@@ -1,5 +1,9 @@
 mod additive;
-mod producers;
+pub(super) mod cached;
+mod dependency_candidates;
+#[cfg(test)]
+mod dependency_candidates_tests;
+pub(in crate::refresh) mod producers;
 mod reciprocal;
 pub(super) mod tensor_affine;
 
@@ -115,6 +119,8 @@ pub fn derive_target_assignment_shapes(
         else {
             continue;
         };
+        let candidates = dependency_candidates::derive(producers.view(), output);
+        let targets = candidates.as_ref().unwrap_or(targets);
         for &target in targets {
             let Some(shape) =
                 canonical_assignment_shape(producers.view(), output, target, dependencies)

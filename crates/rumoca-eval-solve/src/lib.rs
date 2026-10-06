@@ -46,7 +46,9 @@ mod scalar_program_contract_tests;
 mod sparsity;
 mod table_runtime;
 mod tangent_lanes;
+mod tensor_index;
 pub mod tensor_policy;
+use tensor_index::tensor_register_offset;
 mod typed_program;
 mod update_rows;
 pub use block_residual_split::PreparedBlockResidualSplit;
@@ -60,9 +62,9 @@ use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedEvaluationBlock,
-    PreparedScalarProgramBlock, PreparedTornSweep, TargetAssignmentOutputRequest,
-    TargetIsolationProgram, TornSweepComposite, TornSweepRun, TornSweepStatus, replaced_programs,
-    target_assignment_shape, target_assignment_shapes,
+    PreparedScalarProgramBlock, PreparedTargetValuePlan, PreparedTornSweep,
+    TargetAssignmentOutputRequest, TargetIsolationProgram, TornSweepComposite, TornSweepRun,
+    TornSweepStatus, replaced_programs, target_assignment_shape, target_assignment_shapes,
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
@@ -152,6 +154,19 @@ pub enum EvalSolveError {
         len: usize,
         span: Option<rumoca_core::Span>,
     },
+    /// A one-based tensor axis did not contain an exact finite signed Integer.
+    InvalidTensorIndex {
+        axis: usize,
+        value: f64,
+        span: Option<rumoca_core::Span>,
+    },
+    /// A valid Integer lies outside this source tensor axis's checked extent.
+    TensorIndexOutOfBounds {
+        axis: usize,
+        index: i64,
+        extent: u32,
+        span: Option<rumoca_core::Span>,
+    },
     RegisterOutOfBounds {
         access: &'static str,
         register: Reg,
@@ -221,6 +236,9 @@ impl EvalSolveError {
         match self {
             Self::MissingInput { span, .. } => *span,
             Self::RegisterOutOfBounds { span, .. } => *span,
+            Self::InvalidTensorIndex { span, .. } | Self::TensorIndexOutOfBounds { span, .. } => {
+                *span
+            }
             Self::UninitializedRegister { span, .. } => *span,
             Self::OutputTooSmall { span, .. } => *span,
             Self::SingularTargetAssignment { span, .. } => *span,
@@ -243,6 +261,22 @@ impl EvalSolveError {
                 vector,
                 index,
                 len,
+                span,
+            },
+            Self::InvalidTensorIndex {
+                axis,
+                value,
+                span: None,
+            } => Self::InvalidTensorIndex { axis, value, span },
+            Self::TensorIndexOutOfBounds {
+                axis,
+                index,
+                extent,
+                span: None,
+            } => Self::TensorIndexOutOfBounds {
+                axis,
+                index,
+                extent,
                 span,
             },
             Self::RegisterOutOfBounds {
@@ -327,6 +361,9 @@ impl std::fmt::Display for EvalSolveError {
                 f,
                 "missing {vector}[{index}] while evaluating Solve-IR row; vector length is {len}"
             ),
+            Self::InvalidTensorIndex { .. } | Self::TensorIndexOutOfBounds { .. } => {
+                tensor_index::fmt_index_fault(self, f)
+            }
             Self::RegisterOutOfBounds {
                 access,
                 register,
@@ -780,6 +817,11 @@ enum LazyEvalTask {
 #[derive(Clone, Copy)]
 enum LazyTraceStep {
     Apply(usize),
+    /// Validate branch activation before replaying its demanded dependencies.
+    Guard {
+        cond: Reg,
+        expected: bool,
+    },
     Select {
         dst: Reg,
         cond: Reg,
@@ -833,7 +875,11 @@ impl PreparedLazyRowPlan {
             outputs: outputs.into_boxed_slice(),
             trace: RefCell::new(None),
             trace_native_specialization: !row.iter().any(|operation| {
-                matches!(
+                // A trailing specialization guard cannot authorize a potentially
+                // failing address read from a branch that is currently inactive.
+                matches!(operation, LinearOp::LoadIndexedRegister { indices, .. }
+                    if indices.iter().any(|index| matches!(index, rumoca_ir_solve::TensorIndex::Runtime(_))))
+                || matches!(
                     operation,
                     LinearOp::FunctionConditional { .. } | LinearOp::GuardedFunctionFold { .. }
                 )
@@ -930,7 +976,7 @@ fn specialization_trace(trace: &[LazyTraceStep]) -> (SpecializedSelections, Vec<
                 selected.insert(dst, (cond, expected, src));
             }
             LazyTraceStep::Store(src) => outputs.push(src),
-            LazyTraceStep::Apply(_) => {}
+            LazyTraceStep::Apply(_) | LazyTraceStep::Guard { .. } => {}
         }
     }
     (selected, outputs)
@@ -1663,6 +1709,10 @@ fn execute_lazy_task(
             if_true,
             if_false,
         } => {
+            scratch.lazy_trace.push(LazyTraceStep::Guard {
+                cond,
+                expected: scratch.regs[cond as usize] != 0.0,
+            });
             let src = if scratch.regs[cond as usize] != 0.0 {
                 if_true
             } else {
@@ -1706,6 +1756,12 @@ fn eval_cached_lazy_trace(
             LazyTraceStep::Apply(op_index) => {
                 eval_lazy_pure_op(input, regs, input.row[op_index].clone())?;
             }
+            LazyTraceStep::Guard { cond, expected } => {
+                if (regs[cond as usize] != 0.0) != expected {
+                    outputs.clear();
+                    return Ok(false);
+                }
+            }
             LazyTraceStep::Select {
                 dst,
                 cond,
@@ -1745,10 +1801,10 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
                     push_lazy_register(tasks, *register);
                 }
             }
-            let count = dimensions.iter().fold(stride, |count, extent| {
+            let count = dimensions.iter().fold(1usize, |count, extent| {
                 count.saturating_mul(*extent as usize)
             });
-            push_lazy_register_range(tasks, base, count, 1);
+            push_lazy_register_range(tasks, base, count, stride);
         }
         LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. } => {
             push_lazy_register(tasks, src);
@@ -2036,12 +2092,11 @@ fn eval_lazy_scalar_op(
             dimensions,
             indices,
         } => {
-            let offset = tensor_register_offset(&dimensions, &indices, |register| {
-                Ok::<f64, EvalSolveError>(regs[register as usize])
-            })?;
-            regs[dst as usize] = offset
-                .map(|offset| regs[base as usize + offset * stride])
-                .unwrap_or(f64::NAN);
+            let offset =
+                tensor_register_offset(&dimensions, &indices, input.source_span, |register| {
+                    Ok::<f64, EvalSolveError>(regs[register as usize])
+                })?;
+            regs[dst as usize] = regs[base as usize + offset * stride];
         }
         LinearOp::Move { dst, src } => regs[dst as usize] = regs[src as usize],
         LinearOp::LinearSolveComponent {
@@ -2394,12 +2449,13 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 dimensions,
                 indices,
             } => {
-                let offset =
-                    tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = match offset {
-                    Some(offset) => self.get(base + (offset * stride) as Reg)?,
-                    None => f64::NAN,
-                };
+                let offset = tensor_register_offset(
+                    &dimensions,
+                    &indices,
+                    self.input.source_span,
+                    |register| self.get(register),
+                )?;
+                let value = self.get(base + (offset * stride) as Reg)?;
                 self.set(dst, value)?;
             }
             LinearOp::LoadIndexedFoldCarried {
@@ -2412,11 +2468,15 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 let carried = self.input.fold_carried.ok_or_else(|| {
                     invalid_row("indexed function-fold carried load escaped its update body")
                 })?;
-                let offset =
-                    tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = offset
-                    .and_then(|offset| carried.get(base + offset * stride).copied())
-                    .unwrap_or(f64::NAN);
+                let offset = tensor_register_offset(
+                    &dimensions,
+                    &indices,
+                    self.input.source_span,
+                    |register| self.get(register),
+                )?;
+                let value =
+                    self.input
+                        .read_input("fold carried", carried, base + offset * stride)?;
                 self.set(dst, value)?;
             }
             LinearOp::LoadIndexedFoldCapture {
@@ -2429,11 +2489,15 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 let captures = self.input.fold_captures.ok_or_else(|| {
                     invalid_row("indexed function-fold capture load escaped its update body")
                 })?;
-                let offset =
-                    tensor_register_offset(&dimensions, &indices, |register| self.get(register))?;
-                let value = offset
-                    .and_then(|offset| captures.get(base + offset * stride).copied())
-                    .unwrap_or(f64::NAN);
+                let offset = tensor_register_offset(
+                    &dimensions,
+                    &indices,
+                    self.input.source_span,
+                    |register| self.get(register),
+                )?;
+                let value =
+                    self.input
+                        .read_input("fold capture", captures, base + offset * stride)?;
                 self.set(dst, value)?;
             }
             LinearOp::LoadIndexedSeed {
@@ -3145,12 +3209,11 @@ fn eval_row_prepared_fast(
                 dimensions,
                 indices,
             } => {
-                let offset = tensor_register_offset(dimensions, indices, |register| {
-                    Ok::<f64, EvalSolveError>(regs[register as usize])
-                })?;
-                regs[*dst as usize] = offset
-                    .map(|offset| regs[*base as usize + offset * *stride])
-                    .unwrap_or(f64::NAN);
+                let offset =
+                    tensor_register_offset(dimensions, indices, input.source_span, |register| {
+                        Ok::<f64, EvalSolveError>(regs[register as usize])
+                    })?;
+                regs[*dst as usize] = regs[*base as usize + offset * *stride];
             }
             LinearOp::LoadIndexedFoldCarried {
                 dst,
@@ -3162,12 +3225,12 @@ fn eval_row_prepared_fast(
                 let carried = input.fold_carried.ok_or_else(|| {
                     invalid_row("indexed function-fold carried load escaped its update body")
                 })?;
-                let offset = tensor_register_offset(dimensions, indices, |register| {
-                    Ok::<f64, EvalSolveError>(regs[register as usize])
-                })?;
-                regs[*dst as usize] = offset
-                    .and_then(|offset| carried.get(*base + offset * *stride).copied())
-                    .unwrap_or(f64::NAN);
+                let offset =
+                    tensor_register_offset(dimensions, indices, input.source_span, |register| {
+                        Ok::<f64, EvalSolveError>(regs[register as usize])
+                    })?;
+                regs[*dst as usize] =
+                    input.read_input("fold carried", carried, *base + offset * *stride)?;
             }
             LinearOp::LoadIndexedFoldCapture {
                 dst,
@@ -3179,12 +3242,12 @@ fn eval_row_prepared_fast(
                 let captures = input.fold_captures.ok_or_else(|| {
                     invalid_row("indexed function-fold capture load escaped its update body")
                 })?;
-                let offset = tensor_register_offset(dimensions, indices, |register| {
-                    Ok::<f64, EvalSolveError>(regs[register as usize])
-                })?;
-                regs[*dst as usize] = offset
-                    .and_then(|offset| captures.get(*base + offset * *stride).copied())
-                    .unwrap_or(f64::NAN);
+                let offset =
+                    tensor_register_offset(dimensions, indices, input.source_span, |register| {
+                        Ok::<f64, EvalSolveError>(regs[register as usize])
+                    })?;
+                regs[*dst as usize] =
+                    input.read_input("fold capture", captures, *base + offset * *stride)?;
             }
             LinearOp::LoadIndexedSeed {
                 dst,
@@ -3995,21 +4058,6 @@ fn eval_function_conditional_region(
     let mut sink = OutputCursor::new(&mut values);
     eval_row_prepared_fast(nested, &mut scratch, &mut sink)?;
     Ok(values)
-}
-
-fn tensor_register_offset<E>(
-    dimensions: &[u32],
-    indices: &[rumoca_ir_solve::TensorIndex],
-    mut read: impl FnMut(Reg) -> Result<f64, E>,
-) -> Result<Option<usize>, E> {
-    let mut offset = 0usize;
-    for (&extent, index) in dimensions.iter().zip(indices) {
-        let Some(coordinate) = tensor_index_coordinate(*index, extent, &mut read)? else {
-            return Ok(None);
-        };
-        offset = offset * extent as usize + coordinate;
-    }
-    Ok(Some(offset))
 }
 
 fn tensor_update_value_offset<E>(

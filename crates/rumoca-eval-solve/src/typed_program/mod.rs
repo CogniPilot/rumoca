@@ -6,6 +6,7 @@ mod tensor;
 mod tests;
 
 use std::collections::{HashMap, hash_map::Entry};
+use std::sync::Arc;
 
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
@@ -29,7 +30,8 @@ use number::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedValue {
     value_type: SolveValueType,
-    elements: Box<[SolveValueKind]>,
+    // Registers expose immutable payloads; updates construct a distinct value.
+    elements: Arc<[SolveValueKind]>,
 }
 
 impl TypedValue {
@@ -49,7 +51,7 @@ impl TypedValue {
         }
         Ok(Self {
             value_type,
-            elements: elements.into_boxed_slice(),
+            elements: elements.into(),
         })
     }
 
@@ -59,14 +61,14 @@ impl TypedValue {
     }
 
     #[must_use]
-    pub const fn elements(&self) -> &[SolveValueKind] {
+    pub fn elements(&self) -> &[SolveValueKind] {
         &self.elements
     }
 
     fn scalar(value: &SolveValue) -> Self {
         Self {
             value_type: value.value_type().clone(),
-            elements: Box::new([value.kind()]),
+            elements: Arc::from([value.kind()]),
         }
     }
 

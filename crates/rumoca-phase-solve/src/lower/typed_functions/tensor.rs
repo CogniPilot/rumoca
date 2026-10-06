@@ -137,13 +137,13 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide
                 if !lhs_type.is_scalar() && rhs_type.is_scalar() =>
             {
-                let one = self
-                    .builder
-                    .constant(solve::SolveValue::real(arithmetic_profile(), 1.0), at)?;
-                let reciprocal =
-                    self.builder
-                        .binary(solve::SolveBinaryOperator::Divide, one, rhs_value, at)?;
-                self.builder.scale(lhs_value, reciprocal, at)
+                self.builder.broadcast_binary(
+                    solve::SolveBinaryOperator::Divide,
+                    lhs_value,
+                    rhs_value,
+                    false,
+                    at,
+                )
             }
             dae::BinaryOperator::Equal
             | dae::BinaryOperator::NotEqual
@@ -706,10 +706,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     /// Lower one MLS 3.7 §3.7.2 Operator 3.4/3.5/3.6 quotient with a checked
     /// Real result: `ratio = lhs / rhs`, floored (`mod`) or truncated
     /// (`div`/`rem`), then `lhs - quotient * rhs` for the remainder forms —
-    /// the same composition the model-level scalar lowering uses. An Integer
-    /// result takes the exact integer composition of [`Self::integer_quotient`].
-    /// Mixed Integer operands promote through `IntegerToReal`, exactly like the
-    /// binary arithmetic promotion above.
+    /// the same composition the model-level scalar lowering uses. Integer
+    /// results use exact typed quotient operations. Mixed Integer operands
+    /// promote through `IntegerToReal`, exactly
+    /// like the binary arithmetic promotion above.
     fn quotient(
         &mut self,
         value_type: dae::ValueTypeId<'dae>,
@@ -791,47 +791,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let lhs = self.expression(dividend)?.only_register(at)?;
         let rhs = self.expression(divisor)?.only_register(at)?;
-        let quotient =
-            self.builder
-                .binary(solve::SolveBinaryOperator::IntegerQuotient, lhs, rhs, at)?;
-        if builtin == dae::PureBuiltin::Div {
-            return Ok(LoweredValue::scalar(value_type, quotient));
-        }
-        let multiple =
-            self.builder
-                .binary(solve::SolveBinaryOperator::Multiply, quotient, rhs, at)?;
-        let remainder =
-            self.builder
-                .binary(solve::SolveBinaryOperator::Subtract, lhs, multiple, at)?;
-        if builtin == dae::PureBuiltin::Rem {
-            return Ok(LoweredValue::scalar(value_type, remainder));
-        }
-        let zero = solve::SolveValue::integer(arithmetic_profile(), 0).map_err(|_| {
-            solve::SolveProgramConstructionError::ProfileMismatch { provenance: at }
-        })?;
-        let zero = self.builder.constant(zero, at)?;
-        let nonzero =
-            self.builder
-                .compare(solve::SolveCompareOperator::NotEqual, remainder, zero, at)?;
-        let remainder_negative =
-            self.builder
-                .compare(solve::SolveCompareOperator::Less, remainder, zero, at)?;
-        let divisor_negative =
-            self.builder
-                .compare(solve::SolveCompareOperator::Less, rhs, zero, at)?;
-        let signs_differ = self.builder.compare(
-            solve::SolveCompareOperator::NotEqual,
-            remainder_negative,
-            divisor_negative,
-            at,
-        )?;
-        let adjust =
-            self.builder
-                .binary(solve::SolveBinaryOperator::And, nonzero, signs_differ, at)?;
-        let shifted = self
-            .builder
-            .binary(solve::SolveBinaryOperator::Add, remainder, rhs, at)?;
-        let register = self.builder.select(adjust, shifted, remainder, at)?;
+        let operator = match builtin {
+            dae::PureBuiltin::Div => solve::SolveBinaryOperator::IntegerQuotient,
+            dae::PureBuiltin::Mod => solve::SolveBinaryOperator::IntegerModulo,
+            dae::PureBuiltin::Rem => solve::SolveBinaryOperator::IntegerRemainder,
+            _ => {
+                return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                    provenance: at,
+                });
+            }
+        };
+        let register = self.builder.binary(operator, lhs, rhs, at)?;
         Ok(LoweredValue::scalar(value_type, register))
     }
 }

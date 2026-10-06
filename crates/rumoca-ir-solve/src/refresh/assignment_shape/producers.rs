@@ -4,13 +4,13 @@ use std::collections::BTreeMap;
 
 use crate::{LinearOp, Reg};
 
-pub(super) struct UniqueProgram<'a> {
+pub(in crate::refresh) struct UniqueProgram<'a> {
     operations: &'a [LinearOp],
     ranges: BTreeMap<Reg, (u64, usize)>,
 }
 
 impl<'a> UniqueProgram<'a> {
-    pub(super) fn new(operations: &'a [LinearOp]) -> Option<Self> {
+    pub(in crate::refresh) fn new(operations: &'a [LinearOp]) -> Option<Self> {
         let mut ranges = BTreeMap::<Reg, (u64, usize)>::new();
         for (position, operation) in operations.iter().enumerate() {
             let Some(start) = operation.dst_register() else {
@@ -38,7 +38,7 @@ impl<'a> UniqueProgram<'a> {
         Some(Self { operations, ranges })
     }
 
-    pub(super) fn view(&self) -> ProgramPrefix<'_> {
+    pub(in crate::refresh) fn view(&self) -> ProgramPrefix<'_> {
         ProgramPrefix {
             operations: self.operations,
             ranges: &self.ranges,
@@ -47,30 +47,63 @@ impl<'a> UniqueProgram<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProgramPrefix<'a> {
+pub(in crate::refresh) struct ProgramPrefix<'a> {
     operations: &'a [LinearOp],
     ranges: &'a BTreeMap<Reg, (u64, usize)>,
 }
 
 impl<'a> ProgramPrefix<'a> {
-    pub(super) fn before(self, position: usize) -> Option<Self> {
+    pub(in crate::refresh) fn before(self, position: usize) -> Option<Self> {
         Some(Self {
             operations: self.operations.get(..position)?,
             ranges: self.ranges,
         })
     }
 
-    pub(super) fn len(self) -> usize {
+    pub(in crate::refresh) fn len(self) -> usize {
         self.operations.len()
     }
 
-    pub(super) fn operation(self, position: usize) -> Option<&'a LinearOp> {
+    pub(in crate::refresh) fn operation(self, position: usize) -> Option<&'a LinearOp> {
         self.operations.get(position)
     }
 
-    pub(super) fn producer_position(self, register: Reg) -> Option<usize> {
+    pub(in crate::refresh) fn producer_position(self, register: Reg) -> Option<usize> {
         let (_, &(end, position)) = self.ranges.range(..=register).next_back()?;
         (u64::from(register) < end && position < self.operations.len()).then_some(position)
+    }
+
+    /// Query compact producer ranges without enumerating tensor registers.
+    /// The enclosing prefix excludes current/later producers, including when
+    /// destinations are nonmonotone or a source begins inside a tensor range.
+    pub(in crate::refresh) fn any_producer_in_range(
+        self,
+        start: Reg,
+        count: usize,
+        mut predicate: impl FnMut(usize) -> bool,
+    ) -> Option<bool> {
+        let end = u64::from(start).checked_add(u64::try_from(count).ok()?)?;
+        if end > u64::from(Reg::MAX) + 1 {
+            return None;
+        }
+        if count == 0 {
+            return Some(false);
+        }
+        let first = self
+            .ranges
+            .range(..=start)
+            .next_back()
+            .map_or(start, |(&key, _)| key);
+        Some(
+            self.ranges
+                .range(first..)
+                .take_while(|(key, _)| u64::from(**key) < end)
+                .any(|(_, &(limit, position))| {
+                    limit > u64::from(start)
+                        && position < self.operations.len()
+                        && predicate(position)
+                }),
+        )
     }
 }
 

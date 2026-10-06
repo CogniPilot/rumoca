@@ -1,3 +1,5 @@
+mod guards;
+
 use super::*;
 
 pub(super) fn lower_structured_body<'dae>(
@@ -8,7 +10,16 @@ pub(super) fn lower_structured_body<'dae>(
     generated_root: Option<dae::DaeGeneration>,
     _owner_span: Span,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if let Some(selected) = selected_constant_branch(body, symbols.functions.constants) {
+    let retained = matches!(body, Expression::If { branches, else_branch, span }
+        if expression::retained_conditional(symbols, branches, else_branch, *span));
+    let settled = (!retained)
+        .then(|| guards::settle(body, symbols.shapes, binders))
+        .flatten();
+    let body = settled.as_ref().unwrap_or(body);
+    if let Some(selected) = (!retained)
+        .then(|| selected_constant_branch(body, symbols.functions.constants))
+        .flatten()
+    {
         return lower_expression_scoped(construction, symbols, binders, selected, generated_root);
     }
     let normalized = normalize_conditional_residual(body);

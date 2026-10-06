@@ -1,6 +1,6 @@
-use rumoca::Compiler;
+use super::compile_model;
+use crate::{SimOptions, simulate_dae};
 use rumoca_ir_dae as dae;
-use rumoca_sim::{SimOptions, simulate_dae};
 
 /// MLS 3.7 §11.2.6: a top-level `return` ends the algorithm, so a trailing one
 /// (`Electrical.Analog.Basic.OpAmpDetailed`'s limiters) leaves the function
@@ -30,9 +30,7 @@ end TrailingReturn;
 
 #[test]
 fn a_trailing_top_level_return_ends_the_algorithm() {
-    let compiled = Compiler::new()
-        .model("TrailingReturn")
-        .compile_str(TRAILING_RETURN, "trailing_return.mo")
+    let compiled = compile_model("TrailingReturn", TRAILING_RETURN, "trailing_return.mo")
         .expect("a trailing return constructs checked DAE");
     let simulation =
         simulate_dae(&compiled.dae, &SimOptions::default()).expect("the limiter simulates");
@@ -72,9 +70,7 @@ end GuardedReturn;
 
 #[test]
 fn guarded_return_round_trips_and_remains_computable() {
-    let compiled = Compiler::new()
-        .model("GuardedReturn")
-        .compile_str(GUARDED_RETURN, "guarded_return.mo")
+    let compiled = compile_model("GuardedReturn", GUARDED_RETURN, "guarded_return.mo")
         .expect("proved guarded return should construct checked DAE");
     let wire =
         serde_json::to_string(&compiled.dae).expect("guarded return should serialize through v11");
@@ -99,10 +95,9 @@ fn guarded_return_round_trips_and_remains_computable() {
 
 #[test]
 fn partial_return_definition_fails_at_the_function_owner() {
-    let error = Compiler::new()
-        .model("InvalidReturn")
-        .compile_str(
-            r#"
+    let error = compile_model(
+        "InvalidReturn",
+        r#"
 function partial_output
   input Real x;
   output Real y;
@@ -118,9 +113,9 @@ equation
   y = partial_output(1);
 end InvalidReturn;
 "#,
-            "invalid_return.mo",
-        )
-        .expect_err("return without a total output definition must fail closed");
+        "invalid_return.mo",
+    )
+    .expect_err("return without a total output definition must fail closed");
     let message = error.to_string();
     assert!(
         message.contains("function return") && message.contains("define every output"),
@@ -159,9 +154,7 @@ end DefaultedReturn;
 
 #[test]
 fn a_declared_output_default_survives_the_return_guard_lowering() {
-    let compiled = Compiler::new()
-        .model("DefaultedReturn")
-        .compile_str(DEFAULTED_RETURN, "defaulted_return.mo")
+    let compiled = compile_model("DefaultedReturn", DEFAULTED_RETURN, "defaulted_return.mo")
         .expect("a defaulted output with a guarded return should construct a checked DAE");
     let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
         .expect("defaulted return should lower to computable Solve IR");
@@ -232,10 +225,12 @@ end DefaultedRecordReturn;
 
 #[test]
 fn a_record_output_default_survives_the_return_guard_lowering() {
-    let compiled = Compiler::new()
-        .model("DefaultedRecordReturn")
-        .compile_str(DEFAULTED_RECORD_RETURN, "defaulted_record_return.mo")
-        .expect("a defaulted record output with a guarded return should construct a checked DAE");
+    let compiled = compile_model(
+        "DefaultedRecordReturn",
+        DEFAULTED_RECORD_RETURN,
+        "defaulted_record_return.mo",
+    )
+    .expect("a defaulted record output with a guarded return should construct a checked DAE");
     let simulation = simulate_dae(&compiled.dae, &SimOptions::default())
         .expect("defaulted record return should lower to computable Solve IR");
     let x = simulation
@@ -428,9 +423,7 @@ fn describe_stores<'dae>(view: dae::DaeView<'dae>, stores: &[OutputStore<'dae>])
 /// conditional fallback.
 #[test]
 fn a_declared_output_default_is_the_live_seed_of_the_lowered_body() {
-    let compiled = Compiler::new()
-        .model("DefaultedReturn")
-        .compile_str(DEFAULTED_RETURN, "defaulted_return.mo")
+    let compiled = compile_model("DefaultedReturn", DEFAULTED_RETURN, "defaulted_return.mo")
         .expect("a defaulted output with a guarded return should construct a checked DAE");
     compiled.dae.inspect(|view| {
         let function = (0..view.function_count())
@@ -519,9 +512,7 @@ end BranchReturn;
 
 #[test]
 fn statements_after_a_partially_returning_conditional_continue_its_other_branches() {
-    let compiled = Compiler::new()
-        .model("BranchReturn")
-        .compile_str(BRANCH_RETURN, "branch_return.mo")
+    let compiled = compile_model("BranchReturn", BRANCH_RETURN, "branch_return.mo")
         .expect("a partially returning conditional constructs checked DAE");
     let simulation = simulate_dae(
         &compiled.dae,

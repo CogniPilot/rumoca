@@ -1209,10 +1209,10 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
 /// MLS §11.2.2 requires the range to be evaluable and MLS §12.2 lets a function
 /// body be written over its inputs, so `for k in 1:n` under a call that proves
 /// `n = 3` is the same three-element compact domain a literal `1:3` gives. A
-/// direct accumulator owns that domain as a tensor reduction, not as a carried
-/// scalar fold.
+/// direct accumulator retains its source-ordered carried scalar fold, so
+/// checked arithmetic faults are not moved by a seed reassociation.
 #[test]
-fn reachable_function_loop_over_a_proven_input_lowers_to_a_tensor_reduction() {
+fn reachable_function_loop_over_a_proven_input_retains_source_ordered_fold() {
     let source = TestSource::new(
         "function sumN input Integer n; output Integer y; algorithm \
          y := 0; for k in 1:n loop y := y + k; end for; end sumN; 1.0 * sumN(3);",
@@ -1304,39 +1304,38 @@ fn reachable_function_loop_over_a_proven_input_lowers_to_a_tensor_reduction() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(assert_proven_input_tensor_reduction);
+    dae.inspect(assert_proven_input_ordered_fold);
 }
 
-fn assert_proven_input_tensor_reduction(view: dae::DaeView<'_>) {
+fn assert_proven_input_ordered_fold(view: dae::DaeView<'_>) {
     let function = view.function(view.function_id(0).unwrap()).unwrap();
-    assert_eq!(function.fold_count(), 0);
-    let mut statements = function.statements();
-    let Some(dae::FunctionStatementView::Assignment { definition }) = statements.next() else {
-        panic!("the accumulator must lower to one tensor assignment")
-    };
-    assert!(statements.next().is_none());
-    let dae::ExpressionOperation::Binary { rhs, .. } =
-        view.expression(definition.rhs()).unwrap().operation()
-    else {
-        panic!("the seed and tensor reduction must retain their source operator")
-    };
-    let dae::ExpressionOperation::Builtin {
-        builtin: dae::PureBuiltin::Sum,
-        arguments,
-    } = view.expression(rhs).unwrap().operation()
-    else {
-        panic!("the loop must own a tensor-native sum")
-    };
-    let dae::ExpressionOperation::Comprehension { domain, .. } = view
-        .expression(arguments.get(0).unwrap())
-        .unwrap()
-        .operation()
-    else {
-        panic!("the sum operand must retain its compact comprehension")
-    };
-    let domain = view.domain(domain).unwrap();
+    assert_eq!(function.fold_count(), 1);
+    assert_eq!(function.statements().count(), 2);
+    let fold = view.function_fold(function.fold_id(0).unwrap()).unwrap();
+    let domain = view.domain(fold.domain()).unwrap();
     assert_eq!(domain.scalar_count(), 3);
     assert_eq!(view.source_text(domain.provenance()), Some("1:n"));
+    assert_eq!(
+        view.source_text(fold.provenance()),
+        Some("for k in 1:n loop y := y + k; end for")
+    );
+    let update = view
+        .expression(fold.update_values().rhs(0).unwrap())
+        .unwrap();
+    assert_eq!(view.source_text(update.provenance()), Some("y + k"));
+    assert!(matches!(
+        update.operation(),
+        dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Add,
+            ..
+        }
+    ));
+    assert_eq!(
+        view.expression(function.result_values().rhs(0).unwrap())
+            .unwrap()
+            .kind(),
+        dae::ExpressionKind::FunctionFoldOutput
+    );
 }
 
 /// The MLS §12.3 purity prefix the fixture's external declaration writes.

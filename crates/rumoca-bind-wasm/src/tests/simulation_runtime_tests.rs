@@ -3,6 +3,112 @@ use super::*;
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
+fn interactive_session_reset_at_preserves_modelica_time_and_invalid_reset_state() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let baseline = "model Timed parameter Real gain=1; Real x; output Real clock; initial equation x=time; equation der(x)=gain*time; clock=time; end Timed;";
+    for policy in ["auto", "interpreter"] {
+        for gain in [1.0, 2.0] {
+            let source = baseline.replace("gain=1", &format!("gain={gain}"));
+            let options =
+                serde_json::json!({"dt":0.01,"solver":"rk-like","atol":1e-10,"rtol":1e-10,
+                "execution_policy":policy})
+                .to_string();
+            let mut session = crate::WasmSimulationSession::with_interactive_configuration(
+                &source, "Timed", &options,
+            )
+            .unwrap();
+            check_absolute_resets(&mut session, gain);
+            let before = session.state_json().unwrap();
+            for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(session.reset_at(invalid).is_err());
+                assert_eq!(session.state_json().unwrap(), before);
+            }
+            session.reset().unwrap();
+            assert_eq!(session.time(), 0.0);
+            assert_eq!(session.get("x").unwrap(), Some(0.0));
+            assert_eq!(session.get("clock").unwrap(), Some(0.0));
+        }
+    }
+    clear_source_root_cache().unwrap();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+fn check_absolute_resets(session: &mut crate::WasmSimulationSession, gain: f64) {
+    for start in [0.0, 7.0, 7000.125] {
+        session.reset_at(start).unwrap();
+        assert_eq!(session.time(), start);
+        assert_eq!(session.get("clock").unwrap(), Some(start));
+        assert_eq!(session.get("x").unwrap(), Some(start));
+        let elapsed = 0.125;
+        session.advance_to(start + elapsed).unwrap();
+        let expected = start + gain * (start * elapsed + 0.5 * elapsed * elapsed);
+        let actual = session.get("x").unwrap().unwrap();
+        assert!((actual - expected).abs() < 1e-8 * expected.abs().max(1.0));
+        assert_eq!(session.get("clock").unwrap(), Some(start + elapsed));
+    }
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn structured_interactive_options_match_legacy_and_interpreter_trace() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let source = "model Driven input Real u(start=99); Real x; initial equation x=u; equation der(x)=u; end Driven;";
+    let mut legacy = crate::WasmSimulationSession::with_interactive_options(
+        source,
+        "Driven",
+        0.01,
+        "rk-like",
+        1e-10,
+        1e-8,
+        r#"[["u",2.0]]"#,
+    )
+    .unwrap();
+    for policy in ["auto", "interpreter"] {
+        legacy.reset().unwrap();
+        let options = serde_json::json!({"dt":0.01,"solver":"rk-like","atol":1e-10,"rtol":1e-8,
+            "initial_inputs":[["u",2.0]],"execution_policy":policy})
+        .to_string();
+        let mut configured = crate::WasmSimulationSession::with_interactive_configuration(
+            source, "Driven", &options,
+        )
+        .unwrap();
+        assert_eq!(configured.get("x").unwrap(), Some(2.0));
+        for step in 1..=18 {
+            let input = if step <= 9 {
+                r#"[["u",0.3]]"#
+            } else {
+                r#"[["u",-0.2]]"#
+            };
+            legacy.set_inputs(input).unwrap();
+            configured.set_inputs(input).unwrap();
+            let time = f64::from(step) / 90.0;
+            legacy.advance_to(time).unwrap();
+            configured.advance_to(time).unwrap();
+            assert_eq!(
+                configured.state_json().unwrap(),
+                legacy.state_json().unwrap()
+            );
+        }
+        let prior = configured.state_json().unwrap();
+        assert!(configured.set_inputs(r#"[["u",3],["missing",4]]"#).is_err());
+        assert_eq!(configured.state_json().unwrap(), prior);
+        configured.reset().unwrap();
+        assert_eq!(configured.get("x").unwrap(), Some(2.0));
+        let edited = source.replace("der(x)=u", "der(x)=2*u");
+        let mut changed = crate::WasmSimulationSession::with_interactive_configuration(
+            &edited, "Driven", &options,
+        )
+        .unwrap();
+        changed.advance_to(0.25).unwrap();
+        assert!((changed.get("x").unwrap().unwrap() - 3.0).abs() < 1e-8);
+    }
+    clear_source_root_cache().unwrap();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
 fn interactive_session_applies_initial_inputs_before_initialization() {
     let _guard = session_test_guard();
     clear_source_root_cache().unwrap();

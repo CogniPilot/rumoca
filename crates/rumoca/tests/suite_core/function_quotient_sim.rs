@@ -5,8 +5,8 @@
 //! `div`/`rem` truncated — because §3.7.2 function bodies are event-free.
 //! These pins value-check each operator against its MLS definition computed
 //! independently in Rust, straddling a wrap boundary and a sign change, pin
-//! the mixed Integer-operand promotion, and pin that an Integer result is an
-//! exact typed Integer quotient instead of riding Binary64.
+//! the mixed Integer-operand promotion, and pin that an Integer-result
+//! function executes through the checked exact Integer quotient operation.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
@@ -236,26 +236,29 @@ end IntegerResult;
 "#;
 
 #[test]
-fn integer_result_quotient_is_an_exact_integer_division() {
-    // MLS §3.7.2: `div(7, 2)` in an Integer-result function is the exact
-    // truncating Integer quotient 3, computed as a typed Integer operation
-    // rather than through Binary64.
-    let compiled = Compiler::new()
-        .model("IntegerResult")
-        .compile_str(INTEGER_RESULT, "IntegerResult.mo")
-        .expect("the Integer-result fixture constructs its DAE");
-    let result = match simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default()) {
-        Ok(result) => result,
-        Err(error) => panic!("the Integer-result quotient simulates: {error}"),
-    };
-    let y = series(&result, "y");
-    assert!(y.len() > 5, "IntegerResult produced an output grid");
-    let x = series(&result, "x");
-    for (y, x) in y.iter().zip(x) {
-        assert!(
-            (y - x - 3.0).abs() < 1e-12,
-            "div(7, 2) + x: {y} with x = {x}"
-        );
+fn integer_result_quotient_simulates_with_exact_integer_arithmetic() {
+    // The dedicated Integer quotient now admits this previously refused source.
+    // Conversion to Real occurs after the Integer quotient, at the multiplication.
+    // Full-width (>2^53) numeric controls live at the typed execution boundary.
+    for input in [7_i64, -7] {
+        let source = INTEGER_RESULT.replace("i0 = 7", &format!("i0 = {input}"));
+        let compiled = Compiler::new()
+            .model("IntegerResult")
+            .compile_str(&source, "IntegerResult.mo")
+            .expect("the Integer-result fixture constructs its DAE");
+        let result = simulate_dae_with_diagnostics(&compiled.dae, &SimOptions::default())
+            .expect("a checked Integer-result function quotient simulates");
+        let xs = series(&result, "x");
+        let ys = series(&result, "y");
+        assert!(!xs.is_empty());
+        assert_eq!(xs.len(), ys.len());
+        for (x, y) in xs.iter().zip(ys) {
+            let expected = (input / 2) as f64 + x;
+            assert!(
+                (y - expected).abs() < 1e-12,
+                "div({input}, 2) + {x}: {y} != {expected}"
+            );
+        }
     }
 }
 

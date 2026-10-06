@@ -9,6 +9,16 @@
 //! what MLS §12.2 needs from a function-local extent. [`exact_range_distance`]
 //! proves that difference by cancelling the shared terms of two affine forms.
 
+#[cfg(test)]
+mod affine_tests;
+mod finite_for;
+mod flow;
+mod operations;
+#[cfg(test)]
+mod tests;
+
+pub(in crate::construction) use finite_for::infer_finite_for_counter_bounds;
+
 use super::*;
 
 impl ShapeEnvironment {
@@ -18,7 +28,7 @@ impl ShapeEnvironment {
         &self,
         expression: &Expression,
     ) -> Option<(i64, i64)> {
-        if let Some(ProvenValue::Integer(value)) = eval_expr(expression, &self.values)
+        if let Some(ProvenValue::Integer(value)) = eval_expr(expression, &self.shape_aware_values())
             .ok()
             .as_ref()
             .and_then(ProvenValue::from_settled)
@@ -53,8 +63,14 @@ impl ShapeEnvironment {
                         lhs_lower.checked_sub(rhs_upper)?,
                         lhs_upper.checked_sub(rhs_lower)?,
                     )),
+                    OpBinary::Mul | OpBinary::MulElem => {
+                        operations::multiply((lhs_lower, lhs_upper), (rhs_lower, rhs_upper))
+                    }
                     _ => None,
                 }
+            }
+            Expression::BuiltinCall { function, args, .. } => {
+                operations::builtin(self, *function, args)
             }
             _ => None,
         }
@@ -111,23 +127,35 @@ pub(in crate::construction) fn infer_function_integer_bounds(
     statements: &[rumoca_core::Statement],
     shapes: &mut ShapeEnvironment,
 ) {
+    let mut invalidated = flow::invalidated_integer_targets(statements);
+    for target in &invalidated {
+        shapes.integer_bounds.remove(target);
+        shapes.values.remove_parameter(target.as_str());
+    }
+    infer_acyclic_integer_bounds(statements, shapes, &mut invalidated);
+    for target in invalidated {
+        shapes.integer_bounds.remove(&target);
+        shapes.values.remove_parameter(target.as_str());
+    }
+}
+
+fn infer_acyclic_integer_bounds(
+    statements: &[rumoca_core::Statement],
+    shapes: &mut ShapeEnvironment,
+    invalidated: &mut HashSet<VarName>,
+) {
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, value, .. } => {
-                if let Some(target) = integer_assignment_target(comp)
-                    && let Some((lower, upper)) = shapes.proven_integer_bounds(value)
-                {
-                    shapes.merge_integer_bounds(target, lower, upper);
-                }
+                infer_integer_assignment(comp, value, shapes, invalidated);
             }
             rumoca_core::Statement::For {
                 indices, equations, ..
             } => {
-                bind_loop_integer_bounds(indices, shapes);
-                infer_function_integer_bounds(equations, shapes);
+                infer_loop_integer_bounds(indices, equations, shapes, invalidated);
             }
             rumoca_core::Statement::While { block, .. } => {
-                infer_function_integer_bounds(&block.stmts, shapes);
+                infer_acyclic_integer_bounds(&block.stmts, shapes, invalidated);
             }
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -135,13 +163,50 @@ pub(in crate::construction) fn infer_function_integer_bounds(
                 ..
             } => {
                 for block in cond_blocks {
-                    infer_function_integer_bounds(&block.stmts, shapes);
+                    infer_acyclic_integer_bounds(&block.stmts, shapes, invalidated);
                 }
                 if let Some(fallback) = else_block {
-                    infer_function_integer_bounds(fallback, shapes);
+                    infer_acyclic_integer_bounds(fallback, shapes, invalidated);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn infer_integer_assignment(
+    component: &rumoca_core::ComponentReference,
+    value: &Expression,
+    shapes: &mut ShapeEnvironment,
+    invalidated: &mut HashSet<VarName>,
+) {
+    let Some(target) = integer_assignment_target(component) else {
+        return;
+    };
+    if invalidated.contains(&target) {
+        return;
+    }
+    if let Some((lower, upper)) = shapes.proven_integer_bounds(value) {
+        shapes.merge_integer_bounds(target, lower, upper);
+    } else {
+        shapes.integer_bounds.remove(&target);
+        shapes.values.remove_parameter(target.as_str());
+        invalidated.insert(target);
+    }
+}
+
+fn infer_loop_integer_bounds(
+    indices: &[rumoca_core::ForIndex],
+    statements: &[rumoca_core::Statement],
+    shapes: &mut ShapeEnvironment,
+    invalidated: &mut HashSet<VarName>,
+) {
+    let mut scoped_shapes = shapes.clone();
+    bind_loop_integer_bounds(indices, &mut scoped_shapes);
+    infer_acyclic_integer_bounds(statements, &mut scoped_shapes, invalidated);
+    for target in flow::written_integer_targets(statements) {
+        if let Some((lower, upper)) = scoped_shapes.integer_bounds.get(&target) {
+            shapes.merge_integer_bounds(target, *lower, *upper);
         }
     }
 }
@@ -273,61 +338,4 @@ pub(super) fn exact_range_distance(
     let start = affine_integer(start, values)?;
     let end = affine_integer(end, values)?;
     end.plus(start.scaled(-1)?)?.exact()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn reference(name: &str) -> Expression {
-        Expression::VarRef {
-            name: rumoca_core::Reference::new(name),
-            subscripts: Vec::new(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn integer(value: i64) -> Expression {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
-        Expression::Binary {
-            op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: Span::DUMMY,
-        }
-    }
-
-    #[test]
-    fn shared_unproven_terms_cancel_to_an_exact_distance() {
-        let values = ShapeEnvironment::default();
-        let start = binary(OpBinary::Sub, reference("i"), integer(2));
-        let end = binary(OpBinary::Sub, reference("i"), integer(1));
-        assert_eq!(exact_range_distance(&start, &end, &values), Some(1));
-        let scaled_start = binary(OpBinary::Mul, integer(2), reference("i"));
-        let scaled_end = binary(
-            OpBinary::Add,
-            binary(OpBinary::Mul, reference("i"), integer(2)),
-            integer(3),
-        );
-        assert_eq!(
-            exact_range_distance(&scaled_start, &scaled_end, &values),
-            Some(3)
-        );
-    }
-
-    #[test]
-    fn distinct_unproven_terms_leave_the_distance_unproven() {
-        let values = ShapeEnvironment::default();
-        let start = reference("i");
-        let end = binary(OpBinary::Add, reference("j"), integer(1));
-        assert_eq!(exact_range_distance(&start, &end, &values), None);
-        let product = binary(OpBinary::Mul, reference("i"), reference("i"));
-        assert_eq!(exact_range_distance(&start, &product, &values), None);
-    }
 }

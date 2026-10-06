@@ -123,13 +123,19 @@ pub(super) fn failable_op_reads_any_y_index(prefix: &[LinearOp], y_indices: &[us
 }
 
 /// Whether evaluating `op` can return an error, rather than a non-finite
-/// value, depending on its operand values: a singular dense solve, a pure
+/// value, depending on its operand values: a checked runtime tensor read,
+/// a singular dense solve, a pure
 /// call whose body raises, an external-table query, a random-generator op
 /// on runtime state, or a function fold or conditional whose body holds one
 /// of these. Structural errors (register bounds, uninitialized registers)
 /// fail the same way on every input.
 pub(super) fn op_can_fail(op: &LinearOp) -> bool {
     match op {
+        LinearOp::LoadIndexedRegister { indices, .. }
+        | LinearOp::LoadIndexedFoldCarried { indices, .. }
+        | LinearOp::LoadIndexedFoldCapture { indices, .. } => indices
+            .iter()
+            .any(|index| matches!(index, rumoca_ir_solve::TensorIndex::Runtime(_))),
         LinearOp::LinearSolveComponent { .. }
         | LinearOp::PureCall { .. }
         | LinearOp::PureCallDirectional { .. }

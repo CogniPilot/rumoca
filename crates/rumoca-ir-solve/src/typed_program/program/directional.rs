@@ -119,7 +119,9 @@ fn program_supports_directional(
                     | SolveBinaryOperator::Min
                     | SolveBinaryOperator::Max
                     | SolveBinaryOperator::And
-                    | SolveBinaryOperator::Or,
+                    | SolveBinaryOperator::Or
+                    | SolveBinaryOperator::IntegerModulo
+                    | SolveBinaryOperator::IntegerRemainder,
                 ..
             } => false,
             SolveOperation::Reduce {
@@ -213,7 +215,9 @@ fn program_supports_directional(
                     | SolveBinaryOperator::Multiply
                     | SolveBinaryOperator::IntegerQuotient
                     | SolveBinaryOperator::And
-                    | SolveBinaryOperator::Or,
+                    | SolveBinaryOperator::Or
+                    | SolveBinaryOperator::IntegerModulo
+                    | SolveBinaryOperator::IntegerRemainder,
                 ..
             }
             | SolveOperation::BroadcastBinary {
@@ -1007,7 +1011,9 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             // A truncated Integer quotient is piecewise constant, like a Boolean.
             SolveBinaryOperator::IntegerQuotient
             | SolveBinaryOperator::And
-            | SolveBinaryOperator::Or => self.zero(value_type, provenance)?,
+            | SolveBinaryOperator::Or
+            | SolveBinaryOperator::IntegerModulo
+            | SolveBinaryOperator::IntegerRemainder => self.zero(value_type, provenance)?,
         };
         Ok(Directional {
             primal,

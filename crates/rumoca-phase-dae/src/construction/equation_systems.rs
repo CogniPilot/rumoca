@@ -57,7 +57,7 @@ pub(super) fn lower_equation_systems<'dae>(
         functions,
         StructuredEquationRows {
             equations: &flat.equations,
-            families: &flat.structured_equations,
+            families: analysis.templates.continuous(flat),
             excluded_families: &continuous_excluded_families,
             environment: Some(StructuredEquationEnvironment {
                 flat,
@@ -101,7 +101,7 @@ pub(super) fn lower_equation_systems<'dae>(
         functions,
         StructuredEquationRows {
             equations: &flat.initial_equations,
-            families: &flat.initial_structured_equations,
+            families: analysis.templates.initialization(flat),
             excluded_families: &initial_excluded_families,
             environment: None,
             initialization: true,

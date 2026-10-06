@@ -932,9 +932,25 @@ impl ExpressionValidator<'_> {
                         *span,
                     ));
                 }
-                Subscript::Expr { expr, .. } => self.validate(expr)?,
+                Subscript::Expr { expr, .. } => self.validate_subscript_expression(expr)?,
                 Subscript::Index { .. } | Subscript::Colon { .. } => {}
             }
+        }
+        Ok(())
+    }
+
+    fn validate_subscript_expression(self, expression: &Expression) -> Result<(), ToDaeError> {
+        let eligible = self
+            .values
+            .is_some_and(|values| super::super::affine_slices::plan(expression, values).is_some());
+        if !eligible {
+            return self.validate(expression);
+        }
+        // The shared proof validates complete original Integer prefixes;
+        // normal validation still checks every operand's provenance and
+        // lexical/reference ownership in the original source order.
+        for operand in expression_children(expression) {
+            self.validate(operand)?;
         }
         Ok(())
     }

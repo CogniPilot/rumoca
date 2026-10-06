@@ -681,8 +681,12 @@ fn replay_function_quotient<'dae>(
     let lhs = mapped(&ids.expressions, lhs, "expression", provenance)?;
     let rhs = mapped(&ids.expressions, rhs, "expression", provenance)?;
     let state = function_state_mut(functions, function_raw, provenance)?;
-    let Some(ReplayCapability::Body(body)) = state.capability.as_ref() else {
-        return Err(malformed("expressions.nodes.function_quotient_owner"));
+    let body = match state.capability.as_ref() {
+        Some(ReplayCapability::Body(body)) => body,
+        Some(ReplayCapability::Fold(loop_body)) => loop_body.body(),
+        Some(ReplayCapability::External(_)) | None => {
+            return Err(malformed("expressions.nodes.function_quotient_owner"));
+        }
     };
     let quotient = dae.function_runtime_quotient(body, builtin, [lhs, rhs], provenance)?;
     if quotient.index() as usize != ids.expressions.len() {

@@ -1,4 +1,6 @@
 use super::*;
+use rumoca_core::FallibleExpressionVisitor;
+use rumoca_ir_flat::FallibleStatementVisitor;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::construction) struct ComprehensionPlan {
@@ -98,7 +100,40 @@ impl ComprehensionPlans {
     }
 }
 
-pub(super) fn analyze_comprehensions<'expression>(
+/// Plan the exact equation owners that construction will lower, including
+/// symbolic continuous and initialization templates. Materialized rows may
+/// contain only expanded arrays, so they cannot stand in for those templates.
+pub(super) fn analyze_model_comprehensions(
+    flat: &flat::Model,
+    constants: &EvalContext,
+    templates: &TemplateSelection,
+) -> Result<ComprehensionPlans, ToDaeError> {
+    let mut analyzer = ModelComprehensions {
+        constants,
+        plans: ComprehensionPlans::default(),
+    };
+    analyzer.visit_equation_owners(flat, templates)?;
+    Ok(analyzer.plans)
+}
+
+struct ModelComprehensions<'scope> {
+    constants: &'scope EvalContext,
+    plans: ComprehensionPlans,
+}
+
+impl FallibleExpressionVisitor for ModelComprehensions<'_> {
+    type Error = ToDaeError;
+
+    fn visit_expression(&mut self, expression: &Expression) -> Result<(), Self::Error> {
+        analyze_expression(expression, self.constants, &mut self.plans)
+    }
+}
+
+impl FallibleStatementVisitor for ModelComprehensions<'_> {}
+impl ModelExpressionOwnerVisitor for ModelComprehensions<'_> {}
+
+#[cfg(test)]
+fn analyze_comprehensions<'expression>(
     expressions: impl IntoIterator<Item = &'expression Expression>,
     constants: &EvalContext,
 ) -> Result<ComprehensionPlans, ToDaeError> {

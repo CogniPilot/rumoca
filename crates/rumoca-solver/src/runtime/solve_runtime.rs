@@ -135,7 +135,27 @@ pub trait CompiledSolveEventTransaction {
 }
 
 /// Optional execution adapter injected by a concrete simulation backend.
+/// Private checked target tuple execution. No solver-Y publication occurs.
+pub trait CompiledSolveTargetValues {
+    fn call(
+        &self,
+        selected: usize,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, String>;
+}
+
 pub trait SolveExecutionBackend {
+    fn compile_target_values(
+        &self,
+        _plan: &solve_eval::PreparedTargetValuePlan,
+        _context: RowEvalContext<'_>,
+    ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+        Err("prepared target values are not compiled by this backend".into())
+    }
+
     fn pure_call_execution(&self) -> Option<&dyn solve_eval::PureCallExecution> {
         None
     }

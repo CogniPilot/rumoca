@@ -7,6 +7,7 @@
 mod assignment_shape;
 mod dependency;
 mod materialization;
+mod native_assignment;
 mod projection;
 mod shared_schedule;
 mod source_outputs;
@@ -18,9 +19,9 @@ use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use assignment_shape::cached::SourceCertificateQueries;
 #[cfg(test)]
 use assignment_shape::canonical_assignment_shape_for_output;
-use assignment_shape::non_causal_assignment_operation;
 pub use assignment_shape::tensor_affine::AffineTensorProjection;
 pub use assignment_shape::{
     OutputYReads, derive_target_assignment_shape_for_output, derive_target_assignment_shapes,
@@ -31,6 +32,9 @@ use dependency::assignment_y_dependencies_for_shapes;
 pub use materialization::{
     IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
     materialize_target_assignment,
+};
+pub use native_assignment::{
+    NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule, NativeRefreshAssignmentStage,
 };
 pub use shared_schedule::SharedAssignmentSchedule;
 pub use staged_execution::{
@@ -449,6 +453,10 @@ pub enum RefreshSeedRule {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContinuousRefreshOwners {
     #[serde(skip)]
+    native_assignment_schedule: Option<NativeRefreshAssignmentSchedule>,
+    #[serde(skip)]
+    native_assignment_refusal: Option<NativeRefreshAssignmentRefusal>,
+    #[serde(skip)]
     projection_affinities: BTreeMap<usize, bool>,
     algebraic: RefreshPlan,
     derivative: RefreshPlan,
@@ -628,6 +636,55 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
 }
 
 impl ContinuousRefreshOwners {
+    /// Issue native stages from canonical equations and structural targets.
+    /// Refusal leaves the preserved scalar/projection path intact.
+    pub fn issue_native_assignment_schedule(
+        &mut self,
+        source: &ComputeBlock,
+        targets: &[Option<crate::ScalarSlot>],
+        layout: &crate::VarLayout,
+    ) -> Result<(), NativeRefreshAssignmentRefusal> {
+        self.native_assignment_schedule = None;
+        self.native_assignment_refusal = None;
+        match native_assignment::derive(source, targets, layout) {
+            Ok(schedule) => self.native_assignment_schedule = Some(schedule),
+            Err(error) => {
+                self.native_assignment_refusal = Some(error.clone());
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn native_assignment_schedule(&self) -> Option<&NativeRefreshAssignmentSchedule> {
+        self.native_assignment_schedule.as_ref()
+    }
+
+    pub fn native_assignment_refusal(&self) -> Option<&NativeRefreshAssignmentRefusal> {
+        self.native_assignment_refusal.as_ref()
+    }
+
+    pub(crate) fn validate_native_assignment_schedule(
+        &self,
+        source: &ComputeBlock,
+        targets: &[Option<crate::ScalarSlot>],
+        layout: &crate::VarLayout,
+    ) -> Result<(), ContinuousRefreshConstructionError> {
+        if let Some(schedule) = &self.native_assignment_schedule {
+            let current = native_assignment::derive(source, targets, layout).map_err(|error| {
+                ContinuousRefreshConstructionError {
+                    reason: error.to_string(),
+                }
+            })?;
+            if !native_assignment::matches(schedule, &current) {
+                return refresh_error(
+                    "native assignment owner differs from its canonical source".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The warm-start rule of one executor class: an importer-driven
     /// component refreshes from the committed seed, since the order of its
     /// trial evaluations is not the model's; an integrator-driven run keeps
@@ -710,6 +767,8 @@ impl ContinuousRefreshOwners {
         )?;
         Ok(Self {
             projection_affinities: BTreeMap::new(),
+            native_assignment_schedule: None,
+            native_assignment_refusal: None,
             algebraic,
             derivative,
             root,
@@ -743,20 +802,21 @@ impl ContinuousRefreshOwners {
         implicit_rhs: &ComputeBlock,
     ) -> Result<(), ContinuousRefreshConstructionError> {
         let outputs = source_outputs::SourceOutputs::new(implicit_rhs)?;
+        let mut queries = SourceCertificateQueries::new(implicit_rhs);
         for (label, plan) in [
             ("algebraic", &self.algebraic),
             ("derivative", &self.derivative),
             ("root", &self.root),
             ("event", &self.event),
         ] {
-            validate_refresh_sources(label, plan, implicit_rhs, &outputs)?;
+            validate_refresh_sources(label, plan, &outputs, &mut queries)?;
         }
         for (clock, plan) in self.clock_events.iter().enumerate() {
             validate_refresh_sources(
                 &format!("clock event {clock}"),
                 plan,
-                implicit_rhs,
                 &outputs,
+                &mut queries,
             )?;
         }
         Ok(())
@@ -877,6 +937,8 @@ impl ContinuousRefreshOwners {
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
         self.omit_affine_projection_seeds();
         let Self {
+            native_assignment_schedule: _,
+            native_assignment_refusal: _,
             projection_affinities: _,
             algebraic,
             derivative,
@@ -997,8 +1059,8 @@ impl ContinuousRefreshOwners {
 fn validate_refresh_sources(
     label: &str,
     plan: &RefreshPlan,
-    implicit_rhs: &ComputeBlock,
     outputs: &source_outputs::SourceOutputs<'_>,
+    queries: &mut SourceCertificateQueries<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     for row in &plan.rows {
         let Some(equation) = outputs.get(row.source, row.output_offset) else {
@@ -1012,7 +1074,7 @@ fn validate_refresh_sources(
                 row.equation_index
             ));
         }
-        validate_refresh_assignment_certificate(label, row, implicit_rhs)?;
+        validate_refresh_assignment_certificate(label, row, queries)?;
     }
     Ok(())
 }
@@ -1020,21 +1082,15 @@ fn validate_refresh_sources(
 fn validate_refresh_assignment_certificate(
     label: &str,
     row: &AlgebraicRefreshRow,
-    implicit_rhs: &ComputeBlock,
+    queries: &mut SourceCertificateQueries<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
-    let (program, _) = scalar_source_program(implicit_rhs, row.source)?.ok_or_else(|| {
-        ContinuousRefreshConstructionError {
-            reason: format!("{label} refresh row refers to a missing canonical source program"),
-        }
-    })?;
-    let derived =
-        derive_target_assignment_shape_for_output(program, row.output_offset, row.target_index);
+    let (derived, causal) = queries.derive(row, label)?;
     if row.assignment_shape != derived {
         return refresh_error(format!(
             "{label} refresh row assignment certificate disagrees with its canonical source"
         ));
     }
-    let exact = derived.is_some() && !program.iter().any(non_causal_assignment_operation);
+    let exact = derived.is_some() && causal;
     let direct = exact
         && derived
             .as_ref()

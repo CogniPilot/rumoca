@@ -1,4 +1,5 @@
 mod directional_map;
+mod immutable_payloads;
 mod invocation_scope;
 mod linear_solve;
 mod recursion;

@@ -57,6 +57,7 @@ pub mod dependency_graph;
 mod effective_type;
 mod expression_rewriter;
 mod expression_visitor;
+mod generated_function_locals;
 mod ir_primitives;
 mod modelica_builtins;
 pub mod native_body;
@@ -74,6 +75,10 @@ pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first
 pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
+pub use generated_function_locals::{
+    GeneratedBooleanLocal, GeneratedFunctionLocalCatalog, GeneratedFunctionLocalKey,
+    GeneratedFunctionLocals, GeneratedLocalError,
+};
 pub use ir_primitives::*;
 pub use modelica_builtins::*;
 pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};

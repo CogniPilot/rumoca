@@ -13,6 +13,6 @@ pub use function_context::FunctionCallContext;
 pub use numeric::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
 pub use projection::{
     LiteralBinding, ProjectionError, ScalarCoordinateProjectionCache, ZeroCoefficients,
-    for_each_scalar_coordinate, for_each_scalar_coordinate_cached, literal_bindings,
-    multiplication_scalar_pairs,
+    for_each_scalar_coordinate, for_each_scalar_coordinate_cached,
+    for_each_scalar_coordinate_filtered_cached, literal_bindings, multiplication_scalar_pairs,
 };

@@ -13,8 +13,10 @@ pub(in crate::construction) use expression_rules::{
     call_free_expression_shape, call_free_target_shape,
 };
 use expression_rules::{expression_shape, reject_shape_call};
-pub(in crate::construction) use integer_bounds::infer_function_integer_bounds;
-use rumoca_core::{DefId, FunctionInstanceId};
+pub(in crate::construction) use integer_bounds::{
+    infer_finite_for_counter_bounds, infer_function_integer_bounds,
+};
+use rumoca_core::{DefId, FunctionInstanceId, InstanceId};
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment};
 use value_relevance::ValueReadInputs;
 pub(super) use value_relevance::{function_expressions, statement_expression_roots};
@@ -99,6 +101,14 @@ pub(super) struct ShapeEnvironment {
     /// Conservative finite bounds for scalar Integer values whose exact value
     /// is not fixed at translation time (most notably compact loop binders).
     integer_bounds: HashMap<VarName, (i64, i64)>,
+    /// Exact lexical compact-domain bounds, distinct from runtime value bounds.
+    slice_binders: HashMap<VarName, (i64, i64)>,
+    /// Settled scalar Integer declaration values, retaining their exact source
+    /// reference and occurrence. Lexical shadowing clears this authority.
+    slice_constants: HashMap<VarName, (rumoca_core::Reference, i64)>,
+    /// Canonical Flat class occurrences attached to lexical references. These
+    /// supplement name binding; they never create a lexical domain or bounds.
+    slice_class_scopes: Arc<HashSet<InstanceId>>,
     /// Flat literal names paired with the declaration identities proven to be
     /// enumeration types. Both sets are required before shape analysis treats
     /// a reference as an enumeration scalar; rendered spelling alone grants no
@@ -126,13 +136,10 @@ pub(super) struct ShapeEnvironment {
     /// Statically-known array extents per flat name, in dimension order.
     ///
     /// This is the shape proof's `shapes` restated as the `Integer` extents MLS
-    /// §10.3.1 `size(x, d)`/`size(x)`/`ndims(x)` read, and it is consulted *only*
-    /// when folding a conditional guard (MLS §3.6.5) to a Boolean. It is kept
-    /// apart from [`Self::values`] on purpose: the compact-domain proofs
-    /// (`proven_integer_bounds`, `proven_range_bounds`) evaluate a loop bound like
-    /// `1:size(A, 1)` through `values` and must keep `size(A, 1)` symbolic so the
-    /// domain stays a compact loop, not a constant-extent one. Folding `size`
-    /// there would collapse those domains; folding it in a guard never does.
+    /// §10.3.1 `size(x, d)`/`size(x)`/`ndims(x)` read. Conditional guards and
+    /// conservative Integer intervals may inspect these immutable extents.
+    /// They remain separate from [`Self::values`]: an interval proof never
+    /// publishes a settled value or materializes a compact loop's points.
     dimension_extents: HashMap<VarName, Vec<i64>>,
     /// Whether this scope is one function specialization rather than the model.
     ///
@@ -170,6 +177,9 @@ impl ShapeEnvironment {
         Self {
             shapes: HashMap::with_capacity(capacity),
             integer_bounds: HashMap::with_capacity(capacity),
+            slice_binders: HashMap::new(),
+            slice_constants: HashMap::new(),
+            slice_class_scopes: Arc::default(),
             enumeration_literals: Arc::default(),
             enumeration_type_declarations: Arc::default(),
             record_array_fields: None,
@@ -254,6 +264,8 @@ impl ShapeEnvironment {
     /// extent is not statically known never reaches this scope with a concrete
     /// shape and so never folds.
     pub(super) fn insert(&mut self, name: VarName, shape: ValueShape) {
+        self.slice_binders.remove(&name);
+        self.slice_constants.remove(&name);
         self.values.remove_parameter(name.as_str());
         self.integer_bounds.remove(&name);
         self.record_dimension_extents(&name, &shape);
@@ -266,6 +278,8 @@ impl ShapeEnvironment {
     /// a value only for a scalar, so a bound value that disagreed with a
     /// non-scalar shape would be unrepresentable rather than merely wrong.
     pub(super) fn bind_scalar_value(&mut self, name: VarName, value: EvalValue) {
+        self.slice_binders.remove(&name);
+        self.slice_constants.remove(&name);
         self.integer_bounds.remove(&name);
         self.record_dimension_extents(&name, &[]);
         self.shapes.insert(name.clone(), Vec::new());
@@ -275,11 +289,90 @@ impl ShapeEnvironment {
     /// Bind a scalar Integer to a proved finite interval without pretending it
     /// has one translation-time value.
     pub(super) fn bind_integer_bounds(&mut self, name: VarName, lower: i64, upper: i64) {
+        self.slice_binders.remove(&name);
+        self.slice_constants.remove(&name);
         self.values.remove_parameter(name.as_str());
         self.record_dimension_extents(&name, &[]);
         self.shapes.insert(name.clone(), Vec::new());
         self.integer_bounds
             .insert(name, (lower.min(upper), lower.max(upper)));
+    }
+
+    pub(in crate::construction) fn bind_slice_binder(
+        &mut self,
+        name: VarName,
+        lower: i64,
+        upper: i64,
+    ) {
+        self.bind_integer_bounds(name.clone(), lower, upper);
+        self.slice_binders
+            .insert(name, (lower.min(upper), lower.max(upper)));
+    }
+
+    pub(in crate::construction) fn slice_binder_bounds(
+        &self,
+        name: &VarName,
+    ) -> Option<(i64, i64)> {
+        self.slice_binders.get(name).copied()
+    }
+
+    pub(in crate::construction) fn slice_constant(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> Option<i64> {
+        let (owned, value) = self.slice_constants.get(reference.var_name())?;
+        super::affine_slices::same_reference(owned, reference).then_some(*value)
+    }
+
+    pub(in crate::construction) fn bind_slice_constant(
+        &mut self,
+        flat: &flat::Model,
+        variable: &flat::Variable,
+        constants: &EvalContext,
+    ) {
+        self.slice_constants.remove(&variable.name);
+        if !matches!(
+            variable.variability,
+            Variability::Constant(_) | Variability::Parameter(_)
+        ) || !variable.dims.is_empty()
+            || flat
+                .effective_types
+                .get(&variable.type_id)
+                .map(|ty| ty.canonical_type())
+                != Some(flat.predefined_types.integer)
+            || matches!(variable.variability, Variability::Parameter(_))
+                && variable.fixed_uniform() == Some(false)
+        {
+            return;
+        }
+        let Some(EvalValue::Integer(value)) = constants.instance_value(variable.instance_id) else {
+            return;
+        };
+        let Some(path) = &variable.component_ref else {
+            return;
+        };
+        let reference = rumoca_core::Reference::with_component_reference(
+            variable.name.to_string(),
+            path.clone(),
+        )
+        .with_instance_id(variable.instance_id);
+        self.slice_constants
+            .insert(variable.name.clone(), (reference, *value));
+    }
+
+    pub(in crate::construction) fn slice_reference_scope(&self, instance: InstanceId) -> bool {
+        self.slice_class_scopes.contains(&instance)
+    }
+
+    pub(in crate::construction) fn bind_slice_class_scopes(&mut self, flat: &flat::Model) {
+        self.slice_class_scopes = Arc::new(
+            flat.instance_relations
+                .iter()
+                .filter_map(|(instance, relation)| {
+                    (relation.kind == flat::InstanceKind::Class).then_some(*instance)
+                })
+                .collect(),
+        );
     }
 
     /// Record `shape` as the dimensions a folded guard resolves `size`/`ndims`
@@ -295,7 +388,7 @@ impl ShapeEnvironment {
     }
 
     /// A read-only view of the proven values that also answers `size`/`ndims`
-    /// from the proven dimensions. Used only to fold a conditional guard.
+    /// from the proven dimensions for guards and conservative interval proofs.
     fn shape_aware_values(&self) -> ShapeAwareValues<'_> {
         ShapeAwareValues {
             values: &self.values,
@@ -614,6 +707,14 @@ pub(super) struct FunctionShapeAnalysis {
 }
 
 impl FunctionShapeAnalysis {
+    pub(super) fn use_record_array_field_plans(&mut self, plans: Arc<RecordArrayFieldPlans>) {
+        self.model_values.record_array_fields = Some(Arc::clone(&plans));
+        self.attribute_values.record_array_fields = Some(Arc::clone(&plans));
+        for certificate in &mut self.certificates {
+            certificate.values.record_array_fields = Some(Arc::clone(&plans));
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn analyze(flat: &flat::Model, constants: &EvalContext) -> Result<Self, ToDaeError> {
         Self::analyze_model(flat, constants, None)
@@ -627,7 +728,11 @@ impl FunctionShapeAnalysis {
         constants: &EvalContext,
         evaluable: Option<&std::collections::HashSet<VarName>>,
     ) -> Result<Self, ToDaeError> {
-        let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(flat)?);
+        let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(
+            flat,
+            SelectedFamilies::mandatory(&flat.structured_equations),
+            SelectedFamilies::mandatory(&flat.initial_structured_equations),
+        )?);
         let mut model_values = concrete_model_shapes(flat, constants)?;
         model_values.functions = Some(Arc::new(function_table(constants)));
         model_values.evaluable = evaluable.map(|evaluable| Arc::new(evaluable.clone()));
@@ -1848,6 +1953,7 @@ fn concrete_model_shapes(
     constants: &EvalContext,
 ) -> Result<ShapeEnvironment, ToDaeError> {
     let mut values = ShapeEnvironment::with_capacity(flat.variables.len());
+    values.bind_slice_class_scopes(flat);
     values.enumeration_type_declarations = Arc::new(
         flat.type_ids_by_def_id
             .iter()
@@ -1863,6 +1969,7 @@ fn concrete_model_shapes(
         match constants.get(name.as_str()) {
             Some(value) if shape.is_empty() && is_scalar_value(value) => {
                 values.bind_scalar_value(name.clone(), value.clone());
+                values.bind_slice_constant(flat, variable, constants);
             }
             _ => values.insert(name.clone(), shape),
         }

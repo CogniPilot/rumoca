@@ -10,8 +10,12 @@ use super::*;
 /// its admissibility rules. Keeping the root-owner enumeration here prevents a
 /// newly added Flat owner from reaching only one of the runtime-operator passes.
 pub(super) trait ModelExpressionOwnerVisitor: FallibleStatementVisitor {
-    fn visit_model_owners(&mut self, flat: &flat::Model) -> Result<(), Self::Error> {
-        self.visit_equation_owners(flat)?;
+    fn visit_model_owners(
+        &mut self,
+        flat: &flat::Model,
+        templates: &TemplateSelection,
+    ) -> Result<(), Self::Error> {
+        self.visit_equation_owners(flat, templates)?;
         self.visit_assertion_and_algorithm_owners(flat)?;
         self.visit_when_owners(flat)?;
         self.enter_function_owners()?;
@@ -22,12 +26,14 @@ pub(super) trait ModelExpressionOwnerVisitor: FallibleStatementVisitor {
         Ok(())
     }
 
-    fn visit_equation_owners(&mut self, flat: &flat::Model) -> Result<(), Self::Error> {
+    fn visit_equation_owners(
+        &mut self,
+        flat: &flat::Model,
+        templates: &TemplateSelection,
+    ) -> Result<(), Self::Error> {
         all_model_expressions(flat)
-            .chain(structured_template_expressions(&flat.structured_equations))
-            .chain(structured_template_expressions(
-                &flat.initial_structured_equations,
-            ))
+            .chain(templates.continuous(flat).expressions())
+            .chain(templates.initialization(flat).expressions())
             .try_for_each(|expression| self.visit_expression(expression))
     }
 
@@ -302,7 +308,7 @@ mod tests {
         let model = complete_owner_model();
         let mut visitor = MarkerVisitor::default();
         visitor
-            .visit_model_owners(&model)
+            .visit_model_owners(&model, &TemplateSelection::all(&model))
             .expect("marker traversal is infallible");
         assert_eq!(visitor.model, (1..=18).collect::<Vec<_>>());
         assert_eq!(visitor.function, (21..=27).collect::<Vec<_>>());

@@ -365,6 +365,12 @@ impl SolveMeKernel {
             .map_err(|error| error.at_stage(MeStage::EventIteration))?;
         validate_event_entry(entry, self.tolerance)
             .map_err(|error| error.at_stage(MeStage::EventIteration))?;
+        if entry.cause == MeEventCause::InputEvent {
+            // Inputs are still on their event-left values. The importer writes
+            // the new frame only after this standard Event Mode transition.
+            self.capture_event_entry()
+                .map_err(|error| error.at_stage(MeStage::EventIteration))?;
+        }
         // Entering Event Mode is the standard signal that any continuous-
         // mode accepted-point cache is no longer authoritative. This replaces
         // the retired Rumoca-only `AtStateEvent` completed-step variant.

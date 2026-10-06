@@ -1,6 +1,9 @@
 use super::*;
 use rumoca_core::Reference;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn validate_guarded_function_return(
     function: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
@@ -428,23 +431,39 @@ fn guarded_return(
 }
 
 fn disjoin_conditions(blocks: &[rumoca_core::StatementBlock], span: Span) -> Expression {
-    blocks
-        .iter()
-        .map(|block| block.cond.clone())
-        .reduce(|left, right| Expression::Binary {
-            op: OpBinary::Or,
-            lhs: Box::new(left),
-            rhs: Box::new(right),
+    // MLS §11.2.6 selects the first true clause without evaluating later
+    // predicates. Ordinary Boolean operators do not own that statement-level
+    // control flow; retain it explicitly in the generated return predicate.
+    Expression::If {
+        branches: blocks
+            .iter()
+            .map(|block| {
+                (
+                    block.cond.clone(),
+                    Expression::Literal {
+                        value: Literal::Boolean(true),
+                        span,
+                    },
+                )
+            })
+            .collect(),
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
             span,
-        })
-        .expect("a guarded return has at least one condition")
+        }),
+        span,
+    }
 }
 
 fn and_condition(left: Expression, right: Expression, span: Span) -> Expression {
-    Expression::Binary {
-        op: OpBinary::And,
-        lhs: Box::new(left),
-        rhs: Box::new(right),
+    // A continuation after an earlier return must not evaluate its original
+    // source predicate. This is an algorithm activation, not a source `and`.
+    Expression::If {
+        branches: vec![(left, right)],
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
+            span,
+        }),
         span,
     }
 }

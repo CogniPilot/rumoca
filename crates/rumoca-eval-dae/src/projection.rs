@@ -1,13 +1,27 @@
 mod array_update;
+mod call_arguments;
+mod dependencies;
+mod domain_context;
+mod fold_graph;
+mod indexed_write_fold;
 mod literal_bindings;
+mod literal_update_sweeps;
+#[cfg(test)]
+mod merge_profile_tests;
+mod parameter_fragments;
+#[cfg(debug_assertions)]
+mod profile;
+mod query;
 mod scalar_selection;
 #[cfg(test)]
 mod tests;
+mod visited;
 mod zero_coefficients;
 pub use literal_bindings::{LiteralBinding, literal_bindings};
 pub use zero_coefficients::ZeroCoefficients;
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::sync::Arc;
 
 use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
@@ -131,10 +145,56 @@ pub fn for_each_scalar_coordinate<'dae>(
 #[derive(Default)]
 pub struct ScalarCoordinateProjectionCache<'dae> {
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
+    completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
+    parameter_fragments: parameter_fragments::reuse::Cache,
+    query_validation: HashMap<u32, Box<ScalarCoordinateProjectionCache<'dae>>>,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
+    #[cfg(test)]
+    uncached_fold_reference: bool,
+    #[cfg(test)]
+    uncached_indexed_write_folds: bool,
+    #[cfg(test)]
+    indexed_write_folds: usize,
+    #[cfg(test)]
+    uncached_parameter_fragments: bool,
+    #[cfg(test)]
+    uncached_literal_update_sweeps: bool,
+    #[cfg(test)]
+    fragment_hits: u64,
+    #[cfg(test)]
+    validation_memo_hits: u64,
+    #[cfg(test)]
+    uncached_validation_memo: bool,
+    #[cfg(test)]
+    uncached_guard_memo: bool,
+    #[cfg(test)]
+    guard_memo_hits: u64,
+    #[cfg(test)]
+    imported_fragment_hits: u64,
+    #[cfg(test)]
+    sweep_hits: u64,
+    #[cfg(test)]
+    fold_edges: HashMap<fold_graph::FoldNode<'dae>, Vec<fold_graph::FoldNode<'dae>>>,
+    #[cfg(test)]
+    fold_walks: usize,
+    #[cfg(test)]
+    fold_reuses: usize,
+    #[cfg(test)]
+    fold_suppressions: usize,
+    #[cfg(test)]
+    fold_graph_repeated_edges: usize,
 }
 
+impl ScalarCoordinateProjectionCache<'_> {
+    fn cache_function_summary(&mut self, key: FunctionSummaryKey, entry: &FunctionSummaryEntry) {
+        if !matches!(entry, FunctionSummaryEntry::Direct) {
+            self.function_results.insert(key, entry.clone());
+        }
+    }
+}
+
+#[track_caller]
 pub fn for_each_scalar_coordinate_cached<'dae>(
     view: dae::DaeView<'dae>,
     root: dae::ExprId<'dae>,
@@ -143,40 +203,134 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
     cache: &mut ScalarCoordinateProjectionCache<'dae>,
     mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
-    let mut projection = Projection {
+    #[cfg(debug_assertions)]
+    profile::entry(root.index(), scalar_index);
+    project_coordinates(
         view,
-        domain_points: match domain_point {
+        root,
+        scalar_index,
+        domain_point,
+        cache,
+        None,
+        &mut visit,
+    )
+}
+
+/// Visit only coordinates selected by a declaration-level query.
+///
+/// The predicate must return true when any scalar of a declaration is relevant.
+/// Plain query-free call arguments permit validation without irrelevant formal
+/// dependency capture. Address specialization, recursion and projection errors
+/// still use the complete original walker in an isolated cache. Argument
+/// selectors, conditionals and calls retain the unfiltered dependency path.
+#[track_caller]
+pub fn for_each_scalar_coordinate_filtered_cached<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    scalar_index: usize,
+    domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
+    cache: &mut ScalarCoordinateProjectionCache<'dae>,
+    relevant: impl Fn(dae::CoordinateView<'dae>) -> bool,
+    mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
+) -> Result<(), ProjectionError> {
+    #[cfg(debug_assertions)]
+    profile::entry(root.index(), scalar_index);
+    let mut filtered = |coordinate, scalar| {
+        if relevant(coordinate) {
+            visit(coordinate, scalar);
+        }
+    };
+    project_coordinates(
+        view,
+        root,
+        scalar_index,
+        domain_point,
+        cache,
+        Some(&relevant),
+        &mut filtered,
+    )
+}
+
+fn project_coordinates<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    scalar_index: usize,
+    domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
+    cache: &mut ScalarCoordinateProjectionCache<'dae>,
+    relevant: Option<&dyn Fn(dae::CoordinateView<'dae>) -> bool>,
+    visit: &mut dyn FnMut(dae::CoordinateView<'dae>, usize),
+) -> Result<(), ProjectionError> {
+    let mut projection = Projection {
+        activation: Activation::Guaranteed,
+        validating_actuals: false,
+        view,
+        domain_contexts: domain_context::DomainContexts::new(match domain_point {
             Some((domain, point)) => vec![(domain, point.to_vec())],
             None => Vec::new(),
-        },
-        integer_stack: HashSet::default(),
+        }),
+        integer_stack: vec![false; view.expression_count()],
         function_frames: Vec::new(),
         function_call_active: HashSet::default(),
         function_fold_active: HashSet::default(),
         function_summary_captures: Vec::new(),
-        model_visited: HashSet::default(),
+        model_visited: visited::Visited::default(),
         frame_memos: Vec::new(),
         cache,
-        visit: &mut visit,
+        visit,
+        relevant,
+        validation: None,
+        validation_memo: None,
+        guard_memo: None,
     };
     projection.expression(root, scalar_index)
+}
+
+/// Whether a source read must execute if the enclosing expression executes.
+/// This is independent of lexical binder identity and recursion membership.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+enum Activation {
+    #[default]
+    Guaranteed,
+    Conditional,
+}
+
+impl Activation {
+    const fn within(self, child: Self) -> Self {
+        match (self, child) {
+            (Self::Guaranteed, Self::Guaranteed) => Self::Guaranteed,
+            _ => Self::Conditional,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Guaranteed => 0,
+            Self::Conditional => 1,
+        }
+    }
 }
 
 /// The walk dispatches the caller's visitor dynamically, so every caller shares
 /// one compiled projection instead of one copy per visitor type.
 struct Projection<'visit, 'dae> {
+    activation: Activation,
+    validating_actuals: bool,
     view: dae::DaeView<'dae>,
-    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
-    integer_stack: HashSet<u32>,
+    domain_contexts: domain_context::DomainContexts<'dae>,
+    integer_stack: Vec<bool>,
     function_frames: Vec<FunctionFrame<'dae>>,
     function_call_active: HashSet<FunctionResultDependency>,
     function_fold_active: HashSet<FunctionFoldDependency>,
-    function_summary_captures: Vec<FunctionSummaryCapture>,
-    model_visited: HashSet<ScalarExpressionDependency>,
-    /// One memo per entry of `function_frames`.
+    function_summary_captures: Vec<FunctionSummaryCapture<'dae>>,
+    model_visited: visited::Visited,
+    /// One memo per entry of `function_frames`, with the same invocation lifetime.
     frame_memos: Vec<FrameMemo>,
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
+    relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
+    validation: Option<u32>,
+    validation_memo: Option<query::validation_memo::ValidationMemo<'dae>>,
+    guard_memo: Option<query::guard_memo::GuardMemo<'dae>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -204,6 +358,7 @@ struct FrameMemo {
 /// One completed fold dependency under the enclosing fold points.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FoldVisit {
+    activation: Activation,
     dependency: FunctionFoldDependency,
     context: Vec<(u32, Vec<i64>)>,
 }
@@ -249,27 +404,32 @@ struct IntegerBinding {
 /// A function result summary under one set of integer parameter values.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FunctionSummaryKey {
+    activation: Activation,
     dependency: FunctionResultDependency,
     integers: Vec<IntegerBinding>,
 }
 
 /// What a function result depends on under one [`FunctionSummaryKey`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FunctionSummaryEntry {
-    /// The exact parameter scalars the result reads.
+    /// Conservative parameter incidence, retaining each read's activation.
     Complete(Vec<FunctionParameterDependency>),
     /// The result also reads the values of these integer parameter scalars
     /// (an index or a size), which the key does not bind yet.
     NeedsIntegers(Vec<(u32, usize)>),
+    /// A local capture requires its original actual-call walk. Never cached.
+    Direct,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FunctionParameterDependency {
     Scalar {
+        activation: Activation,
         parameter: u32,
         scalar: usize,
     },
     RecordField {
+        activation: Activation,
         parameter: u32,
         field: usize,
         scalar: usize,
@@ -277,23 +437,38 @@ enum FunctionParameterDependency {
 }
 
 #[derive(Debug)]
-struct FunctionSummaryCapture {
+struct FunctionSummaryCapture<'dae> {
     function: u32,
-    dependencies: Vec<FunctionParameterDependency>,
+    dependencies: dependencies::OrderedDependencies,
     needed_integers: Vec<(u32, usize)>,
-    visited: HashSet<ScalarExpressionDependency>,
+    cacheable: bool,
+    visited: visited::Visited,
+    folds: fold_graph::FoldGraph<'dae>,
+    fragments: parameter_fragments::ParameterFragments<'dae>,
+    sweeps: literal_update_sweeps::LiteralUpdateSweeps<'dae>,
+}
+
+impl FunctionSummaryCapture<'_> {
+    fn visit_once(&mut self, dependency: ScalarExpressionDependency) -> bool {
+        let inserted = self.visited.insert(dependency);
+        if !inserted {
+            self.fragments.suppress();
+        }
+        inserted
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ScalarExpressionDependency {
+    activation: Activation,
     expression: u32,
     field: Option<usize>,
     scalar: usize,
-    domain_context: Vec<(u32, Vec<i64>)>,
+    domain_context: domain_context::DomainContextId,
 }
 
 impl<'dae> Projection<'_, 'dae> {
-    fn expression(
+    fn expression_uncached(
         &mut self,
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
@@ -354,7 +529,7 @@ impl<'dae> Projection<'_, 'dae> {
                     scalar_index,
                 ) {
                     Ok(base_index) => self.expression(base, base_index),
-                    Err(ProjectionError::DynamicSubscript { .. }) => {
+                    Err(error) if self.conservative_subscript(&error) => {
                         self.all_scalars(base)?;
                         self.subscripts(subscripts)
                     }
@@ -421,6 +596,19 @@ impl<'dae> Projection<'_, 'dae> {
         field: Option<usize>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
+        if self.fold_summary_capture(fold.function()).is_some() {
+            return self.enqueue_fold(fold, carried, field, scalar);
+        }
+        self.function_fold_dependency_direct(fold, carried, field, scalar)
+    }
+
+    fn function_fold_dependency_direct(
+        &mut self,
+        fold: dae::FunctionFoldId<'dae>,
+        carried: u32,
+        field: Option<usize>,
+        scalar: usize,
+    ) -> Result<(), ProjectionError> {
         let dependency = FunctionFoldDependency {
             function: fold.function().index(),
             fold: fold.ordinal(),
@@ -441,7 +629,8 @@ impl<'dae> Projection<'_, 'dae> {
         // visits by a point that does not change them, and re-walk the whole
         // fold once per enclosing point.
         let enclosing = self
-            .domain_points
+            .domain_contexts
+            .points
             .iter()
             .filter(|(domain, _)| !self.domain_is_within(*domain, fold_domain))
             .cloned()
@@ -450,23 +639,33 @@ impl<'dae> Projection<'_, 'dae> {
         // dependency has already reached every coordinate it can reach; a
         // second read of the same carried scalar adds nothing.
         let completed = FoldVisit {
+            activation: self.activation,
             dependency: dependency.clone(),
             context: enclosing
                 .iter()
                 .map(|(domain, point)| (domain.index(), point.clone()))
                 .collect(),
         };
-        if self
-            .frame_memos
-            .last()
-            .is_some_and(|memo| memo.folds.contains(&completed))
+        if self.direct_fold_memo_enabled()
+            && self
+                .frame_memos
+                .last()
+                .is_some_and(|memo| memo.folds.contains(&completed))
         {
             return Ok(());
         }
         if !self.function_fold_active.insert(dependency.clone()) {
+            #[cfg(test)]
+            {
+                self.cache.fold_suppressions += 1;
+            }
             return Ok(());
         }
-        let current = std::mem::replace(&mut self.domain_points, enclosing);
+        #[cfg(test)]
+        {
+            self.cache.fold_walks += 1;
+        }
+        let current = self.domain_contexts.replace(enclosing);
         let carried = carried as usize;
         let projected = (|| {
             let initial = fold_view
@@ -486,18 +685,18 @@ impl<'dae> Projection<'_, 'dae> {
                 .structured()
                 .index_tuples()
                 .expect("checked fold domain remains representable");
-            let depth = self.domain_points.len();
             for point in points {
-                self.domain_points.push((fold_domain, point));
+                self.domain_contexts.push(fold_domain, point);
                 let result = self.projected_value(update, field, scalar);
-                self.domain_points.truncate(depth);
+                self.domain_contexts.pop();
                 result?;
             }
             Ok(())
         })();
-        self.domain_points = current;
+        self.domain_contexts.replace(current);
         self.function_fold_active.remove(&dependency);
-        if projected.is_ok()
+        if self.direct_fold_memo_enabled()
+            && projected.is_ok()
             && let Some(memo) = self.frame_memos.last_mut()
         {
             memo.folds.insert(completed);
@@ -505,7 +704,104 @@ impl<'dae> Projection<'_, 'dae> {
         projected
     }
 
-    /// Whether `domain` is `ancestor` or lexically nested inside it.
+    fn direct_fold_memo_enabled(&self) -> bool {
+        if self.validating_actuals {
+            return false;
+        }
+        #[cfg(test)]
+        if self.cache.uncached_fold_reference {
+            return false;
+        }
+        true
+    }
+
+    fn fold_summary_capture(
+        &mut self,
+        function: dae::FunctionId<'dae>,
+    ) -> Option<&mut FunctionSummaryCapture<'dae>> {
+        if self.validating_actuals {
+            return None;
+        }
+        #[cfg(test)]
+        if self.cache.uncached_fold_reference {
+            return None;
+        }
+        if !matches!(self.function_frames.last(), Some(FunctionFrame::Summary { function: active, .. }) if *active == function)
+        {
+            return None;
+        }
+        self.function_summary_captures
+            .last_mut()
+            .filter(|capture| capture.function == function.index())
+    }
+
+    fn drain_fold_graph(&mut self, function: dae::FunctionId<'dae>) -> Result<(), ProjectionError> {
+        while let Some(node) = self
+            .fold_summary_capture(function)
+            .and_then(|capture| capture.folds.begin_next())
+        {
+            let parent = node
+                .parent
+                .iter()
+                .map(|(domain, point)| {
+                    (
+                        self.view
+                            .domain_id(*domain as usize)
+                            .expect("checked lexical domain resolves"),
+                        point.clone(),
+                    )
+                })
+                .collect();
+            let previous = self.domain_contexts.replace(parent);
+            self.fold_summary_capture(function).unwrap().visited.clear();
+            #[cfg(test)]
+            {
+                self.cache.fold_walks += 1;
+            }
+            let projected = self.with_activation(node.activation, |projection| {
+                projection.project_fold_node(&node)
+            });
+            self.domain_contexts.replace(previous);
+            let capture = self.fold_summary_capture(function).unwrap();
+            projected?;
+            capture.folds.finish_node();
+        }
+        Ok(())
+    }
+
+    fn project_fold_node(
+        &mut self,
+        node: &fold_graph::FoldNode<'dae>,
+    ) -> Result<(), ProjectionError> {
+        #[cfg(debug_assertions)]
+        profile::fold(self.view, node);
+        self.projected_value(node.initial, node.field, node.scalar)?;
+        if self.project_indexed_write_fold(node)? {
+            return Ok(());
+        }
+        if self.project_literal_update_sweep(node)? {
+            return Ok(());
+        }
+        let fold = self.view.function_fold(node.fold).unwrap();
+        let points = self
+            .view
+            .domain(fold.domain())
+            .unwrap()
+            .structured()
+            .index_tuples()
+            .expect("checked fold domain remains representable");
+        for point in points {
+            #[cfg(debug_assertions)]
+            profile::point(node.fold);
+            self.domain_contexts.push(fold.domain(), point);
+            let projected = self.projected_value(node.update, node.field, node.scalar);
+            self.domain_contexts.pop();
+            projected?;
+        }
+        Ok(())
+    }
+
+    /// Project either one scalar of a value or one scalar of a record field.
     fn domain_is_within(&self, domain: dae::DomainId<'dae>, ancestor: dae::DomainId<'dae>) -> bool {
         let mut current = Some(domain);
         while let Some(candidate) = current {
@@ -521,7 +817,6 @@ impl<'dae> Projection<'_, 'dae> {
         false
     }
 
-    /// Project either one scalar of a value or one scalar of a record field.
     fn projected_value(
         &mut self,
         expression: dae::ExprId<'dae>,
@@ -535,7 +830,9 @@ impl<'dae> Projection<'_, 'dae> {
     }
 
     fn emit_coordinate(&mut self, coordinate: dae::CoordinateView<'dae>, scalar: usize) {
-        (self.visit)(coordinate, scalar);
+        if !self.validating_actuals {
+            (self.visit)(coordinate, scalar);
+        }
     }
 
     fn string_conversion_dependencies(
@@ -608,6 +905,7 @@ impl<'dae> Projection<'_, 'dae> {
                 self.capture_function_parameter(
                     function,
                     FunctionParameterDependency::Scalar {
+                        activation: self.activation,
                         parameter: parameter.ordinal(),
                         scalar: scalar_index,
                     },
@@ -660,6 +958,7 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
+        self.validate_call_arguments(&arguments)?;
         if self.is_native_table_call(function) {
             // A native table interpolation (MLS §12.9) is a solver primitive:
             // its result depends on its argument incidence, and the opaque
@@ -671,6 +970,16 @@ impl<'dae> Projection<'_, 'dae> {
         }
         if self.has_native_body(function) || self.is_active_function(function) {
             return self.native_body_arguments(&arguments);
+        }
+        if !self.validating_actuals && self.query_free_arguments(&arguments) {
+            return self.validate_query_free_call(
+                function,
+                output,
+                None,
+                scalar_index,
+                arguments,
+                span,
+            );
         }
         let dependency = FunctionResultDependency {
             function: function.index(),
@@ -734,8 +1043,19 @@ impl<'dae> Projection<'_, 'dae> {
             return Err(ProjectionError::FunctionRecursion { span });
         }
         let arguments = arguments.iter().collect::<Vec<_>>();
+        self.validate_call_arguments(&arguments)?;
         if self.is_active_function(function) {
             return self.native_body_arguments(&arguments);
+        }
+        if !self.validating_actuals && self.query_free_arguments(&arguments) {
+            return self.validate_query_free_call(
+                function,
+                output,
+                Some(field),
+                scalar,
+                arguments,
+                span,
+            );
         }
         let dependency = FunctionResultDependency {
             function: function.index(),
@@ -762,9 +1082,14 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: Vec<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<(), ProjectionError> {
+        if self.validating_actuals {
+            return self.project_function_result_direct(&dependency, function, arguments, span);
+        }
+        self.guard_memo_note_call(function);
         let mut integers: Vec<IntegerBinding> = Vec::new();
         loop {
             let key = FunctionSummaryKey {
+                activation: self.activation,
                 dependency: dependency.clone(),
                 integers: integers.clone(),
             };
@@ -773,7 +1098,7 @@ impl<'dae> Projection<'_, 'dae> {
                 None => {
                     let entry =
                         self.derive_function_summary(&dependency, function, &integers, span)?;
-                    self.cache.function_results.insert(key, entry.clone());
+                    self.cache.cache_function_summary(key, &entry);
                     entry
                 }
             };
@@ -782,6 +1107,14 @@ impl<'dae> Projection<'_, 'dae> {
                     return self.apply_function_summary(&summary, &arguments, span);
                 }
                 FunctionSummaryEntry::NeedsIntegers(needed) => needed,
+                FunctionSummaryEntry::Direct => {
+                    return self.project_function_result_direct(
+                        &dependency,
+                        function,
+                        arguments,
+                        span,
+                    );
+                }
             };
             if !self.bind_integer_arguments(&needed, &arguments, &mut integers, span)? {
                 return self.project_function_result_direct(&dependency, function, arguments, span);
@@ -789,10 +1122,6 @@ impl<'dae> Projection<'_, 'dae> {
         }
     }
 
-    /// Bind the integer parameter scalars a summary reads to the values the
-    /// call site proves from its arguments. Returns whether at least one new
-    /// value was bound; `false` (nothing new, or an argument that is not a
-    /// translation-time integer) leaves the call to the direct walk.
     fn bind_integer_arguments(
         &mut self,
         needed: &[(u32, usize)],
@@ -835,25 +1164,44 @@ impl<'dae> Projection<'_, 'dae> {
         span: Span,
     ) -> Result<(), ProjectionError> {
         for parameter in summary {
-            match *parameter {
-                FunctionParameterDependency::Scalar { parameter, scalar } => {
-                    let argument = arguments
-                        .get(parameter as usize)
-                        .copied()
-                        .ok_or(ProjectionError::FunctionRecursion { span })?;
-                    self.expression(argument, scalar)?;
-                }
-                FunctionParameterDependency::RecordField {
-                    parameter,
-                    field,
-                    scalar,
-                } => {
-                    let argument = arguments
-                        .get(parameter as usize)
-                        .copied()
-                        .ok_or(ProjectionError::FunctionRecursion { span })?;
-                    self.record_field(argument, field, scalar)?;
-                }
+            self.apply_function_parameter(parameter, arguments, span)?;
+        }
+        Ok(())
+    }
+
+    fn apply_function_parameter(
+        &mut self,
+        parameter: &FunctionParameterDependency,
+        arguments: &[dae::ExprId<'dae>],
+        span: Span,
+    ) -> Result<(), ProjectionError> {
+        match *parameter {
+            FunctionParameterDependency::Scalar {
+                activation,
+                parameter,
+                scalar,
+            } => {
+                let argument = arguments
+                    .get(parameter as usize)
+                    .copied()
+                    .ok_or(ProjectionError::FunctionRecursion { span })?;
+                self.with_activation(activation, |projection| {
+                    projection.expression(argument, scalar)
+                })?;
+            }
+            FunctionParameterDependency::RecordField {
+                activation,
+                parameter,
+                field,
+                scalar,
+            } => {
+                let argument = arguments
+                    .get(parameter as usize)
+                    .copied()
+                    .ok_or(ProjectionError::FunctionRecursion { span })?;
+                self.with_activation(activation, |projection| {
+                    projection.record_field(argument, field, scalar)
+                })?;
             }
         }
         Ok(())
@@ -866,37 +1214,91 @@ impl<'dae> Projection<'_, 'dae> {
         integers: &[IntegerBinding],
         span: Span,
     ) -> Result<FunctionSummaryEntry, ProjectionError> {
+        #[cfg(debug_assertions)]
+        profile::function(
+            "summary_begin",
+            self.view.function(function).unwrap(),
+            dependency,
+            (false, self.validation, self.function_frames.len()),
+        );
+        // Preserve the local error boundary before opening a frame or graph.
+        let result = self.function_result(function, dependency.output, span)?;
         if !self.function_call_active.insert(dependency.clone()) {
             return Err(ProjectionError::FunctionRecursion { span });
         }
+        // These local caches do not bind Integer profiles. A specialized
+        // invocation cannot import generic facts or publish into their cache.
+        let isolated = (!integers.is_empty()).then(|| {
+            (
+                std::mem::take(&mut self.cache.completed_folds),
+                std::mem::take(&mut self.cache.parameter_fragments),
+            )
+        });
         self.function_summary_captures.push(FunctionSummaryCapture {
             function: function.index(),
-            dependencies: Vec::new(),
+            dependencies: dependencies::OrderedDependencies::default(),
             needed_integers: Vec::new(),
-            visited: HashSet::default(),
+            cacheable: true,
+            visited: visited::Visited::default(),
+            folds: fold_graph::FoldGraph::default(),
+            fragments: parameter_fragments::ParameterFragments::default(),
+            sweeps: literal_update_sweeps::LiteralUpdateSweeps::default(),
         });
         self.push_frame(FunctionFrame::Summary {
             function,
             integers: integers.to_vec(),
         });
-        let projected = self
-            .function_result(function, dependency.output, span)
-            .and_then(|result| match dependency.field {
-                Some(field) => self.record_field(result, field, dependency.scalar),
-                None => self.expression(result, dependency.scalar),
-            });
+        let projected = match dependency.field {
+            Some(field) => self.record_field(result, field, dependency.scalar),
+            None => self.expression(result, dependency.scalar),
+        }
+        .and_then(|()| self.drain_fold_graph(function));
         self.pop_frame();
         let capture = self
             .function_summary_captures
             .pop()
             .expect("function summary capture was just pushed");
         self.function_call_active.remove(dependency);
-        projected?;
-        if capture.needed_integers.is_empty() {
-            Ok(FunctionSummaryEntry::Complete(capture.dependencies))
-        } else {
-            Ok(FunctionSummaryEntry::NeedsIntegers(capture.needed_integers))
+        if let Some((folds, fragments)) = isolated {
+            self.cache.completed_folds = folds;
+            self.cache.parameter_fragments = fragments;
         }
+        #[cfg(debug_assertions)]
+        profile::function(
+            if projected.is_err() {
+                "summary_error"
+            } else if capture.cacheable && integers.is_empty() {
+                "summary_generic"
+            } else {
+                "summary_specialized"
+            },
+            self.view.function(function).unwrap(),
+            dependency,
+            (false, self.validation, self.function_frames.len()),
+        );
+        projected?;
+        #[cfg(test)]
+        {
+            self.cache.fold_graph_repeated_edges += capture.folds.repeated_edges;
+            self.cache.fragment_hits += capture.fragments.hits;
+            self.cache.sweep_hits += capture.sweeps.hits;
+            self.cache.fold_edges.extend(capture.folds.ordered_edges());
+        }
+        if !capture.needed_integers.is_empty() {
+            return Ok(FunctionSummaryEntry::NeedsIntegers(capture.needed_integers));
+        }
+        if !capture.cacheable {
+            return Ok(FunctionSummaryEntry::Direct);
+        }
+        if integers.is_empty() {
+            for (key, values) in capture.fragments.into_reusable() {
+                self.cache.parameter_fragments.insert(key, values);
+            }
+            self.cache.completed_folds.extend(capture.folds.completed());
+        }
+        Ok(FunctionSummaryEntry::Complete(
+            capture.dependencies.into_values(),
+        ))
     }
 
     fn project_function_result_direct(
@@ -925,14 +1327,22 @@ impl<'dae> Projection<'_, 'dae> {
         dependency: FunctionParameterDependency,
         span: Span,
     ) -> Result<(), ProjectionError> {
+        if self.validating_actuals {
+            return Ok(());
+        }
+        self.record_guard_parameter(function, &dependency, span);
         let capture = self
             .function_summary_captures
             .last_mut()
             .filter(|capture| capture.function == function.index())
             .ok_or(ProjectionError::FunctionRecursion { span })?;
-        if !capture.dependencies.contains(&dependency) {
-            capture.dependencies.push(dependency);
+        if self.validation == Some(function.index()) {
+            return Ok(());
         }
+        capture.dependencies.insert(&dependency);
+        capture.folds.capture(&dependency);
+        capture.fragments.capture(&dependency);
+        capture.sweeps.capture(&dependency);
         Ok(())
     }
 
@@ -942,7 +1352,14 @@ impl<'dae> Projection<'_, 'dae> {
         field: Option<usize>,
         scalar: usize,
     ) -> bool {
+        if self.validating_actuals
+            || self.validation_memo_forces_walk()
+            || self.guard_memo_forces_walk()
+        {
+            return true;
+        }
         let dependency = ScalarExpressionDependency {
+            activation: self.activation,
             expression: expression.index(),
             field,
             scalar,
@@ -955,7 +1372,7 @@ impl<'dae> Projection<'_, 'dae> {
                 self.function_summary_captures
                     .last_mut()
                     .filter(|capture| capture.function == function)
-                    .is_none_or(|capture| capture.visited.insert(dependency))
+                    .is_none_or(|capture| capture.visit_once(dependency))
             }
             Some(FunctionFrame::Actual { .. }) => self
                 .frame_memos
@@ -964,31 +1381,39 @@ impl<'dae> Projection<'_, 'dae> {
         }
     }
 
-    fn expression_domain_context(&self, expression: dae::ExprId<'dae>) -> Vec<(u32, Vec<i64>)> {
-        let Some(mut domain) = self.node(expression).binder_domain() else {
-            return Vec::new();
-        };
-        let mut lexical_domains = Vec::new();
-        loop {
-            lexical_domains.push(domain.index());
-            let Some(parent) = self
-                .view
-                .domain(domain)
-                .expect("checked expression binder domain resolves")
-                .parent()
-            else {
-                break;
-            };
-            domain = parent;
-        }
-        self.domain_points
-            .iter()
-            .filter(|(domain, _)| lexical_domains.contains(&domain.index()))
-            .map(|(domain, point)| (domain.index(), point.clone()))
-            .collect()
+    fn expression_domain_context(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> domain_context::DomainContextId {
+        let domain = self.node(expression).binder_domain();
+        self.domain_contexts.for_domain(self.view, domain)
     }
 
     fn record_field(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        field: usize,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        self.guard_memo_invalidate();
+        let fragment = self.begin_parameter_fragment(expression, Some(field), scalar_index);
+        if let parameter_fragments::Start::Cached(dependencies)
+        | parameter_fragments::Start::Imported(dependencies) = &fragment
+        {
+            self.replay_parameter_fragment(
+                dependencies,
+                matches!(fragment, parameter_fragments::Start::Imported(_)),
+            );
+            return Ok(());
+        }
+        let result = self.record_field_uncached(expression, field, scalar_index);
+        if matches!(fragment, parameter_fragments::Start::Checking) {
+            self.finish_parameter_fragment(result.is_ok());
+        }
+        result
+    }
+
+    fn record_field_uncached(
         &mut self,
         expression: dae::ExprId<'dae>,
         field: usize,
@@ -1037,25 +1462,7 @@ impl<'dae> Projection<'_, 'dae> {
                 node.provenance().span(),
             ),
             dae::ExpressionOperation::Conditional(operands) => {
-                let fallback = operands
-                    .get(operands.len() - 1)
-                    .expect("checked conditional has a fallback");
-                for ordinal in (0..operands.len() - 1).step_by(2) {
-                    self.expression(
-                        operands
-                            .get(ordinal)
-                            .expect("checked conditional condition ordinal"),
-                        0,
-                    )?;
-                    self.record_field(
-                        operands
-                            .get(ordinal + 1)
-                            .expect("checked conditional value ordinal"),
-                        field,
-                        scalar_index,
-                    )?;
-                }
-                self.record_field(fallback, field, scalar_index)
+                self.conditional_value(operands, Some(field), scalar_index)
             }
             dae::ExpressionOperation::Array(elements) => {
                 self.record_array_field(elements, field, scalar_index)
@@ -1103,6 +1510,7 @@ impl<'dae> Projection<'_, 'dae> {
                 self.capture_function_parameter(
                     function,
                     FunctionParameterDependency::RecordField {
+                        activation: self.activation,
                         parameter: parameter.ordinal(),
                         field,
                         scalar: scalar_index,
@@ -1144,9 +1552,9 @@ impl<'dae> Projection<'_, 'dae> {
             .index_tuple_at(point_index)
             .expect("checked comprehension domain remains valid")
             .expect("checked record field scalar selects its domain");
-        self.domain_points.push((domain, point));
+        self.domain_contexts.push(domain, point);
         let result = self.record_field(body, field, scalar_index % body_count);
-        self.domain_points.pop();
+        self.domain_contexts.pop();
         result
     }
 
@@ -1161,13 +1569,24 @@ impl<'dae> Projection<'_, 'dae> {
         let field_width = self.record_field_width(indexed, field);
         let record_index = scalar_index / field_width;
         let field_index = scalar_index % field_width;
-        let base_record = self.indexed_base_scalar(
+        match self.indexed_base_scalar(
             base,
             subscripts,
             self.node(indexed).value_type().dimensions(),
             record_index,
-        )?;
-        self.record_field(base, field, base_record * field_width + field_index)
+        ) {
+            Ok(base_record) => {
+                self.record_field(base, field, base_record * field_width + field_index)
+            }
+            Err(error)
+                if self.activation == Activation::Conditional
+                    && self.conservative_subscript(&error) =>
+            {
+                self.all_record_field_scalars(base, field)?;
+                self.subscripts(subscripts)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn all_record_field_scalars(
@@ -1202,24 +1621,74 @@ impl<'dae> Projection<'_, 'dae> {
         operands: dae::ExpressionOperands<'dae>,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
+        self.conditional_value(operands, None, scalar_index)
+    }
+
+    fn conditional_value(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        field: Option<usize>,
+        scalar: usize,
+    ) -> Result<(), ProjectionError> {
+        self.walk_conditional(operands, |projection, value| {
+            projection.projected_value(value, field, scalar)
+        })
+    }
+
+    /// One ordered activation inventory for incidence and actual validation.
+    fn walk_conditional(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        mut walk: impl FnMut(&mut Self, dae::ExprId<'dae>) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        let mut remaining = self.activation;
+        for ordinal in (0..operands.len() - 1).step_by(2) {
+            let guard = operands.get(ordinal).expect("checked conditional guard");
+            self.with_activation(remaining, |projection| projection.project_guard(guard))?;
+            let literal = match self.node(guard).operation() {
+                dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(value)) => Some(*value),
+                _ => None,
+            };
+            if literal == Some(false) {
+                continue;
+            }
+            let value = operands
+                .get(ordinal + 1)
+                .expect("checked conditional value");
+            let selected = if literal == Some(true) {
+                remaining
+            } else {
+                Activation::Conditional
+            };
+            self.with_activation(selected, |projection| walk(projection, value))?;
+            if literal == Some(true) {
+                return Ok(());
+            }
+            remaining = Activation::Conditional;
+        }
         let fallback = operands
             .get(operands.len() - 1)
-            .expect("checked conditional has a fallback");
-        for ordinal in (0..operands.len() - 1).step_by(2) {
-            self.expression(
-                operands
-                    .get(ordinal)
-                    .expect("checked conditional condition ordinal"),
-                0,
-            )?;
-            self.expression(
-                operands
-                    .get(ordinal + 1)
-                    .expect("checked conditional value ordinal"),
-                scalar_index,
-            )?;
-        }
-        self.expression(fallback, scalar_index)
+            .expect("checked conditional fallback");
+        self.with_activation(remaining, |projection| walk(projection, fallback))
+    }
+
+    /// Restore the enclosing activation on success and on every ordinary error.
+    fn with_activation<T>(
+        &mut self,
+        activation: Activation,
+        walk: impl FnOnce(&mut Self) -> Result<T, ProjectionError>,
+    ) -> Result<T, ProjectionError> {
+        let previous = self.activation;
+        self.activation = previous.within(activation);
+        let result = walk(self);
+        self.activation = previous;
+        result
+    }
+
+    fn conservative_subscript(&self, error: &ProjectionError) -> bool {
+        matches!(error, ProjectionError::DynamicSubscript { .. })
+            || (self.activation == Activation::Conditional
+                && matches!(error, ProjectionError::IndexOutOfBounds { .. }))
     }
 
     fn binary(
@@ -1301,9 +1770,9 @@ impl<'dae> Projection<'_, 'dae> {
             .index_tuple_at(point_index)
             .expect("checked comprehension domain remains valid")
             .expect("checked comprehension scalar index selects its domain");
-        self.domain_points.push((domain, point));
+        self.domain_contexts.push(domain, point);
         let result = self.expression(body, body_index);
-        self.domain_points.pop();
+        self.domain_contexts.pop();
         result
     }
 
@@ -1609,14 +2078,15 @@ impl<'dae> Projection<'_, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
     ) -> Result<i64, ProjectionError> {
-        let raw = expression.index();
-        if !self.integer_stack.insert(raw) {
+        let raw = expression.index() as usize;
+        if self.integer_stack[raw] {
             return Err(ProjectionError::DynamicSubscript {
                 span: self.node(expression).provenance().span(),
             });
         }
+        self.integer_stack[raw] = true;
         let result = self.integer_inner(expression, scalar_index);
-        self.integer_stack.remove(&raw);
+        self.integer_stack[raw] = false;
         result
     }
 
@@ -1648,7 +2118,8 @@ impl<'dae> Projection<'_, 'dae> {
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
                 let Some((_, point)) = self
-                    .domain_points
+                    .domain_contexts
+                    .points
                     .iter()
                     .rev()
                     .find(|(domain, _)| *domain == binder.domain())
@@ -1748,6 +2219,12 @@ impl<'dae> Projection<'_, 'dae> {
                 {
                     return Ok(binding.value);
                 }
+                // An unbound conditional selector retains the ordinary dynamic
+                // base/subscript union. Do not request a stronger actual-value
+                // certificate from the caller or specialize Boolean/Real inputs.
+                if self.activation == Activation::Conditional {
+                    return Err(ProjectionError::DynamicSubscript { span });
+                }
                 let function = function.index();
                 if let Some(capture) = self
                     .function_summary_captures
@@ -1755,6 +2232,7 @@ impl<'dae> Projection<'_, 'dae> {
                     .filter(|capture| capture.function == function)
                     && !capture.needed_integers.contains(&(ordinal, scalar_index))
                 {
+                    capture.cacheable = false;
                     capture.needed_integers.push((ordinal, scalar_index));
                 }
                 Err(ProjectionError::DynamicSubscript { span })
@@ -1773,10 +2251,12 @@ impl<'dae> Projection<'_, 'dae> {
         if self.function_frames.len() >= 256 {
             return Err(ProjectionError::FunctionRecursion { span });
         }
+        let arguments = arguments.iter().collect::<Vec<_>>();
+        self.validate_call_arguments(&arguments)?;
         let result = self.function_result(function, output, span)?;
         self.push_frame(FunctionFrame::Actual {
             function,
-            arguments: arguments.iter().collect(),
+            arguments,
         });
         let value = self.integer(result, scalar_index);
         self.pop_frame();

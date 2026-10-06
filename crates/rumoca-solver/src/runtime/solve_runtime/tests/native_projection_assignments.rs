@@ -11,6 +11,8 @@ struct AssignmentBackend {
     fail: bool,
     decline: bool,
     schedule_failure: bool,
+    target_values: bool,
+    target_compilations: Cell<usize>,
 }
 
 struct FailingAssignment(Rc<Cell<usize>>);
@@ -54,7 +56,59 @@ impl CompiledSolveExpression for AssignmentExpression {
     }
 }
 
+struct PrivateTargetValues {
+    block: PreparedScalarProgramBlock,
+    count: usize,
+    calls: Rc<Cell<usize>>,
+    fail: bool,
+}
+impl CompiledSolveTargetValues for PrivateTargetValues {
+    fn call(
+        &self,
+        selected: usize,
+        y: &[f64],
+        p: &[f64],
+        time: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<f64, String> {
+        self.calls.set(self.calls.get() + 1);
+        if self.fail {
+            return Err("admitted private target-value fault".into());
+        }
+        let mut output = vec![0.; self.count];
+        self.block
+            .eval_with_context(y, p, time, context, &mut output)
+            .map_err(|error| error.to_string())?;
+        output
+            .get(selected)
+            .copied()
+            .ok_or_else(|| "private target index out of bounds".into())
+    }
+}
+
 impl SolveExecutionBackend for AssignmentBackend {
+    fn compile_target_values(
+        &self,
+        plan: &rumoca_eval_solve::PreparedTargetValuePlan,
+        _context: RowEvalContext<'_>,
+    ) -> Result<Rc<dyn CompiledSolveTargetValues>, String> {
+        if !self.target_values {
+            return Err("test backend target values are disabled".into());
+        }
+        self.target_compilations
+            .set(self.target_compilations.get() + 1);
+        if self.decline {
+            return Err("test backend target values declined".into());
+        }
+        Ok(Rc::new(PrivateTargetValues {
+            block: PreparedScalarProgramBlock::new(plan.program().clone())
+                .map_err(|error| error.to_string())?,
+            count: plan.program().stored_output_count(),
+            calls: self.calls.clone(),
+            fail: self.fail,
+        }))
+    }
+
     fn compile_expression(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -287,4 +341,78 @@ fn singular_coefficients_preserve_the_projection_decline() {
     }
     assert_eq!(backend.compilations.get(), 1);
     assert_eq!(backend.calls.get(), 4);
+}
+
+#[test]
+fn compiled_private_target_returns_checked_value_without_y_commit() {
+    let model = warm_start_test_model();
+    let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let backend = Rc::new(AssignmentBackend {
+        target_values: true,
+        ..Default::default()
+    });
+    runtime.execution_backend = Some(backend.clone());
+    for previous in [2., -3., 1e20] {
+        let y = [1., previous];
+        let bits = y.map(f64::to_bits);
+        assert_eq!(
+            projection(&runtime)
+                .eval_implicit_target_value(1, 1, &y, &[], 0.)
+                .unwrap(),
+            Some(0.)
+        );
+        assert_eq!(y.map(f64::to_bits), bits);
+    }
+    assert_eq!(backend.target_compilations.get(), 1);
+    assert_eq!(backend.compilations.get(), 0);
+    assert_eq!(backend.calls.get(), 3);
+}
+
+#[test]
+fn admitted_private_target_fault_is_authoritative_and_does_not_demote() {
+    let model = warm_start_test_model();
+    let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let backend = Rc::new(AssignmentBackend {
+        target_values: true,
+        fail: true,
+        ..Default::default()
+    });
+    runtime.execution_backend = Some(backend.clone());
+    let y = [1., 2.];
+    for _ in 0..2 {
+        let error = projection(&runtime)
+            .eval_implicit_target_value(1, 1, &y, &[], 0.)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("admitted private target-value fault")
+        );
+        assert_eq!(y, [1., 2.]);
+    }
+    assert_eq!(backend.target_compilations.get(), 1);
+    assert_eq!(backend.compilations.get(), 0);
+    assert_eq!(backend.calls.get(), 2);
+}
+
+#[test]
+fn private_target_pre_admission_decline_is_cached_and_keeps_canonical_path() {
+    let model = warm_start_test_model();
+    let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let backend = Rc::new(AssignmentBackend {
+        target_values: true,
+        decline: true,
+        ..Default::default()
+    });
+    runtime.execution_backend = Some(backend.clone());
+    for previous in [3., -8.] {
+        assert_eq!(
+            projection(&runtime)
+                .eval_implicit_target_value(1, 1, &[1., previous], &[], 0.)
+                .unwrap(),
+            Some(0.)
+        );
+    }
+    assert_eq!(backend.target_compilations.get(), 1);
+    assert_eq!(backend.calls.get(), 0);
 }

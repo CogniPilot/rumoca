@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 #[derive(Default)]
 pub(crate) struct FunctionResultShapes {
     by_declaration: FxHashMap<DefId, Option<Vec<i64>>>,
+    scalar_inputs: FxHashMap<DefId, Option<Vec<Vec<i64>>>>,
 }
 
 impl FunctionResultShapes {
@@ -24,6 +25,12 @@ impl FunctionResultShapes {
                 .entry(declaration)
                 .and_modify(|existing| retain_common_shape(existing, &shape))
                 .or_insert(shape);
+            let inputs = fixed_scalar_inputs(function);
+            result
+                .scalar_inputs
+                .entry(declaration)
+                .and_modify(|existing| retain_common_shape(existing, &inputs))
+                .or_insert(inputs);
         }
         result
     }
@@ -31,14 +38,51 @@ impl FunctionResultShapes {
     pub(crate) fn dimensions(&self, declaration: Option<DefId>) -> Option<&[i64]> {
         self.by_declaration.get(&declaration?)?.as_deref()
     }
+
+    /// Preliminary scalar-result candidate signature. This does not infer
+    /// actual argument shapes or vectorization. Optional conditional templates
+    /// require the completed call-site and expression proofs in DAE selection.
+    pub(crate) fn scalar_input_dimensions(
+        &self,
+        declaration: Option<DefId>,
+    ) -> Option<&[Vec<i64>]> {
+        self.scalar_inputs.get(&declaration?)?.as_deref()
+    }
 }
 
-fn retain_common_shape(existing: &mut Option<Vec<i64>>, incoming: &Option<Vec<i64>>) {
+fn retain_common_shape<T: PartialEq>(existing: &mut Option<T>, incoming: &Option<T>) {
     // Multiple exposures of one declaration must prove the same shape.
     // Ambiguity remains unknown in either order.
     if existing != incoming {
         *existing = None;
     }
+}
+
+fn fixed_scalar_inputs(function: &Function) -> Option<Vec<Vec<i64>>> {
+    let [output] = function.outputs.as_slice() else {
+        return None;
+    };
+    if !output.dimensions().is_empty() || !output.shape_expr.is_empty() {
+        return None;
+    }
+    function
+        .inputs
+        .iter()
+        .map(fixed_parameter_dimensions)
+        .collect()
+}
+
+fn fixed_parameter_dimensions(parameter: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
+    let dimensions = parameter.dimensions();
+    if !parameter.shape_expr.is_empty()
+        && (parameter.shape_expr.len() != dimensions.len()
+            || !parameter.shape_expr.iter().zip(dimensions).all(|(shape, extent)| {
+                matches!(shape, Subscript::Index { value, .. } if value == extent)
+            }))
+    {
+        return None;
+    }
+    Some(dimensions.to_vec())
 }
 
 fn declared_array_result(function: &Function) -> Option<Vec<i64>> {

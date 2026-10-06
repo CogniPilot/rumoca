@@ -209,8 +209,9 @@ impl PreparedScalarProgramBlock {
     /// before the next isolation, and a per-step isolator would evaluate its
     /// whole prefix after those writes, so no pair's isolated value may depend
     /// on the target of an earlier pair, and no operation of its prefix that
-    /// can fail on its operand values (a singular dense solve, a raising pure
-    /// call, a table query, a random-generator op, or a fold or conditional
+    /// can fail on its operand values (a checked runtime tensor read, a singular
+    /// dense solve, a raising pure call, a table query, a random-generator op,
+    /// or a fold or conditional
     /// holding one) may read such a target, since the per-step isolator would
     /// evaluate it on the new value and could fail where the chain does not.
     /// The prefix may still read that target elsewhere, as every residual

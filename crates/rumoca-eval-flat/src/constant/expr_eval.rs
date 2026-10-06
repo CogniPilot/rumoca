@@ -106,11 +106,10 @@ fn eval_var_ref(
 ) -> Result<Value, EvalError> {
     // First try as a parameter
     if let Some(value) = ctx.get_value(name) {
-        let value = value.into_owned();
         return if subscripts.is_empty() {
-            Ok(value)
+            Ok(value.into_owned())
         } else {
-            apply_subscripts(&value, subscripts, ctx, span)
+            apply_subscripts(value.as_ref(), subscripts, ctx, span)
         };
     }
     // Then try as an enum literal from context
@@ -412,7 +411,11 @@ fn eval_flat_index(
     span: Span,
 ) -> Result<Value, EvalError> {
     let base_val = eval_expr_with_span(base, ctx, span)?;
-    apply_subscripts(&base_val, subscripts, ctx, span)
+    if subscripts.is_empty() {
+        Ok(base_val)
+    } else {
+        apply_subscripts(&base_val, subscripts, ctx, span)
+    }
 }
 
 /// Evaluate field access on a record value.
@@ -455,7 +458,7 @@ fn apply_subscripts(
     span: Span,
 ) -> Result<Value, EvalError> {
     super::subscripts::apply_subscripts(
-        value.clone(),
+        value,
         subscripts,
         |expr| eval_expr_with_span(expr, ctx, span),
         span,

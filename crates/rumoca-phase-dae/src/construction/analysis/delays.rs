@@ -28,13 +28,14 @@ impl PositiveParameterPlan {
 pub(super) fn analyze_delays(
     flat: &flat::Model,
     constants: &EvalContext,
+    templates: &TemplateSelection,
 ) -> Result<HashMap<Span, DelayPlan>, ToDaeError> {
     let mut analyzer = DelayAnalyzer {
         constants,
         plans: HashMap::new(),
         in_function: false,
     };
-    analyzer.visit_model_owners(flat)?;
+    analyzer.visit_model_owners(flat, templates)?;
     Ok(analyzer.plans)
 }
 

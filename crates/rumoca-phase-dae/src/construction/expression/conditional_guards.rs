@@ -1,6 +1,9 @@
 //! Guard classification for MLS §3.6.5 conditional folding in attribute and
 //! binding values.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
 
 /// Whether `condition` reads a tunable parameter coordinate's value.
@@ -136,7 +139,33 @@ pub(in crate::construction) fn retains_parameter_guard(
         scan.reads
     };
     let first = incidence(else_branch);
-    branches.iter().all(|(_, value)| incidence(value) == first)
+    branches
+        .iter()
+        .all(|(_, value)| same_incidence(&incidence(value), &first))
+}
+
+/// Source locations do not change equation incidence. The canonical Flat
+/// expression comparator retains variable and subscript semantics while
+/// excluding those locations; enclosing operators remain part of each read.
+struct IncidenceRead {
+    operators: Vec<rumoca_core::BuiltinFunction>,
+    reference: Expression,
+}
+
+impl IncidenceRead {
+    fn same(&self, other: &Self) -> bool {
+        self.operators == other.operators
+            && self
+                .reference
+                .semantically_eq_ignoring_spans(&other.reference)
+    }
+}
+
+fn same_incidence(lhs: &[IncidenceRead], rhs: &[IncidenceRead]) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .all(|read| rhs.iter().any(|other| read.same(other)))
 }
 
 /// Whether `expression` reads, by value, a name `select` accepts; the array
@@ -156,10 +185,10 @@ fn reads_value_where(expression: &Expression, select: &dyn Fn(&VarName) -> bool)
 struct ArmScan<'a> {
     select: &'a dyn Fn(&VarName) -> bool,
     /// The enclosing builtin operators; `None` in value mode.
-    operators: Option<Vec<String>>,
+    operators: Option<Vec<rumoca_core::BuiltinFunction>>,
     found: bool,
     calls_function: bool,
-    reads: std::collections::BTreeSet<String>,
+    reads: Vec<IncidenceRead>,
 }
 
 impl<'a> ArmScan<'a> {
@@ -169,7 +198,7 @@ impl<'a> ArmScan<'a> {
             operators: None,
             found: false,
             calls_function: false,
-            reads: std::collections::BTreeSet::new(),
+            reads: Vec::new(),
         }
     }
 
@@ -179,19 +208,30 @@ impl<'a> ArmScan<'a> {
             ..Self::values(select)
         }
     }
+
+    fn record_incidence(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        let Some(operators) = &self.operators else {
+            return;
+        };
+        let read = IncidenceRead {
+            operators: operators.clone(),
+            reference: Expression::VarRef {
+                name: name.clone(),
+                subscripts: subscripts.to_vec(),
+                span: Span::DUMMY,
+            },
+        };
+        if !self.reads.iter().any(|other| read.same(other)) {
+            self.reads.push(read);
+        }
+    }
 }
 
 impl rumoca_core::ExpressionVisitor for ArmScan<'_> {
     fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
         if (self.select)(name.var_name()) {
             self.found = true;
-            if let Some(operators) = &self.operators {
-                self.reads.insert(format!(
-                    "{}{}{subscripts:?}",
-                    operators.join("/"),
-                    name.var_name()
-                ));
-            }
+            self.record_incidence(name, subscripts);
         }
         self.walk_var_ref(name, subscripts);
     }
@@ -207,7 +247,7 @@ impl rumoca_core::ExpressionVisitor for ArmScan<'_> {
             }
             return;
         };
-        operators.push(format!("{function:?}("));
+        operators.push(*function);
         for argument in args {
             self.visit_expression(argument);
         }
@@ -245,11 +285,17 @@ pub(in crate::construction) fn retains_flat_guard(
         !evaluable.contains(name) && matches!(variability(name), Some(Variability::Parameter(_)))
     };
     let unknown = |name: &VarName| {
-        variability(name).is_some_and(|variability| {
-            !matches!(
-                variability,
-                Variability::Parameter(_) | Variability::Constant(_)
-            )
+        flat.variables.get(name).is_some_and(|variable| {
+            // Use the same resolved top-level ownership as role planning.
+            // Invalid ownership stays conservative here; role planning emits
+            // its original error before constructing a DAE coordinate.
+            let external =
+                super::super::analysis::is_external_input(flat, name, variable).unwrap_or(false);
+            !external
+                && !matches!(
+                    variable.variability,
+                    Variability::Parameter(_) | Variability::Constant(_)
+                )
         })
     };
     retains_parameter_guard(

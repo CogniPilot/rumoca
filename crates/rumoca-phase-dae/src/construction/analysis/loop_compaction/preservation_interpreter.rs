@@ -27,9 +27,20 @@ pub(super) fn interpret(
     statements: &[rumoca_core::Statement],
     entry: &Environment,
 ) -> Result<Environment, Refusal> {
+    interpret_with_limits(statements, entry, STATEMENT_BUDGET, EXTENT_BUDGET)
+}
+
+/// Explicit test-only resource limits; the language subset is unchanged.
+pub(super) fn interpret_with_limits(
+    statements: &[rumoca_core::Statement],
+    entry: &Environment,
+    fuel: u32,
+    extent_budget: i64,
+) -> Result<Environment, Refusal> {
     let mut interpreter = Interpreter {
         environment: entry.clone(),
-        fuel: STATEMENT_BUDGET,
+        fuel,
+        extent_budget,
     };
     interpreter.sequence(statements)?;
     Ok(interpreter.environment)
@@ -38,6 +49,7 @@ pub(super) fn interpret(
 struct Interpreter {
     environment: Environment,
     fuel: u32,
+    extent_budget: i64,
 }
 
 impl Interpreter {
@@ -261,7 +273,12 @@ impl Interpreter {
             Some(step) => self.expression(step)?.as_integer()?,
             None => 1,
         };
-        Ok(Value::Array(sequence(start, step, end)?))
+        Ok(Value::Array(sequence(
+            start,
+            step,
+            end,
+            self.extent_budget,
+        )?))
     }
 
     fn comprehension(
@@ -311,6 +328,14 @@ impl Interpreter {
             (BuiltinFunction::Size, [Value::Array(elements)]) => {
                 Ok(Value::Integer(elements.len() as i64))
             }
+            (BuiltinFunction::Mod, [Value::Integer(value), Value::Integer(divisor)])
+                if *divisor > 0 =>
+            {
+                value
+                    .checked_rem_euclid(*divisor)
+                    .map(Value::Integer)
+                    .ok_or(Refusal::IntegerOverflow)
+            }
             _ => Err(Refusal::UnsupportedExpression),
         }
     }
@@ -347,7 +372,7 @@ fn coordinate(subscript: i64, extent: usize) -> Result<usize, Refusal> {
     Ok(zero_based)
 }
 
-fn sequence(start: i64, step: i64, end: i64) -> Result<Vec<Value>, Refusal> {
+fn sequence(start: i64, step: i64, end: i64, extent_budget: i64) -> Result<Vec<Value>, Refusal> {
     if step == 0 {
         return Err(Refusal::UnsupportedRange);
     }
@@ -357,7 +382,7 @@ fn sequence(start: i64, step: i64, end: i64) -> Result<Vec<Value>, Refusal> {
     } else {
         0
     };
-    if count > EXTENT_BUDGET {
+    if count > extent_budget {
         return Err(Refusal::UnsupportedRange);
     }
     (0..count)

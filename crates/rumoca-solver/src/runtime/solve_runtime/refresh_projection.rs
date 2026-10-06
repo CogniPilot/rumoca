@@ -859,6 +859,24 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
+        if let Some((compiled, selected)) = self.runtime.compiled_projection_target_values(
+            program_idx,
+            output_offset,
+            target_y_index,
+        )? {
+            return compiled
+                .call(selected, y, p, t, self.runtime.row_eval_context())
+                .map(Some)
+                .map_err(|error| {
+                    RuntimeSolveError::solve_ir_with_span(
+                        error,
+                        self.runtime
+                            .implicit_scalar_rhs
+                            .block()
+                            .program_span(program_idx),
+                    )
+                });
+        }
         if output_offset == 0
             && let Some(compiled) = self
                 .runtime

@@ -7,6 +7,7 @@
 
 mod diagnostics;
 mod entry;
+#[cfg(any(feature = "fmi", feature = "solver-diffsol", feature = "solver-rk45"))]
 mod fmi;
 mod overrides;
 mod probe;
@@ -18,7 +19,9 @@ pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
 pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
 
 pub use diagnostics::SimulationDiagnosticError;
-pub use entry::{lower_dae_for_gpu_preparation, lower_dae_for_simulation};
+pub use entry::{
+    lower_dae_for_gpu_preparation, lower_dae_for_native_preparation, lower_dae_for_simulation,
+};
 #[cfg(feature = "fmi")]
 pub use fmi::lower_fmi_component;
 pub use probe::{

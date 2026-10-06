@@ -165,7 +165,6 @@ fn verify_parameter_overrides(
 
 /// Apply experiment overrides through the phase-owned correlated aggregate,
 /// without exposing mutable Solve IR before FMI construction.
-#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub(crate) fn apply_correlated_simulation_overrides(
     lowered: &mut rumoca_phase_solve::LoweredSolveModel<'_>,
     model: &dae::Dae,

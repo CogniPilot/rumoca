@@ -219,3 +219,68 @@ fn group_program_stores_each_isolator_of_one_shared_tensor_prefix() {
         );
     }
 }
+
+#[test]
+fn portable_target_plan_retains_original_discarded_stores_and_exact_prefix() {
+    let source = three_output_row();
+    let prepared = prepare(source.clone());
+    for (output, target) in [(0, 0), (1, 1)] {
+        let plan = prepared
+            .portable_target_value_plan(0, output, target)
+            .unwrap()
+            .unwrap();
+        let length = prepared
+            .target_isolation_prefix_len(0, output, target)
+            .unwrap();
+        assert_eq!(plan.canonical_prefix_len(), length);
+        assert_eq!(&plan.program().programs()[0][..length], &source[..length]);
+        assert_eq!(
+            plan.private_result_offset(),
+            ScalarProgramBlock::program_output_count(&source[..length])
+        );
+        assert_eq!(
+            (plan.row(), plan.output(), plan.target()),
+            (0, output, target)
+        );
+        let count = plan.program().stored_output_count();
+        let mut tuple = vec![f64::NAN; count];
+        PreparedScalarProgramBlock::new(plan.program().clone())
+            .unwrap()
+            .eval_with_context(&Y, &P, 0.0, RowEvalContext::default(), &mut tuple)
+            .unwrap();
+        assert_eq!(
+            tuple[plan.private_result_offset()],
+            unchecked_isolation(&prepared, output, target).unwrap()
+        );
+        assert_eq!(Y, [11.0, -7.0], "target query never commits Y");
+    }
+}
+
+#[test]
+fn portable_target_plan_wrong_target_and_non_direct_are_pre_admission_declines() {
+    let prepared = prepare(three_output_row());
+    assert!(
+        prepared
+            .portable_target_value_plan(0, 0, 1)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        prepared
+            .portable_target_value_plan(0, 2, 0)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        prepared
+            .portable_target_value_plan(99, 0, 0)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        prepared
+            .portable_target_value_plan(0, 99, 0)
+            .unwrap()
+            .is_none()
+    );
+}

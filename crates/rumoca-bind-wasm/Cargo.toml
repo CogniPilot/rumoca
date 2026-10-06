@@ -20,6 +20,9 @@ wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-exec-wasm = { workspace = true, optional = true }
+rumoca-ir-solve = { workspace = true }
+sha2 = { version = "0.10", optional = true }
 rumoca-eval-ast = { workspace = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
@@ -41,7 +44,9 @@ console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rumoca-eval-solve = { workspace = true }
 flate2 = { workspace = true }
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [features]
 default = ["console_error_panic_hook"]
@@ -49,7 +54,10 @@ default = ["console_error_panic_hook"]
 # Diffsol must NOT be added here — it pulls the Pulp relaxed-SIMD graph, which
 # is not safe in all browsers (guarded by
 # architecture_hardening_test::test_bind_wasm_full_web_uses_browser_safe_solver_graph).
-full-web = ["sim-rk45"]
+full-web = ["sim-rk45", "native-assignments"]
+# Stateless CPU kernels use checked lowering through the optional runtime facade.
+# Enabling this surface does not enable an ODE solver.
+native-assignments = ["dep:rumoca-sim", "dep:rumoca-exec-wasm", "dep:sha2"]
 sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
 sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]

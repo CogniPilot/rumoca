@@ -1121,6 +1121,11 @@ fn lower_continuous_family<'dae>(
         output.derivative.push_tensor(group);
         return Ok(row);
     }
+    if let Some(next_row) =
+        continuous_tensor::lower_algebraic_tensor_family(context, output, row, family)?
+    {
+        return Ok(next_row);
+    }
     if family.scalar_view() == ComprehensionScalarView::RowMajorProjection
         && family.bodies().len() == 1
     {
@@ -1949,6 +1954,7 @@ fn scaled_derivative_factor<'dae>(
 
 #[derive(Default)]
 pub(super) struct ScalarRows {
+    native_nodes: Vec<solve::ComputeNode>,
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<Span>,
     output_indices: Vec<usize>,
@@ -2002,10 +2008,13 @@ impl ScalarRows {
     }
 
     pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
+        let mut nodes = std::mem::take(&mut self.native_nodes);
         compact_identical_program_prefixes(&mut self.programs, &mut self.spans);
-        Ok(solve::ComputeBlock::from_scalar_program_block(
-            self.into_scalar_block()?,
-        ))
+        let scalar = self.into_scalar_block()?;
+        if scalar.row_count() > 0 {
+            nodes.insert(0, solve::ComputeNode::ScalarPrograms(scalar));
+        }
+        Ok(solve::ComputeBlock { nodes })
     }
 }
 

@@ -141,7 +141,12 @@ pub(super) fn expression_shape(
         }
         Expression::Range {
             start, step, end, ..
-        } => range_expression_shape(start, step.as_deref(), end, values, span),
+        } => {
+            if let Some(plan) = super::super::affine_slices::plan(expression, values) {
+                return Ok(vec![plan.extent]);
+            }
+            range_expression_shape(start, step.as_deref(), end, values, span)
+        }
         Expression::ArrayComprehension {
             expr,
             indices,

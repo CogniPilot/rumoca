@@ -38,7 +38,7 @@ fn indices(values: &[i64]) -> Subscript {
 fn apply(value: Value, subscripts: &[Subscript]) -> Result<Value, EvalError> {
     let ctx = EvalContext::new();
     apply_subscripts(
-        value,
+        &value,
         subscripts,
         |expr| eval_expr_with_span(expr, &ctx, span()),
         span(),
@@ -117,4 +117,94 @@ fn every_selected_index_remains_bounds_checked() {
             ..
         })
     ));
+}
+
+#[test]
+fn scalar_projection_preserves_real_payload_bits() {
+    let patterns = [
+        0_u64,
+        0x8000_0000_0000_0000,
+        1,
+        0x7ff8_0000_0000_1234,
+        0x7ff0_0000_0000_0000,
+        0xfff0_0000_0000_0000,
+    ];
+    let value = Value::Array(
+        patterns
+            .iter()
+            .map(|bits| Value::Real(f64::from_bits(*bits)))
+            .collect(),
+    );
+    let ctx = EvalContext::new();
+    for (index, expected) in patterns.into_iter().enumerate() {
+        let selected = apply_subscripts(
+            &value,
+            &[Subscript::Index {
+                value: index as i64 + 1,
+                span: span(),
+            }],
+            |expr| eval_expr_with_span(expr, &ctx, span()),
+            span(),
+        )
+        .unwrap();
+        let Value::Real(actual) = selected else {
+            panic!("selected non-Real value")
+        };
+        assert_eq!(actual.to_bits(), expected);
+    }
+}
+
+#[test]
+fn index_evaluation_precedes_bounds_selection() {
+    let value = matrix();
+    let mut evaluated = 0;
+    let result = apply_subscripts(
+        &value,
+        &[
+            Subscript::Index {
+                value: 99,
+                span: span(),
+            },
+            Subscript::Expr {
+                expr: Box::new(Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: span(),
+                }),
+                span: span(),
+            },
+        ],
+        |_| {
+            evaluated += 1;
+            Ok(Value::Bool(true))
+        },
+        span(),
+    );
+    assert_eq!(evaluated, 1);
+    assert!(matches!(result, Err(EvalError::TypeMismatch { .. })));
+}
+
+#[test]
+fn selected_slice_and_whole_value_are_owned_results() {
+    let value = matrix();
+    let ctx = EvalContext::new();
+    for subscripts in [
+        vec![],
+        vec![Subscript::Index {
+            value: 1,
+            span: span(),
+        }],
+    ] {
+        let mut selected = apply_subscripts(
+            &value,
+            &subscripts,
+            |expr| eval_expr_with_span(expr, &ctx, span()),
+            span(),
+        )
+        .unwrap();
+        let Value::Array(ref mut elements) = selected else {
+            panic!("selected non-array value")
+        };
+        elements[0] = Value::Integer(-999);
+        assert_eq!(value, matrix());
+    }
 }

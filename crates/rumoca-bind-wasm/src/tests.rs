@@ -8,7 +8,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::source_root_api::sync_workspace_sources_with_cache_root_for_tests;
 
+mod compile_wire_tests;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
+mod function_tuple_loop_tests;
+#[cfg(feature = "sim-rk45")]
+mod input_event_tests;
 mod lsp_diagnostics_tests;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
+mod native_assignment_tests;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
+mod native_mixed_assignment_tests;
 mod portable_source_root_tests;
 mod scenario_config_tests;
 mod simulation_runtime_tests;
@@ -1583,7 +1592,7 @@ fn test_render_target_wrapper_serializes_target_files() {
         .get("dae_native")
         .expect("compile response should contain dae_native");
 
-    let rendered = render_target(&native.to_string(), "SimpleDecay", "c-ode", "", "{}")
+    let rendered = render_target(&native.to_string(), "SimpleDecay", "dae-modelica", "", "{}")
         .expect("render target should succeed");
     let decoded: serde_json::Value = decode_wasm_value(rendered);
     assert!(
@@ -1591,9 +1600,9 @@ fn test_render_target_wrapper_serializes_target_files() {
             .get("files")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|files| files.iter().any(|file| {
-                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_ode.c")
+                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_dae.mo")
             })),
-        "render target should include the checked ODE RHS C target file"
+        "render target should include the canonical DAE Modelica target file"
     );
 }
 
@@ -1631,11 +1640,10 @@ fn test_compile_to_json_uses_native_only_shape() {
     );
     assert!(
         parsed
-            .get("dae_native")
-            .and_then(|dae| dae.get("__rumoca_build"))
+            .get("__rumoca_build")
             .and_then(serde_json::Value::as_object)
             .is_some(),
-        "native DAE payload should include build metadata"
+        "compile response should include build metadata outside canonical DAE payloads"
     );
 }
 

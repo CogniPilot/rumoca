@@ -5,6 +5,9 @@
 //! against the extents the DAE already checked, so a projection either names an
 //! exact scalar or is rejected as not compile-time computable.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
 use rumoca_core::{flatten_coordinates, row_major_coordinates};
 
@@ -492,6 +495,9 @@ impl<'dae> ScalarSelector<'dae> {
                     scalar % count,
                 )
             }
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.comprehension_integer(domain, body, scalar)
+            }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 let selected = self.indexed_base_scalar(
                     base,
@@ -506,6 +512,35 @@ impl<'dae> ScalarSelector<'dae> {
                 span,
             )),
         }
+    }
+
+    fn comprehension_integer(
+        &self,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<i64, LowerError> {
+        let span = self.node(body).provenance().span();
+        let count = scalar_count(self.view, body);
+        if count == 0 {
+            return Err(LowerError::contract(
+                "integer comprehension body is empty",
+                span,
+            ));
+        }
+        let values = self
+            .view
+            .domain(domain)
+            .expect("checked comprehension domain resolves")
+            .structured()
+            .index_tuple_at(scalar / count)
+            .map_err(|error| LowerError::contract(error.to_string(), span))?
+            .ok_or_else(|| {
+                LowerError::contract("integer comprehension scalar is outside its shape", span)
+            })?;
+        let mut nested = self.clone();
+        nested.domain_points.push((domain, values));
+        nested.integer(body, scalar % count)
     }
 
     pub(in crate::lower) fn node(

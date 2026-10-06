@@ -1361,7 +1361,7 @@ pub(super) fn lower_call_operands<'dae>(
         for (name, binder) in binders {
             let (lower, upper) =
                 construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
-            shapes.bind_integer_bounds(name.clone(), lower, upper);
+            shapes.bind_slice_binder(name.clone(), lower, upper);
         }
         Some(shapes)
     };
@@ -1566,17 +1566,7 @@ fn lower_conditional_expression<'dae>(
     // In an equation, such a guard is kept as a run-time branch when its arms
     // are structurally equal (SPEC_0040 DAE-C22); only a structural selection
     // is evaluated at translation.
-    let preserve_tunable_conditional = if symbols.shapes.is_attribute_scope() {
-        !attribute_conditional_folds(branches, else_branch, symbols.shapes)
-            && branches
-                .iter()
-                .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition))
-    } else {
-        !symbols.shapes.is_structural_selection(span)
-            && symbols.shapes.evaluable().is_some_and(|evaluable| {
-                retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
-            })
-    };
+    let preserve_tunable_conditional = retained_conditional(symbols, branches, else_branch, span);
     let mut lowered = Vec::with_capacity(branches.len());
     for (condition, value) in branches {
         let proven = if preserve_tunable_conditional {
@@ -1585,12 +1575,7 @@ fn lower_conditional_expression<'dae>(
             symbols.shapes.proven_value(condition)
         };
         match proven {
-            // A proven-dead arm is never built; MLS §11.5 skips to the next
-            // condition, so lowering resumes at the following branch.
             Some(ProvenValue::Boolean(false)) => continue,
-            // The first proven-`true` condition selects its value. With no
-            // undecided earlier branch its value is the whole result; otherwise
-            // it is the fallback the retained conditional falls through to.
             Some(ProvenValue::Boolean(true)) => {
                 let taken = lower_expression_scoped(construction, symbols, binders, value, None)?;
                 if lowered.is_empty() {
@@ -1600,8 +1585,6 @@ fn lower_conditional_expression<'dae>(
                     expressions.at(provenance).conditional(lowered, taken)
                 });
             }
-            // An unproven condition (or a non-Boolean fold, which a well-typed
-            // conditional never produces) keeps its arm exactly as written.
             _ => {
                 lowered.push((
                     lower_expression_scoped(construction, symbols, binders, condition, None)?,
@@ -1616,6 +1599,26 @@ fn lower_conditional_expression<'dae>(
     }
     construction
         .expressions(|expressions| expressions.at(provenance).conditional(lowered, fallback))
+}
+
+/// The shared DAE-C22 authority used by ordinary and structured equations.
+pub(super) fn retained_conditional(
+    symbols: LoweringSymbols<'_, '_>,
+    branches: &[(Expression, Expression)],
+    else_branch: &Expression,
+    span: Span,
+) -> bool {
+    if symbols.shapes.is_attribute_scope() {
+        !attribute_conditional_folds(branches, else_branch, symbols.shapes)
+            && branches
+                .iter()
+                .any(|(condition, _)| guard_reads_tunable_parameter(symbols.coordinates, condition))
+    } else {
+        !symbols.shapes.is_structural_selection(span)
+            && symbols.shapes.evaluable().is_some_and(|evaluable| {
+                retains_equation_guard(symbols.coordinates, evaluable, branches, else_branch)
+            })
+    }
 }
 
 fn lower_array_expression<'dae>(
@@ -1746,7 +1749,11 @@ fn lower_subscript<'dae>(
         }
         Subscript::Colon { .. } => dae::Subscript::Whole { provenance },
         Subscript::Expr { expr, .. } => {
-            let expression = lower_expression_scoped(construction, symbols, binders, expr, None)?;
+            let expression =
+                match super::affine_slices::lower(construction, symbols, binders, expr)? {
+                    Some(expression) => expression,
+                    None => lower_expression_scoped(construction, symbols, binders, expr, None)?,
+                };
             dae::Subscript::Value {
                 expression,
                 provenance,

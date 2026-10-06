@@ -8,6 +8,14 @@
 include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 
 mod class_browser_helpers;
+#[cfg(feature = "native-assignments")]
+mod native_assignment_api;
+#[cfg(feature = "native-assignments")]
+mod native_program_api;
+#[cfg(feature = "native-assignments")]
+pub use native_assignment_api::prepare_native_assignments;
+#[cfg(feature = "native-assignments")]
+pub use native_program_api::prepare_native_program;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod gpu_api;
 mod scenario_config_api;
@@ -551,9 +559,8 @@ fn build_compile_response(
     compile_phase_timing: CompilePhaseTimingSnapshot,
 ) -> Result<String, WasmError> {
     let dae = &result.dae;
-    let mut dae_native_json =
+    let dae_native_json =
         serde_json::to_value(dae).map_err(|e| WasmError::new(format!("JSON error: {}", e)))?;
-    attach_build_metadata(&mut dae_native_json);
 
     let (num_eqs, num_unknowns) = result.balance_detail.equations_unknowns();
     let balance_val = result.balance_detail.balance();
@@ -567,7 +574,7 @@ fn build_compile_response(
     let pretty = serde_json::to_string_pretty(dae)
         .map_err(|e| WasmError::new(format!("DAE pretty JSON error: {e}")))?;
 
-    let response = serde_json::json!({
+    let mut response = serde_json::json!({
         "dae": dae_native_json.clone(),
         "dae_native": dae_native_json,
         "balance": balance,
@@ -575,6 +582,7 @@ fn build_compile_response(
         "__compile_phase_timing": compile_timing_snapshot_to_json(compile_phase_timing),
     });
 
+    attach_build_metadata(&mut response);
     serde_json::to_string(&response).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
 }
 

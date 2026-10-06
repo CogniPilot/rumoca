@@ -4,6 +4,7 @@ mod external_functions;
 mod function_conditionals;
 mod function_derivatives;
 mod function_owners;
+mod function_quotients;
 mod function_scopes;
 mod function_tensor_builtins;
 mod function_wire;

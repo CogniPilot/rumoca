@@ -1,3 +1,4 @@
+mod affine_slices;
 mod algorithm;
 mod algorithm_lowering;
 mod analysis;
@@ -19,6 +20,7 @@ mod function_shapes;
 mod function_statements;
 mod initial_discrete_values;
 mod initial_parameter_values;
+mod materialized_family_bodies;
 mod model_algorithm;
 mod model_events;
 mod multi_output_equations;
@@ -27,6 +29,7 @@ mod native_tables;
 mod ordinary_equations;
 mod record_equation;
 mod structured_body;
+mod structured_templates;
 mod terminal_print;
 #[cfg(test)]
 mod tests;
@@ -129,6 +132,7 @@ use native_lapack::lower_native_lapack;
 use ordinary_equations::{OrdinaryEquationRow, lower_ordinary_equation};
 use record_equation::lower_record_equation;
 use structured_body::{lower_structured_body, normalize_conditional_residual};
+use structured_templates::{SelectedFamilies, TemplateSelection};
 use variable_construction::{
     VariableConstructionPlan, VariableDefinitionContext, define_reserved_variables,
     insert_variable_identities, plan_variable_construction,
@@ -835,7 +839,7 @@ struct StructuredEquationEnvironment<'scope, 'dae> {
 #[derive(Clone, Copy)]
 struct StructuredEquationRows<'scope, 'dae> {
     equations: &'scope [flat::Equation],
-    families: &'scope [flat::StructuredEquationFamily],
+    families: SelectedFamilies<'scope>,
     excluded_families: &'scope HashSet<usize>,
     environment: Option<StructuredEquationEnvironment<'scope, 'dae>>,
     initialization: bool,
@@ -851,8 +855,8 @@ fn lower_structured_equations<'dae>(
     for (family_index, family) in rows.families.iter().enumerate() {
         if rows.excluded_families.contains(&family_index)
             || rows.environment.is_some_and(|environment| {
-                materialized_discrete_real_family(family, environment.roles)
-                    || materialized_discrete_value_rows(family, rows.equations, environment.roles)
+                materialized_discrete_real_family(&family, environment.roles)
+                    || materialized_discrete_value_rows(&family, rows.equations, environment.roles)
             })
         {
             continue;
@@ -861,18 +865,20 @@ fn lower_structured_equations<'dae>(
         let generated_root = equation_generation(&family.origin);
         let domain =
             construction.domains(|domains| domains.structured(family.domain.clone(), owner))?;
-        let bodies = if let Some(template) = &family.template {
+        let bodies = if let Some(template) = family.template {
             let mut binders = HashMap::with_capacity(family.domain.binders.len());
             for (ordinal, binder) in family.domain.binders.iter().enumerate() {
                 let id = construction.domains(|domains| domains.binder(domain, ordinal, owner))?;
                 binders.insert(VarName::new(&binder.display_name), id);
             }
             let mut scoped_shapes = functions.shapes.model_values().clone();
-            for binder in binders.keys() {
+            for (name, binder) in &binders {
                 // A StructuredIndexDomain binder is a scalar Integer by
                 // construction.  Carry that proof into function-call shape
                 // selection while lowering the compact body.
-                scoped_shapes.insert(binder.clone(), Vec::new());
+                let (lower, upper) =
+                    construction.domains(|domains| domains.binder_bounds(*binder, owner))?;
+                scoped_shapes.bind_slice_binder(name.clone(), lower, upper);
             }
             if lower_partitioned_structured_template(
                 construction,
@@ -880,7 +886,8 @@ fn lower_structured_equations<'dae>(
                 StructuredTemplatePartitionInput {
                     coordinates,
                     functions,
-                    family,
+                    family: &family,
+                    template,
                     domain,
                     scalar_view: template.scalar_view,
                     binders: &binders,
@@ -919,7 +926,7 @@ fn lower_structured_equations<'dae>(
                 coordinates,
                 functions,
                 rows.equations,
-                family,
+                &family,
                 owner,
             )?
         };
@@ -950,6 +957,7 @@ struct StructuredTemplatePartitionInput<'scope, 'flat, 'dae> {
     coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     functions: &'scope FunctionRegistry<'flat, 'dae>,
     family: &'scope flat::StructuredEquationFamily,
+    template: &'scope rumoca_core::ComprehensionTemplate,
     domain: dae::DomainId<'dae>,
     scalar_view: rumoca_core::ComprehensionScalarView,
     binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
@@ -966,11 +974,7 @@ fn lower_partitioned_structured_template<'dae>(
     let Some(environment) = input.environment else {
         return Ok(false);
     };
-    let template = input
-        .family
-        .template
-        .as_ref()
-        .expect("partitioned structured lowering receives a template family");
+    let template = input.template;
     let assignments = match structured_family_partition(input.family, template, environment) {
         StructuredFamilyPartition::Continuous => return Ok(false),
         StructuredFamilyPartition::ConsumedDiscreteValue => return Ok(true),
@@ -1191,52 +1195,7 @@ fn lower_materialized_family_bodies<'dae>(
     family: &flat::StructuredEquationFamily,
     owner: dae::DaeProvenance,
 ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    let domain_count = family
-        .domain
-        .scalar_count()
-        .expect("analysis validates the structured domain");
-    let extents = family
-        .domain
-        .extents()
-        .expect("analysis validates the structured domain");
-    let mut bodies = Vec::with_capacity(family.equations_per_point);
-    for body_ordinal in 0..family.equations_per_point {
-        let mut scalar_bodies = Vec::with_capacity(domain_count);
-        for point in 0..domain_count {
-            let offset = point
-                .checked_mul(family.equations_per_point)
-                .and_then(|offset| offset.checked_add(body_ordinal))
-                .expect("analysis validates the materialized family row range");
-            let equation = &equations[family.first_equation_index + offset];
-            let symbols = LoweringSymbols {
-                coordinates,
-                functions,
-                shapes: functions.shapes.model_values(),
-                function_body: None,
-                values: None,
-                owner_clock: None,
-            };
-            scalar_bodies.push(lower_structured_body(
-                construction,
-                symbols,
-                &HashMap::new(),
-                &equation.residual,
-                equation_generation(&equation.origin),
-                equation.span,
-            )?);
-        }
-        let provenance = dae::DaeProvenance::generated(
-            dae::DaeGeneration::ArrayEquationProjection,
-            owner.span(),
-        )?;
-        bodies.push(pack_row_major_body(
-            construction,
-            &scalar_bodies,
-            &extents,
-            provenance,
-        )?);
-    }
-    Ok(bodies)
+    materialized_family_bodies::lower(construction, coordinates, functions, equations, family, owner)
 }
 
 pub(super) fn pack_row_major_body<'dae>(

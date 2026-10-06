@@ -684,7 +684,10 @@ pub(super) fn expression_reads_name(expression: &Expression, name: &VarName) -> 
     finder.found
 }
 
-fn statements_assign_name(statements: &[rumoca_core::Statement], name: &VarName) -> bool {
+pub(super) fn statements_assign_name(
+    statements: &[rumoca_core::Statement],
+    name: &VarName,
+) -> bool {
     statements_write_where(statements, &|component| {
         component_targets_name(component, name)
     })

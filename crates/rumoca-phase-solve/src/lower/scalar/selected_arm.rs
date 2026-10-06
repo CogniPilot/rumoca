@@ -215,19 +215,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         };
-        // A literal condition is decided here: a false arm is never reached,
-        // and a true one is the value every later arm falls back to.
+        // Immutable conditions are decided in the original lexical domain
+        // context before constructing an inactive arm's indexed reads. A
+        // tunable guard retains the checked runtime selected-arm program.
         let mut live = Vec::new();
         let mut fallback_value = fallback;
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
         for pair in arm_ids.chunks_exact(2) {
             let (condition, value) = (pair[0], pair[1]);
-            match self.node(condition).operation() {
-                dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(false)) => {}
-                dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true)) => {
+            match selector.translation_guard(condition)? {
+                Some(false) => {}
+                Some(true) => {
                     fallback_value = value;
                     break;
                 }
-                _ => live.push((condition, value)),
+                None => live.push((condition, value)),
             }
         }
         if live.is_empty() {

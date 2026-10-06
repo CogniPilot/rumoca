@@ -16,15 +16,16 @@ pub(super) struct DerivedParameterAnalysis {
 pub(super) fn analyze_derived_parameters(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    selected: SelectedFamilies<'_>,
 ) -> Result<DerivedParameterAnalysis, ToDaeError> {
     let mut plans = HashMap::new();
     let mut families = HashSet::new();
     let mut rows = HashSet::new();
-    for (family_index, family) in flat.structured_equations.iter().enumerate() {
+    for (family_index, family) in selected.iter().enumerate() {
         if family.interiors_materialized {
             continue;
         }
-        let Some(template) = &family.template else {
+        let Some(template) = family.template else {
             continue;
         };
         let assignments = template
@@ -49,7 +50,7 @@ pub(super) fn analyze_derived_parameters(
                 family.span,
             ));
         }
-        validate_family_shape(flat, family, &assignments)?;
+        validate_family_shape(flat, &family, template, &assignments)?;
         for (target, body) in assignments {
             if !matches!(roles.get(&target), Some(PlannedRole::Algebraic)) {
                 return Err(ToDaeError::unsupported_flat(
@@ -77,7 +78,7 @@ pub(super) fn analyze_derived_parameters(
             }
         }
         families.insert(family_index);
-        rows.extend(family_rows(family, flat.equations.len())?);
+        rows.extend(family_rows(&family, flat.equations.len())?);
     }
     validate_dependencies(&plans, roles)?;
     Ok(DerivedParameterAnalysis {
@@ -131,6 +132,7 @@ fn indexed_reference(expression: &Expression) -> Option<(&VarName, &[Subscript])
 fn validate_family_shape(
     flat: &flat::Model,
     family: &flat::StructuredEquationFamily,
+    template: &rumoca_core::ComprehensionTemplate,
     assignments: &[(VarName, &Expression)],
 ) -> Result<(), ToDaeError> {
     let extents = family.domain.extents().map_err(|error| {
@@ -166,7 +168,7 @@ fn validate_family_shape(
             ));
         }
         let (found_target, subscripts) =
-            indexed_reference(template_lhs(family, target).ok_or_else(|| {
+            indexed_reference(template_lhs(template, target).ok_or_else(|| {
                 ToDaeError::unsupported_flat(
                     "derived parameter target",
                     format!("the template has no indexed assignment for `{target}`"),
@@ -192,10 +194,10 @@ fn validate_family_shape(
 }
 
 fn template_lhs<'family>(
-    family: &'family flat::StructuredEquationFamily,
+    template: &'family rumoca_core::ComprehensionTemplate,
     target: &VarName,
 ) -> Option<&'family Expression> {
-    family.template.as_ref()?.body.iter().find_map(|body| {
+    template.body.iter().find_map(|body| {
         let Expression::Binary {
             op: OpBinary::Sub,
             lhs,

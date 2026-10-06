@@ -34,19 +34,22 @@ pub(super) struct ModelReads {
 /// discrete-time expression asks for it.
 pub(super) struct LazyModelReads<'flat> {
     flat: &'flat flat::Model,
+    templates: &'flat TemplateSelection,
     reads: std::cell::OnceCell<ModelReads>,
 }
 
 impl<'flat> LazyModelReads<'flat> {
-    pub(super) fn new(flat: &'flat flat::Model) -> Self {
+    pub(super) fn new(flat: &'flat flat::Model, templates: &'flat TemplateSelection) -> Self {
         Self {
             flat,
+            templates,
             reads: std::cell::OnceCell::new(),
         }
     }
 
     pub(super) fn get(&self) -> &ModelReads {
-        self.reads.get_or_init(|| ModelReads::analyze(self.flat))
+        self.reads
+            .get_or_init(|| ModelReads::analyze(self.flat, self.templates))
     }
 }
 
@@ -81,7 +84,7 @@ enum Site {
 }
 
 impl ModelReads {
-    fn analyze(flat: &flat::Model) -> Self {
+    fn analyze(flat: &flat::Model, templates: &TemplateSelection) -> Self {
         let inputs = FunctionInputReads::analyze(flat);
         let mut reads = Self {
             sites: HashMap::new(),
@@ -100,10 +103,8 @@ impl ModelReads {
                 .iter()
                 .map(|equation| &equation.residual),
         );
-        other.extend(structured_template_expressions(&flat.structured_equations));
-        other.extend(structured_template_expressions(
-            &flat.initial_structured_equations,
-        ));
+        other.extend(templates.continuous(flat).expressions());
+        other.extend(templates.initialization(flat).expressions());
         for assertion in flat
             .assert_equations
             .iter()

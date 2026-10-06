@@ -8,6 +8,9 @@ use branch_assertions::{
 use path_definedness::lower_path_definedness;
 pub(super) use path_definedness::{DefinednessPredicates, PartialTarget};
 
+mod tuple_loop;
+use tuple_loop::lower_function_loop_multi_output_call;
+
 pub(super) fn lower_generated_boolean_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
@@ -1494,69 +1497,6 @@ fn lower_loop_conditional<'dae>(
         )
     })?;
     Ok(loop_body)
-}
-
-fn lower_function_loop_multi_output_call<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: FunctionSymbols<'_, 'dae>,
-    loop_body: &mut dae::FunctionLoop<'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    call: FunctionMultiOutputCall<'_>,
-) -> Result<(), dae::DaeConstructionError> {
-    let provenance = dae::DaeProvenance::source(call.span)?;
-    let operands = lower_call_operands(
-        construction,
-        LoweringSymbols {
-            coordinates: symbols.coordinates,
-            functions: symbols.functions,
-            shapes: symbols.shapes,
-            function_body: Some(loop_body.body()),
-            values: None,
-            owner_clock: None,
-        },
-        binders,
-        call.callee,
-        call.args,
-        provenance,
-    )?;
-    let selected = call
-        .outputs
-        .iter()
-        .enumerate()
-        .filter_map(|(ordinal, output)| output.as_ref().map(|output| (ordinal, output)))
-        .collect::<Vec<_>>();
-    let results = operands.results(
-        construction,
-        selected.iter().map(|(ordinal, _)| *ordinal),
-        provenance,
-    )?;
-    for ((_, output), mut value) in selected.into_iter().zip(results) {
-        let target = function_value_coordinate(symbols.coordinates, output.target());
-        if !output.subscripts().is_empty() {
-            value = lower_function_array_update(
-                construction,
-                FunctionArrayUpdate {
-                    symbols: LoweringSymbols {
-                        coordinates: symbols.coordinates,
-                        functions: symbols.functions,
-                        shapes: symbols.shapes,
-                        function_body: Some(loop_body.body()),
-                        values: None,
-                        owner_clock: None,
-                    },
-                    binders,
-                    base: None,
-                    target,
-                    subscripts: output.subscripts(),
-                    value,
-                    provenance,
-                },
-            )?;
-        }
-        construction
-            .functions(|functions| functions.assign_loop(loop_body, target, value, provenance))?;
-    }
-    Ok(())
 }
 
 fn lower_nested_function_loop<'dae>(

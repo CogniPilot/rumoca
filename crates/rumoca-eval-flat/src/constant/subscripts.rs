@@ -16,13 +16,13 @@ enum EvaluatedSubscript {
 /// Evaluate each index once in its caller's environment, then select the
 /// Cartesian product of retained axes in source order.
 pub(super) fn apply_subscripts(
-    value: Value,
+    value: &Value,
     subscripts: &[Subscript],
     mut evaluate: impl FnMut(&Expression) -> Result<Value, EvalError>,
     span: Span,
 ) -> Result<Value, EvalError> {
     if subscripts.is_empty() {
-        return Ok(value);
+        return Ok(value.clone());
     }
     let indices = subscripts
         .iter()
@@ -39,7 +39,7 @@ pub(super) fn apply_subscripts(
             },
         })
         .collect::<Result<Vec<_>, _>>()?;
-    select(&value, &indices, span)
+    select(value, &indices, span)
 }
 
 fn integer_index(value: &Value, span: Span) -> Result<i64, EvalError> {

@@ -184,8 +184,8 @@ impl<'dae> DaeConstruction<'dae> {
     /// function-scope expression into the model's condition system. The
     /// `FunctionBody` capability is the SPEC_0036 proof that a body is
     /// open. Both operands are validated against that exact body before any
-    /// node is inserted: a pure builtin contributes no scope or read facts
-    /// beyond its operands, so operand prevalidation is the proof, and a
+    /// node is inserted. The exact body also supplies the quotient's function
+    /// scope when literal/binder-only operands carry no scope of their own. A
     /// rejected quotient leaves the expression arena untouched instead of
     /// stranding an eventless dynamic node behind a late `Err`.
     pub fn function_runtime_quotient(
@@ -195,16 +195,10 @@ impl<'dae> DaeConstruction<'dae> {
         arguments: [ExprId<'dae>; 2],
         provenance: DaeProvenance,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        for argument in arguments {
-            expect_function_body_expression(self.storage, body, argument, provenance)?;
-            validate_function_value_reads(self.storage, body, argument, provenance)?;
-        }
         let quotient = self.expressions(|expressions| {
-            expressions.at(provenance).checked_runtime_quotient(
-                builtin,
-                arguments,
-                QuotientScope::FunctionBody,
-            )
+            expressions
+                .at(provenance)
+                .checked_function_runtime_quotient(body, builtin, arguments)
         })?;
         self.storage.record_quotient_owner(
             RuntimeQuotientOwnerEntry {
@@ -360,6 +354,24 @@ impl<'dae> DaeConstruction<'dae> {
             },
             token.generated_at,
         )
+    }
+}
+
+impl<'dae> FunctionBody<'dae> {
+    /// The open body is the authority for an event-free quotient's scope.
+    /// Validate its exact operand domains and current SSA definitions before
+    /// expression construction commits the function-owned arena row.
+    pub(crate) fn checked_quotient_scope(
+        &self,
+        storage: &Storage,
+        arguments: [ExprId<'dae>; 2],
+        provenance: DaeProvenance,
+    ) -> Result<FunctionId<'dae>, DaeConstructionError> {
+        for argument in arguments {
+            expect_function_body_expression(storage, self, argument, provenance)?;
+            validate_function_value_reads(storage, self, argument, provenance)?;
+        }
+        Ok(self.function)
     }
 }
 

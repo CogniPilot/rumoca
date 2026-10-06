@@ -74,6 +74,76 @@ fn tensor_cross_force_assignment_preserves_independent_offset() {
 }
 
 #[test]
+fn tensor_affine_preparation_materializes_only_selected_exact_prefixes() {
+    let mut program = force_moment_program();
+    program.push(LinearOp::LoadP { dst: 11, index: 3 });
+    program.push(LinearOp::TableBounds {
+        dst: 12,
+        table_id: 11,
+        max: false,
+    });
+    program.push(LinearOp::StoreOutput { src: 10 });
+    let prepared = prepare(program);
+    assert_eq!(
+        prepared.row_tensor_affine_assignments[0].materialized_count(),
+        0
+    );
+    let y = [4.0, 1e30, 7.0, 18.0];
+    let evaluate = |output, p| {
+        prepared.eval_target_assignment_output_unchecked_with_context(
+            TargetAssignmentOutputRequest {
+                row_idx: 0,
+                output_offset: output,
+                target_y_index: 1,
+                y: &y,
+                p,
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+        )
+    };
+    assert_eq!(evaluate(0, &[2.0, 3.0, 5.0, 4.0]).unwrap(), Some(15.0));
+    assert_eq!(
+        prepared.row_tensor_affine_assignments[0].materialized_count(),
+        1
+    );
+    // The later store reads the same output register but requires the longer
+    // unchanged source prefix, including the host-backed table lookup.
+    assert!(evaluate(1, &[2.0, 3.0, 5.0, 4.0]).is_err());
+    assert!(evaluate(1, &[2.0, 3.0, 5.0, 9.0]).is_err());
+    assert_eq!(
+        prepared.row_tensor_affine_assignments[0].materialized_count(),
+        2
+    );
+    assert_eq!(
+        prepared.clone().row_tensor_affine_assignments[0].materialized_count(),
+        2
+    );
+}
+
+#[test]
+fn selected_tensor_affine_evaluation_matches_materialized_signed_zero() {
+    let prepared = prepare(force_moment_program());
+    let explicit = prepare(
+        prepared
+            .exact_target_assignment_output_program(0, 0, 1)
+            .unwrap(),
+    );
+    for offset in [0.0, -0.0] {
+        let y = [offset, 8.0, 0.0, offset];
+        let p = [2.0, offset, 0.0];
+        let actual = prepared
+            .eval_target_assignment_row_with_context(0, 1, &y, &p, 0.0, RowEvalContext::default())
+            .unwrap()
+            .unwrap();
+        let expected = explicit
+            .eval_row_with_context(0, &y, &p, 0.0, RowEvalContext::default())
+            .unwrap();
+        assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+}
+
+#[test]
 fn tensor_affine_materialization_preserves_output_identity_and_prefix_errors() {
     let mut program = force_moment_program();
     program.insert(1, LinearOp::StoreOutput { src: 0 });
@@ -448,4 +518,29 @@ fn materialized_affine_projection_declines_an_overflowed_coefficient() {
         !result.is_finite(),
         "overflowed coefficient must decline, got {result}"
     );
+}
+
+#[test]
+fn selected_tensor_affine_preserves_repeated_store_prefix_boundary() {
+    let mut program = force_moment_program();
+    program.push(LinearOp::LoadP { dst: 11, index: 3 });
+    program.push(LinearOp::TableBounds {
+        dst: 12,
+        table_id: 11,
+        max: false,
+    });
+    program.push(LinearOp::StoreOutput { src: 10 });
+    let prepared = prepare(program);
+    let value = prepared.eval_target_assignment_output_unchecked_with_context(
+        TargetAssignmentOutputRequest {
+            row_idx: 0,
+            output_offset: 0,
+            target_y_index: 1,
+            y: &[4.0, 1e30, 7.0, 18.0],
+            p: &[2.0, 3.0, 5.0, 4.0],
+            t: 0.0,
+            context: RowEvalContext::default(),
+        },
+    );
+    assert_eq!(value.unwrap(), Some(15.0));
 }

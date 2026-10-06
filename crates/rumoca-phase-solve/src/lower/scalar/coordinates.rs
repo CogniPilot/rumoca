@@ -5,7 +5,24 @@
 //! and a derivative coordinate a row other than its definition reads is
 //! recomputed from the continuous row the structural proof matched to it.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
+
+#[derive(Clone, Copy)]
+struct CoordinateExtent {
+    variable: u32,
+    count: usize,
+    pre_variable: bool,
+    sampled_base: Option<usize>,
+    input_start: usize,
+}
+
+fn tensor_coordinate_index(base: usize, scalar: usize, span: Span) -> Result<usize, LowerError> {
+    base.checked_add(scalar)
+        .ok_or_else(|| LowerError::contract("tensor coordinate storage extent overflow", span))
+}
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(super) fn pack_coordinate(
@@ -71,25 +88,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             solve::ScalarSlot::P { index, .. } => (solve::TensorInputKind::P, index),
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => return Ok(None),
         };
-        for scalar in 1..count {
-            let expected = input_start.checked_add(scalar).ok_or_else(|| {
-                LowerError::contract("tensor coordinate storage extent overflow", span)
-            })?;
-            let slot =
-                self.coordinate_scalar_slot(variable, scalar, pre_variable, sampled_base, span)?;
-            let contiguous = match slot {
-                solve::ScalarSlot::Y { index, .. } => {
-                    input == solve::TensorInputKind::Y && index == expected
-                }
-                solve::ScalarSlot::P { index, .. } => {
-                    input == solve::TensorInputKind::P && index == expected
-                }
-                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => false,
-            };
-            if !contiguous {
-                return Ok(None);
-            }
-        }
+        self.validate_coordinate_extent(
+            CoordinateExtent {
+                variable,
+                count,
+                pre_variable,
+                sampled_base,
+                input_start,
+            },
+            span,
+        )?;
         let dst_start = self.next_register;
         for _ in 0..count {
             self.register(span)?;
@@ -104,6 +112,47 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         });
         self.tensor_load_cache.insert(key, (dst_start, count));
         Ok(Some(dst_start))
+    }
+
+    // The first slot is checked by pack_coordinate before this helper. All
+    // subsequent slots share that immutable layout entry and storage class.
+    fn validate_coordinate_extent(
+        &self,
+        extent: CoordinateExtent,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let CoordinateExtent {
+            variable,
+            count,
+            pre_variable,
+            sampled_base,
+            input_start,
+        } = extent;
+        if pre_variable || sampled_base.is_none() {
+            let entry = self
+                .layout
+                .variables
+                .get(variable as usize)
+                .copied()
+                .ok_or_else(|| LowerError::contract("variable has no Solve layout entry", span))?;
+            if count > entry.count {
+                // The ordinary loop checks expected-index overflow before
+                // checking this first out-of-range scalar. Keep that order.
+                tensor_coordinate_index(input_start, entry.count, span)?;
+                self.coordinate_scalar_slot(
+                    variable,
+                    entry.count,
+                    pre_variable,
+                    sampled_base,
+                    span,
+                )?;
+            }
+        }
+        // count > 1 is established by the caller. Monotonic addition proves
+        // every interior index once the endpoint is representable. Slot byte
+        // offsets retain scalar_slot_{y,p}'s existing saturating semantics.
+        tensor_coordinate_index(input_start, count - 1, span)?;
+        Ok(())
     }
 
     fn coordinate_scalar_slot(

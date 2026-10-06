@@ -667,6 +667,8 @@ pub struct MeIndicatorCrossing {
 /// Why the host is entering Event Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeEventCause {
+    /// The importer applies a discontinuous input frame at its current point.
+    InputEvent,
     /// The integrator located an event-indicator sign change.
     StateEvent,
     /// The instant the component itself scheduled through

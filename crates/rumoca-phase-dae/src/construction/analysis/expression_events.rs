@@ -39,7 +39,11 @@
 //! are ordinary model relations and still reach their own arm through the child
 //! recursion.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
+use rumoca_core::expression_semantic_fingerprint;
 
 #[derive(Clone, Copy)]
 pub(in crate::construction) enum ExpressionEventPlan {
@@ -102,7 +106,17 @@ impl PlannedOccurrence {
 #[derive(Default)]
 pub(in crate::construction) struct ExpressionEventPlans {
     ordered: Vec<(Span, ExpressionEventPlan)>,
-    by_span: HashMap<Span, Vec<PlannedOccurrence>>,
+    by_span: HashMap<Span, HashMap<Vec<u64>, Vec<PlannedOccurrence>>>,
+}
+
+// This is only a lookup accelerator. Exact operand equality still owns event
+// identity, including spans and resolved references; hash collisions never
+// merge occurrences. Equal operands have equal semantic fingerprints.
+fn operand_fingerprints(operands: &[&Expression]) -> Vec<u64> {
+    operands
+        .iter()
+        .map(|operand| expression_semantic_fingerprint(operand))
+        .collect()
 }
 
 impl ExpressionEventPlans {
@@ -114,6 +128,7 @@ impl ExpressionEventPlans {
     ) -> Option<ExpressionEventPlan> {
         self.by_span
             .get(&span)?
+            .get(&operand_fingerprints(operands))?
             .iter()
             .find_map(|occurrence| occurrence.names(operands).then_some(occurrence.plan))
     }
@@ -135,10 +150,11 @@ impl ExpressionEventPlans {
     /// subset. Scheduled and dynamic time-event families require different
     /// owners and remain fail-closed.
     pub(in crate::construction) fn is_structured_state_relation(&self, span: Span) -> bool {
-        self.by_span.get(&span).is_some_and(|occurrences| {
-            !occurrences.is_empty()
-                && occurrences
-                    .iter()
+        self.by_span.get(&span).is_some_and(|buckets| {
+            !buckets.is_empty()
+                && buckets
+                    .values()
+                    .flatten()
                     .all(|occurrence| matches!(occurrence.plan, ExpressionEventPlan::StateRelation))
         })
     }
@@ -164,7 +180,12 @@ impl ExpressionEventPlans {
         operands: &[&Expression],
         plan: ExpressionEventPlan,
     ) -> Result<(), ToDaeError> {
-        let occurrences = self.by_span.entry(span).or_default();
+        let occurrences = self
+            .by_span
+            .entry(span)
+            .or_default()
+            .entry(operand_fingerprints(operands))
+            .or_default();
         if let Some(existing) = occurrences
             .iter()
             .find(|occurrence| occurrence.names(operands))

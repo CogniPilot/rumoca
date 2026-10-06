@@ -24,6 +24,9 @@ use super::errors::EvalError;
 use super::value::Value;
 use super::{EvalEnvironment, EvalIndexMap};
 
+mod statement_calls;
+use statement_calls::{eval_assert_stmt, eval_fn_call_stmt};
+
 /// Execution limits for function evaluation.
 #[derive(Debug, Clone)]
 pub struct EvalLimits {
@@ -874,13 +877,19 @@ fn eval_statement(
             comp,
             args,
             outputs,
-            ..
-        } => eval_fn_call_stmt(comp, args, outputs, state.env, eval),
+            span,
+        } => eval_fn_call_stmt(comp, args, outputs, state.env, eval, *span),
         Statement::When { .. } => Err(EvalError::not_constant(
             "when statement in function",
             eval.span,
         )),
-        Statement::Reinit { .. } | Statement::Assert { .. } => Ok(FlowControl::Continue),
+        Statement::Assert {
+            condition,
+            message,
+            level,
+            span,
+        } => eval_assert_stmt(condition, message, level.as_deref(), state.env, eval, *span),
+        Statement::Reinit { .. } => Ok(FlowControl::Continue),
     }
 }
 
@@ -962,36 +971,6 @@ fn eval_stmt_list(
         if flow != FlowControl::Continue {
             return Ok(flow);
         }
-    }
-    Ok(FlowControl::Continue)
-}
-
-/// Evaluate a function call statement.
-fn eval_fn_call_stmt(
-    comp: &Reference,
-    args: &[Expression],
-    outputs: &[Option<ComponentReference>],
-    env: &mut FunctionEnv,
-    eval: &EvalState<'_>,
-) -> Result<FlowControl, EvalError> {
-    let func_name = comp.as_str();
-
-    // Skip special built-in statements that appear as function calls
-    // These are runtime-only operations that should be no-ops during constant evaluation
-    match func_name {
-        "assert" | "print" | "terminate" | "Modelica.Utilities.Streams.print" => {
-            return Ok(FlowControl::Continue);
-        }
-        _ => {}
-    }
-
-    let arg_values: Vec<Value> = args
-        .iter()
-        .map(|a| eval_expr_in_function(a, env, eval))
-        .collect::<Result<_, _>>()?;
-    let result = call_function(func_name, arg_values, eval)?;
-    if !outputs.is_empty() {
-        assign_fn_outputs(outputs, result, env, eval)?;
     }
     Ok(FlowControl::Continue)
 }
@@ -1308,7 +1287,7 @@ fn eval_var_ref(
 ) -> Result<Value, EvalError> {
     let name = reference.as_str();
     if let Some(val) = env.get(name) {
-        return apply_subscripts_flat(val.clone(), subscripts, env, eval);
+        return apply_subscripts_flat(val, subscripts, env, eval);
     }
     if let Some(val) = eval.ctx.get_value(name) {
         return Ok(val.into_owned());
@@ -1320,7 +1299,11 @@ fn eval_var_ref(
     // reference Flat renders, so `z.im` names the field `im` of the bound local
     // `z`.
     if let Some(value) = read_bound_field_path(reference, env, eval)? {
-        return apply_subscripts_flat(value, subscripts, env, eval);
+        return if subscripts.is_empty() {
+            Ok(value)
+        } else {
+            apply_subscripts_flat(&value, subscripts, env, eval)
+        };
     }
     // An enumeration literal is a registered value (`get_enum` above). A
     // qualified name that names no value is unknown: reading it as an
@@ -1468,7 +1451,11 @@ fn eval_array_index(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let base_val = eval_expr_in_function(base, env, eval)?;
-    apply_subscripts_flat(base_val, subscripts, env, eval)
+    if subscripts.is_empty() {
+        Ok(base_val)
+    } else {
+        apply_subscripts_flat(&base_val, subscripts, env, eval)
+    }
 }
 
 /// Evaluate an array comprehension: `{expr for i in range if filter}`.
@@ -1959,7 +1946,7 @@ fn set_array_element(
 
 /// Apply Flat subscripts using the function's local evaluation environment.
 fn apply_subscripts_flat(
-    value: Value,
+    value: &Value,
     subs: &[Subscript],
     env: &FunctionEnv,
     eval: &EvalState<'_>,

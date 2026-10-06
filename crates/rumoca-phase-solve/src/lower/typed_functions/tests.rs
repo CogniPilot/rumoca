@@ -1,5 +1,7 @@
 //! Focused construction and execution tests for the shared typed lowerer.
 
+mod division;
+
 use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, VarName};
 
 use super::*;

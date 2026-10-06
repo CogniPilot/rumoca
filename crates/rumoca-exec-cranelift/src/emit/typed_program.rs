@@ -1751,7 +1751,9 @@ fn map_binary(operator: solve::SolveBinaryOperator) -> Option<rumoca_ir_solve::B
         solve::SolveBinaryOperator::Atan2 => Target::Atan2,
         solve::SolveBinaryOperator::Min => Target::Min,
         solve::SolveBinaryOperator::Max => Target::Max,
-        solve::SolveBinaryOperator::IntegerQuotient => return None,
+        solve::SolveBinaryOperator::IntegerQuotient
+        | solve::SolveBinaryOperator::IntegerModulo
+        | solve::SolveBinaryOperator::IntegerRemainder => return None,
     })
 }
 

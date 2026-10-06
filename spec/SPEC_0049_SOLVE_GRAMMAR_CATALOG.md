@@ -168,13 +168,24 @@ Element-kind columns record what the checked constructor ADMITS today.
 | `SolveBinaryOperator` | `Divide` | **Real only** | `FloatingPrimitive` | Current |
 | `SolveBinaryOperator` | `Power` | **Real only** | `FloatingTranscendental` | Current |
 | `SolveBinaryOperator` | `Atan2` | **Real only** | `FloatingTranscendental` | Current |
-| `SolveBinaryOperator` | Integer `Divide` with divide-by-zero and `MIN/-1` status (SEV-025) | — | `ExactIntegral` | **Proposed** |
+| `SolveBinaryOperator` | `IntegerDivide`, `IntegerModulo`, `IntegerRemainder` | Integer only, identical shape and domain | `ExactIntegral` | Current: interpreter and portable WASM; checked quotient failures below |
 | `SolveBinaryOperator` | Integer-exponent `Power` with its own domain and status | — | `ExactIntegral` | **Proposed** |
 | `SolveCompareOperator` | `Equal`, `NotEqual` | any two IDENTICAL types, Boolean included | `RelationalEquality` | Current |
 | `SolveCompareOperator` | `Less`, `LessEqual`, `Greater`, `GreaterEqual` | numeric: Real or Integer | `RelationalOrdering` | Current |
 | `SolveConversionOperator` | `IntegerToReal` | Integer to Real | `Conversion` | Current |
 | `SolveConversionOperator` | `RealToIntegerTowardZero` | Real to Integer | `Conversion` | Current |
 | `SolveConversionOperator` | `RealToIntegerTowardNegativeInfinity` | Real to Integer | `Conversion` | Current |
+
+The exact Integer quotient leaves implement MLS §3.7.2: `IntegerDivide`
+truncates toward zero, `IntegerRemainder` has the dividend's sign, and
+`IntegerModulo` has the divisor's sign. All reject a zero divisor and any
+result outside the root's Integer domain with an Integer-arithmetic failure.
+`MIN/-1` fails for `IntegerDivide`; both remainder leaves return zero without
+constructing the unrepresentable intermediate quotient. They never convert
+through Real, including above 2^53. Real `/` remains `Divide` and does not
+admit Integer operands. The portable WASM executor checks faults before
+trapping instructions and publishes outputs only on success. Cranelift
+explicitly refuses the new leaves until it owns a checked failure ABI.
 | `SolveReductionOperator` | `Sum`, `Product` | numeric | `Reduction` | Current |
 | `SolveReductionOperator` | `Minimum`, `Maximum` | numeric | `Reduction`, NaN handling per the profile | Current |
 | `SolveReductionOperator` | `All` | Boolean only | `NotApplicable` | Current |

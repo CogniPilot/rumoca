@@ -3,6 +3,7 @@
 
 use rumoca_ir_solve as solve;
 
+use super::target_catalog::ExactAssignmentAccess;
 use crate::PreparedScalarProgramBlock;
 
 /// Whether `row` is an admissible causal step for solver-Y unknown `y_index`:
@@ -25,32 +26,16 @@ pub fn causal_step_coefficient_proof(
     row: usize,
     y_index: usize,
 ) -> solve::CausalCoefficient {
-    let program = implicit_scalar_rhs
-        .row_output_position(row)
-        .and_then(|(program, output)| {
-            Some((implicit_scalar_rhs.block().program(program)?, output))
-        });
-    match program {
-        Some((ops, output)) => solve::isolator_coefficient_proof(ops, output, y_index),
-        None => solve::CausalCoefficient::Unproven,
-    }
+    implicit_scalar_rhs.coefficient_proof(row, y_index)
 }
 
 /// Whether evaluating `row`'s target isolator and writing its value satisfies
 /// the scalar residual exactly for solver-Y unknown `y_index`. This mirrors the
 /// runtime `implicit_target_assignment_is_exact` predicate exactly.
 pub(super) fn causal_step_certifies_exact_assignment(
-    implicit_scalar_rhs: &PreparedScalarProgramBlock,
+    implicit_scalar_rhs: &impl ExactAssignmentAccess,
     row: usize,
     y_index: usize,
 ) -> bool {
-    implicit_scalar_rhs
-        .row_output_position(row)
-        .is_some_and(|(program_idx, output_offset)| {
-            implicit_scalar_rhs.certifies_exact_target_assignment_output(
-                program_idx,
-                output_offset,
-                y_index,
-            )
-        })
+    implicit_scalar_rhs.is_exact_assignment(row, y_index)
 }

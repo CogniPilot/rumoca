@@ -431,7 +431,7 @@ const fn discrete_role(scalar_type: dae::ScalarType) -> PlannedRole {
     }
 }
 
-fn is_external_input(
+pub(in crate::construction) fn is_external_input(
     flat: &flat::Model,
     name: &VarName,
     variable: &flat::Variable,

@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "base_revision": "c4968a8275aefa85cf142ee34cdde1bc0513e956",
+  "fixture": "crates/rumoca-phase-flatten/src/equations/scalar_loop_body/fixtures/harris_native_frame.mo",
+  "source_sha256": "18e456247e415add38f7ffdb509d5bf22e0b818ee27bacc24372244867dcf46a",
+  "before_compiler_revision": "e3be35ab6e850d894a67ec67760d36a9689301b8",
+  "before_compiler_wasm_sha256": "d806adb09863af445d49115663bc71499ef5ef6b2982f715db53c9efe5b54cbd",
+  "governing_specs": [
+    "SPEC_0007",
+    "SPEC_0022 EQN008-EQN010",
+    "SPEC_0029 section3b",
+    "SPEC_0032 sections1-2",
+    "SPEC_0033",
+    "SPEC_0021"
+  ],
+  "before_actual_full_web_wasm": {
+    "environment": "Node24.21.0, oneCPU, nice10, external90second watchdog, source unchanged",
+    "width": 160,
+    "height": 90,
+    "compile_ms": 41650.19594500001,
+    "balanced_equations": 133776,
+    "balanced_unknowns": 133776,
+    "compile_final_rss_bytes": 944537600,
+    "compile_final_wasm_memory_bytes": 750256128,
+    "native_prepare_timeout_seconds": 90,
+    "first_15_second_compile_profile_percent": {
+      "flatten": 79.28,
+      "expand_for_equation": 76.837,
+      "collect_for_iterations": 76.83,
+      "make_residual": 41.08,
+      "qualification": 40.08,
+      "ast_lowering": 36.43,
+      "shape_inference": 20.32
+    },
+    "profile": "/tmp/slam-native-harris-compile.cpuprofile",
+    "profile_summary": "/tmp/slam-native-harris-compile-summary.log",
+    "first_divergent_owner": "rumoca-phase-flatten:equations:collect_for_iterations",
+    "excluded_as_dominant_compile_cost": [
+      "parsing",
+      "resolution",
+      "instantiation",
+      "typechecking",
+      "Solve preparation",
+      "native compilation",
+      "solver initialization"
+    ]
+  },
+  "change": "Prepare qualification/lowering and scalar shape once per innermost arithmetic loop scope, then derive the same materialized scalar residuals by exact binder literal substitution and shared constant-subscript evaluation. Outer/dependent/nested domains, family ownership and exhaustive fallback stay unchanged.",
+  "strictness": "Only scalar arithmetic with scope-stable single-part scalar/array references and integer literal/binder subscripts qualifies. Calls, constructors, comprehensions including typed empty bodies, aggregate operands, slices, ranges, field/member occurrence selection and unsupported expressions retain the exhaustive path. Empty iteration domains never prepare their body. No expression reassociation, row omission, dimension changes or validators changed.",
+  "verification": {
+    "focused_differential_tests": {
+      "passed": 7,
+      "failed": 0,
+      "filtered": 639,
+      "log": "/tmp/rumoca-flatten-materialization-focused-final.log",
+      "unchanged_full_fixture": {
+        "scalar_rows": 133776,
+        "structured_families": 10,
+        "prepared_scopes": 858
+      }
+    },
+    "native_parse_through_flatten_timing": {
+      "prepared_ms": 17528,
+      "exhaustive_ms": 26707,
+      "speedup": 1.5236764034687358,
+      "scope": "Both exact-source collectors in the native optimized dev test process; includes parsing, resolution, instantiation, typechecking and Flatten; not WASM or DAE/Solve/native runtime admission"
+    },
+    "strict_scoped_clippy": {
+      "all_targets": true,
+      "all_features": true,
+      "warnings_denied": true,
+      "exit": 0,
+      "log": "/tmp/rumoca-flatten-materialization-clippy.log"
+    },
+    "formatting": "pass",
+    "resource_budget": {
+      "cargo_jobs": 2,
+      "test_threads": 2,
+      "rayon_threads": 2,
+      "cpus": [
+        2,
+        3
+      ],
+      "incremental": false,
+      "shared_target_gib": 6.6,
+      "tmp_gib": 0,
+      "available_ram_gib": 53
+    }
+  },
+  "acceptance_pending": [
+    "Combined architecture/workspace and MSL canary gates",
+    "Rebuilt full-web actual unchanged source compile/native/session/browser numerical and performance gates"
+  ],
+  "claim": "Focused exact-source oracle and native parse-through-Flatten timing; after-WASM performance and native admission unmeasured",
+  "app_fixture": "models/HarrisNativeFrame.mo"
+}

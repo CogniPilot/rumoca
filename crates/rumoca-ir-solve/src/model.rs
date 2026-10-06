@@ -7,6 +7,9 @@ mod event_transaction;
 mod guarded_assignment;
 mod jacobian_outputs;
 
+#[cfg(test)]
+mod jacobian_column_cache_tests;
+
 pub use affine_elimination::AffineEliminationLayout;
 pub use event_schedule::{
     CoupledNewtonPolicy, EventIterationSchedule, EventPassStep, EventScheduleError,
@@ -470,22 +473,21 @@ pub struct JacobianStructure {
     jacobian_application: Option<ProjectionJacobianApplication>,
     affine_elimination: Option<AffineEliminationLayout>,
     linearization_repeatable: bool,
-    /// The pattern's rows per column, formed once for every colored
-    /// Jacobian evaluation that reads them.
-    column_rows: Vec<Vec<usize>>,
-    /// The compact storage order of the pattern, shared by every matrix
-    /// stored in it; formed on first use.
+    /// The immutable pattern's rows per column, derived only when a consumer
+    /// needs the coordinate view. Clone keeps the established owned-cache
+    /// behavior: an initialized view is copied; an unused view stays unused.
+    column_rows: std::sync::OnceLock<Vec<Vec<usize>>>,
+    /// Compact storage layout shared by every matrix in this pattern.
     compact: std::sync::OnceLock<std::sync::Arc<CompactPatternLayout>>,
 }
 
 impl JacobianStructure {
     pub fn derived(pattern: StructuralPattern) -> Self {
         let coloring = pattern.column_coloring();
-        let column_rows = pattern.column_rows();
         Self {
             pattern,
             coloring,
-            column_rows,
+            column_rows: std::sync::OnceLock::new(),
             compact: std::sync::OnceLock::new(),
             output_evaluations: Box::default(),
             residual_output_evaluation: None,
@@ -505,7 +507,9 @@ impl JacobianStructure {
 
     /// [`StructuralPattern::column_rows`] of this structure's pattern.
     pub fn column_rows(&self) -> &[Vec<usize>] {
-        &self.column_rows
+        self.column_rows
+            .get_or_init(|| self.pattern.column_rows())
+            .as_slice()
     }
 
     pub fn output_evaluation(&self, color: usize) -> Option<&ProjectionJacobianOutputs> {

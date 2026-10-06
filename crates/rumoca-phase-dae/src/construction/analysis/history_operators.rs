@@ -56,6 +56,7 @@ impl HistoryOperatorPlans {
 pub(super) fn analyze_history_operators(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    templates: &TemplateSelection,
 ) -> Result<HistoryOperatorPlans, ToDaeError> {
     let mut analyzer = HistoryOperatorAnalyzer {
         flat,
@@ -63,7 +64,7 @@ pub(super) fn analyze_history_operators(
         plans: HistoryOperatorPlans::default(),
         in_function: false,
     };
-    analyzer.visit_model_owners(flat)?;
+    analyzer.visit_model_owners(flat, templates)?;
     Ok(analyzer.plans)
 }
 

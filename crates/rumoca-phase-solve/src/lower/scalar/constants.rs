@@ -7,9 +7,80 @@
 //! two apart, and every fold mirrors the operator the surrounding lowering
 //! emits so a probe and the run it describes cannot disagree.
 
+#[cfg(test)]
+mod tests;
+
 use super::*;
 
 impl<'dae> ScalarSelector<'dae> {
+    /// The exact Boolean guard fixed by immutable declarations and this
+    /// lexical domain point. Runtime inputs and tunable parameter defaults
+    /// never select an arm during lowering.
+    pub(super) fn translation_guard(
+        &self,
+        condition: dae::ExprId<'dae>,
+    ) -> Result<Option<bool>, LowerError> {
+        if !self.translation_guard_scalar(condition, &mut Vec::new())? {
+            return Ok(None);
+        }
+        match self.constant_real_inner(condition, 0, ConstantReach::Translation, &mut Vec::new()) {
+            Ok(value) => Ok(Some(value != 0.0)),
+            Err(LowerError::NonComputable { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// This probe follows only scalar immutable arithmetic. Aggregate products
+    /// and indexed reads require different projection rules, and must retain
+    /// their ordinary checked lowering rather than borrow coefficient defaults.
+    fn translation_guard_scalar(
+        &self,
+        expression: dae::ExprId<'dae>,
+        active: &mut Vec<dae::ExprId<'dae>>,
+    ) -> Result<bool, LowerError> {
+        let node = self.node(expression);
+        let span = node.provenance().span();
+        if !node.value_type().dimensions().is_empty() {
+            return Ok(false);
+        }
+        check_constant_recursion(active, expression, span)?;
+        active.push(expression);
+        let eligible = match node.operation() {
+            dae::ExpressionOperation::Literal(_) => true,
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_)) => true,
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
+                match self.constant_parameter_binding(parameter, ConstantReach::Translation, span) {
+                    Ok(binding) => self.translation_guard_scalar(binding, active)?,
+                    Err(LowerError::NonComputable { .. }) => false,
+                    Err(error) => return Err(error),
+                }
+            }
+            dae::ExpressionOperation::Unary { operand, .. } => {
+                self.translation_guard_scalar(operand, active)?
+            }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                !matches!(
+                    operator,
+                    dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+                ) && self.translation_guard_scalar(lhs, active)?
+                    && self.translation_guard_scalar(rhs, active)?
+            }
+            _ => false,
+        };
+        active.pop();
+        if !eligible {
+            return Ok(false);
+        }
+        // The coefficient evaluator uses f64. Decline integers it cannot
+        // represent exactly, including intermediate results, instead of
+        // changing an exact Integer comparison through rounding.
+        if node.value_type().scalar_type() == dae::ScalarType::Integer {
+            let value = self.integer(expression, 0)?;
+            return Ok(value.unsigned_abs() <= (1_u64 << 53));
+        }
+        Ok(true)
+    }
+
     pub(in crate::lower) fn constant_real(
         &self,
         expression: dae::ExprId<'dae>,

@@ -43,9 +43,21 @@ pub fn lower_dae_for_gpu_preparation(
     lower_dae_with_host_driven_inputs(model, opts)
 }
 
+/// Prepare a checked Solve model for a host-driven native expression kernel.
+///
+/// This assembles storage and runtime defaults without constructing a solver or
+/// advancing time. The host must write every live input before each evaluation;
+/// declaration bindings and checked start attributes supply pre-write values.
+pub fn lower_dae_for_native_preparation(
+    model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<solve::SolveModel, SimulationDiagnosticError> {
+    lower_dae_with_host_driven_inputs(model, opts)
+}
+
 /// Lower for a host that writes every input before each evaluation.
 ///
-/// GPU preparation and FMI export share this: both hand the kernel to a driver
+/// Native/GPU preparation and FMI export share this: all hand the kernel to a driver
 /// that owns the input values, so the pre-write value is the checked `start`
 /// attribute rather than a refusal.
 pub(super) fn lower_dae_with_host_driven_inputs(

@@ -1117,12 +1117,23 @@ impl MeSimulationSession<'_, '_> {
         // rather than moving the component behind the host's back
         self.host.adopt_time(event_time)?;
         let discrete = self.host.run_event_mode(cause, event_time)?;
+        self.complete_event_mode(discrete, event_time, true)
+    }
+
+    fn complete_event_mode(
+        &mut self,
+        discrete: super::MeDiscreteStates,
+        event_time: f64,
+        publish_observation: bool,
+    ) -> Result<(), MeSessionError> {
         if let Some(termination) = discrete.terminate_simulation {
             // FMI: `terminateSimulation` ends the iteration immediately and
             // transitions to Terminated without another numerical request, even
             // when `discreteStatesNeedUpdate` is also true. The settled row is
             // read here, while Event Mode still makes the getters legal.
-            self.host.record_settled(event_time)?;
+            if publish_observation {
+                self.host.record_settled(event_time)?;
+            }
             self.host.terminate_component(Some(termination))?;
             return Ok(());
         }
@@ -1136,7 +1147,7 @@ impl MeSimulationSession<'_, '_> {
         // row, at the end of the chain. Publishing per iteration would mint a
         // second settled row at one coordinate, which SPEC_0050 does not
         // authorize as a replacement.
-        if !continues_at(discrete.next_event_time, event_time) {
+        if publish_observation && !continues_at(discrete.next_event_time, event_time) {
             self.host.record_settled(event_time)?;
         }
         self.host.next_event_time = discrete.next_event_time;

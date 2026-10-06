@@ -6,7 +6,9 @@ pub mod rows;
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
 
-use rumoca_eval_dae::{ScalarCoordinateProjectionCache, for_each_scalar_coordinate_cached};
+use rumoca_eval_dae::{
+    ScalarCoordinateProjectionCache, for_each_scalar_coordinate_filtered_cached,
+};
 use rumoca_ir_dae as dae;
 
 use crate::incidence::rows::{IncidenceRows, IncidenceRowsBuilder};
@@ -376,12 +378,18 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
     ) -> Result<(), StructuralError> {
         let mut occurrences = Vec::new();
         let unknown_map = self.unknown_map;
-        for_each_scalar_coordinate_cached(
+        for_each_scalar_coordinate_filtered_cached(
             self.view,
             expression,
             scalar,
             domain_point,
             &mut self.projection_cache,
+            |coordinate| {
+                matches!(
+                    coordinate,
+                    dae::CoordinateView::Algebraic(_) | dae::CoordinateView::Derivative(_)
+                )
+            },
             |coordinate, scalar| {
                 if let Some(unknown) = resolve_coordinate(unknown_map, coordinate, scalar) {
                     occurrences.push(unknown);

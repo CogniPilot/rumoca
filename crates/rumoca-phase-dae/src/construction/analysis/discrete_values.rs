@@ -89,13 +89,14 @@ fn require_target_occurrence(
 
 pub(super) fn analyze_discrete_value_topology(
     flat: &flat::Model,
+    templates: &TemplateSelection,
     roles: &HashMap<VarName, PlannedRole>,
     connection_ranks: &DiscreteConnectionRanks,
     aggregate_connections: &AggregateDiscreteConnections,
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owners = Vec::new();
-    let reads = LazyModelReads::new(flat);
+    let reads = LazyModelReads::new(flat, templates);
     let mut observed = HashSet::new();
     collect_binding_owners(flat, roles, &reads, &mut observed, &mut owners)?;
     collect_record_equation_owners(flat, roles, record_equations, &mut owners);

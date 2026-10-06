@@ -21,15 +21,15 @@ pub use rumoca_phase_solve::{
 pub use rumoca_solver::{
     DiffsolMethod, HotpathStatsSnapshot, ProjectionFallback, ProjectionFallbackCounts,
     ProjectionFallbackReport, ProjectionSite, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
-    SimVariableMeta, SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard,
-    TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value, build_simulation_payload,
-    is_solver_timeout_panic, panic_on_expired_solver_deadline, projection_fallbacks,
-    projection_fallbacks_value, reset_projection_fallbacks, reset_step_counts, run_timeout_result,
-    run_timeout_step, run_timeout_step_result, runtime_progress_snapshot,
-    shared_value_proof_failures, step_counts, stop_time_reached_with_tol, time_advanced_with_tol,
-    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
-    trace_runtime_step_fail, trace_runtime_timeout,
+    RuntimeTraceContext, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult,
+    SimSolverMode, SimVariableMeta, SimulationRequestSummary, SimulationRunMetrics,
+    SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value,
+    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
+    projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
+    reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
+    runtime_progress_snapshot, shared_value_proof_failures, step_counts,
+    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
+    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 mod build_timing;
@@ -52,21 +52,12 @@ mod diffsol;
     any(feature = "solver-rk45", feature = "solver-diffsol")
 ))]
 mod native_execution;
-/// Wasm builds carry no compiled native backend at all; the one shared
-/// admission gate uniformly withholds so every caller composes through the
-/// same name on every target.
 #[cfg(all(
     target_arch = "wasm32",
     any(feature = "solver-rk45", feature = "solver-diffsol")
 ))]
-mod native_execution {
-    pub(crate) fn admitted_native_execution_backend(
-        _opts: &rumoca_solver::SimOptions,
-        _model: &rumoca_ir_solve::SolveModel,
-    ) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
-        None
-    }
-}
+use wasm_execution as native_execution;
+
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "solver-rk45", feature = "solver-diffsol")
@@ -77,6 +68,11 @@ pub use native_execution::{
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
+#[cfg(all(
+    any(target_arch = "wasm32", test),
+    any(feature = "solver-rk45", feature = "solver-diffsol")
+))]
+mod wasm_execution;
 pub use build_timing::BuildSimulationTimings;
 #[cfg(feature = "solver-diffsol")]
 pub use diffsol::{
@@ -104,11 +100,11 @@ pub use solve_lowering::{
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
     diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,
     lower_correlated_for_simulation_with_overrides, lower_dae_for_gpu_preparation,
-    lower_dae_for_simulation, lower_for_differentiation_with_overrides,
-    lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
-    state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
-    steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
-    structural_report_for_dae,
+    lower_dae_for_native_preparation, lower_dae_for_simulation,
+    lower_for_differentiation_with_overrides, lower_for_simulation_with_overrides,
+    parameter_jacobian_for_dae, state_and_parameter_jacobian_for_dae,
+    steady_state_adjoint_objective_gradient_for_dae, steady_state_objective_gradient_for_dae,
+    steady_state_parameter_sensitivity_for_dae, structural_report_for_dae,
 };
 
 #[cfg(feature = "scenario-config")]

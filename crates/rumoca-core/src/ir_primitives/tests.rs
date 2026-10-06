@@ -644,6 +644,42 @@ fn expression_semantic_equality_ignores_spans() {
     );
 }
 
+#[test]
+fn expression_semantic_fingerprint_preserves_signed_zero_equality() {
+    let span = Span::from_offsets(
+        super::SourceId::from_source_name("signed_zero_fingerprint.mo"),
+        0,
+        3,
+    );
+    let expression = |value| Expression::Array {
+        elements: vec![Expression::Literal {
+            value: Literal::Real(value),
+            span,
+        }],
+        kind: super::ArrayConstructor::Array,
+        span,
+    };
+    let positive = expression(0.0);
+    let negative = expression(-0.0);
+    assert_eq!(positive, negative);
+    assert!(expressions_semantically_equal(&positive, &negative));
+    assert_eq!(
+        expression_semantic_fingerprint(&positive),
+        expression_semantic_fingerprint(&negative)
+    );
+    let Expression::Array { elements, .. } = negative else {
+        unreachable!()
+    };
+    let Expression::Literal {
+        value: Literal::Real(value),
+        ..
+    } = elements[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(value.to_bits(), (-0.0_f64).to_bits());
+}
+
 /// A structured reference to `resistor.v` carrying the given declaration id.
 fn declaration_reference(def_id: DefId, span: Span) -> Reference {
     let part = |ident: &str, part_def_id: DefId| ComponentRefPart {

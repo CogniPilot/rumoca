@@ -1,6 +1,10 @@
+#[cfg(test)]
+mod accumulator_order_tests;
 mod accumulator_reductions;
 mod bounded_while;
 mod dependent_domains;
+#[cfg(test)]
+mod finite_counter_tests;
 /// Dataflow liveness over the function statement tree, and the store-deletion
 /// evidence built from it.
 ///
@@ -38,7 +42,7 @@ mod preservation_programs;
 #[cfg(test)]
 mod preservation_values;
 
-use accumulator_reductions::compact_accumulator_loops;
+use accumulator_reductions::{compact_accumulator_loops, ordered_accumulators};
 use dependent_domains::{integer_range, rectangularize_dependent_loops};
 use loop_local_substitution::{
     LocalSubstitution, compact_perfect_inner_element_loops, expression_dependencies_change,
@@ -112,9 +116,14 @@ pub(super) fn compact_function_loops(
         bounded_while::bound_while_loops(&settled, shapes, &bounded_while::entry_values(function));
     let mut bounded_shapes = shapes.clone();
     infer_function_integer_bounds(&settled, &mut bounded_shapes);
+    infer_declared_finite_counters(&settled, &mut bounded_shapes, function, flat);
     let settled = rectangularize_bounded_slice_assignments(&settled, &bounded_shapes);
     let settled = compact_exhaustive_loop_conditionals(&settled, false);
-    let compacted = compact_accumulator_loops(&settled, &bounded_shapes);
+    let compacted = compact_accumulator_loops(
+        &settled,
+        &bounded_shapes,
+        &ordered_accumulators(function, flat),
+    );
     let compacted =
         inline_dead_loop_scalar_locals(&compacted, &local_value_names, &branch_local_names);
     let compacted = inline_loop_local_prefixes(&compacted, &local_value_names, &output_names);
@@ -146,6 +155,31 @@ pub(super) fn compact_function_loops(
         ),
         span,
     ))
+}
+
+fn infer_declared_finite_counters(
+    statements: &[rumoca_core::Statement],
+    shapes: &mut ShapeEnvironment,
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+) {
+    let counters = function
+        .locals
+        .iter()
+        .filter(|local| {
+            local.effective_type.dimensions().is_empty()
+                && effective_function_scalar_type(flat, local) == Some(dae::ScalarType::Integer)
+        })
+        .filter_map(|local| local.def_id.map(|id| (VarName::new(&local.name), id)))
+        .collect::<Vec<_>>();
+    let inputs = function
+        .inputs
+        .iter()
+        .filter_map(|input| input.def_id.map(|id| (VarName::new(&input.name), id)))
+        .collect::<Vec<_>>();
+    crate::construction::function_shapes::infer_finite_for_counter_bounds(
+        statements, shapes, &counters, &inputs,
+    );
 }
 
 struct AffineSliceRanges;

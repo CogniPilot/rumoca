@@ -1,6 +1,27 @@
 //! WASM execution adapter for prepared Solve-IR row kernels.
 
 mod emit;
+mod exact_assignments;
+mod native_program;
+#[cfg(any(target_arch = "wasm32", test))]
+mod private_arena;
+mod private_program;
+mod typed_call;
+#[cfg(target_arch = "wasm32")]
+mod wasm_runtime;
+pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
+pub use native_program::{
+    CompiledNativeCallProgramWasm, NativeGatherFault,
+    compile_native_assignment_schedule_with_calls_wasm,
+};
+pub use private_program::{CompiledPrivateProgramWasm, compile_private_program_wasm};
+#[cfg(target_arch = "wasm32")]
+use wasm_runtime::WasmKernelRuntime;
+
+pub use typed_call::{
+    CompiledTypedCallWasm, TypedCallCompileError, TypedCallFault, TypedCallFaultKind,
+    TypedCallLayout, compile_pure_call_wasm,
+};
 
 use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
 
@@ -38,6 +59,15 @@ impl CompiledKernelWasm {
     ) -> Result<Self, WasmCompileError> {
         let row_count = rows.len();
         let module_bytes = emit::emit_residual_module(&rows).map_err(WasmCompileError::Backend)?;
+        Self::from_module(module_bytes, row_count, required_y_len, required_p_len)
+    }
+
+    fn from_module(
+        module_bytes: Vec<u8>,
+        row_count: usize,
+        required_y_len: usize,
+        required_p_len: usize,
+    ) -> Result<Self, WasmCompileError> {
         #[cfg(target_arch = "wasm32")]
         let runtime = WasmKernelRuntime::new(&module_bytes)?;
         Ok(Self {
@@ -264,6 +294,59 @@ pub fn compile_expression_scalar_program_block_wasm(
     )
 }
 
+/// Compile checked scalar, compact affine, and direct-input matrix expressions.
+/// Affine domains and dense product reductions become loops. Matrix operands
+/// must be independent direct input views; computed/coupled setups fail.
+/// Matrix output buffers must not overlap either input buffer; the emitted
+/// module traps before mutation on aliasing or pointer-range overflow.
+/// Packed TensorLoad scalar registers are limited to 4096 values. Outputs use
+/// the ComputeBlock's logical slots;
+/// sparse holes are cleared. This evaluates expressions, not a model's causal
+/// refresh schedule: assignment commits remain the caller's checked contract.
+pub fn compile_expression_compute_block_wasm(
+    block: &rumoca_ir_solve::ComputeBlock,
+    layout: &VarLayout,
+) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
+    let module_bytes = compile_expression_compute_block_wasm_bytes(block, layout)?;
+    let outputs = block
+        .len()
+        .map_err(|error| WasmCompileError::Input(error.to_string()))?;
+    let kernel = CompiledKernelWasm::from_module(
+        module_bytes,
+        outputs,
+        layout.y_scalars(),
+        layout.p_scalars(),
+    )?;
+    Ok(CompiledExpressionRowsWasm { kernel })
+}
+
+/// Emit the same checked portable expression module without instantiating it.
+///
+/// Artifact generation does not use or change the compiler's WASM memory.
+/// Callers instantiate with an unshared wasm32 `env.memory`, provide any math
+/// imports, and call `eval_residual(y_ptr, p_ptr, time, seed_ptr, out_ptr)`.
+/// The instantiated wrapper above remains available for immediate execution.
+pub fn compile_expression_compute_block_wasm_bytes(
+    block: &rumoca_ir_solve::ComputeBlock,
+    layout: &VarLayout,
+) -> Result<Vec<u8>, WasmCompileError> {
+    emit::emit_compute_module(block, layout).map_err(WasmCompileError::Backend)
+}
+
+/// Emit one direct-write function from a construction-issued native schedule.
+///
+/// The module imports unshared wasm32 `env.memory` and the same supported math
+/// intrinsics as expression kernels. Call `eval_assignments(y_ptr,p_ptr,time,0,0)`
+/// once: every issued value is written directly into its owned Y target range.
+/// Y/P must be aligned, disjoint and wholly in memory; guards trap before writes.
+/// No compiler memory is instantiated or mutated while producing these bytes.
+pub fn compile_native_assignment_schedule_wasm_bytes(
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+    layout: &VarLayout,
+) -> Result<Vec<u8>, WasmCompileError> {
+    emit::emit_native_assignment_module(schedule, layout).map_err(WasmCompileError::Backend)
+}
+
 fn compile_expression_rows_wasm(
     required_y_len: usize,
     required_p_len: usize,
@@ -271,117 +354,6 @@ fn compile_expression_rows_wasm(
 ) -> Result<CompiledExpressionRowsWasm, WasmCompileError> {
     let kernel = CompiledKernelWasm::from_rows(rows, required_y_len, required_p_len)?;
     Ok(CompiledExpressionRowsWasm { kernel })
-}
-
-#[cfg(target_arch = "wasm32")]
-struct WasmKernelRuntime {
-    eval_function: js_sys::Function,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl WasmKernelRuntime {
-    fn new(module_bytes: &[u8]) -> Result<Self, WasmCompileError> {
-        use js_sys::Object;
-        use js_sys::Reflect;
-        use js_sys::Uint8Array;
-        use js_sys::WebAssembly;
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::JsValue;
-
-        let wasm_bytes = Uint8Array::from(module_bytes);
-        let module = WebAssembly::Module::new(&wasm_bytes.into())
-            .map_err(|err| WasmCompileError::Backend(format!("module create failed: {err:?}")))?;
-
-        let imports = Object::new();
-        let env = Object::new();
-        Reflect::set(&env, &JsValue::from_str("memory"), &wasm_bindgen::memory()).map_err(
-            |err| WasmCompileError::Backend(format!("memory import set failed: {err:?}")),
-        )?;
-        install_math_import(&env, "abs")?;
-        install_math_import(&env, "sign")?;
-        install_math_import(&env, "sin")?;
-        install_math_import(&env, "cos")?;
-        install_math_import(&env, "tan")?;
-        install_math_import(&env, "asin")?;
-        install_math_import(&env, "acos")?;
-        install_math_import(&env, "atan")?;
-        install_math_import(&env, "sinh")?;
-        install_math_import(&env, "cosh")?;
-        install_math_import(&env, "tanh")?;
-        install_math_import(&env, "exp")?;
-        install_math_import(&env, "log")?;
-        install_math_import(&env, "log10")?;
-        install_math_import(&env, "pow")?;
-        install_math_import(&env, "atan2")?;
-
-        Reflect::set(&imports, &JsValue::from_str("env"), &env)
-            .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
-
-        let instance = WebAssembly::Instance::new(&module, &imports).map_err(|err| {
-            WasmCompileError::Backend(format!("module instantiate failed: {err:?}"))
-        })?;
-        let exports = instance.exports();
-        let eval = Reflect::get(&exports, &JsValue::from_str("eval_residual"))
-            .map_err(|err| WasmCompileError::Backend(format!("missing eval export: {err:?}")))?;
-        let eval_function = eval.dyn_into::<js_sys::Function>().map_err(|_| {
-            WasmCompileError::Backend("eval_residual export is not a callable function".to_string())
-        })?;
-        Ok(Self { eval_function })
-    }
-
-    fn call(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        seed: Option<&[f64]>,
-        out: &mut [f64],
-    ) -> Result<(), WasmCompileError> {
-        use wasm_bindgen::JsValue;
-
-        let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
-        let p_ptr = ptr_to_wasm_i32(p.as_ptr())?;
-        let seed_ptr = match seed {
-            Some(values) => ptr_to_wasm_i32(values.as_ptr())?,
-            None => 0u32,
-        };
-        let out_ptr = ptr_to_wasm_i32(out.as_ptr())?;
-
-        self.eval_function
-            .call5(
-                &JsValue::NULL,
-                &JsValue::from_f64(y_ptr as f64),
-                &JsValue::from_f64(p_ptr as f64),
-                &JsValue::from_f64(t),
-                &JsValue::from_f64(seed_ptr as f64),
-                &JsValue::from_f64(out_ptr as f64),
-            )
-            .map_err(|err| WasmCompileError::Backend(format!("kernel call failed: {err:?}")))?;
-        Ok(())
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn install_math_import(env: &js_sys::Object, name: &str) -> Result<(), WasmCompileError> {
-    use js_sys::Reflect;
-    use wasm_bindgen::JsValue;
-
-    let global = js_sys::global();
-    let math = Reflect::get(&global, &JsValue::from_str("Math"))
-        .map_err(|err| WasmCompileError::Backend(format!("Math global missing: {err:?}")))?;
-    let function = Reflect::get(&math, &JsValue::from_str(name))
-        .map_err(|err| WasmCompileError::Backend(format!("Math.{name} missing: {err:?}")))?;
-    Reflect::set(env, &JsValue::from_str(name), &function)
-        .map(|_| ())
-        .map_err(|err| {
-            WasmCompileError::Backend(format!("failed setting import Math.{name}: {err:?}"))
-        })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {
-    u32::try_from(ptr as usize)
-        .map_err(|_| WasmCompileError::Backend("pointer offset does not fit wasm32".to_string()))
 }
 
 #[cfg(test)]

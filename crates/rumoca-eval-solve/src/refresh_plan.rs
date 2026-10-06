@@ -13,6 +13,7 @@ mod row_analysis;
 mod schedule;
 mod source_catalog;
 mod static_domain;
+mod target_catalog;
 #[cfg(test)]
 mod tests;
 
@@ -45,6 +46,7 @@ use rumoca_ir_solve::{
 use schedule::build_refresh_stages;
 use source_catalog::CanonicalScalarProgramCatalog;
 use static_domain::ContinuousStaticParameters;
+use target_catalog::{ExactAssignmentAccess, TargetAssignmentCatalog};
 
 pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshPlan) {
     if !trace_algebraic_refresh() {
@@ -631,7 +633,7 @@ fn build_refresh_owners(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    solve::ContinuousRefreshOwners::checked_for_source(
+    let mut owners = solve::ContinuousRefreshOwners::checked_for_source(
         &problem.continuous.implicit_rhs,
         algebraic,
         derivative,
@@ -642,7 +644,13 @@ fn build_refresh_owners(
     .map_err(|error| EvalSolveError::InvalidRow {
         message: error.to_string(),
         span: catalog.first_span(),
-    })
+    })?;
+    let _ = owners.issue_native_assignment_schedule(
+        &problem.continuous.implicit_rhs,
+        &problem.continuous.implicit_row_targets,
+        &problem.layout,
+    );
+    Ok(owners)
 }
 
 /// Rewrite every algebraic block's tearing so back-substitution is exact-only.
@@ -658,12 +666,25 @@ fn build_refresh_owners(
 fn normalize_algebraic_projection_tearing(
     problem: &mut solve::SolveProblem,
 ) -> Result<(), EvalSolveError> {
+    if !problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .iter()
+        .any(|block| {
+            block
+                .tearing
+                .as_ref()
+                .is_some_and(|tearing| !tearing.causal_steps.is_empty())
+        })
+    {
+        return Ok(());
+    }
     // Build the exactness predicate from the same scalar projection the runtime
     // prepares for `implicit_scalar_rhs`, so the promotion decision matches the
     // runtime's `implicit_target_assignment_is_exact` row for row.
-    let implicit_scalar_rhs = PreparedScalarProgramBlock::new(
-        crate::to_scalar_program_projection(&problem.continuous.implicit_rhs)?.into_block(),
-    )?;
+    let projection = crate::to_scalar_program_projection(&problem.continuous.implicit_rhs)?;
+    let implicit_scalar_rhs = TargetAssignmentCatalog::new(projection.block())?;
     for block in &mut problem.continuous.algebraic_projection_plan.blocks {
         if let Some(tearing) = block.tearing.as_mut() {
             promote_inexact_causal_steps(tearing, &implicit_scalar_rhs)?;
@@ -693,11 +714,11 @@ fn normalize_algebraic_projection_tearing(
 /// the step can never isolate its unknown.
 pub(super) fn promote_inexact_causal_steps(
     tearing: &mut solve::BlockTearing,
-    implicit_scalar_rhs: &PreparedScalarProgramBlock,
+    implicit_scalar_rhs: &impl ExactAssignmentAccess,
 ) -> Result<(), EvalSolveError> {
     let mut retained = Vec::with_capacity(tearing.causal_steps.len());
     for mut step in std::mem::take(&mut tearing.causal_steps) {
-        let proof = causal_step_coefficient_proof(implicit_scalar_rhs, step.row, step.y_index);
+        let proof = implicit_scalar_rhs.coefficient_proof(step.row, step.y_index);
         if proof != solve::CausalCoefficient::Unproven
             && causal_step_certifies_exact_assignment(implicit_scalar_rhs, step.row, step.y_index)
         {

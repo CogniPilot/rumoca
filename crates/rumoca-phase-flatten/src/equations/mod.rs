@@ -3,6 +3,8 @@
 //! This module converts instance equations to flat equations in
 //! residual form (0 = residual).
 
+mod template_conditionals;
+
 use std::{collections::HashSet, sync::Arc};
 
 mod shape_inference;
@@ -35,10 +37,12 @@ mod if_equation_alignment;
 mod parameter_selections;
 use der_divergent_branches::{branches_differ_in_der_targets, try_select_parameter_branch};
 pub(crate) use parameter_selections::parameter_branch_selection;
-use parameter_selections::{branches_structurally_equal, refuse_non_evaluable_range};
+use parameter_selections::refuse_non_evaluable_range;
 mod connections_graph;
 mod flattened_equations;
+mod scalar_loop_body;
 mod structured_domain;
+mod template_domains;
 mod zero_sized_reductions;
 use assert_equations::{
     AssertEquationLowering, flatten_assert_equation, flatten_assert_function_call,
@@ -601,8 +605,8 @@ fn make_residual(
 
 /// Expand array comprehensions in equation expressions when index ranges are structural.
 ///
-/// This preserves current scalar-count and ToDAE expectations for equation residuals
-/// while `ast::Expression::ArrayComprehension` support is rolled through downstream passes.
+/// Nonempty constructors retain their existing expansion. Empty constructors
+/// retain the source body for canonical element-type and shape checking.
 // SPEC_0021: Exception - exhaustive expression-tree rewrite over AST variants.
 #[allow(clippy::too_many_lines)]
 fn expand_array_comprehensions_in_expression(
@@ -617,14 +621,21 @@ fn expand_array_comprehensions_in_expression(
             indices,
             filter,
             ..
-        } => expand_array_comprehension_expression(
-            ctx,
-            body,
-            indices,
-            filter.as_deref(),
-            prefix,
-            span,
-        ),
+        } => {
+            let expanded = expand_array_comprehension_expression(
+                ctx,
+                body,
+                indices,
+                filter.as_deref(),
+                prefix,
+                span,
+            )?;
+            // MLS §10.3.4 and §10.7: an empty domain still owns its checked body type/shape.
+            if matches!(&expanded, ast::Expression::Array { elements, .. } if elements.is_empty()) {
+                return Ok(expr.clone());
+            }
+            Ok(expanded)
+        }
         ast::Expression::Binary { op, lhs, rhs, span } => Ok(ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(expand_array_comprehensions_in_expression(
@@ -1104,16 +1115,16 @@ fn expand_for_equation(
     //     reconstruct, so cheapening to 0 here can never silently survive.
     let cheapen_plan = if !ctx.materialize_structured_families
         && regular.is_some()
+        && template.is_some()
         && (is_state_derivative_body(equations)
-            || (template.is_some()
-                && ctx.current_class_instance_id.is_some_and(|owner| {
-                    crate::param_variability::is_proven_parameter_variability_assignment_body(
-                        owner,
-                        indices,
-                        equations,
-                        &ctx.param_variability_families,
-                    )
-                }))) {
+            || ctx.current_class_instance_id.is_some_and(|owner| {
+                crate::param_variability::is_proven_parameter_variability_assignment_body(
+                    owner,
+                    indices,
+                    equations,
+                    &ctx.param_variability_families,
+                )
+            })) {
         build_cheapen_plan(ctx, indices, prefix, span)?
     } else {
         None
@@ -1249,9 +1260,10 @@ fn expand_independent_for_bodies(
 /// the binders, so the residual bodies plus the domain fully describe the family as
 /// `{ body(i, j) for i, j }`.
 ///
-/// Returns `None` when the body is not a flat list of simple `lhs = rhs` residual
-/// equations (e.g. nested `for`/`if`/`when`), leaving the historical materialized
-/// path in charge for those shapes.
+/// Returns `None` when no single symbolic body has a fixed shape: a nested
+/// reduction bound may depend on an outer index, or the body may contain an
+/// unsupported equation form. Exact static iterations then keep their existing
+/// materialized rows, whose enclosing binders have already been substituted.
 fn capture_comprehension_template(
     ctx: &Context,
     indices: &[ast::ForIndex],
@@ -1274,8 +1286,8 @@ fn capture_comprehension_template(
 /// Append the symbolic residual of every leaf `lhs = rhs` equation in `equations`
 /// to `body`, descending through nested `for` equations (a `for i for j` body).
 /// The inner binders are never substituted here, so they stay symbolic in the
-/// qualified residual. Returns `None` for any non-elementwise shape (`if`/`when`/
-/// function-call/connect), which falls back to the materialized path.
+/// qualified residual. Shape-equal conditional branches retain their lazy
+/// residual tuple; other unsupported forms keep the materialized path.
 fn collect_template_residuals(
     ctx: &Context,
     equations: &[ast::Equation],
@@ -1287,6 +1299,11 @@ fn collect_template_residuals(
     for equation in equations {
         match equation {
             ast::Equation::Simple { lhs, rhs } => {
+                if template_domains::has_binder_dependent_domain(lhs, locals)
+                    || template_domains::has_binder_dependent_domain(rhs, locals)
+                {
+                    return None;
+                }
                 body.push(make_residual(ctx, lhs, rhs, prefix, def_map, Some(locals)).ok()?);
             }
             ast::Equation::For {
@@ -1296,6 +1313,11 @@ fn collect_template_residuals(
                 let mut nested_locals = locals.clone();
                 nested_locals.extend(indices.iter().map(|index| index.ident.text.to_string()));
                 collect_template_residuals(ctx, inner, prefix, def_map, &nested_locals, body)?;
+            }
+            ast::Equation::If { .. } => {
+                body.extend(template_conditionals::capture(
+                    ctx, equation, prefix, def_map, locals,
+                )?);
             }
             _ => return None,
         }
@@ -1347,6 +1369,21 @@ fn collect_for_iterations(
     let remaining_indices = &indices[1..];
     let range_values = expand_range_indices(env.ctx, &first_index.range, env.prefix, env.span)?;
     let index_name = &first_index.ident.text;
+
+    if remaining_indices.is_empty()
+        && cheapen_plan.is_none()
+        && scalar_loop_body::collect_prepared_iterations(
+            env,
+            first_index,
+            equations,
+            &range_values,
+            index_values,
+            iterations,
+            out,
+        )?
+    {
+        return Ok(());
+    }
 
     for value in range_values {
         let substituted: Vec<ast::Equation> = equations
@@ -1486,28 +1523,10 @@ fn expand_if_equation(
         return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
     }
 
-    // A guard over an ordinary parameter stays a run-time branch only when its
-    // branches are structurally equal (SPEC_0040 DAE-C22); otherwise it is a
-    // structural selection made here, recorded so the parameter is fixed.
-    if cond_blocks
-        .iter()
-        .any(|block| reads_tunable_parameter(ctx, &block.cond, prefix))
-        && !branches_structurally_equal(ctx, cond_blocks, else_block, prefix, span)?
-        && let Some(selected_branch) =
-            try_select_parameter_branch(cond_blocks, else_block, ctx, prefix)
-    {
-        let mut flattened =
-            flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map)?;
-        flattened
-            .parameter_branch_selections
-            .push(parameter_branch_selection(
-                flat::StructuralParameterUse::BranchSelection,
-                evaluated_conditions(ctx, cond_blocks, prefix),
-                prefix,
-                span,
-            ));
-        return Ok(flattened);
-    }
+    // Equal-count branches retain their ordinary parameter guard until DAE
+    // construction proves unknown incidence and call shapes (DAE-C22).
+    // AST reference/call names cannot establish that structure: external
+    // inputs are known coordinates and a call name is not an unknown.
 
     // MLS §8.3.4: branches that differ in which variables they differentiate
     // describe different DAEs, so the condition has to be resolved before state

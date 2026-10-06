@@ -385,12 +385,10 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
 /// Lazy view of a `ComputeBlock` exposing `nodes` (structured) plus the derived
 /// `scalar_programs` fallback and counts — matching `solve_template_blocks_value`.
 pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Value, CodegenError> {
-    let scalar = Arc::new(rumoca_eval_solve::to_scalar_program_block(&block)?);
-    let scalar_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-        scalar.clone(),
-    )?);
+    super::lazy_scalar_projection::validate(&block)?;
+    let (scalar_programs, scalar_plan) = super::lazy_scalar_projection::views(block.clone());
     let output_count = block.len()?;
-    let uses_linear_solve = super::scalar_program_block_uses_linear_solve_component(&scalar);
+    let uses_linear_solve = block.uses_linear_solve_component();
     let nodes = nodes_value(block.clone())?;
     Ok(lazy_map(
         &[
@@ -404,7 +402,7 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
         move |k| match k {
             "nodes" => Some(nodes.clone()),
             "scalar_plan" => Some(scalar_plan.clone()),
-            "scalar_programs" => Some(scalar_program_block_value(scalar.clone())),
+            "scalar_programs" => Some(scalar_programs.clone()),
             "output_count" => Some(Value::from(output_count)),
             "tensor_node_count" => Some(Value::from(block.tensor_node_count())),
             "scalar_programs_use_linear_solve_component" => Some(Value::from(uses_linear_solve)),
@@ -764,16 +762,11 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
 /// Lazy `nodes` Seq of a `ComputeBlock` (each `ComputeNode` materialized on
 /// demand, with its op lists lazy underneath).
 pub(super) fn nodes_value(block: Arc<solve::ComputeBlock>) -> Result<Value, CodegenError> {
-    let len = block.nodes.len();
-    let mut nodes = Vec::new();
-    nodes.try_reserve_exact(len).map_err(|_| {
-        CodegenError::template("solve compute node list exceeds host memory limits")
-    })?;
-    for node in &block.nodes {
-        nodes.push(compute_node_value(Arc::new(node.clone()))?);
-    }
-    let nodes = Arc::new(nodes);
-    Ok(lazy_seq(len, move |i| nodes[i].clone()))
+    Ok(lazy_seq(block.nodes.len(), move |i| {
+        compute_node_value(Arc::new(block.nodes[i].clone())).unwrap_or_else(|error| {
+            Value::from(crate::errors::render_err(error.to_string()).with_source(error))
+        })
+    }))
 }
 
 /// The guarded assignments as one renderable plan, their outputs numbered in

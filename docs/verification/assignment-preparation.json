@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "base_revision": "e3be35ab6e850d894a67ec67760d36a9689301b8",
+  "fixture": "crates/rumoca-compile/src/session/tests/fixtures/es15_nested_reductions.mo",
+  "source_sha256": "982cf8f1b69def3ef606f94539a2ce277731cbbd6e3d6da5dd2536ea7ffa8f77",
+  "before_compiler_wasm_sha256": "d806adb09863af445d49115663bc71499ef5ef6b2982f715db53c9efe5b54cbd",
+  "governing_specs": [
+    "SPEC_0007",
+    "SPEC_0029",
+    "SPEC_0032 section2",
+    "SPEC_0033",
+    "SPEC_0036 sectionSolveAggregate",
+    "SPEC_0043 section6a"
+  ],
+  "before_actual_full_web_wasm": {
+    "environment": "Node24.21.0, oneCPU, nice10, eachphase a separate process, bounded external watchdog",
+    "compile_ms": 1164.602906,
+    "compile_peak_rss_kib": 205156,
+    "balanced_equations": 3015,
+    "balanced_unknowns": 3015,
+    "lower_to_fmi_timeout_seconds": 60,
+    "lower_to_fmi_peak_rss_kib": 1304276,
+    "native_prepare_timeout_seconds": 25,
+    "session_prepare_timeout_seconds": 25,
+    "session_options": {
+      "dt": 0.1,
+      "solver": "rk-like",
+      "atol": 1e-12,
+      "rtol": 1e-12,
+      "initial_inputs": []
+    },
+    "first_15_second_session_profile": {
+      "sample_ms": 15079.419,
+      "compile_percent": 8.0767,
+      "structural_prepare_percent": 1.1068,
+      "refresh_construction_percent": 79.4782,
+      "prepared_scalar_block_percent": 79.3326,
+      "all_target_shape_derivation_percent": 44.2833,
+      "eager_tensor_affine_materialization_percent": 34.9736,
+      "repeated_scalar_register_flow_validation_percent": 33.0473
+    },
+    "first_divergent_owner": "Solve lowering:continuous refresh construction:normalize_algebraic_projection_tearing:PreparedScalarProgramBlock::new",
+    "excluded_before_failure": [
+      "source compilation",
+      "structural preparation as dominant cost",
+      "runtime vector construction",
+      "template rendering",
+      "native kernel compilation",
+      "solver initialization"
+    ]
+  },
+  "additional_before_regression": {
+    "name": "selected_tensor_affine_preserves_repeated_store_prefix_boundary",
+    "trigger": "Two stores read the same output register and isolate the sameYtarget; only the later store's prefix includes a host-backed table lookup",
+    "expected": "Earlier store retains its own prefix and yields15; later store retains its missing-table failure",
+    "actual_before": "Eager(output register,target) map overwrites the earlier materialization with the later prefix:earlier output fails ExternalTable(table_id4 not provided)",
+    "log": "/tmp/rumoca-assignment-preparation-before-table-prefix.log"
+  },
+  "changes": [
+    "Skip tearing normalization when no causal tearing steps exist; otherwise query/cache only actual source/logical-output/target triples",
+    "Use the existing canonical one-output/one-target constructor for refresh queries, with immutable-source-bound shape caches",
+    "Enumerate candidateYtargets from output-reachable SSA operation owners; retain full tensor operand ranges and exhaustive fallback for unsupported operations",
+    "Reuse producer ownership and dependency evidence across all coordinates of the sameStoreOutputRange prefix",
+    "Materialize a tensor-affine evaluator only when its issued shape is selected, retaining original prefix and unchanged validators; cache by source row/output-register/target/exact-prefix-length"
+  ],
+  "strictness": "Canonical shapes and wire replay remain authoritative. Full tensor operation candidates, overwritten-destination refusal, validation effects, zero/nonfinite coefficient rejection and signed-zero arithmetic remain preserved. No Modelica source or matrices were changed.",
+  "verification": {
+    "library_tests": {
+      "rumoca_ir_solve": 361,
+      "rumoca_eval_solve": 215,
+      "failures": 0,
+      "log": "/tmp/rumoca-assignment-preparation-corrected-tests.log"
+    },
+    "strict_scoped_clippy": {
+      "all_targets": true,
+      "all_features": true,
+      "warnings_denied": true,
+      "exit": 0,
+      "log": "/tmp/rumoca-assignment-preparation-clippy-corrected.log"
+    },
+    "formatting": "pass",
+    "resource_budget": {
+      "cargo_jobs": 2,
+      "test_threads": 2,
+      "rayon_threads": 2,
+      "incremental": false,
+      "shared_cache_gib": 5.7
+    },
+    "final_dependency_oracle": {
+      "tests": 5,
+      "failures": 0,
+      "after": "Clippy operand-enqueue extraction",
+      "log": "/tmp/rumoca-assignment-preparation-final-oracle.log"
+    }
+  },
+  "acceptance_pending": [
+    "Combined upstream architecture/workspace/canary gates",
+    "Rebuild the combined full-web package and repeat the unchanged full genericES15 browser numerical oracle",
+    "FullModelica SLAM90Hz and10x acceptance"
+  ],
+  "claim": "Focused source/certificate/evaluator fixes and actual before-phase proof; no after-browser performance or fullHarris admission claim"
+}

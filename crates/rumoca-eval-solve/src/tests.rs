@@ -1,3 +1,5 @@
+mod demanded_gathers;
+
 use super::*;
 use crate::prepared::assignment_shape_reads_y_index;
 use crate::random_runtime::checked_random_reg_offset;

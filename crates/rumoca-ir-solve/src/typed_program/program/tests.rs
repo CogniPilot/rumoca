@@ -643,6 +643,8 @@ fn integer_divide_cannot_bypass_an_explicit_real_conversion() {
     .expect("rejected division leaves the valid typed prefix intact");
 }
 
+mod integer_quotients;
+
 #[test]
 fn integer_quotient_is_integer_only() {
     let arithmetic = profile();

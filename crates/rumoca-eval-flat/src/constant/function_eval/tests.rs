@@ -1,5 +1,7 @@
 //! Unit tests for the user-function interpreter.
 
+mod assertions;
+
 use super::*;
 use crate::constant::EvalContext;
 

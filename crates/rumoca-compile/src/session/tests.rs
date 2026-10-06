@@ -1,8 +1,4 @@
-use super::*;
-use rumoca_core::Span;
-use rumoca_core::{Diagnostic as CommonDiagnostic, PrimaryLabel};
-use std::sync::{Arc, Mutex, MutexGuard};
-
+mod bounded_function_domains_tests;
 mod cache_behavior_source_root_tests;
 mod cache_behavior_tests;
 mod class_body_semantics_tests;
@@ -12,6 +8,7 @@ mod class_member_query_tests;
 mod compile_diagnostics_tests;
 mod dae_model_query_tests;
 mod declaration_index_tests;
+mod empty_reduction_tests;
 mod file_outline_tests;
 mod file_summary_tests;
 mod flat_model_query_tests;
@@ -24,10 +21,17 @@ mod persisted_summary_tests;
 mod record_forwarding_tests;
 mod semantic_diagnostics_tests;
 mod source_root_tests;
+mod static_reduction_tests;
 mod typed_model_query_tests;
 mod workspace_symbol_snapshot_tests;
 
 mod semantic_cache_tests;
+
+use super::*;
+use rumoca_core::Span;
+use rumoca_core::{Diagnostic as CommonDiagnostic, PrimaryLabel};
+use std::sync::{Arc, Mutex, MutexGuard};
+
 static SESSION_STATS_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 pub(crate) fn session_stats_test_guard() -> MutexGuard<'static, ()> {

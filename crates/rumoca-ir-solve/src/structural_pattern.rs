@@ -1,6 +1,19 @@
 // SPEC_0021 file-size exception - split plan: split the derivation walk by construction owner (scalar-JVP derivation into structural_pattern/scalar_jvp.rs, seed/output dependency derivation into structural_pattern/dependency.rs, wire records into structural_pattern/wire.rs), leaving construction + provenance here; tracked as the pattern-authority follow-up slice (SPEC_0021 follow-up).
+mod state_jacobian;
+mod tensor_update;
+
+#[cfg(test)]
+mod state_jacobian_tests;
+
+#[cfg(test)]
+mod tensor_update_tests;
+
+#[cfg(test)]
+mod shared_dependency_tests;
+
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -10,15 +23,9 @@ use crate::{
 };
 
 mod stacked;
-mod state_jacobian;
-mod tensor_update;
 
 #[cfg(test)]
 mod stacked_tests;
-#[cfg(test)]
-mod state_jacobian_tests;
-#[cfg(test)]
-mod tensor_update_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -536,15 +543,16 @@ impl StructuralPattern {
                 Some(owner_span),
             ));
         };
-        let DependencyState::Known(dependencies) = dependencies;
-        let mut column_maps = derive_affine_column_maps(
-            dependencies,
-            &seed_positions,
-            base_ops,
-            load_strides,
-            domain.binders.len(),
-            owner_span,
-        )?;
+        let mut column_maps = dependencies.with_set(|dependencies| {
+            derive_affine_column_maps(
+                dependencies,
+                &seed_positions,
+                base_ops,
+                load_strides,
+                domain.binders.len(),
+                owner_span,
+            )
+        })?;
         column_maps.sort_by(|lhs, rhs| {
             (lhs.start, lhs.strides.as_ref()).cmp(&(rhs.start, rhs.strides.as_ref()))
         });
@@ -865,10 +873,7 @@ impl StructuralPattern {
             DependencySource::SolverP,
         )?
         .into_iter()
-        .map(|dependencies| {
-            let DependencyState::Known(indices) = dependencies;
-            Ok(indices)
-        })
+        .map(|dependencies| Ok(dependencies.into_set()))
         .collect()
     }
 
@@ -880,10 +885,7 @@ impl StructuralPattern {
     ) -> Result<Vec<BTreeSet<usize>>, StructuralPatternError> {
         program_output_dependencies(program, span)?
             .into_iter()
-            .map(|dependencies| {
-                let DependencyState::Known(indices) = dependencies;
-                Ok(indices)
-            })
+            .map(|dependencies| Ok(dependencies.into_set()))
             .collect()
     }
 
@@ -1511,9 +1513,26 @@ fn banded_nonzero_count(
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), derive(Clone))]
 enum DependencyState {
-    Known(BTreeSet<usize>),
+    Empty,
+    Singleton(usize),
+    Known(Arc<BTreeSet<usize>>),
+}
+
+#[cfg(test)]
+impl Clone for DependencyState {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Singleton(index) => Self::Singleton(*index),
+            Self::Known(indices) if shared_dependency_tests::legacy_enabled() => {
+                Self::from_set((**indices).clone())
+            }
+            Self::Known(indices) => Self::Known(Arc::clone(indices)),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1532,34 +1551,89 @@ fn derive_output_dependency_presence(
 ) -> Result<Vec<bool>, StructuralPatternError> {
     program_output_dependencies_with_fold(program, span, None, None, None, source)?
         .into_iter()
-        .map(|dependencies| {
-            let DependencyState::Known(indices) = dependencies;
-            Ok(!indices.is_empty())
-        })
+        .map(|dependencies| Ok(!dependencies.is_empty()))
         .collect()
 }
 
 impl DependencyState {
     fn empty() -> Self {
-        Self::Known(BTreeSet::new())
+        Self::Empty
     }
 
     fn singleton(index: usize) -> Self {
-        Self::Known(BTreeSet::from([index]))
+        Self::Singleton(index)
+    }
+
+    fn from_set(indices: BTreeSet<usize>) -> Self {
+        match indices.len() {
+            0 => Self::Empty,
+            1 => Self::Singleton(*indices.first().expect("one-element dependency set")),
+            _ => Self::Known(Arc::new(indices)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    fn elements(&self) -> impl Iterator<Item = usize> + '_ {
+        let singleton = match self {
+            Self::Singleton(index) => Some(*index),
+            _ => None,
+        };
+        let shared = match self {
+            Self::Known(indices) => Some(indices),
+            _ => None,
+        };
+        singleton.into_iter().chain(
+            shared
+                .into_iter()
+                .flat_map(|indices| indices.iter().copied()),
+        )
+    }
+
+    fn with_set<T>(&self, use_set: impl FnOnce(&BTreeSet<usize>) -> T) -> T {
+        match self {
+            Self::Known(indices) => use_set(indices),
+            _ => use_set(&self.clone().into_set()),
+        }
     }
 
     fn union(self, other: Self) -> Self {
+        #[cfg(test)]
+        if shared_dependency_tests::legacy_enabled() {
+            let mut lhs = self.into_set();
+            lhs.extend(other.into_set());
+            return Self::from_set(lhs);
+        }
         match (self, other) {
+            (Self::Empty, rhs) | (rhs, Self::Empty) => rhs,
+            (Self::Singleton(lhs), Self::Singleton(rhs)) if lhs == rhs => Self::Singleton(lhs),
+            (Self::Singleton(lhs), Self::Singleton(rhs)) => {
+                Self::from_set(BTreeSet::from([lhs, rhs]))
+            }
+            (Self::Known(mut indices), Self::Singleton(index))
+            | (Self::Singleton(index), Self::Known(mut indices)) => {
+                if !indices.contains(&index) {
+                    Arc::make_mut(&mut indices).insert(index);
+                }
+                Self::Known(indices)
+            }
             (Self::Known(mut lhs), Self::Known(rhs)) => {
-                lhs.extend(rhs);
+                if !Arc::ptr_eq(&lhs, &rhs) && !rhs.is_subset(&lhs) {
+                    Arc::make_mut(&mut lhs).extend(rhs.iter().copied());
+                }
                 Self::Known(lhs)
             }
         }
     }
 
     fn into_set(self) -> BTreeSet<usize> {
-        let Self::Known(indices) = self;
-        indices
+        match self {
+            Self::Empty => BTreeSet::new(),
+            Self::Singleton(index) => BTreeSet::from([index]),
+            Self::Known(indices) => Arc::unwrap_or_clone(indices),
+        }
     }
 }
 
@@ -1577,8 +1651,7 @@ fn scalar_row_seed_dependencies(
             None,
         ));
     };
-    let DependencyState::Known(indices) = dependencies;
-    Ok(indices.iter().copied().collect())
+    Ok(dependencies.elements().collect())
 }
 
 fn program_output_dependencies(
@@ -1601,10 +1674,7 @@ fn program_output_y_dependencies(
         DependencySource::SolverY,
     )?
     .into_iter()
-    .map(|dependencies| {
-        let DependencyState::Known(indices) = dependencies;
-        Ok(indices)
-    })
+    .map(|dependencies| Ok(dependencies.into_set()))
     .collect()
 }
 
@@ -1629,7 +1699,7 @@ pub(crate) fn program_register_y_dependencies(
     Ok(walk
         .registers
         .into_iter()
-        .map(|dependencies| dependencies.map(|DependencyState::Known(indices)| indices))
+        .map(|dependencies| dependencies.map(DependencyState::into_set))
         .collect())
 }
 
@@ -1919,7 +1989,7 @@ impl DependencyWalk<'_> {
         let mut dependencies = self.get(index)?;
         if matches!(self.source, DependencySource::SolverP) {
             let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
+            dependencies = dependencies.union(DependencyState::from_set((base..end).collect()));
         }
         self.set(dst, dependencies);
         Ok(())
@@ -2088,7 +2158,7 @@ impl DependencyWalk<'_> {
         let mut dependencies = self.get(index)?;
         if matches!(self.source, DependencySource::Seed) {
             let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::Known((base..end).collect()));
+            dependencies = dependencies.union(DependencyState::from_set((base..end).collect()));
         }
         self.set(dst, dependencies);
         Ok(())

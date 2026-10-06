@@ -1,8 +1,8 @@
-use super::*;
-use crate::invalid_row;
-
 #[cfg(test)]
 mod evaluation_facts_tests;
+
+use super::*;
+use crate::invalid_row;
 
 impl Clone for PreparedScalarProgramBlock {
     fn clone(&self) -> Self {
@@ -71,7 +71,7 @@ fn prepare_row(
         RowFacts::Evaluation => Box::default(),
     };
     let tensor_affine_assignments =
-        tensor_affine_assignment::prepare(row, &assignment_shapes, span)?;
+        tensor_affine_assignment::PreparedTensorAffineAssignments::default();
     let parameter_indices = row_parameter_indices(row).into_boxed_slice();
     Ok(PreparedRow {
         register_count,

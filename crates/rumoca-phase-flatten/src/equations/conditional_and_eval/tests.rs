@@ -81,6 +81,24 @@ fn make_for_index(name: &str, start: i64, end: i64) -> ForIndex {
 }
 
 #[test]
+fn empty_comprehension_expansion_preserves_body_binders_and_source_span() {
+    let expression = ast::Expression::ArrayComprehension {
+        expr: Arc::new(ast::Expression::ComponentReference(make_comp_ref("i"))),
+        indices: vec![make_for_index("i", 1, 0)],
+        filter: None,
+        span: test_span(),
+    };
+    let expanded = expand_array_comprehensions_in_expression(
+        &Context::new(),
+        &expression,
+        &QualifiedName::new(),
+        rumoca_core::Span::DUMMY,
+    )
+    .expect("the empty domain is structurally evaluable");
+    assert_eq!(expanded, expression);
+}
+
+#[test]
 fn generated_zero_real_expr_uses_owner_span() {
     let span = test_span();
     assert_eq!(zero_real_expr(span).span(), span);

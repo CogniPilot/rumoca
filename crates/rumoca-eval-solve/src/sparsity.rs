@@ -13,6 +13,8 @@
 //! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
 //! doi:10.1109/99.537089.
 
+mod reverse_invalidations;
+
 use std::collections::BTreeSet;
 
 use rumoca_core::Span;
@@ -22,6 +24,7 @@ use rumoca_ir_solve::{
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
+use reverse_invalidations::derive_algebraic_reverse_invalidations;
 
 /// Lift a pattern-authority failure into this crate's error taxonomy without
 /// losing the owner span the authority reported it against.
@@ -225,51 +228,6 @@ pub fn derive_solve_structural_artifacts(
         initialization_projection,
     );
     Ok((continuous, initialization))
-}
-
-fn derive_algebraic_reverse_invalidations(
-    source: Option<&StructuralPattern>,
-    plan: &rumoca_ir_solve::AlgebraicProjectionPlan,
-) -> Result<Vec<bool>, EvalSolveError> {
-    let Some(source) = source else {
-        return Ok(Vec::new());
-    };
-    let column_rows = source.column_rows();
-    let mut earlier_rows = vec![false; source.rows() as usize];
-    let mut invalidations = Vec::with_capacity(plan.blocks.len());
-    for block in &plan.blocks {
-        let invalidates =
-            block
-                .y_indices
-                .iter()
-                .copied()
-                .try_fold(false, |invalidates, column| {
-                    let affected_rows = column_rows.get(column).ok_or_else(|| {
-                        sparsity_error(
-                            format!(
-                                "projection invalidation column {column} is outside 0..{}",
-                                source.columns()
-                            ),
-                            Some(source.provenance().span()),
-                        )
-                    })?;
-                    Ok::<_, EvalSolveError>(
-                        invalidates || affected_rows.iter().any(|&row| earlier_rows[row]),
-                    )
-                })?;
-        invalidations.push(invalidates);
-        for &row in &block.rows {
-            let row_count = earlier_rows.len();
-            let Some(earlier) = earlier_rows.get_mut(row) else {
-                return Err(sparsity_error(
-                    format!("projection invalidation row {row} is outside 0..{row_count}"),
-                    Some(source.provenance().span()),
-                ));
-            };
-            *earlier = true;
-        }
-    }
-    Ok(invalidations)
 }
 
 fn derive_y_projection_patterns(

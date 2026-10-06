@@ -480,13 +480,29 @@ impl SolvePureCallOwner {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SolvePureCallTable {
     arithmetic: SolveArithmeticProfile,
     recursion: SolveRecursionProfile,
     groups: Box<[SolveRecursiveGroup]>,
     owners: Box<[SolvePureCallOwner]>,
+    // Only Clone shares this witness. Every checked construction and wire replay
+    // starts a fresh lineage; the complete table has no mutation API.
+    #[serde(skip)]
+    immutable_lineage: Arc<()>,
 }
+
+impl PartialEq for SolvePureCallTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.arithmetic == other.arithmetic
+            && (Arc::ptr_eq(&self.immutable_lineage, &other.immutable_lineage)
+                || (self.recursion == other.recursion
+                    && self.groups == other.groups
+                    && self.owners == other.owners))
+    }
+}
+
+impl Eq for SolvePureCallTable {}
 
 impl Default for SolvePureCallTable {
     fn default() -> Self {
@@ -498,6 +514,7 @@ impl Default for SolvePureCallTable {
             recursion: SolveRecursionProfile::HOSTED,
             groups: Box::new([]),
             owners: Box::new([]),
+            immutable_lineage: Arc::new(()),
         }
     }
 }
@@ -593,6 +610,7 @@ impl SolvePureCallTableBuilder {
             recursion: self.recursion,
             groups: self.groups.into_boxed_slice(),
             owners: self.owners.into_boxed_slice(),
+            immutable_lineage: Arc::new(()),
         }
     }
 
@@ -1012,6 +1030,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             recursion: wire.recursion,
             groups: groups.into_boxed_slice(),
             owners: owners.into_boxed_slice(),
+            immutable_lineage: Arc::new(()),
         })
     }
 }
@@ -1023,6 +1042,7 @@ mod tests {
     mod dependencies;
     mod recursion;
     mod shared_values;
+    mod table_sharing;
     mod value_projections;
     mod views;
 

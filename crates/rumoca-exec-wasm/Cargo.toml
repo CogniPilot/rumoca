@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 wasm-encoder = "0.241"
 
@@ -16,6 +17,9 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 
 [dev-dependencies]
+rumoca-eval-solve = { workspace = true }
+serde_json = { workspace = true }
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
 wasmparser = "0.241"
 
 [lints]

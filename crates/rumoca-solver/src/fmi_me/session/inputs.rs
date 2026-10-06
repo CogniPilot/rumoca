@@ -1,7 +1,8 @@
 //! Input transactions belong to the common master (SPEC_0044 ME-HOST-001/ME-BUF-001).
 
+use super::host_state::{close_excursion, update_discrete_states_to_completion};
 use super::{MeSessionError, MeSessionLoss, MeSimulationSession};
-use crate::fmi_me::{MeTime, MeValueRef};
+use crate::fmi_me::{MeEventCause, MeTime, MeValueRef};
 
 impl MeSimulationSession<'_, '_> {
     /// Apply one declared input through the same transaction as a batch.
@@ -63,10 +64,33 @@ impl MeSimulationSession<'_, '_> {
         references: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeSessionError> {
-        let mut kernel = self.host.kernel.borrow_mut();
-        kernel.set_time(MeTime::at(self.host.time))?;
-        kernel.set_continuous_states(&self.host.states)?;
-        Ok(kernel.set_float64(references, values)?)
+        let entry = self
+            .host
+            .event_entry(MeEventCause::InputEvent, self.host.time);
+        let result = {
+            let mut kernel = self.host.kernel.borrow_mut();
+            let checkpoint = kernel.fmu_state();
+            let written = (|| {
+                kernel.set_time(MeTime::at(self.host.time))?;
+                kernel.set_continuous_states(&self.host.states)?;
+                kernel.enter_event_mode(entry)?;
+                kernel.set_float64(references, values)
+            })();
+            match written {
+                Ok(()) => Ok(()),
+                Err(error) => close_excursion(
+                    self.host.time,
+                    kernel.reset_to_fmu_state(&checkpoint),
+                    Err(error.into()),
+                ),
+            }
+        };
+        if matches!(result, Err(MeSessionError::AcceptedPointLost { .. })) {
+            self.host
+                .guard_mutation(MeSessionLoss::InputApplication, result)
+        } else {
+            result
+        }
     }
 
     fn record_inputs(&mut self, inputs: &[(&str, f64)]) {
@@ -78,11 +102,13 @@ impl MeSimulationSession<'_, '_> {
     }
 
     fn correlate_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), MeSessionError> {
-        self.host
-            .kernel
-            .borrow()
-            .get_continuous_states(&mut self.host.states)?;
         self.record_inputs(inputs);
-        self.restart_plugin_history()
+        let discrete = update_discrete_states_to_completion(
+            &mut self.host.kernel.borrow_mut(),
+            self.host.time,
+        )?;
+        // A setter does not request a trace row. The next explicit observation
+        // or advance owns publication, including repeated batches at one time.
+        self.complete_event_mode(discrete, self.host.time, false)
     }
 }

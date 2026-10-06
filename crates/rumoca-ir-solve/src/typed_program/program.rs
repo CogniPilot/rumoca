@@ -159,6 +159,10 @@ pub enum SolveBinaryOperator {
     /// failure, never a wrapped or defaulted value. `Divide` stays Real-only,
     /// so an Integer `/` cannot bypass its explicit conversion to Real.
     IntegerQuotient,
+    /// MLS `mod`: exact Integer remainder with the divisor's sign.
+    IntegerModulo,
+    /// MLS `rem`: exact Integer remainder with the dividend's sign.
+    IntegerRemainder,
     Power,
     And,
     Or,
@@ -1930,11 +1934,15 @@ fn binary_operator_accepts(operator: SolveBinaryOperator, scalar: SolveScalarTyp
         SolveBinaryOperator::Min | SolveBinaryOperator::Max => {
             scalar.is_numeric() || scalar == SolveScalarType::Boolean
         }
-        SolveBinaryOperator::IntegerQuotient => matches!(scalar, SolveScalarType::Integer(_)),
         SolveBinaryOperator::Divide | SolveBinaryOperator::Power | SolveBinaryOperator::Atan2 => {
             matches!(scalar, SolveScalarType::Real { .. })
         }
         SolveBinaryOperator::And | SolveBinaryOperator::Or => scalar == SolveScalarType::Boolean,
+        SolveBinaryOperator::IntegerQuotient
+        | SolveBinaryOperator::IntegerModulo
+        | SolveBinaryOperator::IntegerRemainder => {
+            matches!(scalar, SolveScalarType::Integer(_))
+        }
     }
 }
 

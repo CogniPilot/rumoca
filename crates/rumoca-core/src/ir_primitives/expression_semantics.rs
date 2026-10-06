@@ -233,7 +233,13 @@ fn hash_subscripts_semantics(subscripts: &[Subscript], hasher: &mut impl Hasher)
 fn hash_literal_semantics(value: &Literal, hasher: &mut impl Hasher) {
     hash_discriminant(value, hasher);
     match value {
-        Literal::Real(value) => value.to_bits().hash(hasher),
+        // Modelica expression equality uses f64 equality, which equates both
+        // signed zeros. A lookup fingerprint must preserve that equivalence;
+        // the literal itself retains its original bits.
+        Literal::Real(value) => {
+            let canonical = if *value == 0.0 { 0.0 } else { *value };
+            canonical.to_bits().hash(hasher);
+        }
         Literal::Integer(value) => value.hash(hasher),
         Literal::Boolean(value) => value.hash(hasher),
         // User *data*, not a name: an arbitrary literal from arbitrary source

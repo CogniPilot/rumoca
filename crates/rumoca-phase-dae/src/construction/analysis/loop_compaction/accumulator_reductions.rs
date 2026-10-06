@@ -4,27 +4,29 @@ use super::*;
 
 /// Replace scalar slice accumulations with tensor-native reductions.
 ///
-/// `value := seed; for k in r loop value := value - term[k]; end for`
-/// is exactly `value := seed - sum(term[r])`, including an empty `r`. The
-/// source loop therefore becomes one compact expression owner instead of a
-/// scalar transition family.
+/// Numeric accumulators retain their source-ordered loop: moving the seed after
+/// the reduction changes Real rounding/overflow and checked Integer faults.
+/// No associativity certificate is supplied by this normalization stage.
 pub(super) fn compact_accumulator_loops(
     statements: &[rumoca_core::Statement],
     shapes: &ShapeEnvironment,
+    ordered: &HashSet<VarName>,
 ) -> Vec<rumoca_core::Statement> {
     let nested = statements
         .iter()
-        .map(|statement| compact_accumulators_in_statement(statement, shapes))
+        .map(|statement| compact_accumulators_in_statement(statement, shapes, ordered))
         .collect::<Vec<_>>();
     let mut compacted = Vec::with_capacity(nested.len());
     let mut ordinal = 0;
     while ordinal < nested.len() {
         if let Some(replacement) = nested.get(ordinal + 1).and_then(|loop_statement| {
-            compact_one_accumulator(&nested[ordinal], loop_statement, shapes)
+            compact_one_accumulator(&nested[ordinal], loop_statement, shapes, ordered)
         }) {
             compacted.push(replacement);
             ordinal += 2;
-        } else if let Some(replacement) = compact_standalone_accumulator(&nested[ordinal], shapes) {
+        } else if let Some(replacement) =
+            compact_standalone_accumulator(&nested[ordinal], shapes, ordered)
+        {
             compacted.push(replacement);
             ordinal += 1;
         } else {
@@ -38,6 +40,7 @@ pub(super) fn compact_accumulator_loops(
 fn compact_standalone_accumulator(
     loop_statement: &rumoca_core::Statement,
     shapes: &ShapeEnvironment,
+    ordered: &HashSet<VarName>,
 ) -> Option<rumoca_core::Statement> {
     let rumoca_core::Statement::For {
         equations, span, ..
@@ -63,12 +66,13 @@ fn compact_standalone_accumulator(
         },
         span: *span,
     };
-    compact_one_accumulator(&seed, loop_statement, shapes)
+    compact_one_accumulator(&seed, loop_statement, shapes, ordered)
 }
 
 fn compact_accumulators_in_statement(
     statement: &rumoca_core::Statement,
     shapes: &ShapeEnvironment,
+    ordered: &HashSet<VarName>,
 ) -> rumoca_core::Statement {
     match statement {
         rumoca_core::Statement::For {
@@ -77,7 +81,7 @@ fn compact_accumulators_in_statement(
             span,
         } => rumoca_core::Statement::For {
             indices: indices.clone(),
-            equations: compact_accumulator_loops(equations, shapes),
+            equations: compact_accumulator_loops(equations, shapes, ordered),
             span: *span,
         },
         rumoca_core::Statement::If {
@@ -89,12 +93,12 @@ fn compact_accumulators_in_statement(
                 .iter()
                 .map(|block| rumoca_core::StatementBlock {
                     cond: block.cond.clone(),
-                    stmts: compact_accumulator_loops(&block.stmts, shapes),
+                    stmts: compact_accumulator_loops(&block.stmts, shapes, ordered),
                 })
                 .collect(),
             else_block: else_block
                 .as_ref()
-                .map(|statements| compact_accumulator_loops(statements, shapes)),
+                .map(|statements| compact_accumulator_loops(statements, shapes, ordered)),
             span: *span,
         },
         _ => statement.clone(),
@@ -105,9 +109,15 @@ fn compact_one_accumulator(
     seed: &rumoca_core::Statement,
     loop_statement: &rumoca_core::Statement,
     shapes: &ShapeEnvironment,
+    ordered: &HashSet<VarName>,
 ) -> Option<rumoca_core::Statement> {
     if let Some(compacted) = compact_first_match_accumulator(seed, loop_statement) {
         return Some(compacted);
+    }
+    if matches!(seed, rumoca_core::Statement::Assignment { comp, .. }
+        if ordered.contains(&comp.to_var_name()))
+    {
+        return None;
     }
     let rumoca_core::Statement::Assignment {
         comp: seed_target,
@@ -206,6 +216,26 @@ fn compact_one_accumulator(
         },
         span: *span,
     })
+}
+
+/// Resolved numeric types also cover aliases and aggregate accumulators.
+pub(super) fn ordered_accumulators(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+) -> HashSet<VarName> {
+    function
+        .inputs
+        .iter()
+        .chain(&function.locals)
+        .chain(&function.outputs)
+        .filter(|value| {
+            matches!(
+                effective_function_scalar_type(flat, value),
+                Some(dae::ScalarType::Real | dae::ScalarType::Integer)
+            )
+        })
+        .map(|value| VarName::new(&value.name))
+        .collect()
 }
 
 fn tensor_accumulator_reduction(

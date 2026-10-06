@@ -47,6 +47,29 @@ impl<'source> SourceOutputs<'source> {
             None => outputs.indices.get(ordinal).copied(),
         }
     }
+
+    /// Borrow a complete program's exact contiguous logical output projection.
+    /// Explicit indices are checked as supplied; no scalar output owner is made.
+    pub(super) fn contiguous_range(
+        &self,
+        source: RefreshScalarProgramSource,
+    ) -> Option<Range<usize>> {
+        let outputs = self.nodes.get(source.node as usize)?.as_ref()?;
+        let ordinals = outputs.programs.get(source.program as usize)?;
+        let start = self.get(source, 0)?;
+        let end = start.checked_add(ordinals.len())?;
+        if outputs.local_offset.is_none()
+            && outputs
+                .indices
+                .get(ordinals.clone())?
+                .iter()
+                .enumerate()
+                .any(|(offset, &index)| start.checked_add(offset) != Some(index))
+        {
+            return None;
+        }
+        Some(start..end)
+    }
 }
 
 impl<'source> ScalarOutputs<'source> {

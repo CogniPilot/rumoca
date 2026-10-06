@@ -23,6 +23,7 @@ pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToD
 }
 
 pub use construction::StructuralSelection;
+pub mod function_normalization;
 
 /// The balance evidence together with every owner whose folded parameter
 /// guard fixes parameters at translation (SPEC_0040 DAE-C22), from one

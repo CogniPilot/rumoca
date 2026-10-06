@@ -11,7 +11,6 @@ mod expression_semi_linear;
 mod expression_validation;
 mod fixed_loops;
 mod folded_guards;
-pub use folded_guards::StructuralSelection;
 mod function_array_assemblies;
 mod function_bodies;
 mod function_conditionals;
@@ -20,7 +19,6 @@ mod function_externals;
 mod function_impurity;
 mod function_loops;
 mod function_native_lapack;
-pub(super) use function_native_lapack::NativeLapackPlan;
 mod function_ranges;
 mod function_record_assemblies;
 mod function_reductions;
@@ -55,7 +53,6 @@ pub(super) use clocks::{
     inferred_clock_transfer, is_inferred_clock_condition, is_whole_clock_coordinate,
     when_conditional_selects_clock_structure,
 };
-use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{
     ComprehensionKey, ComprehensionPlans, specialized_comprehension_plan,
 };
@@ -92,6 +89,7 @@ use expression_validation::{
     when_body_context,
 };
 use fixed_loops::{IndexBinding, fixed_range, range_values};
+pub use folded_guards::StructuralSelection;
 use function_array_assemblies::coalesce_function_array_assemblies;
 pub(super) use function_bodies::function_assertion;
 pub(super) use function_bodies::validate_function_certificate;
@@ -109,6 +107,7 @@ pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
 pub(super) use function_loops::flattened_function_loop_source;
 use function_loops::{subscript_is_binder, validate_function_loop};
+pub(super) use function_native_lapack::NativeLapackPlan;
 pub(super) use function_ranges::assigned_function_targets;
 use function_ranges::static_shape_integer_expression;
 use function_ranges::{
@@ -145,6 +144,7 @@ pub(super) use model_algorithms::{
     when_chain_targets,
 };
 use model_expression_owners::ModelExpressionOwnerVisitor;
+pub(super) use model_roles::is_external_input;
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
@@ -168,6 +168,7 @@ use unexecuted_branches::{check_function_assignment_shapes, check_unexecuted_bra
 use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
+    pub(super) templates: TemplateSelection,
     pub(super) constants: EvalContext,
     pub(super) delay_plans: HashMap<Span, DelayPlan>,
     /// Exact analysis certificates for MLS §3.7.5 `edge`/`change` occurrences.
@@ -597,12 +598,11 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     // dimensions can depend on the settled parameter values from MLS §4.5.
     let constants = constant_context(flat)?;
     let mut evaluable = evaluable_parameters(flat);
-    let mut function_shapes =
-        FunctionShapeAnalysis::analyze_model(flat, &constants, Some(&evaluable))?;
-    let record_array_fields = Arc::clone(function_shapes.record_array_fields());
+    let (mut function_shapes, templates, record_array_fields) =
+        analyze_selected_shape_owners(flat, &constants, &evaluable)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equation_sets(flat, function_shapes.model_values())?;
-    let expression_support = analyze_expression_support(flat, &constants)?;
+    let expression_support = analyze_expression_support(flat, &constants, &templates)?;
     let clocks = analyze_clocks(flat, &constants)?;
     let ModelRoles {
         states,
@@ -616,15 +616,16 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     )?;
     function_shapes.add_structural_selections(folded_conditionals);
     validate_runtime_coordinates(flat, &roles, &record_array_fields)?;
-    let derived_parameters = analyze_derived_parameters(flat, &roles)?;
+    let derived_parameters = analyze_derived_parameters(flat, &roles, templates.continuous(flat))?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
         analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
-    let history_operators = analyze_history_operators(flat, &roles)?;
+    let history_operators = analyze_history_operators(flat, &roles, &templates)?;
     let multi_output_equations =
         analyze_multi_output_equation_sets(flat, &expression_roles, &states, &function_shapes)?;
     let family_rows = validate_expressions_and_structured_rows(ExpressionValidationInput {
         flat,
+        templates: &templates,
         roles: &roles,
         expression_roles: &expression_roles,
         states: &states,
@@ -643,7 +644,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &function_shapes,
     )?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
-        analyze_discrete_connections(flat, &roles, &record_equations.continuous)?;
+        analyze_discrete_connections(flat, &templates, &roles, &record_equations.continuous)?;
     let initial = analyze_initial_owners(
         flat,
         &roles,
@@ -678,6 +679,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     evaluable.extend(folded);
     function_shapes.set_evaluable_parameters(&evaluable);
     Ok(Analysis {
+        templates,
         constants,
         delay_plans: expression_support.delays,
         history_operators,
@@ -726,8 +728,32 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     })
 }
 
+type SelectedShapeOwners = (
+    FunctionShapeAnalysis,
+    TemplateSelection,
+    Arc<RecordArrayFieldPlans>,
+);
+
+fn analyze_selected_shape_owners(
+    flat: &flat::Model,
+    constants: &EvalContext,
+    evaluable: &HashSet<VarName>,
+) -> Result<SelectedShapeOwners, ToDaeError> {
+    let mut function_shapes =
+        FunctionShapeAnalysis::analyze_model(flat, constants, Some(evaluable))?;
+    let templates = TemplateSelection::analyze(flat, &function_shapes);
+    let record_array_fields = Arc::new(analyze_record_array_field_plans(
+        flat,
+        templates.continuous(flat),
+        templates.initialization(flat),
+    )?);
+    function_shapes.use_record_array_field_plans(Arc::clone(&record_array_fields));
+    Ok((function_shapes, templates, record_array_fields))
+}
+
 struct ExpressionValidationInput<'a> {
     flat: &'a flat::Model,
+    templates: &'a TemplateSelection,
     roles: &'a HashMap<VarName, PlannedRole>,
     expression_roles: &'a HashMap<VarName, PlannedRole>,
     states: &'a HashSet<VarName>,
@@ -746,10 +772,11 @@ struct ExpressionSupportPlans {
 fn analyze_expression_support(
     flat: &flat::Model,
     constants: &EvalContext,
+    templates: &TemplateSelection,
 ) -> Result<ExpressionSupportPlans, ToDaeError> {
     Ok(ExpressionSupportPlans {
-        comprehensions: analyze_comprehensions(all_model_expressions(flat), constants)?,
-        delays: analyze_delays(flat, constants)?,
+        comprehensions: comprehensions::analyze_model_comprehensions(flat, constants, templates)?,
+        delays: analyze_delays(flat, constants, templates)?,
     })
 }
 
@@ -808,15 +835,7 @@ fn validate_expressions_and_structured_rows(
         &continuous_owned,
         &initialization_owned,
     )?;
-    analyze_structured_family_rows(
-        input.flat,
-        input.roles,
-        input.expression_roles,
-        input.states,
-        input.record_array_fields,
-        input.values,
-        input.record_equations,
-    )
+    analyze_structured_family_rows(input)
 }
 
 fn analyze_multi_output_equation_sets(
@@ -869,21 +888,26 @@ struct StructuredFamilyRows {
 }
 
 fn analyze_structured_family_rows(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    record_array_fields: &RecordArrayFieldPlans,
-    values: &ShapeEnvironment,
-    records: &RecordEquationSets,
+    input: ExpressionValidationInput<'_>,
 ) -> Result<StructuredFamilyRows, ToDaeError> {
+    let ExpressionValidationInput {
+        flat,
+        templates,
+        roles,
+        expression_roles,
+        states,
+        record_array_fields,
+        values,
+        record_equations: records,
+        ..
+    } = input;
     let continuous_record_families =
         record_equality_families(&flat.structured_equations, &records.continuous);
     let initialization_record_families =
         record_equality_families(&flat.initial_structured_equations, &records.initialization);
     let continuous = validate_structured_families(
         PartitionFamilies {
-            families: &flat.structured_equations,
+            families: templates.continuous(flat),
             equations: &flat.equations,
             initialization: false,
             excluded: &continuous_record_families,
@@ -896,7 +920,7 @@ fn analyze_structured_family_rows(
     )?;
     let initialization = validate_structured_families(
         PartitionFamilies {
-            families: &flat.initial_structured_equations,
+            families: templates.initialization(flat),
             equations: &flat.initial_equations,
             initialization: true,
             excluded: &initialization_record_families,
@@ -1020,6 +1044,7 @@ fn validate_source_model(flat: &flat::Model) -> Result<(), ToDaeError> {
 
 fn analyze_discrete_connections(
     flat: &flat::Model,
+    templates: &TemplateSelection,
     roles: &HashMap<VarName, PlannedRole>,
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<
@@ -1032,8 +1057,14 @@ fn analyze_discrete_connections(
 > {
     let ranks = discrete_connection_ranks(flat, roles);
     let aggregates = aggregate_discrete_connections(flat, roles, &ranks)?;
-    let topology =
-        analyze_discrete_value_topology(flat, roles, &ranks, &aggregates, record_equations)?;
+    let topology = analyze_discrete_value_topology(
+        flat,
+        templates,
+        roles,
+        &ranks,
+        &aggregates,
+        record_equations,
+    )?;
     Ok((ranks, aggregates, topology))
 }
 
@@ -1372,29 +1403,20 @@ fn validate_assertions<'flat>(
 
 pub(super) fn analyze_record_array_field_plans(
     flat: &flat::Model,
+    continuous: SelectedFamilies<'_>,
+    initialization: SelectedFamilies<'_>,
 ) -> Result<RecordArrayFieldPlans, ToDaeError> {
     analyze_record_array_fields(
         flat,
         all_model_expressions(flat)
-            .chain(structured_template_expressions(&flat.structured_equations))
-            .chain(structured_template_expressions(
-                &flat.initial_structured_equations,
-            ))
+            .chain(continuous.expressions())
+            .chain(initialization.expressions())
             .chain(
                 flat.functions
                     .values()
                     .flat_map(function_shapes::function_expressions),
             ),
     )
-}
-
-fn structured_template_expressions(
-    families: &[flat::StructuredEquationFamily],
-) -> impl Iterator<Item = &Expression> {
-    families
-        .iter()
-        .filter_map(|family| family.template.as_ref())
-        .flat_map(|template| &template.body)
 }
 
 /// Fold every `constant`/`parameter` binding the Flat model settles at

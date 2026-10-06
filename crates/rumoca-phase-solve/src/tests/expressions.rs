@@ -589,12 +589,27 @@ fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
     solve
         .validate()
         .expect("constructor-certified concatenation produces valid Solve rows");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
-        panic!("one scalar residual block expected");
+    let [
+        ComputeNode::Map {
+            domain, output_map, ..
+        },
+    ] = solve.continuous.residual.nodes.as_slice()
+    else {
+        panic!("one compact concatenation residual Map expected");
     };
-    assert_eq!(rows.row_count(), 1);
+    assert_eq!(domain.index_tuples().unwrap().len(), 4);
+    assert_eq!(output_map.start, 0);
     assert_eq!(
-        eval_residual_rows(rows, &[0.0; 4], &[]),
+        solve
+            .continuous
+            .residual
+            .produced_output_indices("concatenation test")
+            .unwrap(),
+        [0, 1, 2, 3]
+    );
+    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual).unwrap();
+    assert_eq!(
+        eval_residual_rows(&rows, &[0.0; 4], &[]),
         [-1.0, -3.0, -2.0, -4.0]
     );
 }

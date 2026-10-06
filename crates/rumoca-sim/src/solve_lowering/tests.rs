@@ -5,9 +5,11 @@ use super::entry::lower_dae_for_simulation;
 use crate::SimulationSession;
 use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
 
+mod array_storage_views;
 mod array_trajectories;
 mod block_residual_split;
 mod coincident_strict;
+mod function_returns;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;

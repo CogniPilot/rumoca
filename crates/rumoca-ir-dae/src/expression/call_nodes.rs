@@ -28,11 +28,39 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self.insert_builtin(builtin, arguments.into(), result)
     }
 
+    pub(crate) fn checked_function_runtime_quotient(
+        self,
+        body: &crate::FunctionBody<'dae>,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let function = body.checked_quotient_scope(self.storage, arguments, self.provenance)?;
+        let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
+        validate_runtime_quotient(
+            self.storage,
+            builtin,
+            &arguments,
+            QuotientScope::FunctionBody,
+            self.provenance,
+        )?;
+        self.insert_builtin_in_scope(builtin, arguments.into(), result, Some(function))
+    }
+
     fn insert_builtin(
         self,
         builtin: PureBuiltin,
         arguments: Vec<ExprId<'dae>>,
         result: ValueType,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        self.insert_builtin_in_scope(builtin, arguments, result, None)
+    }
+
+    fn insert_builtin_in_scope(
+        mut self,
+        builtin: PureBuiltin,
+        arguments: Vec<ExprId<'dae>>,
+        result: ValueType,
+        function: Option<FunctionId<'dae>>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         // `size(a, k)` reads only the shape of `a`, which MLS §10.1 fixes at
         // translation, so its variability is the dimension index's alone.
@@ -49,12 +77,15 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             .storage
             .expressions
             .push_operands(arguments.into_iter().map(ExprId::index), self.provenance)?;
-        self.insert(
-            ExprNode::Builtin { builtin, operands },
-            ty,
-            variability,
-            binder_domain,
-        )
+        let node = ExprNode::Builtin { builtin, operands };
+        let (id, mut facts) = self.prepare_insertion(&node, ty, variability, binder_domain)?;
+        if let Some(function) = function {
+            // The body capability validated all reads and lexical domains before
+            // allocation. Its ownership is intrinsic even for literal/binder-only
+            // operands, which cannot inherit a function scope from their children.
+            facts.function_scope = Some(function.index());
+        }
+        Ok(self.commit_insertion(id, node, facts))
     }
 
     pub fn call(

@@ -27,7 +27,10 @@ mod fmi_projection_tests;
 mod galec_golden_tests;
 #[cfg(test)]
 mod galec_manifest_template_tests;
+mod lazy_scalar_projection;
 mod me_projection;
+#[cfg(test)]
+mod native_scalar_laziness_tests;
 mod pure_call_families;
 mod render_expr;
 mod render_solve;
@@ -266,47 +269,6 @@ fn solve_template_blocks_value(
 }
 
 #[derive(Debug)]
-struct LazyScalarProgramsValue {
-    scalar: std::sync::Arc<solve::ScalarProgramBlock>,
-}
-
-impl LazyScalarProgramsValue {
-    fn new(scalar: std::sync::Arc<solve::ScalarProgramBlock>) -> Self {
-        Self { scalar }
-    }
-
-    fn scalar(&self) -> &std::sync::Arc<solve::ScalarProgramBlock> {
-        &self.scalar
-    }
-}
-
-impl minijinja::value::Object for LazyScalarProgramsValue {
-    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
-        minijinja::value::ObjectRepr::Map
-    }
-
-    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        let scalar = self.scalar();
-        match key.as_str()? {
-            "programs" => Some(Value::from_object(solve_lazy::SolveProgramsObject {
-                block: scalar.clone(),
-            })),
-            "program_spans" => Some(Value::from_serialize(scalar.program_spans())),
-            "output_indices" => Some(Value::from_serialize(scalar.output_indices())),
-            _ => None,
-        }
-    }
-
-    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
-        minijinja::value::Enumerator::Values(vec![
-            Value::from("programs"),
-            Value::from("program_spans"),
-            Value::from("output_indices"),
-        ])
-    }
-}
-
-#[derive(Debug)]
 pub(in crate::codegen) struct LazyScalarRowsValue {
     block: std::sync::Arc<solve::ComputeBlock>,
     row_count: usize,
@@ -395,16 +357,15 @@ impl minijinja::value::Object for LazyDerivativeNodesValue {
 }
 
 fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Value, CodegenError> {
+    lazy_scalar_projection::validate(block)?;
     let partition = render_solve::native_family_template_partition(block)?;
-    let uses_linear_solve = compute_block_uses_linear_solve_component(block);
+    let uses_linear_solve = block.uses_linear_solve_component();
     // Lazy nodes (one ComputeNode -> ops materialized on demand) so blocks whose
     // nodes contain large op programs don't materialize as eager Values.
     let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()))?;
     let output_count = block.len()?;
-    let scalar = std::sync::Arc::new(rumoca_eval_solve::to_scalar_program_block(block)?);
-    let scalar_plan =
-        Value::from_object(scalar_program_plan::ScalarProgramPlan::new(scalar.clone())?);
-    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(scalar));
+    let (scalar_programs, scalar_plan) =
+        lazy_scalar_projection::views(std::sync::Arc::new(block.clone()));
     let fallback_programs = Value::from_object(render_solve::SolveRowsValue::new(
         partition.fallback_programs,
     ));
@@ -430,26 +391,6 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
         map_family_count => partition.map_family_count,
         stencil_family_count => partition.stencil_family_count,
         scalar_programs_use_linear_solve_component => uses_linear_solve,
-    })
-}
-
-fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
-    block
-        .programs()
-        .iter()
-        .flatten()
-        .any(|op| matches!(op, solve::LinearOp::LinearSolveComponent { .. }))
-}
-
-fn compute_block_uses_linear_solve_component(block: &solve::ComputeBlock) -> bool {
-    block.nodes.iter().any(|node| match node {
-        solve::ComputeNode::ScalarPrograms(block) => {
-            scalar_program_block_uses_linear_solve_component(block)
-        }
-        solve::ComputeNode::LinSolve { .. } => true,
-        solve::ComputeNode::Map { .. }
-        | solve::ComputeNode::AffineStencil { .. }
-        | solve::ComputeNode::MatMul { .. } => false,
     })
 }
 

@@ -201,6 +201,10 @@ impl SolveMeKernel {
     /// while the component independently observes the standard callback at its
     /// own accepted coordinate. No crossing vector crosses the FMI boundary.
     pub(super) fn complete_indicator_domains(&mut self) -> Result<bool, MeError> {
+        self.observe_indicator_domains(true)
+    }
+
+    fn observe_indicator_domains(&mut self, capture_pre: bool) -> Result<bool, MeError> {
         let count = self.indicator_plan.len();
         if count == 0 {
             self.frozen_indicator_positive.clear();
@@ -235,7 +239,9 @@ impl SolveMeKernel {
             self.pending_root_crossings.clear();
             return Ok(false);
         }
-        self.capture_event_entry()?;
+        if capture_pre {
+            self.capture_event_entry()?;
+        }
         let mut crossings = std::mem::take(&mut self.pending_root_crossings);
         crossings.clear();
         crossings.extend(
@@ -1621,8 +1627,13 @@ impl SolveMeKernel {
         entry: MeEventEntry,
     ) -> Result<MeDiscreteStates, MeError> {
         let continuous_states_before = self.states.clone();
+        if entry.cause == MeEventCause::InputEvent {
+            // Reconcile the changed input's domains without replacing the
+            // event-left coordinate captured before the importer wrote it.
+            self.observe_indicator_domains(false)?;
+        }
         match entry.cause {
-            MeEventCause::StateEvent => {
+            MeEventCause::StateEvent | MeEventCause::InputEvent => {
                 self.advance_state_to_event_right_limit = false;
                 let scheduled = self
                     .stop_schedule

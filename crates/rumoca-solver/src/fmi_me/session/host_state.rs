@@ -231,6 +231,13 @@ impl MeHostState {
         cause: MeEventCause,
         event_time: f64,
     ) -> Result<MeDiscreteStates, MeSessionError> {
+        let entry = self.event_entry(cause, event_time);
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.enter_event_mode(entry)?;
+        update_discrete_states_to_completion(&mut kernel, event_time)
+    }
+
+    pub(super) fn event_entry(&self, cause: MeEventCause, event_time: f64) -> MeEventEntry {
         debug_assert_eq!(
             self.time.to_bits(),
             canonical_coordinate(event_time).to_bits(),
@@ -241,13 +248,11 @@ impl MeHostState {
             .stop_time()
             .filter(|stop| *stop >= event_time)
             .unwrap_or(event_time);
-        let mut kernel = self.kernel.borrow_mut();
-        kernel.enter_event_mode(MeEventEntry {
+        MeEventEntry {
             cause,
             event_time,
             horizon,
-        })?;
-        update_discrete_states_to_completion(&mut kernel, event_time)
+        }
     }
 
     pub(super) fn record_event_streak(&mut self, event_time: f64) -> Result<(), MeSessionError> {
@@ -709,7 +714,7 @@ pub(super) fn record_usability_loss(usability: &Cell<Option<MeSessionLoss>>, los
 /// over a restored point is an ordinary typed failure of a still-correlated
 /// session. The attempted failure is neither discarded nor rendered into prose;
 /// it travels inside [`MeSessionError::AcceptedPointLost`] as typed data
-fn close_excursion<T>(
+pub(super) fn close_excursion<T>(
     accepted_time: f64,
     restoration: Result<(), MeError>,
     attempted: Result<T, MeSessionError>,

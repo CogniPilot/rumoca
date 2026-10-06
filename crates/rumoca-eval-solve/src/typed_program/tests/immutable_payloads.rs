@@ -1,0 +1,66 @@
+use super::*;
+
+#[test]
+fn cloned_full_tensor_payload_is_shared_immutable_and_survives_original_drop() {
+    let p = profile(SolveRealFormat::Binary64);
+    let value_type = SolveValueType::tensor(SolveScalarType::real(p), vec![14400]).unwrap();
+    let bits = [
+        0_u64,
+        1_u64 << 63,
+        0x7ff8_1234_5678_9abc,
+        f64::INFINITY.to_bits(),
+    ];
+    let expected = (0..14400)
+        .map(|i| SolveValueKind::Real64(bits[i % 4]))
+        .collect::<Vec<_>>();
+    let original = TypedValue::construct(value_type, expected.clone()).unwrap();
+    let cloned = original.clone();
+    assert!(std::sync::Arc::ptr_eq(&original.elements, &cloned.elements));
+    assert_eq!(std::sync::Arc::strong_count(&original.elements), 2);
+    assert_eq!(original, cloned);
+    drop(original);
+    assert_eq!(cloned.elements(), expected);
+    assert_eq!(std::sync::Arc::strong_count(&cloned.elements), 1);
+}
+
+#[test]
+fn aggregate_update_retains_old_ssa_alias_and_original_input_bits() {
+    let p = profile(SolveRealFormat::Binary64);
+    let tensor = SolveValueType::tensor(SolveScalarType::real(p), vec![4]).unwrap();
+    let mut table = SolvePureCallTable::builder(p);
+    let owner = table
+        .add_owner(
+            identity(120),
+            vec![tensor.clone()],
+            vec![SolvePureCallOutput::result(tensor.clone()); 2],
+            span(670),
+            |b, inputs, outputs| {
+                let first = b.load(inputs[0], span(671))?;
+                let alias = b.load(inputs[0], span(672))?;
+                let replacement = b.constant(SolveValue::real(p, 9.0), span(673))?;
+                let index = b.constant(SolveValue::integer(p, 2).unwrap(), span(674))?;
+                let updated = b.update_element(first, replacement, &[index], span(675))?;
+                b.store(outputs[0], alias, span(676))?;
+                b.store(outputs[1], updated, span(677))
+            },
+        )
+        .unwrap();
+    let table = table.finish();
+    let original = [
+        real_kind(SolveRealFormat::Binary64, -0.0),
+        SolveValueKind::Real64(0x7ff8_1234_5678_9abc),
+        real_kind(SolveRealFormat::Binary64, 3.0),
+        real_kind(SolveRealFormat::Binary64, f64::INFINITY),
+    ];
+    let input = TypedValue::construct(tensor, original.to_vec()).unwrap();
+    let result = eval_pure_call(&table, owner, std::slice::from_ref(&input)).unwrap();
+    let mut expected = original;
+    expected[1] = real_kind(SolveRealFormat::Binary64, 9.0);
+    assert_eq!(input.elements(), original);
+    assert_eq!(result[0].elements(), original);
+    assert_eq!(result[1].elements(), expected);
+    assert!(!std::sync::Arc::ptr_eq(
+        &result[0].elements,
+        &result[1].elements
+    ));
+}
