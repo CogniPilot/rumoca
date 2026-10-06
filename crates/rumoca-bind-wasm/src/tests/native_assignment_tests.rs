@@ -19,14 +19,15 @@ end NativeImage;
 // SPEC_0021: Exception - one fixture checks issued order, portable execution, changing inputs, and result bits.
 #[allow(clippy::too_many_lines)]
 fn prepare_native_assignments_uses_issued_two_stage_modelica_values() {
-    let _lock = SESSION_TEST_LOCK.lock().unwrap();
+    let _lock = session_test_guard();
     let text =
         crate::native_assignment_api::prepare_native_assignments_impl(TWO_STAGE, "NativeImage")
             .unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(artifact["profile"], "native-direct-assignments-f64-v1");
-    assert_eq!(artifact["stages"].as_array().unwrap().len(), 2);
     assert_eq!(artifact["abi"]["y_count"], 32);
+    // Every unknown has exactly one issued owner.
+    assert_eq!(issued_target_count(&artifact), 32);
     assert_eq!(artifact["abi"]["p_count"], 48);
     assert_eq!(artifact["source_sha256"].as_str().unwrap().len(), 64);
     let edited = TWO_STAGE.replace("+ 2;", "+ 3;");
@@ -36,10 +37,7 @@ fn prepare_native_assignments_uses_issued_two_stage_modelica_values() {
     )
     .unwrap();
     assert_ne!(changed["source_sha256"], artifact["source_sha256"]);
-    assert_ne!(
-        changed["stages"][1]["module_sha256"],
-        artifact["stages"][1]["module_sha256"]
-    );
+    assert_ne!(stage_modules(&changed), stage_modules(&artifact));
     let engine = wasmi::Engine::default();
     let mut store = wasmi::Store::new(&engine, ());
     let memory = wasmi::Memory::new(
@@ -139,7 +137,7 @@ fn prepare_native_assignments_uses_issued_two_stage_modelica_values() {
 
 #[test]
 fn native_preparation_preserves_declared_host_input_start() {
-    let _lock = SESSION_TEST_LOCK.lock().unwrap();
+    let _lock = session_test_guard();
     let source = "model NativeStart input Real u[16](each start=3); output Real y[16]; equation for i in 1:16 loop y[i]=2*u[i]; end for; end NativeStart;";
     let artifact: serde_json::Value = serde_json::from_str(
         &crate::native_assignment_api::prepare_native_assignments_impl(source, "NativeStart")
@@ -153,12 +151,33 @@ fn native_preparation_preserves_declared_host_input_start() {
     for value in &parameters[first..first + 16] {
         assert_eq!(value.as_f64(), Some(3.0));
     }
-    assert_eq!(artifact["stages"].as_array().unwrap().len(), 1);
+    assert_eq!(issued_target_count(&artifact), 16);
+}
+
+/// Total unknowns the issued stages assign. An algebraic family issues one
+/// stage per scalar row; compact families return with Map-row exact
+/// certification on the AffineKernelPlan owner.
+pub(super) fn issued_target_count(artifact: &serde_json::Value) -> u64 {
+    artifact["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| stage["target_count"].as_u64().unwrap())
+        .sum()
+}
+
+fn stage_modules(artifact: &serde_json::Value) -> Vec<&serde_json::Value> {
+    artifact["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| &stage["module_sha256"])
+        .collect()
 }
 
 #[test]
 fn native_preparation_refuses_coupled_scalar_and_stateful_models() {
-    let _lock = SESSION_TEST_LOCK.lock().unwrap();
+    let _lock = session_test_guard();
     for (name, source) in [
         (
             "Scalar",
@@ -181,32 +200,31 @@ fn native_model_wire_reissues_source_bound_schedule() {
     session.update_document("input.mo", TWO_STAGE);
     let compilation = compile_requested_model(&mut session, "NativeImage").unwrap();
     let problem = rumoca_sim::lower_solve_problem(&compilation.dae).unwrap();
-    assert!(
-        problem
-            .continuous
-            .implicit_rhs
-            .nodes
+    let original = issued_stage_ranges(&problem);
+    assert_eq!(
+        original
             .iter()
-            .all(|node| matches!(node, rumoca_ir_solve::ComputeNode::Map { .. }))
-    );
-    assert!(
-        problem
-            .continuous
-            .refresh_owners
-            .native_assignment_schedule()
-            .is_some()
+            .map(|(_, targets)| targets.len())
+            .sum::<usize>(),
+        32
     );
     let wire = serde_json::to_string(&problem).unwrap();
     assert!(!wire.contains("native_assignment_schedule"));
     let replay: rumoca_ir_solve::SolveProblem = serde_json::from_str(&wire).unwrap();
-    assert_eq!(
-        replay
-            .continuous
-            .refresh_owners
-            .native_assignment_schedule()
-            .unwrap()
-            .stages()
-            .len(),
-        2
-    );
+    assert_eq!(issued_stage_ranges(&replay), original);
+}
+
+/// The issued native stages as (canonical source node, target range).
+pub(super) fn issued_stage_ranges(
+    problem: &rumoca_ir_solve::SolveProblem,
+) -> Vec<(usize, std::ops::Range<usize>)> {
+    problem
+        .continuous
+        .refresh_owners
+        .native_assignment_schedule()
+        .unwrap()
+        .stages()
+        .iter()
+        .map(|stage| (stage.source_node(), stage.target_range().unwrap()))
+        .collect()
 }

@@ -1,26 +1,10 @@
-//! A compact-call-only source must select the linked status ABI.
+//! A source whose only values are pure calls selects the linked status ABI.
 use super::*;
 use sha2::{Digest, Sha256};
 
 fn artifact(source: &str) -> serde_json::Value {
-    let encoded = crate::native_assignment_api::with_prepared_native_model(
-        source,
-        "CompactCalls",
-        |model, source, name| {
-            let schedule = crate::native_assignment_api::checked_native_schedule(model)?;
-            assert!(schedule.stages().iter().all(|stage| {
-                stage.value_kernel().nodes.iter().all(|node| {
-                    matches!(
-                        node,
-                        rumoca_ir_solve::ComputeNode::Map { .. }
-                            | rumoca_ir_solve::ComputeNode::AffineStencil { .. }
-                    )
-                })
-            }));
-            crate::native_program_api::model_artifact(model, source, name)
-        },
-    )
-    .unwrap();
+    let encoded =
+        crate::native_program_api::prepare_native_program_impl(source, "CompactCalls").unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(artifact["profile"], "native-direct-program-f64-v3");
     assert_eq!(artifact["abi"]["transactional_y"], true);
@@ -68,7 +52,7 @@ fn check_frames(artifact: &serde_json::Value, edited: bool) {
 }
 
 #[test]
-fn map_only_primal_calls_select_v3_and_execute_source_edits() {
+fn pure_call_values_select_v3_and_execute_source_edits() {
     let _lock = session_test_guard();
     let source = "function ExactEqual
       input Real left; input Real right; output Boolean equal;

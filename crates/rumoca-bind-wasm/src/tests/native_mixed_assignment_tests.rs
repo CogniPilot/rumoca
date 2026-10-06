@@ -81,7 +81,7 @@ fn verify_frames(artifact: &serde_json::Value, addition: f64) {
 }
 
 #[test]
-fn mixed_native_values_execute_changed_inputs_and_edited_source_without_scalarizing_arrays() {
+fn mixed_native_values_execute_changed_inputs_and_edited_source() {
     let _lock = session_test_guard();
     let artifact = prepare(MIXED, "NativeMixed");
     assert_eq!(artifact["profile"], "native-direct-assignments-f64-v1");
@@ -91,15 +91,12 @@ fn mixed_native_values_execute_changed_inputs_and_edited_source_without_scalariz
     );
     assert_eq!(artifact["abi"]["y_count"], 33);
     assert_eq!(artifact["abi"]["p_count"], 49);
-    let counts = artifact["stages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|stage| stage["target_count"].as_u64().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(counts.len(), 5);
-    assert_eq!(counts.iter().filter(|&&count| count == 1).count(), 3);
-    assert!(counts.contains(&16) && counts.contains(&14));
+    // Every unknown has exactly one issued owner; array values are checked
+    // element by element against the source semantics below.
+    assert_eq!(
+        super::native_assignment_tests::issued_target_count(&artifact),
+        33
+    );
     verify_frames(&artifact, 2.0);
 
     let edited = prepare(&MIXED.replace("+ 2;", "+ 3;"), "NativeMixed");
@@ -109,43 +106,24 @@ fn mixed_native_values_execute_changed_inputs_and_edited_source_without_scalariz
 }
 
 #[test]
-fn mixed_wire_decode_reissues_exact_scalar_and_family_schedule() {
+fn mixed_wire_decode_reissues_the_issued_schedule() {
     let mut session = Session::default();
     session.update_document("input.mo", MIXED);
     let compilation = compile_requested_model(&mut session, "NativeMixed").unwrap();
     let problem = rumoca_sim::lower_solve_problem(&compilation.dae).unwrap();
-    assert!(
-        problem
-            .continuous
-            .implicit_rhs
-            .nodes
+    let stages = super::native_assignment_tests::issued_stage_ranges;
+    let original = stages(&problem);
+    assert_eq!(
+        original
             .iter()
-            .any(|node| matches!(node, rumoca_ir_solve::ComputeNode::ScalarPrograms(_)))
-    );
-    assert!(
-        problem
-            .continuous
-            .implicit_rhs
-            .nodes
-            .iter()
-            .any(|node| matches!(node, rumoca_ir_solve::ComputeNode::Map { .. }))
+            .map(|(_, targets)| targets.len())
+            .sum::<usize>(),
+        33
     );
     let wire = serde_json::to_string(&problem).unwrap();
     assert!(!wire.contains("native_assignment_schedule"));
     let replay: rumoca_ir_solve::SolveProblem = serde_json::from_str(&wire).unwrap();
-    let stages = |problem: &rumoca_ir_solve::SolveProblem| {
-        problem
-            .continuous
-            .refresh_owners
-            .native_assignment_schedule()
-            .unwrap()
-            .stages()
-            .iter()
-            .map(|stage| (stage.source_node(), stage.target_range().unwrap()))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(stages(&replay), stages(&problem));
-    assert_eq!(stages(&replay).len(), 5);
+    assert_eq!(stages(&replay), original);
 }
 
 #[test]

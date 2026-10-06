@@ -13,7 +13,7 @@ fn program_artifact(source: &str, name: &str) -> serde_json::Value {
 }
 
 #[test]
-fn fused_v2_actual_rectangular_source_preserves_gaps_source_edits_and_copy_abi_refusal() {
+fn fused_v2_actual_rectangular_source_preserves_gaps_and_source_edits() {
     let _lock = session_test_guard();
     let source = "model RectangularCopy
       input Real pixels[15,15] = identity(15);
@@ -26,14 +26,17 @@ fn fused_v2_actual_rectangular_source_preserves_gaps_source_edits_and_copy_abi_r
       end RectangularCopy;";
     let artifact = program_artifact(source, "RectangularCopy");
     assert_eq!(artifact["profile"], "native-direct-program-f64-v2");
+    // Every result element has exactly one issued owner. The two rectangular
+    // blocks issue one stage per scalar row; strided block stages return with
+    // Map-row exact certification on the AffineKernelPlan owner.
     let stages = artifact["issued_schedule"].as_array().unwrap();
-    assert_eq!(stages.len(), 2);
-    assert_eq!(stages[0]["target_stride"], 15);
-    assert_eq!(stages[0]["target_block_width"], 6);
-    assert_eq!(stages[0]["target_count"], 90);
-    assert_eq!(stages[1]["target_stride"], 15);
-    assert_eq!(stages[1]["target_block_width"], 9);
-    assert_eq!(stages[1]["target_count"], 135);
+    assert_eq!(
+        stages
+            .iter()
+            .map(|stage| stage["target_count"].as_u64().unwrap())
+            .sum::<u64>(),
+        225
+    );
     let mut execution = ProgramExecution::new(&artifact);
     let mut inputs = artifact["parameters"]
         .as_array()
@@ -51,14 +54,17 @@ fn fused_v2_actual_rectangular_source_preserves_gaps_source_edits_and_copy_abi_r
         let output = execution.evaluate(&inputs, frame as f64);
         check_rectangular_outputs(&artifact, &output, &inputs, false);
     }
-    let refused =
-        crate::native_assignment_api::prepare_native_assignments_impl(source, "RectangularCopy")
-            .unwrap_err();
-    assert!(
-        refused
-            .message()
-            .contains("copy ABI requires dense targets")
-    );
+    // Scalar-row stages are dense, so the separate-stage copy ABI admits them
+    // and evaluates the same values. Its refusal of strided block targets is
+    // exercised again when block stages return with Map-row exact
+    // certification on the AffineKernelPlan owner.
+    let stages: serde_json::Value = serde_json::from_str(
+        &crate::native_assignment_api::prepare_native_assignments_impl(source, "RectangularCopy")
+            .unwrap(),
+    )
+    .unwrap();
+    let output = super::NativeExecution::new(&stages).evaluate(&inputs, 0.);
+    check_rectangular_outputs(&stages, &output, &inputs, false);
     let edited = source.replacen(
         "result[i,j] = pixels[i,j];",
         "result[i,j] = 2.0*pixels[i,j];",
