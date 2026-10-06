@@ -328,3 +328,42 @@ fn a_nested_record_array_copy_is_one_whole_array_assignment_per_leaf_field() {
         );
     }
 }
+
+const FIELD_DEFAULT: &str = "
+package P
+  constant Integer cap = 2;
+  record Cat
+    Real bodyPositions[cap, 3];
+    Integer n;
+  end Cat;
+  record State
+    Cat catalog;
+    Real w;
+  end State;
+  function F
+    input State previous;
+    input Real pos[cap, 3] = previous.catalog.bodyPositions;
+    output Real y;
+  algorithm
+    y := sum(pos) + previous.w;
+  end F;
+end P;
+model FieldDefault
+  input P.State st;
+  output Real y;
+equation
+  y = P.F(st);
+end FieldDefault;
+";
+
+#[test]
+fn a_function_input_default_may_read_a_nested_field_of_an_earlier_record_input() {
+    // The call supplies `previous`, so the omitted `pos` reads that record's
+    // field: no reference to the callee's own input name survives in Flat.
+    if let Err(error) = compile("FieldDefault", FIELD_DEFAULT) {
+        assert!(
+            !error.contains("unresolved Flat reference"),
+            "the default is read from the supplied record: {error}"
+        );
+    }
+}

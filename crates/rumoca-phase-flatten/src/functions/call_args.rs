@@ -515,6 +515,9 @@ impl ExpressionRewriter for DefaultInputSubstituter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
+        if let Some(field_path) = self.field_path_of_supplied_record(name, span) {
+            return field_path;
+        }
         let Some(value) = name
             .target_def_id()
             .and_then(|def_id| self.values.get(&def_id))
@@ -529,6 +532,58 @@ impl ExpressionRewriter for DefaultInputSubstituter<'_> {
             subscripts: self.rewrite_subscripts(subscripts),
             span,
         }
+    }
+}
+
+impl DefaultInputSubstituter<'_> {
+    /// A default that reads a field of an earlier record input (`previous.catalog.n`)
+    /// reads that field of the record the call supplied for it.
+    fn field_path_of_supplied_record(
+        &mut self,
+        name: &rumoca_core::Reference,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let reference = name.component_ref()?;
+        let (root, fields) = reference.parts().split_first()?;
+        if fields.is_empty() {
+            return None;
+        }
+        let mut value = self.values.get(&root.def_id)?.clone();
+        if let rumoca_core::Expression::VarRef {
+            name: supplied,
+            subscripts,
+            ..
+        } = &value
+            && subscripts.is_empty()
+            && fields.iter().all(|field| field.subs.is_empty())
+        {
+            let spelled = fields
+                .iter()
+                .fold(supplied.as_str().to_string(), |path, field| {
+                    format!("{path}.{}", field.ident)
+                });
+            return Some(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::generated(spelled),
+                subscripts: Vec::new(),
+                span,
+            });
+        }
+        for field in fields {
+            value = rumoca_core::Expression::FieldAccess {
+                base: Box::new(value),
+                field: field.ident.clone(),
+                field_def_id: field.def_id,
+                span,
+            };
+            if !field.subs.is_empty() {
+                value = rumoca_core::Expression::Index {
+                    base: Box::new(value),
+                    subscripts: self.rewrite_subscripts(&field.subs),
+                    span,
+                };
+            }
+        }
+        Some(value)
     }
 }
 
