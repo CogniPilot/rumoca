@@ -40,6 +40,7 @@
 //! This module is designed to be extensible and serves as the foundation for parsing,
 //! analyzing, and generating code for the custom language or model representation.
 
+pub mod declared_constants;
 mod external_object;
 pub mod instance;
 mod modelica;
@@ -73,6 +74,7 @@ pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
 pub use external_object::{
     ExternalObjectLifecycle, ExternalObjectLifecycleError, ExternalObjectLifecycleRole,
 };
+pub use declared_constants::DeclaredConstants;
 pub use nodes::*;
 pub use semantic_identity::{
     classes_are_semantically_compatible, components_are_semantically_compatible,
@@ -230,6 +232,8 @@ pub struct ClassDefIndex<'tree> {
     builtin_def_ids: FxHashSet<DefId>,
     external_object_def_id: Option<DefId>,
     external_object_owner_def_ids: FxHashSet<DefId>,
+    tree: &'tree ClassTree,
+    declared_constants: std::sync::OnceLock<DeclaredConstants>,
 }
 
 impl<'tree> ClassDefIndex<'tree> {
@@ -251,6 +255,8 @@ impl<'tree> ClassDefIndex<'tree> {
                 .scope_tree
                 .predefined_member(&ComponentPath::from_flat_path("ExternalObject")),
             external_object_owner_def_ids: FxHashSet::default(),
+            tree,
+            declared_constants: std::sync::OnceLock::new(),
         };
         for class_def in tree.definitions.classes.values() {
             index.insert_class_tree(class_def, None, None);
@@ -278,6 +284,12 @@ impl<'tree> ClassDefIndex<'tree> {
                 external_object_descendants(&index.classes, external_object_def_id);
         }
         index
+    }
+
+    /// The fixed constant declarations of the tree, indexed on first use.
+    pub fn declared_constants(&self) -> &DeclaredConstants {
+        self.declared_constants
+            .get_or_init(|| DeclaredConstants::from_tree(self.tree))
     }
 
     pub fn get(&self, def_id: DefId) -> Option<&'tree ClassDef> {

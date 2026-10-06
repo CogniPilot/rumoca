@@ -128,7 +128,7 @@ pub struct TypeCheckEvalContext {
     pub dimensions: FxHashMap<String, Vec<usize>>,
     pub declared_dimensions: Arc<DeclaredDimensions>,
     /// Constant declarations by declaration identity (MLS 5.3).
-    pub declared_constants: Arc<crate::declared_constants::DeclaredConstants>,
+    pub declared_constants: rumoca_ir_ast::DeclaredConstants,
     /// Function definitions for compile-time evaluation (MLS §12.4).
     pub functions: Arc<FxHashMap<String, ClassDef>>,
     pub func_eval_depth: usize,
@@ -154,7 +154,7 @@ impl TypeCheckEvalContext {
             enums: FxHashMap::default(),
             dimensions: FxHashMap::default(),
             declared_dimensions: Arc::default(),
-            declared_constants: Arc::default(),
+            declared_constants: Default::default(),
             functions: Arc::new(FxHashMap::default()),
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
@@ -1505,9 +1505,9 @@ pub use late_inference::{
 /// declaration scope (MLS 5.3), without any parameter or instance values.
 pub fn eval_integer_of_declared_constants(
     expr: &Expression,
-    constants: &Arc<crate::declared_constants::DeclaredConstants>,
+    constants: &rumoca_ir_ast::DeclaredConstants,
 ) -> Option<i64> {
     let mut ctx = TypeCheckEvalContext::new();
-    ctx.declared_constants = Arc::clone(constants);
+    ctx.declared_constants = constants.clone();
     eval_integer_with_scope(expr, &ctx, "")
 }

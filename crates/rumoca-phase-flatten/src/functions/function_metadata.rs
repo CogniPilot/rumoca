@@ -772,7 +772,10 @@ pub(super) fn lower_function_shape_subscript(
     match subscript {
         ast::Subscript::Expression(expr) => {
             let span = expr.span();
-            if let Some(value) = resolve_compile_time_integer_expr(expr, class_index) {
+            if let Some(value) = rumoca_eval_ast::eval::eval_integer_of_declared_constants(
+                expr,
+                class_index.declared_constants(),
+            ) {
                 return Ok(rumoca_core::Subscript::index(value, span));
             }
             let qualified = qualify_function_expr(expr, imports, locals);
@@ -792,100 +795,6 @@ pub(super) fn lower_function_shape_subscript(
             .map_err(|err| FlattenError::missing_source_context(err.to_string()))?)
         }
     }
-}
-
-pub(super) fn resolve_compile_time_integer_expr(
-    expr: &ast::Expression,
-    class_index: &ast::ClassDefIndex<'_>,
-) -> Option<i64> {
-    let mut visiting = FxHashSet::default();
-    resolve_compile_time_integer_expr_inner(expr, class_index, &mut visiting)
-}
-
-pub(super) fn resolve_compile_time_integer_expr_inner(
-    expr: &ast::Expression,
-    class_index: &ast::ClassDefIndex<'_>,
-    visiting: &mut FxHashSet<rumoca_core::DefId>,
-) -> Option<i64> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse().ok(),
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus,
-            rhs,
-            ..
-        } => resolve_compile_time_integer_expr_inner(rhs, class_index, visiting),
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus,
-            rhs,
-            ..
-        } => resolve_compile_time_integer_expr_inner(rhs, class_index, visiting)
-            .and_then(i64::checked_neg),
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = resolve_compile_time_integer_expr_inner(lhs, class_index, visiting)?;
-            let rhs = resolve_compile_time_integer_expr_inner(rhs, class_index, visiting)?;
-            match op {
-                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs.checked_add(rhs),
-                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs.checked_sub(rhs),
-                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => lhs.checked_mul(rhs),
-                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem
-                    if rhs != 0 && lhs % rhs == 0 =>
-                {
-                    Some(lhs / rhs)
-                }
-                _ => None,
-            }
-        }
-        ast::Expression::ComponentReference(reference) => reference
-            .target_def_id()
-            .and_then(|def_id| resolve_component_constant_integer(def_id, class_index, visiting)),
-        _ => None,
-    }
-}
-
-pub(super) fn resolve_component_constant_integer(
-    def_id: rumoca_core::DefId,
-    class_index: &ast::ClassDefIndex<'_>,
-    visiting: &mut FxHashSet<rumoca_core::DefId>,
-) -> Option<i64> {
-    if !visiting.insert(def_id) {
-        return None;
-    }
-    let result = component_by_def_id(class_index, def_id)
-        .filter(|component| {
-            // MLS 3.7 §7.2: a public non-final declaration can be modified by
-            // the package that exposes it (`package M extends PM(nS = 2)`), so
-            // only a final or protected one (a protected element cannot be
-            // modified) fixes its value here; any other stays a shape
-            // expression that the exposing package settles (FLAT-C02).
-            (component.is_final || component.is_protected)
-                && matches!(
-                    component.variability,
-                    rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_)
-                )
-        })
-        .and_then(|component| component.binding.as_ref())
-        .and_then(|binding| {
-            resolve_compile_time_integer_expr_inner(binding, class_index, visiting)
-        });
-    visiting.remove(&def_id);
-    result
-}
-
-pub(super) fn component_by_def_id<'a>(
-    class_index: &'a ast::ClassDefIndex<'_>,
-    def_id: rumoca_core::DefId,
-) -> Option<&'a ast::Component> {
-    let parent_def_id = class_index.parent_def_id(def_id)?;
-    let local_name = class_index.local_name(def_id)?;
-    let parent = class_index.get(parent_def_id)?;
-    parent
-        .components
-        .get(local_name)
-        .filter(|component| component.def_id == Some(def_id))
 }
 
 const FUNCTION_QUALIFY_OPTS: qualify::QualifyOptions = qualify::QualifyOptions { skip_local: true };

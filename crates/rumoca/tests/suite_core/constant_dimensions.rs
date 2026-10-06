@@ -149,7 +149,7 @@ end Step;
 ";
 
 #[test]
-fn a_whole_record_copy_builds_the_constructor_call_with_resolved_metadata() {
+fn a_whole_record_copy_lowers_field_by_field_without_a_constructor_call() {
     let model = flat("Step", CONSTRUCTOR_COPY).expect("the record copy flattens");
     assert_eq!(dims(&model, "next.occupied"), vec![4]);
     assert_eq!(dims(&model, "next.point"), vec![4, 3]);
@@ -158,32 +158,31 @@ fn a_whole_record_copy_builds_the_constructor_call_with_resolved_metadata() {
         .values()
         .find(|function| function.name.as_str().ends_with("Advance"))
         .expect("Advance is collected");
-    let copies: Vec<_> = advance
+    // The copy `next := previous` is one assignment per field, the array fields
+    // whole, and builds no constructor call.
+    let copied: Vec<_> = advance
         .body
         .iter()
         .filter_map(|statement| match statement {
-            rumoca_core::Statement::Assignment {
-                value:
-                    rumoca_core::Expression::FunctionCall {
-                        name,
-                        is_constructor: true,
-                        ..
-                    },
-                ..
-            } => Some(name),
+            rumoca_core::Statement::Assignment { comp, value, .. } => {
+                Some((comp.parts().last()?.ident.as_str(), value))
+            }
             _ => None,
         })
         .collect();
-    assert!(
-        !copies.is_empty(),
-        "the whole-record copy is a constructor call"
-    );
-    for name in copies {
+    for field in ["nextId", "occupied", "point", "level"] {
         assert!(
-            name.resolved_function().is_some(),
-            "constructor `{name}` carries its resolved function metadata"
+            copied.iter().any(|(leaf, _)| *leaf == field),
+            "field `{field}` is copied by its own assignment"
         );
     }
+    assert!(copied.iter().all(|(_, value)| !matches!(
+        value,
+        rumoca_core::Expression::FunctionCall {
+            is_constructor: true,
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -214,4 +213,111 @@ equation
 end Cycle;
 ";
     assert!(compile("Cycle", source).is_err());
+}
+
+const SIGNATURE_ALIASES: &str = "
+package K
+  constant Integer dimension = 3;
+end K;
+package F
+  constant Integer currentDimension = 5 * K.dimension;
+end F;
+package E
+  constant Integer dimension = K.dimension;
+  constant Integer currentDimension = F.currentDimension;
+  record Est
+    Real bias[dimension];
+    Real cov[currentDimension, currentDimension];
+    Real q;
+  end Est;
+  function Valid
+    input Est value;
+    output Boolean ok;
+  algorithm
+    ok := value.q > 0 and value.bias[1] > 0;
+  end Valid;
+end E;
+model Signature
+  input E.Est e;
+  output Boolean n;
+equation
+  n = E.Valid(e);
+end Signature;
+";
+
+#[test]
+fn record_fields_in_function_signatures_carry_exact_extents_from_constant_aliases() {
+    let compiled = compile("Signature", SIGNATURE_ALIASES)
+        .expect("signature extents resolve through aliases of expression constants");
+    assert_eq!(dims(&compiled.flat, "e.cov"), vec![15, 15]);
+}
+
+const NESTED_RECORD_ARRAY_COPY: &str = "
+package P
+  constant Integer cap = 3;
+  record Edge
+    Boolean enabled;
+    Integer id;
+  end Edge;
+  record State
+    Integer gen;
+    Edge edges[cap];
+  end State;
+  record Insertion
+    State state;
+    Boolean accepted;
+  end Insertion;
+  function Keep
+    input State previous;
+    output Insertion result;
+  algorithm
+    result.state := previous;
+    result.accepted := false;
+  end Keep;
+end P;
+model Nested
+  input P.State st;
+  output P.Insertion r;
+equation
+  r = P.Keep(st);
+end Nested;
+";
+
+#[test]
+fn a_nested_record_array_copy_is_one_whole_array_assignment_per_leaf_field() {
+    let model = flat("Nested", NESTED_RECORD_ARRAY_COPY).expect("the nested copy flattens");
+    let keep = model
+        .functions
+        .values()
+        .find(|function| function.name.as_str().ends_with("Keep"))
+        .expect("Keep is collected");
+    let leaves: Vec<String> = keep
+        .body
+        .iter()
+        .filter_map(|statement| match statement {
+            rumoca_core::Statement::Assignment { comp, value, .. } => {
+                assert!(
+                    !matches!(
+                        value,
+                        rumoca_core::Expression::FunctionCall {
+                            is_constructor: true,
+                            ..
+                        }
+                    ),
+                    "a copy builds no constructor call"
+                );
+                Some(
+                    comp.parts()
+                        .iter()
+                        .map(|part| part.ident.as_str())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                )
+            }
+            _ => None,
+        })
+        .collect();
+    for leaf in ["result.state.gen", "result.state.edges.enabled", "result.state.edges.id"] {
+        assert!(leaves.iter().any(|name| name == leaf), "missing {leaf} in {leaves:?}");
+    }
 }
