@@ -93,6 +93,15 @@ impl<'scope> GuardFacts<'scope> {
         }
     }
 
+    /// The largest value `name` can hold on this path, when a fact bounds it
+    /// above; an unreachable path bounds every value.
+    pub(super) fn upper_bound(&self, name: &VarName) -> Option<i64> {
+        match &self.path {
+            None => Some(i64::MIN),
+            Some(facts) => facts.get(name)?.upper,
+        }
+    }
+
     /// The facts at the start of each branch of an `if`, and on its
     /// fall-through path when it has no `else` (the last entry).
     pub(super) fn branch_entries(

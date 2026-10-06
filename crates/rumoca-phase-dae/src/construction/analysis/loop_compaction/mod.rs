@@ -112,8 +112,14 @@ pub(super) fn compact_function_loops(
         function,
         flat,
     )?;
-    let settled =
-        bounded_while::bound_while_loops(&settled, shapes, &bounded_while::entry_values(function));
+    let settled = bounded_while::bound_while_loops(
+        &settled,
+        bounded_while::WhileContext {
+            shapes,
+            integers: &scalar_integer_names(function, flat),
+        },
+        &bounded_while::entry_values(function),
+    );
     let mut bounded_shapes = shapes.clone();
     infer_function_integer_bounds(&settled, &mut bounded_shapes);
     infer_declared_finite_counters(&settled, &mut bounded_shapes, function, flat);

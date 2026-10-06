@@ -36,6 +36,9 @@
 use super::*;
 use rumoca_core::{ForIndex, Literal, OpBinary, StatementBlock};
 
+mod exit_or_advance;
+use exit_or_advance::exit_or_advance_bound;
+
 /// Literal Integer values each name is proven to hold at the current point; a
 /// Boolean name holds 0 for `false` and 1 for `true`.
 pub(super) type EntryValues = HashMap<VarName, i64>;
@@ -70,15 +73,23 @@ pub(super) fn entry_values(function: &rumoca_core::Function) -> EntryValues {
         .collect()
 }
 
+/// What a pass-bound proof reads: the proven extents and values, and the
+/// scalar Integer values guard facts may bound.
+#[derive(Clone, Copy)]
+pub(super) struct WhileContext<'a> {
+    pub(super) shapes: &'a ShapeEnvironment,
+    pub(super) integers: &'a HashSet<VarName>,
+}
+
 pub(super) fn bound_while_loops(
     statements: &[rumoca_core::Statement],
-    shapes: &ShapeEnvironment,
+    cx: WhileContext<'_>,
     entry: &EntryValues,
 ) -> Vec<rumoca_core::Statement> {
     let mut known = entry.clone();
     let mut bounded = Vec::with_capacity(statements.len());
     for statement in statements {
-        bounded.extend(bound_statement(statement, shapes, &known));
+        bounded.extend(bound_statement(statement, cx, &known));
         advance_known(&mut known, statement);
     }
     bounded
@@ -121,21 +132,21 @@ fn loop_entry(known: &EntryValues, body: &[rumoca_core::Statement]) -> EntryValu
 /// every path, as the source loop guarantees.
 fn bound_statement(
     statement: &rumoca_core::Statement,
-    shapes: &ShapeEnvironment,
+    cx: WhileContext<'_>,
     known: &EntryValues,
 ) -> Vec<rumoca_core::Statement> {
     let rumoca_core::Statement::While { block, span } = statement else {
-        return vec![bound_nested_statement(statement, shapes, known)];
+        return vec![bound_nested_statement(statement, cx, known)];
     };
-    let body = bound_while_loops(&block.stmts, shapes, &loop_entry(known, &block.stmts));
+    let body = bound_while_loops(&block.stmts, cx, &loop_entry(known, &block.stmts));
     let block = StatementBlock {
         cond: block.cond.clone(),
         stmts: body,
     };
-    let Some(bound) = iteration_bound(&block, known, shapes) else {
+    let Some(bound) = iteration_bound(&block, known, cx) else {
         return vec![rumoca_core::Statement::While { block, span: *span }];
     };
-    if entry_truth(&block.cond, known, shapes) != Some(true) {
+    if entry_truth(&block.cond, known, cx.shapes) != Some(true) {
         return vec![guarded_for(block, bound, *span)];
     }
     let mut peeled = block.stmts.clone();
@@ -206,7 +217,7 @@ fn entry_integer(
 
 fn bound_nested_statement(
     statement: &rumoca_core::Statement,
-    shapes: &ShapeEnvironment,
+    cx: WhileContext<'_>,
     known: &EntryValues,
 ) -> rumoca_core::Statement {
     match statement {
@@ -216,7 +227,7 @@ fn bound_nested_statement(
             span,
         } => rumoca_core::Statement::For {
             indices: indices.clone(),
-            equations: bound_while_loops(equations, shapes, &loop_entry(known, equations)),
+            equations: bound_while_loops(equations, cx, &loop_entry(known, equations)),
             span: *span,
         },
         rumoca_core::Statement::If {
@@ -228,12 +239,12 @@ fn bound_nested_statement(
                 .iter()
                 .map(|block| StatementBlock {
                     cond: block.cond.clone(),
-                    stmts: bound_while_loops(&block.stmts, shapes, known),
+                    stmts: bound_while_loops(&block.stmts, cx, known),
                 })
                 .collect(),
             else_block: else_block
                 .as_ref()
-                .map(|statements| bound_while_loops(statements, shapes, known)),
+                .map(|statements| bound_while_loops(statements, cx, known)),
             span: *span,
         },
         _ => statement.clone(),
@@ -268,11 +279,20 @@ fn guarded_for(block: StatementBlock, bound: i64, span: Span) -> rumoca_core::St
 fn iteration_bound(
     block: &StatementBlock,
     known: &EntryValues,
-    shapes: &ShapeEnvironment,
+    cx: WhileContext<'_>,
 ) -> Option<i64> {
     if statements_exit_early(&block.stmts) {
         return None;
     }
+    counter_bound(block, known, cx.shapes).or_else(|| exit_or_advance_bound(block, known, cx))
+}
+
+/// The counter proof form (see the module note).
+fn counter_bound(
+    block: &StatementBlock,
+    known: &EntryValues,
+    shapes: &ShapeEnvironment,
+) -> Option<i64> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(&block.cond, &mut conjuncts);
     conjuncts.iter().find_map(|conjunct| {
