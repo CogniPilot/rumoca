@@ -7,7 +7,8 @@
 //! program's registers are offset into one register file, a value an earlier
 //! operation of the segment already computed is read from its register
 //! instead of recomputed, and a load of a slot the segment already stored
-//! reads the stored register. The checker evaluates the original programs and
+//! reads the stored register. A closed segment keeps only the registers it
+//! uses, renumbered in order. The checker evaluates the original programs and
 //! the segments over one hash-consed term table and requires identical output
 //! and final slot terms.
 
@@ -18,7 +19,7 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
-use registers::{Role, read_registers, renamable, visit_registers};
+use registers::{Role, compact_registers, read_registers, renamable, visit_registers};
 use symbolic::{SymbolicSlots, Term, Terms, ValueKey, ValueShape, value_shape};
 
 use super::*;
@@ -347,12 +348,16 @@ struct Segment {
 
 impl Builder {
     /// Append a fusible program to the open segment, first closing it when
-    /// the program's registers would exceed the cap. An open segment holds at
-    /// most the cap, so the program's offset is a register.
+    /// the registers the program may add to those the segment uses would
+    /// exceed the cap, unless the program reads a call value the segment
+    /// already holds: a call costs its body, which no register count bounds,
+    /// while any other value costs about its registers to recompute. The
+    /// program's offset must be a register.
     fn append(&mut self, index: usize, targets: &[usize], program: &FusibleProgram<'_>) {
-        let fits = self.segment.registers + program.registers <= SHARED_VALUE_REGISTER_CAP;
+        let fits = self.segment.terms.len() + program.registers <= SHARED_VALUE_REGISTER_CAP;
+        let joins = fits || self.segment.ops.is_empty() || self.holds_call_of(program);
         let base = match Reg::try_from(self.segment.registers) {
-            Ok(base) if fits || self.segment.ops.is_empty() => base,
+            Ok(base) if joins => base,
             _ => {
                 self.close(true);
                 0
@@ -373,6 +378,75 @@ impl Builder {
             program_builder.step(step);
         }
         self.segment.targets.extend_from_slice(targets);
+    }
+
+    /// Whether `program` calls an owner on inputs whose terms are those of a
+    /// call the open segment holds: its operands are evaluated symbolically
+    /// against the segment, as appending would, without changing it.
+    fn holds_call_of(&mut self, program: &FusibleProgram<'_>) -> bool {
+        let mut map: HashMap<Reg, Term> = HashMap::new();
+        program
+            .steps
+            .iter()
+            .any(|step| self.probe_held_call(step, &mut map))
+    }
+
+    /// Record the terms `step` writes in `map`; `true` when it is a call the
+    /// open segment holds.
+    fn probe_held_call(&mut self, step: &Step<'_>, map: &mut HashMap<Reg, Term>) -> bool {
+        let (key, dst, count) = match *step {
+            Step::LoadSlot { dst, index } => {
+                let term = self.slot_term(index);
+                map.insert(dst, term);
+                return false;
+            }
+            Step::LoadSlots {
+                dst, first, count, ..
+            } => {
+                for offset in 0..count {
+                    let term = self.slot_term(first + offset);
+                    map.insert(dst + offset as Reg, term);
+                }
+                return false;
+            }
+            Step::Copy { dst, src } => {
+                let term = map[&src];
+                map.insert(dst, term);
+                return false;
+            }
+            Step::Store(_) => return false,
+            Step::Value {
+                op,
+                ref shape,
+                dst,
+                count,
+            } => {
+                let operands = shape
+                    .operands
+                    .iter()
+                    .map(|&(field, register)| (field, map[&register]))
+                    .collect();
+                let key = self.terms.key(&shape.shape, operands);
+                if matches!(op, LinearOp::PureCall { .. }) && self.segment.values.contains_key(&key)
+                {
+                    return true;
+                }
+                (key, dst, count)
+            }
+        };
+        for offset in 0..count {
+            map.insert(dst + offset as Reg, self.terms.value(&key, offset));
+        }
+        false
+    }
+
+    /// The term a load of `index` reads in the open segment: the value the
+    /// segment stored there, or the slot as the sequence found it.
+    fn slot_term(&mut self, index: usize) -> Term {
+        match self.segment.stored.get(&index) {
+            Some(register) => self.segment.terms[register],
+            None => self.slots.slot(&mut self.terms, index),
+        }
     }
 
     fn push_opaque(&mut self, index: usize, program: &AssignmentProgram<'_>) {
@@ -403,7 +477,7 @@ impl Builder {
             self.closed.extend(segment.values.into_keys());
         }
         self.done.push(SharedValueSegment {
-            ops: without_dead_operations(segment.ops),
+            ops: compact_registers(without_dead_operations(segment.ops)),
             targets: segment.targets,
             first_program: segment.first_program,
         });
@@ -567,9 +641,10 @@ impl ProgramBuilder<'_, '_> {
             .map(|&(field, register)| (field, self.term(register)))
             .collect();
         let key = self.builder.terms.key(&shape.shape, operands);
-        // A call may reach an external body, so it runs at every occurrence.
-        let shareable = !matches!(op, LinearOp::PureCall { .. });
-        if shareable && let Some(registers) = self.builder.segment.values.get(&key).cloned() {
+        // A renamed call is value-only and its owner reads only its inputs
+        // (SPEC_0043 closed-input coordinate), so identical operand terms
+        // prove identical results, as for every other value.
+        if let Some(registers) = self.builder.segment.values.get(&key).cloned() {
             return self.reuse(dst, &registers);
         }
         if self.builder.closed.contains(&key) {
@@ -620,8 +695,8 @@ impl ProgramBuilder<'_, '_> {
 }
 
 /// `ops` without every operation whose written registers no later operation
-/// reads; output stores, operations writing nothing, and calls (whose body may
-/// reach an external function) are kept.
+/// reads; output stores, operations writing nothing, and calls (whose
+/// numerical failures remain observable) are kept.
 fn without_dead_operations(ops: Vec<LinearOp>) -> Vec<LinearOp> {
     let mut live: HashSet<Reg> = HashSet::new();
     let mut keep = vec![false; ops.len()];

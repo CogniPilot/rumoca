@@ -277,6 +277,7 @@ mod reverse_vjp_test;
 mod runtime_index_derivative;
 mod scoped_import_flatten;
 mod settled_initialization_cone;
+mod shared_call_refresh;
 mod simulation_work_counts;
 mod singular_active_mode;
 mod singular_algebraic_seed;
