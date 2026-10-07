@@ -116,6 +116,81 @@ fn an_inlined_fold_continuation_lowers_to_solve_rows() {
     assert_eq!(simulation.data[variable].first().copied(), Some(3.0));
 }
 
+/// The function's assertion reads the fold's result, so the call-scoped
+/// assertion replays the continuation fold inside the equation rows.
+const CHECKED_GATES: &str = r#"
+function firstOverChecked
+  input Real u;
+  input Integer n;
+  output Real k;
+protected
+  Boolean found;
+  Real acc;
+algorithm
+  found := false;
+  k := 0;
+  acc := 0;
+  for i in 1:n loop
+    if not found then
+      acc := acc + u;
+      if acc > 2.5 then
+        found := true;
+        k := i;
+      end if;
+    end if;
+  end for;
+  assert(found, "no partial sum exceeded the threshold");
+end firstOverChecked;
+
+model CheckedGates
+  parameter Integer n = 10;
+  Real x(start = 1.0, fixed = true);
+  Real k;
+equation
+  der(x) = 0;
+  k = firstOverChecked(x, n);
+end CheckedGates;
+
+model ShortGates
+  extends CheckedGates(n = 2);
+end ShortGates;
+"#;
+
+#[test]
+fn a_call_scoped_assertion_after_a_fold_continuation_replays_it_in_the_rows() {
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let compiled = Compiler::new()
+        .model("CheckedGates")
+        .compile_str(CHECKED_GATES, "checked_gates.mo")
+        .expect("a checked flag-continued loop constructs checked DAE");
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the held assertion keeps the simulation");
+    let variable = simulation
+        .names
+        .iter()
+        .position(|candidate| candidate == "k")
+        .expect("k is visible");
+    assert_eq!(simulation.data[variable].first().copied(), Some(3.0));
+
+    let short = Compiler::new()
+        .model("ShortGates")
+        .compile_str(CHECKED_GATES, "checked_gates.mo")
+        .expect("the two-iteration variant constructs checked DAE");
+    let error = simulate_dae(&short.dae, &options)
+        .err()
+        .expect("two partial sums of 1.0 never exceed 2.5, so the assertion fails");
+    assert!(
+        error
+            .to_string()
+            .contains("no partial sum exceeded the threshold"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_fold_continuation_replays_from_the_wire_and_lowers_to_solve_rows() {
     let compiled = Compiler::new()

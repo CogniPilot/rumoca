@@ -7,6 +7,11 @@
 // SPEC_0021 file-size exception - split plan: extract record projection lowering into lower/scalar/functions/records.rs and function-loop lowering into lower/scalar/functions/loops.rs; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 use super::*;
 
+/// A fold continuation is lowered by the typed function program that owns
+/// the call; scalar inline lowering of the function body does not carry it.
+const FOLD_CONTINUATION_SCALAR: &str =
+    "a fold with a continuation is lowered by its typed function program, not inline";
+
 type RecordCondition<'dae> = (dae::ExprId<'dae>, solve::Reg, dae::ExprId<'dae>);
 type FoldInvariantIndexBase<'dae> = (dae::ExprId<'dae>, (solve::Reg, usize));
 
@@ -2325,20 +2330,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let mut capture_registers = update
+        let capture_registers = update
             .deferred_fold_captures
             .as_ref()
             .map(|deferred| deferred.sources.clone())
             .unwrap_or_default();
-        let continuation = match fold_view.continuation() {
-            Some(condition) => Some(self.lower_fold_continuation(
-                (fold, condition, &initial_widths),
-                &mut capture_registers,
-                None,
-                span,
-            )?),
-            None => None,
-        };
+        if fold_view.continuation().is_some() {
+            return Err(LowerError::unsupported(FOLD_CONTINUATION_SCALAR, span));
+        }
         let capture_start = self.pack_fold_registers(&capture_registers, span)?;
         let activation = (self.activation_path.len() > self.fold_guard_base)
             .then(|| self.fold_activation(span))
@@ -2356,10 +2355,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 capture_registers.len(),
                 update.ops,
             )
-            .and_then(|program| match continuation {
-                Some(ops) => program.with_continuation(ops),
-                None => Ok(program),
-            })
             .map_err(|error| {
                 LowerError::contract(
                     format!("function-fold update register proof failed: {error}"),
@@ -2774,7 +2769,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         update
             .symbolic_domain_points
             .push((fold_view.domain(), binder_registers));
-        update.load_fold_carried(fold, widths, span)?;
+        let mut carried_values = Vec::with_capacity(widths.len());
+        let mut carried_index = 0usize;
+        for &width in widths {
+            let mut carried = Vec::with_capacity(width);
+            for _ in 0..width {
+                let dst = update.register(span)?;
+                update.ops.push(solve::LinearOp::LoadFoldCarried {
+                    dst,
+                    index: carried_index,
+                });
+                carried.push(dst);
+                carried_index += 1;
+            }
+            carried_values.push(carried);
+        }
+        update.function_fold_values.push((fold, carried_values));
         let mut update_widths = Vec::with_capacity(widths.len());
         let mut output_base = 0usize;
         let mut carried = 0usize;
@@ -2829,15 +2839,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let Some(deferred) = update.deferred_fold_captures.as_ref() {
             capture_sources.extend_from_slice(&deferred.sources);
         }
-        let continuation = match fold_view.continuation() {
-            Some(condition) => Some(self.lower_fold_continuation(
-                (fold, condition, widths),
-                &mut capture_sources,
-                excluded_parent,
-                span,
-            )?),
-            None => None,
-        };
+        if fold_view.continuation().is_some() {
+            return Err(LowerError::unsupported(FOLD_CONTINUATION_SCALAR, span));
+        }
         let program = std::sync::Arc::new(
             solve::FunctionFoldProgram::checked(
                 domain.structured().clone(),
@@ -2845,10 +2849,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 capture_sources.len(),
                 update.ops,
             )
-            .and_then(|program| match continuation {
-                Some(ops) => program.with_continuation(ops),
-                None => Ok(program),
-            })
             .map_err(|error| {
                 LowerError::contract(
                     format!("function-fold update register proof failed: {error}"),
@@ -2864,68 +2864,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             },
         );
         Ok((program, capture_sources))
-    }
-
-    /// Load the carried tuple of `fold` into fresh registers of this fold region.
-    fn load_fold_carried(
-        &mut self,
-        fold: dae::FunctionFoldId<'dae>,
-        widths: &[usize],
-        span: Span,
-    ) -> Result<(), LowerError> {
-        let mut carried_values = Vec::with_capacity(widths.len());
-        let mut carried_index = 0usize;
-        for &width in widths {
-            let mut carried = Vec::with_capacity(width);
-            for _ in 0..width {
-                let dst = self.register(span)?;
-                self.ops.push(solve::LinearOp::LoadFoldCarried {
-                    dst,
-                    index: carried_index,
-                });
-                carried.push(dst);
-                carried_index += 1;
-            }
-            carried_values.push(carried);
-        }
-        self.function_fold_values.push((fold, carried_values));
-        Ok(())
-    }
-
-    /// Lower a bounded `while` fold's continuation predicate as its own
-    /// region over the carried tuple and captures. Its captures extend the
-    /// update's, so one capture list serves both regions.
-    fn lower_fold_continuation(
-        &mut self,
-        (fold, condition, widths): (dae::FunctionFoldId<'dae>, dae::ExprId<'dae>, &[usize]),
-        capture_sources: &mut Vec<solve::Reg>,
-        excluded_parent: Option<dae::FunctionFoldId<'dae>>,
-        span: Span,
-    ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let mut region = self.fork_for_fold_update(&[], excluded_parent, span)?;
-        let deferred = region
-            .deferred_fold_captures
-            .as_mut()
-            .expect("function fold continuation owns deferred captures");
-        if !capture_sources.starts_with(&deferred.sources) {
-            return Err(LowerError::contract(
-                "fold continuation captures do not extend the update captures",
-                span,
-            ));
-        }
-        let issued = deferred.sources.len();
-        deferred
-            .sources
-            .extend_from_slice(&capture_sources[issued..]);
-        region.load_fold_carried(fold, widths, span)?;
-        let predicate = region.packed_lane(condition, 0, span)?;
-        region
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: predicate });
-        if let Some(deferred) = region.deferred_fold_captures.as_ref() {
-            capture_sources.clone_from(&deferred.sources);
-        }
-        Ok(region.ops)
     }
 
     fn nested_fold_output_run(&self, expressions: &[dae::ExprId<'dae>], start: usize) -> usize {
