@@ -85,6 +85,25 @@ package Structural
       y := y + i;
     end for;
   end triangle;
+  function cappedTriangle
+    input Integer n;
+    output Real y;
+  algorithm
+    y := 0;
+    if n <= 10 then
+      for i in 1:n loop
+        y := y + i;
+      end for;
+    end if;
+  end cappedTriangle;
+  function ramp
+    input Integer n;
+    output Real y[n];
+  algorithm
+    for i in 1:n loop
+      y[i] := i;
+    end for;
+  end ramp;
   model KeyedArgument
     parameter Integer n = 3;
     parameter Real k = 2;
@@ -92,9 +111,23 @@ package Structural
   equation
     y = k*triangle(n);
   end KeyedArgument;
-  model ModifiedKeyedArgument
-    extends KeyedArgument(n = 4);
-  end ModifiedKeyedArgument;
+  model BoundedArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*cappedTriangle(n);
+  end BoundedArgument;
+  model InterfaceArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*sum(ramp(n));
+  end InterfaceArgument;
+  model ModifiedInterfaceArgument
+    extends InterfaceArgument(n = 4);
+  end ModifiedInterfaceArgument;
   model LiteralKeyedArgument
     parameter Integer n = 3;
     Real y;
@@ -246,15 +279,59 @@ fn final_value(model: &str, name: &str) -> f64 {
     *result.data[index].last().expect("a sample")
 }
 
-/// MLS 3.7 §12.2, §11.2.2: a function specialization keyed on an argument
-/// value folds it into the callee's loop domain, so an ordinary parameter the
-/// argument reads is structural (evaluable, with a WD001 warning) and an
-/// unrelated one stays settable; a modification still reaches the result.
+fn final_value_with(model: &str, overrides: &[(&str, f64)]) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &compile(model),
+        &SimOptions {
+            t_end: 1.0,
+            param_overrides: overrides
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), *value))
+                .collect(),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the model simulates");
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == "y")
+        .expect("the result records y");
+    *result.data[index].last().expect("a sample")
+}
+
+/// MLS 3.7 §11.2.2: a loop range inside a function body is evaluated when the
+/// function runs, so a tunable parameter passed to it stays settable: the
+/// range is lowered over the run-time domain its guard bounds, and setting
+/// the parameter changes the result without recompiling.
 #[test]
-fn a_keyed_function_argument_parameter_is_structural() {
-    assert_eq!(evaluable(&compile("Structural.KeyedArgument")), ["n"]);
-    assert!((final_value("Structural.KeyedArgument", "y") - 12.0).abs() < 1e-12);
-    assert!((final_value("Structural.ModifiedKeyedArgument", "y") - 20.0).abs() < 1e-12);
+fn a_tunable_loop_bound_argument_stays_settable() {
+    assert!(evaluable(&compile("Structural.BoundedArgument")).is_empty());
+    assert!((final_value_with("Structural.BoundedArgument", &[]) - 12.0).abs() < 1e-12);
+    assert!((final_value_with("Structural.BoundedArgument", &[("n", 4.0)]) - 20.0).abs() < 1e-12);
+}
+
+/// A tunable parameter in a loop bound nothing bounds at run time is refused
+/// rather than frozen at its translation-time value.
+#[test]
+fn an_unbounded_tunable_loop_bound_argument_is_refused() {
+    let error = refusal("Structural.KeyedArgument");
+    assert!(
+        error.contains("function loop domain")
+            && error.contains("tunable parameter passed to the function"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// MLS 3.7 §10.1, §12.2: a declared output dimension fixes the call's result
+/// shape at translation, so an ordinary parameter its argument reads is
+/// structural (evaluable, with a WD001 warning) and an unrelated one stays
+/// settable; a modification still reaches the result.
+#[test]
+fn an_output_dimension_argument_parameter_is_structural() {
+    assert_eq!(evaluable(&compile("Structural.InterfaceArgument")), ["n"]);
+    assert!((final_value("Structural.InterfaceArgument", "y") - 12.0).abs() < 1e-12);
+    assert!((final_value("Structural.ModifiedInterfaceArgument", "y") - 20.0).abs() < 1e-12);
 }
 
 /// A literal keyed argument reads no parameter, so the parameter that scales

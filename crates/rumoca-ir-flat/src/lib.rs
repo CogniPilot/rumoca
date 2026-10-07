@@ -1593,9 +1593,9 @@ pub enum StructuralParameterUse {
     ArrayDimension,
     /// A for-equation range (MLS §8.3.3).
     ForRange,
-    /// A function call argument whose value a value-keyed specialization folds
-    /// into a declared dimension, compact range or `while` condition of the
-    /// callee (MLS §12.2, §11.2.2, §11.2.3).
+    /// A function call argument a declared input or output dimension of the
+    /// callee reads, which fixes the call's argument or result shape at
+    /// translation (MLS §10.1, §12.2).
     SpecializationArgument,
 }
 
@@ -1611,4 +1611,20 @@ pub struct ParameterBranchSelection {
     /// Per component reference its evaluated conditions read, the flat names
     /// it can denote, the innermost enclosing scope first.
     pub references: Vec<Vec<String>>,
+}
+
+impl ParameterBranchSelection {
+    /// For each reference the evaluated conditions read, the innermost flat
+    /// name `model` declares.
+    pub fn declared_references<'a>(
+        &'a self,
+        model: &'a Model,
+    ) -> impl Iterator<Item = VarName> + 'a {
+        self.references.iter().filter_map(|candidates| {
+            candidates
+                .iter()
+                .map(|candidate| VarName::new(candidate.as_str()))
+                .find(|name| model.variables.contains_key(name))
+        })
+    }
 }

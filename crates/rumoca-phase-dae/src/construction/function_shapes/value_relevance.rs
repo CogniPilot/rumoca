@@ -27,6 +27,12 @@ use super::*;
 /// Input positions each callable must key a specialization on by value.
 pub(super) struct ValueReadInputs {
     masks: HashMap<VarName, Vec<bool>>,
+    /// The keyed positions a declared input or output dimension reads: the
+    /// call's argument and result shapes fix their values at translation
+    /// (MLS §10.1, §12.2). Every other keyed position is read only by the
+    /// run-time body: a range, a `while` condition, a local dimension or a
+    /// `fill` extent (MLS §11.2.2, §11.2.3).
+    structural: HashMap<VarName, Vec<bool>>,
 }
 
 impl ValueReadInputs {
@@ -61,7 +67,23 @@ impl ValueReadInputs {
             }
             masks = build_masks(flat, dimension_typed, &reads);
         }
-        Self { masks }
+        let interface = flat
+            .functions
+            .iter()
+            .map(|(name, function)| (name.clone(), interface_dimension_reads(function)))
+            .collect();
+        let structural = build_masks(flat, dimension_typed, &interface);
+        Self { masks, structural }
+    }
+
+    /// Whether keyed input `ordinal` is read by a declared input or output
+    /// dimension of the callee.
+    pub(super) fn is_structural(&self, function: &VarName, ordinal: usize) -> bool {
+        self.structural
+            .get(function)
+            .and_then(|mask| mask.get(ordinal))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Whether the specialization key carries input `ordinal` by value.
@@ -191,10 +213,31 @@ fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
             collect_read_names(&block.cond, &mut reads);
         }
     });
+    close_over_definitions(function, &mut reads);
+    reads
+}
+
+/// Names a declared input or output dimension of `function` reads.
+fn interface_dimension_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
+    let mut reads = HashSet::new();
+    for value in function.inputs.iter().chain(&function.outputs) {
+        for subscript in &value.shape_expr {
+            if let Subscript::Expr { expr, .. } = subscript {
+                collect_read_names(expr, &mut reads);
+            }
+        }
+    }
+    close_over_definitions(function, &mut reads);
+    reads
+}
+
+/// Extend `reads` with every name the definitions of a read local or output
+/// read, to a fixed point.
+fn close_over_definitions(function: &rumoca_core::Function, reads: &mut HashSet<VarName>) {
     let definitions = value_definitions(function);
     for _ in 0..=definitions.len() {
         let mut added = HashSet::new();
-        for name in &reads {
+        for name in reads.iter() {
             for definition in definitions.get(name).into_iter().flatten() {
                 collect_read_names(definition, &mut added);
             }
@@ -205,7 +248,6 @@ fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
             break;
         }
     }
-    reads
 }
 
 /// The values each local and output is defined from: its declaration

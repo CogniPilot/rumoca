@@ -147,7 +147,7 @@ pub(super) fn compact_function_loops(
     Err(ToDaeError::unsupported_flat(
         "function loop domain",
         format!(
-            "`{}` requires a compact dependent-domain transition; scalar statement expansion is prohibited",
+            "`{}` requires a compact dependent-domain transition; scalar statement expansion is prohibited. The loop range reads a value no translation-time constant or guard bounds (a run-time value, or a tunable parameter passed to the function, which stays settable, MLS 11.2.2); bound it with a guard, or declare the parameter final or Evaluate = true",
             function.name
         ),
         span,

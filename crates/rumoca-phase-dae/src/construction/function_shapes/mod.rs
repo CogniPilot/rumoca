@@ -740,6 +740,10 @@ pub(super) struct FunctionShapeAnalysis {
     /// Parameters with no translation-time value (MLS 3.7 §4.5, §18.6), closed
     /// over the parameter bindings that read them; no key carries their value.
     non_evaluable: HashSet<VarName>,
+    /// Ordinary parameters whose value is settable after translation; only a
+    /// position a callee's declared interface dimension reads is keyed on
+    /// their value.
+    tunable: HashSet<VarName>,
     /// Model-scope calls whose key carries a value read from model variables.
     keyed_argument_reads: Vec<KeyedArgumentReads>,
 }
@@ -826,6 +830,7 @@ impl FunctionShapeAnalysis {
                 derivatives: Vec::new(),
                 structural_selections: HashSet::new(),
                 non_evaluable: specialization_key::non_evaluable_closure(flat),
+                tunable: specialization_key::tunable_parameters(flat, evaluable),
                 keyed_argument_reads: Vec::new(),
             },
             active_specializations: Vec::new(),
@@ -2494,7 +2499,10 @@ pub(super) fn evaluate_shape_integer(
                         "function shape proof",
                         format!(
                             "extent depends on the value of scalar `{}`, which requires a \
-                             value-proven function specialization",
+                             value-proven function specialization; a call argument that is \
+                             a run-time value or reads a tunable parameter proves none (a \
+                             local dimension is sized when the function runs), so declare \
+                             the parameter final or Evaluate = true",
                             name.as_str()
                         ),
                         span,

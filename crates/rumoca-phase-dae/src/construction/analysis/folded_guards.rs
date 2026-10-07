@@ -263,11 +263,5 @@ fn flatten_selection_parameters(
     evaluable: &HashSet<VarName>,
     selection: &flat::ParameterBranchSelection,
 ) -> Vec<VarName> {
-    let declared = selection.references.iter().filter_map(|candidates| {
-        candidates
-            .iter()
-            .map(|candidate| VarName::new(candidate.as_str()))
-            .find(|name| flat.variables.contains_key(name))
-    });
-    ordinary_parameter_names(flat, evaluable, declared)
+    ordinary_parameter_names(flat, evaluable, selection.declared_references(flat))
 }
