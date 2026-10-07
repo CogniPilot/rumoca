@@ -6,10 +6,8 @@ use execution::ProgramExecution;
 use sha2::{Digest, Sha256};
 
 fn program_artifact(source: &str, name: &str) -> serde_json::Value {
-    serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(source, name).unwrap(),
-    )
-    .unwrap()
+    serde_json::from_str(&crate::native_program_api::prepare_native_program(source, name).unwrap())
+        .unwrap()
 }
 
 #[test]
@@ -59,7 +57,7 @@ fn fused_v2_actual_rectangular_source_preserves_gaps_and_source_edits() {
     // exercised again when block stages return with Map-row exact
     // certification on the AffineKernelPlan owner.
     let stages: serde_json::Value = serde_json::from_str(
-        &crate::native_assignment_api::prepare_native_assignments_impl(source, "RectangularCopy")
+        &crate::native_assignment_api::prepare_native_assignments(source, "RectangularCopy")
             .unwrap(),
     )
     .unwrap();
@@ -250,8 +248,7 @@ fn fused_native_profile_preserves_state_and_coupled_equation_refusals() {
             "native evaluation has no continuous states",
         ),
     ] {
-        let error =
-            crate::native_program_api::prepare_native_program_impl(source, name).unwrap_err();
+        let error = crate::native_program_api::prepare_native_program(source, name).unwrap_err();
         assert!(error.message().contains(reason), "{name}: {error}");
     }
 }

@@ -118,7 +118,7 @@ fn expected_fit(
 fn function_loops_execute_in_the_native_program() {
     let _lock = session_test_guard();
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(SOURCE, "Registration")
+        &crate::native_program_api::prepare_native_program(SOURCE, "Registration")
             .expect("function loops lower to a native program"),
     )
     .unwrap();
@@ -216,7 +216,7 @@ equation
   vector = RuntimeSweeps(A, sweeps);
 end RuntimeEigen;
 "#;
-    let refusal = crate::native_program_api::prepare_native_program_impl(source, "RuntimeEigen")
+    let refusal = crate::native_program_api::prepare_native_program(source, "RuntimeEigen")
         .expect_err("a runtime loop bound has no compact dependent domain yet");
     let message = refusal.message();
     assert!(message.contains("ToDae"), "{message}");
@@ -250,9 +250,8 @@ equation
   y = EarlyArray(u);
 end EarlyArrayReturn;
 "#;
-    let refusal =
-        crate::native_program_api::prepare_native_program_impl(source, "EarlyArrayReturn")
-            .expect_err("array-output early return has no checked definedness proof yet");
+    let refusal = crate::native_program_api::prepare_native_program(source, "EarlyArrayReturn")
+        .expect_err("array-output early return has no checked definedness proof yet");
     let message = refusal.message();
     assert!(message.contains("ToDae"), "{message}");
     assert!(

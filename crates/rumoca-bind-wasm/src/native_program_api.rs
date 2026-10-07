@@ -12,13 +12,6 @@ use wasm_bindgen::prelude::*;
 /// All source-issued stage ordering and direct target writes live in the module.
 #[wasm_bindgen]
 pub fn prepare_native_program(source: &str, model_name: &str) -> Result<String, WasmError> {
-    prepare_native_program_impl(source, model_name)
-}
-
-pub(crate) fn prepare_native_program_impl(
-    source: &str,
-    model_name: &str,
-) -> Result<String, WasmError> {
     native_assignment_api::with_prepared_native_model(source, model_name, model_artifact)
 }
 
@@ -302,6 +295,11 @@ fn host_layout(
 /// Read one Integer output lane, the little-endian i64 at `byte_offset` of the
 /// published output lanes: a JavaScript number when its value is exactly
 /// representable as one, otherwise a BigInt, so no host read rounds it.
+///
+/// Coverage exemption: the JavaScript values exist only under a JavaScript
+/// host, so no workspace test can call this; the decoding it publishes is
+/// [`integer_lane`], which the tests cover.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[wasm_bindgen]
 pub fn read_native_integer_lane(lanes: &[u8], byte_offset: usize) -> Result<JsValue, WasmError> {
     Ok(match integer_lane(lanes, byte_offset)? {

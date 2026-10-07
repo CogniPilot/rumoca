@@ -48,7 +48,7 @@ fn lane<'a>(artifact: &'a serde_json::Value, name: &str) -> &'a serde_json::Valu
 fn discrete_outputs_publish_exact_typed_lanes_and_bind_every_reader() {
     let _lock = session_test_guard();
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(SOURCE, "Edge")
+        &crate::native_program_api::prepare_native_program(SOURCE, "Edge")
             .expect("stateless discrete outputs lower to a native program"),
     )
     .unwrap();
@@ -120,8 +120,8 @@ fn unsupported_discrete_semantics_are_refused_with_their_reason() {
             "  output Real gated;",
             &format!("  output Real gated;\n  {equation}"),
         );
-        let refusal = crate::native_program_api::prepare_native_program_impl(&source, "Edge")
-            .expect_err(equation);
+        let refusal =
+            crate::native_program_api::prepare_native_program(&source, "Edge").expect_err(equation);
         assert!(
             refusal.message().contains(reason),
             "{equation}: {}",

@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 fn artifact(source: &str) -> serde_json::Value {
     let encoded =
-        crate::native_program_api::prepare_native_program_impl(source, "CompactCalls").unwrap();
+        crate::native_program_api::prepare_native_program(source, "CompactCalls").unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(artifact["profile"], "native-direct-program-f64-v3");
     assert_eq!(artifact["abi"]["transactional_y"], true);

@@ -21,8 +21,7 @@ end NativeImage;
 fn prepare_native_assignments_uses_issued_two_stage_modelica_values() {
     let _lock = session_test_guard();
     let text =
-        crate::native_assignment_api::prepare_native_assignments_impl(TWO_STAGE, "NativeImage")
-            .unwrap();
+        crate::native_assignment_api::prepare_native_assignments(TWO_STAGE, "NativeImage").unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(artifact["profile"], "native-direct-assignments-f64-v1");
     assert_eq!(artifact["abi"]["y_count"], 32);
@@ -32,8 +31,7 @@ fn prepare_native_assignments_uses_issued_two_stage_modelica_values() {
     assert_eq!(artifact["source_sha256"].as_str().unwrap().len(), 64);
     let edited = TWO_STAGE.replace("+ 2;", "+ 3;");
     let changed: serde_json::Value = serde_json::from_str(
-        &crate::native_assignment_api::prepare_native_assignments_impl(&edited, "NativeImage")
-            .unwrap(),
+        &crate::native_assignment_api::prepare_native_assignments(&edited, "NativeImage").unwrap(),
     )
     .unwrap();
     assert_ne!(changed["source_sha256"], artifact["source_sha256"]);
@@ -140,8 +138,7 @@ fn native_preparation_preserves_declared_host_input_start() {
     let _lock = session_test_guard();
     let source = "model NativeStart input Real u[16](each start=3); output Real y[16]; equation for i in 1:16 loop y[i]=2*u[i]; end for; end NativeStart;";
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_assignment_api::prepare_native_assignments_impl(source, "NativeStart")
-            .unwrap(),
+        &crate::native_assignment_api::prepare_native_assignments(source, "NativeStart").unwrap(),
     )
     .unwrap();
     let first = artifact["var_layout"]["bindings"]["u"]["P"]["index"]
@@ -188,9 +185,7 @@ fn native_preparation_refuses_coupled_scalar_and_stateful_models() {
             "model State Real x(start=0); equation der(x)=1; end State;",
         ),
     ] {
-        assert!(
-            crate::native_assignment_api::prepare_native_assignments_impl(source, name).is_err()
-        );
+        assert!(crate::native_assignment_api::prepare_native_assignments(source, name).is_err());
     }
 }
 

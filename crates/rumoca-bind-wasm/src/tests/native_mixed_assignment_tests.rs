@@ -30,7 +30,7 @@ end NativeMixed;
 
 fn prepare(source: &str, name: &str) -> serde_json::Value {
     serde_json::from_str(
-        &crate::native_assignment_api::prepare_native_assignments_impl(source, name).unwrap(),
+        &crate::native_assignment_api::prepare_native_assignments(source, name).unwrap(),
     )
     .unwrap()
 }
@@ -144,7 +144,7 @@ fn scalar_zero_and_time_values_are_portable_but_coupled_scalar_values_remain_ref
         );
     }
     assert!(
-        crate::native_assignment_api::prepare_native_assignments_impl(
+        crate::native_assignment_api::prepare_native_assignments(
             "model Coupled output Real y; equation y*y=2; end Coupled;",
             "Coupled"
         )

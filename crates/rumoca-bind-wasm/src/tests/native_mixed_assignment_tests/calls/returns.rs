@@ -33,7 +33,7 @@ end ReturnPredicates;
 fn native_wasm_return_predicates_preserve_inactive_and_active_gathers() {
     let _lock = session_test_guard();
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(SOURCE, "ReturnPredicates")
+        &crate::native_program_api::prepare_native_program(SOURCE, "ReturnPredicates")
             .expect("unsettled return predicates lower to native SolveIR WASM"),
     )
     .unwrap();

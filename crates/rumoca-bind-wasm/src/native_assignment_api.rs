@@ -10,13 +10,6 @@ use wasm_bindgen::prelude::*;
 /// No equation solving, kernel isolation, or schedule discovery occurs in a host.
 #[wasm_bindgen]
 pub fn prepare_native_assignments(source: &str, model_name: &str) -> Result<String, WasmError> {
-    prepare_native_assignments_impl(source, model_name)
-}
-
-pub(crate) fn prepare_native_assignments_impl(
-    source: &str,
-    model_name: &str,
-) -> Result<String, WasmError> {
     with_prepared_native_model(source, model_name, model_artifact)
 }
 

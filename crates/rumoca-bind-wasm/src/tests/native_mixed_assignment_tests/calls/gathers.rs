@@ -13,7 +13,7 @@ fn native_model_gather_only_uses_checked_abi_preserves_inputs_and_fault_provenan
       result = if first then 1 else samples[2,k];
     end ModelGather;"#;
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(source, "ModelGather").unwrap(),
+        &crate::native_program_api::prepare_native_program(source, "ModelGather").unwrap(),
     )
     .unwrap();
     assert_eq!(artifact["profile"], "native-direct-program-f64-v3");

@@ -5,7 +5,7 @@ use wasmi::{Engine, Linker, Memory, MemoryType, Module, Store};
 
 fn execute(source: &str, model: &str, inputs: &[(&str, f64)], outputs: &[&str]) -> Vec<f64> {
     let _guard = session_test_guard();
-    let raw = crate::native_program_api::prepare_native_program_impl(source, model).unwrap();
+    let raw = crate::native_program_api::prepare_native_program(source, model).unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(artifact["profile"], "native-direct-program-f64-v3");
     assert_eq!(artifact["abi"]["transactional_y"], true);
@@ -307,10 +307,9 @@ fn tuple_loop_malformed_receiver_types_still_refuse() {
     let invalid = STATE_SOURCE
         .replace("Real u;", "Boolean u;")
         .replace("u := 0.0;", "u := false;");
-    let failure =
-        crate::native_program_api::prepare_native_program_impl(&invalid, "TupleStateLoop")
-            .unwrap_err()
-            .to_string();
+    let failure = crate::native_program_api::prepare_native_program(&invalid, "TupleStateLoop")
+        .unwrap_err()
+        .to_string();
     assert!(failure.contains("expression shape mismatch"), "{failure}");
 }
 
@@ -320,10 +319,9 @@ fn tuple_loop_malformed_receiver_shapes_still_refuse() {
     let invalid = STATE_SOURCE
         .replace("Real u;", "Real u[2];")
         .replace("u := 0.0;", "u := zeros(2);");
-    let failure =
-        crate::native_program_api::prepare_native_program_impl(&invalid, "TupleStateLoop")
-            .unwrap_err()
-            .to_string();
+    let failure = crate::native_program_api::prepare_native_program(&invalid, "TupleStateLoop")
+        .unwrap_err()
+        .to_string();
     assert!(
         failure.contains("shape") || failure.contains("dimension"),
         "{failure}"

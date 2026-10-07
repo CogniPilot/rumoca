@@ -34,7 +34,7 @@ fn prepare(guarded: bool) -> serde_json::Value {
          equation\n result={expression};\n end ReturnArgument;"
     );
     serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(&source, "ReturnArgument")
+        &crate::native_program_api::prepare_native_program(&source, "ReturnArgument")
             .expect("call actuals lower to native SolveIR WASM"),
     )
     .unwrap()
