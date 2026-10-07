@@ -164,26 +164,5 @@ fn pure_value_call(site: &SolvePureCallSite) -> bool {
 /// Every register `op` reads, ascending, as its register-flow validation
 /// proves them; `None` when `op` cannot be validated at the top level.
 pub(super) fn read_registers(op: &LinearOp) -> Option<Vec<Reg>> {
-    let mut defined = Vec::new();
-    let mut reads = Vec::new();
-    let mut validation = ScalarProgramValidationCache::default();
-    loop {
-        match validate_op_sources(op, 0, &defined, None, None, &mut validation) {
-            Ok(_) => break,
-            Err(ScalarProgramRegisterError::UndefinedRegister { register, .. }) => {
-                let index = register as usize;
-                if defined.len() <= index {
-                    defined.resize(index + 1, false);
-                }
-                if defined[index] {
-                    return None;
-                }
-                defined[index] = true;
-                reads.push(register);
-            }
-            Err(_) => return None,
-        }
-    }
-    reads.sort_unstable();
-    Some(reads)
+    op_read_registers(op)
 }

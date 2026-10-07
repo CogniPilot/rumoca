@@ -408,3 +408,20 @@ fn a_wide_tensor_operation_is_derived_and_checked_in_linear_time() {
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     assert_eq!(count(shared.segments()[0].ops(), "TensorBinary"), 1);
 }
+
+/// The read set of a wide range operation is collected in one validation,
+/// not rediscovered one register at a time.
+#[test]
+fn the_read_set_of_a_wide_range_is_collected_linearly() {
+    let count = 200_000;
+    let op = LinearOp::StoreOutputRange {
+        start: 0,
+        count,
+        stride: 1,
+    };
+    let started = std::time::Instant::now();
+    let reads = registers::read_registers(&op).expect("a validatable operation");
+    assert_eq!(reads.len(), count);
+    assert!(reads.iter().copied().eq(0..count as Reg));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
