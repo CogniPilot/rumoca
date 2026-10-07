@@ -1829,8 +1829,30 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            self.builder
-                .update_element(base, value_register, &indices, at)?
+            let base_dimensions = self
+                .view
+                .value_type(base_value.value_type)
+                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+                .dimensions();
+            if indices.len() < base_dimensions.len() {
+                // MLS 10.5.3: the unsubscripted trailing axes are whole, so the
+                // update replaces the sub-array the leading indices select.
+                let axes = indices
+                    .iter()
+                    .copied()
+                    .map(solve::ProgramTensorViewAxis::Index)
+                    .chain(
+                        base_dimensions[indices.len()..]
+                            .iter()
+                            .map(|&extent| solve::ProgramTensorViewAxis::Span { origin: 0, extent }),
+                    )
+                    .collect::<Vec<_>>();
+                self.builder
+                    .update_view(base, value_register, &axes, at)?
+            } else {
+                self.builder
+                    .update_element(base, value_register, &indices, at)?
+            }
         };
         Ok(LoweredValue::scalar(value_type, result))
     }

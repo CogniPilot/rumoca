@@ -60,7 +60,7 @@ fn multi_output_source(
 struct Receiver<'flat> {
     ordinal: usize,
     target: &'flat VarName,
-    projection: &'flat [usize],
+    projection: &'flat [RecordProjectionStep],
     /// The written receiving variable, for a variable that receives a result.
     written: Option<&'flat Expression>,
 }

@@ -280,7 +280,7 @@ pub(in crate::construction) fn record_result_fields(
 
 struct RecordLeaf {
     coordinate: VarName,
-    projection: Box<[usize]>,
+    projection: Box<[RecordProjectionStep]>,
 }
 
 fn record_leaves(
@@ -298,12 +298,10 @@ fn record_leaves(
     })?;
     let mut fields = Vec::new();
     for (ordinal, field) in layout.fields.iter().enumerate() {
-        let child = VarName::new(format!("{}.{}", name.as_str(), field.name));
-        collect_record_equation_leaves(
+        collect_field_leaves(
             flat,
-            &child,
-            vec![ordinal],
-            &[],
+            (name, ordinal, field),
+            (Vec::new(), &[]),
             span,
             &mut HashSet::new(),
             &mut fields,
@@ -346,7 +344,7 @@ pub(in crate::construction) fn reference_leaf_coordinates(
 fn collect_record_equation_leaves(
     flat: &flat::Model,
     name: &VarName,
-    projection: Vec<usize>,
+    projection: Vec<RecordProjectionStep>,
     prefix: &[i64],
     span: Span,
     active: &mut HashSet<DefId>,
@@ -392,14 +390,10 @@ fn collect_record_equation_leaves(
             )
         })?;
     for (ordinal, field) in layout.fields.iter().enumerate() {
-        let child = VarName::new(format!("{name}.{}", field.name));
-        let mut child_projection = projection.clone();
-        child_projection.push(ordinal);
-        collect_record_equation_leaves(
+        collect_field_leaves(
             flat,
-            &child,
-            child_projection,
-            &prefix,
+            (name, ordinal, field),
+            (projection.clone(), &prefix),
             span,
             active,
             fields,
@@ -407,6 +401,65 @@ fn collect_record_equation_leaves(
     }
     active.remove(&instance.type_def_id);
     Ok(())
+}
+
+/// The leaves of field `ordinal` of the record `parent`. Flat holds an array
+/// of records declared inside a record as one instance per element
+/// (`parent.field[i]`, row-major), so such a field is read element by element:
+/// each element is one `Element` step of the projection, then its own fields.
+fn collect_field_leaves(
+    flat: &flat::Model,
+    (parent, ordinal, field): (&VarName, usize, &flat::RecordField),
+    (mut projection, prefix): (Vec<RecordProjectionStep>, &[i64]),
+    span: Span,
+    active: &mut HashSet<DefId>,
+    fields: &mut Vec<RecordLeaf>,
+) -> Result<(), ToDaeError> {
+    let child = VarName::new(format!("{parent}.{}", field.name));
+    projection.push(RecordProjectionStep::Field(ordinal));
+    let held_whole =
+        flat.variables.contains_key(&child) || flat.record_instances.contains_key(&child);
+    if held_whole || field.dims.is_empty() {
+        return collect_record_equation_leaves(
+            flat, &child, projection, prefix, span, active, fields,
+        );
+    }
+    for subscripts in element_subscripts(&field.dims) {
+        let label = subscripts
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let element = VarName::new(format!("{child}[{label}]"));
+        let mut element_projection = projection.clone();
+        element_projection.push(RecordProjectionStep::Element(subscripts.into_boxed_slice()));
+        collect_record_equation_leaves(
+            flat,
+            &element,
+            element_projection,
+            prefix,
+            span,
+            active,
+            fields,
+        )?;
+    }
+    Ok(())
+}
+
+/// Every 1-based subscript tuple of an array of extents `dims`, row-major.
+fn element_subscripts(dims: &[i64]) -> Vec<Vec<i64>> {
+    dims.iter().fold(vec![Vec::new()], |tuples, &extent| {
+        tuples
+            .into_iter()
+            .flat_map(|tuple| {
+                (1..=extent).map(move |index| {
+                    let mut next = tuple.clone();
+                    next.push(index);
+                    next
+                })
+            })
+            .collect()
+    })
 }
 
 fn equation_constructor<'flat>(

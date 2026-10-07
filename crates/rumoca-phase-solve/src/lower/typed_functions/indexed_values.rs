@@ -86,7 +86,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     .and_then(|index| u32::try_from(index).ok())
             })
             .collect::<Option<Vec<_>>>();
-        let dynamic_indices = static_indices.is_none().then(|| {
+        // A literal subscript of a leaf with more axes than subscripts (one
+        // field column of an array of records) selects a view, whose index axes
+        // are registers like any run-time subscript.
+        let needs_registers = static_indices.is_none()
+            || base_types
+                .iter()
+                .any(|base_type| base_type.dimensions().len() != index_expressions.len());
+        let dynamic_indices = needs_registers.then(|| {
             index_expressions
                 .iter()
                 .map(|expression| self.expression(*expression)?.only_register(at))

@@ -638,8 +638,18 @@ pub(super) struct RecordEquationFieldPlan {
     pub(super) value: RecordEquationFieldValue,
 }
 
+/// One step from a record-valued result to one of its leaf coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum RecordProjectionStep {
+    /// The field with this ordinal in the record layout.
+    Field(usize),
+    /// The element at these 1-based subscripts of an array-of-records value;
+    /// Flat holds each element of a record-array field as its own instance.
+    Element(Box<[i64]>),
+}
+
 pub(super) enum RecordEquationFieldValue {
-    AggregateProjection(Box<[usize]>),
+    AggregateProjection(Box<[RecordProjectionStep]>),
     Coordinate(VarName),
 }
 

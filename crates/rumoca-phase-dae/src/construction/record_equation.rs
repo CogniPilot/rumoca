@@ -170,12 +170,33 @@ fn record_field_value<'dae>(
 pub(super) fn lower_record_projection<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     mut value: dae::ExprId<'dae>,
-    projection: &[usize],
+    projection: &[RecordProjectionStep],
     generated: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    for ordinal in projection {
-        value = construction
-            .expressions(|expressions| expressions.at(generated).field(value, *ordinal))?;
+    for step in projection {
+        value = match step {
+            RecordProjectionStep::Field(ordinal) => construction
+                .expressions(|expressions| expressions.at(generated).field(value, *ordinal))?,
+            RecordProjectionStep::Element(subscripts) => {
+                let subscripts = subscripts
+                    .iter()
+                    .map(|subscript| {
+                        construction
+                            .expressions(|expressions| {
+                                expressions
+                                    .at(generated)
+                                    .literal(dae::DaeLiteral::Integer(*subscript))
+                            })
+                            .map(|expression| dae::Subscript::Index {
+                                expression,
+                                provenance: generated,
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                construction
+                    .expressions(|expressions| expressions.at(generated).index(value, subscripts))?
+            }
+        };
     }
     Ok(value)
 }

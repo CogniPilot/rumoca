@@ -1626,7 +1626,9 @@ fn nested_expression_walks_reuse_their_stamp_tables() {
     .expect("expression construction succeeds");
 
     dae.inspect(|view| {
-        let root = view.expression_id(view.expression_count() - 1).expect("root");
+        let root = view
+            .expression_id(view.expression_count() - 1)
+            .expect("root");
         let before = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get);
         let mut inner_visits = 0usize;
         for _ in 0..50 {

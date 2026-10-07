@@ -369,16 +369,10 @@ fn plans_carry_assertion(plans: &[FunctionStatementPlan]) -> bool {
         FunctionStatementPlan::If {
             branches, fallback, ..
         } => {
-            branches
-                .iter()
-                .any(|branch| plans_carry_assertion(branch))
-                || fallback
-                    .as_deref()
-                    .is_some_and(plans_carry_assertion)
+            branches.iter().any(|branch| plans_carry_assertion(branch))
+                || fallback.as_deref().is_some_and(plans_carry_assertion)
         }
-        FunctionStatementPlan::ProvenBranch { statements, .. } => {
-            plans_carry_assertion(statements)
-        }
+        FunctionStatementPlan::ProvenBranch { statements, .. } => plans_carry_assertion(statements),
         _ => false,
     })
 }
