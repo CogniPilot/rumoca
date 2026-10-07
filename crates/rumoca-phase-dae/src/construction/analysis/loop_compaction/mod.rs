@@ -147,12 +147,15 @@ pub(super) fn compact_function_loops(
     Err(ToDaeError::unsupported_flat(
         "function loop domain",
         format!(
-            "`{}` requires a compact dependent-domain transition; scalar statement expansion is prohibited. The loop range reads a value no translation-time constant or guard bounds (a run-time value, or a tunable parameter passed to the function, which stays settable, MLS 11.2.2); bound it with a guard, or declare the parameter final or Evaluate = true",
+            "`{}` requires a compact dependent-domain transition; scalar statement expansion is prohibited. The loop range {UNBOUNDED_LOOP_DOMAIN}",
             function.name
         ),
         span,
     ))
 }
+
+/// Why a function loop has no translation-time domain, and how to give it one.
+pub(super) const UNBOUNDED_LOOP_DOMAIN: &str = "reads a value no translation-time constant or guard bounds (a run-time value, or a tunable parameter passed to the function, which stays settable, MLS 11.2.2); bound it with a guard, or declare the parameter final or Evaluate = true";
 
 fn infer_declared_finite_counters(
     statements: &[rumoca_core::Statement],

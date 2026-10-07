@@ -714,6 +714,16 @@ fn plan_one_function_statement(
             },
             context,
         ),
+        rumoca_core::Statement::While { .. } => Err(unsupported_statement(
+            statement,
+            "unbounded function while loop",
+            "function loop domain",
+            format!(
+                "a `while` loop of `{}` has no translation-time iteration bound: its condition {}",
+                context.function.name,
+                loop_compaction::UNBOUNDED_LOOP_DOMAIN
+            ),
+        )),
         _ => Err(unsupported_statement(
             statement,
             "unsupported function body statement",

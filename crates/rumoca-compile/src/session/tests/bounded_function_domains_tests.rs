@@ -109,15 +109,44 @@ fn loop_binders_shadow_an_immutable_function_local_in_the_actual_pipeline() {
     assert_eq!(evaluate(&source, -3.0), -397302.0);
 }
 
-#[test]
-fn full14400_selection_bounds_every_compact_domain() {
-    let source = include_str!("fixtures/feature_selection_full.mo");
-    assert!(source.contains("parameter Integer capacity = 14400;"));
+const FEATURE_SELECTION_FULL: &str = include_str!("fixtures/feature_selection_full.mo");
+
+fn compile_feature_selection(source: &str) -> Result<(), String> {
     let mut session = Session::default();
     session
         .add_document("feature_selection_full.mo", source)
         .expect("the full editable source parses");
-    if let Err(error) = session.compile_model("FeatureSelection") {
-        panic!("the counted, windowed and while domains are all bounded: {error:?}");
+    session
+        .compile_model("FeatureSelection")
+        .map(|_| ())
+        .map_err(|error| format!("{error:?}"))
+}
+
+/// With the border floor fixed at translation, the counted, windowed and
+/// `while` domains of the full selection are all bounded.
+#[test]
+fn full14400_selection_bounds_every_compact_domain() {
+    let tunable = "parameter Integer minimumBorder = 0;";
+    assert!(FEATURE_SELECTION_FULL.contains("parameter Integer capacity = 14400;"));
+    assert!(FEATURE_SELECTION_FULL.contains(tunable));
+    let source =
+        FEATURE_SELECTION_FULL.replace(tunable, "final parameter Integer minimumBorder = 0;");
+    if let Err(error) = compile_feature_selection(&source) {
+        panic!("the counted, windowed and while domains are all bounded: {error}");
     }
+}
+
+/// MLS 3.7 §11.2.2: a tunable `minimumBorder` is the only lower bound of the
+/// border the grid traversal stops at, so that `while` loop has no
+/// translation-time trip count; it is refused rather than frozen at the
+/// parameter's declared value.
+#[test]
+fn full14400_selection_refuses_a_tunable_border_floor() {
+    let error = compile_feature_selection(FEATURE_SELECTION_FULL)
+        .expect_err("a tunable border floor leaves the grid traversal unbounded");
+    assert!(
+        error.contains("has no translation-time iteration bound")
+            && error.contains("tunable parameter passed to the function"),
+        "{error}"
+    );
 }
