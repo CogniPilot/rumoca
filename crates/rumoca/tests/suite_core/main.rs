@@ -118,6 +118,7 @@ mod function_comprehension_definedness;
 mod function_conditional_sequence_test;
 mod function_constant_binding_scope;
 mod function_continuation_round_trip;
+mod function_default_argument_fields;
 mod function_equation_shape;
 mod function_fact_bounded_loops;
 mod function_fold_projection;
