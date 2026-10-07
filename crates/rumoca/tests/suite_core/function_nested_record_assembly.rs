@@ -217,3 +217,71 @@ fn unwritten_nested_field_is_uninitialized() {
         "unexpected diagnostic: {error}"
     );
 }
+
+const RECORD_ARRAY_COLUMNS: &str = r#"
+within;
+package P
+  record Edge
+    Boolean enabled;
+    Integer id;
+    Real r[2];
+  end Edge;
+  record Graph
+    Integer generation;
+    Edge edges[3];
+  end Graph;
+  record State
+    Graph graph;
+    Real time;
+  end State;
+  function Seed
+    input Integer g;
+    output Graph result;
+  algorithm
+    result.generation := g;
+    for slot in 1:3 loop
+      result.edges[slot] := Edge(slot > 1, slot, {slot, 2 * slot});
+    end for;
+  end Seed;
+  function Carry
+    input Graph graph;
+    input Real t;
+    output State result;
+  algorithm
+    result.graph := graph;
+    result.time := t;
+  end Carry;
+  function Observe
+    input Integer g;
+    output Real y[5];
+  protected
+    State s;
+  algorithm
+    s := Carry(Seed(g), 0.5);
+    y := {s.graph.generation, s.graph.edges[2].r[2], s.graph.edges[3].id,
+      if s.graph.edges[1].enabled then 1 else 0, s.time};
+  end Observe;
+end P;
+
+model ObserveRecordArrayColumns
+  Real y[5] = P.Observe(2);
+end ObserveRecordArrayColumns;
+"#;
+
+/// A decomposed record input copied into a result field writes an array of
+/// records as one column per element field; the assembly rebuilds the array
+/// of records element by element from those columns.
+#[test]
+fn record_array_field_assembles_from_columns() {
+    let compiled = Compiler::new()
+        .model("ObserveRecordArrayColumns")
+        .compile_str(RECORD_ARRAY_COLUMNS, "ObserveRecordArrayColumns.mo")
+        .expect("an array of records written as columns assembles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the assembled record array should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    for (index, expected) in [2.0, 4.0, 3.0, 0.0, 0.5].into_iter().enumerate() {
+        let name = format!("y[{}]", index + 1);
+        assert_eq!(value(&probe.report, &name), expected, "{name}");
+    }
+}

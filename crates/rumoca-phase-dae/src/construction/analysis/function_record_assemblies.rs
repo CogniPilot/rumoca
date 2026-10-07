@@ -27,6 +27,10 @@ struct RecordLevel<'scope> {
     path: Vec<&'scope str>,
     depth: usize,
     fields: &'scope [rumoca_core::FunctionParam],
+    /// Extents of the enclosing array-of-records field, when this record is
+    /// its element: every value written below it is one column of shape
+    /// `prefix ++ field extents` (struct of arrays).
+    prefix: Vec<u32>,
 }
 
 impl RecordLevel<'_> {
@@ -176,6 +180,7 @@ fn plan_staged_record(
             path: vec![target.as_str()],
             depth: 0,
             fields: &constructor.inputs,
+            prefix: Vec::new(),
         };
         let reads = RecordReads {
             root: target.as_str(),
@@ -227,6 +232,7 @@ pub(super) fn validate_record_output_assembly(
         path: vec![target.name.as_str()],
         depth: 0,
         fields: &constructor.inputs,
+        prefix: Vec::new(),
     };
     require_claimed_writes(&writes, &level)?;
     let mut fields = Vec::with_capacity(constructor.inputs.len());
@@ -445,17 +451,21 @@ fn validate_field_assembly(
         return validate_record_field_assembly(writes, level, field, context, reads);
     }
     let output = level.name();
-    let (dimensions, scalar_count) = field_scalar_layout(&output, field)?;
-    let scalars = collect_field_scalar_sources(
-        writes,
-        level,
-        field,
-        context,
-        reads,
-        &dimensions,
-        scalar_count,
-    )?;
-    let scalars = require_total_field_scalars(context.function, scalars, level, field)?;
+    let (field_dimensions, _) = field_scalar_layout(&output, field)?;
+    let dimensions = [level.prefix.as_slice(), field_dimensions.as_slice()].concat();
+    let scalar_count = dimensions
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{output}.{}` exceeds the checked scalar domain",
+                    field.name
+                ),
+                field.span,
+            )
+        })?;
     let scalar_type = effective_function_scalar_type(context.flat, field).ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "record output assembly",
@@ -466,6 +476,24 @@ fn validate_field_assembly(
             field.span,
         )
     })?;
+    let claims = writes
+        .iter()
+        .filter(|write| write_claims_field(write, level, field))
+        .map(|write| validate_field_write(write, level, field, context, reads, &dimensions))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let [claim] = claims.as_slice()
+        && claim.selection.axes.iter().all(Option::is_none)
+    {
+        return Ok(FunctionRecordFieldAssembly {
+            name: VarName::new(&field.name),
+            source: FunctionRecordFieldSource::Whole {
+                statement: claim.statement,
+                value_field: claim.value_field.clone(),
+            },
+        });
+    }
+    let scalars = collect_field_scalar_sources(&claims, &output, field, &dimensions, scalar_count)?;
+    let scalars = require_total_field_scalars(context.function, scalars, level, field)?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
         source: FunctionRecordFieldSource::Tensor {
@@ -476,75 +504,101 @@ fn validate_field_assembly(
     })
 }
 
-fn collect_field_scalar_sources(
-    writes: &[RecordFieldWrite<'_>],
+/// One validated write of a tensor field: the group statement, the field of
+/// a decomposed record value it projects, and the elements it selects.
+struct FieldWrite {
+    statement: usize,
+    value_field: Option<VarName>,
+    selection: FieldSelection,
+}
+
+fn validate_field_write(
+    write: &RecordFieldWrite<'_>,
     level: &RecordLevel<'_>,
     field: &rumoca_core::FunctionParam,
     context: FunctionValidationContext<'_>,
     reads: RecordReads<'_>,
     dimensions: &[u32],
+) -> Result<FieldWrite, ToDaeError> {
+    let output = level.name();
+    let target = &write.path[level.depth];
+    let (value, span) = (write.value, write.span);
+    let value_field = assigned_field_projection(target, &field.name, level.fields).flatten();
+    require_span(span, "record field assignment")?;
+    if !level.prefix.is_empty() && !target.subs.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "`{output}.{}` is a column of an array of records and must be assigned whole",
+                field.name
+            ),
+            span,
+        ));
+    }
+    validate_function_subscripts(&target.subs, context)?;
+    validate_function_expression_with_roles(value, context.roles, context.flat, context.shapes)?;
+    reject_record_self_reference(value, reads, span)?;
+    let selection = field_selection(dimensions, &target.subs, span)?;
+    let found_shape = if let Some(value_field) = &value_field {
+        let projected = Expression::FieldAccess {
+            base: Box::new(value.clone()),
+            field: value_field.as_str().to_string(),
+            field_def_id: field.def_id.ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "record output assembly",
+                    format!("`{output}.{}` has no exact field identity", field.name),
+                    field.span,
+                )
+            })?,
+            span,
+        };
+        context
+            .shape_analysis
+            .expression_shape(&projected, context.shapes)?
+    } else {
+        context
+            .shape_analysis
+            .expression_shape(value, context.shapes)?
+    };
+    if found_shape != selection.value_dimensions {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "`{output}.{}` selection shape {:?} does not match value shape {:?}",
+                field.name, selection.value_dimensions, found_shape
+            ),
+            span,
+        ));
+    }
+    Ok(FieldWrite {
+        statement: write.offset,
+        value_field,
+        selection,
+    })
+}
+
+fn collect_field_scalar_sources(
+    claims: &[FieldWrite],
+    output: &str,
+    field: &rumoca_core::FunctionParam,
+    dimensions: &[u32],
     scalar_count: usize,
 ) -> Result<Vec<Option<FunctionRecordScalarSource>>, ToDaeError> {
-    let output = level.name();
     let mut scalars = vec![None; scalar_count];
-    for write in writes.iter().filter(|write| write.ends_at(level.depth)) {
-        let target = &write.path[level.depth];
-        let Some(value_field) = assigned_field_projection(target, &field.name, level.fields) else {
-            continue;
-        };
-        let (value, span) = (write.value, write.span);
-        require_span(span, "record field assignment")?;
-        validate_function_subscripts(&target.subs, context)?;
-        validate_function_expression_with_roles(
-            value,
-            context.roles,
-            context.flat,
-            context.shapes,
-        )?;
-        reject_record_self_reference(value, reads, span)?;
-        let selection = field_selection(dimensions, &target.subs, span)?;
-        let found_shape = if let Some(value_field) = &value_field {
-            let projected = Expression::FieldAccess {
-                base: Box::new(value.clone()),
-                field: value_field.as_str().to_string(),
-                field_def_id: field.def_id.ok_or_else(|| {
-                    ToDaeError::unsupported_flat(
-                        "record output assembly",
-                        format!("`{output}.{}` has no exact field identity", field.name),
-                        field.span,
-                    )
-                })?,
-                span,
-            };
-            context
-                .shape_analysis
-                .expression_shape(&projected, context.shapes)?
-        } else {
-            context
-                .shape_analysis
-                .expression_shape(value, context.shapes)?
-        };
-        if found_shape != selection.value_dimensions {
-            return Err(ToDaeError::unsupported_flat(
-                "record output assembly",
-                format!(
-                    "`{output}.{}` selection shape {:?} does not match value shape {:?}",
-                    field.name, selection.value_dimensions, found_shape
-                ),
-                span,
-            ));
-        }
+    for claim in claims {
         for (base_scalar, scalar_source) in scalars.iter_mut().enumerate() {
             let base_coordinates = row_major_coordinates(dimensions, base_scalar)
                 .expect("validated record field scalar is in range");
-            let Some(value_coordinates) = selection.selected_value_coordinates(&base_coordinates)
+            let Some(value_coordinates) = claim
+                .selection
+                .selected_value_coordinates(&base_coordinates)
             else {
                 continue;
             };
             if scalar_source
                 .replace(FunctionRecordScalarSource {
-                    statement_offset: write.offset,
-                    value_field: value_field.clone(),
+                    statement_offset: claim.statement,
+                    value_field: claim.value_field.clone(),
                     value_coordinates,
                 })
                 .is_some()
@@ -552,7 +606,7 @@ fn collect_field_scalar_sources(
                 return Err(ToDaeError::unsupported_flat(
                     "record output assembly",
                     format!("`{output}.{}` is assigned more than once", field.name),
-                    span,
+                    field.span,
                 ));
             }
         }
@@ -623,6 +677,17 @@ fn validate_record_field_assembly(
             write.span,
         ));
     }
+    let (extents, _) = field_scalar_layout(&output, field)?;
+    if !extents.is_empty() && !level.prefix.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "`{output}.{}` is an array of records inside an array of records, whose columns the record assembly does not represent",
+                field.name
+            ),
+            field.span,
+        ));
+    }
     let constructor = record_constructor(field, context)?;
     let mut path = level.path.clone();
     path.push(field.name.as_str());
@@ -630,6 +695,7 @@ fn validate_record_field_assembly(
         path,
         depth: level.depth + 1,
         fields: &constructor.inputs,
+        prefix: [level.prefix.as_slice(), extents.as_slice()].concat(),
     };
     require_claimed_writes(&nested, &nested_level)?;
     let fields = constructor
@@ -641,7 +707,7 @@ fn validate_record_field_assembly(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
-        source: FunctionRecordFieldSource::Record { fields },
+        source: FunctionRecordFieldSource::Record { fields, extents },
     })
 }
 

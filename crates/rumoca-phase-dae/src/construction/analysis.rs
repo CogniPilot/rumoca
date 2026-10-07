@@ -459,12 +459,21 @@ pub(super) enum FunctionRecordFieldSource {
         dimensions: Vec<u32>,
         scalars: Vec<FunctionRecordScalarSource>,
     },
+    /// A tensor field assigned whole by the statement at this group offset,
+    /// through field `value_field` of a decomposed record value when set.
+    Whole {
+        statement: usize,
+        value_field: Option<VarName>,
+    },
     /// A record field assigned whole by the statement at this group offset.
     Aggregate { statement: usize },
     /// A record field assembled from writes to its own fields, in its
     /// constructor's field order (MLS §12.4.4 assembly applies recursively).
+    /// A field with `extents` is an array of records whose fields are
+    /// written as columns of those extents.
     Record {
         fields: Vec<FunctionRecordFieldAssembly>,
+        extents: Vec<u32>,
     },
 }
 

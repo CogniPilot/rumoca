@@ -104,6 +104,26 @@ impl<'dae> ValueTypes<'_, 'dae> {
         self.storage.intern_type(field_type, provenance)
     }
 
+    /// The element type of the record array type `record_array`: the same
+    /// record layout with no array extents.
+    pub fn record_element(
+        &mut self,
+        record_array: ValueTypeId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let record = self
+            .storage
+            .value_type_at(record_array.index(), provenance)?;
+        if !record.is_record() {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
+        }
+        let element = record.with_dimensions(Vec::<u32>::new());
+        self.storage.intern_type(element, provenance)
+    }
+
     pub fn expect_record_layout(
         &self,
         value_type: ValueTypeId<'dae>,
