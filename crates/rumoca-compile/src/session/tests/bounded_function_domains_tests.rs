@@ -110,18 +110,14 @@ fn loop_binders_shadow_an_immutable_function_local_in_the_actual_pipeline() {
 }
 
 #[test]
-fn full14400_selection_reports_the_remaining_compact_domain_owner() {
+fn full14400_selection_bounds_every_compact_domain() {
     let source = include_str!("fixtures/feature_selection_full.mo");
     assert!(source.contains("parameter Integer capacity = 14400;"));
     let mut session = Session::default();
     session
         .add_document("feature_selection_full.mo", source)
         .expect("the full editable source parses");
-    let error = session
-        .compile_model("FeatureSelection")
-        .expect_err("generic While and unproved mutable domains still require checked owners");
-    assert!(
-        format!("{error:?}").contains("function loop domain"),
-        "{error:?}"
-    );
+    if let Err(error) = session.compile_model("FeatureSelection") {
+        panic!("the counted, windowed and while domains are all bounded: {error:?}");
+    }
 }
