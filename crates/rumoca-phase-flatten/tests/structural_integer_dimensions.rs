@@ -302,3 +302,67 @@ end Narrow;
     assert_eq!(dims_of(&flatten_source(source, "W.Init"), "x"), vec![3]);
     assert_eq!(dims_of(&flatten_source(source, "Narrow"), "rgb"), vec![4]);
 }
+
+/// MLS 3.7 §7.2: a modification whose target is found nowhere in an extended
+/// class hierarchy that has an unresolved extends clause may reach any
+/// constant of its name, so that constant is never indexed at its declared
+/// value.
+#[test]
+fn a_target_unresolved_in_the_hierarchy_keeps_same_named_constants_out() {
+    let source = r#"
+package W
+  package Sizes
+    constant Integer n = 2;
+  end Sizes;
+  package Mid
+    extends Sizes;
+  end Mid;
+  package Wide
+    extends Mid(n = 3);
+  end Wide;
+  model Use
+    parameter Integer k = Sizes.n;
+  end Use;
+end W;
+"#;
+    let file_name = "<unresolved_hierarchy>";
+    let stored = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source parses");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file_name, source);
+    let mut tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source resolves")
+        .into_inner();
+    let reference = |tree: &ast::ClassTree| {
+        let binding = tree
+            .get_class_by_qualified_name("W.Use")
+            .and_then(|class| class.components.get("k"))
+            .and_then(|component| component.binding.clone());
+        let Some(ast::Expression::ComponentReference(reference)) = binding else {
+            panic!("`k` is bound to a reference");
+        };
+        reference
+    };
+    let sizes_n = reference(&tree);
+    // Resolved, the modification reaches `Sizes.n` through `Mid`.
+    assert!(
+        ast::DeclaredConstants::from_tree(&tree)
+            .constant_id(&sizes_n)
+            .is_none()
+    );
+    // With `Mid`'s extends clause unresolved, the target is found nowhere, so
+    // it reaches every constant named `n`.
+    let mid = tree
+        .definitions
+        .classes
+        .get_mut("W")
+        .and_then(|package| package.classes.get_mut("Mid"))
+        .expect("W.Mid is declared");
+    for extend in &mut mid.extends {
+        extend.base_def_id = None;
+    }
+    assert!(
+        ast::DeclaredConstants::from_tree(&tree)
+            .constant_id(&sizes_n)
+            .is_none()
+    );
+}

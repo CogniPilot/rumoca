@@ -291,7 +291,10 @@ fn only_a_loop_without_break_exits_with_its_condition_false() {
     let step = assign("r", binary(OpBinary::Add, var("r"), integer(1)));
     let mut facts = GuardFacts::entry();
     facts.after(&assign("r", integer(0)), names.scope());
-    facts.after(&while_loop(below.clone(), vec![step.clone()]), names.scope());
+    facts.after(
+        &while_loop(below.clone(), vec![step.clone()]),
+        names.scope(),
+    );
     assert_eq!(bound(&facts, "r").lower, Some(3));
 
     let leave = branch(
