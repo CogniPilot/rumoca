@@ -104,6 +104,43 @@ fn a_problem_with_states_records_its_typed_native_refusal() {
     );
 }
 
+/// One stateless discrete Integer row sourced from a literal classifies into
+/// one typed derived output: an 8-byte Integer lane at offset 0, numbered
+/// after the solver coordinates, with its literal recorded as the source.
+#[test]
+fn a_literal_integer_discrete_row_is_one_typed_derived_output() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::Integer;
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_declarations[0] = SolveVariableDeclaration::new(
+        SolveVariableStorageRole::DiscreteValue,
+        SolveVariableValueKind::Integer,
+    );
+    issue_native_assignment_schedule(&mut problem);
+    let owners = &problem.continuous.refresh_owners;
+    let schedule = owners.native_assignment_schedule().unwrap_or_else(|| {
+        panic!(
+            "one literal Integer row evaluates natively: {:?}",
+            owners.native_assignment_refusal()
+        )
+    });
+    let [output] = schedule.derived_outputs() else {
+        panic!("one discrete row is one derived output");
+    };
+    assert_eq!(
+        (output.row(), output.p_index(), output.work_index()),
+        (0, 0, 0)
+    );
+    assert_eq!(output.lane(), NativeOutputLane::Integer);
+    assert_eq!(output.lane().as_str(), "i64");
+    assert_eq!(output.lane_offset(), 0);
+    assert_eq!(
+        output.integer_source(),
+        Some(NativeIntegerSource::Literal(1))
+    );
+    assert_eq!(schedule.lane_bytes(), 8);
+}
+
 #[test]
 fn event_iteration_contract_accepts_complete_typed_reverse_bijection() {
     event_iteration_contract_fixture()
