@@ -188,27 +188,7 @@ impl Exposure {
                 .base_def_id
                 .and_then(|base_def_id| tree.get_class_by_def_id(base_def_id));
             for modification in &extend.modifications {
-                let Expression::Modification { target, value, .. } = &modification.expr else {
-                    continue;
-                };
-                let [part] = target.parts.as_slice() else {
-                    continue;
-                };
-                let name = part.ident.text.as_ref();
-                let member = base.map_or(HierarchyMember::Unresolved, |base| {
-                    member_in_hierarchy(tree, base, name)
-                });
-                match member {
-                    HierarchyMember::Constant(Some(def_id)) => {
-                        if self.pinned.insert(def_id) {
-                            self.bindings.insert(def_id, (**value).clone());
-                        }
-                    }
-                    HierarchyMember::Constant(None) | HierarchyMember::Other => {}
-                    HierarchyMember::Unresolved => {
-                        self.unresolved.insert(name.to_string());
-                    }
-                }
+                self.modify(tree, base, &modification.expr);
             }
             if let Some(base) = base {
                 self.apply(tree, base);
@@ -224,6 +204,33 @@ impl Exposure {
                 self.bindings
                     .entry(def_id)
                     .or_insert_with(|| binding.clone());
+            }
+        }
+    }
+
+    /// Record one extends modification of `base` (unresolved when `None`): a
+    /// constant the hierarchy resolves takes the modified value, and a target
+    /// the hierarchy cannot resolve is applied by name.
+    fn modify(&mut self, tree: &ClassTree, base: Option<&ClassDef>, modification: &Expression) {
+        let Expression::Modification { target, value, .. } = modification else {
+            return;
+        };
+        let [part] = target.parts.as_slice() else {
+            return;
+        };
+        let name = part.ident.text.as_ref();
+        let member = base.map_or(HierarchyMember::Unresolved, |base| {
+            member_in_hierarchy(tree, base, name)
+        });
+        match member {
+            HierarchyMember::Constant(Some(def_id)) => {
+                if self.pinned.insert(def_id) {
+                    self.bindings.insert(def_id, (**value).clone());
+                }
+            }
+            HierarchyMember::Constant(None) | HierarchyMember::Other => {}
+            HierarchyMember::Unresolved => {
+                self.unresolved.insert(name.to_string());
             }
         }
     }

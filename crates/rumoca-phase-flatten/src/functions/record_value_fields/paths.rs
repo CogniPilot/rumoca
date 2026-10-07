@@ -65,36 +65,37 @@ fn has_field_projection(value: &Expression) -> bool {
 /// projected field by field would let a later field's value see an earlier
 /// field's new value; MLS §11.2.1 evaluates the whole value first.
 fn reads_record(value: &Expression, root: &str) -> bool {
-    struct Reads<'root> {
-        root: &'root str,
-        found: bool,
-    }
-    impl ExpressionVisitor for Reads<'_> {
-        fn visit_var_ref(
-            &mut self,
-            name: &rumoca_core::Reference,
-            subscripts: &[rumoca_core::Subscript],
-        ) {
-            match name.component_ref() {
-                Some(comp) => {
-                    self.found |= comp
-                        .parts()
-                        .first()
-                        .is_some_and(|part| part.ident == self.root);
-                    for part in comp.parts() {
-                        for subscript in &part.subs {
-                            self.visit_subscript(subscript);
-                        }
-                    }
-                }
-                None => self.found |= name.segments().first() == Some(&self.root),
-            }
-            self.walk_var_ref(name, subscripts);
-        }
-    }
-    let mut reads = Reads { root, found: false };
+    let mut reads = RecordReads { root, found: false };
     reads.visit_expression(value);
     reads.found
+}
+
+/// Finds a read of any path under one record root.
+struct RecordReads<'root> {
+    root: &'root str,
+    found: bool,
+}
+
+impl ExpressionVisitor for RecordReads<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        match name.component_ref() {
+            Some(comp) => {
+                self.found |= comp
+                    .parts()
+                    .first()
+                    .is_some_and(|part| part.ident == self.root);
+                for subscript in comp.parts().iter().flat_map(|part| &part.subs) {
+                    self.visit_subscript(subscript);
+                }
+            }
+            None => self.found |= name.segments().first() == Some(&self.root),
+        }
+        self.walk_var_ref(name, subscripts);
+    }
 }
 
 /// How a body uses the record node at a path.

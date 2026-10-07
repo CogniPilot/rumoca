@@ -364,10 +364,13 @@ impl StageFlow<'_> {
                         Some((flat, register, *views.get(&register)?))
                     })
                     .collect::<Vec<_>>();
-                for (flat, register, ordinal) in cells {
-                    if !real_reads.contains(&register) {
-                        bound.insert(register);
-                    }
+                bound.extend(
+                    cells
+                        .iter()
+                        .map(|&(_, register, _)| register)
+                        .filter(|register| !real_reads.contains(register)),
+                );
+                for (flat, _, ordinal) in cells {
                     self.bindings
                         .inputs
                         .insert((position, flat), self.lanes[ordinal].lane_offset);

@@ -219,5 +219,8 @@ fn output_lanes_after_boolean_inputs_stay_eight_byte_aligned() {
     let outputs = abi["output_lanes_offset"].as_u64().unwrap();
     assert_eq!(outputs, typed + inputs);
     assert_eq!(outputs % 8, 0, "output lanes at {outputs}");
-    assert_eq!(offset(&artifact, "derived_outputs", "receivedSequence") % 8, 0);
+    assert_eq!(
+        offset(&artifact, "derived_outputs", "receivedSequence") % 8,
+        0
+    );
 }
