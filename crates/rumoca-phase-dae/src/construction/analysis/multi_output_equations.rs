@@ -294,7 +294,11 @@ fn validate_record_receiver(
         ..
     } = receiver
     else {
-        unreachable!("a record receiver is a variable reference");
+        return Err(invalid_receiver(
+            receiver,
+            context.equation_span,
+            "must be a variable reference",
+        ));
     };
     if !subscripts.is_empty() || !context.call_prefix.is_empty() || !result_shape.is_empty() {
         return Err(invalid_receiver(

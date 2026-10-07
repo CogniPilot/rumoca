@@ -1126,3 +1126,122 @@ fn nested_record_call_arg_projections_follow_decomposed_caller_inputs() {
             if name.as_str() == "reference_rotation_q"
     ));
 }
+
+fn write_to(
+    parts: &[(&str, Option<i64>, rumoca_core::DefId)],
+    value: f64,
+) -> rumoca_core::Statement {
+    rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            parts
+                .iter()
+                .map(|(ident, index, def_id)| rumoca_core::ComponentRefPart {
+                    ident: (*ident).to_string(),
+                    span: test_span(),
+                    subs: index
+                        .map(|value| {
+                            vec![rumoca_core::Subscript::Index {
+                                value,
+                                span: test_span(),
+                            }]
+                        })
+                        .unwrap_or_default(),
+                    def_id: *def_id,
+                })
+                .collect(),
+        )
+        .expect("write target is nonempty and resolved"),
+        value: rumoca_core::Expression::Literal {
+            value: Literal::Real(value),
+            span: test_span(),
+        },
+        span: test_span(),
+    }
+}
+
+fn written_targets(function: &rumoca_core::Function) -> Vec<String> {
+    function
+        .body
+        .iter()
+        .filter_map(|statement| match statement {
+            rumoca_core::Statement::Assignment { comp, .. } => Some(
+                comp.parts()
+                    .iter()
+                    .map(|part| match part.subs.first() {
+                        Some(rumoca_core::Subscript::Index { value, .. }) => {
+                            format!("{}[{value}]", part.ident)
+                        }
+                        _ => part.ident.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn coalescing_record_output_writes_keeps_a_write_before_a_later_write_to_the_same_field() {
+    let mut function = rumoca_core::Function::new("Pkg.g", test_span());
+    function.add_output(
+        crate::test_support::aggregate_param("s", "Pkg.S", Vec::new(), test_span())
+            .with_def_id(OUTPUT_DEF_ID)
+            .with_type_class(ClassType::Record),
+    );
+    let (s, n, edges, u) = (
+        OUTPUT_DEF_ID,
+        FIELD_A_DEF_ID,
+        FIELD_B_DEF_ID,
+        FIELD_COEFFS_DEF_ID,
+    );
+    function.body = vec![
+        write_to(&[("s", None, s), ("n", None, n)], 1.0),
+        write_to(&[("s", None, s), ("edges", None, edges)], 2.0),
+        write_to(
+            &[("s", None, s), ("edges", Some(2), edges), ("u", None, u)],
+            3.0,
+        ),
+        write_to(&[("s", None, s), ("edges", Some(1), edges)], 4.0),
+    ];
+    let before = written_targets(&function);
+
+    coalesce_proven_record_output_assignments(&mut function);
+
+    // The whole `s.edges` write precedes the element write it must not
+    // overwrite, so no write moves past it.
+    assert_eq!(written_targets(&function), before);
+}
+
+#[test]
+fn coalescing_record_output_writes_still_moves_a_write_past_an_unrelated_field_write() {
+    let mut function = rumoca_core::Function::new("Pkg.g", test_span());
+    function.add_output(
+        crate::test_support::aggregate_param("s", "Pkg.S", Vec::new(), test_span())
+            .with_def_id(OUTPUT_DEF_ID)
+            .with_type_class(ClassType::Record),
+    );
+    let (s, n, edges, u) = (
+        OUTPUT_DEF_ID,
+        FIELD_A_DEF_ID,
+        FIELD_B_DEF_ID,
+        FIELD_COEFFS_DEF_ID,
+    );
+    function.body = vec![
+        write_to(&[("s", None, s), ("n", None, n)], 1.0),
+        write_to(
+            &[("s", None, s), ("edges", Some(2), edges), ("u", None, u)],
+            3.0,
+        ),
+        write_to(&[("s", None, s), ("edges", Some(1), edges)], 4.0),
+    ];
+
+    coalesce_proven_record_output_assignments(&mut function);
+
+    assert_eq!(
+        written_targets(&function),
+        ["s.edges[2].u", "s.n", "s.edges[1]"]
+    );
+}

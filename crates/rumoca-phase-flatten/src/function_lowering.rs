@@ -575,6 +575,14 @@ fn record_write_may_move(
     output: &str,
     value: &rumoca_core::Expression,
 ) -> bool {
+    // Moving the write past another write to the same field would reorder
+    // the two, so the later one would no longer win.
+    let moved_field = match &statements[start] {
+        rumoca_core::Statement::Assignment { comp, .. } => {
+            comp.parts().get(1).map(|field| field.ident.as_str())
+        }
+        _ => None,
+    };
     let mut references = Vec::new();
     value.collect_var_refs(&mut references);
     let dependencies = references
@@ -587,6 +595,9 @@ fn record_write_may_move(
         let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
             return false;
         };
+        if comp.parts().get(1).map(|field| field.ident.as_str()) == moved_field {
+            return false;
+        }
         let assigned = comp.parts().first().map(|part| part.ident.as_str());
         if assigned.is_some_and(|assigned| dependencies.contains(assigned)) {
             return false;

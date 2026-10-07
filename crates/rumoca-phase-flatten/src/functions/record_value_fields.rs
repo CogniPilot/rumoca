@@ -133,12 +133,7 @@ impl SplitField {
     /// The declaration of [`Self::element_local`]: one record of the array.
     fn element_param(&self) -> rumoca_core::FunctionParam {
         let mut param = record_field_column_param(self.element_local(), &[], &[], &self.param);
-        param.effective_type = rumoca_core::EffectiveType::new(
-            self.param.effective_type.nominal_type(),
-            self.param.effective_type.canonical_type(),
-            Vec::new(),
-        )
-        .expect("a record element keeps the declared type contract");
+        param.effective_type = self.param.effective_type.element();
         param.shape_expr = Vec::new();
         param
     }
@@ -153,6 +148,20 @@ impl SplitField {
                 && self.constructor.is_some()
                 && fields.iter().all(Self::reconstructable)
         })
+    }
+
+    /// Whether one element of an array of records with `constructor` and
+    /// `fields` can be reassembled from the columns: every field is held in
+    /// one column, or is a split record without array axes that reassembles
+    /// in turn.
+    fn elements_reconstructable(constructor: bool, fields: &[SplitField]) -> bool {
+        constructor
+            && fields.iter().all(|field| {
+                field.fields.as_deref().is_none_or(|nested| {
+                    field.rank() == 0
+                        && Self::elements_reconstructable(field.constructor.is_some(), nested)
+                })
+            })
     }
 
     /// The array rank this field adds to the columns below it.
@@ -369,10 +378,20 @@ fn split_fields(
             let reconstructable = |fields: &[SplitField]| {
                 constructor.is_some() && fields.iter().all(SplitField::reconstructable)
             };
+            // A copy through subscripts reads the node where it is, so it must
+            // select one element of an array of records that the columns
+            // reassemble.
+            let copy_unsupported = |fields: &[SplitField]| {
+                uses.copied_through_subscripts()
+                    && !(uses.copies_elements_only(field.dimensions().len())
+                        && enclosing.0.is_empty()
+                        && SplitField::elements_reconstructable(constructor.is_some(), fields))
+            };
             let (fields, constructor) = match fields {
                 Some(fields)
-                    if (read_whole_above || uses.read_whole(!field.dimensions().is_empty()))
-                        && !reconstructable(&fields) =>
+                    if ((read_whole_above || uses.read_whole(!field.dimensions().is_empty()))
+                        && !reconstructable(&fields))
+                        || copy_unsupported(&fields) =>
                 {
                     (None, None)
                 }
