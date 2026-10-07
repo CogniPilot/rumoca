@@ -275,11 +275,13 @@ equation
 end UndirectedGates;
 "#;
 
-/// Counts the typed calls and the continued fold programs of a Solve model.
+/// Counts the typed calls, conditional regions, and continued fold programs
+/// of a Solve model.
 #[derive(Default)]
 struct FoldCensus {
     typed_calls: usize,
     continued_folds: usize,
+    conditional_regions: usize,
 }
 
 impl SolveVisitor for FoldCensus {
@@ -293,6 +295,7 @@ impl SolveVisitor for FoldCensus {
     ) -> Result<(), Self::Error> {
         match op {
             LinearOp::PureCall { .. } => self.typed_calls += 1,
+            LinearOp::FunctionConditional { .. } => self.conditional_regions += 1,
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. }
@@ -338,4 +341,194 @@ fn a_continued_fold_in_a_callee_without_a_directional_body_lowers_inline() {
             .unwrap_or_else(|| panic!("{name} is visible"));
         assert_eq!(simulation.data[variable].first().copied(), Some(expected));
     }
+}
+
+/// A chain walk under two outer loops: the continued fold's body reads a
+/// value built from the outer binders.
+const NESTED_WALKS: &str = r#"
+function nestedWalk
+  input Real u;
+  input Real w[:];
+  input Integer head[:];
+  input Integer link[:];
+  input Integer cell[:];
+  output Integer found;
+  output Integer visited;
+  output Real peak;
+protected
+  Integer node;
+  Integer traversed;
+  Integer neighbor;
+  Boolean valid;
+algorithm
+  found := 0;
+  visited := 0;
+  peak := max(w) * u;
+  for dx in -1:1 loop
+    for dy in 0:1 loop
+      neighbor := dx + 2 * dy + 2;
+      node := head[neighbor];
+      traversed := 0;
+      valid := node >= 0 and node <= size(link, 1);
+      while node > 0 and valid loop
+        if node > size(link, 1) or traversed >= size(link, 1) then
+          valid := false;
+        else
+          traversed := traversed + 1;
+          visited := visited + 1;
+          if cell[node] == neighbor and (found == 0 or node < found) then
+            found := node;
+          end if;
+          node := link[node];
+        end if;
+      end while;
+    end for;
+  end for;
+end nestedWalk;
+
+model NestedWalks
+  Real x(start = 1.0, fixed = true);
+  Integer found;
+  Integer visited;
+  Real peak;
+equation
+  der(x) = 0;
+  (found, visited, peak) = nestedWalk(x, {1.0, 4.0}, {2, 0, 3, 0, 1}, {0, 4, 5, 0, 0, 0}, {0, 3, 1, 5, 4, 2});
+end NestedWalks;
+"#;
+
+#[test]
+fn a_continued_fold_under_outer_loops_reads_the_outer_binders() {
+    let compiled = Compiler::new()
+        .model("NestedWalks")
+        .compile_str(NESTED_WALKS, "nested_walks.mo")
+        .expect("a loop nest with a continued walk constructs checked DAE");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let model = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &options)
+        .expect("the nested continuation lowers to Solve rows");
+    let mut census = FoldCensus::default();
+    census
+        .visit_solve_model(&model)
+        .expect("the census walk is infallible");
+    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the nested continuation simulates");
+    let value = |name: &str| {
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        simulation.data[variable].first().copied()
+    };
+    assert_eq!(value("peak"), Some(4.0));
+}
+
+/// A fold-bearing callee with its own guarded folds, called from an outer
+/// loop with a slice of the loop binder.
+const GUARDED_FOLDS_UNDER_LOOP: &str = r#"
+function orthogonal
+  input Real R[3, 3];
+  output Boolean valid;
+protected
+  Real gram[3, 3];
+algorithm
+  valid := true;
+  for a in 1:3 loop
+    for b in 1:3 loop
+      valid := valid and abs(R[a, b]) <= 1.000001;
+    end for;
+  end for;
+  if valid then
+    gram := transpose(R) * R;
+    for a in 1:3 loop
+      for b in 1:3 loop
+        valid := valid and abs(gram[a, b] - (if a == b then 1.0 else 0.0)) <= 1e-6;
+      end for;
+    end for;
+  end if;
+end orthogonal;
+
+function sweep
+  input Real u;
+  input Real w[:];
+  input Real rotations[:, 3, 3];
+  output Boolean valid;
+  output Real peak;
+algorithm
+  peak := max(w) * u;
+  valid := true;
+  for slot in 1:size(rotations, 1) loop
+    valid := valid and orthogonal(rotations[slot, :, :]);
+  end for;
+end sweep;
+
+model SweepBroken
+  Real x(start = 1.0, fixed = true);
+  Boolean valid;
+  Real peak;
+equation
+  der(x) = 0;
+  (valid, peak) = sweep(x, {1.0, 4.0}, {identity(3), 2 * identity(3)});
+end SweepBroken;
+
+model Sweep
+  Real x(start = 1.0, fixed = true);
+  Boolean valid;
+  Real peak;
+equation
+  der(x) = 0;
+  (valid, peak) = sweep(x, {1.0, 4.0}, {identity(3), [0, -1, 0; 1, 0, 0; 0, 0, 1]});
+end Sweep;
+"#;
+
+#[test]
+fn a_guarded_fold_in_a_callee_under_an_outer_loop_lowers_inline() {
+    let compiled = Compiler::new()
+        .model("Sweep")
+        .compile_str(GUARDED_FOLDS_UNDER_LOOP, "sweep.mo")
+        .expect("a loop over guarded folds constructs checked DAE");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let model = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &options)
+        .expect("the guarded folds under the outer loop lower to Solve rows");
+    let mut census = FoldCensus::default();
+    census
+        .visit_solve_model(&model)
+        .expect("the census walk is infallible");
+    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
+    assert!(
+        census.conditional_regions > 0,
+        "the guarded folds lower as conditional regions"
+    );
+    let simulation = simulate_dae(&compiled.dae, &options).expect("the sweep simulates");
+    let first = |name: &str| {
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        simulation.data[variable].first().copied()
+    };
+    assert_eq!(first("valid"), Some(1.0));
+    assert_eq!(first("peak"), Some(4.0));
+
+    let broken = Compiler::new()
+        .model("SweepBroken")
+        .compile_str(GUARDED_FOLDS_UNDER_LOOP, "sweep.mo")
+        .expect("the non-orthogonal variant constructs checked DAE");
+    let simulation = simulate_dae(&broken.dae, &options).expect("the broken sweep simulates");
+    let variable = simulation
+        .names
+        .iter()
+        .position(|candidate| candidate == "valid")
+        .expect("valid is visible");
+    assert_eq!(simulation.data[variable].first().copied(), Some(0.0));
 }

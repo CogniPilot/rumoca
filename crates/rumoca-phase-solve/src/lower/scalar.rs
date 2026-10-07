@@ -308,13 +308,19 @@ enum FunctionConditionalCaptureSource<'dae> {
         field: usize,
         count: usize,
     },
+    /// A register of the compiler that owns the conditional, one scalar wide.
+    ParentRegister {
+        source: solve::Reg,
+    },
 }
 
 impl<'dae> FunctionConditionalCaptureSource<'dae> {
     const fn width(self) -> usize {
         match self {
-            Self::DefinitionRange { count, .. }
-            | Self::DefinitionRecordFieldRange { count, .. } => count,
+            Self::DefinitionRange { count, .. } | Self::DefinitionRecordFieldRange { count, .. } => {
+                count
+            }
+            Self::ParentRegister { .. } => 1,
         }
     }
 
@@ -338,6 +344,7 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
                 field,
                 count,
             },
+            Self::ParentRegister { source } => Self::ParentRegister { source },
         }
     }
 }

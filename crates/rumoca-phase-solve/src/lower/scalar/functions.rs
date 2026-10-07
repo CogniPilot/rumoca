@@ -361,7 +361,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     first.id().function(),
                     context,
                     &prior_inactive,
-                )
+                    span,
+                )?
                 .function_conditional_condition_program(condition)?;
             let branch = conditional.branch(ordinal).ok_or_else(|| {
                 LowerError::contract("function conditional branch is missing", span)
@@ -369,7 +370,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut selected = prior_inactive;
             selected.push((condition, true));
             let result_program = self
-                .fork_for_function_conditional_region(first.id().function(), context, &selected)
+                .fork_for_function_conditional_region(
+                    first.id().function(),
+                    context,
+                    &selected,
+                    span,
+                )?
                 .function_conditional_result_program(branch, span)?;
             pending_arms.push((condition_program, result_program));
         }
@@ -379,7 +385,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .map(|condition| (condition, false))
             .collect::<Vec<_>>();
         let pending_fallback = self
-            .fork_for_function_conditional_region(first.id().function(), context, &fallback_guards)
+            .fork_for_function_conditional_region(
+                first.id().function(),
+                context,
+                &fallback_guards,
+                span,
+            )?
             .function_conditional_result_program(conditional.fallback(), span)?;
         let owner = match (owner_key.as_ref(), self.function_conditional_owners) {
             (Some(_), Some(owners)) => Some(owners.borrow_mut().issue().ok_or_else(|| {
@@ -505,7 +516,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     fn lazy_conditional_regions(
-        &self,
+        &mut self,
         operands: dae::ExpressionOperands<'dae>,
         owner_function: dae::FunctionId<'dae>,
         owner_context: u64,
@@ -542,12 +553,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     owner_function,
                     owner_context,
                     &prior_inactive,
-                )
+                    span,
+                )?
                 .function_conditional_condition_program(condition)?;
             let mut selected = prior_inactive;
             selected.push((conditions[ordinal], true));
             let result = self
-                .fork_for_function_conditional_region(owner_function, owner_context, &selected)
+                .fork_for_function_conditional_region(
+                    owner_function,
+                    owner_context,
+                    &selected,
+                    span,
+                )?
                 .function_conditional_result_program([value], span)?;
             arms.push((condition, result));
         }
@@ -563,7 +580,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .copied()
                     .map(|condition| (condition, false))
                     .collect::<Vec<_>>(),
-            )
+                span,
+            )?
             .function_conditional_result_program([fallback], span)?;
         Ok((arms, fallback))
     }
@@ -679,7 +697,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         // stable call-frame identity across independently lowered rows. Their
         // owning fold already retains one program, so do not issue a cross-row
         // owner from register ordinals.
-        if !self.symbolic_domain_points.is_empty() || !self.function_fold_values.is_empty() {
+        if !self.symbolic_domain_points.is_empty()
+            || !self.function_fold_values.is_empty()
+            || self
+                .deferred_fold_captures
+                .as_ref()
+                .is_some_and(|deferred| !deferred.symbolic_domain_points.is_empty())
+        {
             return None;
         }
         Some(FunctionConditionalOwnerKey {
@@ -872,14 +896,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     fn fork_for_function_conditional_region(
-        &self,
+        &mut self,
         owner_function: dae::FunctionId<'dae>,
         owner_context: u64,
         branch_guards: &[(dae::ExprId<'dae>, bool)],
-    ) -> Self {
+        span: Span,
+    ) -> Result<Self, LowerError> {
+        let symbolic_points = self.visible_symbolic_points(span)?;
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.domain_points = self.domain_points.clone();
-        compiler.symbolic_domain_points = self.symbolic_domain_points.clone();
         compiler.function_arguments = self.function_arguments.clone();
         for frame in &mut compiler.function_arguments {
             // The conditional region is its own native control-flow owner, so
@@ -935,7 +960,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 locals: Vec::new(),
             });
         compiler.function_conditional_owners = self.function_conditional_owners;
-        compiler
+        // The region has its own register file: each symbolic point of the
+        // enclosing fold is one of its captures, loaded once.
+        for (domain, registers) in symbolic_points {
+            let mut local = Vec::with_capacity(registers.len());
+            for source in registers {
+                let range = compiler.function_conditional_capture_range(
+                    FunctionConditionalCaptureSource::ParentRegister { source },
+                    span,
+                )?;
+                local.push(range.start);
+            }
+            compiler.symbolic_domain_points.push((domain, local));
+        }
+        Ok(compiler)
     }
 
     fn function_conditional_captures_definition(
@@ -1122,6 +1160,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 Ok(FunctionConditionalRegisterRange {
                     start: self.pack_function_definition(definition, span)?,
                     count,
+                })
+            }
+            FunctionConditionalCaptureSource::ParentRegister { source } => {
+                Ok(FunctionConditionalRegisterRange {
+                    start: source,
+                    count: 1,
                 })
             }
             FunctionConditionalCaptureSource::DefinitionRecordFieldRange {
@@ -3825,25 +3869,36 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         false
     }
 
+    /// Every symbolic domain point readable from this compiler's register
+    /// file: its own, then those an enclosing fold update passes in as
+    /// captures, each materialized here.
+    fn visible_symbolic_points(
+        &mut self,
+        span: Span,
+    ) -> Result<Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>, LowerError> {
+        let inherited = self
+            .deferred_fold_captures
+            .as_ref()
+            .map(|deferred| deferred.symbolic_domain_points.clone())
+            .unwrap_or_default();
+        let mut points = self.symbolic_domain_points.clone();
+        for (domain, sources) in inherited {
+            let registers = sources
+                .into_iter()
+                .map(|source| self.deferred_fold_capture(source, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            points.push((domain, registers));
+        }
+        Ok(points)
+    }
+
     fn fork_for_fold_update(
         &mut self,
         captures: &[solve::Reg],
         _excluded: Option<dae::FunctionFoldId<'dae>>,
         span: Span,
     ) -> Result<Self, LowerError> {
-        let inherited_symbolic = self
-            .deferred_fold_captures
-            .as_ref()
-            .map(|deferred| deferred.symbolic_domain_points.clone())
-            .unwrap_or_default();
-        let mut symbolic_domain_points = self.symbolic_domain_points.clone();
-        for (domain, sources) in inherited_symbolic {
-            let registers = sources
-                .into_iter()
-                .map(|source| self.deferred_fold_capture(source, span))
-                .collect::<Result<Vec<_>, _>>()?;
-            symbolic_domain_points.push((domain, registers));
-        }
+        let symbolic_domain_points = self.visible_symbolic_points(span)?;
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.domain_points = self.domain_points.clone();
         if !captures.is_empty() {
