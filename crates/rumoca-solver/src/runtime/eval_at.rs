@@ -5,7 +5,11 @@
 //! can be attributed to a specific model variable in a single command instead
 //! of repeated instrumented rebuilds.
 
-use crate::runtime::{inspect_alloc::filled_f64_values, solve_runtime::SolveRuntime};
+use crate::runtime::{
+    inspect_alloc::filled_f64_values,
+    solve_ops::EventActionOutcome,
+    solve_runtime::{EventUpdateRowFilter, SolveRuntime},
+};
 
 /// One named value in an [`EvalAtReport`].
 #[derive(Debug, Clone)]
@@ -96,6 +100,24 @@ impl SolveRuntime {
             self.full_solver_y_into(t, state, params, tol, max_iters, &mut solver_y_values)
         {
             error = Some(err.to_string());
+        }
+        // Event actions are model-level assertions: a function-call-scoped
+        // definedness assertion (MLS 12.4.4) or a model `assert` that fails at
+        // this point is an evaluation error, not a value.
+        if error.is_none() {
+            match self.eval_event_actions(
+                &solver_y_values,
+                params,
+                params,
+                t,
+                EventUpdateRowFilter::All,
+            ) {
+                Ok(EventActionOutcome::AssertionFailed { message, .. }) => {
+                    error = Some(format!("assertion failed: {message}"));
+                }
+                Ok(_) => {}
+                Err(err) => error = Some(err.to_string()),
+            }
         }
         let solver_y = solver_y_values
             .iter()
