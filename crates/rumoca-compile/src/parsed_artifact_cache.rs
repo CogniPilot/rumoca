@@ -223,4 +223,20 @@ mod tests {
 
         assert_eq!(restored, definition);
     }
+
+    #[test]
+    fn binary_cache_round_trip_preserves_an_unannotated_external_function() {
+        let definition = rumoca_phase_parse::parse_to_ast(
+            "function f\n  input Real x;\n  output Real y;\nexternal \"C\" y = f(x);\nend f;\n",
+            "external-unannotated.mo",
+        )
+        .expect("test source should parse");
+        let temp = tempfile::tempdir().expect("temporary cache directory");
+        let cache_file = temp.path().join("artifact.bin");
+
+        write_cache(&cache_file, &definition).expect("cache write should succeed");
+        let restored = try_read_cache(&cache_file).expect("cache read should succeed");
+
+        assert_eq!(restored, definition);
+    }
 }
