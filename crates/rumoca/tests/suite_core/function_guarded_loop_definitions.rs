@@ -264,3 +264,57 @@ fn solver_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
         .unwrap_or_else(|| panic!("missing solver value {name}"))
         .value
 }
+
+const ASSERTED: &str = r#"
+package W
+  constant Integer n = 4;
+  function Scores
+    input Real rgb[:];
+    input Boolean enabled;
+    output Real scores[size(rgb, 1)];
+  protected
+    Real gray[size(rgb, 1)];
+  algorithm
+    scores := zeros(size(rgb, 1));
+    if enabled then
+      assert(size(rgb, 1) >= 2, "needs two samples");
+      for slot in 1:size(rgb, 1) loop
+        gray[slot] := 2.0 * rgb[slot];
+      end for;
+      for slot in 2:size(rgb, 1) - 1 loop
+        scores[slot] := gray[slot];
+      end for;
+    end if;
+  end Scores;
+end W;
+model Asserted
+  Real scores[W.n] = W.Scores({1, 2, 3, 4}, time < 0.5);
+end Asserted;
+"#;
+
+/// A proven assertion at the head of a guarded branch that also holds loops
+/// leaves a conditional with no value to define; the loops that follow it keep
+/// their guard.
+#[test]
+fn a_proven_assertion_before_guarded_loops_leaves_their_definitions_intact() {
+    let compiled = Compiler::new()
+        .model("Asserted")
+        .compile_str(ASSERTED, "Asserted.mo")
+        .expect("the proven assertion does not hide the guarded loops");
+    for (time, expected) in [(0.0, [0.0, 4.0, 6.0, 0.0]), (1.0, [0.0; 4])] {
+        let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], time)
+            .expect("the guarded DAE evaluates");
+        assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+        for (index, want) in expected.iter().enumerate() {
+            let name = format!("scores[{}]", index + 1);
+            let got = probe
+                .report
+                .solver_y
+                .iter()
+                .find(|slot| slot.name.replace(' ', "") == name)
+                .unwrap_or_else(|| panic!("solver value {name}"))
+                .value;
+            assert_eq!(got, *want, "{name} at t={time}");
+        }
+    }
+}

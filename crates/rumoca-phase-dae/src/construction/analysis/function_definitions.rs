@@ -1692,7 +1692,7 @@ impl FunctionDefinitions {
 
     /// The facts after the branches rejoin; the fall-through path is this
     /// certificate when the conditional has no `else`.
-    fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
+    pub(super) fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
         let mut paths = branches.iter().map(|branch| &branch.facts);
         let mut joined = paths.next().unwrap_or(&self.facts).clone();
         for facts in paths {

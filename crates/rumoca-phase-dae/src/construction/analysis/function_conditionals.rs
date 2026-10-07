@@ -172,13 +172,13 @@ pub(super) fn resolve_function_conditional(
             definitions,
         );
     }
-    // A conditional that only asserts defines no value but still owns the
-    // guarded actions of its branches.
-    let owns_actions = branches
+    // A conditional that only asserts defines no value; it owns the guarded
+    // actions of its branches, or nothing when every assertion is proven.
+    let carries_assertions = branches
         .iter()
         .map(Vec::as_slice)
         .chain(fallback_plans.as_deref().map(Vec::as_slice))
-        .any(plans_carry_runtime_assertion);
+        .any(plans_carry_assertion);
     let writes_before = definitions.folds.write_count();
     let resolved = resolve_reachable_branches(
         (blocks, fallback_statements),
@@ -196,8 +196,11 @@ pub(super) fn resolve_function_conditional(
         pruned,
     } = resolved;
     // A conditional whose reachable branches write nothing has no effect at
-    // the binder values that reach it; its other branches never run.
-    if branch_states.is_empty() || (ordered.is_empty() && (owns_actions || pruned)) {
+    // the binder values that reach it; its other branches never run. The
+    // paths still rejoin, so the facts after it hold on every path through it
+    // and not only on the fall-through.
+    if branch_states.is_empty() || (ordered.is_empty() && (carries_assertions || pruned)) {
+        definitions.join_facts(&branch_states, exhaustive);
         return Ok(ordered);
     }
     if ordered.is_empty() {
@@ -357,22 +360,24 @@ impl ResolvedBranches {
     }
 }
 
-/// Whether a runtime branch hands at least one assertion to its action owner.
-fn plans_carry_runtime_assertion(plans: &[FunctionStatementPlan]) -> bool {
+/// Whether a runtime branch carries at least one assertion: a runtime one is
+/// handed to the action owner, a proven one (MLS §8.3.7, established `true` by
+/// the specialization) is erased and leaves the branch with no value to define.
+fn plans_carry_assertion(plans: &[FunctionStatementPlan]) -> bool {
     plans.iter().any(|plan| match plan {
-        FunctionStatementPlan::RuntimeAssertion => true,
+        FunctionStatementPlan::RuntimeAssertion | FunctionStatementPlan::ProvenAssertion => true,
         FunctionStatementPlan::If {
             branches, fallback, ..
         } => {
             branches
                 .iter()
-                .any(|branch| plans_carry_runtime_assertion(branch))
+                .any(|branch| plans_carry_assertion(branch))
                 || fallback
                     .as_deref()
-                    .is_some_and(plans_carry_runtime_assertion)
+                    .is_some_and(plans_carry_assertion)
         }
         FunctionStatementPlan::ProvenBranch { statements, .. } => {
-            plans_carry_runtime_assertion(statements)
+            plans_carry_assertion(statements)
         }
         _ => false,
     })
