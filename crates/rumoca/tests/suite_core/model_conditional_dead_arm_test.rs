@@ -97,7 +97,7 @@ fn an_unproven_model_conditional_still_builds_the_unreducible_arm() {
         .expect_err("a runtime guard keeps both arms, so the unreducible loop still fails");
     let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("function statement"),
+        rendered.contains("function loop domain"),
         "the runtime arm must still reach the unbounded loop: {rendered}"
     );
 }
