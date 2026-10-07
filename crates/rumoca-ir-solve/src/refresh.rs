@@ -857,9 +857,10 @@ impl ContinuousRefreshOwners {
         &self,
         id: ExactRefreshAssignmentProgramId,
     ) -> Option<&ExactRefreshAssignmentProgram> {
+        // `append_exact_assignment_program` issues each identity as the
+        // program's position in this inventory, the only place one is made.
         self.exact_assignment_programs
-            .iter()
-            .find(|program| program.id == id)
+            .get(usize::try_from(id.0).ok()?)
     }
 
     /// Every issued exact assignment schedule.
