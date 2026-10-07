@@ -113,6 +113,7 @@ mod function_assertion_scopes;
 mod function_branch_assertions;
 mod function_branch_integer_conversion;
 mod function_call_extents;
+mod function_call_statement_named_arguments;
 mod function_comprehension_definedness;
 mod function_conditional_sequence_test;
 mod function_constant_binding_scope;

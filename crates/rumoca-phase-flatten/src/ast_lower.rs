@@ -415,9 +415,12 @@ fn lower_function_call_statement(
         comp: rumoca_core::Reference::from_component_reference(function_component_ref_from_ast(
             comp, context,
         )?),
+        // MLS §12.4.1 binds a named argument by the input it names; the
+        // statement form `(o1, o2) := f(x = e)` binds exactly like the
+        // expression form, so both carry the same named-argument markers.
         args: args
             .iter()
-            .map(|arg| expression_from_ast_with_context(arg, context))
+            .map(|arg| convert_call_arg_with_context(arg, context))
             .collect::<LowerResult<Vec<_>>>()?,
         outputs: outputs
             .iter()
