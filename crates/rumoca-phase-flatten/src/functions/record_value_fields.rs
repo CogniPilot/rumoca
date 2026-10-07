@@ -12,9 +12,13 @@
 //! the end of the algorithm. The record value is only ever observed through
 //! its fields, so the rewrite preserves every value the function computes.
 //!
-//! A record that is read or written whole, whose fields are themselves
-//! records, or whose function returns early keeps its source form and the
-//! existing record-assembly rules.
+//! A field that is itself a record (or an array of records) becomes one
+//! record-valued local, and a nested path `r.f.g` becomes `r__f.g`, so
+//! element and nested writes of record fields inside loops and conditionals
+//! are ordinary writes of that local.
+//!
+//! A record that is read or written whole, or whose function returns early,
+//! keeps its source form and the existing record-assembly rules.
 
 use super::*;
 use rumoca_core::{ComponentRefPart, ComponentReference, Expression, Span, Statement};
@@ -75,10 +79,6 @@ fn branch_assigned_records(
                 value.type_def_id?,
             )
             .ok()?;
-            let scalar_fields = constructor
-                .inputs
-                .iter()
-                .all(|field| field.type_class != Some(rumoca_core::ClassType::Record));
             let identified = value.def_id.is_some_and(|id| id.index() != 0)
                 && constructor
                     .inputs
@@ -91,7 +91,6 @@ fn branch_assigned_records(
                 fields: constructor.inputs.clone(),
             };
             (identified
-                && scalar_fields
                 && assigns_field_in_nested_statement(&function.body, &record.name, false)
                 && assigns_every_field(&function.body, &record)
                 && !reads_or_writes_whole(&function.body, &record)
@@ -147,8 +146,9 @@ fn assigns_field_in_nested_statement(statements: &[Statement], record: &str, nes
     })
 }
 
+/// Whether `comp` names a field of `record`, or a path inside one.
 fn is_field_of(comp: &ComponentReference, record: &str) -> bool {
-    matches!(comp.parts(), [root, _field] if root.ident == record && root.subs.is_empty())
+    matches!(comp.parts(), [root, _field, ..] if root.ident == record && root.subs.is_empty())
 }
 
 /// Whether the body names `record` other than through one of its fields.
@@ -305,14 +305,40 @@ struct FieldLocalRewriter<'record> {
 }
 
 impl FieldLocalRewriter<'_> {
+    /// The field `comp` names and the path below it, for a reference through
+    /// one field of the split record.
     fn field_part<'part>(
         &self,
         comp: &'part ComponentReference,
-    ) -> Option<&'part ComponentRefPart> {
+    ) -> Option<(&'part ComponentRefPart, &'part [ComponentRefPart])> {
         match comp.parts() {
-            [root, field] if root.ident == self.record.name && root.subs.is_empty() => Some(field),
+            [root, field, rest @ ..] if root.ident == self.record.name && root.subs.is_empty() => {
+                Some((field, rest))
+            }
             _ => None,
         }
+    }
+
+    /// `r.f[s].rest` becomes `r__f[s].rest`: the field local takes the
+    /// field's place and keeps its subscripts.
+    fn local_path(
+        &mut self,
+        comp: &ComponentReference,
+        field: &ComponentRefPart,
+        rest: &[ComponentRefPart],
+    ) -> ComponentReference {
+        let mut parts = Vec::with_capacity(rest.len() + 1);
+        parts.push(ComponentRefPart {
+            ident: self.record.field_local(&field.ident),
+            span: field.span,
+            subs: self.rewrite_subscripts(&field.subs),
+            def_id: field.def_id,
+        });
+        parts.extend(
+            rest.iter()
+                .map(|part| self.rewrite_component_ref_part(part)),
+        );
+        reference(false, comp.span(), parts)
     }
 }
 
@@ -324,12 +350,25 @@ impl ExpressionRewriter for FieldLocalRewriter<'_> {
                 subscripts,
                 span,
             } => {
-                let field = name.component_ref().and_then(|comp| self.field_part(comp));
-                match field {
-                    Some(field) => {
+                let Some(comp) = name.component_ref() else {
+                    return self.walk_expression(expr);
+                };
+                match self.field_part(comp) {
+                    Some((field, [])) => {
                         let mut subs = field.subs.clone();
                         subs.extend(self.rewrite_subscripts(subscripts));
                         field_local_reference(self.record, &field.ident, field.def_id, subs, *span)
+                    }
+                    Some((field, rest)) => {
+                        let local = self.local_path(comp, field, rest);
+                        Expression::VarRef {
+                            name: rumoca_core::Reference::with_component_reference(
+                                local.to_var_name().as_str(),
+                                local,
+                            ),
+                            subscripts: self.rewrite_subscripts(subscripts),
+                            span: *span,
+                        }
                     }
                     None => self.walk_expression(expr),
                 }
@@ -351,7 +390,7 @@ impl ExpressionRewriter for FieldLocalRewriter<'_> {
 
 impl StatementRewriter for FieldLocalRewriter<'_> {
     fn rewrite_component_reference(&mut self, comp: &ComponentReference) -> ComponentReference {
-        let Some(field) = self.field_part(comp) else {
+        let Some((field, rest)) = self.field_part(comp) else {
             let parts = comp
                 .parts()
                 .iter()
@@ -359,16 +398,7 @@ impl StatementRewriter for FieldLocalRewriter<'_> {
                 .collect();
             return reference(comp.local(), comp.span(), parts);
         };
-        reference(
-            false,
-            comp.span(),
-            vec![ComponentRefPart {
-                ident: self.record.field_local(&field.ident),
-                span: field.span,
-                subs: self.rewrite_subscripts(&field.subs),
-                def_id: field.def_id,
-            }],
-        )
+        self.local_path(comp, field, rest)
     }
 }
 
@@ -392,10 +422,10 @@ fn writes_field(statements: &[Statement], record: &str, field: &str) -> bool {
     statements.iter().any(|statement| {
         match statement {
         Statement::Assignment { comp, .. } => {
-            matches!(comp.parts(), [root, part] if root.ident == record && part.ident == field)
+            matches!(comp.parts(), [root, part, ..] if root.ident == record && part.ident == field)
         }
         Statement::FunctionCall { outputs, .. } => outputs.iter().flatten().any(|output| {
-            matches!(output.parts(), [root, part] if root.ident == record && part.ident == field)
+            matches!(output.parts(), [root, part, ..] if root.ident == record && part.ident == field)
         }),
         Statement::If {
             cond_blocks,
