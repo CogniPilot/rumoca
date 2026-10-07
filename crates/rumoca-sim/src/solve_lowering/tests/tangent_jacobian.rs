@@ -494,3 +494,68 @@ fn fourbar1_tangent_jacobians_match_the_dense_reference() {
     );
     assert!(colored > 0, "Fourbar1 exercises the colored tangent plan");
 }
+
+/// Many blocks over one source construction share a single widening of each
+/// source program, and a plan built through the shared catalog equals the
+/// plan built alone.
+#[test]
+fn colored_plans_over_a_shared_source_share_one_widening() {
+    let model = lower_source(&affine_chain(), "TangentChain", &[]);
+    let rows = prepared_rows(&model);
+    let structures = model.artifacts.continuous.structural.algebraic_projection();
+    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let (block, application) = blocks
+        .iter()
+        .zip(structures)
+        .find_map(|(block, structure)| {
+            let application = structure.jacobian_application()?;
+            (application.colors().len() >= 2).then_some((block, application))
+        })
+        .expect("a multi-color application");
+    let alone = ColoredTangentPlan::derive(application).expect("the standalone plan");
+    let mut widened = solve::TangentLaneCatalog::default();
+    let mut prepared = rumoca_eval_solve::PreparedLaneCatalog::default();
+    let evaluators = (0..2000)
+        .map(|_| {
+            let plan = ColoredTangentPlan::derive_sharing(application, &mut widened)
+                .expect("the shared plan");
+            assert_eq!(plan, alone, "the shared plan is the standalone plan");
+            ColoredTangentEvaluator::sharing(plan, &mut prepared)
+        })
+        .collect::<Vec<_>>();
+    let first = evaluators[0].plan().programs();
+    assert!(evaluators.iter().all(|evaluator| {
+        let programs = evaluator.plan().programs();
+        programs.len() == first.len()
+            && programs
+                .iter()
+                .zip(first)
+                .all(|(program, shared)| std::sync::Arc::ptr_eq(program, shared))
+    }));
+    let y = random_point(rows.model, &mut Random(0x2545_f491_4f6c_dd1d));
+    let seed_len = y.len() + rows.model.parameters.len();
+    let eval = |evaluator: &ColoredTangentEvaluator| {
+        let mut out = vec![f64::NAN; application.output_len()];
+        evaluator
+            .eval(
+                (&y, &rows.model.parameters, 0.0),
+                rows.context(),
+                seed_len,
+                &mut out,
+            )
+            .expect("evaluate the colored tangents");
+        out
+    };
+    let reference = eval(&ColoredTangentEvaluator::new(alone));
+    for evaluator in [&evaluators[0], &evaluators[1999]] {
+        let values = eval(evaluator);
+        assert!(
+            values
+                .iter()
+                .zip(&reference)
+                .all(|(a, b)| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())),
+            "shared evaluators reproduce the standalone values for {} rows",
+            block.rows.len()
+        );
+    }
+}

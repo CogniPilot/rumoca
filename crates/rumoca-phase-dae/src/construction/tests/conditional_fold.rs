@@ -376,7 +376,7 @@ fn an_unproven_guard_still_builds_both_arms() {
         .expect_err("an unproven guard keeps the runtime branch and reaches its call");
     let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("searchLike") && rendered.contains("function statement"),
+        rendered.contains("searchLike") && rendered.contains("function loop domain"),
         "the unproven arm must still reach the unbounded loop call: {rendered}"
     );
 }

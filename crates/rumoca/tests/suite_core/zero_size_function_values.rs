@@ -50,7 +50,7 @@ package ZeroSize
     a := w*c1;
   end scaled;
   model UnwrittenLocal
-    parameter Integer n = 3;
+    parameter Integer n = 3 annotation(Evaluate = true);
     parameter Real p = unwrittenLocal(n);
     Real y = p + time;
   end UnwrittenLocal;

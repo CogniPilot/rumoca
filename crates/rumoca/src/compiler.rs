@@ -1257,6 +1257,30 @@ mod tests {
         );
     }
 
+    /// SPEC_0040 DAE-C22: a call argument a declared output dimension of the
+    /// callee reads fixes the result shape at translation, so it is reported
+    /// once, at the call, naming the parameter that can no longer be set.
+    #[test]
+    fn a_keyed_function_argument_parameter_is_reported_at_its_call() {
+        let source = "function ramp\n  input Integer n;\n  output Real y[n];\nalgorithm\n  \
+                      y := zeros(n);\n  for i in 1:n loop\n    y[i] := i;\n  end for;\nend ramp;\n\
+                      model Keyed\n  parameter Integer n = 3;\n  Real y;\nequation\n  \
+                      y = sum(ramp(n));\nend Keyed;\n";
+        let compiler = Compiler::new().model("Keyed");
+        let mut session = loaded_session(&compiler, source, "Keyed.mo");
+        let warnings = rendered_warnings(&mut session, "Keyed")
+            .into_iter()
+            .filter(|warning| warning.contains("WD001"))
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        // The label is the `ramp(n)` call: zero-based line 13.
+        assert!(
+            warnings[0].contains("parameter n cannot be set")
+                && warnings[0].contains("Keyed.mo:13"),
+            "{warnings:?}"
+        );
+    }
+
     fn rendered_warnings(session: &mut Session, model_name: &str) -> Vec<String> {
         let diagnostics = session.compile_model_diagnostics(model_name);
         let source_map = diagnostics.source_map;

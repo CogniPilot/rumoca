@@ -5,7 +5,7 @@ fn key(field: Option<usize>, scalar: usize) -> FunctionParameterDependency {
         Some(field) => FunctionParameterDependency::RecordField {
             activation: crate::projection::Activation::Guaranteed,
             parameter: 0,
-            field,
+            field: crate::projection::FieldPath::Field(field),
             scalar,
         },
         None => FunctionParameterDependency::Scalar {

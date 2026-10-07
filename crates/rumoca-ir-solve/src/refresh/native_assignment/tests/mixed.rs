@@ -240,6 +240,6 @@ fn scalar_coupled_values_and_multiple_outputs_remain_outside_native_profile() {
     let layout = VarLayout::from_parts(Default::default(), 2, 0);
     assert_eq!(
         derive(&source, &targets, &layout).unwrap_err().0,
-        "native scalar program requires one terminal scalar output"
+        "native tensor residual has no direct elementwise isolator"
     );
 }

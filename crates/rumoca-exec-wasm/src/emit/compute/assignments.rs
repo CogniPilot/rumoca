@@ -13,6 +13,9 @@ pub(crate) fn emit_native_assignment_module(
                 .into(),
         );
     }
+    if !schedule.input_lanes().is_empty() {
+        return Err("typed input lanes are read only by the checked native program entry".into());
+    }
     layout
         .validate_shape_contract()
         .map_err(|error| error.to_string())?;

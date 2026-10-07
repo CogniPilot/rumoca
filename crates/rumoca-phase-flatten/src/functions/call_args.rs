@@ -555,15 +555,10 @@ impl DefaultInputSubstituter<'_> {
             ..
         } = &value
             && subscripts.is_empty()
-            && fields.iter().all(|field| field.subs.is_empty())
+            && let Some(extended) = extend_supplied_reference(supplied, fields)
         {
-            let spelled = fields
-                .iter()
-                .fold(supplied.as_str().to_string(), |path, field| {
-                    format!("{path}.{}", field.ident)
-                });
             return Some(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::generated(spelled),
+                name: extended,
                 subscripts: Vec::new(),
                 span,
             });
@@ -585,6 +580,22 @@ impl DefaultInputSubstituter<'_> {
         }
         Some(value)
     }
+}
+
+/// The reference `supplied` extended by the field parts a default selects
+/// from it, keeping every part's declaration identity (MLS 12.4.1: the
+/// default reads the supplied actual in the caller's scope).
+fn extend_supplied_reference(
+    supplied: &rumoca_core::Reference,
+    fields: &[rumoca_core::ComponentRefPart],
+) -> Option<rumoca_core::Reference> {
+    let base = supplied.component_ref()?;
+    let mut parts = base.parts().to_vec();
+    parts.extend(fields.iter().cloned());
+    let extended =
+        rumoca_core::ComponentReference::construct(base.local(), base.span(), parts).ok()?;
+    let spelled = rumoca_core::ComponentPath::from_component_reference(&extended).to_flat_string();
+    Some(supplied.with_rewritten_component_reference(spelled, extended))
 }
 
 pub(super) fn rewrite_model_expressions<R: FallibleStatementRewriter<Error = FlattenError>>(

@@ -1431,6 +1431,53 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(start)
     }
 
+    /// The packed scalars of record field `field` of a typed call result
+    /// whose scalars begin at `start`: one run of result scalars is that run;
+    /// a record-typed field whose packed lanes interleave its leaves is
+    /// gathered lane by lane.
+    fn pack_typed_call_record_field(
+        &mut self,
+        call: dae::ExprId<'dae>,
+        (function, output, field): (dae::FunctionId<'dae>, usize, usize),
+        start: solve::Reg,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let count = self.record_field_scalar_count(call, field);
+        let offsets = (0..count)
+            .map(|scalar| {
+                typed_call_record_field_scalar(
+                    self.view,
+                    function,
+                    registered,
+                    output,
+                    (field, scalar),
+                    span,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let first = offsets.first().copied().unwrap_or_default();
+        if offsets
+            .iter()
+            .enumerate()
+            .all(|(lane, offset)| *offset == first + lane)
+        {
+            return function_conditional_reg_offset(
+                start,
+                first,
+                span,
+                "typed pure-call record field",
+            );
+        }
+        let values = offsets
+            .into_iter()
+            .map(|offset| {
+                function_conditional_reg_offset(start, offset, span, "typed pure-call record lane")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.pack_registers(&values, span)
+    }
+
     fn pack_record_call_field(
         &mut self,
         call: dae::ExprId<'dae>,
@@ -1452,19 +1499,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?
         {
-            let range = typed_call_record_field_scalar_range(
-                self.view,
-                function,
-                &registered,
-                output as usize,
-                field,
-                span,
-            )?;
-            return function_conditional_reg_offset(
+            return self.pack_typed_call_record_field(
+                call,
+                (function, output as usize, field),
                 start,
-                range.start,
+                &registered,
                 span,
-                "typed pure-call record field",
             );
         }
         let typed_assertions = self.register_root_pure_call(call, function, span)?;
@@ -1644,12 +1684,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let node = self.node(expression);
         match node.operation() {
-            dae::ExpressionOperation::Record(fields) => self.expression(
-                fields
+            dae::ExpressionOperation::Record(fields) => {
+                let value = fields
                     .get(field)
-                    .ok_or_else(|| LowerError::contract("record field is out of range", span))?,
-                scalar,
-            ),
+                    .ok_or_else(|| LowerError::contract("record field is out of range", span))?;
+                if self.node(value).value_type().is_record() {
+                    self.record_value_lane(value, scalar, span)
+                } else {
+                    self.expression(value, scalar)
+                }
+            }
             dae::ExpressionOperation::Call {
                 function,
                 output,
@@ -1701,6 +1745,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 scalar,
                 span,
             ),
+            // A field of a record field: the field's scalar is a packed lane of
+            // the enclosing field's value.
+            dae::ExpressionOperation::Field {
+                base,
+                field: enclosing,
+            } => {
+                let lane = self.packed_lane_of_record_field(expression, field, scalar, span)?;
+                self.record_field(base, enclosing as usize, lane, span)
+            }
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 let lane = self.packed_lane_of_record_field(expression, field, scalar, span)?;
                 self.function_fold_parameter(fold, carried, lane, span)
@@ -1738,23 +1791,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?
         {
-            let range = typed_call_record_field_scalar_range(
+            let offset = typed_call_record_field_scalar(
                 self.view,
                 function,
                 &registered,
                 output as usize,
-                field,
+                (field, scalar),
                 span,
             )?;
-            if scalar >= range.len() {
-                return Err(LowerError::contract(
-                    "typed pure-call record scalar projection is out of range",
-                    span,
-                ));
-            }
             return function_conditional_reg_offset(
                 start,
-                range.start + scalar,
+                offset,
                 span,
                 "typed pure-call record scalar",
             );
@@ -2195,6 +2242,45 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     /// Locate one scalar of one record field within the record's packed lanes.
+    /// Packed lane `lane` of a record value: element major over its records,
+    /// each record its fields in declaration order (the DAE record field
+    /// layout), so the lane selects one scalar of one field.
+    pub(super) fn record_value_lane(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        lane: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let value_type = self.node(expression).value_type_id();
+        let field_count = self.node(expression).value_type().record_field_count();
+        for field in 0..field_count {
+            let layout = self
+                .view
+                .record_field_layout(value_type, field)
+                .ok_or_else(|| LowerError::contract("record field has no finite layout", span))?;
+            if layout.record_width() == 0 {
+                break;
+            }
+            let element = lane / layout.record_width();
+            let Some(offset) = (lane % layout.record_width()).checked_sub(layout.field_offset())
+            else {
+                continue;
+            };
+            if offset < layout.field_width() && element < layout.outer_count() {
+                return self.record_field(
+                    expression,
+                    field,
+                    element * layout.field_width() + offset,
+                    span,
+                );
+            }
+        }
+        Err(LowerError::contract(
+            "record value lane is out of range",
+            span,
+        ))
+    }
+
     fn packed_lane_of_record_field(
         &self,
         expression: dae::ExprId<'dae>,
@@ -4376,14 +4462,17 @@ fn typed_call_result_scalar_range(
     Ok(start..end)
 }
 
-fn typed_call_record_field_scalar_range<'dae>(
+/// The offset, among a typed pure call's flattened result scalars, of scalar
+/// `scalar` of record field `field` of result `output` (a packed lane when the
+/// field is itself a record).
+fn typed_call_record_field_scalar<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
     registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
     output: usize,
-    field: usize,
+    (field, scalar): (usize, usize),
     span: Span,
-) -> Result<std::ops::Range<usize>, LowerError> {
+) -> Result<usize, LowerError> {
     let function = view.function(function).ok_or_else(|| {
         LowerError::contract("typed pure-call record function does not resolve", span)
     })?;
@@ -4402,33 +4491,32 @@ fn typed_call_record_field_scalar_range<'dae>(
     let result_leaves = registered.callee.result_ranges.get(output).ok_or_else(|| {
         LowerError::contract("typed pure-call record result is out of range", span)
     })?;
-    for (leaf, ordinal) in (result_leaves.start..).zip(0..record.record_field_count()) {
-        let (_, field_type) = view.record_field(result_type, ordinal).ok_or_else(|| {
-            LowerError::contract("typed pure-call record field does not resolve", span)
+    let (leaf, leaf_scalar) = crate::lower::typed_functions::record_field_scalar_leaf(
+        view,
+        result_type,
+        field,
+        scalar,
+    )
+    .map_err(|_| LowerError::contract("typed pure-call record field is out of range", span))?;
+    let leaf = result_leaves.start + leaf;
+    let leaf_width = registered
+        .site
+        .outputs()
+        .get(leaf)
+        .filter(|_| leaf < result_leaves.end)
+        .map(|output| output.value_type().scalar_count() as usize)
+        .ok_or_else(|| {
+            LowerError::contract("typed pure-call record field is out of range", span)
         })?;
-        let field_type = view.value_type(field_type).ok_or_else(|| {
-            LowerError::contract("typed pure-call record field type does not resolve", span)
-        })?;
-        if field_type.is_record() {
-            return Err(LowerError::contract(
-                "nested record typed pure-call results are not construction-complete",
-                span,
-            ));
-        }
-        if ordinal == field {
-            let start = typed_call_scalar_offset(registered, leaf).ok_or_else(|| {
-                LowerError::contract("typed pure-call record field offset overflows", span)
-            })?;
-            let end = typed_call_scalar_offset(registered, leaf + 1).ok_or_else(|| {
-                LowerError::contract("typed pure-call record field offset overflows", span)
-            })?;
-            return Ok(start..end);
-        }
+    if leaf_scalar >= leaf_width {
+        return Err(LowerError::contract(
+            "typed pure-call record scalar projection is out of range",
+            span,
+        ));
     }
-    Err(LowerError::contract(
-        "typed pure-call record field is out of range",
-        span,
-    ))
+    typed_call_scalar_offset(registered, leaf)
+        .and_then(|offset| offset.checked_add(leaf_scalar))
+        .ok_or_else(|| LowerError::contract("typed pure-call record field offset overflows", span))
 }
 
 fn typed_call_scalar_offset(

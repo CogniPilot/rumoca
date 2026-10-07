@@ -1692,11 +1692,61 @@ fn mark_register_range_initialized(initialized: &mut Vec<bool>, dst: Reg, count:
 /// Every extracted check needs the same row context, so bundling it keeps the
 /// per-operation helpers below the workspace argument budget and keeps one
 /// operation-name spelling (`LinearOp::kind_name`) in every diagnostic.
+/// The registers an operation's sources may read: those an earlier write
+/// defined, or, when collecting, every register the operation reads (each is
+/// recorded and counts as defined, so one validation yields the whole read
+/// set in time linear in it).
+#[derive(Clone, Copy)]
+pub(crate) struct Initialized<'a> {
+    flags: &'a [bool],
+    reads: Option<&'a std::cell::RefCell<Vec<Reg>>>,
+}
+
+impl<'a> Initialized<'a> {
+    fn is_defined(self, register: Reg) -> bool {
+        match self.reads {
+            Some(reads) => {
+                reads.borrow_mut().push(register);
+                true
+            }
+            None => self.flags.get(register as usize).copied().unwrap_or(false),
+        }
+    }
+}
+
+impl<'a> From<&'a [bool]> for Initialized<'a> {
+    fn from(flags: &'a [bool]) -> Self {
+        Self { flags, reads: None }
+    }
+}
+
+impl<'a> From<&'a Vec<bool>> for Initialized<'a> {
+    fn from(flags: &'a Vec<bool>) -> Self {
+        Self::from(flags.as_slice())
+    }
+}
+
+/// Every register `op` reads, ascending, as its register-flow validation
+/// proves them; `None` when `op` cannot be validated at the top level.
+pub(crate) fn op_read_registers(op: &LinearOp) -> Option<Vec<Reg>> {
+    let reads = std::cell::RefCell::new(Vec::new());
+    let collecting = Initialized {
+        flags: &[],
+        reads: Some(&reads),
+    };
+    let mut validation = ScalarProgramValidationCache::default();
+    validate_op_sources(op, 0, collecting, None, None, &mut validation).ok()?;
+    let mut reads = reads.into_inner();
+    reads.sort_unstable();
+    reads.dedup();
+    Some(reads)
+}
+
 #[derive(Clone, Copy)]
 struct OpSources<'a> {
     op: &'a LinearOp,
     op_index: usize,
-    initialized: &'a [bool],
+    initialized: Initialized<'a>,
     fold_context: Option<(usize, usize, usize)>,
     conditional_capture_count: Option<usize>,
     max_lanes: usize,
@@ -1805,15 +1855,16 @@ impl FoldSlot {
 /// per line, which triples the table without telling a reader anything the
 /// single-line form does not.
 #[rustfmt::skip]
-fn validate_op_sources(
+fn validate_op_sources<'a>(
     op: &LinearOp,
     op_index: usize,
-    initialized: &[bool],
+    initialized: impl Into<Initialized<'a>>,
     fold_context: Option<(usize, usize, usize)>,
     conditional_capture_count: Option<usize>,
     validation: &mut ScalarProgramValidationCache,
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
     let max_lanes = validation.max_tensor_lanes();
+    let initialized = initialized.into();
     let cx = OpSources { op, op_index, initialized, fold_context, conditional_capture_count, max_lanes };
     match *op {
         LinearOp::Const { .. } | LinearOp::LoadTime { .. } | LinearOp::LoadY { .. }
@@ -2879,7 +2930,7 @@ fn require_strided_registers(
     start: Reg,
     count: usize,
     stride: usize,
-    initialized: &[bool],
+    initialized: Initialized<'_>,
 ) -> Result<Reg, ScalarProgramRegisterError> {
     let Some(last_term) = count.checked_sub(1) else {
         return Err(ScalarProgramRegisterError::EmptyRegisterRange {
@@ -2925,9 +2976,9 @@ fn require_register(
     op_index: usize,
     operation: &'static str,
     register: Reg,
-    initialized: &[bool],
+    initialized: Initialized<'_>,
 ) -> Result<(), ScalarProgramRegisterError> {
-    if initialized.get(register as usize).copied().unwrap_or(false) {
+    if initialized.is_defined(register) {
         return Ok(());
     }
     Err(ScalarProgramRegisterError::UndefinedRegister {
@@ -2942,7 +2993,7 @@ fn require_register_range(
     operation: &'static str,
     start: Reg,
     len: usize,
-    initialized: &[bool],
+    initialized: Initialized<'_>,
 ) -> Result<Reg, ScalarProgramRegisterError> {
     let Some(last_offset) = len.checked_sub(1) else {
         return Err(ScalarProgramRegisterError::EmptyRegisterRange {
@@ -2967,7 +3018,7 @@ fn require_register_range(
         },
     )?;
     for register in start..=end {
-        if !initialized.get(register as usize).copied().unwrap_or(false) {
+        if !initialized.is_defined(register) {
             return Err(ScalarProgramRegisterError::UndefinedRegister {
                 op_index,
                 operation,
@@ -2984,7 +3035,7 @@ fn require_strided_register_range(
     start: Reg,
     count: usize,
     stride: usize,
-    initialized: &[bool],
+    initialized: Initialized<'_>,
 ) -> Result<Reg, ScalarProgramRegisterError> {
     let Some(last_ordinal) = count.checked_sub(1) else {
         return Err(ScalarProgramRegisterError::EmptyRegisterRange {

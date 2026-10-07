@@ -62,14 +62,14 @@ use analysis::{
     ExpressionEventPlans, ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan,
     FunctionAssignmentPlan, FunctionDefinednessPlan, FunctionIntegerReduction,
     FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan, FunctionRecordCallAssemblyPlan,
-    FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan, FunctionStatementPlan,
-    FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan, ModelEventFunctionCallPlan,
-    ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan, MultiOutputEquationPlan,
-    NativeLapackPlan, PartialJoinPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole,
-    SemiLinearRules, StructuredSource, WhenBranchKey, analyze, assigned_function_targets,
-    branch_never_completes, collect_algorithm_writes, discrete_value_assignment,
-    effective_function_scalar_type, effective_variable_scalar_type,
+    FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan, FunctionRecordFieldSource,
+    FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
+    ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
+    MultiOutputEquationPlan, NativeLapackPlan, PartialJoinPlan, PlannedRole, RecordArrayFieldPlan,
+    RecordArrayFieldPlans, RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan,
+    RecordProjectionStep, RuntimeVariableRole, SemiLinearRules, StructuredSource, WhenBranchKey,
+    analyze, assigned_function_targets, branch_never_completes, collect_algorithm_writes,
+    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
     empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
     function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
     is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
@@ -130,7 +130,7 @@ use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, l
 use multi_output_equations::{MultiOutputDiscreteOwners, lower_multi_output_equation};
 use native_lapack::lower_native_lapack;
 use ordinary_equations::{OrdinaryEquationRow, lower_ordinary_equation};
-use record_equation::lower_record_equation;
+use record_equation::{lower_record_equation, lower_record_projection};
 use structured_body::{lower_structured_body, normalize_conditional_residual};
 use structured_templates::{SelectedFamilies, TemplateSelection};
 use variable_construction::{

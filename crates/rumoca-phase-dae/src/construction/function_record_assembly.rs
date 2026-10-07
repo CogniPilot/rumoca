@@ -56,6 +56,8 @@ pub(super) fn lower_function_record_value<'dae>(
         .expect("analysis requires record-assembly provenance");
     let generated =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, owner_span)?;
+    let target = function_value_coordinate(symbols.coordinates, &plan.target);
+    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     let mut values = Vec::with_capacity(source.len());
     let mut available = HashSet::new();
     let mut staged_values = HashMap::new();
@@ -87,7 +89,8 @@ pub(super) fn lower_function_record_value<'dae>(
             if record_field_completion_offset(field) != Some(statement_offset) {
                 continue;
             }
-            let field_value = lower_record_field_value(construction, &values, field, generated)?;
+            let field_value =
+                lower_record_field_value(construction, &values, field, value_type, &[], generated)?;
             available.insert(field.name.clone());
             staged_values.insert(
                 function_record_field_name(&plan.target, &field.name),
@@ -101,13 +104,20 @@ pub(super) fn lower_function_record_value<'dae>(
         .iter()
         .map(|field| {
             completed_fields.get(&field.name).copied().map_or_else(
-                || lower_record_field_value(construction, &values, field, generated),
+                || {
+                    lower_record_field_value(
+                        construction,
+                        &values,
+                        field,
+                        value_type,
+                        &[],
+                        generated,
+                    )
+                },
                 Ok,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
-    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     construction.types(|types| {
         types.expect_record_layout(
             value_type,
@@ -120,14 +130,19 @@ pub(super) fn lower_function_record_value<'dae>(
     Ok((target, record, generated))
 }
 
+/// The group offset of the last statement contributing to `field`.
 fn record_field_completion_offset(field: &FunctionRecordFieldAssembly) -> Option<usize> {
-    field.aggregate_statement.or_else(|| {
-        field
-            .scalars
+    match &field.source {
+        FunctionRecordFieldSource::Aggregate { statement }
+        | FunctionRecordFieldSource::Whole { statement, .. } => Some(*statement),
+        FunctionRecordFieldSource::Tensor { scalars, .. } => {
+            scalars.iter().map(|source| source.statement_offset).max()
+        }
+        FunctionRecordFieldSource::Record { fields, .. } => fields
             .iter()
-            .map(|source| source.statement_offset)
-            .max()
-    })
+            .filter_map(record_field_completion_offset)
+            .max(),
+    }
 }
 
 pub(super) fn lower_function_record_field_assembly<'dae>(
@@ -168,7 +183,16 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let field_value = lower_record_field_value(construction, &values, &plan.field, generated)?;
+    let target = function_value_coordinate(symbols.coordinates, &plan.target);
+    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
+    let field_value = lower_record_field_value(
+        construction,
+        &values,
+        &plan.field,
+        value_type,
+        &[],
+        generated,
+    )?;
     let staged_name = function_record_field_name(&plan.target, &plan.field.name);
     let staged = function_value_coordinate(symbols.coordinates, &staged_name);
     construction.functions(|functions| functions.assign(body, staged, field_value, generated))?;
@@ -183,8 +207,6 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
             construction.functions(|functions| functions.read(body, staged, generated))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
-    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     construction.types(|types| {
         types.expect_record_layout(value_type, field_names.iter().cloned(), generated)
     })?;
@@ -228,34 +250,213 @@ impl ExpressionRewriter for StagedRecordReadRewriter<'_> {
     }
 }
 
+/// Lower one assembled field of a record whose type is `record_type`.
+///
+/// `element` holds the binder coordinates of the enclosing array-of-records
+/// element, if any: every group value below such a field is a column whose
+/// leading axes are the element axes, so it is read at `element`.
 fn lower_record_field_value<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     values: &[dae::ExprId<'dae>],
     field: &FunctionRecordFieldAssembly,
+    record_type: dae::ValueTypeId<'dae>,
+    element: &[dae::ExprId<'dae>],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if let Some(statement_offset) = field.aggregate_statement {
-        return Ok(values[statement_offset]);
+    let column = match &field.source {
+        FunctionRecordFieldSource::Aggregate { statement } => values[*statement],
+        FunctionRecordFieldSource::Whole {
+            statement,
+            value_field,
+        } => project_value_field(
+            construction,
+            values[*statement],
+            value_field.as_ref(),
+            provenance,
+        )?,
+        FunctionRecordFieldSource::Tensor {
+            scalar_type,
+            dimensions,
+            scalars,
+        } => lower_record_tensor_field(
+            construction,
+            values,
+            *scalar_type,
+            dimensions,
+            scalars,
+            provenance,
+        )?,
+        FunctionRecordFieldSource::Record { fields, extents } => {
+            return lower_nested_record_field(
+                construction,
+                values,
+                NestedRecordField {
+                    name: &field.name,
+                    fields,
+                    extents,
+                    record_type,
+                    element,
+                },
+                provenance,
+            );
+        }
+    };
+    select_element(construction, column, element, provenance)
+}
+
+struct NestedRecordField<'scope, 'dae> {
+    name: &'scope VarName,
+    fields: &'scope [FunctionRecordFieldAssembly],
+    extents: &'scope [u32],
+    record_type: dae::ValueTypeId<'dae>,
+    element: &'scope [dae::ExprId<'dae>],
+}
+
+/// A record-typed field built from its own fields; a field with extents is
+/// an array of records, built as the comprehension over its element domain
+/// of the element record whose fields read the columns at that element.
+fn lower_nested_record_field<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    values: &[dae::ExprId<'dae>],
+    nested: NestedRecordField<'_, 'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let field_type = construction
+        .types(|types| types.record_field(nested.record_type, nested.name, provenance))?;
+    let element_type = if nested.extents.is_empty() {
+        field_type
+    } else {
+        construction.types(|types| types.record_element(field_type, provenance))?
+    };
+    construction.types(|types| {
+        types.expect_record_layout(
+            element_type,
+            nested.fields.iter().map(|field| field.name.clone()),
+            provenance,
+        )
+    })?;
+    let domain = (!nested.extents.is_empty())
+        .then(|| {
+            let binders = nested
+                .extents
+                .iter()
+                .enumerate()
+                .map(|(ordinal, extent)| StructuredIndexBinder {
+                    id: ordinal,
+                    display_name: format!("{}{ordinal}", nested.name),
+                    lower: 1,
+                    upper: i64::from(*extent),
+                    step: 1,
+                })
+                .collect::<Vec<_>>();
+            construction.domains(|domains| {
+                domains.structured(StructuredIndexDomain { binders }, provenance)
+            })
+        })
+        .transpose()?;
+    let mut element = nested.element.to_vec();
+    if let Some(domain) = domain {
+        for ordinal in 0..nested.extents.len() {
+            let binder =
+                construction.domains(|domains| domains.binder(domain, ordinal, provenance))?;
+            element.push(
+                construction
+                    .expressions(|expressions| expressions.at(provenance).binder(binder))?,
+            );
+        }
     }
-    let scalars = field
-        .scalars
+    let fields = nested
+        .fields
+        .iter()
+        .map(|field| {
+            lower_record_field_value(
+                construction,
+                values,
+                field,
+                element_type,
+                &element,
+                provenance,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let record = construction
+        .expressions(|expressions| expressions.at(provenance).record(element_type, fields))?;
+    match domain {
+        Some(domain) => construction
+            .expressions(|expressions| expressions.at(provenance).comprehension(domain, record)),
+        None => Ok(record),
+    }
+}
+
+/// The value of `value` at the array-of-records element `element`: its
+/// leading axes are the element axes, and the remaining axes stay whole.
+fn select_element<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    value: dae::ExprId<'dae>,
+    element: &[dae::ExprId<'dae>],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if element.is_empty() {
+        return Ok(value);
+    }
+    let rank = construction
+        .expressions(|expressions| expressions.value_type(value, provenance))?
+        .dimensions()
+        .len();
+    construction.expressions(|expressions| {
+        let subscripts = element
+            .iter()
+            .map(|expression| dae::Subscript::Index {
+                expression: *expression,
+                provenance,
+            })
+            .chain((element.len()..rank).map(|_| dae::Subscript::Whole { provenance }))
+            .collect::<Vec<_>>();
+        expressions.at(provenance).index(value, subscripts)
+    })
+}
+
+/// `value.field` for a decomposed record value, or `value` itself.
+fn project_value_field<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    value: dae::ExprId<'dae>,
+    field: Option<&VarName>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let Some(field) = field else {
+        return Ok(value);
+    };
+    let ordinal = construction
+        .expressions(|expressions| expressions.record_field_ordinal(value, field, provenance))?
+        .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+            name: field.clone(),
+            span: provenance.span(),
+        })?;
+    construction.expressions(|expressions| expressions.at(provenance).field(value, ordinal))
+}
+
+fn lower_record_tensor_field<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    values: &[dae::ExprId<'dae>],
+    scalar_type: dae::ScalarType,
+    dimensions: &[u32],
+    scalars: &[FunctionRecordScalarSource],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let scalars = scalars
         .iter()
         .map(|source| lower_record_scalar_source(construction, values, source, provenance))
         .collect::<Result<Vec<_>, _>>()?;
-    let dimensions = field
-        .dimensions
-        .iter()
-        .map(|extent| *extent as usize)
-        .collect::<Vec<_>>();
     if !scalars.is_empty() {
-        return pack_row_major_body(construction, &scalars, &dimensions, provenance);
+        let extents = dimensions
+            .iter()
+            .map(|extent| *extent as usize)
+            .collect::<Vec<_>>();
+        return pack_row_major_body(construction, &scalars, &extents, provenance);
     }
-    let scalar_type = field
-        .scalar_type
-        .expect("analysis gives every tensor record field a scalar type");
     let value_type = construction.types(|types| {
         types.derived(
-            dae::ValueType::array(scalar_type, field.dimensions.clone()),
+            dae::ValueType::array(scalar_type, dimensions.to_vec()),
             provenance,
         )
     })?;
@@ -268,17 +469,12 @@ fn lower_record_scalar_source<'dae>(
     source: &FunctionRecordScalarSource,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let mut value = values[source.statement_offset];
-    if let Some(field) = &source.value_field {
-        let ordinal = construction
-            .expressions(|expressions| expressions.record_field_ordinal(value, field, provenance))?
-            .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
-                name: field.clone(),
-                span: provenance.span(),
-            })?;
-        value = construction
-            .expressions(|expressions| expressions.at(provenance).field(value, ordinal))?;
-    }
+    let value = project_value_field(
+        construction,
+        values[source.statement_offset],
+        source.value_field.as_ref(),
+        provenance,
+    )?;
     project_record_field_scalar(construction, value, &source.value_coordinates, provenance)
 }
 

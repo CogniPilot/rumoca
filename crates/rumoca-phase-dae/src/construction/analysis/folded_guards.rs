@@ -10,13 +10,18 @@
 //! parameter at its translation-time value, so a later set of it could not
 //! take effect. Each such parameter, and every parameter its binding reads,
 //! is therefore evaluable: fixed at translation and exported non-settable.
+//! A call argument whose value a function specialization is keyed on folds
+//! into the callee body the same way, so the ordinary parameters it reads are
+//! recorded here too.
 
 use std::collections::HashSet;
 
 use rumoca_core::{Expression, ExpressionVisitor};
 
 use super::super::expression::conditional_guards::attribute_conditional_folds;
-use super::super::function_shapes::{ProvenValue, ShapeEnvironment};
+use super::super::function_shapes::{
+    FunctionShapeAnalysis, ProvenValue, ShapeEnvironment, non_evaluable_parameter,
+};
 use super::clocks::when_conditional_selects_clock_structure;
 use super::{ValueReads, VarName, Variability, flat};
 
@@ -35,9 +40,10 @@ pub struct StructuralSelection {
 /// translation-time set already known.
 pub(super) fn folded_guard_parameters(
     flat: &flat::Model,
-    values: &ShapeEnvironment,
+    shapes: &FunctionShapeAnalysis,
     evaluable: &HashSet<VarName>,
 ) -> (HashSet<VarName>, Vec<StructuralSelection>) {
+    let values = shapes.model_values();
     let mut scan = GuardScan {
         flat,
         values,
@@ -75,6 +81,15 @@ pub(super) fn folded_guard_parameters(
         if !read.is_empty() {
             scan.owner = Some(selection.span);
             scan.record_use(selection.kind, read);
+        }
+    }
+    // A specialization keyed on an argument value folds that value into the
+    // callee body, so an ordinary parameter the argument reads is structural.
+    for keyed in shapes.keyed_argument_reads() {
+        let read = ordinary_parameter_names(flat, evaluable, keyed.names.iter().cloned());
+        if !read.is_empty() {
+            scan.owner = Some(keyed.span);
+            scan.record_use(flat::StructuralParameterUse::SpecializationArgument, read);
         }
     }
     let selections = scan.selections;
@@ -193,8 +208,16 @@ pub(super) fn ordinary_parameters(
 ) -> Vec<VarName> {
     let mut reads = ValueReads::default();
     reads.visit_expression(expression);
-    reads
-        .names
+    ordinary_parameter_names(flat, evaluable, reads.names)
+}
+
+/// The members of `names` that are parameters not already evaluable.
+fn ordinary_parameter_names(
+    flat: &flat::Model,
+    evaluable: &HashSet<VarName>,
+    names: impl IntoIterator<Item = VarName>,
+) -> Vec<VarName> {
+    names
         .into_iter()
         .filter(|name| {
             !evaluable.contains(name)
@@ -203,17 +226,6 @@ pub(super) fn ordinary_parameters(
                 })
         })
         .collect()
-}
-
-/// Whether `name` is a `fixed = false` or `Evaluate = false` parameter.
-fn non_evaluable_parameter(flat: &flat::Model, name: &VarName) -> bool {
-    flat.variables.get(name).is_some_and(|variable| {
-        variable.evaluate_refused
-            || variable
-                .fixed
-                .as_ref()
-                .is_some_and(|fixed| fixed.iter().any(|value| !value))
-    })
 }
 
 /// `found` with every ordinary parameter a member's binding reads, so each
@@ -251,20 +263,5 @@ fn flatten_selection_parameters(
     evaluable: &HashSet<VarName>,
     selection: &flat::ParameterBranchSelection,
 ) -> Vec<VarName> {
-    selection
-        .references
-        .iter()
-        .filter_map(|candidates| {
-            candidates
-                .iter()
-                .map(|candidate| VarName::new(candidate.as_str()))
-                .find(|name| flat.variables.contains_key(name))
-        })
-        .filter(|name| {
-            !evaluable.contains(name)
-                && flat.variables.get(name).is_some_and(|variable| {
-                    matches!(variable.variability, Variability::Parameter(_))
-                })
-        })
-        .collect()
+    ordinary_parameter_names(flat, evaluable, selection.declared_references(flat))
 }

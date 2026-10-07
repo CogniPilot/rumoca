@@ -27,6 +27,12 @@ use super::*;
 /// Input positions each callable must key a specialization on by value.
 pub(super) struct ValueReadInputs {
     masks: HashMap<VarName, Vec<bool>>,
+    /// The keyed positions a declared input or output dimension reads: the
+    /// call's argument and result shapes fix their values at translation
+    /// (MLS §10.1, §12.2). Every other keyed position is read only by the
+    /// run-time body: a range, a `while` condition, a local dimension or a
+    /// `fill` extent (MLS §11.2.2, §11.2.3).
+    structural: HashMap<VarName, Vec<bool>>,
 }
 
 impl ValueReadInputs {
@@ -61,7 +67,23 @@ impl ValueReadInputs {
             }
             masks = build_masks(flat, dimension_typed, &reads);
         }
-        Self { masks }
+        let interface = flat
+            .functions
+            .iter()
+            .map(|(name, function)| (name.clone(), interface_dimension_reads(function)))
+            .collect();
+        let structural = build_masks(flat, dimension_typed, &interface);
+        Self { masks, structural }
+    }
+
+    /// Whether keyed input `ordinal` is read by a declared input or output
+    /// dimension of the callee.
+    pub(super) fn is_structural(&self, function: &VarName, ordinal: usize) -> bool {
+        self.structural
+            .get(function)
+            .and_then(|mask| mask.get(ordinal))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Whether the specialization key carries input `ordinal` by value.
@@ -145,8 +167,12 @@ fn build_masks(
 ///
 /// The translation-time constructs are the ones that reach
 /// `evaluate_shape_integer` / `ShapeEnvironment::proven_extent`: a declared
-/// dimension (MLS §12.2), a compact range bound (MLS §10.4.1, §11.2.2), and a
-/// `zeros`/`ones`/`fill` extent (MLS §10.3).
+/// dimension (MLS §12.2), a compact range bound (MLS §10.4.1, §11.2.2), a
+/// `zeros`/`ones`/`fill` extent (MLS §10.3), and a `while` condition, which
+/// bounds the pass domain of its compact fold the way a range bounds a `for`
+/// (MLS §11.2.3). A read of a local or output is a read of every value it is
+/// defined from: its declaration equation (MLS §12.4.4) and every whole
+/// assignment to it.
 fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
     let mut reads = HashSet::new();
     for value in function
@@ -182,29 +208,72 @@ fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
         }
         _ => {}
     });
-    // MLS §12.4.4: a local's declaration equation settles the value a later
-    // dimension reads, so a read of the local is a read of everything that
-    // equation is written over.
-    for _ in 0..=function.locals.len() {
-        let mut grew = false;
-        for local in &function.locals {
-            let Some(default) = &local.default else {
-                continue;
-            };
-            if !reads.contains(&VarName::new(&local.name)) {
-                continue;
-            }
-            let mut added = HashSet::new();
-            collect_read_names(default, &mut added);
-            for read in added {
-                grew |= reads.insert(read);
+    for_each_statement(&function.body, &mut |statement| {
+        if let rumoca_core::Statement::While { block, .. } = statement {
+            collect_read_names(&block.cond, &mut reads);
+        }
+    });
+    close_over_definitions(function, &mut reads);
+    reads
+}
+
+/// Names a declared input or output dimension of `function` reads.
+fn interface_dimension_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
+    let mut reads = HashSet::new();
+    for value in function.inputs.iter().chain(&function.outputs) {
+        for subscript in &value.shape_expr {
+            if let Subscript::Expr { expr, .. } = subscript {
+                collect_read_names(expr, &mut reads);
             }
         }
-        if !grew {
+    }
+    close_over_definitions(function, &mut reads);
+    reads
+}
+
+/// Extend `reads` with every name the definitions of a read local or output
+/// read, to a fixed point.
+fn close_over_definitions(function: &rumoca_core::Function, reads: &mut HashSet<VarName>) {
+    let definitions = value_definitions(function);
+    for _ in 0..=definitions.len() {
+        let mut added = HashSet::new();
+        for name in reads.iter() {
+            for definition in definitions.get(name).into_iter().flatten() {
+                collect_read_names(definition, &mut added);
+            }
+        }
+        let before = reads.len();
+        reads.extend(added);
+        if reads.len() == before {
             break;
         }
     }
-    reads
+}
+
+/// The values each local and output is defined from: its declaration
+/// equation and the value of every whole assignment to it.
+fn value_definitions(function: &rumoca_core::Function) -> HashMap<VarName, Vec<&Expression>> {
+    let mut definitions: HashMap<VarName, Vec<&Expression>> = HashMap::new();
+    for value in function.locals.iter().chain(&function.outputs) {
+        if let Some(default) = &value.default {
+            definitions
+                .entry(VarName::new(&value.name))
+                .or_default()
+                .push(default);
+        }
+    }
+    for_each_statement(&function.body, &mut |statement| {
+        if let rumoca_core::Statement::Assignment { comp, value, .. } = statement
+            && let [part] = comp.parts()
+            && part.subs.is_empty()
+        {
+            definitions
+                .entry(VarName::new(&part.ident))
+                .or_default()
+                .push(value);
+        }
+    });
+    definitions
 }
 
 /// Every free reference name in `expression`.
@@ -349,9 +418,9 @@ fn visit_expression_tree(expression: &Expression, visit: &mut impl FnMut(&Expres
 }
 
 /// Visit every statement of `statements`, including nested bodies.
-fn for_each_statement(
-    statements: &[rumoca_core::Statement],
-    visit: &mut impl FnMut(&rumoca_core::Statement),
+fn for_each_statement<'a>(
+    statements: &'a [rumoca_core::Statement],
+    visit: &mut impl FnMut(&'a rumoca_core::Statement),
 ) {
     for statement in statements {
         visit(statement);

@@ -37,7 +37,7 @@ pub(in crate::construction) fn validate_function_certificate(
     let roles = function_expression_roles(function, flat);
     let staged_record_fields = HashSet::new();
     let loop_binders = HashSet::new();
-    let scalars = super::guard_facts::ScalarKinds::of(function, flat);
+    let scalars = super::guard_facts::ValueKinds::of(function, flat);
     let context = FunctionValidationContext {
         function,
         flat,
@@ -50,6 +50,7 @@ pub(in crate::construction) fn validate_function_certificate(
         loop_binders: &loop_binders,
         scalars: &scalars,
         call_scoped_actions: true,
+        inside_fold: false,
     };
     if function.external.is_some() {
         return validate_external_body(function, context);
@@ -714,6 +715,16 @@ fn plan_one_function_statement(
             },
             context,
         ),
+        rumoca_core::Statement::While { .. } => Err(unsupported_statement(
+            statement,
+            "unbounded function while loop",
+            "function loop domain",
+            format!(
+                "a `while` loop of `{}` has no translation-time iteration bound: its condition {}",
+                context.function.name,
+                loop_compaction::UNBOUNDED_LOOP_DOMAIN
+            ),
+        )),
         _ => Err(unsupported_statement(
             statement,
             "unsupported function body statement",

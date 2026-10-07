@@ -8,6 +8,7 @@ use crate::{
     StructuralPattern,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Where one row's tangents come from: output `output` of lane program
 /// `program` of the plan, or of JVP program `program` for a plan evaluated one
@@ -452,7 +453,7 @@ fn program_uses(application: &ProjectionJacobianApplication) -> Vec<ProgramUse> 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColoredTangentPlan {
     color_seeds: Box<[Box<[usize]>]>,
-    programs: Vec<TangentLaneProgram>,
+    programs: Vec<Arc<TangentLaneProgram>>,
     calls: Vec<ColoredLaneCall>,
     output_len: usize,
 }
@@ -460,6 +461,16 @@ pub struct ColoredTangentPlan {
 impl ColoredTangentPlan {
     /// Build the plan of an issued colored Jacobian application.
     pub fn derive(application: &ProjectionJacobianApplication) -> Result<Self, TangentLaneError> {
+        Self::derive_sharing(application, &mut TangentLaneCatalog::default())
+    }
+
+    /// [`Self::derive`] for one of several applications over shared source
+    /// programs: each source program is widened once per lane count into
+    /// `catalog`, and every plan that calls it holds that one widening.
+    pub fn derive_sharing(
+        application: &ProjectionJacobianApplication,
+        catalog: &mut TangentLaneCatalog,
+    ) -> Result<Self, TangentLaneError> {
         let uses = program_uses(application);
         let mut programs = Vec::with_capacity(uses.len());
         let mut calls = Vec::with_capacity(uses.len());
@@ -474,16 +485,7 @@ impl ColoredTangentPlan {
                     lanes: colors.len(),
                 });
             }
-            let ops =
-                application
-                    .source()
-                    .programs()
-                    .get(program)
-                    .ok_or(TangentLaneError::Coloring {
-                        row: program,
-                        column: 0,
-                    })?;
-            programs.push(TangentLaneProgram::replicate(ops, colors.len())?);
+            programs.push(catalog.widen(application.source(), program, colors.len())?);
             calls.push(ColoredLaneCall {
                 program: programs.len() - 1,
                 colors: colors.into_boxed_slice(),
@@ -509,7 +511,7 @@ impl ColoredTangentPlan {
     }
 
     #[must_use]
-    pub fn programs(&self) -> &[TangentLaneProgram] {
+    pub fn programs(&self) -> &[Arc<TangentLaneProgram>] {
         &self.programs
     }
 
@@ -522,5 +524,53 @@ impl ColoredTangentPlan {
     #[must_use]
     pub const fn output_len(&self) -> usize {
         self.output_len
+    }
+}
+
+/// The widened lane programs of the source programs that several colored
+/// applications share. A source program is a pure function of its program
+/// storage, its index and the lane count, so one widening serves every
+/// application whose source is a clone of the same construction.
+#[derive(Default)]
+pub struct TangentLaneCatalog {
+    entries: Vec<CatalogEntry>,
+}
+
+struct CatalogEntry {
+    source: ScalarProgramBlock,
+    program: usize,
+    lanes: usize,
+    widened: Arc<TangentLaneProgram>,
+}
+
+impl TangentLaneCatalog {
+    fn widen(
+        &mut self,
+        source: &ScalarProgramBlock,
+        program: usize,
+        lanes: usize,
+    ) -> Result<Arc<TangentLaneProgram>, TangentLaneError> {
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            entry.program == program
+                && entry.lanes == lanes
+                && entry.source.shares_programs_with(source)
+        }) {
+            return Ok(Arc::clone(&entry.widened));
+        }
+        let ops = source
+            .programs()
+            .get(program)
+            .ok_or(TangentLaneError::Coloring {
+                row: program,
+                column: 0,
+            })?;
+        let widened = Arc::new(TangentLaneProgram::replicate(ops, lanes)?);
+        self.entries.push(CatalogEntry {
+            source: source.clone(),
+            program,
+            lanes,
+            widened: Arc::clone(&widened),
+        });
+        Ok(widened)
     }
 }

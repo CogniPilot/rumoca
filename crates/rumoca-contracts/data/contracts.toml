@@ -2670,6 +2670,15 @@ status = 'NotImplemented'
 tier = 1
 
 [[contracts]]
+id = 'FUNC-045'
+category = 'Function'
+name = 'Nested record field assignment'
+mls_ref = '§11.2.1, §12.4.4'
+requirement = 'A record result or local may be defined through nested field paths; each record-typed field is assembled from writes to its own fields or assigned whole'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'INST-001'
 category = 'Instantiation'
 name = 'Modification context'

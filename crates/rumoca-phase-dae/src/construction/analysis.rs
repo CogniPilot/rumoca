@@ -87,10 +87,10 @@ use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     PreContext, validate_expression, validate_expression_in_context_with_literals,
-    validate_expression_scoped_with_record_array_fields, validate_model_algorithm_range,
-    validate_model_expression_with_record_array_fields, validate_specialized_expression,
-    validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
-    when_body_context,
+    validate_expression_scoped_with_record_array_fields, validate_model_algorithm_expression,
+    validate_model_algorithm_range, validate_model_expression_with_record_array_fields,
+    validate_specialized_expression, validate_specialized_subscripts, validate_subscripts_scoped,
+    validate_when_expression, when_body_context,
 };
 use fixed_loops::{IndexBinding, fixed_range, range_values};
 pub use folded_guards::StructuralSelection;
@@ -160,8 +160,10 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
-use record_equations::analyze_record_equations;
-pub(super) use record_equations::{RecordFieldSystem, reference_leaf_coordinates};
+pub(super) use record_equations::{
+    RecordFieldSystem, RecordProjectionStep, reference_leaf_coordinates,
+};
+use record_equations::{analyze_record_equations, record_result_fields};
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
 use structural_selections::{has_decidable_conditionals, select_structural_branches};
@@ -447,10 +449,34 @@ pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> V
 
 pub(super) struct FunctionRecordFieldAssembly {
     pub(super) name: VarName,
-    pub(super) scalar_type: Option<dae::ScalarType>,
-    pub(super) dimensions: Vec<u32>,
-    pub(super) scalars: Vec<FunctionRecordScalarSource>,
-    pub(super) aggregate_statement: Option<usize>,
+    pub(super) source: FunctionRecordFieldSource,
+}
+
+/// Where one record field's value comes from in its assembly group.
+pub(super) enum FunctionRecordFieldSource {
+    /// A tensor field assembled scalar by scalar from (possibly partial)
+    /// field writes, in row-major order of `dimensions`.
+    Tensor {
+        scalar_type: dae::ScalarType,
+        dimensions: Vec<u32>,
+        scalars: Vec<FunctionRecordScalarSource>,
+    },
+    /// A tensor field assigned whole by the statement at this group offset,
+    /// through field `value_field` of a decomposed record value when set.
+    Whole {
+        statement: usize,
+        value_field: Option<VarName>,
+    },
+    /// A record field assigned whole by the statement at this group offset.
+    Aggregate { statement: usize },
+    /// A record field assembled from writes to its own fields, in its
+    /// constructor's field order (MLS §12.4.4 assembly applies recursively).
+    /// A field with `extents` is an array of records whose fields are
+    /// written as columns of those extents.
+    Record {
+        fields: Vec<FunctionRecordFieldAssembly>,
+        extents: Vec<u32>,
+    },
 }
 
 pub(super) struct FunctionRecordCallAssemblyPlan {
@@ -493,12 +519,16 @@ struct FunctionValidationContext<'scope> {
     /// The binders of the compact loops whose body is being resolved as one
     /// generic iteration: immutable within an iteration, but not settled.
     loop_binders: &'scope HashSet<VarName>,
-    /// The scalar Integer and Real values of the function, which value facts
+    /// The Integer and Real values of the function, which value facts
     /// (`guard_facts`) may bound.
-    scalars: &'scope guard_facts::ScalarKinds,
+    scalars: &'scope guard_facts::ValueKinds,
     /// Whether this source sequence reaches a call-scoped or loop action
     /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,
+    /// Whether this sequence is the body of a compact loop, so a loop in it
+    /// is a fold nested in the enclosing transition (a nested total
+    /// definition has no lowering of its own).
+    inside_fold: bool,
 }
 
 /// Name the statement form, so a report says which owner is missing.
@@ -611,7 +641,7 @@ pub(super) struct RecordEquationFieldPlan {
 }
 
 pub(super) enum RecordEquationFieldValue {
-    AggregateProjection(Box<[usize]>),
+    AggregateProjection(Box<[RecordProjectionStep]>),
     Coordinate(VarName),
 }
 
@@ -716,7 +746,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &aggregate_discrete_connections,
     )?;
     let (folded, structural_selections) =
-        folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
+        folded_guards::folded_guard_parameters(flat, &function_shapes, &evaluable);
     evaluable.extend(folded);
     function_shapes.set_evaluable_parameters(&evaluable);
     Ok(Analysis {
@@ -1452,6 +1482,14 @@ pub(super) fn analyze_record_array_field_plans(
         all_model_expressions(flat)
             .chain(continuous.expressions())
             .chain(initialization.expressions())
+            .chain(
+                flat.algorithms
+                    .iter()
+                    .chain(&flat.initial_algorithms)
+                    .flat_map(|algorithm| {
+                        function_shapes::statement_expression_roots(&algorithm.statements)
+                    }),
+            )
             .chain(
                 flat.functions
                     .values()

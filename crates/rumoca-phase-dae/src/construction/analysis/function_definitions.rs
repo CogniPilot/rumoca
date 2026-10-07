@@ -261,6 +261,27 @@ impl FunctionDefinitions {
         )
     }
 
+    /// `target` is defined under both sides of a split: everywhere when the
+    /// sides are a condition and its negation, else wherever `union` holds.
+    fn define_under_union(
+        &mut self,
+        target: &VarName,
+        proof: &BranchOnlyCoverage,
+        union: Option<Expression>,
+        span: Span,
+    ) {
+        let Some(union) = union else {
+            self.branch_only.remove(target);
+            self.values.insert(target.clone(), ValueCoverage::Whole);
+            return;
+        };
+        let mut joined = proof.clone();
+        joined.span = span;
+        joined.guard = Some(union);
+        joined.coverage = Some(ValueCoverage::Whole);
+        self.branch_only.insert(target.clone(), joined);
+    }
+
     /// Record what a single-branch conditional over an immutable `condition`
     /// leaves defined. A value already proven under a guard that `condition`
     /// implies keeps that proof: its fall-through path retains the earlier
@@ -278,11 +299,34 @@ impl FunctionDefinitions {
             if self.values.contains_key(target) {
                 continue;
             }
+            // A value proven under a guard and now under the guard's other
+            // side is defined wherever the two sides together hold.
+            if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)
+                && let (Some(guard), Some(proven)) = (&proof.guard, &proof.coverage)
+                && let Some(defined) = branch.values.get(target)
+                && proven.is_total()
+                && defined.is_total()
+                && let Some(union) = guard_union(guard, condition, context)
+            {
+                self.define_under_union(target, proof, union, span);
+                continue;
+            }
             if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)
                 && let Some(guard) = &proof.guard
                 && condition_implies_guard(condition, guard, context, 0)
             {
-                self.branch_only.insert(target.clone(), proof.clone());
+                // Under an equivalent guard the branch ran on exactly the
+                // guarded paths, so what it covers by its end (the earlier
+                // proof plus its own writes) is what the guard proves.
+                let equivalent = condition_implies_guard(guard, condition, context, 0);
+                let mut proof = proof.clone();
+                proof.coverage = branch
+                    .values
+                    .get(target)
+                    .filter(|_| equivalent)
+                    .cloned()
+                    .or(proof.coverage);
+                self.branch_only.insert(target.clone(), proof);
                 continue;
             }
             let Some(coverage) = branch.values.get(target) else {
@@ -648,6 +692,11 @@ impl FunctionDefinitions {
         span: Span,
     ) -> Result<(), ToDaeError> {
         let name = reference.var_name();
+        // MLS §11.2.2: a loop binder shadows every outer value of its name and
+        // holds a value in every iteration.
+        if context.loop_binders.contains(name) {
+            return Ok(());
+        }
         // A branch value of an if-expression is evaluated only when its
         // condition holds (MLS §3.6.5), so a value proven under a guard that
         // condition implies is defined there, as in a guarded statement branch.
@@ -1259,11 +1308,19 @@ fn function_value_seed(
     let constructor = record_constructor(declaration, context)?;
     let mut seen = HashSet::new();
     seen.insert(type_id);
-    function_record_seed(declaration, dimensions, constructor, context, &mut seen)
+    function_record_seed(
+        declaration,
+        type_id,
+        dimensions,
+        constructor,
+        context,
+        &mut seen,
+    )
 }
 
 fn function_record_seed(
     declaration: &rumoca_core::FunctionParam,
+    type_id: rumoca_core::DefId,
     dimensions: Vec<u32>,
     constructor: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
@@ -1303,7 +1360,8 @@ fn function_record_seed(
                 ));
             }
             let nested = record_constructor(field, context)?;
-            let seed = function_record_seed(field, field_dimensions, nested, context, seen)?;
+            let seed =
+                function_record_seed(field, type_id, field_dimensions, nested, context, seen)?;
             seen.remove(&type_id);
             seed
         } else {
@@ -1311,8 +1369,23 @@ fn function_record_seed(
         };
         fields.push((VarName::new(&field.name), seed));
     }
+    // The seed names its record type by the Flat layout owner, exactly as
+    // the declared function value type does: a nested field carries its
+    // type name as written, which need not be the canonical record name.
+    let name = context
+        .flat
+        .record_types
+        .get(&type_id)
+        .map(|record| VarName::new(&record.name))
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function aggregate seed",
+                format!("`{}` has no Flat record layout", declaration.type_name),
+                declaration.span,
+            )
+        })?;
     Ok(FunctionValueSeed::Record {
-        name: VarName::new(&declaration.type_name),
+        name,
         dimensions,
         fields,
     })
@@ -1619,7 +1692,7 @@ impl FunctionDefinitions {
 
     /// The facts after the branches rejoin; the fall-through path is this
     /// certificate when the conditional has no `else`.
-    fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
+    pub(super) fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
         let mut paths = branches.iter().map(|branch| &branch.facts);
         let mut joined = paths.next().unwrap_or(&self.facts).clone();
         for facts in paths {
@@ -1727,4 +1800,50 @@ impl FunctionDefinitions {
         );
         Ok(true)
     }
+}
+
+/// The guard under which `guard` or `condition` holds when they are the two
+/// sides of one split, `None` for every path. `guard` is `a and not b` (as an
+/// if-expression, a conjunction, or a bare `not b` for `a` true) and
+/// `condition` is `b`, which implies `a`: either `a` and `not b`, or `b`,
+/// holds exactly where `a` holds.
+fn guard_union(
+    guard: &Expression,
+    condition: &Expression,
+    context: FunctionValidationContext<'_>,
+) -> Option<Option<Expression>> {
+    let equivalent = |left: &Expression, right: &Expression| {
+        condition_implies_guard(left, right, context, 0)
+            && condition_implies_guard(right, left, context, 0)
+    };
+    let negation_of_condition = |negated: &Expression| match negated {
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => equivalent(rhs, condition),
+        _ => false,
+    };
+    if negation_of_condition(guard) {
+        return Some(None);
+    }
+    let (whole, negated) = match guard {
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } if is_boolean_false(else_branch) => match branches.as_slice() {
+            [(whole, negated)] => (whole, negated),
+            _ => return None,
+        },
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } => (lhs.as_ref(), rhs.as_ref()),
+        _ => return None,
+    };
+    (negation_of_condition(negated) && condition_implies_guard(condition, whole, context, 0))
+        .then(|| Some(whole.clone()))
 }

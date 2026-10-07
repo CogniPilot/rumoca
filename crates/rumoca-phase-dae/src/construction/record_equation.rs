@@ -167,15 +167,43 @@ fn record_field_value<'dae>(
     }
 }
 
-fn lower_record_projection<'dae>(
+pub(super) fn lower_record_projection<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     mut value: dae::ExprId<'dae>,
-    projection: &[usize],
+    projection: &[RecordProjectionStep],
     generated: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    for ordinal in projection {
-        value = construction
-            .expressions(|expressions| expressions.at(generated).field(value, *ordinal))?;
+    for step in projection {
+        value = match step {
+            RecordProjectionStep::Field(ordinal) => construction
+                .expressions(|expressions| expressions.at(generated).field(value, *ordinal))?,
+            RecordProjectionStep::Element(subscripts) => {
+                let subscripts = element_subscripts(construction, subscripts, generated)?;
+                construction
+                    .expressions(|expressions| expressions.at(generated).index(value, subscripts))?
+            }
+        };
     }
     Ok(value)
+}
+
+/// The literal index subscripts of one element of an array of records.
+fn element_subscripts<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    subscripts: &[i64],
+    generated: dae::DaeProvenance,
+) -> Result<Vec<dae::Subscript<'dae>>, dae::DaeConstructionError> {
+    let mut selected = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let expression = construction.expressions(|expressions| {
+            expressions
+                .at(generated)
+                .literal(dae::DaeLiteral::Integer(*subscript))
+        })?;
+        selected.push(dae::Subscript::Index {
+            expression,
+            provenance: generated,
+        });
+    }
+    Ok(selected)
 }

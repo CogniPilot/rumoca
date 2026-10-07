@@ -7,6 +7,7 @@ mod packed;
 mod registration;
 mod return_arguments;
 mod returns;
+mod typed_inputs;
 mod typed_maps;
 
 use super::*;
@@ -25,10 +26,26 @@ struct CallExecution {
     y: usize,
     /// Typed output-lane buffer (offset, bytes); zero when none is published.
     lanes: (usize, usize),
+    /// Start of the typed lane buffer the entry receives: the typed input
+    /// lanes, then the output lanes.
+    typed: usize,
+    /// Typed input lanes written before every call, and their names.
+    inputs: Vec<u8>,
+    input_lanes: Vec<(String, String, usize, usize)>,
 }
 
 impl CallExecution {
     fn new(artifact: &serde_json::Value) -> Self {
+        let mut execution = Self::uninitialized(artifact);
+        // Typed input lanes start at their declared start values.
+        for (name, _, _, p_index) in execution.input_lanes.clone() {
+            let start = artifact["parameters"][p_index].as_f64().unwrap();
+            execution.set_input(&name, start as i64);
+        }
+        execution
+    }
+
+    fn uninitialized(artifact: &serde_json::Value) -> Self {
         let engine = wasmi::Engine::default();
         let mut store = wasmi::Store::new(&engine, ());
         let memory = wasmi::Memory::new(
@@ -77,18 +94,30 @@ impl CallExecution {
                 artifact["abi"]["output_lanes_offset"].as_u64().unwrap_or(0) as usize,
                 artifact["abi"]["output_lanes_bytes"].as_u64().unwrap_or(0) as usize,
             ),
+            typed: artifact["abi"]["typed_lanes_offset"].as_u64().unwrap_or(0) as usize,
+            inputs: vec![0; artifact["abi"]["input_lanes_bytes"].as_u64().unwrap_or(0) as usize],
+            input_lanes: artifact["input_lanes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|lane| {
+                    (
+                        lane["name"].as_str().unwrap().to_owned(),
+                        lane["representation"].as_str().unwrap().to_owned(),
+                        lane["byte_offset"].as_u64().unwrap() as usize,
+                        lane["p_index"].as_u64().unwrap() as usize,
+                    )
+                })
+                .collect(),
         }
     }
     fn run(&mut self, p: &[f64]) -> Vec<f64> {
         let bytes = p.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
         self.memory.write(&mut self.store, self.p, &bytes).unwrap();
-        let arguments = (
-            0,
-            self.p as i32,
-            0.,
-            self.scratch as i32,
-            self.lanes.0 as i32,
-        );
+        self.memory
+            .write(&mut self.store, self.typed, &self.inputs)
+            .unwrap();
+        let arguments = (0, self.p as i32, 0., self.scratch as i32, self.typed as i32);
         match self.call {
             CallEntry::Direct(call) => call.call(&mut self.store, arguments).unwrap(),
             CallEntry::Checked(call) => assert_eq!(
@@ -118,5 +147,47 @@ impl CallExecution {
             .read(&self.store, self.lanes.0, &mut bytes)
             .unwrap();
         bytes
+    }
+}
+
+impl CallExecution {
+    /// Write P and the typed input lanes, run the checked entry once and
+    /// return its status with the host Y it published.
+    fn run_typed(&mut self, p: &[f64]) -> (i32, Vec<f64>) {
+        let CallEntry::Checked(call) = self.call else {
+            panic!("typed input lanes require the checked entry");
+        };
+        let bytes = p.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        self.memory.write(&mut self.store, self.p, &bytes).unwrap();
+        self.memory
+            .write(&mut self.store, self.typed, &self.inputs)
+            .unwrap();
+        let arguments = (0, self.p as i32, 0., self.scratch as i32, self.typed as i32);
+        let status = call.call(&mut self.store, arguments).unwrap();
+        let mut y = vec![0; self.y * 8];
+        self.memory.read(&self.store, 0, &mut y).unwrap();
+        let y = y
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (status, y)
+    }
+}
+
+impl CallExecution {
+    /// Write an Integer (`i64`) or Boolean (`u8`) input to its typed lane
+    /// for every following call.
+    fn set_input(&mut self, name: &str, value: i64) {
+        let (_, representation, offset, _) = self
+            .input_lanes
+            .iter()
+            .find(|(lane, ..)| lane == name)
+            .unwrap_or_else(|| panic!("{name} has a typed input lane"))
+            .clone();
+        match representation.as_str() {
+            "i64" => self.inputs[offset..offset + 8].copy_from_slice(&value.to_le_bytes()),
+            "u8" => self.inputs[offset] = u8::try_from(value).unwrap(),
+            other => panic!("unexpected input lane representation {other}"),
+        }
     }
 }

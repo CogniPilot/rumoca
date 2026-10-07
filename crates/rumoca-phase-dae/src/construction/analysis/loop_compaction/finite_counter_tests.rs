@@ -16,8 +16,13 @@ fn rectangularize(source: &[rumoca_core::Statement]) -> Vec<rumoca_core::Stateme
     );
     assert_eq!(shapes.proven_integer_bounds(&count()), Some((0, 14400)));
     assert_eq!(shapes.proven_extent(&count()), None);
-    rectangularize_dependent_loops(source, &HashMap::new(), &shapes, &HashSet::new())
-        .expect("proved whole-domain envelope")
+    rectangularize_dependent_loops(
+        source,
+        &HashMap::new(),
+        &shapes,
+        &super::super::guard_facts::ValueKinds::default(),
+    )
+    .expect("proved whole-domain envelope")
 }
 
 fn run(source: &[rumoca_core::Statement]) -> Result<Environment, Refusal> {

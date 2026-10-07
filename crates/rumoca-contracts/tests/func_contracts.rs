@@ -1751,3 +1751,47 @@ fn func_042_record_with_text_field_passed_to_calls() {
     assert!((trace.final_value("nested") - 461.5 * 5.0).abs() < 1e-9);
     assert!((trace.final_value("direct") - 461.5 * 5.0).abs() < 1e-9);
 }
+
+// =============================================================================
+// FUNC-045: Nested record field assignment (MLS §11.2.1, §12.4.4)
+// =============================================================================
+
+#[test]
+fn func_045_nested_record_field_paths_assemble() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model NestedFields
+            record Identity
+                Integer sequence;
+                Real weight;
+            end Identity;
+            record State
+                Identity identity;
+                Real time;
+            end State;
+            function seed
+                input Real w;
+                output State state;
+            algorithm
+                state.identity.sequence := 7;
+                state.time := 2 * w;
+                state.identity.weight := w;
+            end seed;
+            function observe
+                input Real w;
+                output Real y;
+            protected
+                State s;
+            algorithm
+                s := seed(w);
+                y := s.identity.sequence + s.identity.weight + s.time;
+            end observe;
+            Real y = observe(time);
+        end NestedFields;
+    "#,
+        "NestedFields",
+        1.0,
+    );
+    // At t = 1: 7 + 1 + 2.
+    assert!((trace.final_value("y") - 10.0).abs() < 1e-9);
+}

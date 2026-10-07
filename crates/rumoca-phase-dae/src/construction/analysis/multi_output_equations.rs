@@ -3,8 +3,17 @@ use super::*;
 /// Typed owner for one MLS §12.4.3 multi-result equation.
 pub(in crate::construction) struct MultiOutputEquationPlan {
     /// One receiving slot per function result ordinal; `None` is an omitted
-    /// receiver in the source tuple.
+    /// receiver in the source tuple, or a whole record that `records` owns.
     pub(in crate::construction) outputs: Vec<Option<VarName>>,
+    /// The whole records that receive one record-valued result: each leaf
+    /// coordinate reads its field projection of the result.
+    pub(in crate::construction) records: Vec<MultiOutputRecord>,
+}
+
+/// One whole record receiving the record-valued result at `ordinal`.
+pub(in crate::construction) struct MultiOutputRecord {
+    pub(in crate::construction) ordinal: usize,
+    pub(in crate::construction) plan: RecordEquationPlan,
 }
 
 pub(super) fn analyze_multi_output_equations(
@@ -112,6 +121,7 @@ fn validate_multi_output_equation(
         ));
     }
     let mut outputs = Vec::with_capacity(source.receivers.len());
+    let mut records = Vec::new();
     let mut claimed = HashSet::new();
     let receiver_context = ReceiverValidation {
         flat,
@@ -127,6 +137,17 @@ fn validate_multi_output_equation(
         .zip(&certificate.results)
         .enumerate()
     {
+        if let Some(record) = record_receiver(flat, receiver) {
+            let plan = validate_record_receiver(
+                receiver_context,
+                (record, receiver),
+                (result_shape, ordinal),
+                &mut claimed,
+            )?;
+            records.push(MultiOutputRecord { ordinal, plan });
+            outputs.push(None);
+            continue;
+        }
         outputs.push(validate_receiver(
             receiver_context,
             receiver,
@@ -135,7 +156,7 @@ fn validate_multi_output_equation(
             &mut claimed,
         )?);
     }
-    if outputs.iter().all(Option::is_none) {
+    if outputs.iter().all(Option::is_none) && records.is_empty() {
         return Err(ToDaeError::unsupported_flat(
             "multi-output equation",
             "a receiving tuple must retain at least one function result",
@@ -151,7 +172,7 @@ fn validate_multi_output_equation(
             shapes.model_values(),
         )?;
     }
-    Ok(MultiOutputEquationPlan { outputs })
+    Ok(MultiOutputEquationPlan { outputs, records })
 }
 
 #[derive(Clone, Copy)]
@@ -202,35 +223,107 @@ fn validate_receiver(
             *span,
         ));
     }
-    let role = context.roles.get(&target);
+    require_owned_receiver(context, &target, *span)?;
+    validate_receiver_type_and_shape(context, receiver, result_shape, ordinal, &target, *span)?;
+    Ok(Some(target))
+}
+
+/// A receiver is a coordinate this equation may own: continuous, discrete (a
+/// discrete receiver is defined by its result ordinal the same way a
+/// continuous one is; its owner is the discrete system, MLS Appendix B), or an
+/// initial parameter of an initialization equation.
+fn require_owned_receiver(
+    context: ReceiverValidation<'_>,
+    target: &VarName,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    let role = context.roles.get(target);
     let continuous = matches!(
         role,
         Some(PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output)
     );
-    // A discrete receiver is defined by its result ordinal the same way a
-    // continuous one is; its owner is the discrete system (MLS Appendix B).
     let discrete = !context.initialization
         && matches!(
             role,
             Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
         );
     let initial_parameter = context.initialization && matches!(role, Some(PlannedRole::Parameter));
-    if !continuous && !discrete && !initial_parameter {
-        return Err(ToDaeError::unsupported_flat(
-            "multi-output equation",
-            format!(
-                "receiving variable `{target}` is not a coordinate owned by this {} equation",
-                if context.initialization {
-                    "initial"
-                } else {
-                    "continuous"
-                }
-            ),
-            *span,
+    if continuous || discrete || initial_parameter {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "multi-output equation",
+        format!(
+            "receiving variable `{target}` is not a coordinate owned by this {} equation",
+            if context.initialization {
+                "initial"
+            } else {
+                "continuous"
+            }
+        ),
+        span,
+    ))
+}
+
+/// The whole record a receiving slot names, when it names no Flat variable.
+fn record_receiver<'flat>(
+    flat: &'flat flat::Model,
+    receiver: &Expression,
+) -> Option<&'flat flat::RecordInstance> {
+    let Expression::VarRef { name, .. } = receiver else {
+        return None;
+    };
+    (!flat.variables.contains_key(name.var_name()))
+        .then(|| flat.record_instances.get(name.var_name()))
+        .flatten()
+}
+
+/// A whole record receiving one record-valued result: every leaf coordinate
+/// of the record is an owned receiver and reads its field projection of the
+/// result.
+fn validate_record_receiver(
+    context: ReceiverValidation<'_>,
+    (record, receiver): (&flat::RecordInstance, &Expression),
+    (result_shape, ordinal): (&[u32], usize),
+    claimed: &mut HashSet<VarName>,
+) -> Result<RecordEquationPlan, ToDaeError> {
+    let Expression::VarRef {
+        name,
+        subscripts,
+        span,
+        ..
+    } = receiver
+    else {
+        unreachable!("a record receiver is a variable reference");
+    };
+    if !subscripts.is_empty() || !context.call_prefix.is_empty() || !result_shape.is_empty() {
+        return Err(invalid_receiver(
+            receiver,
+            context.equation_span,
+            "must receive one whole scalar record result",
         ));
     }
-    validate_receiver_type_and_shape(context, receiver, result_shape, ordinal, &target, *span)?;
-    Ok(Some(target))
+    let fields = record_result_fields(
+        context.flat,
+        record,
+        name.var_name(),
+        &context.function.outputs[ordinal],
+        *span,
+    )?;
+    for field in &fields {
+        if !claimed.insert(field.target.clone()) {
+            return Err(ToDaeError::unsupported_flat(
+                "multi-output equation",
+                format!(
+                    "receiving variable `{}` occurs more than once",
+                    field.target
+                ),
+                *span,
+            ));
+        }
+        require_owned_receiver(context, &field.target, *span)?;
+    }
+    Ok(RecordEquationPlan { fields })
 }
 
 fn validate_receiver_type_and_shape(

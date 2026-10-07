@@ -906,6 +906,12 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
     ctx.build_parameter_lookup(flat, tree);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    // MLS 3.7 §5.3: a binding names a package constant through any enclosing
+    // scope, up to the unnamed top level. A package outside the model's own
+    // enclosing classes is injected only by the referenced-scope pass above,
+    // so the parameters reading it are evaluated again before a dimension
+    // reads them.
+    ctx.build_parameter_lookup(flat, tree);
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
         ctx.build_parameter_lookup(flat, tree);
     }
@@ -1060,7 +1066,7 @@ pub(crate) fn finalize_flat_model(
     // later rewrite to reintroduce source-shaped record arguments against an
     // already decomposed signature.
     functions::lower_record_function_params(flat)?;
-    functions::split_branch_assigned_records(flat);
+    functions::split_branch_assigned_records(flat)?;
     expand_record_array_field_projections_in_equations(flat);
     // Recheck the decomposed ABI and materialize defaults of any scalar calls
     // introduced by record projection.

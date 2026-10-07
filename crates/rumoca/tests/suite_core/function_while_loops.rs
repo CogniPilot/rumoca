@@ -219,3 +219,45 @@ fn a_bounded_while_fold_ends_at_its_first_false_condition() {
         assert!(continued, "the while fold carries its condition");
     });
 }
+
+/// A `while` that can leave through `break` has no exit at which its
+/// condition is known false, so no exit fact or iteration envelope is proven
+/// from the condition, and the loop is refused rather than bounded by it.
+#[test]
+fn a_while_loop_that_can_break_is_refused() {
+    let source = r#"
+function firstAbove
+  input Real x[4];
+  input Real limit;
+  output Integer k;
+protected
+  Integer i;
+algorithm
+  i := 1;
+  k := 0;
+  while i < 5 loop
+    if x[i] > limit then
+      k := i;
+      break;
+    end if;
+    i := i + 1;
+  end while;
+end firstAbove;
+model WhileBreak
+  input Real limit = 2;
+  Real k;
+equation
+  k = firstAbove({1, 2, 3, 4}, limit + time);
+end WhileBreak;
+"#;
+    let error = Compiler::new()
+        .model("WhileBreak")
+        .compile_str(source, "WhileBreak.mo")
+        .map(|_| ())
+        .expect_err("a while loop with break has no proven envelope");
+    let message = error.to_string();
+    assert!(
+        message.contains("`firstAbove`"),
+        "unexpected refusal: {message}"
+    );
+}

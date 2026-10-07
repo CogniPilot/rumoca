@@ -34,6 +34,9 @@ pub(super) fn colored_tangent_evaluators(
     plan: &solve::AlgebraicProjectionPlan,
     structures: &solve::ContinuousStructuralArtifacts,
 ) -> Rc<[Option<rumoca_eval_solve::ColoredTangentEvaluator>]> {
+    // Blocks over one shared source program share its widening and preparation.
+    let mut widened = solve::TangentLaneCatalog::default();
+    let mut prepared = rumoca_eval_solve::PreparedLaneCatalog::default();
     plan.blocks
         .iter()
         .zip(structures.algebraic_projection())
@@ -44,8 +47,11 @@ pub(super) fn colored_tangent_evaluators(
             let application = structure.jacobian_application().filter(|application| {
                 application.rows() == block.rows && application.y_indices() == block.y_indices
             })?;
-            let plan = solve::ColoredTangentPlan::derive(application).ok()?;
-            Some(rumoca_eval_solve::ColoredTangentEvaluator::new(plan))
+            let plan = solve::ColoredTangentPlan::derive_sharing(application, &mut widened).ok()?;
+            Some(rumoca_eval_solve::ColoredTangentEvaluator::sharing(
+                plan,
+                &mut prepared,
+            ))
         })
         .collect()
 }

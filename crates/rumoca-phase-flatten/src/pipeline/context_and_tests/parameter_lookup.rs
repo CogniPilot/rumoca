@@ -213,6 +213,7 @@ impl Context {
                     may_be_record_alias,
                     binding_from_modification: var.binding_from_modification,
                     aggregate: !var.dims.is_empty() || is_string_variable(flat, var),
+                    enumeration: flat.enumeration_types.contains(&var.type_id),
                 })
             })
             .collect()
@@ -255,6 +256,7 @@ impl Context {
                     may_be_record_alias: !var.is_primitive,
                     binding_from_modification: var.binding_from_modification,
                     aggregate: false,
+                    enumeration: false,
                 })
             })
             .collect()

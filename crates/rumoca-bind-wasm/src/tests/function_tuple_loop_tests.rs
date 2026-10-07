@@ -30,7 +30,23 @@ fn execute(source: &str, model: &str, inputs: &[(&str, f64)], outputs: &[&str]) 
         .iter()
         .map(|value| value.as_f64().unwrap())
         .collect::<Vec<_>>();
+    // Integer and Boolean inputs are written to their typed input lanes
+    // (SOLVE-C69), starting from their declared start values.
+    let typed = abi["typed_lanes_offset"].as_u64().unwrap_or(0) as usize;
+    let mut lanes = vec![0u8; abi["input_lanes_bytes"].as_u64().unwrap_or(0) as usize];
+    let lane_inputs = artifact["input_lanes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for lane in &lane_inputs {
+        let p_index = lane["p_index"].as_u64().unwrap() as usize;
+        write_lane(&mut lanes, lane, parameters[p_index]);
+    }
     for &(name, value) in inputs {
+        if let Some(lane) = lane_inputs.iter().find(|lane| lane["name"] == name) {
+            write_lane(&mut lanes, lane, value);
+            continue;
+        }
         let index = artifact["var_layout"]["bindings"][name]["P"]["index"]
             .as_u64()
             .unwrap() as usize;
@@ -47,6 +63,7 @@ fn execute(source: &str, model: &str, inputs: &[(&str, f64)], outputs: &[&str]) 
             &parameter_bytes,
         )
         .unwrap();
+    memory.write(&mut store, typed, &lanes).unwrap();
     let mut linker = Linker::new(&engine);
     linker.define("env", "memory", memory).unwrap();
     let instance = linker
@@ -65,7 +82,7 @@ fn execute(source: &str, model: &str, inputs: &[(&str, f64)], outputs: &[&str]) 
                 abi["p_offset"].as_u64().unwrap() as i32,
                 0.0,
                 abi["scratch_offset"].as_u64().unwrap() as i32,
-                0
+                typed as i32
             )
         )
         .unwrap(),
@@ -326,4 +343,13 @@ fn tuple_loop_malformed_receiver_shapes_still_refuse() {
         failure.contains("shape") || failure.contains("dimension"),
         "{failure}"
     );
+}
+
+/// Write one Integer (`i64`) or Boolean (`u8`) typed input lane.
+fn write_lane(lanes: &mut [u8], lane: &serde_json::Value, value: f64) {
+    let at = lane["byte_offset"].as_u64().unwrap() as usize;
+    match lane["representation"].as_str().unwrap() {
+        "i64" => lanes[at..at + 8].copy_from_slice(&(value as i64).to_le_bytes()),
+        _ => lanes[at] = u8::from(value != 0.0),
+    }
 }

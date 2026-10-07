@@ -101,6 +101,7 @@ fn stage_body(
     emitter.calls = Some(calls);
     emitter.kernel_ordinal = kernel;
     emitter.integer_capture = capture;
+    emitter.native_stage = Some(stage);
     emitter.gather_status_base = Some(
         faults
             .status_base

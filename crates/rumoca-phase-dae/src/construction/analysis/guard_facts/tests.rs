@@ -2,7 +2,7 @@
 //! Real facts, joins and invalidation by a later write.
 
 use super::super::loop_compaction::preservation_corpus::{
-    assign, binary, integer, real, span, var,
+    assign, assign_element, binary, branch, element, for_loop, integer, real, span, var,
 };
 use super::*;
 
@@ -19,9 +19,13 @@ struct Names {
 impl Names {
     fn new() -> Self {
         Self {
-            integers: names(&["r", "n"]),
-            reals: names(&["accepted"]),
-            shapes: ShapeEnvironment::default(),
+            integers: names(&["r", "n", "count", "idx", "w", "h"]),
+            reals: names(&["accepted", "valid", "settings"]),
+            shapes: {
+                let mut shapes = ShapeEnvironment::default();
+                shapes.insert(VarName::new("idx"), vec![5]);
+                shapes
+            },
         }
     }
 
@@ -135,4 +139,173 @@ fn an_unreachable_path_adds_nothing_to_a_join() {
         bound(&GuardFacts::join(&entries), "r"),
         IntegerInterval::exact(0)
     );
+}
+
+fn if_expression(condition: Expression, then: Expression, otherwise: Expression) -> Expression {
+    Expression::If {
+        branches: vec![(condition, then)],
+        else_branch: Box::new(otherwise),
+        span: span(),
+    }
+}
+
+fn integer_call(value: Expression) -> Expression {
+    Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Integer,
+        args: vec![value],
+        span: span(),
+    }
+}
+
+#[test]
+fn a_real_indicator_carries_the_facts_of_the_condition_that_selects_it() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    let stride = element("settings", integer(1));
+    let condition = binary(OpBinary::Ge, stride.clone(), real(1.0));
+    facts.after(
+        &assign("valid", if_expression(condition, real(1.0), real(0.0))),
+        names.scope(),
+    );
+    // `r` is the stride on the accepted path and 1 otherwise.
+    let positive = binary(OpBinary::Gt, var("valid"), real(0.0));
+    facts.after(
+        &assign(
+            "r",
+            if_expression(positive.clone(), integer_call(stride), integer(1)),
+        ),
+        names.scope(),
+    );
+    assert_eq!(bound(&facts, "r").lower, Some(1));
+    let entries = facts.branch_entries(&[&positive], names.scope());
+    // `valid > 0.0` admits only the 1.0 arm; its false side only the 0.0 arm.
+    assert!(!entries[0].is_unreachable());
+    let rejected = binary(OpBinary::Eq, var("valid"), real(1.0));
+    assert!(
+        entries[1]
+            .assuming(&rejected, true, names.scope())
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn a_failed_ordered_comparison_proves_no_real_fact() {
+    // `settings[1] >= 1.0` fails for a NaN as well, so its false side bounds
+    // nothing: integer(settings[1]) stays unbounded there.
+    let names = Names::new();
+    let facts = GuardFacts::entry();
+    let condition = binary(OpBinary::Ge, element("settings", integer(1)), real(1.0));
+    let entries = facts.branch_entries(&[&condition], names.scope());
+    let converted = integer_call(element("settings", integer(1)));
+    assert_eq!(
+        entries[0].integer_interval(&converted, names.scope()).lower,
+        Some(1)
+    );
+    assert!(
+        entries[1]
+            .integer_interval(&converted, names.scope())
+            .is_unbounded()
+    );
+}
+
+#[test]
+fn a_completed_element_write_bounds_its_index_by_the_extent() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign_element("idx", var("r"), integer(0)), names.scope());
+    assert_eq!(bound(&facts, "r"), IntegerInterval::finite(1, 5));
+}
+
+#[test]
+fn a_loop_head_keeps_a_counter_bounded_by_the_array_it_indexes() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("count", integer(0)), names.scope());
+    let counted = vec![
+        assign("count", binary(OpBinary::Add, var("count"), integer(1))),
+        assign_element("idx", var("count"), integer(1)),
+    ];
+    let body = vec![branch(
+        vec![(binary(OpBinary::Gt, var("n"), integer(0)), counted)],
+        None,
+    )];
+    facts.after(&for_loop("i", 9, body), names.scope());
+    // Widening steps to the extent 5 and the head is proven there.
+    assert_eq!(bound(&facts, "count"), IntegerInterval::finite(0, 5));
+}
+
+#[test]
+fn a_bounded_product_bounds_each_factor_proven_at_least_one() {
+    let names = Names::new();
+    let facts = GuardFacts::entry();
+    let positive = binary(
+        OpBinary::And,
+        binary(OpBinary::Gt, var("w"), integer(0)),
+        binary(OpBinary::Gt, var("h"), integer(0)),
+    );
+    let condition = binary(
+        OpBinary::And,
+        positive,
+        binary(
+            OpBinary::Eq,
+            integer(12),
+            binary(OpBinary::Mul, var("w"), var("h")),
+        ),
+    );
+    let entry = facts.assuming(&condition, true, names.scope());
+    assert_eq!(bound(&entry, "w"), IntegerInterval::finite(1, 12));
+    assert_eq!(bound(&entry, "h"), IntegerInterval::finite(1, 12));
+}
+
+#[test]
+fn a_selection_over_its_own_old_value_keeps_no_fact_of_it() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    let high = binary(OpBinary::Gt, var("r"), integer(5));
+    facts.after(
+        &assign("r", if_expression(high, integer(1), integer(2))),
+        names.scope(),
+    );
+    // The 1 arm was selected by the old `r > 5`; that fact says nothing
+    // about the new `r`, so `r <> 1` and `r == 1` both stay reachable.
+    let differs = binary(OpBinary::Neq, var("r"), integer(1));
+    let entries = facts.branch_entries(&[&differs], names.scope());
+    assert!(!entries[0].is_unreachable());
+    assert!(!entries[1].is_unreachable());
+    assert_eq!(bound(&facts, "r"), IntegerInterval::finite(1, 2));
+}
+
+fn while_loop(cond: Expression, stmts: Vec<rumoca_core::Statement>) -> rumoca_core::Statement {
+    rumoca_core::Statement::While {
+        block: rumoca_core::StatementBlock { cond, stmts },
+        span: span(),
+    }
+}
+
+/// A normal exit evaluated the condition false; a `break` leaves with it
+/// either way, so a loop that can break proves no exit fact from it.
+#[test]
+fn only_a_loop_without_break_exits_with_its_condition_false() {
+    let names = Names::new();
+    let below = binary(OpBinary::Lt, var("r"), integer(3));
+    let step = assign("r", binary(OpBinary::Add, var("r"), integer(1)));
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("r", integer(0)), names.scope());
+    facts.after(
+        &while_loop(below.clone(), vec![step.clone()]),
+        names.scope(),
+    );
+    assert_eq!(bound(&facts, "r").lower, Some(3));
+
+    let leave = branch(
+        vec![(
+            binary(OpBinary::Eq, var("n"), integer(0)),
+            vec![rumoca_core::Statement::Break { span: span() }],
+        )],
+        None,
+    );
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("r", integer(0)), names.scope());
+    facts.after(&while_loop(below, vec![leave, step]), names.scope());
+    assert_eq!(bound(&facts, "r").lower, None);
 }

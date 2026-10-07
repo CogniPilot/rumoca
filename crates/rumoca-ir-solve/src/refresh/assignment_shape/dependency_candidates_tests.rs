@@ -129,6 +129,7 @@ fn unrelated_tensor_loads_are_not_output_candidates() {
     assert_eq!(
         dependency_candidates::derive(producers.view(), 12)
             .unwrap()
+            .targets
             .len(),
         6
     );
@@ -139,7 +140,7 @@ fn unrelated_tensor_loads_are_not_output_candidates() {
 }
 
 #[test]
-fn unsupported_projection_operations_retain_exhaustive_candidates() {
+fn unsupported_projection_operations_are_opaque_to_candidates() {
     let program = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
         LinearOp::LoadY { dst: 1, index: 1 },
@@ -158,7 +159,9 @@ fn unsupported_projection_operations_retain_exhaustive_candidates() {
         LinearOp::StoreOutput { src: 4 },
     ];
     let producers = UniqueProgram::new(&program[..5]).unwrap();
-    assert!(dependency_candidates::derive(producers.view(), 4).is_none());
+    let candidates = dependency_candidates::derive(producers.view(), 4).unwrap();
+    assert_eq!(candidates.targets, BTreeSet::from([1]));
+    assert!(candidates.linear);
     assert_eq!(
         derive_target_assignment_shapes(&program),
         exhaustive_shapes(&program)
@@ -206,4 +209,43 @@ fn aggregate_matrix_candidates_keep_whole_operation_certificates() {
         assert!(!actual.is_empty());
         assert_eq!(actual, exhaustive_shapes(&program));
     }
+}
+
+/// The lanes of one wide residual each isolate their own target: the walk is
+/// shared by the lanes and the candidates follow each lane's dependencies, so
+/// the inventory still matches the exhaustive oracle.
+#[test]
+fn wide_lane_residuals_keep_the_exhaustive_inventory() {
+    let count = 300;
+    let lanes = |dst_start, input_start| LinearOp::TensorLoad {
+        dst_start,
+        input: crate::TensorInputKind::Y,
+        input_start,
+        seed_start: None,
+        count,
+        lanes: 1,
+    };
+    let registers = u32::try_from(count).unwrap();
+    let program = vec![
+        lanes(0, 0),
+        lanes(registers, count),
+        LinearOp::TensorBinary {
+            dst_start: registers * 2,
+            op: BinaryOp::Sub,
+            lhs_start: 0,
+            rhs_start: registers,
+            count,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: registers * 2,
+            count,
+            stride: 1,
+        },
+    ];
+    let actual = derive_target_assignment_shapes(&program);
+    assert_eq!(actual.len(), count * 2);
+    assert_eq!(actual, exhaustive_shapes(&program));
 }

@@ -1603,3 +1603,61 @@ fn a_duplicate_variable_name_is_refused() {
             if key == "x" && span == second.span()
     ));
 }
+
+/// A walk nested in another walk's visitor must not size a stamp table to the
+/// arena again: a query from inside a visitor is the shape that made a
+/// multi-root query cost roots times arena.
+#[test]
+fn nested_expression_walks_reuse_their_stamp_tables() {
+    use crate::expr_query::STAMP_TABLE_GROWTHS;
+
+    let source = TestSource::new("1 + 1 + 1 + 1");
+    let at = source.source("1 + 1 + 1 + 1", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let mut sum = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            for _ in 0..64 {
+                let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+                sum = expressions.at(at).binary(BinaryOperator::Add, sum, one)?;
+            }
+            Ok(())
+        })
+    })
+    .expect("expression construction succeeds");
+
+    dae.inspect(|view| {
+        let root = view
+            .expression_id(view.expression_count() - 1)
+            .expect("root");
+        let before = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get);
+        let mut inner_visits = 0usize;
+        for _ in 0..50 {
+            walk_nested(view, root, 2, &mut inner_visits);
+        }
+        assert!(inner_visits > 0);
+        for _ in 0..50 {
+            let mut visits = 0usize;
+            ExpressionTraversal::new().visit_pruned(view, [root], |_, _| {
+                visits += 1;
+                true
+            });
+            assert!(visits > 0);
+        }
+        let growths = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get) - before;
+        // One table per nesting depth, sized once; none per query.
+        assert!(growths <= 3, "stamp tables grew {growths} times");
+    });
+}
+
+/// Visit every node of `root`, starting a walk of `depth` further nested levels
+/// from each one.
+fn walk_nested<'dae>(view: DaeView<'dae>, root: ExprId<'dae>, depth: usize, visits: &mut usize) {
+    for_each_expression_pruned(view, root, |node, _| {
+        if depth == 0 {
+            *visits += 1;
+        } else {
+            walk_nested(view, node, depth - 1, visits);
+        }
+        true
+    });
+}

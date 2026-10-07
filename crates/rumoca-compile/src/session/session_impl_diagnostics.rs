@@ -599,7 +599,9 @@ fn build_model_diagnostics_for_typed_model(
 
 /// One WD001 warning per structural use of ordinary parameters: a guard
 /// selecting between structurally different branches (MLS 3.7 §8.3.4), an
-/// array dimension (§10.1), or a for-equation range (§8.3.3). Each fixes its
+/// array dimension (§10.1), a for-equation range (§8.3.3), or a call argument
+/// a declared input or output dimension of the callee reads (§10.1, §12.2).
+/// Each fixes its
 /// parameters at translation, so they cannot be set (SPEC_0040 DAE-C22).
 fn structural_selection_warnings(
     selections: &[rumoca_phase_dae::StructuralSelection],
@@ -634,6 +636,14 @@ fn structural_selection_warnings(
                          {parameters} cannot be set (MLS 3.7 §8.3.3)"
                     ),
                     "range fixed at translation",
+                ),
+                rumoca_ir_flat::StructuralParameterUse::SpecializationArgument => (
+                    format!(
+                        "this argument is fixed at translation because a declared dimension of the \
+                         called function's inputs or outputs depends on it, so parameter{plural} \
+                         {parameters} cannot be set (MLS 3.7 §10.1, §12.2)"
+                    ),
+                    "argument fixed at translation",
                 ),
             };
             CommonDiagnostic::warning(

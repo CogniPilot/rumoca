@@ -357,3 +357,71 @@ fn a_sharing_that_fails_its_proof_is_counted_and_admits_nothing() {
     let admitted = admit_proven(right, &program, &targets).expect("a proven sharing");
     assert_eq!(count(&admitted.ops, "StoreOutput"), 1);
 }
+
+/// `y[target + i] = y[a + i] * y[b + i]` over `width` lanes as one tensor
+/// operation (the load, the product and the range store).
+fn wide_product(width: usize, a: usize, b: usize) -> Vec<LinearOp> {
+    let load = |dst_start: Reg, input_start: usize| LinearOp::TensorLoad {
+        dst_start,
+        input: TensorInputKind::Y,
+        input_start,
+        count: width,
+        seed_start: None,
+        lanes: 1,
+    };
+    vec![
+        load(0, a),
+        load(width as Reg, b),
+        LinearOp::TensorBinary {
+            dst_start: 2 * width as Reg,
+            op: BinaryOp::Mul,
+            lhs_start: 0,
+            rhs_start: width as Reg,
+            count: width,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 2 * width as Reg,
+            count: width,
+            stride: 1,
+        },
+    ]
+}
+
+/// A wide tensor operation costs its width, not its width squared: the
+/// operands of an operation are interned once, and each of its outputs is a
+/// term over that one id.
+#[test]
+fn a_wide_tensor_operation_is_derived_and_checked_in_linear_time() {
+    let width = 20_000;
+    let rows = [(
+        wide_product(width, 0, width),
+        (10_000..10_000 + width).collect::<Vec<_>>(),
+    )];
+    let programs = programs(&rows);
+    let started = std::time::Instant::now();
+    let shared = SharedValueSegments::derive(&programs);
+    shared.check(&programs).unwrap();
+    // Quadratic hashing of the operand list per output takes minutes here.
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert_eq!(count(shared.segments()[0].ops(), "TensorBinary"), 1);
+}
+
+/// The read set of a wide range operation is collected in one validation,
+/// not rediscovered one register at a time.
+#[test]
+fn the_read_set_of_a_wide_range_is_collected_linearly() {
+    let count = 200_000;
+    let op = LinearOp::StoreOutputRange {
+        start: 0,
+        count,
+        stride: 1,
+    };
+    let started = std::time::Instant::now();
+    let reads = registers::read_registers(&op).expect("a validatable operation");
+    assert_eq!(reads.len(), count);
+    assert!(reads.iter().copied().eq(0..count as Reg));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}

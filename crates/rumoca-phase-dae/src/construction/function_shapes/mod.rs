@@ -1,6 +1,7 @@
 mod derivatives;
 mod expression_rules;
 mod integer_bounds;
+mod specialization_key;
 mod specialization_schedule;
 #[cfg(test)]
 mod tests;
@@ -14,10 +15,12 @@ pub(in crate::construction) use expression_rules::{
 };
 use expression_rules::{expression_shape, reject_shape_call};
 pub(in crate::construction) use integer_bounds::{
-    IntegerInterval, infer_finite_for_counter_bounds, infer_function_integer_bounds,
+    IntegerInterval, exact_range_distance, infer_finite_for_counter_bounds,
+    infer_function_integer_bounds,
 };
 use rumoca_core::{DefId, FunctionInstanceId, InstanceId};
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment};
+pub(in crate::construction) use specialization_key::{KeyedArgumentReads, non_evaluable_parameter};
 use value_relevance::ValueReadInputs;
 pub(super) use value_relevance::{function_expressions, statement_expression_roots};
 
@@ -734,6 +737,15 @@ pub(super) struct FunctionShapeAnalysis {
     /// a run-time branch but an arm's calls cannot be certified, so the guard
     /// is a structural selection (SPEC_0040 DAE-C22).
     structural_selections: HashSet<Span>,
+    /// Parameters with no translation-time value (MLS 3.7 §4.5, §18.6), closed
+    /// over the parameter bindings that read them; no key carries their value.
+    non_evaluable: HashSet<VarName>,
+    /// Ordinary parameters whose value is settable after translation; only a
+    /// position a callee's declared interface dimension reads is keyed on
+    /// their value.
+    tunable: HashSet<VarName>,
+    /// Model-scope calls whose key carries a value read from model variables.
+    keyed_argument_reads: Vec<KeyedArgumentReads>,
 }
 
 impl FunctionShapeAnalysis {
@@ -817,6 +829,9 @@ impl FunctionShapeAnalysis {
                 value_read_inputs,
                 derivatives: Vec::new(),
                 structural_selections: HashSet::new(),
+                non_evaluable: specialization_key::non_evaluable_closure(flat),
+                tunable: specialization_key::tunable_parameters(flat, evaluable),
+                keyed_argument_reads: Vec::new(),
             },
             active_specializations: Vec::new(),
             chain_depths: Vec::new(),
@@ -837,33 +852,6 @@ impl FunctionShapeAnalysis {
             .record_array_fields
             .as_ref()
             .expect("function shape analysis owns the model projection plan")
-    }
-
-    /// The proven argument values that identify one call's specialization.
-    ///
-    /// A position carries a value only when the callee's declared dimensions or
-    /// ranges actually read that input's value, and only when the argument is
-    /// evaluable at translation time. Every other position records `None`, which
-    /// keeps calls that differ only in a value no shape reads inside one shared
-    /// specialization — the property that both prevents duplicate DAE functions
-    /// and lets a recursive call repeat its key.
-    fn proven_input_values(
-        &self,
-        function: &VarName,
-        arguments: &[Expression],
-        values: &ShapeEnvironment,
-    ) -> Vec<Option<ProvenValue>> {
-        arguments
-            .iter()
-            .enumerate()
-            .map(|(ordinal, argument)| {
-                if self.value_read_inputs.reads_value(function, ordinal) {
-                    values.proven_value(argument)
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     pub(super) fn model_values(&self) -> &ShapeEnvironment {
@@ -1070,6 +1058,7 @@ struct DiscoveryCheckpoint {
     pending_bodies: usize,
     call_keys: HashSet<FunctionSpecializationKey>,
     constructor_keys: HashSet<FunctionSpecializationKey>,
+    keyed_argument_reads: usize,
 }
 
 struct ShapeAnalyzer<'flat> {
@@ -1297,9 +1286,7 @@ impl ShapeAnalyzer<'_> {
                 .map(|argument| self.discover_expression(argument, values))
                 .collect::<Result<Vec<_>, _>>()?;
             let function = name.var_name().clone();
-            let input_values = self
-                .analysis
-                .proven_input_values(&function, arguments, values);
+            let input_values = self.keyed_input_values(&function, arguments, values, span);
             let (index, prefix) =
                 self.certify_regular_call(name, function, inputs, input_values, span)?;
             self.analysis.certificates[index]
@@ -1478,9 +1465,7 @@ impl ShapeAnalyzer<'_> {
             )?);
         }
         let function = name.var_name().clone();
-        let input_values = self
-            .analysis
-            .proven_input_values(&function, arguments, values);
+        let input_values = self.keyed_input_values(&function, arguments, values, span);
         let key = FunctionSpecializationKey {
             function,
             inputs,
@@ -1529,6 +1514,7 @@ impl ShapeAnalyzer<'_> {
                 .keys()
                 .cloned()
                 .collect(),
+            keyed_argument_reads: self.analysis.keyed_argument_reads.len(),
         }
     }
 
@@ -1536,6 +1522,9 @@ impl ShapeAnalyzer<'_> {
         let count = checkpoint.certificates;
         self.analysis.certificates.truncate(count);
         self.chain_depths.truncate(count);
+        self.analysis
+            .keyed_argument_reads
+            .truncate(checkpoint.keyed_argument_reads);
         self.pending_bodies.truncate(checkpoint.pending_bodies);
         self.analysis.dependencies.truncate(count);
         for dependencies in &mut self.analysis.dependencies {
@@ -1650,7 +1639,7 @@ impl ShapeAnalyzer<'_> {
                     return Ok(());
                 }
                 let function = comp.var_name().clone();
-                let input_values = self.analysis.proven_input_values(&function, args, values);
+                let input_values = self.keyed_input_values(&function, args, values, *span);
                 self.certify_regular_call(comp, function, inputs, input_values, *span)?;
                 Ok(())
             }
@@ -2510,7 +2499,10 @@ pub(super) fn evaluate_shape_integer(
                         "function shape proof",
                         format!(
                             "extent depends on the value of scalar `{}`, which requires a \
-                             value-proven function specialization",
+                             value-proven function specialization; a call argument that is \
+                             a run-time value or reads a tunable parameter proves none (a \
+                             local dimension is sized when the function runs), so declare \
+                             the parameter final or Evaluate = true",
                             name.as_str()
                         ),
                         span,

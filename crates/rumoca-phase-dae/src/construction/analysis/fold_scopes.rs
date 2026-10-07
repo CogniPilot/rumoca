@@ -694,7 +694,7 @@ impl FoldScopes {
         {
             return true;
         }
-        let Some(parts) = single_offset_parts(axes) else {
+        let Some(parts) = single_offset_parts(axes, false) else {
             return false;
         };
         let region = IndexUnion::of([scope.region.clone()]);
@@ -723,6 +723,9 @@ impl FoldScopes {
             if binder_shifts(axes, &write.axes, None).contains(&0) {
                 defined.extend(write.region.clone());
             }
+        }
+        for owner in self.scopes.iter().rev().skip(1) {
+            defined.extend(enclosing_writes_defining(owner, scope, target, axes));
         }
         for (coordinate, owner, binder) in self.binders() {
             let Some(previous) = &owner.previous else {
@@ -806,12 +809,14 @@ fn inner_images(axes: &[IndexAxis], region: &IndexBox, from: usize) -> Option<Ve
         .collect()
 }
 
-/// The read split into one read per offset of every binder axis.
-fn single_offset_parts(axes: &[IndexAxis]) -> Option<Vec<Vec<IndexAxis>>> {
+/// The read split into one read per offset of every binder axis, and of
+/// every fixed axis too when `split_fixed` (a read whose elements may come
+/// from different writes).
+fn single_offset_parts(axes: &[IndexAxis], split_fixed: bool) -> Option<Vec<Vec<IndexAxis>>> {
     const PART_LIMIT: usize = 64;
     let mut parts = vec![Vec::new()];
     for axis in axes {
-        let choices = if axis.form.is_binder_free() {
+        let choices = if axis.form.is_binder_free() && !split_fixed {
             vec![axis.clone()]
         } else {
             offset_values(&axis.offsets, PART_LIMIT)?
@@ -1098,4 +1103,54 @@ fn selection_value<'a>(
         }
     }
     current
+}
+
+/// The binder values of `scope` at which a read `axes` of `target` is defined
+/// by writes `owner`, an enclosing loop, made earlier in its current
+/// iteration. Such a write ran before `scope` began, so it holds at every
+/// binder value of `scope`. The read, its inner binders replaced by their
+/// images over `scope`'s values, is compared in `owner`'s coordinates one
+/// element at a time, since each element may come from a different write
+/// (`solution[1, c]` ... `solution[6, c]` before `solution[i, c]`).
+fn enclosing_writes_defining(
+    owner: &FoldScope,
+    scope: &FoldScope,
+    target: &VarName,
+    axes: &[IndexAxis],
+) -> IndexUnion {
+    let width = owner.region.0.len();
+    let Some(parts) =
+        inner_images(axes, &scope.region, width).and_then(|read| single_offset_parts(&read, true))
+    else {
+        return IndexUnion::default();
+    };
+    let writes = owner
+        .writes
+        .iter()
+        .filter(|write| &write.target == target)
+        .collect::<Vec<_>>();
+    let covering = |part: &Vec<IndexAxis>| {
+        let mut covering = IndexUnion::default();
+        for write in writes
+            .iter()
+            .filter(|write| binder_shifts(part, &write.axes, None).contains(&0))
+        {
+            covering.extend(write.region.clone());
+        }
+        covering
+    };
+    let Some(reached) = parts
+        .iter()
+        .map(covering)
+        .reduce(|reached, covering| reached.meet(&covering).unwrap_or_default())
+    else {
+        return IndexUnion::default();
+    };
+    let inner = &scope.region.0[width..];
+    IndexUnion::of(
+        reached
+            .boxes()
+            .iter()
+            .map(|part| IndexBox(part.0.iter().chain(inner).copied().collect())),
+    )
 }

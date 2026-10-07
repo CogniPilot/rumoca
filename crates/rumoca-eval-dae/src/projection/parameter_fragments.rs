@@ -1,13 +1,17 @@
 //! Successful parameter-only projections within one exact function summary.
-mod completed;
+pub(super) mod completed;
 mod integration;
 pub(super) mod reuse;
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use super::{
     FunctionParameterDependency, ScalarExpressionDependency, dependencies::OrderedDependencies,
 };
 use rumoca_ir_dae as dae;
+
+/// Whether an expression may enter a parameter-only fragment, by expression
+/// identity alone, so every summary capture of one DAE shares one table.
+pub(super) type SharedEligibility = Rc<RefCell<completed::Eligibility>>;
 
 pub(super) enum Start {
     None,
@@ -27,7 +31,7 @@ struct Recording {
 #[derive(Debug, Default)]
 pub(super) struct ParameterFragments<'dae> {
     completed: completed::Cache,
-    eligibility: completed::Eligibility,
+    eligibility: SharedEligibility,
     traversal: dae::ExpressionTraversal<'dae>,
     recording: Vec<Recording>,
     reusable: Vec<(reuse::Key, Arc<[FunctionParameterDependency]>)>,
@@ -36,6 +40,19 @@ pub(super) struct ParameterFragments<'dae> {
 }
 
 impl<'dae> ParameterFragments<'dae> {
+    /// Fragments of one summary capture, deciding eligibility in `eligibility`.
+    pub(super) fn new(eligibility: SharedEligibility) -> Self {
+        Self {
+            completed: completed::Cache::default(),
+            eligibility,
+            traversal: dae::ExpressionTraversal::new(),
+            recording: Vec::new(),
+            reusable: Vec::new(),
+            #[cfg(test)]
+            hits: 0,
+        }
+    }
+
     pub(super) fn begin(
         &mut self,
         view: dae::DaeView<'dae>,
@@ -121,13 +138,14 @@ impl<'dae> ParameterFragments<'dae> {
         view: dae::DaeView<'dae>,
         root: dae::ExprId<'dae>,
     ) -> bool {
-        if let Some(eligible) = self.eligibility.get(root.index()) {
+        if let Some(eligible) = self.eligibility.borrow().get(root.index()) {
             return eligible;
         }
         let mut eligible = true;
+        let eligibility = Rc::clone(&self.eligibility);
         self.traversal
             .visit_pruned(view, [root], |expression, node| {
-                if let Some(known) = self.eligibility.get(expression.index()) {
+                if let Some(known) = eligibility.borrow().get(expression.index()) {
                     eligible &= known;
                     return false;
                 }
@@ -137,7 +155,7 @@ impl<'dae> ParameterFragments<'dae> {
                 }
                 true
             });
-        self.eligibility.insert(root.index(), eligible);
+        self.eligibility.borrow_mut().insert(root.index(), eligible);
         eligible
     }
 }

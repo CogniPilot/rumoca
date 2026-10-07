@@ -46,11 +46,11 @@ fn emit_with_budget(
     helpers.relocate(&imports).map_err(|e| e.to_string())?;
     let (bodies, faults) = helpers.bodies(table).map_err(|e| e.to_string())?;
     let rank = plans.iter().map(|plan| plan.rank).max().unwrap_or(0);
-    let arena =
-        arena::ArenaPlan::new(&programs, rank)?.ok_or("typed calls require private registers")?;
+    // The checked entry always evaluates stages in private registers.
+    let arena = arena::ArenaPlan::required(&programs, rank)?;
     let call_plan =
         CallProgramPlan::new(&programs, &helpers, work.y_scalars(), arena.inner_counter)?
-            .with_output_lanes(layout.y_scalars(), schedule.lane_bytes())?;
+            .with_schedule_lanes(schedule, layout)?;
     let mut module = Module::new();
     let types = add_types(&mut module);
     let mut catalog = add_import_section(&mut module, &imports, &types);
@@ -101,7 +101,7 @@ fn emit_with_budget(
     let mut emitter = BodyEmitter::new(&catalog, &mut function);
     emitter.arena = Some(arena);
     emitter.calls = Some(&call_plan);
-    emitter.begin_call_program(layout)?;
+    emitter.begin_call_program(layout, schedule.input_lanes())?;
     groups::invoke(&mut emitter, first_group, outlined.len())?;
     emitter.finish_call_program(schedule.derived_outputs())?;
     function.instruction(&Instruction::End);
@@ -142,7 +142,7 @@ fn work_layout<'a>(
 }
 
 /// A checked entry is issued only for a program that needs one: an issued
-/// call, a checked model operation, or typed output lanes.
+/// call, a checked model operation, or typed input or output lanes.
 fn require_checked_entry(
     schedule: &solve::NativeRefreshAssignmentSchedule,
     sites: &[solve::SolvePureCallSite],
@@ -150,6 +150,7 @@ fn require_checked_entry(
 ) -> Result<(), String> {
     if sites.is_empty()
         && schedule.derived_outputs().is_empty()
+        && schedule.input_lanes().is_empty()
         && !has_checked_model_operations(programs.iter().flatten())
     {
         return Err("native checked program has no checked operations".into());

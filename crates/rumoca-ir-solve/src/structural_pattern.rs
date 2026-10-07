@@ -846,6 +846,25 @@ impl StructuralPattern {
 
     /// Exact solver-`Y` dependencies of every output of one checked scalar
     /// program, in output order.
+    /// The union of the solver-`Y` dependencies of every output of one
+    /// checked scalar program. Outputs that share one dependency set are
+    /// counted once, so a wide program costs its distinct sets, not its width.
+    pub fn derive_y_dependency_union(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<BTreeSet<usize>, StructuralPatternError> {
+        output_dependency_union(program, span, DependencySource::SolverY)
+    }
+
+    /// The union of the solver-`P` dependencies of every output of one checked
+    /// scalar program; see [`Self::derive_y_dependency_union`].
+    pub fn derive_p_dependency_union(
+        program: &[LinearOp],
+        span: Option<Span>,
+    ) -> Result<BTreeSet<usize>, StructuralPatternError> {
+        output_dependency_union(program, span, DependencySource::SolverP)
+    }
+
     pub fn derive_output_y_dependencies(
         program: &[LinearOp],
         span: Option<Span>,
@@ -1630,6 +1649,13 @@ impl DependencyState {
         }
     }
 
+    fn into_shared(self) -> Arc<BTreeSet<usize>> {
+        match self {
+            Self::Known(indices) => indices,
+            other => Arc::new(other.into_set()),
+        }
+    }
+
     fn into_set(self) -> BTreeSet<usize> {
         match self {
             Self::Empty => BTreeSet::new(),
@@ -1663,6 +1689,30 @@ fn program_output_dependencies(
     program_output_dependencies_with_fold(program, span, None, None, None, DependencySource::Seed)
 }
 
+fn output_dependency_union(
+    program: &[LinearOp],
+    span: Option<Span>,
+    source: DependencySource,
+) -> Result<BTreeSet<usize>, StructuralPatternError> {
+    let mut seen = BTreeSet::new();
+    let mut union = BTreeSet::new();
+    let outputs = program_output_dependencies_with_fold(program, span, None, None, None, source)?;
+    for dependencies in &outputs {
+        match dependencies {
+            DependencyState::Empty => {}
+            DependencyState::Singleton(index) => {
+                union.insert(*index);
+            }
+            DependencyState::Known(indices) => {
+                if seen.insert(Arc::as_ptr(indices) as usize) {
+                    union.extend(indices.iter().copied());
+                }
+            }
+        }
+    }
+    Ok(union)
+}
+
 fn program_output_y_dependencies(
     program: &[LinearOp],
     span: Option<Span>,
@@ -1685,7 +1735,7 @@ fn program_output_y_dependencies(
 /// consumed fail-closed by refresh construction.
 pub(crate) fn program_register_y_dependencies(
     program: &[LinearOp],
-) -> Result<Vec<Option<BTreeSet<usize>>>, StructuralPatternError> {
+) -> Result<Vec<Option<Arc<BTreeSet<usize>>>>, StructuralPatternError> {
     let mut walk = DependencyWalk {
         registers: Vec::new(),
         outputs: Vec::new(),
@@ -1698,10 +1748,12 @@ pub(crate) fn program_register_y_dependencies(
     for operation in program {
         apply_dependency_op(&mut walk, operation)?;
     }
+    // Registers that share one dependency set keep sharing it: a wide
+    // operation whose lanes all read one input owns one set, not one a lane.
     Ok(walk
         .registers
         .into_iter()
-        .map(|dependencies| dependencies.map(DependencyState::into_set))
+        .map(|dependencies| dependencies.map(DependencyState::into_shared))
         .collect())
 }
 
@@ -2595,25 +2647,40 @@ impl DependencyWalk<'_> {
         output: &crate::SolvePureCallOutput,
         summary: &[crate::SolveCallDependency],
     ) -> Result<Reg, StructuralPatternError> {
+        // A summary of whole inputs is the same for every element, so its union
+        // is formed once and shared instead of rebuilt per element.
+        let whole = summary
+            .iter()
+            .all(crate::SolveCallDependency::is_whole_input)
+            .then(|| self.pure_call_output_element(inputs, output, summary, 0))
+            .transpose()?;
         for element in 0..output.value_type().scalar_count() as usize {
-            let dependency =
-                summary
-                    .iter()
-                    .try_fold(DependencyState::empty(), |dependency, source| {
-                        let source = self.pure_call_input_dependency(
-                            source,
-                            inputs,
-                            output.value_type(),
-                            element,
-                        )?;
-                        Ok::<_, StructuralPatternError>(dependency.union(source))
-                    })?;
+            let dependency = match &whole {
+                Some(dependency) => dependency.clone(),
+                None => self.pure_call_output_element(inputs, output, summary, element)?,
+            };
             self.set(destination, dependency);
             destination = destination
                 .checked_add(1)
                 .ok_or_else(|| dependency_error("pure-call output width overflows", self.span))?;
         }
         Ok(destination)
+    }
+
+    fn pure_call_output_element(
+        &self,
+        inputs: &PureCallInputDependencies<'_>,
+        output: &crate::SolvePureCallOutput,
+        summary: &[crate::SolveCallDependency],
+        element: usize,
+    ) -> Result<DependencyState, StructuralPatternError> {
+        summary
+            .iter()
+            .try_fold(DependencyState::empty(), |dependency, source| {
+                let source =
+                    self.pure_call_input_dependency(source, inputs, output.value_type(), element)?;
+                Ok(dependency.union(source))
+            })
     }
 
     fn pure_call_input_dependency(

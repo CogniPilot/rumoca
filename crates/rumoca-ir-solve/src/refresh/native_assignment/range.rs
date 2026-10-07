@@ -2,12 +2,14 @@
 
 mod dependency;
 mod scalar_tuple;
+mod segments;
 
 use super::*;
 use crate::refresh::assignment_shape::producers::{ProgramPrefix, UniqueProgram};
 use crate::{
     BinaryOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock, ScalarSlot, TensorInputKind,
 };
+use segments::{derive_segments, store_segments, trailing_scalar_tuple};
 
 /// Returned values alone do not prove a call's numerical-failure dependence.
 /// Every complete input cell must be independent of this stage's unknown target.
@@ -117,6 +119,12 @@ pub(super) fn derive(
     targets: &[Option<ScalarSlot>],
     layout: &VarLayout,
 ) -> Checked<Family> {
+    let segments = store_segments(operations);
+    if segments.len() > 1 && !trailing_scalar_tuple(operations, &segments) {
+        return derive_segments(
+            source, outputs, operations, &segments, span, targets, layout,
+        );
+    }
     let (prefix, stores, start, count) = terminal_outputs(operations)?;
     crate::ScalarProgramRegisterFlow::derive(prefix).map_err(|_| {
         NativeRefreshAssignmentRefusal("native tensor prefix has invalid register flow")
@@ -172,6 +180,7 @@ pub(super) fn derive(
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native tensor value projection"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
+            integer_bindings: Default::default(),
             source: NativeStageSource::Continuous {
                 node: source.node() as usize,
             },
@@ -297,30 +306,40 @@ fn isolated_value(
         .ok_or(NativeRefreshAssignmentRefusal(
             "native tensor residual has no exact producer",
         ))?;
-    let Some(LinearOp::TensorBinary {
-        dst_start,
-        op: BinaryOp::Sub,
-        lhs_start,
-        rhs_start,
-        count: residual_count,
-        lhs_stride,
-        rhs_stride,
-        lanes: 1,
-    }) = prefix.operation(position)
-    else {
-        return refused("native tensor residual has no direct elementwise isolator");
+    // An elementwise residual `load - value` (either order): a tensor
+    // difference over the whole store, or one scalar difference.
+    let (lhs, lhs_stride, rhs, rhs_stride) = match prefix.operation(position) {
+        Some(LinearOp::TensorBinary {
+            dst_start,
+            op: BinaryOp::Sub,
+            lhs_start,
+            rhs_start,
+            count: residual_count,
+            lhs_stride,
+            rhs_stride,
+            lanes: 1,
+        }) => {
+            if *dst_start != output || *residual_count != count {
+                return refused("native tensor residual selects a partial producer range");
+            }
+            (*lhs_start, *lhs_stride, *rhs_start, *rhs_stride)
+        }
+        Some(LinearOp::Binary {
+            dst,
+            op: BinaryOp::Sub,
+            lhs,
+            rhs,
+        }) if *dst == output && count == 1 => (*lhs, 1, *rhs, 1),
+        _ => return refused("native tensor residual has no direct elementwise isolator"),
     };
-    if *dst_start != output || *residual_count != count {
-        return refused("native tensor residual selects a partial producer range");
-    }
     let before = prefix
         .before(position)
         .ok_or(NativeRefreshAssignmentRefusal(
             "invalid native tensor prefix",
         ))?;
     for (load, load_stride, value, value_stride) in [
-        (*lhs_start, *lhs_stride, *rhs_start, *rhs_stride),
-        (*rhs_start, *rhs_stride, *lhs_start, *lhs_stride),
+        (lhs, lhs_stride, rhs, rhs_stride),
+        (rhs, rhs_stride, lhs, lhs_stride),
     ] {
         if load_stride == 1
             && exact_target_load(before, load, target)

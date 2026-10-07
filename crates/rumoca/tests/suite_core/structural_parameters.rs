@@ -76,6 +76,71 @@ package Structural
   equation
     der(x) = -x;
   end UnfixedDimension;
+  function triangle
+    input Integer n;
+    output Real y;
+  algorithm
+    y := 0;
+    for i in 1:n loop
+      y := y + i;
+    end for;
+  end triangle;
+  function cappedTriangle
+    input Integer n;
+    output Real y;
+  algorithm
+    y := 0;
+    if n <= 10 then
+      for i in 1:n loop
+        y := y + i;
+      end for;
+    end if;
+  end cappedTriangle;
+  function ramp
+    input Integer n;
+    output Real y[n];
+  algorithm
+    for i in 1:n loop
+      y[i] := i;
+    end for;
+  end ramp;
+  model KeyedArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*triangle(n);
+  end KeyedArgument;
+  model BoundedArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*cappedTriangle(n);
+  end BoundedArgument;
+  model InterfaceArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*sum(ramp(n));
+  end InterfaceArgument;
+  model ModifiedInterfaceArgument
+    extends InterfaceArgument(n = 4);
+  end ModifiedInterfaceArgument;
+  model LiteralKeyedArgument
+    parameter Integer n = 3;
+    Real y;
+  equation
+    y = n*triangle(3);
+  end LiteralKeyedArgument;
+  model UnevaluatedKeyedArgument
+    parameter Integer n = 3 annotation(Evaluate = false);
+    parameter Integer m = n + 1;
+    Real y;
+  equation
+    y = triangle(m);
+  end UnevaluatedKeyedArgument;
   model UnevaluatedRange
     parameter Integer m = 2 annotation(Evaluate = false);
     Real x[3](each start = 1, each fixed = true);
@@ -87,6 +152,15 @@ package Structural
       der(x[i]) = 0;
     end for;
   end UnevaluatedRange;
+  record Sizes
+    Integer n;
+  end Sizes;
+  model UnevaluatedRecordDimension
+    parameter Sizes sizes(n = 2) annotation(Evaluate = false);
+    Real x[sizes.n](each start = 1, each fixed = true);
+  equation
+    der(x) = -x;
+  end UnevaluatedRecordDimension;
 end Structural;
 "#;
 
@@ -195,4 +269,107 @@ fn a_for_range_reading_an_evaluate_false_parameter_is_refused() {
 #[test]
 fn a_size_of_an_input_array_binds_a_structural_parameter() {
     assert_eq!(evaluable(&compile("Structural.InputExtent")), ["f.n"]);
+}
+
+fn final_value(model: &str, name: &str) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &compile(model),
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("the model simulates");
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .expect("the result records the column");
+    *result.data[index].last().expect("a sample")
+}
+
+fn final_value_with(model: &str, overrides: &[(&str, f64)]) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &compile(model),
+        &SimOptions {
+            t_end: 1.0,
+            param_overrides: overrides
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), *value))
+                .collect(),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the model simulates");
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == "y")
+        .expect("the result records y");
+    *result.data[index].last().expect("a sample")
+}
+
+/// MLS 3.7 §11.2.2: a loop range inside a function body is evaluated when the
+/// function runs, so a tunable parameter passed to it stays settable: the
+/// range is lowered over the run-time domain its guard bounds, and setting
+/// the parameter changes the result without recompiling.
+#[test]
+fn a_tunable_loop_bound_argument_stays_settable() {
+    assert!(evaluable(&compile("Structural.BoundedArgument")).is_empty());
+    assert!((final_value_with("Structural.BoundedArgument", &[]) - 12.0).abs() < 1e-12);
+    assert!((final_value_with("Structural.BoundedArgument", &[("n", 4.0)]) - 20.0).abs() < 1e-12);
+}
+
+/// A tunable parameter in a loop bound nothing bounds at run time is refused
+/// rather than frozen at its translation-time value.
+#[test]
+fn an_unbounded_tunable_loop_bound_argument_is_refused() {
+    let error = refusal("Structural.KeyedArgument");
+    assert!(
+        error.contains("function loop domain")
+            && error.contains("tunable parameter passed to the function"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// MLS 3.7 §10.1, §12.2: a declared output dimension fixes the call's result
+/// shape at translation, so an ordinary parameter its argument reads is
+/// structural (evaluable, with a WD001 warning) and an unrelated one stays
+/// settable; a modification still reaches the result.
+#[test]
+fn an_output_dimension_argument_parameter_is_structural() {
+    assert_eq!(evaluable(&compile("Structural.InterfaceArgument")), ["n"]);
+    assert!((final_value("Structural.InterfaceArgument", "y") - 12.0).abs() < 1e-12);
+    assert!((final_value("Structural.ModifiedInterfaceArgument", "y") - 20.0).abs() < 1e-12);
+}
+
+/// A literal keyed argument reads no parameter, so the parameter that scales
+/// the call result stays settable.
+#[test]
+fn a_literal_keyed_argument_leaves_parameters_settable() {
+    assert!(evaluable(&compile("Structural.LiteralKeyedArgument")).is_empty());
+}
+
+/// MLS 3.7 §18.6: an `Evaluate = false` parameter, and a parameter bound to
+/// one, has no translation-time value, so no specialization is keyed on it
+/// and the loop domain it would fix is refused rather than frozen.
+#[test]
+fn a_keyed_argument_reading_an_evaluate_false_parameter_is_refused() {
+    let error = refusal("Structural.UnevaluatedKeyedArgument");
+    assert!(
+        error.contains("function loop domain"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// MLS 3.7 §18.6: `Evaluate = false` on a record parameter applies to the
+/// whole component, so its fields are non-evaluable too and a dimension
+/// reading one is refused rather than folded.
+#[test]
+fn a_dimension_reading_a_field_of_an_evaluate_false_record_is_refused() {
+    let error = refusal("Structural.UnevaluatedRecordDimension");
+    assert!(
+        error.contains("non-evaluable parameter `sizes.n`"),
+        "unexpected refusal: {error}"
+    );
 }

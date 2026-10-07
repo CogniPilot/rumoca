@@ -94,7 +94,7 @@ algorithm
   end for;
 end accumulate;
 ",
-    context: "  parameter Integer n = 3;\n",
+    context: "  final parameter Integer n = 3;\n",
     call: "accumulate({x}, n)",
     rows: 2,
     width: 4,

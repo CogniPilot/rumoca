@@ -72,21 +72,15 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 Ok(expression)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let static_indices = index_expressions
-            .iter()
-            .map(|expression| {
-                let node = self.view.expression(*expression)?;
-                let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(index)) =
-                    node.operation()
-                else {
-                    return None;
-                };
-                index
-                    .checked_sub(1)
-                    .and_then(|index| u32::try_from(index).ok())
-            })
-            .collect::<Option<Vec<_>>>();
-        let dynamic_indices = static_indices.is_none().then(|| {
+        let static_indices = self.literal_indices(&index_expressions);
+        // A literal subscript of a leaf with more axes than subscripts (one
+        // field column of an array of records) selects a view, whose index axes
+        // are registers like any run-time subscript.
+        let needs_registers = static_indices.is_none()
+            || base_types
+                .iter()
+                .any(|base_type| base_type.dimensions().len() != index_expressions.len());
+        let dynamic_indices = needs_registers.then(|| {
             index_expressions
                 .iter()
                 .map(|expression| self.expression(*expression)?.only_register(at))
@@ -135,17 +129,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         }
         let indices = dynamic_indices
             .ok_or(solve::SolveProgramConstructionError::InvalidProjection { provenance: at })?;
-        let mut axes = indices
-            .iter()
-            .copied()
-            .map(solve::ProgramTensorViewAxis::Index)
-            .collect::<Vec<_>>();
-        axes.extend(
-            result_dimensions
-                .iter()
-                .copied()
-                .map(|extent| solve::ProgramTensorViewAxis::Span { origin: 0, extent }),
-        );
+        let axes = leading_index_axes(indices, result_dimensions);
         self.builder.project_view(register, &axes, at)
     }
 
@@ -246,5 +230,43 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             return Err(solve::SolveProgramConstructionError::InvalidProjection { provenance: at });
         }
         Ok(axes)
+    }
+}
+
+/// The view axes of a partial index: one index axis per subscript register,
+/// then a whole span over each trailing dimension (MLS 3.7 section 10.5.3).
+pub(super) fn leading_index_axes<'program>(
+    indices: &[solve::ProgramRegister<'program>],
+    trailing: &[u32],
+) -> Vec<solve::ProgramTensorViewAxis<'program>> {
+    indices
+        .iter()
+        .copied()
+        .map(solve::ProgramTensorViewAxis::Index)
+        .chain(
+            trailing
+                .iter()
+                .map(|&extent| solve::ProgramTensorViewAxis::Span { origin: 0, extent }),
+        )
+        .collect()
+}
+
+impl<'dae> ExpressionLowerer<'_, '_, 'dae> {
+    /// The zero-based values of subscripts that are all integer literals.
+    fn literal_indices(&self, expressions: &[dae::ExprId<'dae>]) -> Option<Vec<u32>> {
+        expressions
+            .iter()
+            .map(|expression| {
+                let node = self.view.expression(*expression)?;
+                let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(index)) =
+                    node.operation()
+                else {
+                    return None;
+                };
+                index
+                    .checked_sub(1)
+                    .and_then(|index| u32::try_from(index).ok())
+            })
+            .collect()
     }
 }

@@ -59,6 +59,10 @@ pub enum NativeEvaluationRefusal {
     IntegerReaderRequiresTypedRegisters,
     /// An indexed, tensor or compact family read of a derived output.
     DerivedOutputCompactRead,
+    /// An operation whose register reads cannot be computed while a
+    /// register holds an Integer input view or Integer call result, so no
+    /// exact binding or check can be proven for it.
+    UnresolvedTypedRead,
 }
 
 impl std::fmt::Display for NativeEvaluationRefusal {
@@ -99,6 +103,9 @@ impl std::fmt::Display for NativeEvaluationRefusal {
             }
             Self::DerivedOutputCompactRead => {
                 "a derived discrete output is read through an indexed, tensor or compact family load"
+            }
+            Self::UnresolvedTypedRead => {
+                "an operation with no computable read set may read an Integer value held in a Real register"
             }
         })
     }
@@ -146,6 +153,11 @@ pub enum NativeIntegerSource {
         cell: u32,
     },
     Literal(i64),
+    /// The typed Integer input lane at `lane_offset` bytes of the typed lane
+    /// buffer (SPEC_0040 SOLVE-C69).
+    Input {
+        lane_offset: usize,
+    },
 }
 
 /// One derived-discrete output: Solve discrete row `row` computed into private
@@ -200,7 +212,10 @@ pub(super) struct DerivedDiscrete {
 /// Classify every discrete and event owner of `problem`; derived outputs are
 /// numbered after the `y` solver coordinates in P-slot order, and their lanes
 /// are packed 8-byte values first, then bytes.
-pub(super) fn classify(problem: &SolveProblem) -> Result<DerivedDiscrete, NativeEvaluationRefusal> {
+pub(super) fn classify(
+    problem: &SolveProblem,
+    inputs: &super::typed_inputs::TypedInputs,
+) -> Result<DerivedDiscrete, NativeEvaluationRefusal> {
     refuse_event_owners(problem)?;
     let discrete = &problem.discrete;
     let rhs = &discrete.rhs;
@@ -227,7 +242,7 @@ pub(super) fn classify(problem: &SolveProblem) -> Result<DerivedDiscrete, Native
             SolveVariableValueKind::String => return Err(NativeEvaluationRefusal::StringOutput),
         };
         let integer_source = match lane {
-            NativeOutputLane::Integer => Some(integer_source(rhs, row)?),
+            NativeOutputLane::Integer => Some(integer_source(rhs, row, inputs)?),
             NativeOutputLane::Real | NativeOutputLane::Boolean => {
                 single_output_value(rhs, row)?;
                 None
@@ -378,11 +393,12 @@ fn single_output_value(
 }
 
 /// The exact Integer source of `row`: the defining operation of its stored
-/// register must be an Integer pure-call output cell or an integral literal
-/// within the exact Binary64 range.
+/// register must be an Integer pure-call output cell, a load of a typed
+/// Integer input, or an integral literal within the exact Binary64 range.
 fn integer_source(
     rhs: &ScalarProgramBlock,
     row: usize,
+    inputs: &super::typed_inputs::TypedInputs,
 ) -> Result<NativeIntegerSource, NativeEvaluationRefusal> {
     let (program, value) = single_output_value(rhs, row)?;
     let operations = rhs
@@ -403,6 +419,10 @@ fn integer_source(
         {
             Ok(NativeIntegerSource::Literal(*value as i64))
         }
+        LinearOp::LoadP { index, .. } => inputs
+            .integer_lane(*index)
+            .map(|lane_offset| NativeIntegerSource::Input { lane_offset })
+            .ok_or(NativeEvaluationRefusal::IntegerComputedInReal),
         LinearOp::PureCall {
             dst_start, site, ..
         } => {

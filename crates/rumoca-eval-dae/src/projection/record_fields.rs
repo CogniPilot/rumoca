@@ -1,15 +1,63 @@
 //! Record field projection: field selection through calls, arrays,
-//! comprehensions and indexed record aggregates.
+//! comprehensions, indexed record aggregates and enclosing records.
 use super::*;
+
+/// The record field ordinals one projection selects, outermost first.
+///
+/// A projection of a field of a field (`s.identity.weight`) selects a path:
+/// its scalar index runs over the extents of the projected value, then the
+/// extents of every field along the path, then the scalars of the last
+/// field, row major. A single field is the common case and holds no heap
+/// allocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum FieldPath {
+    Field(usize),
+    Nested(Arc<[usize]>),
+}
+
+impl FieldPath {
+    /// The field the path selects first.
+    pub(super) fn head(&self) -> usize {
+        match self {
+            Self::Field(field) => *field,
+            Self::Nested(path) => path[0],
+        }
+    }
+
+    /// The path below the first field, `None` for a single field.
+    fn rest(&self) -> Option<Self> {
+        match self {
+            Self::Field(_) => None,
+            Self::Nested(path) => Some(Self::from_ordinals(&path[1..])),
+        }
+    }
+
+    /// `field` followed by this path.
+    fn below(field: usize, path: &Self) -> Self {
+        let mut ordinals = vec![field];
+        match path {
+            Self::Field(next) => ordinals.push(*next),
+            Self::Nested(rest) => ordinals.extend(rest.iter().copied()),
+        }
+        Self::Nested(ordinals.into())
+    }
+
+    fn from_ordinals(ordinals: &[usize]) -> Self {
+        match ordinals {
+            [field] => Self::Field(*field),
+            _ => Self::Nested(ordinals.into()),
+        }
+    }
+}
 
 impl<'dae> Projection<'_, 'dae> {
     pub(super) fn record_field(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
-        let fragment = self.begin_parameter_fragment(expression, Some(field), scalar_index);
+        let fragment = self.begin_parameter_fragment(expression, Some(field.clone()), scalar_index);
         if let parameter_fragments::Start::Cached(dependencies)
         | parameter_fragments::Start::Imported(dependencies) = &fragment
         {
@@ -29,7 +77,7 @@ impl<'dae> Projection<'_, 'dae> {
     pub(super) fn record_field_uncached(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
         let node = self.node(expression);
@@ -38,16 +86,30 @@ impl<'dae> Projection<'_, 'dae> {
         if let dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
         | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } = node.operation()
         {
-            return self.function_fold_dependency(fold, carried, Some(field), scalar_index);
+            return self.function_fold_dependency(fold, carried, Some(field.clone()), scalar_index);
         }
-        if !self.visit_expression_once(expression, Some(field), scalar_index) {
+        if !self.visit_expression_once(expression, Some(field.clone()), scalar_index) {
             return Ok(());
         }
         match node.operation() {
-            dae::ExpressionOperation::Record(fields) => self.expression(
-                fields
-                    .get(field)
-                    .expect("checked record field ordinal is in range"),
+            dae::ExpressionOperation::Record(fields) => {
+                let value = fields
+                    .get(field.head())
+                    .expect("checked record field ordinal is in range");
+                match field.rest() {
+                    None => self.expression(value, scalar_index),
+                    Some(rest) => self.record_field(value, &rest, scalar_index),
+                }
+            }
+            // A field of an enclosing record selects the path through it:
+            // the enclosing value's extents, then this field's extents, lead
+            // the scalar index exactly as they lead the selected path's.
+            dae::ExpressionOperation::Field {
+                base,
+                field: enclosing,
+            } => self.record_field(
+                base,
+                &FieldPath::below(enclosing as usize, field),
                 scalar_index,
             ),
             dae::ExpressionOperation::Call {
@@ -91,14 +153,14 @@ impl<'dae> Projection<'_, 'dae> {
                 value,
                 subscripts,
             } => self.array_update_field(base, value, subscripts, field, scalar_index),
-            _ => Err(unsupported_record_operation(node, field)),
+            _ => Err(unsupported_record_operation(node, field.head())),
         }
     }
 
     pub(super) fn function_parameter_field(
         &mut self,
         parameter: dae::FunctionParameterId<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
         span: Span,
     ) -> Result<(), ProjectionError> {
@@ -125,7 +187,7 @@ impl<'dae> Projection<'_, 'dae> {
                     FunctionParameterDependency::RecordField {
                         activation: self.activation,
                         parameter: parameter.ordinal(),
-                        field,
+                        field: field.clone(),
                         scalar: scalar_index,
                     },
                     span,
@@ -137,7 +199,7 @@ impl<'dae> Projection<'_, 'dae> {
     pub(super) fn record_array_field(
         &mut self,
         elements: dae::ExpressionOperands<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
         let first = elements.get(0).expect("checked record array is nonempty");
@@ -152,7 +214,7 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         domain: dae::DomainId<'dae>,
         body: dae::ExprId<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
         let body_count = self.record_field_scalar_count(body, field);
@@ -176,7 +238,7 @@ impl<'dae> Projection<'_, 'dae> {
         indexed: dae::ExprId<'dae>,
         base: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
         let field_width = self.record_field_width(indexed, field);
@@ -205,7 +267,7 @@ impl<'dae> Projection<'_, 'dae> {
     pub(super) fn all_record_field_scalars(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: usize,
+        field: &FieldPath,
     ) -> Result<(), ProjectionError> {
         for scalar in 0..self.record_field_scalar_count(expression, field) {
             self.record_field(expression, field, scalar)?;
@@ -213,27 +275,44 @@ impl<'dae> Projection<'_, 'dae> {
         Ok(())
     }
 
+    /// Scalars the path selects over every element of `expression`.
     pub(super) fn record_field_scalar_count(
         &self,
         expression: dae::ExprId<'dae>,
-        field: usize,
+        field: &FieldPath,
     ) -> usize {
-        let layout = self.record_layout(expression, field);
-        layout.outer_count() * layout.field_width()
+        self.path_scalar_count(self.node(expression).value_type_id(), field)
     }
 
-    pub(super) fn record_field_width(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
-        self.record_layout(expression, field).field_width()
-    }
-
-    pub(super) fn record_layout(
+    /// Scalars the path selects in one record element of `expression`.
+    pub(super) fn record_field_width(
         &self,
         expression: dae::ExprId<'dae>,
+        field: &FieldPath,
+    ) -> usize {
+        let value_type = self.node(expression).value_type_id();
+        let (layout, _) = self.record_layout(value_type, field.head());
+        self.path_scalar_count(value_type, field) / layout.outer_count()
+    }
+
+    fn path_scalar_count(&self, value_type: dae::ValueTypeId<'dae>, field: &FieldPath) -> usize {
+        let (layout, field_type) = self.record_layout(value_type, field.head());
+        match field.rest() {
+            None => layout.outer_count() * layout.field_width(),
+            Some(rest) => layout.outer_count() * self.path_scalar_count(field_type, &rest),
+        }
+    }
+
+    /// The packing layout of one field and the field's declared type.
+    fn record_layout(
+        &self,
+        value_type: dae::ValueTypeId<'dae>,
         field: usize,
-    ) -> dae::RecordFieldLayout {
-        let node = self.node(expression);
+    ) -> (dae::RecordFieldLayout, dae::ValueTypeId<'dae>) {
         self.view
-            .record_field_layout(node.value_type_id(), field)
+            .record_field_layout(value_type, field)
+            .zip(self.view.record_field(value_type, field))
+            .map(|(layout, (_, field_type))| (layout, field_type))
             .expect("checked record projection has a finite field layout")
     }
 }

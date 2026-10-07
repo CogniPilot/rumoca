@@ -410,7 +410,7 @@ fn validate_algorithm_statements(
                 ) || (matches!(target_role, Some(PlannedRole::Aggregate))
                     && is_direct_record_call_assignment(comp, value))
                 {
-                    validate_expression(value, roles, states)?;
+                    validate_model_algorithm_expression(value, roles, states, model_values)?;
                 } else if structured_assignment_pairs(&target, value, roles).is_none() {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
@@ -544,7 +544,7 @@ fn validate_algorithm_statements(
                     ));
                 }
                 for argument in args {
-                    validate_expression(argument, roles, states)?;
+                    validate_model_algorithm_expression(argument, roles, states, model_values)?;
                 }
                 for output in outputs.iter().flatten() {
                     validate_function_call_output(output, roles)?;
@@ -557,10 +557,10 @@ fn validate_algorithm_statements(
                 span,
             } => {
                 require_span(*span, "algorithm assertion")?;
-                validate_expression(condition, roles, states)?;
-                validate_expression(message, roles, states)?;
+                validate_model_algorithm_expression(condition, roles, states, model_values)?;
+                validate_model_algorithm_expression(message, roles, states, model_values)?;
                 if let Some(level) = level {
-                    validate_expression(level, roles, states)?;
+                    validate_model_algorithm_expression(level, roles, states, model_values)?;
                 }
             }
             _ => {

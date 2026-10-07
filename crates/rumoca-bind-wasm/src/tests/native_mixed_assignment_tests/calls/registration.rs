@@ -157,12 +157,11 @@ fn function_loops_execute_in_the_native_program() {
             parameters[slot(&artifact, &name("sourcePoint"), "P")] = source[i][j];
             parameters[slot(&artifact, &name("targetPoint"), "P")] = target[i][j];
         }
-        parameters[slot(&artifact, &format!("pairEnabled[{}]", i + 1), "P")] =
-            f64::from(u8::from(enabled[i]));
+        execution.set_input(&format!("pairEnabled[{}]", i + 1), i64::from(enabled[i]));
     }
     let output = |values: &[f64], name: &str| values[slot(&artifact, name, "Y")];
     for active in [40, 0] {
-        parameters[slot(&artifact, "activeCount", "P")] = active as f64;
+        execution.set_input("activeCount", active as i64);
         let values = execution.run(&parameters);
         let (accepted, translation, rms, count) = expected_fit(&source, &target, &enabled, active);
         assert_eq!(output(&values, "accepted"), accepted);

@@ -142,6 +142,49 @@ fn a_literal_integer_discrete_row_is_one_typed_derived_output() {
 }
 
 #[test]
+fn an_integer_external_input_is_one_typed_input_lane() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::Integer;
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_declarations[0] = SolveVariableDeclaration::new(
+        SolveVariableStorageRole::DiscreteValue,
+        SolveVariableValueKind::Integer,
+    );
+    problem
+        .solve_layout
+        .variable_storage_runs
+        .push(SolveVariableStorageRun {
+            base: scalar_slot_p(2),
+            scalar_count: 1,
+            role: SolveVariableStorageRole::ExternalInput,
+            value_kind: SolveVariableValueKind::Integer,
+        });
+    problem
+        .solve_layout
+        .variable_declarations
+        .push(SolveVariableDeclaration::new(
+            SolveVariableStorageRole::ExternalInput,
+            SolveVariableValueKind::Integer,
+        ));
+    problem.solve_layout.compiled_parameter_len = 3;
+    issue_native_assignment_schedule(&mut problem);
+    let owners = &problem.continuous.refresh_owners;
+    let schedule = owners.native_assignment_schedule().unwrap_or_else(|| {
+        panic!(
+            "an Integer input beside a literal row evaluates natively: {:?}",
+            owners.native_assignment_refusal()
+        )
+    });
+    let [lane] = schedule.input_lanes() else {
+        panic!("one Integer input is one typed input lane");
+    };
+    assert_eq!(lane.p_index(), 2);
+    assert_eq!(lane.lane(), NativeOutputLane::Integer);
+    assert_eq!(lane.lane_offset(), 0);
+    assert_eq!(schedule.input_lane_bytes(), 8);
+}
+
+#[test]
 fn event_iteration_contract_accepts_complete_typed_reverse_bijection() {
     event_iteration_contract_fixture()
         .validate_shape_contract()

@@ -352,6 +352,9 @@ struct BodyEmitter<'a> {
     /// Copy one Integer call cell into its typed output lane after the call
     /// at this operation of the stage program.
     integer_capture: Option<IntegerCapture>,
+    /// The native stage being emitted, whose issued exact Integer bindings
+    /// (SOLVE-C69) its top-level pure calls follow.
+    native_stage: Option<&'a rumoca_ir_solve::NativeRefreshAssignmentStage>,
 }
 
 #[derive(Clone, Copy)]
@@ -380,6 +383,7 @@ impl<'a> BodyEmitter<'a> {
             operation_ordinal: 0,
             region_path: Vec::new(),
             integer_capture: None,
+            native_stage: None,
         }
     }
 

@@ -44,6 +44,16 @@ impl RecordEquationPlan {
     }
 }
 
+/// One step from a record-valued result to one of its leaf coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::construction) enum RecordProjectionStep {
+    /// The field with this ordinal in the record layout.
+    Field(usize),
+    /// The element at these 1-based subscripts of an array-of-records value;
+    /// Flat holds each element of a record-array field as its own instance.
+    Element(Box<[i64]>),
+}
+
 pub(super) fn analyze_record_equations(
     flat: &flat::Model,
     equations: &[flat::Equation],
@@ -197,6 +207,17 @@ fn validate_constructor_layout(
     call: RecordCall<'_>,
     equation_span: Span,
 ) -> Result<(), ToDaeError> {
+    let constructor = equation_constructor(flat, record, call, equation_span)?;
+    validate_constructor_fields(flat, record, constructor)
+}
+
+/// The constructor's inputs are the Flat record's fields, in order, by
+/// identity, name and shape.
+fn validate_constructor_fields(
+    flat: &flat::Model,
+    record: &flat::RecordInstance,
+    constructor: &rumoca_core::Function,
+) -> Result<(), ToDaeError> {
     let record_type = flat.record_types.get(&record.type_def_id).ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "record equation",
@@ -204,7 +225,6 @@ fn validate_constructor_layout(
             record.source_span,
         )
     })?;
-    let constructor = equation_constructor(flat, record, call, equation_span)?;
     let same_layout = constructor.inputs.len() == record_type.fields.len()
         && constructor
             .inputs
@@ -225,9 +245,52 @@ fn validate_constructor_layout(
     Ok(())
 }
 
+/// The field plans of a whole record receiving one record-valued result of a
+/// function: every leaf coordinate of the record reads its field projection
+/// of the result (MLS 3.7 section 12.4.3 with section 8.3.1).
+pub(in crate::construction) fn record_result_fields(
+    flat: &flat::Model,
+    record: &flat::RecordInstance,
+    name: &VarName,
+    result: &rumoca_core::FunctionParam,
+    span: Span,
+) -> Result<Vec<RecordEquationFieldPlan>, ToDaeError> {
+    if result.type_class != Some(rumoca_core::ClassType::Record)
+        || result.type_def_id != Some(record.type_def_id)
+        || !result.dimensions().is_empty()
+        || !record.dims.is_empty()
+    {
+        return Err(ToDaeError::unsupported_flat(
+            "record equation",
+            "a receiving record and its function result have distinct resolved type identities or shapes",
+            span,
+        ));
+    }
+    let constructor = rumoca_core::resolve_record_constructor(
+        flat.functions.values(),
+        &result.type_name,
+        record.type_def_id,
+    )
+    .map_err(|error| {
+        ToDaeError::unsupported_flat(
+            "record equation",
+            format!("`{}` has no constructor layout: {error}", record.type_name),
+            record.source_span,
+        )
+    })?;
+    validate_constructor_fields(flat, record, constructor)?;
+    Ok(record_leaves(flat, record, name, span)?
+        .into_iter()
+        .map(|leaf| RecordEquationFieldPlan {
+            target: leaf.coordinate,
+            value: RecordEquationFieldValue::AggregateProjection(leaf.projection),
+        })
+        .collect())
+}
+
 struct RecordLeaf {
     coordinate: VarName,
-    projection: Box<[usize]>,
+    projection: Box<[RecordProjectionStep]>,
 }
 
 fn record_leaves(
@@ -245,11 +308,10 @@ fn record_leaves(
     })?;
     let mut fields = Vec::new();
     for (ordinal, field) in layout.fields.iter().enumerate() {
-        let child = VarName::new(format!("{}.{}", name.as_str(), field.name));
-        collect_record_equation_leaves(
+        collect_field_leaves(
             flat,
-            &child,
-            vec![ordinal],
+            (name, ordinal, field),
+            (Vec::new(), &[]),
             span,
             &mut HashSet::new(),
             &mut fields,
@@ -277,6 +339,7 @@ pub(in crate::construction) fn reference_leaf_coordinates(
         flat,
         name,
         Vec::new(),
+        &[],
         record.source_span,
         &mut HashSet::new(),
         &mut leaves,
@@ -284,15 +347,27 @@ pub(in crate::construction) fn reference_leaf_coordinates(
     Ok(leaves.into_iter().map(|leaf| leaf.coordinate).collect())
 }
 
+/// `prefix` holds the extents of the enclosing arrays of records: Flat holds
+/// an array of records as one column per leaf field, whose leading extents
+/// are the array's (struct of arrays), and a field projection of an array of
+/// records is that column (MLS 3.7 §10.6.1).
 fn collect_record_equation_leaves(
     flat: &flat::Model,
     name: &VarName,
-    projection: Vec<usize>,
+    projection: Vec<RecordProjectionStep>,
+    prefix: &[i64],
     span: Span,
     active: &mut HashSet<DefId>,
     fields: &mut Vec<RecordLeaf>,
 ) -> Result<(), ToDaeError> {
-    if flat.variables.contains_key(name) {
+    if let Some(variable) = flat.variables.get(name) {
+        if !variable.dims.starts_with(prefix) {
+            return Err(ToDaeError::unsupported_flat(
+                "record equation",
+                format!("`{name}` is not one column of extents {prefix:?} of its array of records"),
+                span,
+            ));
+        }
         fields.push(RecordLeaf {
             coordinate: name.clone(),
             projection: projection.into_boxed_slice(),
@@ -306,13 +381,7 @@ fn collect_record_equation_leaves(
             span,
         )
     })?;
-    if !instance.dims.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "record equation",
-            format!("nested record array `{name}` requires a compact record-family owner"),
-            span,
-        ));
-    }
+    let prefix = [prefix, instance.dims.as_slice()].concat();
     if !active.insert(instance.type_def_id) {
         return Err(ToDaeError::unsupported_flat(
             "record equation",
@@ -331,13 +400,76 @@ fn collect_record_equation_leaves(
             )
         })?;
     for (ordinal, field) in layout.fields.iter().enumerate() {
-        let child = VarName::new(format!("{name}.{}", field.name));
-        let mut child_projection = projection.clone();
-        child_projection.push(ordinal);
-        collect_record_equation_leaves(flat, &child, child_projection, span, active, fields)?;
+        collect_field_leaves(
+            flat,
+            (name, ordinal, field),
+            (projection.clone(), &prefix),
+            span,
+            active,
+            fields,
+        )?;
     }
     active.remove(&instance.type_def_id);
     Ok(())
+}
+
+/// The leaves of field `ordinal` of the record `parent`. Flat holds an array
+/// of records declared inside a record as one instance per element
+/// (`parent.field[i]`, row-major), so such a field is read element by element:
+/// each element is one `Element` step of the projection, then its own fields.
+fn collect_field_leaves(
+    flat: &flat::Model,
+    (parent, ordinal, field): (&VarName, usize, &flat::RecordField),
+    (mut projection, prefix): (Vec<RecordProjectionStep>, &[i64]),
+    span: Span,
+    active: &mut HashSet<DefId>,
+    fields: &mut Vec<RecordLeaf>,
+) -> Result<(), ToDaeError> {
+    let child = VarName::new(format!("{parent}.{}", field.name));
+    projection.push(RecordProjectionStep::Field(ordinal));
+    let held_whole =
+        flat.variables.contains_key(&child) || flat.record_instances.contains_key(&child);
+    if held_whole || field.dims.is_empty() {
+        return collect_record_equation_leaves(
+            flat, &child, projection, prefix, span, active, fields,
+        );
+    }
+    for subscripts in element_subscripts(&field.dims) {
+        let label = subscripts
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let element = VarName::new(format!("{child}[{label}]"));
+        let mut element_projection = projection.clone();
+        element_projection.push(RecordProjectionStep::Element(subscripts.into_boxed_slice()));
+        collect_record_equation_leaves(
+            flat,
+            &element,
+            element_projection,
+            prefix,
+            span,
+            active,
+            fields,
+        )?;
+    }
+    Ok(())
+}
+
+/// Every 1-based subscript tuple of an array of extents `dims`, row-major.
+fn element_subscripts(dims: &[i64]) -> Vec<Vec<i64>> {
+    dims.iter().fold(vec![Vec::new()], |tuples, &extent| {
+        tuples
+            .into_iter()
+            .flat_map(|tuple| {
+                (1..=extent).map(move |index| {
+                    let mut next = tuple.clone();
+                    next.push(index);
+                    next
+                })
+            })
+            .collect()
+    })
 }
 
 fn equation_constructor<'flat>(

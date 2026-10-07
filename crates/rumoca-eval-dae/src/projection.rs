@@ -11,6 +11,7 @@ mod merge_profile_tests;
 mod parameter_fragments;
 mod query;
 mod record_fields;
+use record_fields::FieldPath;
 mod scalar_selection;
 #[cfg(test)]
 mod tests;
@@ -146,6 +147,7 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
+    parameter_eligibility: parameter_fragments::SharedEligibility,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
     #[cfg(test)]
@@ -318,7 +320,7 @@ struct FunctionFoldDependency {
     function: u32,
     fold: u32,
     carried: u32,
-    field: Option<usize>,
+    field: Option<FieldPath>,
     scalar: usize,
 }
 
@@ -347,7 +349,7 @@ struct FoldVisit {
 struct FunctionResultDependency {
     function: u32,
     output: u32,
-    field: Option<usize>,
+    field: Option<FieldPath>,
     scalar: usize,
 }
 
@@ -411,7 +413,7 @@ enum FunctionParameterDependency {
     RecordField {
         activation: Activation,
         parameter: u32,
-        field: usize,
+        field: FieldPath,
         scalar: usize,
     },
 }
@@ -442,7 +444,7 @@ impl FunctionSummaryCapture<'_> {
 struct ScalarExpressionDependency {
     activation: Activation,
     expression: u32,
-    field: Option<usize>,
+    field: Option<FieldPath>,
     scalar: usize,
     domain_context: domain_context::DomainContextId,
 }
@@ -489,7 +491,7 @@ impl<'dae> Projection<'_, 'dae> {
                 Ok(())
             }
             dae::ExpressionOperation::Field { base, field } => {
-                self.record_field(base, field as usize, scalar_index)
+                self.record_field(base, &FieldPath::Field(field as usize), scalar_index)
             }
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.comprehension(domain, body, scalar_index)
@@ -573,7 +575,7 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         carried: u32,
-        field: Option<usize>,
+        field: Option<FieldPath>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         if self.fold_summary_capture(fold.function()).is_some() {
@@ -586,14 +588,14 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         carried: u32,
-        field: Option<usize>,
+        field: Option<FieldPath>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         let dependency = FunctionFoldDependency {
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried,
-            field,
+            field: field.clone(),
             scalar,
         };
         let fold_view = self
@@ -652,7 +654,7 @@ impl<'dae> Projection<'_, 'dae> {
                 .initial_values()
                 .rhs(carried)
                 .expect("checked fold carried ordinal has an initial value");
-            self.projected_value(initial, field, scalar)?;
+            self.projected_value(initial, field.as_ref(), scalar)?;
             let domain = self
                 .view
                 .domain(fold_domain)
@@ -667,7 +669,7 @@ impl<'dae> Projection<'_, 'dae> {
                 .expect("checked fold domain remains representable");
             for point in points {
                 self.domain_contexts.push(fold_domain, point);
-                let result = self.projected_value(update, field, scalar);
+                let result = self.projected_value(update, field.as_ref(), scalar);
                 self.domain_contexts.pop();
                 result?;
             }
@@ -747,7 +749,7 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         node: &fold_graph::FoldNode<'dae>,
     ) -> Result<(), ProjectionError> {
-        self.projected_value(node.initial, node.field, node.scalar)?;
+        self.projected_value(node.initial, node.field.as_ref(), node.scalar)?;
         if self.project_indexed_write_fold(node)? {
             return Ok(());
         }
@@ -764,7 +766,7 @@ impl<'dae> Projection<'_, 'dae> {
             .expect("checked fold domain remains representable");
         for point in points {
             self.domain_contexts.push(fold.domain(), point);
-            let projected = self.projected_value(node.update, node.field, node.scalar);
+            let projected = self.projected_value(node.update, node.field.as_ref(), node.scalar);
             self.domain_contexts.pop();
             projected?;
         }
@@ -790,7 +792,7 @@ impl<'dae> Projection<'_, 'dae> {
     fn projected_value(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: Option<usize>,
+        field: Option<&FieldPath>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         match field {
@@ -997,7 +999,7 @@ impl<'dae> Projection<'_, 'dae> {
         function: dae::FunctionId<'dae>,
         output: u32,
         arguments: dae::ExpressionOperands<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar: usize,
         span: Span,
     ) -> Result<(), ProjectionError> {
@@ -1016,7 +1018,7 @@ impl<'dae> Projection<'_, 'dae> {
         let dependency = FunctionResultDependency {
             function: function.index(),
             output,
-            field: Some(field),
+            field: Some(field.clone()),
             scalar,
         };
         self.project_function_result(dependency, function, arguments, span)
@@ -1127,8 +1129,8 @@ impl<'dae> Projection<'_, 'dae> {
         arguments: &[dae::ExprId<'dae>],
         span: Span,
     ) -> Result<(), ProjectionError> {
-        match *parameter {
-            FunctionParameterDependency::Scalar {
+        match parameter {
+            &FunctionParameterDependency::Scalar {
                 activation,
                 parameter,
                 scalar,
@@ -1147,8 +1149,9 @@ impl<'dae> Projection<'_, 'dae> {
                 field,
                 scalar,
             } => {
+                let (activation, scalar) = (*activation, *scalar);
                 let argument = arguments
-                    .get(parameter as usize)
+                    .get(*parameter as usize)
                     .copied()
                     .ok_or(ProjectionError::FunctionRecursion { span })?;
                 self.with_activation(activation, |projection| {
@@ -1186,14 +1189,16 @@ impl<'dae> Projection<'_, 'dae> {
             cacheable: true,
             visited: visited::Visited::default(),
             folds: fold_graph::FoldGraph::default(),
-            fragments: parameter_fragments::ParameterFragments::default(),
+            fragments: parameter_fragments::ParameterFragments::new(std::rc::Rc::clone(
+                &self.cache.parameter_eligibility,
+            )),
             sweeps: literal_update_sweeps::LiteralUpdateSweeps::default(),
         });
         self.push_frame(FunctionFrame::Summary {
             function,
             integers: integers.to_vec(),
         });
-        let projected = match dependency.field {
+        let projected = match &dependency.field {
             Some(field) => self.record_field(result, field, dependency.scalar),
             None => self.expression(result, dependency.scalar),
         }
@@ -1245,7 +1250,7 @@ impl<'dae> Projection<'_, 'dae> {
             function,
             arguments,
         });
-        let projected = match dependency.field {
+        let projected = match &dependency.field {
             Some(field) => self.record_field(result, field, dependency.scalar),
             None => self.expression(result, dependency.scalar),
         };
@@ -1274,7 +1279,7 @@ impl<'dae> Projection<'_, 'dae> {
     fn visit_expression_once(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: Option<usize>,
+        field: Option<FieldPath>,
         scalar: usize,
     ) -> bool {
         let dependency = ScalarExpressionDependency {
@@ -1319,7 +1324,7 @@ impl<'dae> Projection<'_, 'dae> {
     fn conditional_value(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
-        field: Option<usize>,
+        field: Option<&FieldPath>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         self.walk_conditional(operands, |projection, value| {

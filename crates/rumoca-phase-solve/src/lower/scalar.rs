@@ -1378,10 +1378,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 let (element, element_scalar) = self.select_array(elements, scalar);
                 self.expression(element, element_scalar)
             }
-            dae::ExpressionOperation::Record(_) => Err(LowerError::contract(
-                "record value escaped a checked field projection",
-                node.provenance().span(),
-            )),
+            dae::ExpressionOperation::Record(_) => {
+                self.record_value_lane(expression, scalar, node.provenance().span())
+            }
             dae::ExpressionOperation::Field { base, field } => {
                 self.record_field(base, field as usize, scalar, node.provenance().span())
             }

@@ -9,6 +9,7 @@ mod capacity;
 mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
+mod parameter_static;
 mod row_analysis;
 mod schedule;
 mod source_catalog;
@@ -39,6 +40,9 @@ use row_analysis::{
     AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
 };
 
+#[cfg(test)]
+use parameter_static::parameter_static_refresh_program;
+use parameter_static::parameter_static_refresh_targets;
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
     RefreshStage,
@@ -1186,9 +1190,18 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
             span,
         });
     };
-    let reads = AssignmentYReads::new(program, shape);
-    for dependency in row_y_input_ranges(program).into_iter().flatten() {
-        if dependency >= state_count && reads.reads(dependency) {
+    // The assignment reads exactly the footprint of its value registers over
+    // its expression prefix; a prefix the program does not hold, or an
+    // unbounded register, reads every input (fail closed).
+    let footprint = program.get(..shape.expr_eval_len()).and_then(|prefix| {
+        solve::ScalarProgramYDependency::new(prefix).footprint(shape.value_registers())
+    });
+    let reads: Box<dyn Iterator<Item = usize>> = match &footprint {
+        Some(footprint) => Box::new(footprint.indices()),
+        None => Box::new(row_y_input_ranges(program).into_iter().flatten()),
+    };
+    for dependency in reads {
+        if dependency >= state_count {
             reserve_refresh_vec_capacity(stack, 1, "exact assignment dependency stack", span)?;
             stack.push(dependency);
         }
@@ -1324,6 +1337,7 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         // complete seed schedule is dependency-certified.
         plan.simultaneous_plan.clone()
     };
+    let mut dependencies = RowDependencyCache::default();
     plan.value_stages = build_refresh_stages(
         &plan.simultaneous_plan,
         &plan.simultaneous_block_indices,
@@ -1332,7 +1346,13 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         plan.causal_solution_certified,
         |row, targets| {
             block.source_program(row.source()).map(|operations| {
-                refresh_row_dependency_positions(row, operations, state_count, targets)
+                refresh_row_dependency_positions(
+                    row,
+                    operations,
+                    state_count,
+                    targets,
+                    &mut dependencies,
+                )
             })
         },
     )
@@ -1341,128 +1361,6 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         span,
     })?;
     Ok(())
-}
-
-fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
-    plan: &RefreshPlan,
-    block: &A,
-    state_count: usize,
-    continuous_static_parameters: ContinuousStaticParameters,
-) -> BTreeSet<usize> {
-    // Begin with the complete algebraic candidate set and remove every target
-    // whose dependency closure reaches time, a state, or a non-candidate.
-    // This greatest-fixed-point direction is load-bearing for parameter-only
-    // algebraic loops: a closed simultaneous block can be static even though
-    // none of its members is independently orderable from parameters first.
-    let candidates = plan
-        .causal_rows()
-        .iter()
-        .map(|refresh_row| {
-            let target = refresh_row.target_index();
-            let dependencies = block
-                .source_program(refresh_row.source())
-                .and_then(ParameterStaticDependencies::derive);
-            (target, dependencies)
-        })
-        .collect::<Vec<_>>();
-    let mut static_targets = candidates
-        .iter()
-        .map(|(target, _)| *target)
-        .collect::<BTreeSet<_>>();
-    loop {
-        let rejected = candidates
-            .iter()
-            .filter(|(target, _)| static_targets.contains(target))
-            .filter(|(target, dependencies)| {
-                dependencies.as_ref().is_none_or(|dependencies| {
-                    !dependencies.is_parameter_static(
-                        *target,
-                        state_count,
-                        &static_targets,
-                        continuous_static_parameters,
-                    )
-                })
-            })
-            .map(|(target, _)| *target)
-            .collect::<Vec<_>>();
-        if rejected.is_empty() {
-            return static_targets;
-        }
-        for target in rejected {
-            static_targets.remove(&target);
-        }
-    }
-}
-
-struct ParameterStaticDependencies {
-    y: Vec<BTreeSet<usize>>,
-    parameters: Vec<BTreeSet<usize>>,
-    time: Vec<bool>,
-    seed: Vec<bool>,
-    effect: Vec<bool>,
-}
-
-impl ParameterStaticDependencies {
-    fn derive(program: &[solve::LinearOp]) -> Option<Self> {
-        Some(Self {
-            y: solve::StructuralPattern::derive_output_y_dependencies(program, None).ok()?,
-            parameters: solve::StructuralPattern::derive_output_p_dependencies(program, None)
-                .ok()?,
-            time: solve::StructuralPattern::derive_output_time_dependencies(program, None).ok()?,
-            seed: solve::StructuralPattern::derive_output_seed_dependencies(program, None).ok()?,
-            effect: solve::StructuralPattern::derive_output_effect_dependencies(program, None)
-                .ok()?,
-        })
-    }
-
-    fn is_parameter_static(
-        &self,
-        target_index: usize,
-        state_count: usize,
-        static_targets: &BTreeSet<usize>,
-        continuous_static_parameters: ContinuousStaticParameters,
-    ) -> bool {
-        let parameters_are_static = self
-            .parameters
-            .iter()
-            .flatten()
-            .all(|index| continuous_static_parameters.contains(*index));
-        let solver_values_are_static = self.y.iter().flatten().all(|index| {
-            parameter_static_y_index(*index, target_index, state_count, static_targets)
-        });
-        parameters_are_static
-            && solver_values_are_static
-            && self.time.iter().all(|dependency| !dependency)
-            && self.seed.iter().all(|dependency| !dependency)
-            && self.effect.iter().all(|dependency| !dependency)
-    }
-}
-
-#[cfg(test)]
-fn parameter_static_refresh_program(
-    program: &[solve::LinearOp],
-    target_index: usize,
-    state_count: usize,
-    static_targets: &BTreeSet<usize>,
-    continuous_static_parameters: ContinuousStaticParameters,
-) -> bool {
-    ParameterStaticDependencies::derive(program).is_some_and(|dependencies| {
-        dependencies.is_parameter_static(
-            target_index,
-            state_count,
-            static_targets,
-            continuous_static_parameters,
-        )
-    })
-}
-
-fn parameter_static_y_index(
-    index: usize,
-    target_index: usize,
-    state_count: usize,
-    static_targets: &BTreeSet<usize>,
-) -> bool {
-    index == target_index || (index >= state_count && static_targets.contains(&index))
 }
 
 fn block_is_exactly_seeded(
@@ -1615,12 +1513,18 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     let mut indegree = Vec::new();
     reserve_refresh_vec_capacity(&mut indegree, rows.len(), "refresh order indegree", span)?;
     indegree.resize(rows.len(), 0usize);
+    let mut dependencies = RowDependencyCache::default();
     for (row_pos, row) in rows.iter().enumerate() {
         let Some(ops) = block.source_program(row.source()) else {
             continue;
         };
-        for dep_pos in refresh_row_dependency_positions(row, ops, state_count, &producer_by_target)
-        {
+        for dep_pos in refresh_row_dependency_positions(
+            row,
+            ops,
+            state_count,
+            &producer_by_target,
+            &mut dependencies,
+        ) {
             if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
                 continue;
             }
@@ -1699,61 +1603,72 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     })
 }
 
-fn refresh_row_dependency_positions(
+fn refresh_row_dependency_positions<'ops>(
     row: &AlgebraicRefreshRow,
-    ops: &[solve::LinearOp],
+    ops: &'ops [solve::LinearOp],
     state_count: usize,
     producer_by_target: &BTreeMap<usize, usize>,
+    dependencies: &mut RowDependencyCache<'ops>,
 ) -> Vec<usize> {
     let mut positions = BTreeSet::new();
-    // One register-dependency table of the assignment's expression prefix
-    // answers every candidate producer of this row.
-    let assignment_reads = row
-        .assignment_shape()
-        .map(|shape| AssignmentYReads::new(ops, shape));
-    for mut range in row_y_input_ranges(ops) {
-        range.start = range.start.max(state_count);
-        if range.is_empty() {
-            continue;
-        }
-        for (&index, &position) in producer_by_target.range(range) {
-            if index == row.target_index()
-                || assignment_reads
-                    .as_ref()
-                    .is_some_and(|reads| !reads.reads(index))
-            {
-                continue;
-            }
+    let mut add = |index: usize| {
+        if index >= state_count
+            && index != row.target_index()
+            && let Some(&position) = producer_by_target.get(&index)
+        {
             positions.insert(position);
+        }
+    };
+    // An assignment reads exactly the footprint of its value registers over
+    // its expression prefix; the rows of one program share that prefix's
+    // dependency table, so a wide program is analyzed once, not once a row.
+    let footprint = row.assignment_shape().and_then(|shape| {
+        dependencies
+            .prefix(ops, shape.expr_eval_len())?
+            .footprint(shape.value_registers())
+    });
+    match footprint {
+        Some(footprint) => footprint.indices().for_each(&mut add),
+        None => {
+            for range in dependencies.input_ranges(ops) {
+                for (&index, _) in producer_by_target.range(range.clone()) {
+                    add(index);
+                }
+            }
         }
     }
     positions.into_iter().collect()
 }
 
-/// Solver-Y reads of one target assignment's value registers, evaluated over
-/// the assignment's expression prefix. A prefix that does not fit the program
-/// reads every index (fail closed).
-struct AssignmentYReads<'a> {
-    shape: &'a solve::TargetAssignmentShape,
-    dependency: Option<solve::ScalarProgramYDependency<'a>>,
+/// Per-program analyses shared by the rows that refresh from one program:
+/// the register dependency table of each expression prefix and the program's
+/// solver-Y input ranges. Programs are keyed by their operation slice.
+#[derive(Default)]
+struct RowDependencyCache<'ops> {
+    prefixes: BTreeMap<(usize, usize), Option<solve::ScalarProgramYDependency<'ops>>>,
+    inputs: BTreeMap<(usize, usize), Vec<std::ops::Range<usize>>>,
 }
 
-impl<'a> AssignmentYReads<'a> {
-    fn new(ops: &'a [solve::LinearOp], shape: &'a solve::TargetAssignmentShape) -> Self {
-        Self {
-            shape,
-            dependency: ops
-                .get(..shape.expr_eval_len())
-                .map(solve::ScalarProgramYDependency::new),
-        }
+impl<'ops> RowDependencyCache<'ops> {
+    fn key(ops: &[solve::LinearOp]) -> (usize, usize) {
+        (ops.as_ptr() as usize, ops.len())
     }
 
-    fn reads(&self, y_index: usize) -> bool {
-        self.dependency.as_ref().is_none_or(|dependency| {
-            self.shape
-                .value_registers()
-                .any(|register| dependency.depends_on(register, y_index))
-        })
+    fn prefix(
+        &mut self,
+        ops: &'ops [solve::LinearOp],
+        len: usize,
+    ) -> Option<&solve::ScalarProgramYDependency<'ops>> {
+        self.prefixes
+            .entry((Self::key(ops).0, len))
+            .or_insert_with(|| ops.get(..len).map(solve::ScalarProgramYDependency::new))
+            .as_ref()
+    }
+
+    fn input_ranges(&mut self, ops: &[solve::LinearOp]) -> &[std::ops::Range<usize>] {
+        self.inputs
+            .entry(Self::key(ops))
+            .or_insert_with(|| row_y_input_ranges(ops))
     }
 }
 

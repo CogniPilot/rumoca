@@ -163,7 +163,7 @@ impl BlockResidualSplit {
 fn validate_part(part: &[LinearOp], defined: &mut [bool]) -> Result<(), BlockResidualSplitError> {
     let mut validation = ScalarProgramValidationCache::default();
     for (index, op) in part.iter().enumerate() {
-        match validate_op_sources(op, index, defined, None, None, &mut validation) {
+        match validate_op_sources(op, index, &*defined, None, None, &mut validation) {
             Ok(_) => {}
             Err(ScalarProgramRegisterError::UndefinedRegister { register, .. }) => {
                 return Err(BlockResidualSplitError::UndefinedRegister { register });

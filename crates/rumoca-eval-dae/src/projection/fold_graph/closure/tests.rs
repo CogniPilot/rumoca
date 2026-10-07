@@ -53,7 +53,7 @@ fn key(parameter: u32, field: Option<usize>, scalar: usize) -> FunctionParameter
         Some(field) => FunctionParameterDependency::RecordField {
             activation: crate::projection::Activation::Guaranteed,
             parameter,
-            field,
+            field: crate::projection::FieldPath::Field(field),
             scalar,
         },
         None => FunctionParameterDependency::Scalar {

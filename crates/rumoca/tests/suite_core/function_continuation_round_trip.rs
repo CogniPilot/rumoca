@@ -143,7 +143,7 @@ algorithm
 end firstOverChecked;
 
 model CheckedGates
-  parameter Integer n = 10;
+  parameter Integer n = 10 annotation(Evaluate = true);
   Real x(start = 1.0, fixed = true);
   Real k;
 equation

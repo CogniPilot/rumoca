@@ -391,7 +391,10 @@ pub(crate) fn run_eval_at(
             report.solver_y.len(),
             report.derivatives.len()
         );
-        return Ok(());
+        return match &report.error {
+            Some(error) => bail!("eval failed: {error}"),
+            None => Ok(()),
+        };
     }
 
     println!("\nNON-FINITE ({}):", nonfinite.len());

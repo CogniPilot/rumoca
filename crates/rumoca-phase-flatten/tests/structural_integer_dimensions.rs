@@ -184,3 +184,185 @@ fn replicated_array_elements_keep_their_structural_integer() {
         );
     }
 }
+
+/// MLS 3.7 §7.2: an extends modification of a model parameter reaches only
+/// the declaration it names, so a package constant that merely shares the
+/// parameter's name keeps its binding and still sizes a record field reached
+/// through a constant alias chain.
+#[test]
+fn modifying_a_parameter_leaves_a_same_named_package_constant_fixed() {
+    let source = r#"
+package W
+  package Profile
+    constant Integer height = 4;
+  end Profile;
+  package Anchors
+    constant Integer imageHeight = 3;
+    constant Integer imageWidth = 2;
+    constant Integer mapCapacity = imageHeight*imageWidth;
+  end Anchors;
+  package Mapping
+    constant Integer mapCapacity = Anchors.mapCapacity;
+    record State
+      Real point[mapCapacity, 3];
+    end State;
+  end Mapping;
+  partial model Interface
+    parameter Integer imageHeight(min = 1) = 3;
+    input Mapping.State previous;
+    input Real rgb[imageHeight];
+    output Real s;
+  end Interface;
+  model Base
+    extends Interface;
+  equation
+    s = sum(previous.point) + sum(rgb);
+  end Base;
+  model Narrow
+    extends Base(imageHeight = Profile.height);
+  end Narrow;
+end W;
+"#;
+    let model = flatten_source(source, "W.Narrow");
+    assert_eq!(dims_of(&model, "previous.point"), vec![6, 3]);
+    assert_eq!(dims_of(&model, "rgb"), vec![4]);
+}
+
+/// MLS 3.7 §5.3: lookup of `Types.n` from a top-level model continues to the
+/// unnamed top-level scope, so a parameter bound to a top-level package
+/// constant sizes a dimension. Only enumeration-typed declarations hold
+/// enumeration values (§4.8.5): a capitalized package prefix does not make
+/// an Integer binding an enumeration literal, and enumeration parameters
+/// keep their literals.
+#[test]
+fn top_level_package_constant_sizes_a_top_level_model() {
+    let source = r#"
+package Types
+  type Mode = enumeration(Fast, Slow);
+  constant Integer n = 2;
+  constant Mode m = Mode.Slow;
+end Types;
+package Other
+  constant Integer n2 = Types.n + 1;
+  constant Integer alias = Types.n;
+end Other;
+model E
+  parameter Types.Mode p = Types.Mode.Fast;
+  parameter Types.Mode q = Types.m;
+  parameter Integer k = Types.n;
+  Real x[k];
+  Real y[Other.n2];
+  Real w[Other.alias];
+  Real z[if q == Types.Mode.Slow and p == Types.Mode.Fast then 4 else 1];
+equation
+  x = ones(k);
+  y = ones(Other.n2);
+  w = ones(Other.alias);
+  z = ones(size(z, 1));
+end E;
+"#;
+    let model = flatten_source(source, "E");
+    assert_eq!(dims_of(&model, "x"), vec![2]);
+    assert_eq!(dims_of(&model, "y"), vec![3]);
+    assert_eq!(dims_of(&model, "w"), vec![2]);
+    assert_eq!(dims_of(&model, "z"), vec![4]);
+}
+
+/// The same lookup from a model nested in a package reaches a top-level
+/// package outside the model's enclosing classes, and an extends
+/// modification bound to one sizes the inherited dimension.
+#[test]
+fn package_constant_outside_the_enclosing_scope_sizes_a_dimension() {
+    let source = r#"
+package Keyframes
+  constant Integer imageHeight = 3;
+end Keyframes;
+package Profile
+  constant Integer height = 4;
+end Profile;
+package W
+  model Init
+    parameter Integer ih = Keyframes.imageHeight;
+    Real x[ih];
+  equation
+    x = ones(ih);
+  end Init;
+end W;
+partial model Interface
+  parameter Integer imageHeight(min = 1) = 3;
+  input Real rgb[imageHeight];
+  output Real s;
+end Interface;
+model Narrow
+  extends Interface(imageHeight = Profile.height);
+equation
+  s = sum(rgb);
+end Narrow;
+"#;
+    assert_eq!(dims_of(&flatten_source(source, "W.Init"), "x"), vec![3]);
+    assert_eq!(dims_of(&flatten_source(source, "Narrow"), "rgb"), vec![4]);
+}
+
+/// MLS 3.7 §7.2: a modification whose target is found nowhere in an extended
+/// class hierarchy that has an unresolved extends clause may reach any
+/// constant of its name, so that constant is never indexed at its declared
+/// value.
+#[test]
+fn a_target_unresolved_in_the_hierarchy_keeps_same_named_constants_out() {
+    let source = r#"
+package W
+  package Sizes
+    constant Integer n = 2;
+  end Sizes;
+  package Mid
+    extends Sizes;
+  end Mid;
+  package Wide
+    extends Mid(n = 3);
+  end Wide;
+  model Use
+    parameter Integer k = Sizes.n;
+  end Use;
+end W;
+"#;
+    let file_name = "<unresolved_hierarchy>";
+    let stored = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source parses");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file_name, source);
+    let mut tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source resolves")
+        .into_inner();
+    let reference = |tree: &ast::ClassTree| {
+        let binding = tree
+            .get_class_by_qualified_name("W.Use")
+            .and_then(|class| class.components.get("k"))
+            .and_then(|component| component.binding.clone());
+        let Some(ast::Expression::ComponentReference(reference)) = binding else {
+            panic!("`k` is bound to a reference");
+        };
+        reference
+    };
+    let sizes_n = reference(&tree);
+    // Resolved, the modification reaches `Sizes.n` through `Mid`.
+    assert!(
+        ast::DeclaredConstants::from_tree(&tree)
+            .constant_id(&sizes_n)
+            .is_none()
+    );
+    // With `Mid`'s extends clause unresolved, the target is found nowhere, so
+    // it reaches every constant named `n`.
+    let mid = tree
+        .definitions
+        .classes
+        .get_mut("W")
+        .and_then(|package| package.classes.get_mut("Mid"))
+        .expect("W.Mid is declared");
+    for extend in &mut mid.extends {
+        extend.base_def_id = None;
+    }
+    assert!(
+        ast::DeclaredConstants::from_tree(&tree)
+            .constant_id(&sizes_n)
+            .is_none()
+    );
+}

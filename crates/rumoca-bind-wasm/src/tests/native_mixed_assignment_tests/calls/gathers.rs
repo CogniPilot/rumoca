@@ -28,42 +28,29 @@ fn native_model_gather_only_uses_checked_abi_preserves_inputs_and_fault_provenan
                 && fault["provenance"]["source"].is_string())
     );
     let mut execution = CallExecution::new(&artifact);
-    let mut parameters = artifact["parameters"]
+    let parameters = artifact["parameters"]
         .as_array()
         .unwrap()
         .iter()
         .map(|value| value.as_f64().unwrap())
         .collect::<Vec<_>>();
-    let first = slot(&artifact, "first", "P");
-    let k = slot(&artifact, "k", "P");
     let result = slot(&artifact, "result", "Y");
+    // `first` and `k` are typed input lanes (SOLVE-C69); `samples` stays in P.
     assert_eq!(execution.run(&parameters)[result], 7.);
-    parameters[k] = 2.;
+    execution.set_input("k", 2);
     assert_eq!(execution.run(&parameters)[result], 8.);
-    parameters[k] = 3.;
-    parameters[first] = 1.;
+    execution.set_input("k", 3);
+    execution.set_input("first", 1);
     assert_eq!(execution.run(&parameters)[result], 1.);
-    parameters[first] = 0.;
-    for invalid in [0., 3., -1., 1.5, f64::NAN, f64::INFINITY] {
-        parameters[k] = invalid;
-        let input = parameters
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<_>>();
-        execution
-            .memory
-            .write(&mut execution.store, execution.p, &input)
-            .unwrap();
+    execution.set_input("first", 0);
+    let input = parameters
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect::<Vec<_>>();
+    for invalid in [0, 3, -1] {
+        execution.set_input("k", invalid);
         let before = execution.memory.data(&execution.store)[..execution.y * 8].to_vec();
-        let CallEntry::Checked(call) = execution.call else {
-            panic!("checked gather ABI")
-        };
-        let status = call
-            .call(
-                &mut execution.store,
-                (0, execution.p as i32, 0., execution.scratch as i32, 0),
-            )
-            .unwrap();
+        let (status, _) = execution.run_typed(&parameters);
         assert_ne!(status, 0);
         assert!(faults.iter().any(|fault| fault["status"] == status));
         assert_eq!(
@@ -75,6 +62,6 @@ fn native_model_gather_only_uses_checked_abi_preserves_inputs_and_fault_provenan
             input
         );
     }
-    parameters[k] = 1.;
+    execution.set_input("k", 1);
     assert_eq!(execution.run(&parameters)[result], 7.);
 }

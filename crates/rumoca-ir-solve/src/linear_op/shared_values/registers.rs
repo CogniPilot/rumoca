@@ -164,26 +164,52 @@ fn pure_value_call(site: &SolvePureCallSite) -> bool {
 /// Every register `op` reads, ascending, as its register-flow validation
 /// proves them; `None` when `op` cannot be validated at the top level.
 pub(super) fn read_registers(op: &LinearOp) -> Option<Vec<Reg>> {
-    let mut defined = Vec::new();
-    let mut reads = Vec::new();
-    let mut validation = ScalarProgramValidationCache::default();
-    loop {
-        match validate_op_sources(op, 0, &defined, None, None, &mut validation) {
-            Ok(_) => break,
-            Err(ScalarProgramRegisterError::UndefinedRegister { register, .. }) => {
-                let index = register as usize;
-                if defined.len() <= index {
-                    defined.resize(index + 1, false);
-                }
-                if defined[index] {
-                    return None;
-                }
-                defined[index] = true;
-                reads.push(register);
-            }
-            Err(_) => return None,
+    op_read_registers(op)
+}
+
+/// Visit every register field of an operation a fused segment holds: a
+/// [`renamable`] value, a solver-slot load, a copy, or an output store.
+fn visit_segment_registers(op: &mut LinearOp, visit: &mut dyn FnMut(&mut Reg)) {
+    match op {
+        LinearOp::LoadY { dst, .. }
+        | LinearOp::TensorLoad {
+            dst_start: dst,
+            input: TensorInputKind::Y,
+            ..
+        } => visit(dst),
+        LinearOp::Move { dst, src } => {
+            visit(src);
+            visit(dst);
+        }
+        LinearOp::StoreOutput { src } => visit(src),
+        _ => visit_registers(op, &mut |_, register| visit(register)),
+    }
+}
+
+/// `ops`, a fused segment, renumbered onto the registers it uses, in their
+/// original order. Each operation keeps every register from the lowest to
+/// the highest it reads, and every register it writes, so the offsets within
+/// one operation's operands, which its value key records, are unchanged and
+/// every range stays contiguous; the register file shrinks to those spans.
+pub(super) fn compact_registers(mut ops: Vec<LinearOp>) -> Vec<LinearOp> {
+    let mut used = Vec::new();
+    for op in &ops {
+        let reads = read_registers(op).unwrap_or_default();
+        if let (Some(&lowest), Some(&highest)) = (reads.first(), reads.last()) {
+            used.extend(lowest..=highest);
+        }
+        if let Some(start) = op.dst_register() {
+            used.extend((0..op.dst_register_count()).map(|offset| start + offset as Reg));
         }
     }
-    reads.sort_unstable();
-    Some(reads)
+    used.sort_unstable();
+    used.dedup();
+    for op in &mut ops {
+        visit_segment_registers(op, &mut |register| {
+            if let Ok(dense) = used.binary_search(register) {
+                *register = dense as Reg;
+            }
+        });
+    }
+    ops
 }

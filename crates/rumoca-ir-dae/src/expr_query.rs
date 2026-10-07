@@ -30,7 +30,8 @@ pub fn for_each_expression<'dae>(
 /// are visited once. This keeps dependency selection at the checked DAE
 /// boundary without requiring consumers to reproduce the expression grammar.
 /// The visited set is this thread's shared stamp table, so a call costs only
-/// the nodes it reaches; a multi-root pass uses an [`ExpressionTraversal`].
+/// the nodes it reaches, nested or not; a multi-root pass uses an
+/// [`ExpressionTraversal`].
 pub fn for_each_expression_pruned<'dae>(
     dae: DaeView<'dae>,
     root: ExprId<'dae>,
@@ -90,6 +91,8 @@ struct StampTable {
 impl StampTable {
     fn begin_pass(&mut self, len: usize) {
         if self.stamps.len() < len {
+            #[cfg(test)]
+            STAMP_TABLE_GROWTHS.with(|growths| growths.set(growths.get() + 1));
             self.stamps.resize(len, 0);
         }
         self.generation = self.generation.checked_add(1).unwrap_or_else(|| {
@@ -108,33 +111,40 @@ impl StampTable {
     }
 }
 
+#[cfg(test)]
 thread_local! {
-    /// The table single-root walks share; a walk nested in another walk's
-    /// visitor finds it borrowed and uses a table of its own.
-    static SHARED_STAMPS: std::cell::RefCell<StampTable> = std::cell::RefCell::default();
+    /// How many times a stamp table on this thread grew to cover a larger arena.
+    pub(crate) static STAMP_TABLE_GROWTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+thread_local! {
+    /// Stamp tables idle on this thread. A walk takes one for its duration and
+    /// returns it, so a walk nested in another walk's visitor takes a second
+    /// table instead of allocating one: the pool holds one table per nesting
+    /// depth ever reached, each sized once to the largest arena it has seen,
+    /// and a query costs only the nodes it reaches.
+    static STAMP_POOL: std::cell::RefCell<Vec<StampTable>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
 }
 
 fn with_shared_stamps(dae: DaeView<'_>, walk: &mut dyn FnMut(&mut StampTable)) {
-    SHARED_STAMPS.with(|shared| {
-        let (mut borrowed, mut own);
-        let table: &mut StampTable = if let Ok(table) = shared.try_borrow_mut() {
-            borrowed = table;
-            &mut borrowed
-        } else {
-            own = StampTable::default();
-            &mut own
-        };
-        table.begin_pass(dae.expression_count());
-        walk(table)
-    })
+    let mut table = STAMP_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    table.begin_pass(dae.expression_count());
+    walk(&mut table);
+    STAMP_POOL.with(|pool| pool.borrow_mut().push(table));
 }
 
 /// Reusable workspace for pruned expression walks over one DAE.
 ///
-/// The visited set is the whole expression arena, so allocating one per root
+/// The visited set is the whole expression arena, so allocating one per walk
 /// makes a multi-root query cost `roots * arena` before it looks at a single
-/// operand. This workspace is allocated once and reused: each pass stamps
-/// nodes with a fresh generation instead of clearing, and the pending stack is
+/// operand. The visited sets are therefore the thread's pooled stamp tables,
+/// shared by every traversal and every nested walk: each pass stamps nodes
+/// with a fresh generation instead of clearing, so a workspace is free to
+/// create and a query costs only the nodes it reaches. The pending stack is
 /// kept across passes so a steady-state query allocates nothing at all.
 ///
 /// [`visit_pruned`](Self::visit_pruned) takes all of a pass's roots together
@@ -144,7 +154,6 @@ fn with_shared_stamps(dae: DaeView<'_>, walk: &mut dyn FnMut(&mut StampTable)) {
 /// node alone, so a second arrival could only repeat the first answer.
 #[derive(Debug, Default)]
 pub struct ExpressionTraversal<'dae> {
-    stamps: StampTable,
     pending: Vec<ExprId<'dae>>,
 }
 
@@ -153,10 +162,6 @@ impl<'dae> ExpressionTraversal<'dae> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            stamps: StampTable {
-                stamps: Vec::new(),
-                generation: 0,
-            },
             pending: Vec::new(),
         }
     }
@@ -172,12 +177,12 @@ impl<'dae> ExpressionTraversal<'dae> {
         roots: impl IntoIterator<Item = ExprId<'dae>>,
         mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
     ) {
-        self.stamps.begin_pass(dae.expression_count());
         self.pending.clear();
         self.pending.extend(roots);
         self.pending.reverse();
-        walk_pruned(dae, &mut self.stamps, &mut self.pending, &mut |id, node| {
-            Some(visit(id, node))
+        let pending = &mut self.pending;
+        with_shared_stamps(dae, &mut |stamps| {
+            walk_pruned(dae, stamps, pending, &mut |id, node| Some(visit(id, node)));
         });
     }
 }
