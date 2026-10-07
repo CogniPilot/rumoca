@@ -10,7 +10,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         mut self,
         family: dae::ContinuousFamilyId<'dae>,
         form: &AlgebraicFamilyForm<'dae>,
-    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+    ) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
         let span = form.provenance;
         let site = self
             .layout
@@ -18,6 +18,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .borrow_mut()
             .register_algebraic_family(self.view, family, form)
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        // The residual's derivatives are taken through the owner's directional
+        // relation; a body with an operation that has none (a product
+        // reduction, for one) keeps its scalar rows, which differentiate
+        // in place.
+        if site.directional().is_none() {
+            return Ok(None);
+        }
         let input_starts = form
             .input_readers()
             .map(|reader| self.pack_expression(reader))
@@ -53,7 +60,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             count: form.scalar_count,
             stride: 1,
         });
-        Ok(solve::prune_dead_constants(std::mem::take(&mut self.ops)))
+        Ok(Some(solve::prune_dead_constants(std::mem::take(
+            &mut self.ops,
+        ))))
     }
 
     /// `count` consecutive fresh registers, returning the first.
