@@ -21,6 +21,7 @@ impl Context {
                 may_be_record_alias: false,
                 binding_from_modification: false,
                 aggregate: false,
+                enumeration: true,
             })
             .collect::<Vec<_>>();
         self.eval_enum_param_bindings(&params)
@@ -56,6 +57,7 @@ impl Context {
     ) -> Vec<(String, String)> {
         params
             .iter()
+            .filter(|binding| binding.enumeration)
             .filter_map(|ParamBinding { name, binding, .. }| {
                 self.resolve_enum_binding_value(binding, param_names)
                     .map(|enum_val| ((*name).to_string(), enum_val))

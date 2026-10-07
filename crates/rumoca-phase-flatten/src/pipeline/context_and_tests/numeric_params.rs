@@ -49,6 +49,7 @@ impl Context {
                 may_be_record_alias: false,
                 binding_from_modification: false,
                 aggregate: false,
+                enumeration: false,
             })
             .collect::<Vec<_>>();
         self.eval_integer_param_bindings(&params)
@@ -64,6 +65,7 @@ impl Context {
                 may_be_record_alias: false,
                 binding_from_modification: true,
                 aggregate: false,
+                enumeration: false,
             })
             .collect::<Vec<_>>();
         self.eval_integer_param_bindings(&params)

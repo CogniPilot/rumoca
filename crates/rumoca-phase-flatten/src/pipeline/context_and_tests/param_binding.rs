@@ -12,6 +12,10 @@ pub(super) struct ParamBinding<'a> {
     /// The declared type is String or the declaration is an array, so the
     /// binding value has no scalar inventory.
     pub(super) aggregate: bool,
+    /// The declared type is an enumeration (MLS 3.7 §4.8.5), so the binding
+    /// value belongs to the enumeration inventory. A parameter of any other
+    /// type never holds an enumeration value, whatever its binding spells.
+    pub(super) enumeration: bool,
 }
 
 pub(super) fn is_array_literal_binding(binding: &Expression) -> bool {
