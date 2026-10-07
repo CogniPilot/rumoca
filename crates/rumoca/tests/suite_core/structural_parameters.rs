@@ -76,6 +76,38 @@ package Structural
   equation
     der(x) = -x;
   end UnfixedDimension;
+  function triangle
+    input Integer n;
+    output Real y;
+  algorithm
+    y := 0;
+    for i in 1:n loop
+      y := y + i;
+    end for;
+  end triangle;
+  model KeyedArgument
+    parameter Integer n = 3;
+    parameter Real k = 2;
+    Real y;
+  equation
+    y = k*triangle(n);
+  end KeyedArgument;
+  model ModifiedKeyedArgument
+    extends KeyedArgument(n = 4);
+  end ModifiedKeyedArgument;
+  model LiteralKeyedArgument
+    parameter Integer n = 3;
+    Real y;
+  equation
+    y = n*triangle(3);
+  end LiteralKeyedArgument;
+  model UnevaluatedKeyedArgument
+    parameter Integer n = 3 annotation(Evaluate = false);
+    parameter Integer m = n + 1;
+    Real y;
+  equation
+    y = triangle(m);
+  end UnevaluatedKeyedArgument;
   model UnevaluatedRange
     parameter Integer m = 2 annotation(Evaluate = false);
     Real x[3](each start = 1, each fixed = true);
@@ -195,4 +227,51 @@ fn a_for_range_reading_an_evaluate_false_parameter_is_refused() {
 #[test]
 fn a_size_of_an_input_array_binds_a_structural_parameter() {
     assert_eq!(evaluable(&compile("Structural.InputExtent")), ["f.n"]);
+}
+
+fn final_value(model: &str, name: &str) -> f64 {
+    let result = simulate_dae_with_diagnostics(
+        &compile(model),
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("the model simulates");
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .expect("the result records the column");
+    *result.data[index].last().expect("a sample")
+}
+
+/// MLS 3.7 §12.2, §11.2.2: a function specialization keyed on an argument
+/// value folds it into the callee's loop domain, so an ordinary parameter the
+/// argument reads is structural (evaluable, with a WD001 warning) and an
+/// unrelated one stays settable; a modification still reaches the result.
+#[test]
+fn a_keyed_function_argument_parameter_is_structural() {
+    assert_eq!(evaluable(&compile("Structural.KeyedArgument")), ["n"]);
+    assert!((final_value("Structural.KeyedArgument", "y") - 12.0).abs() < 1e-12);
+    assert!((final_value("Structural.ModifiedKeyedArgument", "y") - 20.0).abs() < 1e-12);
+}
+
+/// A literal keyed argument reads no parameter, so the parameter that scales
+/// the call result stays settable.
+#[test]
+fn a_literal_keyed_argument_leaves_parameters_settable() {
+    assert!(evaluable(&compile("Structural.LiteralKeyedArgument")).is_empty());
+}
+
+/// MLS 3.7 §18.6: an `Evaluate = false` parameter, and a parameter bound to
+/// one, has no translation-time value, so no specialization is keyed on it
+/// and the loop domain it would fix is refused rather than frozen.
+#[test]
+fn a_keyed_argument_reading_an_evaluate_false_parameter_is_refused() {
+    let error = refusal("Structural.UnevaluatedKeyedArgument");
+    assert!(
+        error.contains("function loop domain"),
+        "unexpected refusal: {error}"
+    );
 }

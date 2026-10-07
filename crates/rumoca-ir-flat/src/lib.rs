@@ -1593,6 +1593,10 @@ pub enum StructuralParameterUse {
     ArrayDimension,
     /// A for-equation range (MLS §8.3.3).
     ForRange,
+    /// A function call argument whose value a value-keyed specialization folds
+    /// into a declared dimension, compact range or `while` condition of the
+    /// callee (MLS §12.2, §11.2.2, §11.2.3).
+    SpecializationArgument,
 }
 
 /// One flatten use that evaluated parameter values at translation

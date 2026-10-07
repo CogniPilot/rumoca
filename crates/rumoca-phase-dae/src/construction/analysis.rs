@@ -740,7 +740,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &aggregate_discrete_connections,
     )?;
     let (folded, structural_selections) =
-        folded_guards::folded_guard_parameters(flat, function_shapes.model_values(), &evaluable);
+        folded_guards::folded_guard_parameters(flat, &function_shapes, &evaluable);
     evaluable.extend(folded);
     function_shapes.set_evaluable_parameters(&evaluable);
     Ok(Analysis {
