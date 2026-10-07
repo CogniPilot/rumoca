@@ -1238,6 +1238,16 @@ fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
     );
 }
 
+#[test]
+fn solve_model_without_periodic_schedules_is_borrowed_not_copied() {
+    let model = SolveModel::default();
+    let resolved = model.resolved_periodic_schedules_at(2.0).unwrap();
+    assert!(
+        matches!(resolved, std::borrow::Cow::Borrowed(borrowed) if std::ptr::eq(borrowed, &model)),
+        "a model with nothing to resolve must not be cloned at instantiation"
+    );
+}
+
 fn assert_same_json_shape<T: serde::Serialize>(actual: &T, expected: &T) {
     assert_eq!(
         serde_json::to_value(actual).expect("serialize actual"),
