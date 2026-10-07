@@ -83,11 +83,6 @@ pub(crate) const WORKSPACE_TEST_FEATURES: &[&str] = &["--features", "rumoca/msl-
 pub(crate) const COVERAGE_TEST_FEATURES: &[&str] =
     &["--features", "rumoca-bind-wasm/native-assignments"];
 
-/// [`COVERAGE_TEST_FEATURES`] as owned `cargo` arguments.
-pub(crate) fn coverage_feature_args() -> impl Iterator<Item = String> {
-    COVERAGE_TEST_FEATURES.iter().map(ToString::to_string)
-}
-
 /// Unit + integration tests under nextest, then doctests. nextest schedules
 /// individual tests across every core in isolated processes; plain
 /// `cargo test` runs one binary at a time, so suites that serialize on an
