@@ -436,36 +436,40 @@ fn seed_undefined_whole_loop_value(
     Ok(())
 }
 
-/// The condition of a loop body that is one conditional without an else whose
-/// condition reads nothing the body writes and no binder of the loop, so every
-/// iteration selects the same way.
+/// The condition of a loop body whose statements are each one conditional
+/// without an else, all over the same condition, which reads nothing the body
+/// writes and no binder of the loop, so every iteration selects the same way.
+/// The body is one such conditional, or the guarded statements the branch
+/// snapshot pass makes of a selected sequence that owns the loop.
 fn invariant_selection<'a>(
     binders: &[&rumoca_core::ForIndex],
     body: &'a [rumoca_core::Statement],
 ) -> Option<&'a Expression> {
-    let [
+    let mut guards = body.iter().map(|statement| match statement {
         rumoca_core::Statement::If {
             cond_blocks,
             else_block: None,
             ..
+        } => match cond_blocks.as_slice() {
+            [block] => Some(&block.cond),
+            _ => None,
         },
-    ] = body
-    else {
-        return None;
-    };
-    let [block] = cond_blocks.as_slice() else {
-        return None;
-    };
+        _ => None,
+    });
+    let condition = guards.next()??;
+    for guard in guards {
+        rumoca_core::expressions_semantically_equal(condition, guard?).then_some(())?;
+    }
     let written = function_ranges::assigned_function_targets(body);
     let mut reads = Vec::new();
-    block.cond.collect_var_refs(&mut reads);
+    condition.collect_var_refs(&mut reads);
     reads
         .iter()
         .all(|name| {
             !written.contains(name.as_str())
                 && binders.iter().all(|binder| binder.ident != name.as_str())
         })
-        .then_some(&block.cond)
+        .then_some(condition)
 }
 
 /// Whether `condition`, or a generated selection it reads, reads a binder of
