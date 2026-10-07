@@ -22,7 +22,6 @@ scalar rows are derived views, not recovered structure.
 | Binder ids are stable and explicit | `StructuredIndexBinder` / phase maps | Names can shadow |
 | Empty domains produce zero scalar rows | Scalar views | Valid zero-iteration ranges |
 | Each body of a loop nest owns one family over the whole nest | Flatten | An unrolled outer binder scalarizes every grid row |
-| An algebraic regular family keeps one owner through Flat, DAE, Solve, and refresh | [SPEC_0043 §6c](SPEC_0043_CONSTRUCTION_CATALOG.md) | Compile cost follows the source, not the domain |
 
 Structured families include source `for` equations, whole-array equations,
 slices, comprehensions, boundary ranges, and connection-generated array
@@ -62,11 +61,14 @@ state the per-element entries already own, and it makes the two paths
 distinguishable to consumers, which this section forbids. A future phase that
 wants the compact domain re-derives it from the declared extents.
 
-This prohibition is on IR content, not observability: an out-of-band counter no
-consumer can read is permitted and needed. Differential tests only prove the
-compact and scalar overlays agree, which stays true if the homogeneity gate
-silently stops compacting, so the follow-up is a non-IR compaction counter
-the instantiate tests assert on.
+This prohibition is on IR content, not on observability as such: a counter or
+other out-of-band signal that no consumer can read is still permitted, and one
+is needed. Compaction currently has no liveness witness — the differential
+tests prove only that the compact and scalar overlays agree, which stays
+trivially true if the homogeneity gate silently stops compacting anything, so
+the optimization could regress to element-by-element expansion undetected. The
+follow-up is a non-IR compaction counter that the instantiate tests can assert
+on.
 
 Compaction is refused whenever any per-element rewrite in
 `prepare_element_declaration` would fire: a non-`each` `start`, an array-level
