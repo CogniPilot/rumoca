@@ -33,10 +33,8 @@ end Derived;
 
 #[test]
 fn dimensions_read_the_constants_the_exposing_package_modifies() {
-    for model in ["Derived.Copy"] {
-        Compiler::new()
-            .model(model)
-            .compile_str(MODEL, "Packages.mo")
-            .unwrap_or_else(|error| panic!("{model} compiles: {error:?}"));
-    }
+    Compiler::new()
+        .model("Derived.Copy")
+        .compile_str(MODEL, "Packages.mo")
+        .unwrap_or_else(|error| panic!("Derived.Copy compiles: {error:?}"));
 }
