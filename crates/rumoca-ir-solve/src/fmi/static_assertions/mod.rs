@@ -23,7 +23,8 @@ pub(in crate::fmi) enum StaticRefusal {
     /// scalar event profile (SPEC_0044 ME-EVENT-002).
     EventIteration(&'static str),
     /// A predicate the partition would keep static reads time, a state, or an
-    /// input.
+    /// input and no event tracks: a relation on them is an event of the scalar
+    /// event profile, so this is a call or a `noEvent` relation.
     Predicate(&'static str),
 }
 

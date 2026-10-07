@@ -13,8 +13,10 @@ use crate::SolveLayout;
 /// actual-system endpoint (`lambda = 1`). It is therefore equally static for
 /// continuous refresh and root-search purposes.
 ///
-/// One owner: the algebraic refresh plan and the root search classification
-/// both read this domain.
+/// The algebraic refresh plan reads this domain. The root search classification
+/// is narrower on the other side: every slot but an external input is fixed
+/// within an accepted interval (`root_search.rs` `static_root`), because a
+/// discrete value changes only at an event.
 #[derive(Clone, Copy, Debug)]
 pub struct ContinuousStaticParameters {
     pub immutable_prefix: usize,

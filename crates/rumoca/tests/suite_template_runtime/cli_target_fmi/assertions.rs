@@ -26,9 +26,19 @@ fn packaged_fmi_parameter_assertions_preserve_validation_and_free_fall() {
     }
 }
 
+/// A relation on time, a state, or an input is an event the scalar event
+/// profile tracks (`c_profile_events.rs`); a predicate that changes with them
+/// and no event tracks, a call or a `noEvent` relation, is refused by name.
 #[test]
 fn packaged_fmi_static_assertion_profile_refuses_continuously_changing_predicates() {
-    for argument in ["time", "x", "u"] {
+    for argument in [
+        "valid(time)",
+        "valid(x)",
+        "valid(u)",
+        "noEvent(time < 0.5)",
+        "noEvent(x < 0.5)",
+        "noEvent(u < 0.5)",
+    ] {
         let source = format!(
             r#"
 function valid
@@ -42,7 +52,7 @@ model ChangingAssertion
  Real x(start=0,fixed=true);
 equation
  der(x)=1;
- assert(valid({argument}), "changing predicate");
+ assert({argument}, "changing predicate");
 end ChangingAssertion;
 "#
         );

@@ -9,10 +9,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::{
-    BinaryOp, ContinuousStaticParameters, LinearOp, Reg, ScalarProgramBlock, SolveProblem,
-    StructuralPattern,
-};
+use std::ops::Range;
+
+use crate::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, SolveProblem, StructuralPattern};
 
 /// Which side of `time` a direct time root subtracts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,8 +65,10 @@ impl RootSearchPlan {
             .iter()
             .map(|row| row.target_index())
             .collect::<BTreeSet<_>>();
-        let static_parameters = ContinuousStaticParameters::from_layout(&problem.solve_layout);
-        let roles = classify_block(roots, &static_y, static_parameters)
+        let layout = &problem.solve_layout;
+        let inputs =
+            layout.parameter_count..layout.parameter_count + layout.input_scalar_names.len();
+        let roles = classify_block(roots, &static_y, &inputs)
             .unwrap_or_else(|| vec![RootSearchRole::Search; roots.output_count()]);
         Self {
             roles: roles.into_boxed_slice(),
@@ -125,7 +126,7 @@ pub fn root_neighborhoods(
 fn classify_block(
     roots: &ScalarProgramBlock,
     static_y: &BTreeSet<usize>,
-    static_parameters: ContinuousStaticParameters,
+    inputs: &Range<usize>,
 ) -> Option<Vec<RootSearchRole>> {
     if !roots.uses_local_contiguous_output_indices() {
         return None;
@@ -140,7 +141,7 @@ fn classify_block(
             && let Some((param_index, sign)) = direct_time_root(row)
         {
             RootSearchRole::AnnouncedTime { param_index, sign }
-        } else if static_root(row, static_y, static_parameters) {
+        } else if static_root(row, static_y, inputs) {
             RootSearchRole::Static
         } else {
             RootSearchRole::Search
@@ -198,17 +199,16 @@ fn time_and_param_loads(first: &LinearOp, second: &LinearOp) -> Option<(Reg, Reg
     }
 }
 
-/// A declared parameter is fixed during one accepted interval, and so is a
-/// statically fixed `Y` coordinate. An external input is not: the importer
-/// changes it between calls, and a relation that reads one must be searched
-/// like a relation of a state. A row reading only fixed values, and no time,
-/// seed, or effect, keeps its Event Mode value but offers no surface to the
-/// continuous root finder.
-fn static_root(
-    row: &[LinearOp],
-    static_y: &BTreeSet<usize>,
-    static_parameters: ContinuousStaticParameters,
-) -> bool {
+/// Every P slot but an external input is fixed during one accepted interval, as
+/// is a statically fixed `Y` coordinate: a declared parameter never changes,
+/// and a discrete value, a `pre` slot, a condition memory, or a clock lane
+/// changes only at an event, where the host refreshes the indicators. An
+/// external input is not: the importer changes it between calls, and a
+/// relation that reads one must be searched like a relation of a state
+/// (`inputs` is the range of input slots). A row reading only fixed values,
+/// and no time, seed, or effect, keeps its Event Mode value but offers no
+/// surface to the continuous root finder.
+fn static_root(row: &[LinearOp], static_y: &BTreeSet<usize>, inputs: &Range<usize>) -> bool {
     let Ok(y_dependencies) = StructuralPattern::derive_output_y_dependencies(row, None) else {
         return false;
     };
@@ -222,7 +222,7 @@ fn static_root(
         dependencies
             .iter()
             .flatten()
-            .all(|index| static_parameters.contains(*index))
+            .all(|index| !inputs.contains(index))
     }) && none_depend(StructuralPattern::derive_output_time_dependencies(
         row, None,
     )) && none_depend(StructuralPattern::derive_output_seed_dependencies(
@@ -240,11 +240,10 @@ fn none_depend<E>(dependencies: Result<Vec<bool>, E>) -> bool {
 mod tests {
     use super::*;
 
-    /// Two declared parameters, then the inputs.
-    const DECLARED: ContinuousStaticParameters = ContinuousStaticParameters {
-        immutable_prefix: 2,
-        homotopy_endpoint: None,
-    };
+    /// Slot 0 and 1 are declared parameters, 2 and 3 external inputs; slots 4
+    /// and up are discrete values, `pre` slots, condition memories, and clock
+    /// lanes.
+    const INPUTS: Range<usize> = 2..4;
 
     #[test]
     fn a_plan_without_roles_is_empty() {
@@ -280,7 +279,7 @@ mod tests {
         assert!(static_root(
             &parameter_tensor_root,
             &BTreeSet::new(),
-            DECLARED
+            &INPUTS
         ));
 
         let state_tensor_root = vec![
@@ -301,12 +300,12 @@ mod tests {
         assert!(!static_root(
             &state_tensor_root,
             &BTreeSet::from([3]),
-            DECLARED
+            &INPUTS
         ));
         assert!(static_root(
             &state_tensor_root,
             &BTreeSet::from([3, 4]),
-            DECLARED
+            &INPUTS
         ));
     }
 
@@ -323,7 +322,7 @@ mod tests {
             },
             crate::LinearOp::StoreOutput { src: 2 },
         ];
-        assert!(!static_root(&time_root, &BTreeSet::new(), DECLARED));
+        assert!(!static_root(&time_root, &BTreeSet::new(), &INPUTS));
     }
 
     #[test]
@@ -332,18 +331,30 @@ mod tests {
             crate::LinearOp::LoadSeed { dst: 0, index: 3 },
             crate::LinearOp::StoreOutput { src: 0 },
         ];
-        assert!(!static_root(&seed_root, &BTreeSet::new(), DECLARED));
+        assert!(!static_root(&seed_root, &BTreeSet::new(), &INPUTS));
     }
 
     #[test]
-    fn a_root_reading_an_external_input_is_searched() {
+    fn a_root_reading_an_external_input_is_searched_and_every_other_slot_is_static() {
         let load = |index| {
             vec![
                 crate::LinearOp::LoadP { dst: 0, index },
                 crate::LinearOp::StoreOutput { src: 0 },
             ]
         };
-        assert!(static_root(&load(1), &BTreeSet::new(), DECLARED));
-        assert!(!static_root(&load(2), &BTreeSet::new(), DECLARED));
+        // Declared parameters, then the discrete, `pre`, condition-memory, and
+        // clock-lane slots behind the inputs, stay fixed within an interval.
+        for fixed in [0, 1, 4, 5, 9] {
+            assert!(
+                static_root(&load(fixed), &BTreeSet::new(), &INPUTS),
+                "{fixed}"
+            );
+        }
+        for input in [2, 3] {
+            assert!(
+                !static_root(&load(input), &BTreeSet::new(), &INPUTS),
+                "{input}"
+            );
+        }
     }
 }
