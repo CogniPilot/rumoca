@@ -238,6 +238,8 @@ fn branch_assigned_records(
                 mixed |= field.written_whole_and_by_field
             });
             (mixed
+                || (root.written_whole && root.written_below)
+                || root.element_field_write
                 || paths.overwrites_below(&record.name)
                 || assigns_field_in_nested_statement(&function.body, &record.name, false))
             .then_some(())?;
@@ -414,6 +416,13 @@ fn contains_return(statements: &[Statement]) -> bool {
 fn assigns_field_in_nested_statement(statements: &[Statement], record: &str, nested: bool) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Assignment { comp, .. } => nested && is_field_of(comp, record),
+        Statement::FunctionCall { outputs, .. } => {
+            nested
+                && outputs
+                    .iter()
+                    .flatten()
+                    .any(|output| is_field_of(output, record))
+        }
         Statement::If {
             cond_blocks,
             else_block,

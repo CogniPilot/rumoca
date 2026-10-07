@@ -119,6 +119,9 @@ pub(super) struct NodeUses {
     pub(super) written_below: bool,
     /// Some expression reads a path strictly below the node.
     pub(super) read_below: bool,
+    /// Some statement writes a field of one element of an array of records
+    /// below this node (a subscript on a part that has parts after it).
+    pub(super) element_field_write: bool,
     /// Statements that write exactly this path, with no subscript on any part
     /// (a subscripted write updates one element, not the whole value).
     pub(super) writes: usize,
@@ -165,6 +168,10 @@ impl BodyPaths {
 
     fn target(&mut self, comp: &ComponentReference) {
         let parts = comp.parts();
+        let element_field = parts
+            .split_last()
+            .is_some_and(|(_, record)| record.iter().skip(1).any(|part| !part.subs.is_empty()));
+        self.entry(&parts[..1]).element_field_write |= element_field;
         let node = self.entry(parts);
         node.written_whole = true;
         node.writes += usize::from(parts.iter().all(|part| part.subs.is_empty()));

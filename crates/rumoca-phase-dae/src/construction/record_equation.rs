@@ -167,7 +167,7 @@ fn record_field_value<'dae>(
     }
 }
 
-fn lower_record_projection<'dae>(
+pub(super) fn lower_record_projection<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     mut value: dae::ExprId<'dae>,
     projection: &[usize],

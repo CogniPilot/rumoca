@@ -213,6 +213,7 @@ mod model_conditional_dead_arm_test;
 mod model_value_forms;
 mod modifier_value_context;
 mod msl_table_regression;
+mod multi_output_record_receivers;
 mod nanosecond_bdf_steps;
 mod native_foreign_bodies;
 mod native_least_squares;

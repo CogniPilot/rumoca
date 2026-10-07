@@ -130,7 +130,7 @@ use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, l
 use multi_output_equations::{MultiOutputDiscreteOwners, lower_multi_output_equation};
 use native_lapack::lower_native_lapack;
 use ordinary_equations::{OrdinaryEquationRow, lower_ordinary_equation};
-use record_equation::lower_record_equation;
+use record_equation::{lower_record_equation, lower_record_projection};
 use structured_body::{lower_structured_body, normalize_conditional_residual};
 use structured_templates::{SelectedFamilies, TemplateSelection};
 use variable_construction::{

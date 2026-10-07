@@ -261,6 +261,27 @@ impl FunctionDefinitions {
         )
     }
 
+    /// `target` is defined under both sides of a split: everywhere when the
+    /// sides are a condition and its negation, else wherever `union` holds.
+    fn define_under_union(
+        &mut self,
+        target: &VarName,
+        proof: &BranchOnlyCoverage,
+        union: Option<Expression>,
+        span: Span,
+    ) {
+        let Some(union) = union else {
+            self.branch_only.remove(target);
+            self.values.insert(target.clone(), ValueCoverage::Whole);
+            return;
+        };
+        let mut joined = proof.clone();
+        joined.span = span;
+        joined.guard = Some(union);
+        joined.coverage = Some(ValueCoverage::Whole);
+        self.branch_only.insert(target.clone(), joined);
+    }
+
     /// Record what a single-branch conditional over an immutable `condition`
     /// leaves defined. A value already proven under a guard that `condition`
     /// implies keeps that proof: its fall-through path retains the earlier
@@ -287,19 +308,7 @@ impl FunctionDefinitions {
                 && defined.is_total()
                 && let Some(union) = guard_union(guard, condition, context)
             {
-                match union {
-                    None => {
-                        self.branch_only.remove(target);
-                        self.values.insert(target.clone(), ValueCoverage::Whole);
-                    }
-                    Some(union) => {
-                        let mut joined = proof.clone();
-                        joined.span = span;
-                        joined.guard = Some(union);
-                        joined.coverage = Some(ValueCoverage::Whole);
-                        self.branch_only.insert(target.clone(), joined);
-                    }
-                }
+                self.define_under_union(target, proof, union, span);
                 continue;
             }
             if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)

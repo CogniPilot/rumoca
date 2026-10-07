@@ -221,7 +221,6 @@ fn collect_equation_owners(
             EquationPartition::MultiOutput { receivers, call } => {
                 let targets = receivers
                     .iter()
-                    .copied()
                     .filter(|receiver| {
                         matches!(roles.get(*receiver), Some(PlannedRole::DiscreteValue))
                     })
@@ -277,16 +276,16 @@ fn collect_equation_owners(
 fn push_multi_output_owner(
     equation: &flat::Equation,
     call: &Expression,
-    receivers: &[&VarName],
+    receivers: &[VarName],
     roles: &HashMap<VarName, PlannedRole>,
     owners: &mut Vec<SourceOwner>,
 ) {
     let dependencies = current_discrete_dependencies(call, roles);
     let targets = receivers
         .iter()
-        .filter(|receiver| matches!(roles.get(**receiver), Some(PlannedRole::DiscreteValue)))
+        .filter(|receiver| matches!(roles.get(*receiver), Some(PlannedRole::DiscreteValue)))
         .map(|receiver| SourceTarget {
-            name: (*receiver).clone(),
+            name: receiver.clone(),
             dependencies: dependencies.clone(),
             span: equation.span,
             ordered_scalar_self_dependencies: false,

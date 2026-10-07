@@ -160,8 +160,8 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
-use record_equations::analyze_record_equations;
 pub(super) use record_equations::{RecordFieldSystem, reference_leaf_coordinates};
+use record_equations::{analyze_record_equations, record_result_fields};
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
 use structural_selections::{has_decidable_conditionals, select_structural_branches};

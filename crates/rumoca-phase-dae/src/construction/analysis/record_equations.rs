@@ -197,6 +197,17 @@ fn validate_constructor_layout(
     call: RecordCall<'_>,
     equation_span: Span,
 ) -> Result<(), ToDaeError> {
+    let constructor = equation_constructor(flat, record, call, equation_span)?;
+    validate_constructor_fields(flat, record, constructor)
+}
+
+/// The constructor's inputs are the Flat record's fields, in order, by
+/// identity, name and shape.
+fn validate_constructor_fields(
+    flat: &flat::Model,
+    record: &flat::RecordInstance,
+    constructor: &rumoca_core::Function,
+) -> Result<(), ToDaeError> {
     let record_type = flat.record_types.get(&record.type_def_id).ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "record equation",
@@ -204,7 +215,6 @@ fn validate_constructor_layout(
             record.source_span,
         )
     })?;
-    let constructor = equation_constructor(flat, record, call, equation_span)?;
     let same_layout = constructor.inputs.len() == record_type.fields.len()
         && constructor
             .inputs
@@ -223,6 +233,49 @@ fn validate_constructor_layout(
         ));
     }
     Ok(())
+}
+
+/// The field plans of a whole record receiving one record-valued result of a
+/// function: every leaf coordinate of the record reads its field projection
+/// of the result (MLS 3.7 section 12.4.3 with section 8.3.1).
+pub(in crate::construction) fn record_result_fields(
+    flat: &flat::Model,
+    record: &flat::RecordInstance,
+    name: &VarName,
+    result: &rumoca_core::FunctionParam,
+    span: Span,
+) -> Result<Vec<RecordEquationFieldPlan>, ToDaeError> {
+    if result.type_class != Some(rumoca_core::ClassType::Record)
+        || result.type_def_id != Some(record.type_def_id)
+        || !result.dimensions().is_empty()
+        || !record.dims.is_empty()
+    {
+        return Err(ToDaeError::unsupported_flat(
+            "record equation",
+            "a receiving record and its function result have distinct resolved type identities or shapes",
+            span,
+        ));
+    }
+    let constructor = rumoca_core::resolve_record_constructor(
+        flat.functions.values(),
+        &result.type_name,
+        record.type_def_id,
+    )
+    .map_err(|error| {
+        ToDaeError::unsupported_flat(
+            "record equation",
+            format!("`{}` has no constructor layout: {error}", record.type_name),
+            record.source_span,
+        )
+    })?;
+    validate_constructor_fields(flat, record, constructor)?;
+    Ok(record_leaves(flat, record, name, span)?
+        .into_iter()
+        .map(|leaf| RecordEquationFieldPlan {
+            target: leaf.coordinate,
+            value: RecordEquationFieldValue::AggregateProjection(leaf.projection),
+        })
+        .collect())
 }
 
 struct RecordLeaf {

@@ -810,3 +810,67 @@ fn a_record_equation_over_a_nested_constructor_projects_each_lane() {
     assert_eq!(value(&probe.report, "o.c"), 7.0);
     assert_eq!(value(&probe.report, "y"), 12.0);
 }
+
+/// MLS 3.7 section 12.4.4: an output record written through the fields of
+/// individual elements of an array of records, in straight-line code, and
+/// updated after a whole write from a call, keeps one value per field.
+const ELEMENT_FIELD_WRITES: &str = r#"
+package W
+  record Edge
+    Boolean enabled;
+    Real w;
+  end Edge;
+  record State
+    Integer generation;
+    Real x[2];
+    Edge edges[2];
+  end State;
+  function Base
+    input Real u;
+    output State s;
+  algorithm
+    s.generation := 1;
+    s.x := {u, u};
+    s.edges[1].enabled := false; s.edges[1].w := 0;
+    s.edges[2].enabled := false; s.edges[2].w := 0;
+  end Base;
+  function Make
+    input Real u;
+    output State next;
+  algorithm
+    next := Base(u);
+    next.x[2] := 5 * u;
+    next.edges[1].enabled := true; next.edges[1].w := u;
+    next.edges[2].enabled := u > 1; next.edges[2].w := 2 * u;
+  end Make;
+  function Read
+    input Real u;
+    output Real y;
+  protected
+    State s;
+  algorithm
+    s := Make(u);
+    y := s.x[1] + s.x[2] + s.edges[1].w + (if s.edges[2].enabled then s.edges[2].w else 0);
+  end Read;
+end W;
+model Elements
+  parameter Real u = 2;
+  Real small = W.Read(0.5);
+  Real large = W.Read(u);
+end Elements;
+"#;
+
+#[test]
+fn element_field_writes_after_a_whole_call_write_are_split() {
+    let compiled = Compiler::new()
+        .model("Elements")
+        .compile_str(ELEMENT_FIELD_WRITES, "ElementFieldWrites.mo")
+        .expect("element field writes after a whole call write compile");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the element-field DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    // u = 0.5: x = {0.5, 2.5}, edge 1 weighs 0.5, edge 2 is disabled.
+    assert_eq!(value(&probe.report, "small"), 3.5);
+    // u = 2: x = {2, 10}, edge 1 weighs 2, edge 2 enabled and weighs 4.
+    assert_eq!(value(&probe.report, "large"), 18.0);
+}
