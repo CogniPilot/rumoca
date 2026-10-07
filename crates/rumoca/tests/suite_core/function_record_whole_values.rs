@@ -588,3 +588,59 @@ fn a_record_copied_whole_then_updated_in_straight_line_code_keeps_the_update() {
     // The updated positions and rotations, and the copied count.
     assert_eq!(value(&probe.report, "y"), 3.0 + 70.0 + 500.0);
 }
+
+/// MLS 3.7 section 12.4.4: an output record whose array-of-records field is
+/// filled element by element from calls and read through the fields of its
+/// elements holds one column per element field.
+const ELEMENT_CALLS: &str = r#"
+package E
+  record Proposal
+    Real value;
+    Boolean verified;
+  end Proposal;
+  record Batch
+    Proposal proposals[3];
+    Real nextSeeds[3];
+    Real total;
+  end Batch;
+  function Verify
+    input Real seed;
+    output Proposal proposal;
+  algorithm
+    proposal.value := 2 * seed;
+    proposal.verified := seed > 1.5;
+  end Verify;
+  function Run
+    input Real base;
+    output Batch result;
+  algorithm
+    result.total := 0;
+    for rank in 1:3 loop
+      result.proposals[rank] := Verify(base + rank);
+      result.nextSeeds[rank] := result.proposals[rank].value + 1;
+      result.total := result.total + (if result.proposals[rank].verified then 1 else 0);
+    end for;
+  end Run;
+end E;
+model Elements
+  parameter Real base = 0.5;
+  E.Batch b = E.Run(base);
+  Real second = b.nextSeeds[2];
+  Real total = b.total;
+end Elements;
+"#;
+
+#[test]
+fn an_array_of_records_filled_from_calls_and_read_by_fields_is_split() {
+    let compiled = Compiler::new()
+        .model("Elements")
+        .compile_str(ELEMENT_CALLS, "Elements.mo")
+        .expect("element-wise record calls with field reads compile");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the element-call DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    // Seeds 1.5, 2.5, 3.5: the second proposal is 5, so its next seed is 6;
+    // seed 1.5 is not above 1.5, so two of three proposals verify.
+    assert_eq!(value(&probe.report, "second"), 6.0);
+    assert_eq!(value(&probe.report, "total"), 2.0);
+}

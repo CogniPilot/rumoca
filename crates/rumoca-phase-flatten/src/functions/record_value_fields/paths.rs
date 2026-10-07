@@ -114,6 +114,8 @@ pub(super) struct NodeUses {
     pub(super) written_whole: bool,
     /// Some statement writes a path strictly below the node.
     pub(super) written_below: bool,
+    /// Some expression reads a path strictly below the node.
+    pub(super) read_below: bool,
     /// Statements that write exactly this path, with no subscript on any part
     /// (a subscripted write updates one element, not the whole value).
     pub(super) writes: usize,
@@ -254,6 +256,9 @@ impl ExpressionVisitor for BodyPaths {
             return self.walk_expression(expr);
         };
         self.entry(&path.parts).read_whole = true;
+        for prefix in 1..path.parts.len() {
+            self.entry(&path.parts[..prefix]).read_below = true;
+        }
         self.part_subscripts(&path.parts);
         self.subscripts(&path.trailing);
     }

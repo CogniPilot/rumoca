@@ -331,7 +331,12 @@ fn split_fields(
             let nested = (field.type_class == Some(rumoca_core::ClassType::Record))
                 .then(|| record_constructor(constructors, field))
                 .flatten()
-                .filter(|_| uses.written_below)
+                .filter(|_| {
+                    // An array of records whose elements are written whole and read
+                    // through their fields holds one column per element field.
+                    uses.written_below
+                        || (!field.dimensions().is_empty() && uses.written_whole && uses.read_below)
+                })
                 .map(|constructor| {
                     let fields = split_fields(
                         paths,
