@@ -64,6 +64,25 @@ model SharedArgument
 equation
   difference = Mixed(count, count);
 end SharedArgument;
+function NativeTypedInputValue
+  input Real value;
+  input Integer sequence;
+  input Boolean enabled;
+  output Real result;
+algorithm
+  result := 0.0;
+  if enabled then
+    result := value+sequence;
+  end if;
+end NativeTypedInputValue;
+model NativeTypedInputsProbe
+  input Real value = 2.5;
+  input Integer sequence = 7;
+  input Boolean enabled = true;
+  output Real result;
+equation
+  result = NativeTypedInputValue(value,sequence,enabled);
+end NativeTypedInputsProbe;
 model RealView
   input Integer count = 1;
   output Real scaled;
@@ -185,10 +204,11 @@ fn real_views_of_integer_inputs_are_exact_or_refused() {
 }
 
 /// One Integer input passed both as an Integer argument (bound to its lane)
-/// and as a Real argument of the same call reads its Real view too, so a
-/// magnitude above 2^53 is refused rather than rounded into the Real cell.
+/// and as a Real argument of the same call: the Real cell is the authored
+/// coercion of the call, so it rounds (IEEE 754) and the call returns status
+/// 0; the Integer cell still reads the exact lane.
 #[test]
-fn an_integer_input_also_passed_as_a_real_argument_is_checked() {
+fn an_integer_input_also_passed_as_a_real_argument_rounds_the_real_cell() {
     let _lock = session_test_guard();
     let artifact = prepare("SharedArgument");
     let mut execution = CallExecution::new(&artifact);
@@ -203,7 +223,11 @@ fn an_integer_input_also_passed_as_a_real_argument_is_checked() {
     assert_eq!(status, 0);
     assert_eq!(values[slot(&artifact, "difference", "Y")], 0.0);
     execution.set_input("count", (1 << 53) + 1);
-    assert_eq!(execution.run_typed(&parameters).0, 2);
+    let (status, values) = execution.run_typed(&parameters);
+    assert_eq!(status, 0);
+    // The Real cell holds 2^53 (ties to even); the callee converts the exact
+    // Integer cell to Real the same way, so the difference is zero.
+    assert_eq!(values[slot(&artifact, "difference", "Y")], 0.0);
 }
 
 /// Boolean input lanes are one byte each, so the input lane region is
@@ -223,4 +247,36 @@ fn output_lanes_after_boolean_inputs_stay_eight_byte_aligned() {
         offset(&artifact, "derived_outputs", "receivedSequence") % 8,
         0
     );
+}
+
+/// An authored Real expression over an Integer input (`value + sequence`) is
+/// Modelica Real arithmetic: the Integer converts to Binary64 with IEEE 754
+/// rounding above 2^53 (MLS 3.7 has no inexact-conversion error), so the call
+/// returns status 0 with the rounded sum. The Integer reaches the callee
+/// through its lane, so the Real view of the input is never read and never
+/// checked.
+#[test]
+fn an_authored_real_expression_over_an_integer_input_rounds() {
+    let _lock = session_test_guard();
+    let artifact = prepare("NativeTypedInputsProbe");
+    let parameters = artifact["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_f64().unwrap())
+        .collect::<Vec<_>>();
+    let mut execution = CallExecution::new(&artifact);
+    execution.set_input("enabled", 1);
+    execution.set_input("sequence", (1 << 53) + 1);
+    let (status, values) = execution.run_typed(&parameters);
+    assert_eq!(status, 0);
+    // 2^53 + 1 converts to 2^53 (ties to even); 2^53 + 2.5 rounds to 2^53 + 2.
+    assert_eq!(
+        values[slot(&artifact, "result", "Y")],
+        ((1_u64 << 53) + 2) as f64
+    );
+    execution.set_input("sequence", 7);
+    let (status, values) = execution.run_typed(&parameters);
+    assert_eq!(status, 0);
+    assert_eq!(values[slot(&artifact, "result", "Y")], 9.5);
 }

@@ -7,8 +7,10 @@
 //! lane; the host's P is never written. Where an Integer value
 //! only passes through (into an Integer argument cell of a pure call, or
 //! straight to an Integer output) the schedule binds that sink to the `i64`
-//! lane itself, so the value never takes a Binary64 hop. Every other Real
-//! view of an Integer (an input view, or a pure-call Integer result cell) is
+//! lane itself, so the value never takes a Binary64 hop. A Real argument cell
+//! of a pure call fed by an Integer view is the authored coercion of the call
+//! and rounds (IEEE 754). Every other Real view of an Integer (an input view
+//! read by an untyped stage operation, or a pure-call Integer result cell) is
 //! marked checked: the backend refuses a magnitude above 2^53 at run time
 //! instead of rounding it.
 
@@ -352,24 +354,22 @@ impl StageFlow<'_> {
             LinearOp::PureCall {
                 input_starts, site, ..
             } => {
-                // A register a Real argument cell of the same call also reads
-                // stays an unbound read of its Real view.
-                let real_reads = argument_cells(input_starts, site)
-                    .filter(|&(_, _, integer)| !integer)
-                    .map(|(_, register, _)| register)
-                    .collect::<BTreeSet<_>>();
+                // A Real argument cell fed by the Real view of an Integer input is
+                // the authored Integer-to-Real coercion of the call (MLS 3.7
+                // section 10.5 coerces an Integer actual to a Real formal), so
+                // it rounds per IEEE 754 and is not a checked read; the
+                // Integer cells of the same call still read the lane.
+                bound.extend(
+                    argument_cells(input_starts, site)
+                        .map(|(_, register, _)| register)
+                        .filter(|register| views.contains_key(register)),
+                );
                 let cells = argument_cells(input_starts, site)
                     .filter(|&(_, _, integer)| integer)
                     .filter_map(|(flat, register, _)| {
                         Some((flat, register, *views.get(&register)?))
                     })
                     .collect::<Vec<_>>();
-                bound.extend(
-                    cells
-                        .iter()
-                        .map(|&(_, register, _)| register)
-                        .filter(|register| !real_reads.contains(register)),
-                );
                 for (flat, _, ordinal) in cells {
                     self.bindings
                         .inputs
