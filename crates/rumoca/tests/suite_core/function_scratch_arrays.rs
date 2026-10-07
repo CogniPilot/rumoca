@@ -113,3 +113,67 @@ fn a_selected_sequence_reads_the_scratch_its_earlier_loop_filled() {
     assert_eq!(result_at("Conditional", 0.0), [0.0, 4.0, 6.0]);
     assert_eq!(result_at("Conditional", 1.0), [0.0; 3]);
 }
+
+const COLUMN_COPY: &str = r#"
+package C
+  record Edge
+    Boolean enabled;
+    Real w;
+  end Edge;
+  record State
+    Integer generation;
+    Edge edges[2];
+  end State;
+  function F
+    input Real u;
+    input Boolean flag;
+    output Real y;
+  protected
+    State a;
+    State b;
+  algorithm
+    a.generation := 1;
+    for i in 1:2 loop
+      a.edges[i].enabled := i == 1;
+      a.edges[i].w := u * i;
+    end for;
+    b.generation := 2;
+    b.edges := a.edges;
+    if flag then
+      b.edges[2].w := 100;
+    end if;
+    y := b.edges[1].w + b.edges[2].w + b.generation;
+  end F;
+end C;
+model Copy
+  parameter Real u = 3;
+  Real y = C.F(u, time < 0.5);
+  Real z = C.F(u, false);
+end Copy;
+"#;
+
+/// A record local whose array-of-records field is copied whole into another
+/// record is one copy per leaf column; later element writes update the copy
+/// only.
+#[test]
+fn a_record_array_field_is_copied_by_column() {
+    let compiled = Compiler::new()
+        .model("Copy")
+        .compile_str(COLUMN_COPY, "Copy.mo")
+        .expect("the record-array copy compiles");
+    for (time, y) in [(0.0, 105.0), (1.0, 11.0)] {
+        let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], time)
+            .expect("the copy evaluates");
+        let value = |name: &str| {
+            probe
+                .report
+                .solver_y
+                .iter()
+                .find(|slot| slot.name == name)
+                .unwrap_or_else(|| panic!("solver value {name}"))
+                .value
+        };
+        assert_eq!(value("y"), y, "y at t={time}");
+        assert_eq!(value("z"), 11.0, "z at t={time}");
+    }
+}
