@@ -27,8 +27,8 @@ pub use assignment_shape::{
     OutputYReads, derive_target_assignment_shape_for_output, derive_target_assignment_shapes,
     isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
 };
+pub use dependency::ScalarProgramYDependency;
 use dependency::assignment_y_dependencies_for_shapes;
-pub use dependency::{ScalarProgramYDependency, YFootprint};
 pub use materialization::{
     IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
     materialize_target_assignment,
@@ -44,8 +44,8 @@ pub use staged_execution::{
 };
 
 use crate::{
-    AlgebraicProjectionPlan, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    TargetAssignmentShape,
+    AlgebraicProjectionPlan, ComputeBlock, ComputeNode, IndexIntervals, LinearOp,
+    ScalarProgramBlock, SettledIntervals, TargetAssignmentShape,
 };
 
 /// Exact canonical scalar program inside one tensor-aware [`crate::ComputeBlock`].
@@ -259,7 +259,7 @@ pub struct ExactRefreshAssignmentProgram {
     source: RefreshScalarProgramSource,
     target_indices: Box<[usize]>,
     assignment_shapes: Box<[TargetAssignmentShape]>,
-    assignment_y_dependencies: Box<[Box<[usize]>]>,
+    assignment_y_dependencies: Box<[IndexIntervals]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -308,10 +308,8 @@ impl ExactRefreshAssignmentProgram {
     }
 
     #[must_use]
-    pub fn assignment_y_dependencies(&self, position: usize) -> Option<&[usize]> {
-        self.assignment_y_dependencies
-            .get(position)
-            .map(Box::as_ref)
+    pub fn assignment_y_dependencies(&self, position: usize) -> Option<&IndexIntervals> {
+        self.assignment_y_dependencies.get(position)
     }
 
     /// Materialize the scalar execution view at a final backend boundary.
@@ -1226,13 +1224,14 @@ fn exact_rows_can_commit_together(
         let Some(shape) = row.assignment_shape.as_ref() else {
             return Ok(false);
         };
-        let reads_other = |index: usize| {
-            owners_by_target
-                .get(&index)
-                .is_some_and(|owners| owners.iter().any(|owner| *owner != row.owner_id))
-        };
+        // The footprint's intervals are met with the targets, so the cost is
+        // the targets inside them, not the footprint's width.
         let conflicts = match dependencies.footprint(shape.value_registers()) {
-            Some(footprint) => footprint.indices().any(reads_other),
+            Some(footprint) => footprint.intervals().any(|interval| {
+                owners_by_target
+                    .range(interval)
+                    .any(|(_, owners)| owners.iter().any(|owner| *owner != row.owner_id))
+            }),
             None => rows.iter().any(|other| other.owner_id != row.owner_id),
         };
         if conflicts {
@@ -1428,6 +1427,7 @@ struct ExactAssignmentCoverage<'a> {
     target_inventory: std::collections::BTreeSet<usize>,
     covered: std::collections::BTreeSet<RefreshRowOwnerId>,
     available: std::collections::BTreeSet<usize>,
+    settled: SettledIntervals,
 }
 
 impl<'a> ExactAssignmentCoverage<'a> {
@@ -1449,6 +1449,7 @@ impl<'a> ExactAssignmentCoverage<'a> {
             target_inventory,
             covered: std::collections::BTreeSet::new(),
             available: std::collections::BTreeSet::new(),
+            settled: SettledIntervals::default(),
         }
     }
 
@@ -1493,13 +1494,17 @@ impl<'a> ExactAssignmentCoverage<'a> {
         };
         let mut actual = Vec::new();
         for id in schedule.program_ids() {
-            let Some(program) = self.programs.iter().find(|program| program.id() == *id) else {
+            let Some(program) = usize::try_from(id.0)
+                .ok()
+                .and_then(|position| self.programs.get(position))
+            else {
                 return false;
             };
             if !exact_assignment_program_is_causal(
                 program,
                 &self.target_inventory,
                 &mut self.available,
+                &mut self.settled,
             ) {
                 return false;
             }
@@ -1526,16 +1531,18 @@ fn exact_assignment_program_is_causal(
     program: &ExactRefreshAssignmentProgram,
     target_inventory: &std::collections::BTreeSet<usize>,
     available: &mut std::collections::BTreeSet<usize>,
+    settled: &mut SettledIntervals,
 ) -> bool {
     for (position, target) in program.target_indices().iter().copied().enumerate() {
         let Some(dependencies) = program.assignment_y_dependencies(position) else {
             return false;
         };
-        if dependencies.iter().copied().any(|dependency| {
-            dependency != target
-                && target_inventory.contains(&dependency)
-                && !available.contains(&dependency)
-        }) {
+        if dependencies.reads_unresolved(
+            target,
+            target_inventory,
+            |dependency| available.contains(&dependency),
+            settled,
+        ) {
             return false;
         }
     }

@@ -19,7 +19,8 @@ use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    AffineStencilLoadStride, BinaryOp, LinearOp, Reg, ScalarProgramBlock, TensorOutputMap,
+    AffineStencilLoadStride, BinaryOp, IndexIntervals, LinearOp, Reg, ScalarProgramBlock,
+    TensorOutputMap,
 };
 
 mod stacked;
@@ -1537,7 +1538,7 @@ fn banded_nonzero_count(
 enum DependencyState {
     Empty,
     Singleton(usize),
-    Known(Arc<BTreeSet<usize>>),
+    Known(Arc<IndexIntervals>),
 }
 
 #[cfg(test)]
@@ -1547,7 +1548,7 @@ impl Clone for DependencyState {
             Self::Empty => Self::Empty,
             Self::Singleton(index) => Self::Singleton(*index),
             Self::Known(indices) if shared_dependency_tests::legacy_enabled() => {
-                Self::from_set((**indices).clone())
+                Self::from_set(indices.to_set())
             }
             Self::Known(indices) => Self::Known(Arc::clone(indices)),
         }
@@ -1584,12 +1585,19 @@ impl DependencyState {
     }
 
     fn from_set(indices: BTreeSet<usize>) -> Self {
-        let mut values = indices.iter().copied();
-        let leading = (values.next(), values.next());
-        match leading {
-            (None, _) => Self::Empty,
-            (Some(index), None) => Self::Singleton(index),
-            (Some(_), Some(_)) => Self::Known(Arc::new(indices)),
+        Self::from_intervals(IndexIntervals::of(indices))
+    }
+
+    /// The dependency on every index of `start..end`, held as one interval.
+    fn from_range(start: usize, end: usize) -> Self {
+        Self::from_intervals(IndexIntervals::range(start, end))
+    }
+
+    fn from_intervals(indices: IndexIntervals) -> Self {
+        match indices.len() {
+            0 => Self::Empty,
+            1 => indices.iter().next().map_or(Self::Empty, Self::Singleton),
+            _ => Self::Known(Arc::new(indices)),
         }
     }
 
@@ -1606,18 +1614,13 @@ impl DependencyState {
             Self::Known(indices) => Some(indices),
             _ => None,
         };
-        singleton.into_iter().chain(
-            shared
-                .into_iter()
-                .flat_map(|indices| indices.iter().copied()),
-        )
+        singleton
+            .into_iter()
+            .chain(shared.into_iter().flat_map(|indices| indices.iter()))
     }
 
     fn with_set<T>(&self, use_set: impl FnOnce(&BTreeSet<usize>) -> T) -> T {
-        match self {
-            Self::Known(indices) => use_set(indices),
-            _ => use_set(&self.clone().into_set()),
-        }
+        use_set(&self.clone().into_set())
     }
 
     fn union(self, other: Self) -> Self {
@@ -1635,24 +1638,28 @@ impl DependencyState {
             }
             (Self::Known(mut indices), Self::Singleton(index))
             | (Self::Singleton(index), Self::Known(mut indices)) => {
-                if !indices.contains(&index) {
+                if !indices.contains(index) {
                     Arc::make_mut(&mut indices).insert(index);
                 }
                 Self::Known(indices)
             }
-            (Self::Known(mut lhs), Self::Known(rhs)) => {
-                if !Arc::ptr_eq(&lhs, &rhs) && !rhs.is_subset(&lhs) {
-                    Arc::make_mut(&mut lhs).extend(rhs.iter().copied());
+            (Self::Known(lhs), Self::Known(rhs)) => {
+                if Arc::ptr_eq(&lhs, &rhs) || rhs.is_subset(&lhs) {
+                    Self::Known(lhs)
+                } else if lhs.is_subset(&rhs) {
+                    Self::Known(rhs)
+                } else {
+                    Self::Known(Arc::new(lhs.union(&rhs)))
                 }
-                Self::Known(lhs)
             }
         }
     }
 
-    fn into_shared(self) -> Arc<BTreeSet<usize>> {
+    fn into_shared(self) -> Arc<IndexIntervals> {
         match self {
             Self::Known(indices) => indices,
-            other => Arc::new(other.into_set()),
+            Self::Singleton(index) => Arc::new(IndexIntervals::singleton(index)),
+            Self::Empty => Arc::new(IndexIntervals::default()),
         }
     }
 
@@ -1660,7 +1667,7 @@ impl DependencyState {
         match self {
             Self::Empty => BTreeSet::new(),
             Self::Singleton(index) => BTreeSet::from([index]),
-            Self::Known(indices) => Arc::unwrap_or_clone(indices),
+            Self::Known(indices) => indices.to_set(),
         }
     }
 }
@@ -1694,23 +1701,13 @@ fn output_dependency_union(
     span: Option<Span>,
     source: DependencySource,
 ) -> Result<BTreeSet<usize>, StructuralPatternError> {
-    let mut seen = BTreeSet::new();
-    let mut union = BTreeSet::new();
     let outputs = program_output_dependencies_with_fold(program, span, None, None, None, source)?;
-    for dependencies in &outputs {
-        match dependencies {
-            DependencyState::Empty => {}
-            DependencyState::Singleton(index) => {
-                union.insert(*index);
-            }
-            DependencyState::Known(indices) => {
-                if seen.insert(Arc::as_ptr(indices) as usize) {
-                    union.extend(indices.iter().copied());
-                }
-            }
-        }
-    }
-    Ok(union)
+    // Outputs whose sets overlap (every lane of a call over whole inputs)
+    // are united interval by interval, so the union costs their structure.
+    let union = outputs
+        .into_iter()
+        .fold(DependencyState::empty(), DependencyState::union);
+    Ok(union.into_set())
 }
 
 fn program_output_y_dependencies(
@@ -1735,7 +1732,7 @@ fn program_output_y_dependencies(
 /// consumed fail-closed by refresh construction.
 pub(crate) fn program_register_y_dependencies(
     program: &[LinearOp],
-) -> Result<Vec<Option<Arc<BTreeSet<usize>>>>, StructuralPatternError> {
+) -> Result<Vec<Option<Arc<IndexIntervals>>>, StructuralPatternError> {
     let mut walk = DependencyWalk {
         registers: Vec::new(),
         outputs: Vec::new(),
@@ -2043,7 +2040,7 @@ impl DependencyWalk<'_> {
         let mut dependencies = self.get(index)?;
         if matches!(self.source, DependencySource::SolverP) {
             let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::from_set((base..end).collect()));
+            dependencies = dependencies.union(DependencyState::from_range(base, end));
         }
         self.set(dst, dependencies);
         Ok(())
@@ -2212,7 +2209,7 @@ impl DependencyWalk<'_> {
         let mut dependencies = self.get(index)?;
         if matches!(self.source, DependencySource::Seed) {
             let end = checked_indexed_seed_end(base, count, self.span)?;
-            dependencies = dependencies.union(DependencyState::from_set((base..end).collect()));
+            dependencies = dependencies.union(DependencyState::from_range(base, end));
         }
         self.set(dst, dependencies);
         Ok(())

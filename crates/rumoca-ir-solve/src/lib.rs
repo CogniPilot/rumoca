@@ -697,6 +697,8 @@ fn validate_function_conditional_owners(
     Ok(())
 }
 
+mod index_intervals;
+pub use index_intervals::{IndexIntervals, SettledIntervals};
 mod structural_pattern;
 pub use structural_pattern::{
     ColumnColoring, PatternDerivation, PatternProvenance, StructuralPattern,

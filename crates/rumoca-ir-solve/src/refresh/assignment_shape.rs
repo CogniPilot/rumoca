@@ -187,15 +187,18 @@ pub fn derive_target_assignment_shapes(
                     .or_insert_with(|| dependency_candidates::derive(producers.view(), output))
                     .as_ref()
             });
+        // Every shape isolates a target loaded on the output's projectable
+        // operand walk, so a target the output reads only through another
+        // operation (a call's inputs) is never a candidate; testing it would
+        // cost each output the width of that operation.
         let candidates = match walked {
             Some(walked) => {
                 let mut candidates = dependencies.register_dependencies(output).map_or_else(
-                    || targets.clone(),
+                    || walked.targets.clone(),
                     |scalar| {
                         scalar
                             .iter()
-                            .filter(|index| targets.contains(index))
-                            .copied()
+                            .filter(|index| walked.targets.contains(index))
                             .collect()
                     },
                 );
@@ -310,7 +313,7 @@ pub fn output_y_reads(program: &[LinearOp], output_offset: usize) -> OutputYRead
 #[derive(Clone, Debug)]
 pub enum OutputYReads {
     Absent,
-    Bounded(std::collections::BTreeSet<usize>),
+    Bounded(crate::IndexIntervals),
     Unbounded,
 }
 
@@ -319,7 +322,7 @@ impl OutputYReads {
     pub fn contains(&self, y_index: usize) -> bool {
         match self {
             Self::Absent => false,
-            Self::Bounded(reads) => reads.contains(&y_index),
+            Self::Bounded(reads) => reads.contains(y_index),
             Self::Unbounded => true,
         }
     }

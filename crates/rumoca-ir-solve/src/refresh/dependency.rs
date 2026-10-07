@@ -1,38 +1,32 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
-use crate::{LinearOp, Reg, TargetAssignmentShape};
+use crate::{IndexIntervals, LinearOp, Reg, TargetAssignmentShape};
 
 pub(super) fn assignment_y_dependencies_for_shapes(
     source_program: &[LinearOp],
     shapes: &[TargetAssignmentShape],
-) -> Box<[Box<[usize]>]> {
+) -> Box<[IndexIntervals]> {
     let mut prefix_dependencies = BTreeMap::new();
     shapes
         .iter()
         .map(|shape| {
             let prefix_len = shape.expr_eval_len();
-            let (indices, dependency) =
-                prefix_dependencies.entry(prefix_len).or_insert_with(|| {
-                    let prefix = source_program.get(..prefix_len).unwrap_or(source_program);
-                    (
-                        y_load_indices(prefix),
-                        ScalarProgramYDependency::new(prefix),
-                    )
-                });
-            // The loaded indices inside the footprint's intervals, ascending:
-            // the cost follows the footprint, not every index the prefix loads.
+            let (loaded, dependency) = prefix_dependencies.entry(prefix_len).or_insert_with(|| {
+                let prefix = source_program.get(..prefix_len).unwrap_or(source_program);
+                (
+                    IndexIntervals::of(y_load_indices(prefix)),
+                    ScalarProgramYDependency::new(prefix),
+                )
+            });
+            // The loaded indices inside the footprint, met interval by
+            // interval: the cost follows the two sets' structure.
             match dependency.footprint(shape.value_registers()) {
-                Some(footprint) => footprint
-                    .intervals()
-                    .flat_map(|(start, end)| indices.range(start..end).copied())
-                    .collect::<Vec<_>>(),
-                None => indices.iter().copied().collect(),
+                Some(footprint) => footprint.intersection(loaded),
+                None => loaded.clone(),
             }
-            .into_boxed_slice()
         })
-        .collect::<Vec<_>>()
-        .into_boxed_slice()
+        .collect()
 }
 
 pub(super) fn y_load_indices(program: &[LinearOp]) -> BTreeSet<usize> {
@@ -82,8 +76,8 @@ fn collect_y_load_indices(program: &[LinearOp], indices: &mut BTreeSet<usize>) {
 /// range. A query then costs a binary search, so asking many targets about
 /// the same wide operation never rescans its registers.
 pub struct ScalarProgramYDependency<'a> {
-    dependencies: Option<Vec<Option<std::sync::Arc<BTreeSet<usize>>>>>,
-    footprints: Mutex<BTreeMap<(Reg, usize), Option<YFootprint>>>,
+    dependencies: Option<Vec<Option<std::sync::Arc<IndexIntervals>>>>,
+    footprints: Mutex<BTreeMap<(Reg, usize), Option<IndexIntervals>>>,
     program: std::marker::PhantomData<&'a [LinearOp]>,
 }
 
@@ -99,11 +93,11 @@ impl<'a> ScalarProgramYDependency<'a> {
     /// The exact solver-Y dependencies of `register`, or `None` when the
     /// analysis cannot bound them and [`Self::depends_on`] answers `true` for
     /// every target.
-    pub fn register_dependencies(&self, register: u32) -> Option<&BTreeSet<usize>> {
+    pub fn register_dependencies(&self, register: u32) -> Option<&IndexIntervals> {
         self.register_set(register)
     }
 
-    fn register_set(&self, register: u32) -> Option<&BTreeSet<usize>> {
+    fn register_set(&self, register: u32) -> Option<&IndexIntervals> {
         self.dependencies
             .as_ref()
             .and_then(|dependencies| dependencies.get(register as usize))
@@ -112,7 +106,7 @@ impl<'a> ScalarProgramYDependency<'a> {
 
     pub fn depends_on(&self, register: u32, target: usize) -> bool {
         self.register_set(register)
-            .is_none_or(|dependencies| dependencies.contains(&target))
+            .is_none_or(|dependencies| dependencies.contains(target))
     }
 
     /// Whether any of the `count` registers from `start` depends on `target`.
@@ -132,66 +126,30 @@ impl<'a> ScalarProgramYDependency<'a> {
     }
 
     /// The union of the dependencies of `registers`, or `None` when one of
-    /// them is unbounded.
-    pub fn footprint(&self, registers: impl IntoIterator<Item = Reg>) -> Option<YFootprint> {
-        let mut indices = BTreeSet::new();
+    /// them is unbounded. Registers that share one dependency set are united
+    /// once.
+    pub fn footprint(&self, registers: impl IntoIterator<Item = Reg>) -> Option<IndexIntervals> {
+        let mut footprint = IndexIntervals::default();
+        let mut previous: Option<&std::sync::Arc<IndexIntervals>> = None;
         for register in registers {
-            indices.extend(self.register_set(register)?);
-        }
-        Some(YFootprint::of(indices))
-    }
-}
-
-/// A set of solver-Y indices as sorted, disjoint, non-adjacent half-open
-/// intervals.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct YFootprint(Box<[(usize, usize)]>);
-
-impl YFootprint {
-    fn of(indices: BTreeSet<usize>) -> Self {
-        let mut intervals: Vec<(usize, usize)> = Vec::new();
-        for index in indices {
-            match intervals.last_mut() {
-                Some((_, end)) if *end == index => *end += 1,
-                _ => intervals.push((index, index + 1)),
+            let set = self
+                .dependencies
+                .as_ref()
+                .and_then(|dependencies| dependencies.get(register as usize))
+                .and_then(Option::as_ref)?;
+            if previous.is_some_and(|previous| std::sync::Arc::ptr_eq(previous, set)) {
+                continue;
             }
+            footprint = footprint.union(set);
+            previous = Some(set);
         }
-        Self(intervals.into_boxed_slice())
-    }
-
-    /// The set's half-open intervals, in ascending order.
-    pub fn intervals(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.0.iter().copied()
-    }
-
-    /// The indices of the set, in ascending order.
-    pub fn indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.0.iter().flat_map(|&(start, end)| start..end)
-    }
-
-    pub fn contains(&self, index: usize) -> bool {
-        let after = self.0.partition_point(|&(start, _)| start <= index);
-        after
-            .checked_sub(1)
-            .is_some_and(|position| index < self.0[position].1)
+        Some(footprint)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_footprint_coalesces_adjacent_indices_and_answers_membership() {
-        let footprint = YFootprint::of(BTreeSet::from([1, 2, 3, 7]));
-        assert_eq!(&*footprint.0, &[(1, 4), (7, 8)]);
-        for index in [1, 2, 3, 7] {
-            assert!(footprint.contains(index), "{index}");
-        }
-        for index in [0, 4, 6, 8] {
-            assert!(!footprint.contains(index), "{index}");
-        }
-    }
 
     #[test]
     fn a_register_range_depends_on_exactly_its_registers_targets() {

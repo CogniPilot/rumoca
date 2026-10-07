@@ -1195,7 +1195,7 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
         solve::ScalarProgramYDependency::new(prefix).footprint(shape.value_registers())
     });
     let reads: Box<dyn Iterator<Item = usize>> = match &footprint {
-        Some(footprint) => Box::new(footprint.indices()),
+        Some(footprint) => Box::new(footprint.iter()),
         None => Box::new(row_y_input_ranges(program).into_iter().flatten()),
     };
     for dependency in reads {
@@ -1628,7 +1628,15 @@ fn refresh_row_dependency_positions<'ops>(
             .footprint(shape.value_registers())
     });
     match footprint {
-        Some(footprint) => footprint.indices().for_each(&mut add),
+        // Only indices some row produces matter, so each interval is met
+        // with the producers rather than walked index by index.
+        Some(footprint) => {
+            for interval in footprint.intervals() {
+                for (&index, _) in producer_by_target.range(interval) {
+                    add(index);
+                }
+            }
+        }
         None => {
             for range in dependencies.input_ranges(ops) {
                 for (&index, _) in producer_by_target.range(range.clone()) {
