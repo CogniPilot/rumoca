@@ -14,7 +14,8 @@ pub(in crate::construction) use expression_rules::{
 };
 use expression_rules::{expression_shape, reject_shape_call};
 pub(in crate::construction) use integer_bounds::{
-    IntegerInterval, infer_finite_for_counter_bounds, infer_function_integer_bounds,
+    IntegerInterval, exact_range_distance, infer_finite_for_counter_bounds,
+    infer_function_integer_bounds,
 };
 use rumoca_core::{DefId, FunctionInstanceId, InstanceId};
 use rumoca_eval_flat::constant::{DeferredParameterSource, EvalEnvironment};

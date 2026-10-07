@@ -7,7 +7,9 @@
 //! the loop unrolled per point the read indices of `state[i - 2:i - 1]` are
 //! exact. MLS §10.3.1 makes `size(y, 1)` the extent of `y`, never its value,
 //! so it may be asked before `y` has one. `Modelica.Math.Random.Utilities.
-//! initialStateWithXorshift64star` uses all three.
+//! initialStateWithXorshift64star` uses all three. A window such as
+//! `img[row - radius:row + radius, ...]` over a named constant radius is the
+//! same construct; an extent that varies with the loop index is refused.
 
 use rumoca::Compiler;
 
@@ -149,4 +151,148 @@ fn an_output_may_ask_its_own_extent_before_it_is_defined() {
         let name = format!("y[{}]", index + 1);
         assert_eq!(final_value(&result, &name), expected, "{name}");
     }
+}
+
+// A readable image kernel: the window is a slice whose bounds read both loop
+// indices and a named constant radius, inside loops bounded by `size`.
+const PATCH_SUMS: &str = r#"
+model PatchSums
+  function weighted
+    input Real p[3,3];
+    output Real s;
+  algorithm
+    s := sum(p[i,j]*(10*i + j) for i in 1:3, j in 1:3);
+  end weighted;
+  function patchSums
+    input Real img[:,:];
+    output Real weightedSums[size(img,1),size(img,2)];
+    output Real stridedSums[size(img,1),size(img,2)];
+  protected
+    constant Integer radius = 1;
+  algorithm
+    weightedSums := zeros(size(img,1),size(img,2));
+    stridedSums := zeros(size(img,1),size(img,2));
+    for row in radius+1:size(img,1)-radius loop
+      for column in radius+1:size(img,2)-radius loop
+        weightedSums[row,column] :=
+          weighted(img[row-radius:row+radius,column-radius:column+radius]);
+        stridedSums[row,column] :=
+          sum(img[row-radius:row+radius,column-radius:2*radius:column+radius]);
+      end for;
+    end for;
+  end patchSums;
+  parameter Real a = 1;
+  Real w[4,5];
+  Real p[4,5];
+equation
+  (w, p) = patchSums({{a*(7*r + c*c) for c in 1:5} for r in 1:4});
+end PatchSums;
+"#;
+
+/// The weighted and column-strided sums of the 3x3 window centred on
+/// `(row, column)` of `PatchSums`, accumulated in the same element order.
+fn expected_window_sums(row: i64, column: i64) -> (f64, f64) {
+    let image = |r: i64, c: i64| (7 * r + c * c) as f64;
+    let window = (1..=3_i64).flat_map(|i| (1..=3_i64).map(move |j| (i, j)));
+    let (mut weighted, mut strided) = (0.0, 0.0);
+    for (i, j) in window {
+        let value = image(row - 2 + i, column - 2 + j);
+        weighted += value * (10 * i + j) as f64;
+        if j != 2 {
+            strided += value;
+        }
+    }
+    (weighted, strided)
+}
+
+#[test]
+fn a_loop_window_slice_with_a_named_radius_is_a_fixed_extent_view() {
+    let result = simulate(PATCH_SUMS, "PatchSums");
+    for row in 1..=4_i64 {
+        for column in 1..=5_i64 {
+            let interior = (2..=3).contains(&row) && (2..=4).contains(&column);
+            let (weighted, strided) = if interior {
+                expected_window_sums(row, column)
+            } else {
+                (0.0, 0.0)
+            };
+            let w = format!("w[{row},{column}]");
+            let p = format!("p[{row},{column}]");
+            assert_eq!(final_value(&result, &w), weighted, "{w}");
+            assert_eq!(final_value(&result, &p), strided, "{p}");
+        }
+    }
+}
+
+// The run-time offset `m` cancels from the extent but is never folded: the
+// view follows `k` after its event.
+const RUNTIME_OFFSET: &str = r#"
+model RuntimeOffset
+  function weighted
+    input Real p[2];
+    output Real s;
+  algorithm
+    s := sum(p[i]*(10*i) for i in 1:2);
+  end weighted;
+  function pairs
+    input Real x[:];
+    input Integer m;
+    output Real y[3];
+  algorithm
+    for i in 1:3 loop
+      y[i] := weighted(x[i+m:i+m+1]);
+    end for;
+  end pairs;
+  discrete Integer k(start = 1, fixed = true);
+  Real y[3] = pairs({1, 2, 3, 4, 5, 6}, k);
+equation
+  when time > 0.05 then
+    k = 2;
+  end when;
+end RuntimeOffset;
+"#;
+
+#[test]
+fn a_window_offset_known_only_at_run_time_is_read_at_run_time() {
+    let result = simulate(RUNTIME_OFFSET, "RuntimeOffset");
+    for i in 1..=3 {
+        let name = format!("y[{i}]");
+        let expected = 10.0 * (i + 2) as f64 + 20.0 * (i + 3) as f64;
+        assert_eq!(final_value(&result, &name), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_slice_whose_extent_varies_with_the_loop_index_is_refused() {
+    let error = Compiler::new()
+        .model("GrowingSlice")
+        .compile_str(
+            r#"
+model GrowingSlice
+  function total
+    input Real p[:];
+    output Real y;
+  algorithm
+    y := sum(p);
+  end total;
+  function prefixes
+    input Real x[:];
+    output Real y[3];
+  algorithm
+    for i in 1:3 loop
+      y[i] := total(x[i:2*i]);
+    end for;
+  end prefixes;
+  Real y[3] = prefixes({1, 2, 3, 4, 5, 6});
+end GrowingSlice;
+"#,
+            "GrowingSlice.mo",
+        )
+        .expect_err("`x[i:2*i]` has an extent that changes with `i`");
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("function shape proof")
+            && rendered.contains("extent depends on the value of scalar `i`"),
+        "the unproven extent must be refused at its slice: {rendered}"
+    );
 }

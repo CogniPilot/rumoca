@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod accumulator_order_tests;
 mod accumulator_reductions;
+mod affine_slice_ranges;
 mod bounded_while;
 mod dependent_domains;
 #[cfg(test)]
@@ -43,6 +44,7 @@ mod preservation_programs;
 mod preservation_values;
 
 use accumulator_reductions::{compact_accumulator_loops, ordered_accumulators};
+use affine_slice_ranges::AffineSliceRanges;
 use dependent_domains::{integer_range, rectangularize_dependent_loops};
 use loop_local_substitution::{
     LocalSubstitution, compact_perfect_inner_element_loops, expression_dependencies_change,
@@ -53,7 +55,6 @@ pub(super) use loop_local_substitution::{statements_partially_assign_name, state
 
 use super::*;
 use rumoca_core::{ExpressionRewriter, Reference, StatementRewriter, Subscript};
-use std::collections::BTreeMap;
 
 /// Normalize function loops without materializing their scalar iterations.
 ///
@@ -103,7 +104,7 @@ pub(super) fn compact_function_loops(
         })
         .cloned()
         .collect::<HashSet<_>>();
-    let affine_slices = AffineSliceRanges.rewrite_statements(statements);
+    let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(statements);
     let settled = inline_settled_shape_integer_locals(
         &affine_slices,
         static_integers,
@@ -196,211 +197,6 @@ fn infer_declared_finite_counters(
     crate::construction::function_shapes::infer_finite_for_counter_bounds(
         statements, shapes, &counters, &inputs,
     );
-}
-
-struct AffineSliceRanges;
-
-impl ExpressionRewriter for AffineSliceRanges {
-    fn rewrite_subscript(&mut self, subscript: &Subscript) -> Subscript {
-        let Subscript::Expr { expr, span } = subscript else {
-            return subscript.clone();
-        };
-        let rewritten = self.rewrite_expression(expr);
-        affine_slice_subscript(&rewritten, *span).unwrap_or(Subscript::Expr {
-            expr: Box::new(rewritten),
-            span: *span,
-        })
-    }
-}
-
-fn affine_slice_subscript(rewritten: &Expression, span: Span) -> Option<Subscript> {
-    let Expression::Range {
-        start,
-        step,
-        end,
-        span: range_span,
-    } = &rewritten
-    else {
-        return None;
-    };
-    let mut references = Vec::new();
-    start.collect_var_refs(&mut references);
-    end.collect_var_refs(&mut references);
-    if references.is_empty() {
-        return None;
-    }
-    let step_value = match step.as_deref() {
-        None => 1,
-        Some(Expression::Literal {
-            value: Literal::Integer(value),
-            ..
-        }) if *value != 0 => *value,
-        _ => {
-            return None;
-        }
-    };
-    let distance = affine_integer_difference(end, start)?;
-    if distance.checked_rem(step_value) != Some(0) {
-        return None;
-    }
-    let extent = distance
-        .checked_div(step_value)
-        .and_then(|value| value.checked_add(1))?;
-    if extent <= 0 {
-        return None;
-    }
-    let binder = rumoca_core::affine_slice_binder_name(range_span.start.0);
-    let binder_reference = || Expression::VarRef {
-        name: Reference::generated(&binder),
-        subscripts: Vec::new(),
-        span: *range_span,
-    };
-    let coordinate = Expression::Binary {
-        op: OpBinary::Add,
-        lhs: start.clone(),
-        rhs: Box::new(Expression::Binary {
-            op: OpBinary::Mul,
-            lhs: Box::new(Expression::Binary {
-                op: OpBinary::Sub,
-                lhs: Box::new(binder_reference()),
-                rhs: Box::new(Expression::Literal {
-                    value: Literal::Integer(1),
-                    span: *range_span,
-                }),
-                span: *range_span,
-            }),
-            rhs: Box::new(Expression::Literal {
-                value: Literal::Integer(step_value),
-                span: *range_span,
-            }),
-            span: *range_span,
-        }),
-        span: *range_span,
-    };
-    Some(Subscript::Expr {
-        expr: Box::new(Expression::ArrayComprehension {
-            expr: Box::new(coordinate),
-            indices: vec![rumoca_core::ComprehensionIndex {
-                name: binder,
-                range: integer_range(1, extent, *range_span),
-            }],
-            filter: None,
-            span: *range_span,
-        }),
-        span,
-    })
-}
-
-impl StatementRewriter for AffineSliceRanges {}
-
-#[derive(Default)]
-struct AffineInteger {
-    constant: i64,
-    terms: BTreeMap<VarName, i64>,
-}
-
-fn affine_integer_difference(end: &Expression, start: &Expression) -> Option<i64> {
-    let mut difference = affine_integer(end)?;
-    difference.add_scaled(affine_integer(start)?, -1)?;
-    difference
-        .terms
-        .values()
-        .all(|coefficient| *coefficient == 0)
-        .then_some(difference.constant)
-}
-
-fn affine_integer(expression: &Expression) -> Option<AffineInteger> {
-    match expression {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            ..
-        } => Some(AffineInteger {
-            constant: *value,
-            terms: BTreeMap::new(),
-        }),
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => Some(AffineInteger {
-            constant: 0,
-            terms: BTreeMap::from([(name.var_name().clone(), 1)]),
-        }),
-        Expression::Unary {
-            op: OpUnary::Plus,
-            rhs,
-            ..
-        } => affine_integer(rhs),
-        Expression::Unary {
-            op: OpUnary::Minus,
-            rhs,
-            ..
-        } => {
-            let mut value = affine_integer(rhs)?;
-            value.scale(-1)?;
-            Some(value)
-        }
-        Expression::Binary { op, lhs, rhs, .. }
-            if matches!(
-                op,
-                OpBinary::Add | OpBinary::AddElem | OpBinary::Sub | OpBinary::SubElem
-            ) =>
-        {
-            let mut value = affine_integer(lhs)?;
-            let scale = if matches!(op, OpBinary::Sub | OpBinary::SubElem) {
-                -1
-            } else {
-                1
-            };
-            value.add_scaled(affine_integer(rhs)?, scale)?;
-            Some(value)
-        }
-        Expression::Binary {
-            op: OpBinary::Mul | OpBinary::MulElem,
-            lhs,
-            rhs,
-            ..
-        } => {
-            if let Expression::Literal {
-                value: Literal::Integer(scale),
-                ..
-            } = lhs.as_ref()
-            {
-                let mut value = affine_integer(rhs)?;
-                value.scale(*scale)?;
-                return Some(value);
-            }
-            let Expression::Literal {
-                value: Literal::Integer(scale),
-                ..
-            } = rhs.as_ref()
-            else {
-                return None;
-            };
-            let mut value = affine_integer(lhs)?;
-            value.scale(*scale)?;
-            Some(value)
-        }
-        _ => None,
-    }
-}
-
-impl AffineInteger {
-    fn scale(&mut self, scale: i64) -> Option<()> {
-        self.constant = self.constant.checked_mul(scale)?;
-        for coefficient in self.terms.values_mut() {
-            *coefficient = coefficient.checked_mul(scale)?;
-        }
-        Some(())
-    }
-
-    fn add_scaled(&mut self, mut other: Self, scale: i64) -> Option<()> {
-        other.scale(scale)?;
-        self.constant = self.constant.checked_add(other.constant)?;
-        for (name, coefficient) in other.terms {
-            let owned = self.terms.entry(name).or_default();
-            *owned = owned.checked_add(coefficient)?;
-        }
-        Some(())
-    }
 }
 
 struct BoundedReductionComprehensions<'shape> {

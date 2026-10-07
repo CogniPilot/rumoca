@@ -350,7 +350,7 @@ fn affine_integer(expression: &Expression, values: &ShapeEnvironment) -> Option<
 
 /// The exact `end - start` of a range whose bounds differ by a proven
 /// Integer, or `None` when the unproven terms do not cancel.
-pub(super) fn exact_range_distance(
+pub(in crate::construction) fn exact_range_distance(
     start: &Expression,
     end: &Expression,
     values: &ShapeEnvironment,
