@@ -410,8 +410,10 @@ impl Builder {
                 return false;
             }
             Step::Copy { dst, src } => {
-                let term = map[&src];
-                map.insert(dst, term);
+                match map.get(&src).copied() {
+                    Some(term) => map.insert(dst, term),
+                    None => map.remove(&dst),
+                };
                 return false;
             }
             Step::Store(_) => return false,
@@ -421,11 +423,17 @@ impl Builder {
                 dst,
                 count,
             } => {
-                let operands = shape
+                // `FusibleProgram::classify` admits only programs whose register
+                // flow defines every read first; a register with no term would
+                // match nothing the segment holds.
+                let Some(operands) = shape
                     .operands
                     .iter()
-                    .map(|&(field, register)| (field, map[&register]))
-                    .collect();
+                    .map(|&(field, register)| Some((field, *map.get(&register)?)))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return false;
+                };
                 let key = self.terms.key(&shape.shape, operands);
                 if matches!(op, LinearOp::PureCall { .. }) && self.segment.values.contains_key(&key)
                 {
