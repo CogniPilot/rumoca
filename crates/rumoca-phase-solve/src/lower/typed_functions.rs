@@ -1580,8 +1580,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         let body_value = self.expression(body)?;
         if body_value.leaves.len() != 1 {
             return self.filled_record_comprehension(
-                value_type,
-                body_node.value_type_id(),
+                (value_type, body_node.value_type_id()),
+                domain,
                 body_value,
                 at,
             );

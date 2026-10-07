@@ -177,3 +177,65 @@ fn a_record_array_field_is_copied_by_column() {
         assert_eq!(value("z"), 11.0, "z at t={time}");
     }
 }
+
+const FILLED_EDGES: &str = r#"
+package G
+  constant Integer cap = 3;
+  record Edge
+    Integer id;
+    Real rotation[2, 2];
+    Real translation[2];
+  end Edge;
+  record State
+    Integer generation;
+    Edge edges[cap];
+  end State;
+  function EmptyEdge
+    input Real scale;
+    output Edge result;
+  algorithm
+    result.id := 0;
+    result.rotation := scale * identity(2);
+    result.translation := {scale, 2 * scale};
+  end EmptyEdge;
+  function Empty
+    input Real scale;
+    output State result;
+  protected
+    Edge empty;
+  algorithm
+    result.generation := 1;
+    empty := EmptyEdge(scale);
+    for slot in 1:cap loop result.edges[slot] := empty; end for;
+  end Empty;
+end G;
+model Filled
+  parameter Real scale = 3;
+  output G.State s = G.Empty(scale);
+end Filled;
+"#;
+
+/// A record with array fields written whole into every element of a
+/// record-array field repeats each field over the elements.
+#[test]
+fn a_record_with_array_fields_fills_a_record_array_field() {
+    let compiled = Compiler::new()
+        .model("Filled")
+        .compile_str(FILLED_EDGES, "Filled.mo")
+        .expect("the filled record array compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the filled record array evaluates");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    let reals = probe
+        .report
+        .solver_y
+        .iter()
+        .map(|slot| slot.value)
+        .collect::<Vec<_>>();
+    // Per element: rotation (2 x 2) and translation (2); the layout orders the
+    // columns by field, each over the three elements.
+    assert_eq!(reals.len(), 3 * 4 + 3 * 2);
+    assert_eq!(reals.iter().filter(|value| **value == 3.0).count(), 3 * 2 + 3);
+    assert_eq!(reals.iter().filter(|value| **value == 6.0).count(), 3);
+    assert_eq!(reals.iter().filter(|value| **value == 0.0).count(), 3 * 2);
+}
