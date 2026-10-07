@@ -10,6 +10,7 @@ pub use construction_error::SolveProgramConstructionError;
 mod directional;
 mod linear_solve;
 mod native;
+mod read_flow;
 mod tensor;
 
 pub use tensor::promoted_concatenate_dimensions;
@@ -656,6 +657,8 @@ pub struct TypedProgram {
     slots: Box<[SolveSlot]>,
     register_types: Box<[SolveValueType]>,
     operations: Box<[SolveSpannedOperation]>,
+    #[serde(skip)]
+    read_flow: read_flow::ReadFlow,
 }
 
 impl TypedProgram {
@@ -675,12 +678,12 @@ impl TypedProgram {
             marker: PhantomData,
         };
         build(&mut builder)?;
-        Ok(Self {
+        Ok(Self::assemble(
             arithmetic,
-            slots: builder.slots.into_boxed_slice(),
-            register_types: builder.register_types.into_boxed_slice(),
-            operations: builder.operations.into_boxed_slice(),
-        })
+            builder.slots,
+            builder.register_types,
+            builder.operations,
+        ))
     }
 
     pub(super) fn construct_with_calls(
@@ -700,12 +703,44 @@ impl TypedProgram {
             marker: PhantomData,
         };
         build(&mut builder)?;
-        Ok(Self {
+        Ok(Self::assemble(
             arithmetic,
-            slots: builder.slots.into_boxed_slice(),
-            register_types: builder.register_types.into_boxed_slice(),
-            operations: builder.operations.into_boxed_slice(),
-        })
+            builder.slots,
+            builder.register_types,
+            builder.operations,
+        ))
+    }
+
+    fn assemble(
+        arithmetic: SolveArithmeticProfile,
+        slots: Vec<SolveSlot>,
+        register_types: Vec<SolveValueType>,
+        operations: Vec<SolveSpannedOperation>,
+    ) -> Self {
+        let read_flow = read_flow::ReadFlow::of(&operations, register_types.len(), &slots);
+        Self {
+            arithmetic,
+            slots: slots.into_boxed_slice(),
+            register_types: register_types.into_boxed_slice(),
+            operations: operations.into_boxed_slice(),
+            read_flow,
+        }
+    }
+
+    /// Whether `operation` is the last operation of this program that reads
+    /// `register`. The register's value is dead afterwards, so an executor may
+    /// move it out instead of sharing it.
+    #[must_use]
+    pub fn register_last_read_at(&self, register: SolveRegisterId, operation: usize) -> bool {
+        self.read_flow
+            .register_last_read_at(register.index(), operation)
+    }
+
+    /// Whether `operation` is the last load of the read-only `slot`, whose
+    /// value is dead afterwards.
+    #[must_use]
+    pub fn slot_last_load_at(&self, slot: SolveSlotId, operation: usize) -> bool {
+        self.read_flow.slot_last_load_at(slot.index(), operation)
     }
 
     #[must_use]

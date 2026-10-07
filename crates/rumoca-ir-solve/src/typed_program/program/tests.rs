@@ -4,6 +4,7 @@ use rumoca_core::{SourceId, StructuredIndexBinder, StructuredIndexDomain};
 
 mod linear_solve;
 mod native;
+mod read_flow;
 
 fn span(start: usize) -> Span {
     Span::from_offsets(
