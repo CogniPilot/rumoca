@@ -1318,12 +1318,13 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         span,
     )?;
     plan.value_projection_plan = if plan.causal_solution_certified {
+        let seeded = exact_seed_assignments(plan.causal_rows());
         solve::AlgebraicProjectionPlan {
             blocks: plan
                 .simultaneous_plan
                 .blocks
                 .iter()
-                .filter(|block| !block_is_exactly_seeded(block, plan.causal_rows()))
+                .filter(|block| !block_is_exactly_seeded(block, &seeded))
                 .cloned()
                 .collect(),
         }
@@ -1361,9 +1362,22 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     Ok(())
 }
 
+/// `(equation, target)` of every seed row that is a certified exact
+/// assignment of its own target.
+fn exact_seed_assignments(seed_rows: RefreshRows<'_>) -> BTreeSet<(usize, usize)> {
+    seed_rows
+        .iter()
+        .filter(|seed| {
+            seed.assignment_target() == Some(seed.target_index())
+                && seed.exact_assignment_certified()
+        })
+        .map(|seed| (seed.equation_index(), seed.target_index()))
+        .collect()
+}
+
 fn block_is_exactly_seeded(
     block: &solve::AlgebraicProjectionBlock,
-    seed_rows: RefreshRows<'_>,
+    seeded: &BTreeSet<(usize, usize)>,
 ) -> bool {
     block.rows.len() == 1
         && block.y_indices.len() == 1
@@ -1371,14 +1385,7 @@ fn block_is_exactly_seeded(
             .rows
             .iter()
             .zip(&block.y_indices)
-            .all(|(&row, &target)| {
-                seed_rows.iter().any(|seed| {
-                    seed.equation_index() == row
-                        && seed.target_index() == target
-                        && seed.assignment_target() == Some(target)
-                        && seed.exact_assignment_certified()
-                })
-            })
+            .all(|(&row, &target)| seeded.contains(&(row, target)))
 }
 
 fn dependency_causal_projection_is_certified(
@@ -1523,7 +1530,9 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
             &producer_by_target,
             &mut dependencies,
         ) {
-            if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
+            // Positions are distinct per row and each row is visited once, so
+            // no edge repeats.
+            if dep_pos == row_pos {
                 continue;
             }
             reserve_refresh_vec_capacity(
@@ -1546,8 +1555,12 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     );
     let mut ordered = Vec::new();
     reserve_refresh_vec_capacity(&mut ordered, rows.len(), "ordered refresh rows", span)?;
+    let mut emitted = Vec::new();
+    reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
+    emitted.resize(rows.len(), false);
     while let Some(row_pos) = ready.pop_front() {
         ordered.push(rows[row_pos].clone());
+        emitted[row_pos] = true;
         for &next in &edges[row_pos] {
             indegree[next] -= 1;
             if indegree[next] == 0 {
@@ -1564,17 +1577,6 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     );
     let causal_solution_certified = causal_solution_certified && ordered.len() == rows.len();
     if !causal_solution_certified {
-        let mut emitted = Vec::new();
-        reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
-        emitted.resize(rows.len(), false);
-        for row in &ordered {
-            if let Some(pos) = rows
-                .iter()
-                .position(|candidate| candidate.owner_id() == row.owner_id())
-            {
-                emitted[pos] = true;
-            }
-        }
         ordered.extend(
             rows.into_iter()
                 .enumerate()
