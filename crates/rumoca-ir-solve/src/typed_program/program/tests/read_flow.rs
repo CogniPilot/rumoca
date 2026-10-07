@@ -41,11 +41,11 @@ fn last_reads_follow_operation_order() {
     assert!(!program.slot_last_load_at(input, 0));
     assert!(program.slot_last_load_at(input, 1));
     assert!(!program.slot_last_load_at(output, 5));
-    assert!(program.register_last_read_at(second, 4));
-    assert!(!program.register_last_read_at(second, 3));
-    assert!(program.register_last_read_at(updated, 5));
-    assert!(!program.register_last_read_at(first, 0));
-    assert!((0..6).all(|operation| !program.register_last_read_at(first, operation)));
+    assert!(program.register_moves_at(second, 4));
+    assert!(!program.register_moves_at(second, 3));
+    assert!(program.register_moves_at(updated, 5));
+    assert!(!program.register_moves_at(first, 0));
+    assert!((0..6).all(|operation| !program.register_moves_at(first, operation)));
 }
 
 /// An operation that lists one register twice reads it last, but cannot move
@@ -69,5 +69,5 @@ fn a_register_listed_twice_by_its_last_reader_is_not_movable() {
     })
     .unwrap();
     let doubled = doubled.unwrap();
-    assert!((0..4).all(|operation| !program.register_last_read_at(doubled, operation)));
+    assert!((0..4).all(|operation| !program.register_moves_at(doubled, operation)));
 }

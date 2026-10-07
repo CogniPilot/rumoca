@@ -1333,7 +1333,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         register: SolveRegisterId,
         provenance: Span,
     ) -> Result<TypedValue, TypedProgramEvalError> {
-        if self.program.register_last_read_at(register, self.operation)
+        if self.program.register_moves_at(register, self.operation)
             && let Some(value) = self
                 .storage
                 .registers

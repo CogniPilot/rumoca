@@ -727,13 +727,21 @@ impl TypedProgram {
         }
     }
 
-    /// Whether `operation` is the last operation of this program that reads
-    /// `register`. The register's value is dead afterwards, so an executor may
-    /// move it out instead of sharing it.
+    /// The last operation of this program that reads each register, by register
+    /// index; `None` for a register nothing reads. Every executor derives its
+    /// value lifetimes from this relation.
     #[must_use]
-    pub fn register_last_read_at(&self, register: SolveRegisterId, operation: usize) -> bool {
+    pub fn register_last_reads(&self) -> &[Option<usize>] {
+        self.read_flow.register_last_reads()
+    }
+
+    /// Whether `operation` is the last operation of this program that reads
+    /// `register` and lists it once. The register's value is dead afterwards,
+    /// so an executor may move it out instead of sharing it.
+    #[must_use]
+    pub fn register_moves_at(&self, register: SolveRegisterId, operation: usize) -> bool {
         self.read_flow
-            .register_last_read_at(register.index(), operation)
+            .register_moves_at(register.index(), operation)
     }
 
     /// Whether `operation` is the last load of the read-only `slot`, whose

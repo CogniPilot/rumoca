@@ -2,18 +2,21 @@
 //!
 //! Registers are single-assignment and a region body owns its own register
 //! namespace, so the operation that reads a register or a read-only slot last
-//! is fixed by construction. An executor that holds a value as shared payload
-//! uses this relation to release it at its last read instead of keeping it
-//! alive, which lets a functional update of an aggregate reuse the payload of
-//! an aggregate nothing reads afterwards.
+//! is fixed by construction. Every executor derives its value lifetimes from
+//! this one relation: the interpreter releases a shared payload at its last
+//! read, which lets a functional update of an aggregate reuse the payload of
+//! an aggregate nothing reads afterwards, and the compiled backends end a
+//! register's storage there.
 
 use super::{SolveOperation, SolveSlot, SolveSlotAccess, SolveSpannedOperation};
 
-/// The operation index of the last single read of every register and of the last
-/// load of every slot.
+/// The operation index of the last read of every register and of the last
+/// load of every read-only slot.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct ReadFlow {
     register_last_read: Box<[Option<usize>]>,
+    /// Whether the last reader lists the register more than once.
+    register_listed_twice: Box<[bool]>,
     slot_last_load: Box<[Option<usize>]>,
 }
 
@@ -62,17 +65,6 @@ impl ReadFlow {
                 *last = Some(index);
             }
         }
-        // A register an operation lists twice cannot move out of that operation:
-        // its second read would find it gone.
-        let RegisterReads {
-            mut last_read,
-            occurrences,
-        } = reads;
-        for (last, count) in last_read.iter_mut().zip(&occurrences) {
-            if *count > 1 {
-                *last = None;
-            }
-        }
         // Only a slot nothing stores to can release its value at its last
         // load: a read-write slot is read again as the program's result.
         for (last, slot) in slot_last_load.iter_mut().zip(slots) {
@@ -81,13 +73,29 @@ impl ReadFlow {
             }
         }
         Self {
-            register_last_read: last_read.into_boxed_slice(),
+            register_last_read: reads.last_read.into_boxed_slice(),
+            register_listed_twice: reads
+                .occurrences
+                .into_iter()
+                .map(|count| count > 1)
+                .collect(),
             slot_last_load: slot_last_load.into_boxed_slice(),
         }
     }
 
-    pub(super) fn register_last_read_at(&self, register: usize, operation: usize) -> bool {
+    pub(super) fn register_last_reads(&self) -> &[Option<usize>] {
+        &self.register_last_read
+    }
+
+    /// Whether `operation` reads `register` last and lists it once, so that it
+    /// can move the value out: a second listing would find it gone.
+    pub(super) fn register_moves_at(&self, register: usize, operation: usize) -> bool {
         self.register_last_read.get(register).copied().flatten() == Some(operation)
+            && !self
+                .register_listed_twice
+                .get(register)
+                .copied()
+                .unwrap_or(true)
     }
 
     pub(super) fn slot_last_load_at(&self, slot: usize, operation: usize) -> bool {

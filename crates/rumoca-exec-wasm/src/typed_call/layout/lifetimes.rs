@@ -13,14 +13,15 @@ pub(super) struct Lifetimes {
 impl Lifetimes {
     pub(super) fn construct(program: &solve::TypedProgram, slots: &[CellRange]) -> Self {
         let mut result = Self {
-            last_use: vec![0; program.register_types().len()],
+            last_use: program
+                .register_last_reads()
+                .iter()
+                .map(|last| last.unwrap_or(0))
+                .collect(),
             defined_at: vec![usize::MAX; program.register_types().len()],
             input_reads: BTreeMap::new(),
         };
         for (index, operation) in program.operations().iter().enumerate() {
-            operation
-                .operation()
-                .visit_input_registers(|register| result.last_use[register.index()] = index);
             operation
                 .operation()
                 .visit_output_registers(|register| result.defined_at[register.index()] = index);
