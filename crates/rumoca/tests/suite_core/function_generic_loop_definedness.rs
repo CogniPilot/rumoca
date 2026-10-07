@@ -402,3 +402,86 @@ fn a_same_iteration_write_defines_a_scratch_under_a_runtime_guard() {
         [22.0, 32.0, 33.0]
     );
 }
+
+const GUARDED_PREVIOUS_WHOLE: &str = r#"
+function guardedPrevious
+  input Integer n;
+  output Real y;
+protected
+  Real previous;
+  Real total;
+algorithm
+  total := 0.0;
+  for i in 1:n loop
+    if i > 2 then
+      total := total + previous;
+    end if;
+    previous := i;
+  end for;
+  y := total;
+end guardedPrevious;
+
+model GuardedPrevious
+  output Real y;
+equation
+  y = guardedPrevious(4);
+end GuardedPrevious;
+
+function unguardedPrevious
+  input Integer n;
+  output Real y;
+protected
+  Real previous;
+  Real total;
+algorithm
+  total := 0.0;
+  for i in 1:n loop
+    total := total + previous;
+    previous := i;
+  end for;
+  y := total;
+end unguardedPrevious;
+
+model UnguardedPrevious
+  output Real y;
+equation
+  y = unguardedPrevious(4);
+end UnguardedPrevious;
+"#;
+
+/// A whole scalar unassigned at loop entry but assigned by the end of every
+/// iteration is defined by the earlier iteration for a read on a path whose
+/// binder range excludes the first iteration. Read on every iteration, the
+/// first read sees the local's start value (MLS 3.6 §12.4.4), as OpenModelica does.
+#[test]
+fn a_previous_iteration_whole_is_defined_where_the_first_point_is_excluded() {
+    let compiled = Compiler::new()
+        .model("GuardedPrevious")
+        .compile_str(GUARDED_PREVIOUS_WHOLE, "GuardedPrevious.mo")
+        .unwrap_or_else(|error| panic!("GuardedPrevious should compile: {error}"));
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .unwrap_or_else(|error| panic!("GuardedPrevious should evaluate: {error}"));
+    let y = probe
+        .report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name == "y")
+        .expect("GuardedPrevious has y")
+        .value;
+    assert_eq!(y, 2.0 + 3.0);
+
+    let compiled = Compiler::new()
+        .model("UnguardedPrevious")
+        .compile_str(GUARDED_PREVIOUS_WHOLE, "GuardedPrevious.mo")
+        .unwrap_or_else(|error| panic!("UnguardedPrevious should compile: {error}"));
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .unwrap_or_else(|error| panic!("UnguardedPrevious should evaluate: {error}"));
+    let y = probe
+        .report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name == "y")
+        .expect("UnguardedPrevious has y")
+        .value;
+    assert_eq!(y, 0.0 + 1.0 + 2.0 + 3.0);
+}

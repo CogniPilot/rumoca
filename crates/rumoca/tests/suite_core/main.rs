@@ -116,6 +116,7 @@ mod function_call_extents;
 mod function_comprehension_definedness;
 mod function_conditional_sequence_test;
 mod function_constant_binding_scope;
+mod function_continuation_round_trip;
 mod function_equation_shape;
 mod function_fold_projection;
 mod function_generic_loop_definedness;

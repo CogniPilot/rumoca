@@ -6,6 +6,7 @@ mod mixed;
 mod packed_tuples;
 mod permutations;
 mod ranges;
+mod rebinding;
 mod scalar_stores;
 mod strided;
 mod varying_constants;
