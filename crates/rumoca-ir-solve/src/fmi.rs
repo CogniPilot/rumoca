@@ -549,7 +549,7 @@ impl FmiComponent {
 /// `Clone` or `Copy`; a host lends it directly into one component instance.
 #[derive(Debug)]
 pub struct FmiRuntimeView<'component> {
-    model: &'component Arc<SolveModel>,
+    model: &'component SolveModel,
     metadata: &'component FmiMetadata,
     event_indicators: &'component FmiEventIndicatorInventory,
     root_location: &'component RootLocationPlan,
@@ -569,13 +569,6 @@ impl<'component> FmiRuntimeView<'component> {
     #[must_use]
     pub fn model(self) -> &'component SolveModel {
         self.model
-    }
-
-    /// The same checked root as an immutable shared handle, so a runtime built
-    /// from this component shares the component's model instead of copying it.
-    #[must_use]
-    pub fn shared_model(&self) -> Arc<SolveModel> {
-        Arc::clone(self.model)
     }
 
     #[must_use]

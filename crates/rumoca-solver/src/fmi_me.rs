@@ -117,8 +117,8 @@ enum MeModelSourceInner<'a> {
 /// The checked pieces an [`MeModelSource`] resolves to: the Solve model, the
 /// ordered event-indicator inventory, the optional max-step value reference,
 /// and the structural-configuration capability.
-type MeModelParts = (
-    std::sync::Arc<rumoca_ir_solve::SolveModel>,
+type MeModelParts<'a> = (
+    &'a rumoca_ir_solve::SolveModel,
     rumoca_ir_solve::fmi::FmiIndicatorPlan,
     Option<u32>,
     lifecycle::MeConfigurationCapability,
@@ -182,7 +182,7 @@ impl<'a> MeModelSource<'a> {
 
     pub(crate) fn into_parts(
         self,
-    ) -> Result<MeModelParts, rumoca_ir_solve::fmi::FmiComponentError> {
+    ) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
                 let configuration = match view.configuration_capability() {
@@ -196,10 +196,9 @@ impl<'a> MeModelSource<'a> {
                         lifecycle::MeConfigurationCapability::TunableStructuralParameter
                     }
                 };
-                let shared = view.shared_model();
-                let (_, metadata, inventory) = view.into_parts();
+                let (model, metadata, inventory) = view.into_parts();
                 Ok((
-                    shared,
+                    model,
                     inventory.plan().clone(),
                     metadata
                         .max_step_duration()
@@ -213,7 +212,7 @@ impl<'a> MeModelSource<'a> {
                 max_step_duration_value_reference,
                 configuration,
             } => Ok((
-                std::sync::Arc::new(model.clone()),
+                model,
                 rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
                     .plan()
                     .clone(),

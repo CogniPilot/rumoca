@@ -346,21 +346,3 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
         .unwrap();
     assert_eq!(refreshed, [0.0, 2.5, 0.0]);
 }
-
-/// A runtime built from a model a component already shares holds that same
-/// allocation, so instantiating a component copies the model zero times.
-#[test]
-fn a_runtime_built_from_a_shared_model_holds_the_same_allocation() {
-    let mut model = solve::SolveModel::default();
-    model.problem.continuous.refresh_owners =
-        solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
-            .expect("empty model issues its refresh owners");
-    let model = std::sync::Arc::new(model);
-    let runtime = SolveRuntime::new_shared(&model, None).expect("empty model constructs");
-    assert!(std::sync::Arc::ptr_eq(&runtime.model, &model));
-    let copy = runtime.clone();
-    assert!(
-        std::sync::Arc::ptr_eq(&copy.model, &model),
-        "cloning a runtime shares its model too"
-    );
-}
