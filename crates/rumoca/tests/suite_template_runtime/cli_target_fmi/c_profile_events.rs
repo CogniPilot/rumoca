@@ -26,6 +26,49 @@ equation
   b = noEvent(x > 0.5);
 end DiscreteFromState;
 
+block RelationOnTime
+  parameter Real startTime = 0.5;
+  output Real y;
+equation
+  y = if time < startTime then 0 else 1;
+end RelationOnTime;
+
+model WhenTime
+  Real x(start = 0, fixed = true);
+  Integer n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    n = pre(n) + 1;
+  end when;
+end WhenTime;
+
+model WhenSample
+  Real x(start = 0, fixed = true);
+  Integer n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when sample(0, 0.1) then
+    n = pre(n) + 1;
+  end when;
+end WhenSample;
+
+model SampleAndStateEvents
+  Real x(start = 0, fixed = true);
+  Real held(start = 0, fixed = true);
+  Integer ticks(start = 0, fixed = true);
+  Integer crossings(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when sample(0.05, 0.1) then
+    ticks = pre(ticks) + 1;
+    held = x;
+  end when;
+  when x > 0.43 then
+    crossings = pre(crossings) + 1;
+  end when;
+end SampleAndStateEvents;
+
 model WhenRelation
   Real x(start = 0, fixed = true);
   Integer n(start = 0, fixed = true);
@@ -229,6 +272,57 @@ fn packaged_fmi_when_clauses_on_state_relations_match_the_simulation() {
         input: &[],
         reference: Reference::Simulation,
     }]);
+}
+
+/// A relation on time and a `when` on time are time events: Model Exchange
+/// announces the instant as `nextEventTime`, and a Co-Simulation step ends at
+/// it, so the discontinuity falls on a step boundary (FMI 2.0.4 section 3.2.2,
+/// FMI 3.0 event mode).
+#[test]
+fn packaged_fmi_time_events_are_announced_and_stepped_to() {
+    assert_cases_agree(&[
+        Case {
+            model: "RelationOnTime",
+            variables: &["y"],
+            stop: 1.0,
+            interval: 0.25,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+        Case {
+            model: "WhenTime",
+            variables: &["n"],
+            stop: 1.0,
+            interval: 0.2,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+    ]);
+}
+
+/// A periodic clock is a stream of time events: the tick at the start instant
+/// is the first event after initialization, and each later tick advances the
+/// counter once, alone and beside state events.
+#[test]
+fn packaged_fmi_sample_clocks_tick_like_the_simulation() {
+    assert_cases_agree(&[
+        Case {
+            model: "WhenSample",
+            variables: &["n"],
+            stop: 1.0,
+            interval: 0.25,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+        Case {
+            model: "SampleAndStateEvents",
+            variables: &["x", "held", "ticks", "crossings"],
+            stop: 1.0,
+            interval: 0.2,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+    ]);
 }
 
 /// A discrete variable defined by a continuous-time expression is recomputed

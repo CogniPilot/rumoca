@@ -44,6 +44,7 @@ mod scalar_events;
 mod static_assertions;
 #[cfg(test)]
 mod tests;
+mod time_events;
 
 pub use c_codegen::{FmiCCodegenError, FmiCCodegenView};
 pub use co_simulation::{

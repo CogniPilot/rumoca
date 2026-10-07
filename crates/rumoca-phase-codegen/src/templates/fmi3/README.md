@@ -49,8 +49,9 @@ algebraic refresh) through the shared projection kernel at the FMI tolerance.
 Initialization rows over declaration seeds, homotopy continuation, delay
 histories, and retained state-manifold rows are refused.
 
-The current profile rejects general events, clocks, runtime event history,
-external calls/tables, and random operations. A derivative inside a matrix
+The current profile executes state, input, and time events and periodic clocks
+through the event iteration of SPEC_0044 ME-EVENT-002 and rejects dynamic time
+events, runtime event history, external calls/tables, and random operations. A derivative inside a matrix
 product (`J * der(w) = f`) lowers to a Solve IR `LinSolve` that the state
 derivative kernel evaluates by the linked kernel's Gauss-Jordan elimination
 with partial pivoting; a singular matrix fails the evaluation. A `LinSolve` in

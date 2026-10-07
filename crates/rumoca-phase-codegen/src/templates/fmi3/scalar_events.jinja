@@ -10,11 +10,24 @@
 {%- from "fmi-c-kernel.jinja" import scalar_op %}
 
 {%- macro event_fields(fmi) -%}
-{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count;{% endif -%}
+{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
+{%- endmacro %}
+
+{#- The evaluation time of a read at the component's time: after an event with
+    a right limit, the right limit itself (component.rs public_time_eval_time).
+    Declared after the instance type, before any program reads time. -#}
+{%- macro event_now(fmi) -%}
+{%- if fmi.scalar_events %}
+static inline double rmc_now(const ModelInstance* m) {
+    return m->rmc_right_valid && fabs(m->time - m->rmc_anchor) <= {{ fmi.scalar_events.time_events.match_tolerance }} * (1.0 + fmax(fabs(m->time), fabs(m->rmc_anchor))) ? m->rmc_right : m->time;
+}
+{%- else %}
+static inline double rmc_now(const ModelInstance* m) { return m->time; }
+{%- endif %}
 {%- endmacro %}
 
 {%- macro event_reset(fmi) -%}
-{%- if fmi.scalar_events %} m->rmc_domain_valid=false; m->rmc_entry_captured=false; m->rmc_initial_event=false; m->rmc_override_count=0; m->rmc_scan=0.0;{% endif -%}
+{%- if fmi.scalar_events %} m->rmc_domain_valid=false; m->rmc_entry_captured=false; m->rmc_initial_event=false; m->rmc_override_count=0; m->rmc_scan=0.0; m->rmc_pass=0; m->rmc_right_valid=false;{% endif -%}
 {%- endmacro %}
 
 {#- One named change step of a pass; `flag` accumulates whether it changed the
@@ -117,6 +130,84 @@ static bool rmc_value_changed(double before, double after, double tol) {
 static bool rmc_root_overridden(const ModelInstance* m, size_t root) {
     for (size_t k = 0; k < m->rmc_override_count; ++k) if (m->rmc_override_root[k] == root) return true;
     return false;
+}
+
+{%- set te = ev.time_events %}
+{%- set nclock = te.clocks|length %}
+{%- set ninstant = te.instants|length %}
+/* Time events: the static instants and the periodic clock schedules the
+   Solve problem owns (timeline.rs). A time event is announced to a Model
+   Exchange importer and ends a Co-Simulation interval exactly. */
+#define RMC_TIME_INSTANTS {{ ninstant }}
+#define RMC_CLOCKS {{ nclock }}
+static const double rmc_time_instant[{{ [ninstant, 1]|max }}] = { {% for instant in te.instants %}{{ instant }},{% else %}0.0{% endfor %} };
+static const double rmc_clock_period[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.period }},{% else %}1.0{% endfor %} };
+static const double rmc_clock_phase[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.phase }},{% else %}0.0{% endfor %} };
+static const double rmc_clock_phase_numerator[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.phase_numerator }},{% else %}0.0{% endfor %} };
+static const double rmc_clock_period_numerator[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.period_numerator }},{% else %}1.0{% endfor %} };
+static const double rmc_clock_denominator[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.denominator }},{% else %}1.0{% endfor %} };
+static const size_t rmc_clock_activation[{{ [nclock, 1]|max }}] = { {% for clock in te.clocks %}{{ clock.activation }},{% else %}0{% endfor %} };
+/* timeline.rs sample_time_match_with_tol. */
+static bool rmc_time_match(double a, double b) {
+    return fabs(a - b) <= {{ te.match_tolerance }} * (1.0 + fmax(fabs(a), fabs(b)));
+}
+/* timeline.rs event_time_in_window. */
+static bool rmc_time_in_window(double event, double current, double target) {
+    return isfinite(event) && event > current && (event < target || rmc_time_match(event, target));
+}
+/* timeline.rs schedule_tick_time: the tick's exact ratio rounded once. */
+static double rmc_clock_tick_time(size_t clock, double tick) {
+    return (rmc_clock_phase_numerator[clock] + tick * rmc_clock_period_numerator[clock]) / rmc_clock_denominator[clock];
+}
+/* timeline.rs periodic_schedule_matches_time. */
+static bool rmc_clock_active(size_t clock, double t) {
+    double period = rmc_clock_period[clock], phase = rmc_clock_phase[clock];
+    if (!isfinite(period) || !isfinite(phase) || period <= 0.0 || t + period < phase) return false;
+    double ticks = (t - phase) / period;
+    return ticks >= 0.0 && rmc_time_match(ticks, round(ticks));
+}
+/* timeline.rs next_schedule_event_time: the first tick of `clock` after
+   `current` and within `target`. */
+static bool rmc_clock_next(size_t clock, double current, double target, double* event) {
+    double period = rmc_clock_period[clock], phase = rmc_clock_phase[clock];
+    if (!isfinite(period) || !isfinite(phase) || period <= 0.0 || !isfinite(current) || !isfinite(target)) return false;
+    double tick = fmax(floor((current - phase) / period), 0.0);
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        double at = rmc_clock_tick_time(clock, tick);
+        if (rmc_time_in_window(at, current, target) && !rmc_time_match(at, current)) { *event = at; return true; }
+        if (at > target && !rmc_time_match(at, target)) return false;
+        double first_distinct = current + {{ te.match_tolerance }} * (1.0 + fmax(fabs(at), fabs(current)));
+        double next = fmax(fmax(floor((first_distinct - phase) / period) + 1.0, tick + 1.0), 0.0);
+        if (!isfinite(next) || next <= tick) return false;
+        tick = next;
+    }
+    return false;
+}
+/* runtime/schedule.rs next_stop: the earliest time event after `current` and
+   within `target`, instants and clock ticks alike. */
+static bool rmc_next_time_event(double current, double target, double* event) {
+    bool found = false;
+    for (size_t k = 0; k != RMC_TIME_INSTANTS; ++k) {
+        double at = rmc_time_instant[k];
+        if (at > current && !rmc_time_match(at, current) && (at < target || rmc_time_match(at, target)) && (!found || at < *event)) { *event = at; found = true; }
+    }
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) {
+        double at = 0.0;
+        if (rmc_clock_next(k, current, target, &at) && (!found || at < *event)) { *event = at; found = true; }
+    }
+    return found;
+}
+/* solve_ops.rs write_clock_activation_params: every activation lane reads
+   whether its clock ticks at `t`; an event holds them for its iteration. */
+static void rmc_write_clock_lanes(ModelInstance* m, double t) {
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) m->p[rmc_clock_activation[k]] = rmc_clock_active(k, t) ? 1.0 : 0.0;
+    (void)m; (void)t;
+}
+/* solve_ops.rs write_observation_clock_activation_params: outside an event no
+   clock ticks. */
+static void rmc_clear_clock_lanes(ModelInstance* m) {
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) m->p[rmc_clock_activation[k]] = 0.0;
+    (void)m;
 }
 
 /* component.rs event_indicators_into: the searched roots at the refreshed
@@ -240,6 +331,7 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
        the rows; a target that is an overridden relation memory keeps the
        located side. Clock-free owners run in every pass. */
     static const size_t gindex[{{ nguard }}] = { {% for slot in ev.guarded_targets %}{{ slot.index }},{% endfor %} };
+    static const long gclock[{{ nguard }}] = { {% for clock in ev.guarded_clocks %}{{ clock if clock is not none else -1 }},{% endfor %} };
     static const bool gin_y[{{ nguard }}] = { {% for slot in ev.guarded_targets %}{{ "true" if slot.column == "y" else "false" }},{% endfor %} };
     double gvalues[{{ nguard }}];
     if (!memories_only) {
@@ -273,6 +365,9 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
             for (size_t g = 0; g < {{ nguard }}; ++g) if (!gin_y[g] && (long)gindex[g] == memory) gvalues[g] = m->rmc_override_value[k];
         }
         for (size_t g = 0; g < {{ nguard }}; ++g) {
+            /* guarded_assignments.rs guarded_assignment_accepts_snapshot: an
+               owner under a clock runs on its tick, in the first pass only. */
+            if (gclock[g] >= 0 && (m->rmc_pass != 0 || !rmc_clock_active((size_t)gclock[g], m->time))) continue;
             double* slot = gin_y[g] ? &m->y[gindex[g]] : &m->p[gindex[g]];
             *changed |= memcmp(slot, &gvalues[g], sizeof(double)) != 0;
             *slot = gvalues[g];
@@ -553,12 +648,13 @@ static {{ prefix }}Status rmc_event_pass(ModelInstance* m, bool* changed) {
 /* relation_memory.rs apply_projected_event_update, eval_event_actions, and
    component.rs commit_event_runtime_state. Pre values are seeded from the
    event entry; each later pass reads the previous pass (Appendix B). */
-static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize) {
+static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canonicalize) {
     for (size_t k = 0; k < RMC_PRE_LANES; ++k) m->p[rmc_pre_dest[k]] = rmc_pre_source(m->rmc_entry_y, m->rmc_entry_p, k);
     bool settled = false;
     RmcSurface surface;
     if (!rmc_surface_open(&surface)) { RMC_LOG(m, "the event surface history could not be allocated"); return {{ prefix }}Error; }
     for (size_t pass = 0; pass < {{ schedule.fixed_point_cap }} && !settled; ++pass) {
+        m->rmc_pass = pass;
         bool changed = pass > 0 && rmc_advance_lanes(m);
         if (rmc_event_pass(m, &changed) != {{ prefix }}OK) { rmc_surface_close(&surface); return {{ prefix }}Error; }
         /* relation_memory.rs: condition memories advance on the settled pass,
@@ -606,6 +702,16 @@ static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize)
     return {{ prefix }}Error;
 }
 
+/* One event at `m->time`: every clock that ticks there reads active for the
+   whole iteration, and none reads active once it has settled. */
+static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize) {
+    rmc_write_clock_lanes(m, m->time);
+    {{ prefix }}Status status = rmc_event_iterate_passes(m, canonicalize);
+    rmc_clear_clock_lanes(m);
+    m->rmc_pass = 0;
+    return status;
+}
+
 /* component.rs exit_initialization_mode_inner and discrete_rows.rs
    seed_condition_memory_for_initialization: relation memory from the settled
    state, then every condition memory with pre following the current value. */
@@ -625,6 +731,16 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     return {{ prefix }}OK;
 }
 
+/* runtime/schedule.rs coincident_scheduled_event: an event at a static instant
+   is observed at its right limit unless a clock ticks there (EventEntry wins
+   the merge of the two owners' pre modes). */
+static bool rmc_observes_right_limit(double t) {
+    bool instant = false;
+    for (size_t k = 0; k != RMC_TIME_INSTANTS; ++k) instant |= rmc_time_match(rmc_time_instant[k], t);
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) if (rmc_clock_active(k, t)) return false;
+    return instant;
+}
+
 /* Event Mode: the initial event after initialization, else the state event
    the completed step captured. Without a captured entry (a host-requested
    event), the entry is the current coordinate. */
@@ -638,7 +754,15 @@ static {{ prefix }}Status rmc_events_update(ModelInstance* m, bool* states_chang
         memcpy(m->rmc_entry_p, m->p, sizeof(m->p));
         m->rmc_override_count = 0;
     }
+    m->rmc_right_valid = false;
     {{ prefix }}Status status = rmc_event_iterate(m, !initial);
+    /* event_boundary.rs apply_event_right_limit: the right limit observes the
+       same event, so it starts again from the event-entry discrete values. */
+    if (status == {{ prefix }}OK && !initial && rmc_observes_right_limit(m->time)) {
+        m->rmc_anchor = m->time; m->rmc_right = nextafter(m->time, DBL_MAX); m->rmc_right_valid = true;
+        memcpy(m->p, m->rmc_entry_p, sizeof(m->p));
+        status = rmc_event_iterate(m, true);
+    }
     *states_changed = memcmp(states, m->y, sizeof(states)) != 0;
     m->rmc_entry_captured = false;
     m->rmc_initial_event = false;
@@ -658,6 +782,20 @@ static {{ prefix }}Status rmc_events_continuous(ModelInstance* m) {
     }
     m->rmc_domain_valid = true;
     return {{ prefix }}OK;
+}
+
+/* Co-Simulation has no Event Mode call: the initial event, and with it the
+   values of a tick at the start instant, runs as initialization exits. */
+static {{ prefix }}Status rmc_cs_start(ModelInstance* m) {
+    bool reinit = false;
+    if (!m->rmc_initial_event) return {{ prefix }}OK;
+    return rmc_events_update(m, &reinit) == {{ prefix }}OK && rmc_events_continuous(m) == {{ prefix }}OK ? {{ prefix }}OK : {{ prefix }}Error;
+}
+
+/* The time event Event Mode announces: the first instant or clock tick after
+   the current time (`nextEventTime`). */
+static bool rmc_next_event(const ModelInstance* m, double* event) {
+    return rmc_next_time_event(m->time, DBL_MAX, event);
 }
 {%- endmacro %}
 
@@ -813,12 +951,19 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     if (rmc_events_completed(m, &entered) != {{ prefix }}OK) return {{ prefix }}Error;
     if (entered && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
     while (t < end) {
-        double scan = m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN);
-        double h = fmin(end - t, scan), advanced = 0.0;
+        /* Indicators bound the scan; a component without any integrates a
+           whole interval. */
+        double scan = RMC_EVENT_INDICATORS == 0 ? INFINITY : (m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN));
+        double h = fmin(end - t, scan), advanced = 0.0, event = 0.0;
+        /* A time event inside the interval ends it exactly at the event, and
+           an event at the interval's end is handled at the end. */
+        bool at_event = rmc_next_time_event(t, t + h, &event);
+        if (at_event) h = fmin(event, t + h) - t;
         {{ prefix }}Status interval = rmc_cs_interval(m, t, h, &advanced);
         if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;
+        if (at_event && advanced == h && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
     }
     return {{ prefix }}OK;
 }

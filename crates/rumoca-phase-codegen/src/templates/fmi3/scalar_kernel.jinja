@@ -63,7 +63,7 @@
 
 {%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none) %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
-{%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
+{%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = rmc_now(m);
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];

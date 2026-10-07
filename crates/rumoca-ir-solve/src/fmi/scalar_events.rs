@@ -7,9 +7,10 @@
 //! IR facts: the searched roots and their indicator table, the relation-memory
 //! targets and zero domains, the event iteration schedule, and the pre-binding
 //! lanes of each iteration run. Runtime, post-commit, and unclocked guarded
-//! assignments run as their row blocks. Clocks, scheduled or dynamic time
-//! events, delays, structured updates, and event transactions are refused
-//! here.
+//! assignments run as their row blocks; a guarded assignment under a periodic
+//! clock runs on that clock's ticks. The static instants and the periodic
+//! clock schedules are the component's time events. Dynamic time events,
+//! delays, structured updates, and event transactions are refused here.
 
 use serde::Serialize;
 
@@ -44,6 +45,11 @@ pub(super) struct ScalarEventProfile {
     runtime_targets: Vec<Slot>,
     /// Per guarded-assignment output, in program order: its target.
     guarded_targets: Vec<Slot>,
+    /// Per guarded-assignment output: the periodic clock that owns it, which
+    /// gates it to that clock's ticks and to the first pass of an event.
+    guarded_clocks: Vec<Option<usize>>,
+    /// The time events the component announces and stops at.
+    time_events: super::time_events::TimeEvents,
     post_commit_targets: Vec<Slot>,
     /// The parameters actions read at their event-entry value.
     condition_memories: Vec<usize>,
@@ -188,6 +194,11 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         observation_reads_y: discrete.observation_refresh_reads_y,
         runtime_targets: slots(&discrete.runtime_assignment_targets)?,
         guarded_targets: guarded_targets(discrete)?,
+        guarded_clocks: guarded_clocks(
+            discrete,
+            model.problem.clocks.periodic_event_schedules.len(),
+        )?,
+        time_events: super::time_events::derive(model)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
         schedule: discrete.event_iteration_plan.schedule.clone(),
@@ -200,14 +211,19 @@ fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
     let problem = &model.problem;
     let events = &problem.events;
     let discrete = &problem.discrete;
-    if crate::solve_has_runtime_events(problem) || crate::solve_has_clocks(problem) {
-        return Err("the C profile cannot execute delays, terminal events, or clocks");
+    if crate::solve_has_runtime_events(problem) {
+        return Err("the C profile cannot execute delays or terminal events");
+    }
+    if discrete.clock_owners.iter().any(Option::is_some)
+        || !discrete.clock_partition_intermediates.is_empty()
+    {
+        return Err("the C profile executes clocks only through guarded assignments");
     }
     if !events.scheduled_root_conditions.is_empty()
-        || !events.scheduled_time_events.is_empty()
         || !events.dynamic_time_event_rhs.is_empty()
+        || !events.dynamic_time_event_names.is_empty()
     {
-        return Err("the C profile cannot execute time events");
+        return Err("the C profile cannot execute dynamic or scheduled-root time events");
     }
     if events.actions.iter().any(|action| {
         !matches!(
@@ -275,13 +291,10 @@ fn scalar_event_root(
 }
 
 /// The guarded assignments' targets, expanded from their compact ranges in
-/// program and range order; an owner under a clock is refused.
+/// program and range order.
 fn guarded_targets(discrete: &crate::DiscreteSolveSystem) -> Result<Vec<Slot>, &'static str> {
     let mut targets = Vec::new();
     for program in &discrete.guarded_assignments {
-        if program.clock_owner().is_some() {
-            return Err("the C profile cannot execute clocked guarded assignments");
-        }
         for range in program.target_ranges() {
             let (column, base) = match range.base() {
                 ScalarSlot::Y { index, .. } => ("y", index),
@@ -299,4 +312,26 @@ fn guarded_targets(discrete: &crate::DiscreteSolveSystem) -> Result<Vec<Slot>, &
         }
     }
     Ok(targets)
+}
+
+/// The periodic clock of every guarded-assignment output, in the order of
+/// [`guarded_targets`].
+fn guarded_clocks(
+    discrete: &crate::DiscreteSolveSystem,
+    clock_count: usize,
+) -> Result<Vec<Option<usize>>, &'static str> {
+    let mut clocks = Vec::new();
+    for program in &discrete.guarded_assignments {
+        let clock = program.clock_owner().map(crate::PeriodicClockId::index);
+        if clock.is_some_and(|clock| clock >= clock_count) {
+            return Err("a guarded assignment names a clock outside the clock partition");
+        }
+        let outputs: usize = program
+            .target_ranges()
+            .iter()
+            .map(|range| range.count())
+            .sum();
+        clocks.extend(std::iter::repeat_n(clock, outputs));
+    }
+    Ok(clocks)
 }

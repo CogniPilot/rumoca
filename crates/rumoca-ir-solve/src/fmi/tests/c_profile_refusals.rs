@@ -357,3 +357,56 @@ fn a_projection_holding_discretes_is_refused() {
         },
     );
 }
+
+/// A model whose only event is the tick of one periodic clock.
+fn ticking_model(schedule: PeriodicEventSchedule) -> (SolveModel, crate::fmi::FmiVariableInput) {
+    let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    model.problem.clocks.periodic_event_schedules = vec![schedule];
+    model.problem.clocks.activation_parameter_indices = vec![0];
+    (model, input)
+}
+
+/// SPEC_0044 ME-EVENT-002: a periodic clock is a time event the component
+/// announces, carried as the exact ratio of its ticks.
+#[test]
+fn a_periodic_clock_is_a_time_event_with_an_exact_tick_ratio() {
+    let (model, input) = ticking_model(PeriodicEventSchedule::from_seconds(0.1, 0.0).unwrap());
+    let view = FmiComponent::construct(model, vec![input])
+        .expect("the fixture is a checked component")
+        .into_codegen_view()
+        .try_c()
+        .expect("a clock tick is a time event");
+    let events = &serde_json::to_value(&view).unwrap()["scalar_events"]["time_events"];
+    let clock = &events["clocks"][0];
+    assert_eq!(clock["denominator"], 10.0);
+    assert_eq!(clock["period_numerator"], 1.0);
+    assert_eq!(clock["phase_numerator"], 0.0);
+    assert_eq!(clock["activation"], 0);
+    assert_eq!(
+        events["match_tolerance"],
+        rumoca_core::SCHEDULE_TIME_RELATIVE_TOLERANCE
+    );
+}
+
+/// A phase anchored at the simulation start needs the experiment's start time,
+/// which the packaged component learns only when it is set up.
+#[test]
+fn a_clock_anchored_at_the_simulation_start_is_refused() {
+    let lattice = rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap();
+    let schedule = PeriodicEventSchedule::from_schedule(
+        rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice).unwrap(),
+    )
+    .unwrap();
+    let (model, input) = ticking_model(schedule);
+    let refused = FmiComponent::construct(model, vec![input])
+        .expect("the fixture is a checked component")
+        .into_codegen_view()
+        .try_c()
+        .expect_err("the anchor is unresolved")
+        .to_string();
+    assert!(
+        refused.contains("anchored at the simulation start"),
+        "{refused}"
+    );
+}
