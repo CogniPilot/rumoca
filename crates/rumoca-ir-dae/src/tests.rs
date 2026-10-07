@@ -1632,17 +1632,7 @@ fn nested_expression_walks_reuse_their_stamp_tables() {
         let before = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get);
         let mut inner_visits = 0usize;
         for _ in 0..50 {
-            for_each_expression_pruned(view, root, |outer, _| {
-                // Each outer node starts a nested walk and a doubly nested one.
-                for_each_expression_pruned(view, outer, |nested, _| {
-                    for_each_expression_pruned(view, nested, |_, _| {
-                        inner_visits += 1;
-                        true
-                    });
-                    true
-                });
-                true
-            });
+            walk_nested(view, root, 2, &mut inner_visits);
         }
         assert!(inner_visits > 0);
         for _ in 0..50 {
@@ -1656,5 +1646,18 @@ fn nested_expression_walks_reuse_their_stamp_tables() {
         let growths = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get) - before;
         // One table per nesting depth, sized once; none per query.
         assert!(growths <= 3, "stamp tables grew {growths} times");
+    });
+}
+
+/// Visit every node of `root`, starting a walk of `depth` further nested levels
+/// from each one.
+fn walk_nested<'dae>(view: DaeView<'dae>, root: ExprId<'dae>, depth: usize, visits: &mut usize) {
+    for_each_expression_pruned(view, root, |node, _| {
+        if depth == 0 {
+            *visits += 1;
+        } else {
+            walk_nested(view, node, depth - 1, visits);
+        }
+        true
     });
 }

@@ -235,7 +235,10 @@ fn a_record_with_array_fields_fills_a_record_array_field() {
     // Per element: rotation (2 x 2) and translation (2); the layout orders the
     // columns by field, each over the three elements.
     assert_eq!(reals.len(), 3 * 4 + 3 * 2);
-    assert_eq!(reals.iter().filter(|value| **value == 3.0).count(), 3 * 2 + 3);
+    assert_eq!(
+        reals.iter().filter(|value| **value == 3.0).count(),
+        3 * 2 + 3
+    );
     assert_eq!(reals.iter().filter(|value| **value == 6.0).count(), 3);
     assert_eq!(reals.iter().filter(|value| **value == 0.0).count(), 3 * 2);
 }

@@ -18,6 +18,7 @@ mod tensor;
 mod total_conditionals;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
+use indexed_values::leading_index_axes;
 use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
@@ -1581,7 +1582,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         if body_value.leaves.len() != 1 {
             return self.filled_record_comprehension(
                 (value_type, body_node.value_type_id()),
-                domain,
+                &domain,
                 body_value,
                 at,
             );
@@ -1837,18 +1838,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             if indices.len() < base_dimensions.len() {
                 // MLS 10.5.3: the unsubscripted trailing axes are whole, so the
                 // update replaces the sub-array the leading indices select.
-                let axes = indices
-                    .iter()
-                    .copied()
-                    .map(solve::ProgramTensorViewAxis::Index)
-                    .chain(
-                        base_dimensions[indices.len()..]
-                            .iter()
-                            .map(|&extent| solve::ProgramTensorViewAxis::Span { origin: 0, extent }),
-                    )
-                    .collect::<Vec<_>>();
-                self.builder
-                    .update_view(base, value_register, &axes, at)?
+                let axes = leading_index_axes(&indices, &base_dimensions[indices.len()..]);
+                self.builder.update_view(base, value_register, &axes, at)?
             } else {
                 self.builder
                     .update_element(base, value_register, &indices, at)?

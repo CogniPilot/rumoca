@@ -147,6 +147,7 @@ pub struct ScalarCoordinateProjectionCache<'dae> {
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
+    parameter_eligibility: parameter_fragments::SharedEligibility,
     zero_coefficients: zero_coefficients::ZeroCoefficients<'dae>,
     marker: std::marker::PhantomData<&'dae ()>,
     #[cfg(test)]
@@ -1188,7 +1189,9 @@ impl<'dae> Projection<'_, 'dae> {
             cacheable: true,
             visited: visited::Visited::default(),
             folds: fold_graph::FoldGraph::default(),
-            fragments: parameter_fragments::ParameterFragments::default(),
+            fragments: parameter_fragments::ParameterFragments::new(std::rc::Rc::clone(
+                &self.cache.parameter_eligibility,
+            )),
             sweeps: literal_update_sweeps::LiteralUpdateSweeps::default(),
         });
         self.push_frame(FunctionFrame::Summary {

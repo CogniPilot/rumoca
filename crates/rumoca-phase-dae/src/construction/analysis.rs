@@ -160,7 +160,9 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
-pub(super) use record_equations::{RecordFieldSystem, reference_leaf_coordinates};
+pub(super) use record_equations::{
+    RecordFieldSystem, RecordProjectionStep, reference_leaf_coordinates,
+};
 use record_equations::{analyze_record_equations, record_result_fields};
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
@@ -636,16 +638,6 @@ pub(super) struct RecordEquationPlan {
 pub(super) struct RecordEquationFieldPlan {
     pub(super) target: VarName,
     pub(super) value: RecordEquationFieldValue,
-}
-
-/// One step from a record-valued result to one of its leaf coordinates.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum RecordProjectionStep {
-    /// The field with this ordinal in the record layout.
-    Field(usize),
-    /// The element at these 1-based subscripts of an array-of-records value;
-    /// Flat holds each element of a record-array field as its own instance.
-    Element(Box<[i64]>),
 }
 
 pub(super) enum RecordEquationFieldValue {

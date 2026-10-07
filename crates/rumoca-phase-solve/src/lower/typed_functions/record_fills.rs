@@ -15,7 +15,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     pub(super) fn filled_record_comprehension(
         &mut self,
         (value_type, body_type): (dae::ValueTypeId<'dae>, dae::ValueTypeId<'dae>),
-        domain: rumoca_core::StructuredIndexDomain,
+        domain: &rumoca_core::StructuredIndexDomain,
         body: LoweredValue<'program, 'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
@@ -33,21 +33,42 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .to_vec();
         let mut leaves = Vec::with_capacity(body.leaves.len());
         for (leaf, leaf_type) in body.leaves.iter().zip(leaf_types) {
-            leaves.push(if leaf_type.dimensions().is_empty() {
-                self.builder.fill(*leaf, dimensions.clone(), at)?
-            } else {
-                self.builder.map(
-                    domain.clone(),
-                    &[*leaf],
-                    leaf_type,
-                    at,
-                    |builder, captures, _, output| {
-                        let value = builder.load(captures[0], at)?;
-                        builder.store(output, value, at)
-                    },
-                )?
-            });
+            leaves.push(self.repeat_leaf(*leaf, leaf_type, (domain, &dimensions), at)?);
         }
         Ok(LoweredValue { value_type, leaves })
     }
+
+    /// One field leaf repeated over the comprehension: a scalar is filled over
+    /// the dimensions, an array leaf is mapped over the domain.
+    fn repeat_leaf(
+        &mut self,
+        leaf: solve::ProgramRegister<'program>,
+        leaf_type: solve::SolveValueType,
+        (domain, dimensions): (&rumoca_core::StructuredIndexDomain, &[u32]),
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        if leaf_type.dimensions().is_empty() {
+            return self.builder.fill(leaf, dimensions.to_vec(), at);
+        }
+        map_copy(self.builder, domain.clone(), (leaf, leaf_type), at)
+    }
+}
+
+/// A map over `domain` whose every element is the one captured `leaf`.
+fn map_copy<'program>(
+    builder: &mut solve::TypedProgramBuilder<'program>,
+    domain: rumoca_core::StructuredIndexDomain,
+    (leaf, leaf_type): (solve::ProgramRegister<'program>, solve::SolveValueType),
+    at: rumoca_core::Span,
+) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+    builder.map(
+        domain,
+        &[leaf],
+        leaf_type,
+        at,
+        |inner, captures, _, output| {
+            let value = inner.load(captures[0], at)?;
+            inner.store(output, value, at)
+        },
+    )
 }

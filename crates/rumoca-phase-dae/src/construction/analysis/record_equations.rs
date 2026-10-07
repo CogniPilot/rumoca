@@ -44,6 +44,16 @@ impl RecordEquationPlan {
     }
 }
 
+/// One step from a record-valued result to one of its leaf coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::construction) enum RecordProjectionStep {
+    /// The field with this ordinal in the record layout.
+    Field(usize),
+    /// The element at these 1-based subscripts of an array-of-records value;
+    /// Flat holds each element of a record-array field as its own instance.
+    Element(Box<[i64]>),
+}
+
 pub(super) fn analyze_record_equations(
     flat: &flat::Model,
     equations: &[flat::Equation],

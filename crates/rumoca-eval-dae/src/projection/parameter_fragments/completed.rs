@@ -58,7 +58,7 @@ fn plain(key: &ScalarExpressionDependency) -> bool {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct Eligibility {
+pub(in crate::projection) struct Eligibility {
     dense: Vec<Option<bool>>,
     sparse: HashMap<u32, bool>,
 }
