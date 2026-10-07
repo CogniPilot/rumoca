@@ -152,6 +152,15 @@ package Structural
       der(x[i]) = 0;
     end for;
   end UnevaluatedRange;
+  record Sizes
+    Integer n;
+  end Sizes;
+  model UnevaluatedRecordDimension
+    parameter Sizes sizes(n = 2) annotation(Evaluate = false);
+    Real x[sizes.n](each start = 1, each fixed = true);
+  equation
+    der(x) = -x;
+  end UnevaluatedRecordDimension;
 end Structural;
 "#;
 
@@ -349,6 +358,18 @@ fn a_keyed_argument_reading_an_evaluate_false_parameter_is_refused() {
     let error = refusal("Structural.UnevaluatedKeyedArgument");
     assert!(
         error.contains("function loop domain"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// MLS 3.7 §18.6: `Evaluate = false` on a record parameter applies to the
+/// whole component, so its fields are non-evaluable too and a dimension
+/// reading one is refused rather than folded.
+#[test]
+fn a_dimension_reading_a_field_of_an_evaluate_false_record_is_refused() {
+    let error = refusal("Structural.UnevaluatedRecordDimension");
+    assert!(
+        error.contains("non-evaluable parameter `sizes.n`"),
         "unexpected refusal: {error}"
     );
 }

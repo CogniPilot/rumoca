@@ -91,7 +91,7 @@ use conditional_components::{ConditionScope, mark_disabled_component_if_needed};
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
-use evaluate_annotation::evaluate_annotation;
+use evaluate_annotation::{EvaluateMark, evaluate_annotation};
 #[cfg(test)]
 pub(crate) use inner_outer::inner_visible_to_outer;
 pub(crate) use inner_outer::{
@@ -236,10 +236,10 @@ struct InstantiationFrame {
 #[derive(Clone, Debug, Default)]
 struct ScopeFrame {
     variability: Option<rumoca_core::Variability>,
-    /// MLS section 18.6: the component or an enclosing one carries
-    /// annotation(Evaluate = true), so everything instantiated beneath it is
-    /// evaluated during translation, record members included.
-    evaluate: bool,
+    /// MLS section 18.6: the `Evaluate` decision of the component, own or
+    /// inherited from an enclosing one, which applies to everything
+    /// instantiated beneath it, record members included.
+    evaluate: EvaluateMark,
     is_final: bool,
     causality: Option<rumoca_core::Causality>,
     flow: bool,
@@ -251,7 +251,7 @@ struct ScopeFrame {
 
 struct ScopeFrameInput<'a> {
     variability: &'a rumoca_core::Variability,
-    evaluate: bool,
+    evaluate: EvaluateMark,
     is_final: bool,
     causality: &'a rumoca_core::Causality,
     flow: bool,
@@ -609,11 +609,17 @@ impl InstantiateContext {
             .find_map(|frame| frame.causality.as_ref())
     }
 
-    /// Whether any enclosing component carries annotation(Evaluate = true).
-    /// MLS §18.6: evaluating a record-typed parameter during translation
-    /// evaluates the whole component, so its members inherit the mark.
-    fn inherited_evaluate(&self) -> bool {
-        self.scope_frames.iter().any(|frame| frame.evaluate)
+    /// The `Evaluate` decision of the innermost enclosing component that has
+    /// one. MLS §18.6: evaluating a record-typed parameter during translation,
+    /// or refusing to, applies to the whole component, so its members inherit
+    /// the mark.
+    fn inherited_evaluate(&self) -> EvaluateMark {
+        self.scope_frames
+            .iter()
+            .rev()
+            .map(|frame| frame.evaluate)
+            .find(|mark| *mark != EvaluateMark::Unmarked)
+            .unwrap_or_default()
     }
 
     fn inherited_final(&self) -> bool {
@@ -1142,7 +1148,7 @@ struct InstanceDataBuild<'a> {
     type_id: TypeId,
     is_primitive: bool,
     is_discrete_type: bool,
-    evaluate: bool,
+    evaluate: EvaluateMark,
     is_final: bool,
     source_map: &'a rumoca_core::SourceMap,
     ctx: &'a InstantiateContext,
@@ -1220,8 +1226,8 @@ fn build_instance_data(
         is_primitive: args.is_primitive,
         is_discrete_type: args.is_discrete_type,
         from_expandable_connector: args.ctx.is_in_expandable_connector(),
-        evaluate: args.evaluate,
-        evaluate_refused: evaluate_annotation(args.comp) == Some(false),
+        evaluate: args.evaluate.evaluates(),
+        evaluate_refused: args.evaluate.refused(),
         is_final: args.is_final,
         is_overconstrained: args.ctx.is_in_overconstrained(),
         is_protected: args.comp.is_protected || args.ctx.is_in_protected(),
@@ -1399,10 +1405,11 @@ fn instantiate_component(
             .mod_env()
             .get(&ast::QualifiedName::from_ident(&comp.name))
             .is_some_and(|modifier| modifier.final_);
-    // MLS §18.6: an explicit `Evaluate = false` outranks `final` and any
-    // enclosing `Evaluate = true`.
-    let evaluate =
-        evaluate_annotation(comp).unwrap_or_else(|| is_final || ctx.inherited_evaluate());
+    let evaluate = EvaluateMark::resolve(
+        evaluate_annotation(comp),
+        is_final,
+        ctx.inherited_evaluate(),
+    );
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
     let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
         resolve_component_nested_type_overrides(
@@ -1640,7 +1647,7 @@ struct NestedComponentRequest<'a> {
     class_def: Option<&'a ast::ClassDef>,
     is_primitive: bool,
     is_final: bool,
-    evaluate: bool,
+    evaluate: EvaluateMark,
     effective_variability: &'a rumoca_core::Variability,
     causality: &'a rumoca_core::Causality,
     flow: bool,
@@ -1722,7 +1729,7 @@ struct NestedInstantiationInput<'a> {
     nested_class: &'a ast::ClassDef,
     comp: &'a ast::Component,
     is_final: bool,
-    evaluate: bool,
+    evaluate: EvaluateMark,
     effective_variability: &'a rumoca_core::Variability,
     causality: &'a rumoca_core::Causality,
     flow: bool,
