@@ -91,10 +91,26 @@ impl IndexIntervals {
         })
     }
 
-    /// Add one index, merging it with adjacent intervals.
+    /// Add one index, merging it with adjacent intervals in place: a binary
+    /// search plus at most one shift of the interval vector, no rebuild.
     pub fn insert(&mut self, index: usize) {
-        if !self.contains(index) {
-            *self = self.union(&Self::singleton(index));
+        let after = self.0.partition_point(|&(start, _)| start <= index);
+        if after > 0 && index <= self.0[after - 1].1 {
+            return;
+        }
+        let joins_before = after > 0 && self.0[after - 1].1.checked_add(1) == Some(index);
+        let joins_after = self
+            .0
+            .get(after)
+            .is_some_and(|&(start, _)| index.checked_add(1) == Some(start));
+        match (joins_before, joins_after) {
+            (true, true) => {
+                self.0[after - 1].1 = self.0[after].1;
+                self.0.remove(after);
+            }
+            (true, false) => self.0[after - 1].1 = index,
+            (false, true) => self.0[after].0 = index,
+            (false, false) => self.0.insert(after, (index, index)),
         }
     }
 
