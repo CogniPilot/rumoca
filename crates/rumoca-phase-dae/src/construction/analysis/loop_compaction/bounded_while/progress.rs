@@ -170,7 +170,7 @@ fn collect_written_integers(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { .. } => {
-                if let Some((target, _)) = plain_assignment(statement)
+                if let Some((target, _, _)) = plain_assignment(statement)
                     && scope.integers.contains(&target)
                     && !counters.contains(&target)
                 {
@@ -278,7 +278,7 @@ impl PassProof<'_> {
 
     fn statement(&self, statement: &rumoca_core::Statement, mut paths: Paths) -> Paths {
         match plain_assignment(statement) {
-            Some((target, value)) if Some(&target) == self.flag => {
+            Some((target, _, value)) if Some(&target) == self.flag => {
                 let ends = matches!(
                     value,
                     Expression::Literal {
@@ -300,10 +300,10 @@ impl PassProof<'_> {
                     }
                 };
             }
-            Some((target, value)) if &target == self.counter => {
+            Some((target, span, value)) if &target == self.counter => {
                 let start = paths
                     .facts
-                    .integer_interval(&reference(self.counter), self.scope);
+                    .integer_interval(&reference(self.counter, span), self.scope);
                 paths.continuing = paths
                     .continuing
                     .map(|counter| self.write_counter(counter, value, start, &paths));
@@ -311,7 +311,7 @@ impl PassProof<'_> {
                     .exiting
                     .map(|counter| self.write_counter(counter, value, start, &paths));
             }
-            Some((target, value)) if self.scope.integers.contains(&target) => {
+            Some((target, _, value)) if self.scope.integers.contains(&target) => {
                 let tracked = paths
                     .continuing
                     .and_then(|counter| self.affine(value, counter, &paths));
@@ -417,8 +417,9 @@ fn exact(interval: IntegerInterval) -> Option<i64> {
     (lower == upper).then_some(lower)
 }
 
-/// A whole scalar assignment's target and value.
-fn plain_assignment(statement: &rumoca_core::Statement) -> Option<(VarName, &Expression)> {
+/// A whole scalar assignment's target, the span of its target reference,
+/// and its value.
+fn plain_assignment(statement: &rumoca_core::Statement) -> Option<(VarName, Span, &Expression)> {
     let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
         return None;
     };
@@ -430,6 +431,7 @@ fn plain_assignment(statement: &rumoca_core::Statement) -> Option<(VarName, &Exp
                 rumoca_core::component_ref_to_base_reference(comp)
                     .var_name()
                     .clone(),
+                comp.span(),
                 value,
             )
         })

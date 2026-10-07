@@ -192,7 +192,7 @@ fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_
     let mut conjuncts = Vec::new();
     collect_conjuncts(&block.cond, &mut conjuncts);
     conjuncts.iter().find_map(|conjunct| {
-        let (counter, limit) = counter_limit(conjunct)?;
+        let (counter_reference, counter, limit) = counter_limit(conjunct)?;
         let bound = scope.shapes.proven_extent(limit)?;
         let written = statements_written_names(&block.stmts);
         let limit_invariant = {
@@ -205,7 +205,7 @@ fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_
         let floor = if indexes_with(&block.cond, counter) {
             Some(1)
         } else {
-            entry.integer_interval(&reference(counter), scope).lower
+            entry.integer_interval(counter_reference, scope).lower
         }?;
         let iterations = iterations_from(bound, floor)?;
         (bound >= 0
@@ -213,15 +213,6 @@ fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_
             && advances_each_iteration(&block.stmts, counter, bound, scope.shapes))
         .then_some(iterations)
     })
-}
-
-/// A plain reference to the scalar `name`.
-fn reference(name: &VarName) -> Expression {
-    Expression::VarRef {
-        name: Reference::generated(name.as_str()),
-        subscripts: Vec::new(),
-        span: Span::DUMMY,
-    }
 }
 
 /// An iteration bound for a counter that rises by at least 1 per iteration
@@ -248,8 +239,9 @@ fn collect_conjuncts<'a>(expression: &'a Expression, conjuncts: &mut Vec<&'a Exp
     }
 }
 
-/// `k < N`, `k <= N`, `N > k`, or `N >= k` for a plain reference `k`.
-fn counter_limit(expression: &Expression) -> Option<(&VarName, &Expression)> {
+/// `k < N`, `k <= N`, `N > k`, or `N >= k` for a plain reference `k`: the
+/// reference, its name and the limit.
+fn counter_limit(expression: &Expression) -> Option<(&Expression, &VarName, &Expression)> {
     let Expression::Binary { op, lhs, rhs, .. } = expression else {
         return None;
     };
@@ -258,7 +250,7 @@ fn counter_limit(expression: &Expression) -> Option<(&VarName, &Expression)> {
         OpBinary::Gt | OpBinary::Ge => (rhs, lhs),
         _ => return None,
     };
-    plain_reference(counter).map(|name| (name, limit.as_ref()))
+    plain_reference(counter).map(|name| (counter.as_ref(), name, limit.as_ref()))
 }
 
 fn plain_reference(expression: &Expression) -> Option<&VarName> {
@@ -436,5 +428,15 @@ fn collect_written_names(statements: &[rumoca_core::Statement], written: &mut Ha
             }
             _ => {}
         }
+    }
+}
+
+/// A plain reference to the scalar `name`, spanned at the source reference
+/// it stands for.
+fn reference(name: &VarName, span: Span) -> Expression {
+    Expression::VarRef {
+        name: Reference::generated(name.as_str()),
+        subscripts: Vec::new(),
+        span,
     }
 }
