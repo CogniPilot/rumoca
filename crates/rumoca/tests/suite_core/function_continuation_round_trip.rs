@@ -181,8 +181,7 @@ fn a_call_scoped_assertion_after_a_fold_continuation_replays_it_in_the_rows() {
         .compile_str(CHECKED_GATES, "checked_gates.mo")
         .expect("the two-iteration variant constructs checked DAE");
     let error = simulate_dae(&short.dae, &options)
-        .err()
-        .expect("two partial sums of 1.0 never exceed 2.5, so the assertion fails");
+        .expect_err("two partial sums of 1.0 never exceed 2.5, so the assertion fails");
     assert!(
         error
             .to_string()
