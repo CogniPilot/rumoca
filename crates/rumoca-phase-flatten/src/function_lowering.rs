@@ -9,7 +9,7 @@
 mod record_copies;
 #[cfg(test)]
 mod tests;
-use record_copies::{dotted_record_param_field, expand_record_copies};
+use record_copies::expand_record_copies;
 
 use crate::errors::FlattenError;
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
@@ -145,9 +145,6 @@ struct RecordFieldAccessRewriter<'a> {
 
 impl ExpressionRewriter for RecordFieldAccessRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
-        if let Some(rewritten) = dotted_record_param_field(expr, self.params) {
-            return rewritten;
-        }
         if let Some(rewritten) = indexed_record_param_field(expr, self.params) {
             return rewritten;
         }
