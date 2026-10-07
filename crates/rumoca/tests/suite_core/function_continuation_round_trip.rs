@@ -6,6 +6,7 @@
 //! lowering instead of folding at translation.
 
 use rumoca::Compiler;
+use rumoca_ir_solve::{LinearOp, LinearOpSliceKind, SolveVisitor};
 use rumoca_sim::{SimOptions, simulate_dae};
 
 const MODELS: &str = r#"
@@ -232,5 +233,109 @@ fn a_fold_continuation_replays_from_the_wire_and_lowers_to_solve_rows() {
             .copied()
             .expect("the walk trace is non-empty");
         assert_eq!(value, expected, "{name}");
+    }
+}
+
+/// The callee takes an array-maximum reduction, which has no directional
+/// body, so scalar differentiation expands the call in place and its
+/// flag-continued fold lowers through scalar inline lowering.
+const UNDIRECTED_GATES: &str = r#"
+function firstOverPeak
+  input Real u;
+  input Real w[:];
+  input Integer n;
+  output Real k;
+  output Real peak;
+protected
+  Boolean found;
+  Real acc;
+algorithm
+  found := false;
+  k := 0;
+  acc := 0;
+  peak := max(w) * u;
+  for i in 1:n loop
+    if not found then
+      acc := acc + u;
+      if acc > 2.5 then
+        found := true;
+        k := i;
+      end if;
+    end if;
+  end for;
+end firstOverPeak;
+
+model UndirectedGates
+  Real x(start = 1.0, fixed = true);
+  Real k;
+  Real peak;
+equation
+  der(x) = 0;
+  (k, peak) = firstOverPeak(x, {1.0, 4.0, 2.0}, 10);
+end UndirectedGates;
+"#;
+
+/// Counts the typed calls and the continued fold programs of a Solve model.
+#[derive(Default)]
+struct FoldCensus {
+    typed_calls: usize,
+    continued_folds: usize,
+}
+
+impl SolveVisitor for FoldCensus {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        match op {
+            LinearOp::PureCall { .. } => self.typed_calls += 1,
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. }
+                if program.continuation.is_some() =>
+            {
+                self.continued_folds += 1;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_continued_fold_in_a_callee_without_a_directional_body_lowers_inline() {
+    let compiled = Compiler::new()
+        .model("UndirectedGates")
+        .compile_str(UNDIRECTED_GATES, "undirected_gates.mo")
+        .expect("a flag-continued loop constructs checked DAE");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let model = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &options)
+        .expect("the continuation lowers to Solve rows");
+    let mut census = FoldCensus::default();
+    census
+        .visit_solve_model(&model)
+        .expect("the census walk is infallible");
+    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
+    assert!(
+        census.continued_folds > 0,
+        "the inline path carries the fold continuation"
+    );
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the continuation lowers to Solve rows");
+    for (name, expected) in [("k", 3.0), ("peak", 4.0)] {
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        assert_eq!(simulation.data[variable].first().copied(), Some(expected));
     }
 }
