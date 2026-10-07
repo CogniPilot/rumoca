@@ -56,6 +56,8 @@ pub(super) fn lower_function_record_value<'dae>(
         .expect("analysis requires record-assembly provenance");
     let generated =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, owner_span)?;
+    let target = function_value_coordinate(symbols.coordinates, &plan.target);
+    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     let mut values = Vec::with_capacity(source.len());
     let mut available = HashSet::new();
     let mut staged_values = HashMap::new();
@@ -87,7 +89,8 @@ pub(super) fn lower_function_record_value<'dae>(
             if record_field_completion_offset(field) != Some(statement_offset) {
                 continue;
             }
-            let field_value = lower_record_field_value(construction, &values, field, generated)?;
+            let field_value =
+                lower_record_field_value(construction, &values, field, value_type, generated)?;
             available.insert(field.name.clone());
             staged_values.insert(
                 function_record_field_name(&plan.target, &field.name),
@@ -101,13 +104,11 @@ pub(super) fn lower_function_record_value<'dae>(
         .iter()
         .map(|field| {
             completed_fields.get(&field.name).copied().map_or_else(
-                || lower_record_field_value(construction, &values, field, generated),
+                || lower_record_field_value(construction, &values, field, value_type, generated),
                 Ok,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
-    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     construction.types(|types| {
         types.expect_record_layout(
             value_type,
@@ -120,14 +121,18 @@ pub(super) fn lower_function_record_value<'dae>(
     Ok((target, record, generated))
 }
 
+/// The group offset of the last statement contributing to `field`.
 fn record_field_completion_offset(field: &FunctionRecordFieldAssembly) -> Option<usize> {
-    field.aggregate_statement.or_else(|| {
-        field
-            .scalars
+    match &field.source {
+        FunctionRecordFieldSource::Aggregate { statement } => Some(*statement),
+        FunctionRecordFieldSource::Tensor { scalars, .. } => {
+            scalars.iter().map(|source| source.statement_offset).max()
+        }
+        FunctionRecordFieldSource::Record { fields } => fields
             .iter()
-            .map(|source| source.statement_offset)
-            .max()
-    })
+            .filter_map(record_field_completion_offset)
+            .max(),
+    }
 }
 
 pub(super) fn lower_function_record_field_assembly<'dae>(
@@ -168,7 +173,10 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let field_value = lower_record_field_value(construction, &values, &plan.field, generated)?;
+    let target = function_value_coordinate(symbols.coordinates, &plan.target);
+    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
+    let field_value =
+        lower_record_field_value(construction, &values, &plan.field, value_type, generated)?;
     let staged_name = function_record_field_name(&plan.target, &plan.field.name);
     let staged = function_value_coordinate(symbols.coordinates, &staged_name);
     construction.functions(|functions| functions.assign(body, staged, field_value, generated))?;
@@ -183,8 +191,6 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
             construction.functions(|functions| functions.read(body, staged, generated))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
-    let value_type = construction.functions(|functions| functions.value_type(target, generated))?;
     construction.types(|types| {
         types.expect_record_layout(value_type, field_names.iter().cloned(), generated)
     })?;
@@ -228,34 +234,72 @@ impl ExpressionRewriter for StagedRecordReadRewriter<'_> {
     }
 }
 
+/// Lower one assembled field of a record whose type is `record_type`.
 fn lower_record_field_value<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     values: &[dae::ExprId<'dae>],
     field: &FunctionRecordFieldAssembly,
+    record_type: dae::ValueTypeId<'dae>,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if let Some(statement_offset) = field.aggregate_statement {
-        return Ok(values[statement_offset]);
+    match &field.source {
+        FunctionRecordFieldSource::Aggregate { statement } => Ok(values[*statement]),
+        FunctionRecordFieldSource::Tensor {
+            scalar_type,
+            dimensions,
+            scalars,
+        } => lower_record_tensor_field(
+            construction,
+            values,
+            *scalar_type,
+            dimensions,
+            scalars,
+            provenance,
+        ),
+        FunctionRecordFieldSource::Record { fields } => {
+            let field_type = construction
+                .types(|types| types.record_field(record_type, &field.name, provenance))?;
+            construction.types(|types| {
+                types.expect_record_layout(
+                    field_type,
+                    fields.iter().map(|nested| nested.name.clone()),
+                    provenance,
+                )
+            })?;
+            let nested = fields
+                .iter()
+                .map(|nested| {
+                    lower_record_field_value(construction, values, nested, field_type, provenance)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            construction
+                .expressions(|expressions| expressions.at(provenance).record(field_type, nested))
+        }
     }
-    let scalars = field
-        .scalars
+}
+
+fn lower_record_tensor_field<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    values: &[dae::ExprId<'dae>],
+    scalar_type: dae::ScalarType,
+    dimensions: &[u32],
+    scalars: &[FunctionRecordScalarSource],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let scalars = scalars
         .iter()
         .map(|source| lower_record_scalar_source(construction, values, source, provenance))
         .collect::<Result<Vec<_>, _>>()?;
-    let dimensions = field
-        .dimensions
-        .iter()
-        .map(|extent| *extent as usize)
-        .collect::<Vec<_>>();
     if !scalars.is_empty() {
-        return pack_row_major_body(construction, &scalars, &dimensions, provenance);
+        let extents = dimensions
+            .iter()
+            .map(|extent| *extent as usize)
+            .collect::<Vec<_>>();
+        return pack_row_major_body(construction, &scalars, &extents, provenance);
     }
-    let scalar_type = field
-        .scalar_type
-        .expect("analysis gives every tensor record field a scalar type");
     let value_type = construction.types(|types| {
         types.derived(
-            dae::ValueType::array(scalar_type, field.dimensions.clone()),
+            dae::ValueType::array(scalar_type, dimensions.to_vec()),
             provenance,
         )
     })?;

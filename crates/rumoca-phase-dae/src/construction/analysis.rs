@@ -447,10 +447,25 @@ pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> V
 
 pub(super) struct FunctionRecordFieldAssembly {
     pub(super) name: VarName,
-    pub(super) scalar_type: Option<dae::ScalarType>,
-    pub(super) dimensions: Vec<u32>,
-    pub(super) scalars: Vec<FunctionRecordScalarSource>,
-    pub(super) aggregate_statement: Option<usize>,
+    pub(super) source: FunctionRecordFieldSource,
+}
+
+/// Where one record field's value comes from in its assembly group.
+pub(super) enum FunctionRecordFieldSource {
+    /// A tensor field assembled scalar by scalar from (possibly partial)
+    /// field writes, in row-major order of `dimensions`.
+    Tensor {
+        scalar_type: dae::ScalarType,
+        dimensions: Vec<u32>,
+        scalars: Vec<FunctionRecordScalarSource>,
+    },
+    /// A record field assigned whole by the statement at this group offset.
+    Aggregate { statement: usize },
+    /// A record field assembled from writes to its own fields, in its
+    /// constructor's field order (MLS §12.4.4 assembly applies recursively).
+    Record {
+        fields: Vec<FunctionRecordFieldAssembly>,
+    },
 }
 
 pub(super) struct FunctionRecordCallAssemblyPlan {
