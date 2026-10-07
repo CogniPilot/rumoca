@@ -200,13 +200,7 @@ enumerate coordinates into scalar registers, repeated operations, or select
 chains. A scalar consumer receives a projection of this aggregate owner; it
 does not become the owner. Evaluators and native backends execute the compact
 operation directly. Text backends may materialize target-language coordinate
-operations only while rendering the final checked template view.
-
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Native checked-assignment WASM executes `LoadIndexedRegister` with its canonical dimensions, strided packed source and index operands. Its register-flow certificate proves the source range; runtime axes must be finite exact signed Integers within their one-based extents before the affine source address is accessed. | Solve construction and native WASM emission | Preserves compact checked indexing without clamps, candidate expansion or invalid reads |
-| Gather-only programs use the checked transaction ABI. Failed conversion or bounds checks return nonzero status, leave P unchanged and prevent whole-program Y publication; inactive conditional regions perform none of their gathers. | Native assignment WASM profile | Retains checked failure, branch laziness and atomic publication |
-| Model address faults carry their registered source-program span and emitted kernel/program/operation/region coordinates in a separate diagnostic inventory; they never receive a manufactured function owner. Typed helper statuses remain unchanged, with model faults allocated after them. | Native WASM fault catalog and artifact API | Keeps diagnostics source-bound without inventing semantic identities |
+operations only while rendering the final checked template view. Native checked-assignment WASM gather and fault rows live in [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md).
 
 ### 5. Ownership Boundaries
 
