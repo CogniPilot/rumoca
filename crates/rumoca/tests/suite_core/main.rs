@@ -174,6 +174,7 @@ mod gear_loop_regression;
 mod guarded_return_continuations;
 mod held_sample_relations;
 mod homotopy_branch_selection;
+mod image_kernel_scaling;
 mod implicit_derivative_aliases;
 mod index_reduction_auxiliary;
 mod index_reduction_components;
