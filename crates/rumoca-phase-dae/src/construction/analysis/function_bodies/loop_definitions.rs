@@ -93,10 +93,14 @@ fn join_selected_loop(
     // The whole loop runs under `condition`, so a value it proved under a
     // guard that `condition` implies is defined on this path.
     taken.enter_guard(condition, context);
+    // Where the facts already select `condition`, as inside an enclosing
+    // loop selected by it, the path that skips the loop is not reachable and
+    // the loop defines what it defines on every path.
+    let skipped = definitions.reachable_paths(&[condition], context)[1];
     definitions.enter_path(&[condition], 1, context);
     definitions.join_branches(
         std::slice::from_ref(&taken),
-        false,
+        !skipped,
         targets,
         &HashSet::new(),
         context,
@@ -436,40 +440,65 @@ fn seed_undefined_whole_loop_value(
     Ok(())
 }
 
-/// The condition of a loop body whose statements are each one conditional
-/// without an else, all over the same condition, which reads nothing the body
-/// writes and no binder of the loop, so every iteration selects the same way.
-/// The body is one such conditional, or the guarded statements the branch
-/// snapshot pass makes of a selected sequence that owns the loop.
+/// The condition of a loop body whose statements are each selected by the
+/// same condition, which reads nothing the body writes and no binder of the
+/// loop or of a loop in it, so every iteration selects the same way. A
+/// statement is selected by a conditional without an else, or is a loop whose
+/// body statements all are: the guarded statements the branch snapshot pass
+/// makes of a selected sequence that owns the loop.
 fn invariant_selection<'a>(
     binders: &[&rumoca_core::ForIndex],
     body: &'a [rumoca_core::Statement],
 ) -> Option<&'a Expression> {
-    let mut guards = body.iter().map(|statement| match statement {
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block: None,
-            ..
-        } => match cond_blocks.as_slice() {
-            [block] => Some(&block.cond),
-            _ => None,
-        },
-        _ => None,
-    });
-    let condition = guards.next()??;
-    for guard in guards {
-        rumoca_core::expressions_semantically_equal(condition, guard?).then_some(())?;
-    }
+    let mut bound = binders
+        .iter()
+        .map(|binder| binder.ident.clone())
+        .collect::<Vec<_>>();
+    let condition = sequence_selection(body, &mut bound)?;
     let written = function_ranges::assigned_function_targets(body);
     let mut reads = Vec::new();
     condition.collect_var_refs(&mut reads);
     reads
         .iter()
         .all(|name| {
-            !written.contains(name.as_str())
-                && binders.iter().all(|binder| binder.ident != name.as_str())
+            !written.contains(name.as_str()) && bound.iter().all(|binder| binder != name.as_str())
         })
         .then_some(condition)
+}
+
+/// The one condition that selects every statement of `statements`, recording
+/// the binders of the loops among them in `bound`.
+fn sequence_selection<'a>(
+    statements: &'a [rumoca_core::Statement],
+    bound: &mut Vec<String>,
+) -> Option<&'a Expression> {
+    let mut selected = None::<&'a Expression>;
+    for statement in statements {
+        let condition = match statement {
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block: None,
+                ..
+            } => match cond_blocks.as_slice() {
+                [block] => &block.cond,
+                _ => return None,
+            },
+            rumoca_core::Statement::For {
+                indices, equations, ..
+            } => {
+                bound.extend(indices.iter().map(|index| index.ident.clone()));
+                sequence_selection(equations, bound)?
+            }
+            _ => return None,
+        };
+        match selected {
+            Some(first) => {
+                rumoca_core::expressions_semantically_equal(first, condition).then_some(())?
+            }
+            None => selected = Some(condition),
+        }
+    }
+    selected
 }
 
 /// Whether `condition`, or a generated selection it reads, reads a binder of

@@ -50,6 +50,7 @@ pub(in crate::construction) fn validate_function_certificate(
         loop_binders: &loop_binders,
         scalars: &scalars,
         call_scoped_actions: true,
+        inside_fold: false,
     };
     if function.external.is_some() {
         return validate_external_body(function, context);

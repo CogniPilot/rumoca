@@ -523,6 +523,10 @@ struct FunctionValidationContext<'scope> {
     /// Whether this source sequence reaches a call-scoped or loop action
     /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,
+    /// Whether this sequence is the body of a compact loop, so a loop in it
+    /// is a fold nested in the enclosing transition (a nested total
+    /// definition has no lowering of its own).
+    inside_fold: bool,
 }
 
 /// Name the statement form, so a report says which owner is missing.

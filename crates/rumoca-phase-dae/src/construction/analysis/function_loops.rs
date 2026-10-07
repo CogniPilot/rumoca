@@ -172,6 +172,7 @@ fn validate_nested_function_loop(
         &statements,
         context.function,
         &validated.shapes,
+        context.inside_fold,
     );
     Ok(Some(FunctionStatementPlan::For {
         domain: validated.domain,
@@ -192,6 +193,7 @@ fn validate_function_loop_body(
         roles: &validated.roles,
         shapes: &validated.shapes,
         call_scoped_actions: true,
+        inside_fold: true,
         ..context
     };
     let statements = plan_function_statements(equations, body_context)?;
@@ -237,6 +239,7 @@ fn validate_function_loop_body(
         &statements,
         context.function,
         &validated.shapes,
+        context.inside_fold,
     );
     Ok(FunctionStatementPlan::For {
         domain: validated.domain,
@@ -254,11 +257,14 @@ fn classify_function_loop(
     plans: &[FunctionStatementPlan],
     function: &rumoca_core::Function,
     shapes: &ShapeEnvironment,
+    inside_fold: bool,
 ) -> FunctionLoopLowering {
     let targets = function_loop_targets(plans);
-    if loop_is_ordered_total_array_definitions(
-        domain, indices, statements, plans, function, shapes, &targets,
-    ) {
+    if !inside_fold
+        && loop_is_ordered_total_array_definitions(
+            domain, indices, statements, plans, function, shapes, &targets,
+        )
+    {
         FunctionLoopLowering::TotalArrayDefinition
     } else {
         FunctionLoopLowering::Fold {
