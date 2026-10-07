@@ -59,6 +59,63 @@ package Chains
 end Chains;
 "#;
 
+/// A `for` loop whose whole body is one `if` on a carried flag: the fold
+/// continues while the flag is clear, and the function is small enough to be
+/// lowered into the equation rows rather than called.
+const GATES: &str = r#"
+function firstOver
+  input Real u;
+  input Integer n;
+  output Real k;
+protected
+  Boolean found;
+  Real acc;
+algorithm
+  found := false;
+  k := 0;
+  acc := 0;
+  for i in 1:n loop
+    if not found then
+      acc := acc + u;
+      if acc > 2.5 then
+        found := true;
+        k := i;
+      end if;
+    end if;
+  end for;
+end firstOver;
+
+model Gates
+  Real x(start = 1.0, fixed = true);
+  Real k;
+equation
+  der(x) = 0;
+  k = firstOver(x, 10);
+end Gates;
+"#;
+
+#[test]
+fn an_inlined_fold_continuation_lowers_to_solve_rows() {
+    let compiled = Compiler::new()
+        .model("Gates")
+        .compile_str(GATES, "gates.mo")
+        .expect("a flag-continued for loop constructs checked DAE");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the continuation lowers to Solve rows");
+    let variable = simulation
+        .names
+        .iter()
+        .position(|candidate| candidate == "k")
+        .expect("k is visible");
+    // acc reaches 3.0 on the third iteration; later iterations are skipped.
+    assert_eq!(simulation.data[variable].first().copied(), Some(3.0));
+}
+
 #[test]
 fn a_fold_continuation_replays_from_the_wire_and_lowers_to_solve_rows() {
     let compiled = Compiler::new()
