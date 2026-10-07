@@ -152,6 +152,8 @@ found to retire. The derived rule rounds the total up to the next 250-line
 step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers,
 core and wire ceilings, and totality-debt ceilings are unchanged.
 
+**2026-10-07 enumeration-declaration review:** measured production source moved to 18,684 core, 5,572 wire, and 24,256 total lines with the enumeration declaration attribute of an enumeration variable (DAE-C32) and its view and wire replay. The derived rule rounds the total up to the next 250-line step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers, core and wire ceilings, and totality-debt ceilings are unchanged.
+
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
 Only the entries listed here may reserve a slot before its complete value

@@ -89,9 +89,9 @@ static fmi3Status evaluate_derivatives(ModelInstance* m) {
 {%- endif %}
 {#- One row per FMI 3 value reference, indexed by the reference itself: time
     is 0, the variables are 1..N in inventory order and the state derivatives
-    follow (the renderer refuses any other numbering). Integer and
-    enumeration values are Int32 and Boolean values Boolean, all held in the
-    numeric storage run; String values live in the instance text table. -#}
+    follow (the renderer refuses any other numbering). Integer values are
+    Int32, enumeration ordinals Int64, and Boolean values Boolean, all held in
+    the numeric storage run; String values live in the instance text table. -#}
 enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT, RMC_COLUMN_INDICATOR };
 enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_INT64, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
 enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };

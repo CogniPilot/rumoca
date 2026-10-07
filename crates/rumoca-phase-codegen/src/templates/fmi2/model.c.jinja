@@ -94,7 +94,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
 
 {#- One row per FMI 2 value reference, indexed by the reference itself: time
     is 0, then every variable scalar in inventory order, then every state
-    derivative scalar. Integer and enumeration values are Integer and Boolean
+    derivative scalar. Integer and enumeration ordinals are Integer and Boolean
     values Boolean, all held in the numeric storage run; String values live in
     the instance text table. -#}
 enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT };

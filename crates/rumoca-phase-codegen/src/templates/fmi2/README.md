@@ -17,14 +17,19 @@ Co-Simulation integrator.
 - FMI 2 scalar value references are external views of tensor-native variables;
   they do not scalarize compiler IR.
 - ME and CS share state, initialization data, and equation evaluation.
+- An enumeration variable is an `Enumeration` with `declaredType` over a
+  `SimpleType` in `TypeDefinitions`; a setter returns an error for an ordinal no
+  literal has.
+- Time events (static instants and periodic clocks) are announced as
+  `nextEventTime`, and a Co-Simulation step ends exactly at the next one.
 - Exact singleton algebraic assignments use the same checked schedule and C
   kernel as FMI 3. Outputs refresh after input, time, and state changes.
 
 ## Unsupported
 
 The FMI 2 target shares the FMI 3 C kernel and profile: see the Unsupported
-section of the `fmi3` target. Integer and enumeration ordinals export as
-Integer, Boolean as Boolean, and String parameters and constants as String. It
+section of the `fmi3` target. Integer values export as Integer, enumeration
+ordinals as Enumeration, Boolean as Boolean, and String parameters and constants as String. It
 does not advertise state serialization or derivatives it does not implement.
 
 ## Verification

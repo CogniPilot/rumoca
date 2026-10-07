@@ -116,8 +116,9 @@ fn refuse_recursive_groups(table: &crate::SolvePureCallTable) -> Result<(), FmiC
 }
 
 /// Every public variable has one FMI value type the generated component
-/// reads and writes through its storage: Real as Float64, Integer and
-/// enumeration ordinals as Int32 (FMI 2 Integer), Boolean as Boolean, all
+/// reads and writes through its storage: Real as Float64, Integer as Int32
+/// (FMI 2 Integer), an enumeration ordinal as Int64 (FMI 2 Integer; the
+/// ordinal range is its type's literal count), Boolean as Boolean, all
 /// held in the numeric storage run; a String parameter or constant as its
 /// literal text, which no numeric program reads.
 fn validate_variables(metadata: &FmiMetadata) -> Result<(), FmiCCodegenError> {

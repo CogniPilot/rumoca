@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// A variable of the type carries the declaration, so a consumer that exposes
 /// the variable (an FMI model description) names its literals without
 /// recovering them from spellings.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumerationDeclaration {
     pub name: String,
     pub literals: Vec<String>,

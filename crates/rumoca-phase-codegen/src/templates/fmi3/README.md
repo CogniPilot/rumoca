@@ -17,6 +17,11 @@ checked component state.
 - FMI 3 value references address complete tensor variables with declared
   dimensions.
 - ME and CS are lifecycle profiles of one kernel, not independent lowerings.
+- An enumeration variable is an `Enumeration` with `declaredType` over an
+  `EnumerationType` in `TypeDefinitions`, read and set with `fmi3GetInt64` and
+  `fmi3SetInt64`; a setter returns an error for an ordinal no literal has.
+- Time events (static instants and periodic clocks) are announced as
+  `nextEventTime`, and a Co-Simulation step ends exactly at the next one.
 - A Co-Simulation step runs the component's `CoSimulationStepPlan`:
   error-controlled Dormand-Prince 5(4) substeps within the setup tolerance
   (1e-6 when the importer defines none), ending exactly at the communication
