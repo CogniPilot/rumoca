@@ -714,17 +714,15 @@ fn plan_one_function_statement(
             },
             context,
         ),
-        _ => {
-            let span = required_statement_span(statement, "unsupported function body statement")?;
-            Err(ToDaeError::unsupported_flat(
-                "function statement",
-                format!(
-                    "`{}` contains a statement without a checked DAE owner",
-                    context.function.name
-                ),
-                span,
-            ))
-        }
+        _ => Err(unsupported_statement(
+            statement,
+            "unsupported function body statement",
+            "function statement",
+            format!(
+                "`{}` contains a statement without a checked DAE owner",
+                context.function.name
+            ),
+        )),
     }
 }
 

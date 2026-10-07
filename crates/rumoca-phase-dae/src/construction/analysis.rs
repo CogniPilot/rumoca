@@ -530,6 +530,21 @@ pub(super) fn required_statement_span(
         })
 }
 
+/// The refusal of `statement` at its source span: `unsupported_flat` for
+/// `feature` with `detail`, or the missing-provenance error naming
+/// `provenance_owner` when the statement has no span.
+pub(super) fn unsupported_statement(
+    statement: &rumoca_core::Statement,
+    provenance_owner: &str,
+    feature: &str,
+    detail: impl Into<String>,
+) -> ToDaeError {
+    match required_statement_span(statement, provenance_owner) {
+        Ok(span) => ToDaeError::unsupported_flat(feature, detail, span),
+        Err(error) => error,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlannedRole {
     /// An MLS §9.1.3 member that has no connection and no binding. It is

@@ -661,14 +661,14 @@ fn validate_conditional_branch_shape(
             }
             _ => {}
         }
-        let span = required_statement_span(statement, "function conditional branch statement")?;
-        return Err(ToDaeError::unsupported_flat(
+        return Err(unsupported_statement(
+            statement,
+            "function conditional branch statement",
             "function conditional",
             format!(
                 "`{}` requires assignments or nested conditionals in every checked branch",
                 context.function.name
             ),
-            span,
         ));
     }
     Ok(())

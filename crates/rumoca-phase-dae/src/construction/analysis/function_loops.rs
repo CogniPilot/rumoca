@@ -214,14 +214,14 @@ fn validate_function_loop_body(
         ) {
             continue;
         }
-        let statement_span = required_statement_span(statement, "function loop body statement")?;
-        return Err(ToDaeError::unsupported_flat(
+        return Err(unsupported_statement(
+            statement,
+            "function loop body statement",
             "function loop transition",
             format!(
                 "`{}` requires direct value assignments or assertions in a loop body",
                 context.function.name
             ),
-            statement_span,
         ));
     }
     // An assertion-only loop has no value transition, but it still owns one

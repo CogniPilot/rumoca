@@ -427,14 +427,14 @@ fn unsupported_return_shape<T>(
     function: &rumoca_core::Function,
     statement: &rumoca_core::Statement,
 ) -> Result<T, ToDaeError> {
-    let span = required_statement_span(statement, "unsupported guarded function return statement")?;
-    Err(ToDaeError::unsupported_flat(
+    Err(unsupported_statement(
+        statement,
+        "unsupported guarded function return statement",
         "function return",
         format!(
             "`{}` requires a leading guarded return with total output definitions",
             function.name
         ),
-        span,
     ))
 }
 
@@ -459,21 +459,21 @@ fn continue_branch_return(
 ) -> Result<Option<rumoca_core::Statement>, ToDaeError> {
     let Some(branches) = branch_return(statement) else {
         if contains_return(std::slice::from_ref(statement)) {
-            let span = required_statement_span(statement, "nested function return")?;
-            return Err(ToDaeError::unsupported_flat(
+            return Err(unsupported_statement(
+                statement,
+                "nested function return",
                 "function return",
                 "a non-guarded nested return requires a checked control-flow owner",
-                span,
             ));
         }
         return Ok(None);
     };
     if contains_return(rest) {
-        let span = required_statement_span(statement, "nested function return")?;
-        return Err(ToDaeError::unsupported_flat(
+        return Err(unsupported_statement(
+            statement,
+            "nested function return",
             "function return",
             "a return after a partially returning conditional requires a checked control-flow owner",
-            span,
         ));
     }
     let continued = branches.continued_by(rest);

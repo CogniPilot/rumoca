@@ -2,7 +2,8 @@
 //! fold with a continuation. The continuation survives the checked DAE wire
 //! (replay rebuilds it through the same owner) and lowers to Solve rows that
 //! carry the loop state between iterations and stop at the pass the DAE
-//! evaluator stops at.
+//! evaluator stops at. The keys depend on a state so the calls reach Solve
+//! lowering instead of folding at translation.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae};
@@ -12,8 +13,8 @@ package Chains
   function walk
     input Integer head;
     input Integer link[:];
-    input Integer key[:];
-    input Integer wanted;
+    input Real key[:];
+    input Real wanted;
     output Real found;
     output Real steps;
     output Real accepted;
@@ -43,6 +44,7 @@ package Chains
   end walk;
 
   model Walks
+    Real x(start = 1.0, fixed = true);
     Real found;
     Real steps;
     Real accepted;
@@ -50,8 +52,9 @@ package Chains
     Real cycleSteps;
     Real cycleAccepted;
   equation
-    (found, steps, accepted) = walk(3, {4, 0, 1, 0}, {10, 20, 30, 40}, 40);
-    (cycleFound, cycleSteps, cycleAccepted) = walk(1, {2, 1, 0, 0}, {10, 20, 30, 40}, 99);
+    der(x) = 0;
+    (found, steps, accepted) = walk(3, {4, 0, 1, 0}, {10 * x, 20 * x, 30 * x, 40 * x}, 40 * x);
+    (cycleFound, cycleSteps, cycleAccepted) = walk(1, {2, 1, 0, 0}, {10 * x, 20 * x, 30 * x, 40 * x}, 99 * x);
   end Walks;
 end Chains;
 "#;

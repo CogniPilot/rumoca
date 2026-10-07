@@ -485,3 +485,52 @@ fn a_previous_iteration_whole_is_defined_where_the_first_point_is_excluded() {
         .value;
     assert_eq!(y, 0.0 + 1.0 + 2.0 + 3.0);
 }
+
+const BRANCH_DEFINED_PREVIOUS: &str = r#"
+function branchPrevious
+  input Integer n;
+  output Real y;
+protected
+  Real previous;
+  Real total;
+algorithm
+  total := 0.0;
+  for i in 1:n loop
+    if i > 1 then
+      total := total + previous;
+    else
+      previous := 0.0;
+    end if;
+    previous := previous + i;
+  end for;
+  y := total;
+end branchPrevious;
+
+model BranchPrevious
+  output Real y;
+equation
+  y = branchPrevious(4);
+end BranchPrevious;
+"#;
+
+/// After a conditional that defines `previous` only on the first iteration,
+/// the read on every other path is defined by the earlier iteration, since
+/// every iteration ends with `previous` written and the path's binder range
+/// excludes the first point.
+#[test]
+fn a_branch_only_definition_is_completed_by_the_earlier_iteration_off_the_first_point() {
+    let compiled = Compiler::new()
+        .model("BranchPrevious")
+        .compile_str(BRANCH_DEFINED_PREVIOUS, "BranchPrevious.mo")
+        .unwrap_or_else(|error| panic!("BranchPrevious should compile: {error}"));
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .unwrap_or_else(|error| panic!("BranchPrevious should evaluate: {error}"));
+    let y = probe
+        .report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name == "y")
+        .expect("BranchPrevious has y")
+        .value;
+    assert_eq!(y, 1.0 + 3.0 + 6.0);
+}

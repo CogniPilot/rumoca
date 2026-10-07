@@ -233,87 +233,106 @@ fn resolve_fold_iteration(
             index += count;
             continue;
         }
-        let statement = &statements[index];
-        let plan = &mut plans[index];
-        match (statement, plan) {
-            (statement, FunctionStatementPlan::ProvenAssertion) => {
-                resolve_function_assertion_definition(statement, false, context, definitions)?;
-            }
-            (statement, FunctionStatementPlan::RuntimeAssertion) => {
-                resolve_function_assertion_definition(statement, true, context, definitions)?;
-            }
-            (
-                rumoca_core::Statement::Assignment { value, span, .. },
-                FunctionStatementPlan::Assignment(assignment),
-            ) => resolve_fold_assignment(value, *span, assignment, context, definitions)?,
-            (statement, plan @ FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => {
-                resolve_function_definition(statement, plan, context, definitions)?;
-            }
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    span,
-                },
-                FunctionStatementPlan::If {
-                    branches,
-                    fallback,
-                    targets,
-                },
-            ) => {
-                let point_targets = resolve_function_conditional(
-                    cond_blocks,
-                    else_block.as_deref(),
-                    branches,
-                    fallback.as_mut(),
-                    *span,
-                    context,
-                    definitions,
-                )?;
-                union_targets(targets, point_targets);
-            }
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    ..
-                },
-                FunctionStatementPlan::ProvenBranch {
-                    selected,
-                    statements,
-                },
-            ) => {
-                let selected =
-                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-                resolve_fold_iteration(selected, statements, context, definitions)?;
-            }
-            (
-                rumoca_core::Statement::For {
-                    indices,
-                    equations,
-                    span,
-                },
-                FunctionStatementPlan::For {
-                    domain,
-                    lowering,
-                    statements,
-                    source_depth,
-                    ..
-                },
-            ) => resolve_function_loop_definitions(
-                (indices, equations, *span),
-                (domain, *source_depth, lowering, statements),
-                context,
-                definitions,
-            )?,
-            (
-                rumoca_core::Statement::FunctionCall { args, span, .. },
-                FunctionStatementPlan::MultiOutputCall { outputs },
-            ) => resolve_fold_multi_output(args, *span, outputs, context, definitions)?,
-            (statement, _) => return Err(fold_plan_mismatch(statement, context)),
-        }
+        resolve_fold_statement(&statements[index], &mut plans[index], context, definitions)?;
         definitions.advance_facts_over(std::slice::from_ref(&statements[index]), context);
         index += 1;
+    }
+    Ok(())
+}
+
+/// Resolve one planned statement of a generic fold iteration.
+fn resolve_fold_statement(
+    statement: &rumoca_core::Statement,
+    plan: &mut FunctionStatementPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    match (statement, plan) {
+        (statement, FunctionStatementPlan::ProvenAssertion) => {
+            resolve_function_assertion_definition(statement, false, context, definitions)?;
+        }
+        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+            resolve_function_assertion_definition(statement, true, context, definitions)?;
+        }
+        (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) => resolve_fold_assignment(value, *span, assignment, context, definitions)?,
+        (statement, plan @ FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => {
+            resolve_function_definition(statement, plan, context, definitions)?;
+        }
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            },
+            FunctionStatementPlan::If {
+                branches,
+                fallback,
+                targets,
+            },
+        ) => {
+            let point_targets = resolve_function_conditional(
+                cond_blocks,
+                else_block.as_deref(),
+                branches,
+                fallback.as_mut(),
+                *span,
+                context,
+                definitions,
+            )?;
+            union_targets(targets, point_targets);
+        }
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            },
+            FunctionStatementPlan::ProvenBranch {
+                selected,
+                statements,
+            },
+        ) => {
+            let selected =
+                selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+            resolve_fold_iteration(selected, statements, context, definitions)?;
+        }
+        (
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            },
+            FunctionStatementPlan::For {
+                domain,
+                lowering,
+                statements,
+                source_depth,
+                ..
+            },
+        ) => resolve_function_loop_definitions(
+            (indices, equations, *span),
+            (domain, *source_depth, lowering, statements),
+            context,
+            definitions,
+        )?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::MultiOutputCall { outputs },
+        ) => resolve_fold_multi_output(args, *span, outputs, context, definitions)?,
+        (statement, _) => {
+            return Err(unsupported_statement(
+                statement,
+                "function loop transition",
+                "function loop transition",
+                format!(
+                    "`{}` has a fold statement that its checked plan does not cover",
+                    context.function.name
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -326,7 +345,15 @@ fn resolve_fold_record_assembly(
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
-            return Err(fold_plan_mismatch(statement, context));
+            return Err(unsupported_statement(
+                statement,
+                "function loop transition",
+                "function loop transition",
+                format!(
+                    "`{}` has a fold statement that its checked plan does not cover",
+                    context.function.name
+                ),
+            ));
         };
         definitions.require_readable(value, context, *span)?;
     }
@@ -462,24 +489,4 @@ fn reads_enclosing_binder(
                     depth >= 16 || reads_enclosing_binder(&definition.value, context, depth + 1)
                 })
     })
-}
-
-/// A fold iteration statement that its checked plan cannot describe. Analysis
-/// only certifies matching statement and plan shapes, so reaching this is a
-/// refused transition rather than a supported one.
-fn fold_plan_mismatch(
-    statement: &rumoca_core::Statement,
-    context: FunctionValidationContext<'_>,
-) -> ToDaeError {
-    match required_statement_span(statement, "function loop transition") {
-        Ok(span) => ToDaeError::unsupported_flat(
-            "function loop transition",
-            format!(
-                "`{}` has a fold statement that its checked plan does not cover",
-                context.function.name
-            ),
-            span,
-        ),
-        Err(error) => error,
-    }
 }
