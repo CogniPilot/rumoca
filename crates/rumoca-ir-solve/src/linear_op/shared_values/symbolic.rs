@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::super::*;
-use super::registers::{Role, read_registers, renamable, visit_registers};
+use super::registers::{Role, read_registers, records_operand_offsets, renamable, visit_registers};
 
 /// The id of one hash-consed symbolic value.
 pub(super) type Term = usize;
@@ -98,12 +98,13 @@ pub(super) fn value_shape(op: &LinearOp) -> Option<ValueShape> {
             ranged: true,
         });
     }
-    let (mut scalar, mut ranged) = (Vec::new(), false);
+    let ranged = records_operand_offsets(op);
+    let mut scalar = Vec::new();
     let mut probe = op.clone();
-    visit_registers(&mut probe, &mut |role, register| match role {
-        Role::Scalar => scalar.push(*register),
-        Role::RangeStart => ranged = true,
-        Role::Destination => {}
+    visit_registers(&mut probe, &mut |role, register| {
+        if role == Role::Scalar {
+            scalar.push(*register);
+        }
     });
     let lowest = reads.first().copied().unwrap_or(0);
     let mut normalized = op.clone();

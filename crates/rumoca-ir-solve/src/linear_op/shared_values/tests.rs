@@ -425,3 +425,56 @@ fn the_read_set_of_a_wide_range_is_collected_linearly() {
     assert!(reads.iter().copied().eq(0..count as Reg));
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
+
+/// A scalar operation's key names its operands by field, so compaction keeps
+/// only the registers it reads; a range operation's key records the offset
+/// between its operands, so it keeps the span between them.
+#[test]
+fn compaction_keeps_operand_spans_only_where_the_key_records_them() {
+    let far = 100_000;
+    let scalar = registers::compact_registers(vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: far,
+            value: 2.0,
+        },
+        LinearOp::Binary {
+            dst: far + 1,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: far,
+        },
+        LinearOp::StoreOutput { src: far + 1 },
+    ]);
+    assert_eq!(
+        scalar[2],
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        }
+    );
+    let ranged = registers::compact_registers(vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: far,
+            value: 2.0,
+        },
+        LinearOp::TensorBinary {
+            dst_start: far + 1,
+            op: BinaryOp::Add,
+            lhs_start: 0,
+            rhs_start: far,
+            count: 1,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: far + 1 },
+    ]);
+    assert!(matches!(
+        ranged[2],
+        LinearOp::TensorBinary { lhs_start: 0, rhs_start, .. } if rhs_start == far
+    ));
+}
