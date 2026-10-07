@@ -44,34 +44,45 @@ impl FmiCodegenView {
         let (update_order, update_levels) =
             super::parameter_updates::validate(&self.model.problem, &self.model.pure_calls)
                 .map_err(FmiCCodegenError)?;
-        if !self.event_indicators.sources().is_empty() {
-            let events = super::scalar_events::validate(&self.model).map_err(FmiCCodegenError)?;
-            return Ok(FmiCCodegenView {
-                profile: Profile::ScalarEvents(self, Box::new(events)),
-                update_order,
-                update_levels,
-                discrete_order: super::static_assertions::DiscreteOrder::default(),
-            });
-        }
-        if crate::solve_event_class(&self.model.problem).is_none() {
-            return self
-                .try_event_free()
-                .map(|value| FmiCCodegenView {
-                    profile: Profile::EventFree(value),
-                    update_order,
-                    update_levels,
-                    discrete_order: super::static_assertions::DiscreteOrder::default(),
-                })
-                .map_err(|_| FmiCCodegenError("event-free narrowing failed"));
-        }
-        let discrete_order =
-            super::static_assertions::validate(&self.model).map_err(FmiCCodegenError)?;
+        let (profile, discrete_order) = self.profile()?;
         Ok(FmiCCodegenView {
-            profile: Profile::StaticAssertions(self),
+            profile,
             update_order,
             update_levels,
             discrete_order,
         })
+    }
+
+    /// The narrowest profile that executes the component's events: none,
+    /// events fixed between parameter changes, or the event iteration.
+    fn profile(
+        self,
+    ) -> Result<(Profile, super::static_assertions::DiscreteOrder), FmiCCodegenError> {
+        let no_order = super::static_assertions::DiscreteOrder::default;
+        if !self.event_indicators.sources().is_empty() {
+            return self.scalar_events().map(|profile| (profile, no_order()));
+        }
+        if crate::solve_event_class(&self.model.problem).is_none() {
+            return self
+                .try_event_free()
+                .map(|value| (Profile::EventFree(value), no_order()))
+                .map_err(|_| FmiCCodegenError("event-free narrowing failed"));
+        }
+        match super::static_assertions::validate(&self.model) {
+            Ok(order) => Ok((Profile::StaticAssertions(self), order)),
+            // Events that follow time, states, or inputs, and the discrete
+            // rows that follow them, run through the event iteration even
+            // when no continuous indicator monitors them.
+            Err(super::static_assertions::StaticRefusal::EventIteration(_)) => {
+                self.scalar_events().map(|profile| (profile, no_order()))
+            }
+            Err(refusal) => Err(FmiCCodegenError(refusal.message())),
+        }
+    }
+
+    fn scalar_events(self) -> Result<Profile, FmiCCodegenError> {
+        let events = super::scalar_events::validate(&self.model).map_err(FmiCCodegenError)?;
+        Ok(Profile::ScalarEvents(self, Box::new(events)))
     }
 }
 

@@ -48,7 +48,7 @@ fn a_program_mixing_equations_and_condition_memories_is_refused() {
         [p(0), p(1)],
     );
     assert_eq!(
-        validate(&model).map(|_| ()),
+        validate(&model).map(|_| ()).map_err(StaticRefusal::message),
         Err("a discrete program mixes equations and condition memories")
     );
 }
@@ -65,7 +65,7 @@ fn a_discrete_row_writing_solver_storage_is_refused() {
             },
         ],
     );
-    let refused = validate(&model).map(|_| ()).unwrap_err();
+    let refused = validate(&model).map(|_| ()).unwrap_err().message();
     assert!(
         refused.starts_with("the C profile executes only parameter-determined discrete equations"),
         "{refused}"
@@ -97,7 +97,7 @@ fn assert_event_iteration(mutate: impl FnOnce(&mut crate::DiscreteSolveSystem)) 
         [p(0), p(1)],
     );
     mutate(&mut model.problem.discrete);
-    let refused = validate(&model).map(|_| ()).unwrap_err();
+    let refused = validate(&model).map(|_| ()).unwrap_err().message();
     assert!(refused.starts_with(EVENT_ITERATION), "{refused}");
 }
 

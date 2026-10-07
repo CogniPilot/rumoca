@@ -124,7 +124,7 @@ static const RmcValueReference* rmc_reference(fmi2ValueReference vr, unsigned ch
 }
 /* One settled numeric value. */
 static fmi2Status rmc_get_numeric(ModelInstance* m, const RmcValueReference* ref, double* value) {
-    if (settle_values(m) != fmi2OK) return fmi2Error;
+    if (settle_public_values(m) != fmi2OK) return fmi2Error;
     switch (ref->column) {
     case RMC_COLUMN_TIME: *value = m->time; return fmi2OK;
     case RMC_COLUMN_Y: *value = m->y[ref->index]; return fmi2OK;

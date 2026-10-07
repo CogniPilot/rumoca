@@ -15,9 +15,29 @@ mod typed_dependencies;
 
 use crate::{DiscreteRowRole, RefreshStage, ScalarSlot, SolveEventActionKind, SolveModel};
 
+/// Why a model is not a parameter-determined event partition.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::fmi) enum StaticRefusal {
+    /// The model has events that change between parameter changes, or
+    /// discrete rows that follow them: it needs the event iteration of the
+    /// scalar event profile (SPEC_0044 ME-EVENT-002).
+    EventIteration(&'static str),
+    /// A predicate the partition would keep static reads time, a state, or an
+    /// input.
+    Predicate(&'static str),
+}
+
+impl StaticRefusal {
+    pub(in crate::fmi) const fn message(self) -> &'static str {
+        match self {
+            Self::EventIteration(message) | Self::Predicate(message) => message,
+        }
+    }
+}
+
 /// Admit a parameter-determined event partition and return the order in which
 /// the component evaluates the discrete rows.
-pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str> {
+pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, StaticRefusal> {
     let problem = &model.problem;
     let events = &problem.events;
     let discrete = &problem.discrete;
@@ -38,7 +58,9 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
             ) || a.clock_owner.is_some()
         })
     {
-        return Err("only unscheduled assertions without relation memory are supported");
+        return Err(StaticRefusal::EventIteration(
+            "only unscheduled assertions without relation memory are supported",
+        ));
     }
     if !discrete.runtime_assignment_rhs.is_empty()
         || !discrete.post_commit_assignment_rhs.is_empty()
@@ -51,29 +73,37 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
             .iter()
             .any(|slot| !matches!(slot, ScalarSlot::P { .. }))
     {
-        return Err(
+        return Err(StaticRefusal::EventIteration(
             "the C profile executes only parameter-determined discrete equations; runtime, guarded, structured, or transactional discrete updates need event iteration",
-        );
+        ));
     }
     if discrete.row_roles.contains(&DiscreteRowRole::EventAction) {
-        return Err("the C profile cannot execute event-edge discrete actions");
+        return Err(StaticRefusal::EventIteration(
+            "the C profile cannot execute event-edge discrete actions",
+        ));
     }
     if discrete
         .row_roles
         .contains(&DiscreteRowRole::PulseConditionMemory)
     {
-        return Err("the C profile cannot release sample() tick pulses after an event");
+        return Err(StaticRefusal::EventIteration(
+            "the C profile cannot release sample() tick pulses after an event",
+        ));
     }
     let pre = &problem.solve_layout.pre_param_bindings;
     if pre.iter().any(|binding| binding.clock_schedule.is_some()) {
-        return Err("the C profile cannot execute clocked previous() history");
+        return Err(StaticRefusal::EventIteration(
+            "the C profile cannot execute clocked previous() history",
+        ));
     }
-    memory_reads::validate(model)?;
+    memory_reads::validate(model).map_err(StaticRefusal::EventIteration)?;
     let mut y = vec![false; problem.layout.y_scalars()];
     let mut p = super::parameter_updates::stable_parameters(problem);
     for binding in pre {
         *p.get_mut(binding.dest_p_index)
-            .ok_or("a pre() binding names storage outside the parameters")? = false;
+            .ok_or(StaticRefusal::EventIteration(
+                "a pre() binding names storage outside the parameters",
+            ))? = false;
     }
     let order = discrete_order(model, &mut y, &mut p)?;
     for index in &events.condition_memory_parameter_indices {
@@ -84,8 +114,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<DiscreteOrder, &'static str
             p[*index] = true;
         }
     }
-    require_static(model, &events.root_conditions, &y, &p)?;
-    require_static_actions(model, &y, &p)?;
+    require_static(model, &events.root_conditions, &y, &p).map_err(StaticRefusal::Predicate)?;
+    require_static_actions(model, &y, &p).map_err(StaticRefusal::Predicate)?;
     Ok(order)
 }
 
@@ -107,7 +137,8 @@ fn discrete_order(
     model: &SolveModel,
     y: &mut [bool],
     p: &mut [bool],
-) -> Result<DiscreteOrder, &'static str> {
+) -> Result<DiscreteOrder, StaticRefusal> {
+    let event_iteration = StaticRefusal::EventIteration;
     let discrete = &model.problem.discrete;
     let programs = discrete.rhs.programs();
     let (mut equations, mut memories) = (Vec::new(), Vec::new());
@@ -119,7 +150,7 @@ fn discrete_order(
             .rhs
             .output_indices()
             .get(cursor..cursor + count)
-            .ok_or("a discrete row has no output index")?;
+            .ok_or(event_iteration("a discrete row has no output index"))?;
         let written = rows
             .iter()
             .map(|output| match discrete.update_targets.get(*output) {
@@ -127,7 +158,9 @@ fn discrete_order(
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()
-            .ok_or("a discrete row writes outside the parameters")?;
+            .ok_or(event_iteration(
+                "a discrete row writes outside the parameters",
+            ))?;
         let role = |output: &usize| discrete.row_roles.get(*output).copied();
         if rows
             .iter()
@@ -140,7 +173,9 @@ fn discrete_order(
         {
             memories.push(index);
         } else {
-            return Err("a discrete program mixes equations and condition memories");
+            return Err(event_iteration(
+                "a discrete program mixes equations and condition memories",
+            ));
         }
         outputs.push(written);
         cursor += count;
@@ -149,13 +184,15 @@ fn discrete_order(
     let calls = &model.pure_calls;
     let equations = scalar_dependencies::dependency_order(calls, programs, &equations, &outputs, &unsettled, p)
         .map(|(order, _)| order)
-        .map_err(|_| "a discrete equation depends on time, a state, an input, an algebraic, or a pre() value")?;
-    static_algebraics(model, y, p)?;
+        .map_err(|_| event_iteration("a discrete equation depends on time, a state, an input, an algebraic, or a pre() value"))?;
+    static_algebraics(model, y, p).map_err(StaticRefusal::Predicate)?;
     let memories = scalar_dependencies::dependency_order(calls, programs, &memories, &outputs, y, p)
         .map(|(order, _)| order)
         .map_err(|_| {
-        "assertion depends on time, a continuous state, an input, or an unsupported dependence operation"
-    })?;
+            StaticRefusal::Predicate(
+                "assertion depends on time, a continuous state, an input, or an unsupported dependence operation",
+            )
+        })?;
     Ok(DiscreteOrder {
         equations,
         memories,

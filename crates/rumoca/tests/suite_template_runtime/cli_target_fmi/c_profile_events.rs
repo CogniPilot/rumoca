@@ -18,6 +18,14 @@ equation
   y = if u > 0 then u else 0;
 end RelationOnInput;
 
+model DiscreteFromState
+  Real x(start = 0, fixed = true);
+  Boolean b;
+equation
+  der(x) = 1;
+  b = noEvent(x > 0.5);
+end DiscreteFromState;
+
 model WhenRelation
   Real x(start = 0, fixed = true);
   Integer n(start = 0, fixed = true);
@@ -216,6 +224,20 @@ fn packaged_fmi_when_clauses_on_state_relations_match_the_simulation() {
     assert_cases_agree(&[Case {
         model: "WhenRelation",
         variables: &["x", "n"],
+        stop: 1.0,
+        interval: 0.2,
+        input: &[],
+        reference: Reference::Simulation,
+    }]);
+}
+
+/// A discrete variable defined by a continuous-time expression is recomputed
+/// when the importer reads it (SPEC_0022 EXPR-012), with no event in between.
+#[test]
+fn packaged_fmi_discrete_equations_over_states_are_observed_at_each_read() {
+    assert_cases_agree(&[Case {
+        model: "DiscreteFromState",
+        variables: &["x", "b"],
         stop: 1.0,
         interval: 0.2,
         input: &[],

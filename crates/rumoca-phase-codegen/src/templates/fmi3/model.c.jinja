@@ -146,7 +146,7 @@ static bool rmc_request(const ModelInstance* m, const fmi3ValueReference vr[], s
 }
 /* The settled numeric storage one reference reads; NULL on a failed refresh. */
 static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref) {
-    if (settle_values(m) != fmi3OK) return NULL;
+    if (settle_public_values(m) != fmi3OK) return NULL;
     switch (ref->column) {
     case RMC_COLUMN_TIME: return &m->time;
     case RMC_COLUMN_Y: return m->y;

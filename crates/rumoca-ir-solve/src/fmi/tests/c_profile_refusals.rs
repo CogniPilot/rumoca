@@ -132,7 +132,7 @@ fn one_discrete_row(model: &mut SolveModel, role: DiscreteRowRole) {
 #[test]
 fn event_edge_actions_are_refused() {
     assert_refused(
-        "the C profile cannot execute event-edge discrete actions",
+        "the C profile executes only discrete equations and condition memories",
         |model| {
             static_partition(model);
             one_discrete_row(model, DiscreteRowRole::EventAction);
@@ -143,7 +143,7 @@ fn event_edge_actions_are_refused() {
 #[test]
 fn sample_tick_pulse_buffers_are_refused() {
     assert_refused(
-        "the C profile cannot release sample() tick pulses after an event",
+        "the C profile executes only discrete equations and condition memories",
         |model| {
             static_partition(model);
             one_discrete_row(model, DiscreteRowRole::PulseConditionMemory);
@@ -166,24 +166,35 @@ fn clocked_previous_history_is_refused() {
     );
 }
 
+/// A pre() value the continuous kernel reads follows events, which the
+/// parameter-determined partition never runs: the event iteration takes it.
 #[test]
-fn a_pre_value_read_by_the_continuous_kernel_is_refused() {
-    assert_refused(
-        "the continuous kernel reads a condition memory or a pre() value",
-        |model| {
-            static_partition(model);
-            model.problem.solve_layout.pre_param_bindings = vec![PreParamBinding {
-                dest_p_index: 0,
-                source: PreParamSource::P { index: 1 },
-                clock_schedule: None,
-            }];
-            model.problem.continuous.residual =
-                ComputeBlock::from_scalar_program_block(rows(vec![vec![
-                    LinearOp::LoadP { dst: 0, index: 0 },
-                    LinearOp::StoreOutput { src: 0 },
-                ]]));
-        },
-    );
+fn a_pre_value_read_by_the_continuous_kernel_runs_through_the_event_iteration() {
+    let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    static_partition(&mut model);
+    model.problem.solve_layout.pre_param_bindings = vec![PreParamBinding {
+        dest_p_index: 0,
+        source: PreParamSource::P { index: 1 },
+        clock_schedule: None,
+    }];
+    model.problem.continuous.residual = ComputeBlock::from_scalar_program_block(rows(vec![vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]));
+    let refusal = super::static_assertions::validate(&model)
+        .map(|_| ())
+        .expect_err("the static partition refuses a pre() read");
+    assert!(matches!(
+        refusal,
+        super::static_assertions::StaticRefusal::EventIteration(message)
+            if message.contains("the continuous kernel reads a condition memory or a pre() value")
+    ));
+    FmiComponent::construct(model, vec![input])
+        .expect("the fixture is a checked component")
+        .into_codegen_view()
+        .try_c()
+        .expect("the event iteration executes the pre() read");
 }
 
 #[test]

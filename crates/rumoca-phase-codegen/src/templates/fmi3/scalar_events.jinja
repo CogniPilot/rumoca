@@ -59,6 +59,18 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m, bool* changed) {
 }
 {%- endmacro %}
 
+{#- Every discrete row at the current coordinate into `values`. -#}
+{%- macro discrete_row_values(solve, prefix) %}
+{%- for program in solve.discrete.rhs_plan.programs %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "values", prefix ~ "Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endmacro %}
+
 {%- macro scalar_events(solve, fmi, prefix) %}
 {%- set ev = fmi.scalar_events %}
 {%- set nroots = ev.roots|length %}
@@ -67,6 +79,7 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m, bool* changed) {
 {%- set schedule = ev.schedule %}
 #define RMC_EVENT_INDICATORS {{ nind }}
 #define RMC_ROOTS {{ nroots }}
+#define RMC_ROOT_SLOTS (RMC_ROOTS > 0 ? RMC_ROOTS : 1)
 static const size_t rmc_indicator_root[{{ [nind, 1]|max }}] = { {% for root in fmi.event_indicator_roots %}{{ root }},{% else %}0{% endfor %} };
 /* Zero domain per root: 1 positive, -1 non-positive, 0 previous side. */
 static const signed char rmc_root_zero[{{ [nroots, 1]|max }}] = { {% for root in ev.roots %}{{ 1 if root.zero == "positive" else (-1 if root.zero == "non_positive" else 0) }},{% else %}0{% endfor %} };
@@ -85,7 +98,7 @@ static {{ prefix }}Status rmc_eval_roots(ModelInstance* m, double* roots) {
 {%- endfor %}
     }
 {%- endfor %}
-    for (size_t k = 0; k < RMC_ROOTS; ++k) if (!isfinite(roots[k])) return {{ prefix }}Error;
+    for (size_t k = 0; k != RMC_ROOTS; ++k) if (!isfinite(roots[k])) return {{ prefix }}Error;
     return {{ prefix }}OK;
 }
 /* solve_ops.rs orient_typed_root_zero and relation_memory_value_from_root. */
@@ -109,9 +122,9 @@ static bool rmc_root_overridden(const ModelInstance* m, size_t root) {
 /* component.rs event_indicators_into: the searched roots at the refreshed
    coordinate, an exact zero reported on its domain's side. */
 static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
-    double roots[{{ [nroots, 1]|max }}];
+    double roots[{{ [nroots, 1]|max }}] = {0};
     if (settle_values(m) != {{ prefix }}OK || rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
-    for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) {
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
         size_t root = rmc_indicator_root[k];
         double value = roots[root];
         if (value == 0.0) {
@@ -131,18 +144,18 @@ static {{ prefix }}Status rmc_events_completed(ModelInstance* m, bool* enter) {
     if (RMC_EVENT_INDICATORS == 0) return {{ prefix }}OK;
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
     if (!m->rmc_domain_valid) {
-        for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) m->rmc_domain[k] = z[k] > 0.0;
+        for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) m->rmc_domain[k] = z[k] > 0.0;
         m->rmc_domain_valid = true;
         return {{ prefix }}OK;
     }
     bool changed = false;
-    for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) changed |= m->rmc_domain[k] != (z[k] > 0.0);
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) changed |= m->rmc_domain[k] != (z[k] > 0.0);
     if (!changed) return {{ prefix }}OK;
     memcpy(m->rmc_entry_y, m->y, sizeof(m->y));
     memcpy(m->rmc_entry_p, m->p, sizeof(m->p));
     m->rmc_entry_captured = true;
     m->rmc_override_count = 0;
-    for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) {
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
         bool now = z[k] > 0.0;
         if (now != m->rmc_domain[k]) {
             m->rmc_override_root[m->rmc_override_count] = rmc_indicator_root[k];
@@ -172,7 +185,7 @@ static bool rmc_apply_overrides(ModelInstance* m) {
    `algebraic_only`, update_algebraic_relation_memory_from_solver_y_except_overrides:
    release overrides the roots now contradict, then encode every other root. */
 static {{ prefix }}Status rmc_relation_refresh(ModelInstance* m, bool algebraic_only, bool* changed) {
-    double roots[{{ [nroots, 1]|max }}];
+    double roots[{{ [nroots, 1]|max }}] = {0};
     *changed = false;
     if (rmc_eval_roots(m, roots) != {{ prefix }}OK) return {{ prefix }}Error;
     size_t kept = 0;
@@ -188,7 +201,7 @@ static {{ prefix }}Status rmc_relation_refresh(ModelInstance* m, bool algebraic_
         }
     }
     m->rmc_override_count = kept;
-    for (size_t root = 0; root < RMC_ROOTS; ++root) {
+    for (size_t root = 0; root != RMC_ROOTS; ++root) {
         long target = rmc_root_memory[root];
         if (target < 0 || (algebraic_only && !rmc_root_algebraic[root]) || rmc_root_overridden(m, root)) continue;
         double value = rmc_memory_value(rmc_orient_root(roots[root], rmc_root_zero[root]));
@@ -220,14 +233,7 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
     static const size_t targets[{{ ndisc }}] = { {% for target in ev.discrete_targets %}{{ target }},{% endfor %} };
     static const bool memory_row[{{ ndisc }}] = { {% for row in ev.condition_memory_rows %}{{ "true" if row else "false" }},{% endfor %} };
     double values[{{ ndisc }}];
-{%- for program in solve.discrete.rhs_plan.programs %}
-    {
-    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
-{%- for op in program.ops %}
-{{ scalar_op(op, "values", prefix ~ "Error") }}
-{%- endfor %}
-    }
-{%- endfor %}
+{{- discrete_row_values(solve, prefix) }}
 {%- endif %}
 {%- if nguard > 0 %}
     /* guarded_assignments.rs: every guarded owner reads the same snapshot as
@@ -275,6 +281,44 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
 {%- endif %}
     return {{ prefix }}OK;
 }
+
+{%- if ndisc > 0 and (ev.observation_rows | select | list | length) > 0 %}
+/* discrete_rows.rs refresh_observation_discrete_rows: a public observation
+   recomputes the rows it owns from the coordinate the importer reads. */
+static {{ prefix }}Status rmc_observation_rows(ModelInstance* m, bool* changed) {
+    static const size_t targets[{{ ndisc }}] = { {% for target in ev.discrete_targets %}{{ target }},{% endfor %} };
+    static const bool observed[{{ ndisc }}] = { {% for row in ev.observation_rows %}{{ "true" if row else "false" }},{% endfor %} };
+    double values[{{ ndisc }}];
+{{- discrete_row_values(solve, prefix) }}
+    for (size_t d = 0; d < {{ ndisc }}; ++d) {
+        if (!observed[d]) continue;
+        *changed |= memcmp(&m->p[targets[d]], &values[d], sizeof(double)) != 0;
+        m->p[targets[d]] = values[d];
+    }
+    return {{ prefix }}OK;
+}
+/* component.rs refresh_public_observation_coordinate: the rows, then the
+   algebraic refresh; rows that read a solver coordinate alternate with it
+   until they agree. */
+static {{ prefix }}Status rmc_observe(ModelInstance* m) {
+    bool changed = false;
+    if (rmc_observation_rows(m, &changed) != {{ prefix }}OK || refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if ev.observation_reads_y %}
+    for (size_t round = 0; round < {{ schedule.fixed_point_cap }}; ++round) {
+        changed = false;
+        if (rmc_observation_rows(m, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+        if (!changed) return {{ prefix }}OK;
+        if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    }
+    RMC_LOG(m, "public observation refresh did not converge");
+    return {{ prefix }}Error;
+{%- else %}
+    return {{ prefix }}OK;
+{%- endif %}
+}
+{%- else %}
+static {{ prefix }}Status rmc_observe(ModelInstance* m) { (void)m; return {{ prefix }}OK; }
+{%- endif %}
 
 {{ update_rows("rmc_runtime_assignments", solve.discrete.runtime_assignment_plan, ev.runtime_targets, schedule.fixed_point_cap, prefix) }}
 {{ update_rows("rmc_post_commit_assignments", solve.discrete.post_commit_assignment_plan, ev.post_commit_targets, schedule.fixed_point_cap, prefix) }}
@@ -389,23 +433,23 @@ static bool rmc_on_surface(const ModelInstance* m, RmcSurface* s) {
 static const size_t rmc_neighbor_offset[{{ nb.offsets|length }}] = { {% for o in nb.offsets %}{{ o }},{% endfor %} };
 static const size_t rmc_neighbor[{{ [nb.flat|length, 1]|max }}] = { {% for r in nb.flat %}{{ r }},{% else %}0{% endfor %} };
 static size_t rmc_mode_candidates(const ModelInstance* m, const RmcSurface* s, size_t* candidates) {
-    bool cycling[RMC_ROOTS] = {false}, joined[RMC_ROOTS] = {false};
-    for (size_t root = 0; root < RMC_ROOTS; ++root) {
+    bool cycling[RMC_ROOT_SLOTS] = {false}, joined[RMC_ROOT_SLOTS] = {false};
+    for (size_t root = 0; root != RMC_ROOTS; ++root) {
         long memory = rmc_root_memory[root];
         for (size_t k = 0; memory >= 0 && k < s->count && !cycling[root]; ++k)
             cycling[root] = s->data[k * (Y_LEN + P_LEN) + Y_LEN + (size_t)memory] != m->p[memory];
     }
-    for (size_t root = 0; root < RMC_ROOTS; ++root)
+    for (size_t root = 0; root != RMC_ROOTS; ++root)
         for (size_t k = rmc_neighbor_offset[root]; cycling[root] && k < rmc_neighbor_offset[root + 1]; ++k) joined[rmc_neighbor[k]] = true;
     size_t count = 0;
-    for (size_t root = 0; root < RMC_ROOTS; ++root)
+    for (size_t root = 0; root != RMC_ROOTS; ++root)
         if (joined[root] && rmc_root_memory[root] >= 0) { if (count < RMC_MODE_LIMIT) candidates[count] = root; ++count; }
     return count;
 }
 static bool rmc_mode_consistent(ModelInstance* m, const size_t* candidates, size_t count, size_t mode) {
     for (size_t k = 0; k < count; ++k) m->p[rmc_root_memory[candidates[k]]] = (mode >> k & 1u) ? 1.0 : 0.0;
     if (refresh_algebraics(m) != {{ prefix }}OK) return false;
-    double roots[RMC_ROOTS];
+    double roots[RMC_ROOT_SLOTS] = {0};
     if (rmc_eval_roots(m, roots) != {{ prefix }}OK) return false;
     for (size_t k = 0; k < count; ++k) {
         double value = rmc_orient_root(roots[candidates[k]], rmc_root_zero[candidates[k]]);
@@ -607,7 +651,7 @@ static {{ prefix }}Status rmc_events_continuous(ModelInstance* m) {
     double z[{{ [nind, 1]|max }}];
     if (RMC_EVENT_INDICATORS == 0) return {{ prefix }}OK;
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
-    for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) {
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
         long memory = rmc_root_memory[rmc_indicator_root[k]];
         bool previous = m->rmc_domain_valid ? m->rmc_domain[k] : z[k] > 0.0;
         m->rmc_domain[k] = memory >= 0 ? m->p[memory] <= 0.5 : previous;
@@ -694,7 +738,7 @@ static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool*
     *changed = false;
     if (RMC_EVENT_INDICATORS == 0 || !m->rmc_domain_valid) return {{ prefix }}OK;
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
-    for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
     return {{ prefix }}OK;
 }
 /* One scan interval from `t`: integrate; when a domain changed, narrow the
@@ -724,7 +768,7 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     for (size_t iter = 0; iter < {{ plan.refinement_iteration_cap }}; ++iter) {
         double least = 1.0, trial = 0.0;
         if (rmc_root_located(&bracket)) { exhausted = false; break; }
-        for (size_t k = 0; k < RMC_EVENT_INDICATORS; ++k) {
+        for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
             if (m->rmc_domain[k] != (z_high[k] > 0.0)) least = fmin(least, rmc_root_fraction(&bracket, z_low[k], z_high[k]));
         }
         /* No representable coordinate strictly inside the bracket. */

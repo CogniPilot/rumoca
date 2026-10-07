@@ -566,6 +566,19 @@ static {{ prefix }}Status settle_values(ModelInstance* m) {
     if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
 }
+{%- if scalar_events %}
+static {{ prefix }}Status rmc_observe(ModelInstance* m);
+{%- endif %}
+/* The values a public read observes: settled, then the rows a public
+   observation recomputes. */
+static {{ prefix }}Status settle_public_values(ModelInstance* m) {
+    if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if scalar_events %}
+    return rmc_observe(m);
+{%- else %}
+    return {{ prefix }}OK;
+{%- endif %}
+}
 static {{ prefix }}Status settle_derivative_values(ModelInstance* m) {
     if (refresh_derivative_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;

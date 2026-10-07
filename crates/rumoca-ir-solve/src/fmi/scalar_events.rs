@@ -33,6 +33,12 @@ pub(super) struct ScalarEventProfile {
     /// Per discrete output: whether it is a condition memory, the rows
     /// initialization seeds with `pre` following the current value.
     condition_memory_rows: Vec<bool>,
+    /// Per discrete output: whether a public observation recomputes it from
+    /// the observed coordinate (an unread B.1c owner, SPEC_0022 EXPR-012).
+    observation_rows: Vec<bool>,
+    /// Whether an observation row reads a solver coordinate, so the algebraic
+    /// refresh and the rows alternate until they agree.
+    observation_reads_y: bool,
     /// Targets of the runtime assignments and of the post-commit
     /// assignments, in output order.
     runtime_targets: Vec<Slot>,
@@ -178,6 +184,8 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             .map(|role| *role == DiscreteRowRole::ConditionMemory)
             .collect(),
         discrete_targets,
+        observation_rows: discrete.observation_refresh.clone(),
+        observation_reads_y: discrete.observation_refresh_reads_y,
         runtime_targets: slots(&discrete.runtime_assignment_targets)?,
         guarded_targets: guarded_targets(discrete)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
@@ -208,6 +216,13 @@ fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
         ) || action.clock_owner.is_some()
     }) {
         return Err("the C profile executes only unscheduled assertions");
+    }
+    if discrete
+        .guarded_assignments
+        .iter()
+        .any(crate::GuardedAssignmentProgram::observation_refresh)
+    {
+        return Err("the C profile cannot observe a guarded assignment through a refresh");
     }
     if !discrete.structured_rhs.is_empty()
         || !discrete.structured_updates.is_empty()
