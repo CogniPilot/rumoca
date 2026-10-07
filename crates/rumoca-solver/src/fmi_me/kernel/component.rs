@@ -542,18 +542,15 @@ impl SolveMeKernel {
             }));
         }
         rumoca_eval_solve::reset_solve_row_eval_trace();
-        validate_explicit_solve_model(model)?;
-        let model = model
-            .resolved_periodic_schedules_at(config.start_time)
-            .map_err(|error| {
-                contract(format!(
-                    "periodic schedule cannot be anchored at FMI startTime: {error}"
-                ))
-            })?;
-        let runtime = Rc::new(SolveRuntime::new_with_execution_backend(
-            &model,
-            execution_backend,
-        )?);
+        validate_explicit_solve_model(&model)?;
+        let model =
+            rumoca_ir_solve::SolveModel::resolved_periodic_schedules_at(&model, config.start_time)
+                .map_err(|error| {
+                    contract(format!(
+                        "periodic schedule cannot be anchored at FMI startTime: {error}"
+                    ))
+                })?;
+        let runtime = Rc::new(SolveRuntime::new_shared(&model, execution_backend)?);
         let state_count = runtime.state_count;
         let states = runtime.model.initial_y[..state_count].to_vec();
         let params = runtime.model.parameters.clone();

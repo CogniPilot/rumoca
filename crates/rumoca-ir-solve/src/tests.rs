@@ -1226,8 +1226,9 @@ fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
     let mut model = SolveModel::default();
     model.problem.clocks.periodic_event_schedules =
         vec![PeriodicEventSchedule::from_schedule(schedule).unwrap()];
+    let model = std::sync::Arc::new(model);
 
-    let resolved = model.resolved_periodic_schedules_at(2.0).unwrap();
+    let resolved = SolveModel::resolved_periodic_schedules_at(&model, 2.0).unwrap();
     let schedule = &resolved.problem.clocks.periodic_event_schedules[0];
     assert_eq!(schedule.anchor(), rumoca_core::ClockPhaseAnchor::Absolute);
     assert_eq!(schedule.phase_seconds(), 2.25);
@@ -1235,6 +1236,16 @@ fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
         model.problem.clocks.periodic_event_schedules[0].anchor(),
         rumoca_core::ClockPhaseAnchor::SimulationStart,
         "compile-time Solve IR must remain independent of instance startTime"
+    );
+}
+
+#[test]
+fn solve_model_without_periodic_schedules_is_shared_not_copied() {
+    let model = std::sync::Arc::new(SolveModel::default());
+    let resolved = SolveModel::resolved_periodic_schedules_at(&model, 2.0).unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&resolved, &model),
+        "a model with nothing to resolve must not be cloned at instantiation"
     );
 }
 

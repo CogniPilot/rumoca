@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
+    sync::Arc,
 };
 
 use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
@@ -303,7 +304,9 @@ fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), Runtime
 
 #[derive(Clone)]
 pub struct SolveRuntime {
-    pub model: solve::SolveModel,
+    /// The checked model this runtime executes, shared with the component it
+    /// was built from.
+    pub model: Arc<solve::SolveModel>,
     pub state_count: usize,
     pub solver_count: usize,
     implicit_rhs: PreparedComputeBlock,
@@ -471,6 +474,15 @@ impl SolveRuntime {
         model: &solve::SolveModel,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
     ) -> Result<Self, EvalSolveError> {
+        Self::construct(&Arc::new(model.clone()), execution_backend, None)
+    }
+
+    /// The runtime of a model a component already shares: the runtime holds
+    /// the same allocation and copies nothing.
+    pub fn new_shared(
+        model: &Arc<solve::SolveModel>,
+        execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+    ) -> Result<Self, EvalSolveError> {
         Self::construct(model, execution_backend, None)
     }
 
@@ -478,16 +490,21 @@ impl SolveRuntime {
     /// primary runtime's prepared and compiled programs wherever `model`
     /// carries the same ones (see [`chart_sharing`]).
     pub(crate) fn new_alternate(&self, model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
-        Self::construct(model, self.execution_backend.clone(), Some(self))
+        Self::construct(
+            &Arc::new(model.clone()),
+            self.execution_backend.clone(),
+            Some(self),
+        )
     }
 
     // SPEC_0021: Exception - construction-issued owner binding stays contiguous for auditability.
     #[allow(clippy::too_many_lines)]
     fn construct(
-        model: &solve::SolveModel,
+        shared_model: &Arc<solve::SolveModel>,
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
         primary: Option<&SolveRuntime>,
     ) -> Result<Self, EvalSolveError> {
+        let model: &solve::SolveModel = shared_model;
         let prepare = |pick: fn(&SolveRuntime) -> &PreparedScalarProgramBlock,
                        block: solve::ScalarProgramBlock| {
             let base = primary.map(pick);
@@ -833,7 +850,7 @@ impl SolveRuntime {
         )
         .into();
         Ok(Self {
-            model: model.clone(),
+            model: Arc::clone(shared_model),
             state_count: model.state_scalar_count(),
             solver_count: model.solver_scalar_count(),
             implicit_rhs: prepare_compute(
