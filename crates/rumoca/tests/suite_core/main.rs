@@ -119,6 +119,7 @@ mod function_conditional_sequence_test;
 mod function_constant_binding_scope;
 mod function_continuation_round_trip;
 mod function_equation_shape;
+mod function_fact_bounded_loops;
 mod function_fold_projection;
 mod function_generic_loop_definedness;
 mod function_guard_bounded_ranges;

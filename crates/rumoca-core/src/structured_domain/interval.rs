@@ -94,6 +94,36 @@ impl IntegerInterval {
         }
     }
 
+    /// `min(a, b)` lies below either operand's upper bound and above the
+    /// lesser lower bound.
+    pub fn minimum(self, other: Self) -> Self {
+        Self {
+            lower: self.lower.zip(other.lower).map(|(a, b)| a.min(b)),
+            upper: min_endpoint(self.upper, other.upper),
+        }
+    }
+
+    /// `max(a, b)` lies above either operand's lower bound and below the
+    /// greater upper bound.
+    pub fn maximum(self, other: Self) -> Self {
+        Self {
+            lower: max_endpoint(self.lower, other.lower),
+            upper: self.upper.zip(other.upper).map(|(a, b)| a.max(b)),
+        }
+    }
+
+    /// `div(a, divisor)` for a positive divisor (MLS §3.7.1.1: truncated
+    /// toward zero), which never decreases as `a` grows.
+    pub fn divided_by(self, divisor: i64) -> Self {
+        if divisor <= 0 {
+            return Self::UNBOUNDED;
+        }
+        Self {
+            lower: self.lower.and_then(|value| value.checked_div(divisor)),
+            upper: self.upper.and_then(|value| value.checked_div(divisor)),
+        }
+    }
+
     fn constant(self) -> Option<i64> {
         self.bounds()
             .and_then(|(lower, upper)| (lower == upper).then_some(lower))

@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use super::super::guard_facts::{FactScope, GuardFacts};
+use super::super::guard_facts::{FactScope, GuardFacts, ValueKinds};
 use super::*;
 use rumoca_core::BuiltinFunction;
 
@@ -17,19 +17,16 @@ pub(super) fn rectangularize_dependent_loops(
     statements: &[rumoca_core::Statement],
     static_integers: &HashMap<VarName, i64>,
     shapes: &ShapeEnvironment,
-    integers: &HashSet<VarName>,
+    kinds: &ValueKinds,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     let mut facts = GuardFacts::entry();
-    // Dependent domains are Integer ranges; no Real fact bounds them.
-    let reals = HashSet::new();
     rectangularize_loops_in_scope(
         statements,
         Scope {
             static_integers,
             shapes,
             bounds: &HashMap::new(),
-            integers,
-            reals: &reals,
+            kinds,
         },
         &mut facts,
     )
@@ -41,17 +38,12 @@ struct Scope<'a> {
     static_integers: &'a HashMap<VarName, i64>,
     shapes: &'a ShapeEnvironment,
     bounds: &'a HashMap<VarName, (i64, i64)>,
-    integers: &'a HashSet<VarName>,
-    reals: &'a HashSet<VarName>,
+    kinds: &'a ValueKinds,
 }
 
 impl<'a> Scope<'a> {
     fn facts(self) -> FactScope<'a> {
-        FactScope {
-            shapes: self.shapes,
-            integers: self.integers,
-            reals: self.reals,
-        }
+        self.kinds.scope(self.shapes)
     }
 }
 
@@ -97,8 +89,9 @@ fn rectangularize_statement(
         .iter()
         .map(|index| VarName::new(&index.ident))
         .collect::<Vec<_>>();
-    let mut body_facts = facts.loop_entry(equations, &binders);
-    *facts = facts.loop_entry(equations, &[]);
+    let head = facts.for_head(indices, equations, scope.facts());
+    let mut body_facts = head.loop_entry(&[], &binders);
+    *facts = head;
     let mut bounds = scope.bounds.clone();
     let mut rectangular = Vec::with_capacity(indices.len());
     let mut guards = Vec::new();
@@ -178,8 +171,7 @@ fn rectangularize_loop_body(
             static_integers: &body_static,
             shapes: &body_shapes,
             bounds,
-            integers: scope.integers,
-            reals: scope.reals,
+            kinds: scope.kinds,
         },
         facts,
     )?;

@@ -517,9 +517,9 @@ struct FunctionValidationContext<'scope> {
     /// The binders of the compact loops whose body is being resolved as one
     /// generic iteration: immutable within an iteration, but not settled.
     loop_binders: &'scope HashSet<VarName>,
-    /// The scalar Integer and Real values of the function, which value facts
+    /// The Integer and Real values of the function, which value facts
     /// (`guard_facts`) may bound.
-    scalars: &'scope guard_facts::ScalarKinds,
+    scalars: &'scope guard_facts::ValueKinds,
     /// Whether this source sequence reaches a call-scoped or loop action
     /// owner, directly or through runtime conditionals that guard its actions.
     call_scoped_actions: bool,

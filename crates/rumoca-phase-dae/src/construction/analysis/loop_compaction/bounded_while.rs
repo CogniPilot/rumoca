@@ -13,7 +13,8 @@
 //! state the `while` loop's final (false) test already evaluated `c` in, so
 //! they raise no error the original does not.
 //!
-//! The bound is proven from a counter `k`:
+//! The bound is proven from the value facts (`guard_facts`) at the loop, in
+//! one of two forms. The counter form:
 //!
 //! * a top-level conjunct of `c` is `k < N`, `k <= N`, `N > k`, or `N >= k`,
 //!   with `N` settled at translation (a literal, a shape extent, an evaluable
@@ -24,104 +25,37 @@
 //!   exit), which cannot lower `k` while `c` holds;
 //! * `k` has a proven floor `s` whenever `c` is evaluated: either `c` reads an
 //!   array element with `k` as a subscript (MLS §10.5 makes an index below 1
-//!   an error, so `s = 1`), or `k` enters the loop holding the literal `s`
-//!   (its last dominating assignment, or its declaration binding when nothing
+//!   an error, so `s = 1`), or the facts on entry bound `k` below by `s` (its
+//!   last dominating assignment, or its declaration binding when nothing
 //!   wrote it), as the Media inversions' `Integer i = 0` counters do.
 //!
 //! Then every iteration raises `k` by at least 1 from at least `s` while `k`
 //! stays at most `N`, so `B = N - min(s, 1) + 1` iterations suffice (`B = N`
-//! for `s >= 1`). A loop without such a proof is left as written and keeps
+//! for `s >= 1`). The progress form (`progress`) proves that every pass
+//! either ends the loop or raises a counter by at least 1 from within a
+//! proven interval. A loop without either proof is left as written and keeps
 //! its typed rejection.
 
+use super::super::guard_facts::{FactScope, GuardFacts};
 use super::*;
 use rumoca_core::{ForIndex, Literal, OpBinary, StatementBlock};
 
-mod exit_or_advance;
-use exit_or_advance::exit_or_advance_bound;
+mod progress;
+use progress::progress_bound;
 
-/// Literal Integer values each name is proven to hold at the current point; a
-/// Boolean name holds 0 for `false` and 1 for `true`.
-pub(super) type EntryValues = HashMap<VarName, i64>;
-
-/// The Integer or Boolean value of a literal.
-fn literal_value(expression: &Expression) -> Option<i64> {
-    match expression {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            ..
-        } => Some(*value),
-        Expression::Literal {
-            value: Literal::Boolean(value),
-            ..
-        } => Some(i64::from(*value)),
-        _ => None,
-    }
-}
-
-/// The literal Integer and Boolean defaults of a function's locals, which hold
-/// at entry.
-pub(super) fn entry_values(function: &rumoca_core::Function) -> EntryValues {
-    function
-        .locals
-        .iter()
-        .filter_map(|local| {
-            Some((
-                VarName::new(&local.name),
-                literal_value(local.default.as_ref()?)?,
-            ))
-        })
-        .collect()
-}
-
-/// What a pass-bound proof reads: the proven extents and values, and the
-/// scalar Integer values guard facts may bound.
-#[derive(Clone, Copy)]
-pub(super) struct WhileContext<'a> {
-    pub(super) shapes: &'a ShapeEnvironment,
-    pub(super) integers: &'a HashSet<VarName>,
-}
-
+/// `statements` with every `while` loop they contain bounded, reading the
+/// facts that hold before them.
 pub(super) fn bound_while_loops(
     statements: &[rumoca_core::Statement],
-    cx: WhileContext<'_>,
-    entry: &EntryValues,
+    scope: FactScope<'_>,
+    mut facts: GuardFacts,
 ) -> Vec<rumoca_core::Statement> {
-    let mut known = entry.clone();
     let mut bounded = Vec::with_capacity(statements.len());
     for statement in statements {
-        bounded.extend(bound_statement(statement, cx, &known));
-        advance_known(&mut known, statement);
+        bounded.extend(bound_statement(statement, scope, &facts));
+        facts.after(statement, scope);
     }
     bounded
-}
-
-/// The values still proven after `statement` runs.
-fn advance_known(known: &mut EntryValues, statement: &rumoca_core::Statement) {
-    if let rumoca_core::Statement::Assignment { comp, value, .. } = statement
-        && let Some(value) = literal_value(value)
-        && comp.parts().iter().all(|part| part.subs.is_empty())
-    {
-        known.insert(
-            rumoca_core::component_ref_to_base_reference(comp)
-                .var_name()
-                .clone(),
-            value,
-        );
-        return;
-    }
-    for name in statements_written_names(std::slice::from_ref(statement)) {
-        known.remove(&name);
-    }
-}
-
-/// The values a loop body may rely on in every iteration: none it writes.
-fn loop_entry(known: &EntryValues, body: &[rumoca_core::Statement]) -> EntryValues {
-    let written = statements_written_names(body);
-    known
-        .iter()
-        .filter(|(name, _)| !written.contains(*name))
-        .map(|(name, value)| (name.clone(), *value))
-        .collect()
 }
 
 /// `statement` with every `while` loop it contains bounded.
@@ -132,21 +66,25 @@ fn loop_entry(known: &EntryValues, body: &[rumoca_core::Statement]) -> EntryValu
 /// every path, as the source loop guarantees.
 fn bound_statement(
     statement: &rumoca_core::Statement,
-    cx: WhileContext<'_>,
-    known: &EntryValues,
+    scope: FactScope<'_>,
+    facts: &GuardFacts,
 ) -> Vec<rumoca_core::Statement> {
     let rumoca_core::Statement::While { block, span } = statement else {
-        return vec![bound_nested_statement(statement, cx, known)];
+        return vec![bound_nested_statement(statement, scope, facts)];
     };
-    let body = bound_while_loops(&block.stmts, cx, &loop_entry(known, &block.stmts));
+    let head = facts.while_head(block, scope);
+    let mut pass = head.clone();
+    pass.observe_accesses(&block.cond, scope);
+    let pass = pass.assuming(&block.cond, true, scope);
+    let body = bound_while_loops(&block.stmts, scope, pass);
     let block = StatementBlock {
         cond: block.cond.clone(),
         stmts: body,
     };
-    let Some(bound) = iteration_bound(&block, known, cx) else {
+    let Some(bound) = iteration_bound(&block, facts, &head, scope) else {
         return vec![rumoca_core::Statement::While { block, span: *span }];
     };
-    if entry_truth(&block.cond, known, cx.shapes) != Some(true) {
+    if !facts.assuming(&block.cond, false, scope).is_unreachable() {
         return vec![guarded_for(block, bound, *span)];
     }
     let mut peeled = block.stmts.clone();
@@ -156,97 +94,57 @@ fn bound_statement(
     peeled
 }
 
-/// The truth value `condition` is proven to have from the known literal
-/// values, or `None` when any operand is not known.
-fn entry_truth(
-    condition: &Expression,
-    known: &EntryValues,
-    shapes: &ShapeEnvironment,
-) -> Option<bool> {
-    match condition {
-        Expression::Literal {
-            value: Literal::Boolean(value),
-            ..
-        } => Some(*value),
-        Expression::VarRef { .. } => known
-            .get(plain_reference(condition)?)
-            .map(|value| *value != 0),
-        Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => entry_truth(rhs, known, shapes).map(|value| !value),
-        Expression::Binary {
-            op: OpBinary::And,
-            lhs,
-            rhs,
-            ..
-        } => Some(entry_truth(lhs, known, shapes)? && entry_truth(rhs, known, shapes)?),
-        Expression::Binary {
-            op: OpBinary::Or,
-            lhs,
-            rhs,
-            ..
-        } => Some(entry_truth(lhs, known, shapes)? || entry_truth(rhs, known, shapes)?),
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = entry_integer(lhs, known, shapes)?;
-            let rhs = entry_integer(rhs, known, shapes)?;
-            match op {
-                OpBinary::Lt => Some(lhs < rhs),
-                OpBinary::Le => Some(lhs <= rhs),
-                OpBinary::Gt => Some(lhs > rhs),
-                OpBinary::Ge => Some(lhs >= rhs),
-                OpBinary::Eq => Some(lhs == rhs),
-                OpBinary::Neq => Some(lhs != rhs),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn entry_integer(
-    expression: &Expression,
-    known: &EntryValues,
-    shapes: &ShapeEnvironment,
-) -> Option<i64> {
-    plain_reference(expression)
-        .and_then(|name| known.get(name).copied())
-        .or_else(|| shapes.proven_extent(expression))
-}
-
 fn bound_nested_statement(
     statement: &rumoca_core::Statement,
-    cx: WhileContext<'_>,
-    known: &EntryValues,
+    scope: FactScope<'_>,
+    facts: &GuardFacts,
 ) -> rumoca_core::Statement {
     match statement {
         rumoca_core::Statement::For {
             indices,
             equations,
             span,
-        } => rumoca_core::Statement::For {
-            indices: indices.clone(),
-            equations: bound_while_loops(equations, cx, &loop_entry(known, equations)),
-            span: *span,
-        },
+        } => {
+            let binders = indices
+                .iter()
+                .map(|index| VarName::new(&index.ident))
+                .collect::<Vec<_>>();
+            let body = facts
+                .for_head(indices, equations, scope)
+                .loop_entry(&[], &binders);
+            rumoca_core::Statement::For {
+                indices: indices.clone(),
+                equations: bound_while_loops(equations, scope, body),
+                span: *span,
+            }
+        }
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
             span,
-        } => rumoca_core::Statement::If {
-            cond_blocks: cond_blocks
+        } => {
+            let conditions = cond_blocks
                 .iter()
-                .map(|block| StatementBlock {
-                    cond: block.cond.clone(),
-                    stmts: bound_while_loops(&block.stmts, cx, known),
-                })
-                .collect(),
-            else_block: else_block
-                .as_ref()
-                .map(|statements| bound_while_loops(statements, cx, known)),
-            span: *span,
-        },
+                .map(|block| &block.cond)
+                .collect::<Vec<_>>();
+            let mut entries = facts.branch_entries(&conditions, scope);
+            let fallthrough = entries.pop();
+            rumoca_core::Statement::If {
+                cond_blocks: cond_blocks
+                    .iter()
+                    .zip(entries)
+                    .map(|(block, entry)| StatementBlock {
+                        cond: block.cond.clone(),
+                        stmts: bound_while_loops(&block.stmts, scope, entry),
+                    })
+                    .collect(),
+                else_block: else_block
+                    .as_ref()
+                    .zip(fallthrough)
+                    .map(|(statements, entry)| bound_while_loops(statements, scope, entry)),
+                span: *span,
+            }
+        }
         _ => statement.clone(),
     }
 }
@@ -275,29 +173,27 @@ fn guarded_for(block: StatementBlock, bound: i64, span: Span) -> rumoca_core::St
     }
 }
 
-/// The proven iteration bound of one `while` loop (see the module note).
+/// The proven iteration bound of one `while` loop (see the module note), from
+/// the facts before the loop and at its head.
 fn iteration_bound(
     block: &StatementBlock,
-    known: &EntryValues,
-    cx: WhileContext<'_>,
+    entry: &GuardFacts,
+    head: &GuardFacts,
+    scope: FactScope<'_>,
 ) -> Option<i64> {
     if statements_exit_early(&block.stmts) {
         return None;
     }
-    counter_bound(block, known, cx.shapes).or_else(|| exit_or_advance_bound(block, known, cx))
+    counter_bound(block, entry, scope).or_else(|| progress_bound(block, head, scope))
 }
 
 /// The counter proof form (see the module note).
-fn counter_bound(
-    block: &StatementBlock,
-    known: &EntryValues,
-    shapes: &ShapeEnvironment,
-) -> Option<i64> {
+fn counter_bound(block: &StatementBlock, entry: &GuardFacts, scope: FactScope<'_>) -> Option<i64> {
     let mut conjuncts = Vec::new();
     collect_conjuncts(&block.cond, &mut conjuncts);
     conjuncts.iter().find_map(|conjunct| {
         let (counter, limit) = counter_limit(conjunct)?;
-        let bound = shapes.proven_extent(limit)?;
+        let bound = scope.shapes.proven_extent(limit)?;
         let written = statements_written_names(&block.stmts);
         let limit_invariant = {
             let mut reads = Vec::new();
@@ -305,18 +201,27 @@ fn counter_bound(
             reads.iter().all(|name| !written.contains(name))
         };
         // The least value `k` can hold when `c` is evaluated: 1 when `c`
-        // indexes an array with it, otherwise its literal entry value.
+        // indexes an array with it, otherwise its least value on entry.
         let floor = if indexes_with(&block.cond, counter) {
             Some(1)
         } else {
-            known.get(counter).copied()
+            entry.integer_interval(&reference(counter), scope).lower
         }?;
         let iterations = iterations_from(bound, floor)?;
         (bound >= 0
             && limit_invariant
-            && advances_each_iteration(&block.stmts, counter, bound, shapes))
+            && advances_each_iteration(&block.stmts, counter, bound, scope.shapes))
         .then_some(iterations)
     })
+}
+
+/// A plain reference to the scalar `name`.
+fn reference(name: &VarName) -> Expression {
+    Expression::VarRef {
+        name: Reference::generated(name.as_str()),
+        subscripts: Vec::new(),
+        span: Span::DUMMY,
+    }
 }
 
 /// An iteration bound for a counter that rises by at least 1 per iteration

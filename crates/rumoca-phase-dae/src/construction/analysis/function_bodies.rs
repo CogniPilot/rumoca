@@ -37,7 +37,7 @@ pub(in crate::construction) fn validate_function_certificate(
     let roles = function_expression_roles(function, flat);
     let staged_record_fields = HashSet::new();
     let loop_binders = HashSet::new();
-    let scalars = super::guard_facts::ScalarKinds::of(function, flat);
+    let scalars = super::guard_facts::ValueKinds::of(function, flat);
     let context = FunctionValidationContext {
         function,
         flat,

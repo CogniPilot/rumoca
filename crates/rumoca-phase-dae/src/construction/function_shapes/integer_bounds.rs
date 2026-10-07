@@ -75,9 +75,6 @@ impl ShapeEnvironment {
             }
             Expression::BuiltinCall { function, args, .. } => {
                 operations::builtin(self, *function, args)
-                    .map_or(IntegerInterval::UNBOUNDED, |(lower, upper)| {
-                        IntegerInterval::finite(lower, upper)
-                    })
             }
             _ => IntegerInterval::UNBOUNDED,
         }

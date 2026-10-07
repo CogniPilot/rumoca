@@ -53,6 +53,7 @@ use loop_local_substitution::{
 };
 pub(super) use loop_local_substitution::{statements_partially_assign_name, statements_read_name};
 
+use super::guard_facts::{GuardFacts, ValueKinds};
 use super::*;
 use rumoca_core::{ExpressionRewriter, Reference, StatementRewriter, Subscript};
 
@@ -112,13 +113,11 @@ pub(super) fn compact_function_loops(
         function,
         flat,
     )?;
+    let kinds = ValueKinds::of(function, flat);
     let settled = bounded_while::bound_while_loops(
         &settled,
-        bounded_while::WhileContext {
-            shapes,
-            integers: &scalar_integer_names(function, flat),
-        },
-        &bounded_while::entry_values(function),
+        kinds.scope(shapes),
+        GuardFacts::function_entry(function, kinds.scope(shapes)),
     );
     let mut bounded_shapes = shapes.clone();
     infer_function_integer_bounds(&settled, &mut bounded_shapes);
@@ -139,12 +138,8 @@ pub(super) fn compact_function_loops(
         shapes: &bounded_shapes,
     }
     .rewrite_statements(&compacted);
-    let compacted = rectangularize_dependent_loops(
-        &compacted,
-        static_integers,
-        &bounded_shapes,
-        &scalar_integer_names(function, flat),
-    )?;
+    let compacted =
+        rectangularize_dependent_loops(&compacted, static_integers, &bounded_shapes, &kinds)?;
     let Some(span) = first_dependent_loop_range(&compacted, static_integers, &bounded_shapes)?
     else {
         return Ok(compacted);
@@ -157,21 +152,6 @@ pub(super) fn compact_function_loops(
         ),
         span,
     ))
-}
-
-/// The scalar Integer inputs, outputs and locals of `function`.
-fn scalar_integer_names(function: &rumoca_core::Function, flat: &flat::Model) -> HashSet<VarName> {
-    function
-        .inputs
-        .iter()
-        .chain(&function.outputs)
-        .chain(&function.locals)
-        .filter(|value| {
-            value.effective_type.dimensions().is_empty()
-                && effective_function_scalar_type(flat, value) == Some(dae::ScalarType::Integer)
-        })
-        .map(|value| VarName::new(&value.name))
-        .collect()
 }
 
 fn infer_declared_finite_counters(

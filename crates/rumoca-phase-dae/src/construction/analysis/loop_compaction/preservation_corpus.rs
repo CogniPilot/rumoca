@@ -247,7 +247,10 @@ impl EntryValues {
     }
 }
 
-pub(super) fn component(name: &str, subs: Vec<Subscript>) -> ComponentReference {
+pub(in crate::construction::analysis) fn component(
+    name: &str,
+    subs: Vec<Subscript>,
+) -> ComponentReference {
     ComponentReference::construct(
         false,
         span(),
@@ -269,7 +272,7 @@ pub(in crate::construction::analysis) fn var(name: &str) -> Expression {
     }
 }
 
-pub(super) fn element(name: &str, subscript: Expression) -> Expression {
+pub(in crate::construction::analysis) fn element(name: &str, subscript: Expression) -> Expression {
     Expression::VarRef {
         name: rumoca_core::Reference::new(name),
         subscripts: vec![Subscript::Expr {
@@ -325,7 +328,7 @@ pub(in crate::construction::analysis) fn assign(
     }
 }
 
-pub(super) fn assign_element(
+pub(in crate::construction::analysis) fn assign_element(
     target: &str,
     subscript: Expression,
     value: Expression,
@@ -343,7 +346,7 @@ pub(super) fn assign_element(
     }
 }
 
-pub(super) fn for_loop(
+pub(in crate::construction::analysis) fn for_loop(
     binder: &str,
     count: i64,
     body: Vec<rumoca_core::Statement>,
@@ -363,7 +366,7 @@ pub(super) fn for_loop(
     }
 }
 
-pub(super) fn branch(
+pub(in crate::construction::analysis) fn branch(
     conditions: Vec<(Expression, Vec<rumoca_core::Statement>)>,
     fallback: Option<Vec<rumoca_core::Statement>>,
 ) -> rumoca_core::Statement {

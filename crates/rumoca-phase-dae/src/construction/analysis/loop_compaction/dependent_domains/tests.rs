@@ -70,7 +70,7 @@ fn bounded_dynamic_strides_preserve_point_order_empty_domains_and_array_aliases(
             &body,
             &HashMap::new(),
             &ShapeEnvironment::default(),
-            &HashSet::new(),
+            &ValueKinds::default(),
         )
         .expect("immutable bounded strided domains have a compact owner");
         assert_ne!(format!("{body:?}"), format!("{compacted:?}"));
@@ -106,7 +106,7 @@ fn bounded_dynamic_strides_preserve_point_order_empty_domains_and_array_aliases(
         &body,
         &HashMap::new(),
         &ShapeEnvironment::default(),
-        &HashSet::new(),
+        &ValueKinds::default(),
     )
     .expect("the empty descending envelope remains compact");
     for entry in ENTRY_VALUES {
@@ -127,8 +127,9 @@ fn mutable_range_operand_requires_entry_snapshot_instead_of_live_membership_read
     )];
     let mut shapes = ShapeEnvironment::default();
     shapes.bind_integer_bounds(VarName::new("k"), 0, 3);
-    let error = rectangularize_dependent_loops(&body, &HashMap::new(), &shapes, &HashSet::new())
-        .expect_err("a body write cannot change the entry range");
+    let error =
+        rectangularize_dependent_loops(&body, &HashMap::new(), &shapes, &ValueKinds::default())
+            .expect_err("a body write cannot change the entry range");
     assert!(format!("{error:?}").contains("entry snapshot"));
 }
 
@@ -148,7 +149,7 @@ fn full14400_parent_domain_does_not_expand_statement_storage() {
         &body,
         &HashMap::new(),
         &ShapeEnvironment::default(),
-        &HashSet::new(),
+        &ValueKinds::default(),
     )
     .expect("the full finite parent keeps one bounded nested domain");
     let [rumoca_core::Statement::For { equations, .. }] = compacted.as_slice() else {
@@ -192,7 +193,7 @@ fn nonlinear_range_start_keeps_interior_points_in_its_conservative_envelope() {
         &body,
         &HashMap::new(),
         &ShapeEnvironment::default(),
-        &HashSet::new(),
+        &ValueKinds::default(),
     )
     .expect("checked interval arithmetic bounds the nonlinear start");
     for entry in ENTRY_VALUES {
@@ -226,7 +227,7 @@ fn empty_dynamic_domain_preserves_the_initial_signed_zero() {
         &body,
         &HashMap::new(),
         &ShapeEnvironment::default(),
-        &HashSet::new(),
+        &ValueKinds::default(),
     )
     .expect("a proven empty envelope has a compact owner");
     assert_ne!(format!("{body:?}"), format!("{compacted:?}"));
@@ -261,7 +262,7 @@ fn enclosing_binder_shadows_settled_outer_values_during_envelope_recognition() {
     shapes.bind_scalar_value(VarName::new("i"), EvalValue::Integer(987));
     let static_integers = HashMap::from([(VarName::new("i"), 987)]);
     let compacted =
-        rectangularize_dependent_loops(&body, &static_integers, &shapes, &HashSet::new())
+        rectangularize_dependent_loops(&body, &static_integers, &shapes, &ValueKinds::default())
             .expect("the inner range reads the lexical binder");
     assert_ne!(format!("{body:?}"), format!("{compacted:?}"));
     for entry in ENTRY_VALUES {
@@ -285,7 +286,7 @@ fn generated_stride_difference_requires_checked_integer_bounds() {
     let mut shapes = ShapeEnvironment::default();
     shapes.bind_integer_bounds(VarName::new("limit"), i64::MIN, i64::MIN + 1);
     let compacted =
-        rectangularize_dependent_loops(&body, &HashMap::new(), &shapes, &HashSet::new())
+        rectangularize_dependent_loops(&body, &HashMap::new(), &shapes, &ValueKinds::default())
             .expect("a missing arithmetic proof leaves the source for typed refusal");
     assert_eq!(
         format!("{body:?}"),
