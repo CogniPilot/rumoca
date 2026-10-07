@@ -20,17 +20,16 @@ pub(super) fn assignment_y_dependencies_for_shapes(
                         ScalarProgramYDependency::new(prefix),
                     )
                 });
-            let footprint = dependency.footprint(shape.value_registers());
-            indices
-                .iter()
-                .copied()
-                .filter(|index| {
-                    footprint
-                        .as_ref()
-                        .is_none_or(|footprint| footprint.contains(*index))
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice()
+            // The loaded indices inside the footprint's intervals, ascending:
+            // the cost follows the footprint, not every index the prefix loads.
+            match dependency.footprint(shape.value_registers()) {
+                Some(footprint) => footprint
+                    .intervals()
+                    .flat_map(|(start, end)| indices.range(start..end).copied())
+                    .collect::<Vec<_>>(),
+                None => indices.iter().copied().collect(),
+            }
+            .into_boxed_slice()
         })
         .collect::<Vec<_>>()
         .into_boxed_slice()
@@ -158,6 +157,11 @@ impl YFootprint {
             }
         }
         Self(intervals.into_boxed_slice())
+    }
+
+    /// The set's half-open intervals, in ascending order.
+    pub fn intervals(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.0.iter().copied()
     }
 
     /// The indices of the set, in ascending order.
