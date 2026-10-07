@@ -143,7 +143,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             return Ok(value.clone());
         }
 
-        refuse_while_fold(fold_view, span)?;
         let mut values = fold_view
             .initial_values()
             .rhs_iter()
@@ -383,21 +382,4 @@ fn select_dynamic_typed_expression(
         expression: gast::Expression::If(gast::IfExpression::new(branches, fallback.expression)),
         scalar_type,
     })
-}
-
-/// SPEC_0034: no qualified GALEC form expresses a loop that ends at a runtime
-/// predicate, so a fold with a continuation (a bounded `while`) is refused,
-/// never run over its whole pass bound.
-pub(super) fn refuse_while_fold(
-    fold: dae::FunctionFoldView<'_>,
-    span: Span,
-) -> Result<(), GalecTargetError> {
-    if fold.continuation().is_none() {
-        return Ok(());
-    }
-    Err(unsupported(
-        "galec-while-loop",
-        "a bounded while loop needs a GALEC early-exit form, which is not qualified".to_owned(),
-        span,
-    ))
 }
