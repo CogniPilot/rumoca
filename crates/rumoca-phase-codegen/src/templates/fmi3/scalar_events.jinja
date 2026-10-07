@@ -762,6 +762,12 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     bool reinit = false;
     if (m->rmc_initial_event && rmc_events_update(m, &reinit) != {{ prefix }}OK) return {{ prefix }}Error;
     if (!m->rmc_domain_valid && rmc_events_continuous(m) != {{ prefix }}OK) return {{ prefix }}Error;
+    /* The importer sets inputs between steps: an indicator that reads one may
+       have changed domain since the last step ended, which is an event at the
+       step's first instant, handled before integrating. */
+    bool entered = false;
+    if (rmc_events_completed(m, &entered) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (entered && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
     while (t < end) {
         double scan = m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN);
         double h = fmin(end - t, scan), advanced = 0.0;

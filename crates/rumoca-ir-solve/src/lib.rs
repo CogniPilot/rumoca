@@ -28,6 +28,7 @@ mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;
+mod static_parameters;
 mod tangent_lanes;
 mod typed_program;
 mod variable_bounds;
@@ -76,6 +77,7 @@ pub use parameter_reads::read_parameter_slots;
 pub use refresh::*;
 pub use root_search::{RootSearchPlan, RootSearchRole, TimeRootSign, root_neighborhoods};
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
+pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{
     ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentLaneError, TangentLaneProgram,
     TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
