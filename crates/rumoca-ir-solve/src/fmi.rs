@@ -380,6 +380,20 @@ impl FmiMetadata {
         &self.state_variable_indices
     }
 
+    /// The enumeration types the inventory's variables declare, each once, in
+    /// the order the inventory first uses them: the type definitions of the
+    /// model description.
+    #[must_use]
+    pub fn enumerations(&self) -> Vec<&rumoca_core::EnumerationDeclaration> {
+        let mut declared: Vec<&rumoca_core::EnumerationDeclaration> = Vec::new();
+        for declaration in self.variables.iter().filter_map(FmiVariable::enumeration) {
+            if !declared.contains(&declaration) {
+                declared.push(declaration);
+            }
+        }
+        declared
+    }
+
     #[must_use]
     pub const fn derivative_value_reference_base_fmi3(&self) -> u32 {
         self.derivative_value_reference_base_fmi3
@@ -786,6 +800,14 @@ fn checked_variable(
         }
         text_start => text_start,
     };
+    // An enumeration declaration is exactly what an `Enumeration` entry needs
+    // to name its literals, and no other kind has one.
+    if input.enumeration.is_some() != (input.value_kind == SolveVariableValueKind::Enumeration) {
+        return Err(FmiComponentError::StorageTypeMismatch {
+            name: input.name,
+            span: input.declaration,
+        });
+    }
     let initial = metadata::initial_for_storage(input.role, input.causality, input.variability);
     let start = if initial == Some(FmiInitial::Calculated)
         || input.causality == FmiCausality::Independent
@@ -812,6 +834,7 @@ fn checked_variable(
         maximum: input.maximum,
         nominal: input.nominal,
         text_start,
+        enumeration: input.enumeration,
         unit: input.unit,
         description: input.description,
         causality: input.causality,

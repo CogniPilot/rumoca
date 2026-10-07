@@ -10,7 +10,7 @@
 {%- from "fmi-c-kernel.jinja" import scalar_op %}
 
 {%- macro event_fields(fmi) -%}
-{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
+{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_inputs|length, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
 {%- endmacro %}
 
 {#- The evaluation time of a read at the component's time: after an event with
@@ -702,6 +702,21 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
     return {{ prefix }}Error;
 }
 
+/* The discrete inputs as the last event saw them. */
+#define RMC_DISCRETE_INPUTS {{ ev.discrete_inputs|length }}
+static const size_t rmc_discrete_input[{{ [ev.discrete_inputs|length, 1]|max }}] = { {% for index in ev.discrete_inputs %}{{ index }},{% else %}0{% endfor %} };
+static void rmc_discrete_inputs_seen(ModelInstance* m) {
+    for (size_t k = 0; k != RMC_DISCRETE_INPUTS; ++k) m->rmc_input_seen[k] = m->p[rmc_discrete_input[k]];
+    (void)m;
+}
+/* A discrete-time input changes only at events (MLS §4.5): one the importer
+   set since the last event is an event at the next instant. */
+static bool rmc_discrete_inputs_changed(const ModelInstance* m) {
+    for (size_t k = 0; k != RMC_DISCRETE_INPUTS; ++k) if (memcmp(&m->rmc_input_seen[k], &m->p[rmc_discrete_input[k]], sizeof(double)) != 0) return true;
+    (void)m;
+    return false;
+}
+
 /* One event at `m->time`: every clock that ticks there reads active for the
    whole iteration, and none reads active once it has settled. */
 static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize) {
@@ -726,6 +741,7 @@ static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     m->rmc_entry_captured = true;
     m->rmc_initial_event = true;
     m->rmc_domain_valid = false;
+    rmc_discrete_inputs_seen(m);
     /* Assertions are checked from here on, with every condition memory seeded. */
     m->assertions_initialized = true;
     return {{ prefix }}OK;
@@ -763,6 +779,7 @@ static {{ prefix }}Status rmc_events_update(ModelInstance* m, bool* states_chang
         memcpy(m->p, m->rmc_entry_p, sizeof(m->p));
         status = rmc_event_iterate(m, true);
     }
+    if (status == {{ prefix }}OK) rmc_discrete_inputs_seen(m);
     *states_changed = memcmp(states, m->y, sizeof(states)) != 0;
     m->rmc_entry_captured = false;
     m->rmc_initial_event = false;
@@ -949,6 +966,7 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
        step's first instant, handled before integrating. */
     bool entered = false;
     if (rmc_events_completed(m, &entered) != {{ prefix }}OK) return {{ prefix }}Error;
+    entered |= rmc_discrete_inputs_changed(m);
     if (entered && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
     while (t < end) {
         /* Indicators bound the scan; a component without any integrates a

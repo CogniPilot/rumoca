@@ -12,6 +12,17 @@
       <BaseUnit s="1"/>
     </Unit>
   </UnitDefinitions>
+{%- if fmi.enumerations|length > 0 %}
+  <TypeDefinitions>
+{%- for enumeration in fmi.enumerations %}
+    <EnumerationType name="{{ enumeration.name | xml_escape }}">
+{%- for literal in enumeration.literals %}
+      <Item name="{{ literal | xml_escape }}" value="{{ loop.index }}"/>
+{%- endfor %}
+    </EnumerationType>
+{%- endfor %}
+  </TypeDefinitions>
+{%- endif %}
   <LogCategories>
     <Category name="error" description="Failures of the generated kernel"/>
     <Category name="projection" description="Algebraic projection sites whose fallback rate exceeds the reporting threshold"/>
@@ -21,8 +32,8 @@
 {%- set state_ordinal = namespace(value=0) %}
 {%- for variable in fmi.variables %}
 {%- set kind = variable.value_kind %}
-{%- set element = "Float64" if kind == "Real" else ("Int32" if kind in ["Integer", "Enumeration"] else kind) %}
-    <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
+{%- set element = "Float64" if kind == "Real" else ("Int32" if kind == "Integer" else kind) %}
+    <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}"{% if kind == "Enumeration" %} declaredType="{{ variable.enumeration.name | xml_escape }}"{% endif %} causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
 {%- if variable.start is defined and kind != "String" %} start="{% for value in variable.start %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value != 0 else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
 {%- if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}
 {#- FMI 3.0 min, max, and nominal are single values that apply to every

@@ -212,13 +212,14 @@ impl FmiCCodegenView {
 impl Serialize for FmiCCodegenView {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let metadata = self.metadata();
-        let mut entries = serializer.serialize_map(Some(13))?;
+        let mut entries = serializer.serialize_map(Some(14))?;
         entries.serialize_entry("initial_y", &self.model().initial_y)?;
         entries.serialize_entry("initial_parameters", &self.model().parameters)?;
         entries.serialize_entry(
             "variables",
             &super::metadata::SerializedFmiVariables::borrowing(metadata.variables()),
         )?;
+        entries.serialize_entry("enumerations", &metadata.enumerations())?;
         entries.serialize_entry("state_variable_indices", metadata.state_variable_indices())?;
         entries.serialize_entry(
             "derivative_value_reference_base_fmi3",

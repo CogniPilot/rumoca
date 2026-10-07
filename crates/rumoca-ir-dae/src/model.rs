@@ -221,6 +221,7 @@ pub(crate) struct VariableAttributesWire {
     unit: Option<String>,
     state_select: StateSelect,
     description: Option<String>,
+    enumeration: Option<rumoca_core::EnumerationDeclaration>,
     pub(crate) causality: VariableCausality,
     declared_causality: DeclaredCausality,
     is_tunable: bool,
@@ -328,6 +329,10 @@ pub struct VariableAttributes<'dae> {
     pub unit: Option<String>,
     pub state_select: StateSelect,
     pub description: Option<String>,
+    /// The declaration of the enumeration type of an enumeration variable
+    /// (MLS §4.9.5), so a consumer that exposes the variable names its
+    /// literals.
+    pub enumeration: Option<rumoca_core::EnumerationDeclaration>,
     pub causality: VariableCausality,
     /// The source `input`/`output` prefix. An exported `Input` or `Output`
     /// causality requires the same declared causality (SPEC_0040 DAE-C24).
@@ -1221,6 +1226,7 @@ fn erase_variable_attributes(attributes: VariableAttributes<'_>) -> VariableAttr
         unit: attributes.unit,
         state_select: attributes.state_select,
         description: attributes.description,
+        enumeration: attributes.enumeration,
         causality: attributes.causality,
         declared_causality: attributes.declared_causality,
         is_tunable: attributes.is_tunable,

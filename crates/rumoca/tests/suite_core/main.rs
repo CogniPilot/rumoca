@@ -79,6 +79,7 @@ mod discrete_array_element_equations;
 mod discrete_time_definitions;
 mod element_connection_sets;
 mod enumeration_compact_range_test;
+mod enumeration_declarations;
 mod enumeration_literal_assertions;
 mod enumeration_ordinal_conversion;
 mod evaluable_parameters;

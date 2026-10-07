@@ -100,20 +100,21 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
 enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT };
 enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
 enum RmcAccess { RMC_ACCESS_FIXED, RMC_ACCESS_STATE, RMC_ACCESS_INPUT, RMC_ACCESS_PARAMETER, RMC_ACCESS_TUNABLE_PARAMETER };
-typedef struct { unsigned char column; unsigned char kind; unsigned char access; unsigned char marks_parameters; size_t index; } RmcValueReference;
+/* `literals` is the literal count of an enumeration variable, 0 for any other. */
+typedef struct { unsigned char column; unsigned char kind; unsigned char access; unsigned char marks_parameters; size_t index; size_t literals; } RmcValueReference;
 static const RmcValueReference rmc_value_references[] = {
-    {RMC_COLUMN_TIME, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, 0},
+    {RMC_COLUMN_TIME, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, 0, 0},
 {%- set row = namespace(count=0, text=0) %}
 {%- for variable in fmi.variables %}
 {%- set column %}{% if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}{% endset %}
 {%- set access %}{% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}{% endset %}
 {%- for scalar in range(variable.storage.scalar_count) %}{% if row.count % 6 == 0 %}
-   {% endif %} { {{- column }}, {{ rmc_kind(variable) }}, {{ access }}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ row.text }}{% set row.text = row.text + 1 %}{% else %}{{ variable.storage.base + scalar }}{% endif -%} },
+   {% endif %} { {{- column }}, {{ rmc_kind(variable) }}, {{ access }}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ row.text }}{% set row.text = row.text + 1 %}{% else %}{{ variable.storage.base + scalar }}{% endif -%}, {{ variable.enumeration.literals|length if variable.enumeration else 0 }} },
 {%- set row.count = row.count + 1 %}
 {%- endfor %}
 {%- endfor %}
 {%- for scalar in range(solve.solve_layout.state_scalar_count) %}{% if row.count % 6 == 0 %}
-   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, {{ scalar }}},
+   {% endif %} {RMC_COLUMN_DERIVATIVE, RMC_KIND_FLOAT64, RMC_ACCESS_FIXED, 0, {{ scalar }}, 0},
 {%- set row.count = row.count + 1 %}
 {%- endfor %}
 };
@@ -153,6 +154,11 @@ static fmi2Boolean rmc_can_set(const ModelInstance* m, const RmcValueReference* 
     }
 }
 
+/* Whether `ordinal` is a literal of the enumeration `ref` names; any ordinal
+   of a variable that is not an enumeration. */
+static bool rmc_ordinal_valid(const RmcValueReference* ref, long long ordinal) {
+    return ref->literals == 0 || (ordinal >= 1 && (unsigned long long)ordinal <= ref->literals);
+}
 #define RMC_GET_NUMERIC(Name, Type, KIND, CONVERT) \
 FMI_EXPORT fmi2Status fmi2Get##Name(fmi2Component c, const fmi2ValueReference vr[], size_t n, Type values[]) { \
     ModelInstance* m = c; \
@@ -195,7 +201,7 @@ FMI_EXPORT fmi2Status fmi2Reset(fmi2Component c) { ModelInstance* m = c; if (!m)
 RMC_GET_NUMERIC(Real, fmi2Real, RMC_KIND_FLOAT64, value)
 RMC_SET_NUMERIC(Real, fmi2Real, RMC_KIND_FLOAT64, isfinite(value), value)
 RMC_GET_NUMERIC(Integer, fmi2Integer, RMC_KIND_INT32, (fmi2Integer)value)
-RMC_SET_NUMERIC(Integer, fmi2Integer, RMC_KIND_INT32, true, (double)value)
+RMC_SET_NUMERIC(Integer, fmi2Integer, RMC_KIND_INT32, rmc_ordinal_valid(ref, value), (double)value)
 RMC_GET_NUMERIC(Boolean, fmi2Boolean, RMC_KIND_BOOLEAN, value != 0.0 ? fmi2True : fmi2False)
 RMC_SET_NUMERIC(Boolean, fmi2Boolean, RMC_KIND_BOOLEAN, true, value ? 1.0 : 0.0)
 FMI_EXPORT fmi2Status fmi2GetString(fmi2Component c, const fmi2ValueReference vr[], size_t n, fmi2String values[]) {

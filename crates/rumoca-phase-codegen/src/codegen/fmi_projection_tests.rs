@@ -89,6 +89,7 @@ fn state_input() -> solve::fmi::FmiVariableInput {
         evaluable: false,
         declaration: fixture_span(),
         text_start: None,
+        enumeration: None,
     }
 }
 

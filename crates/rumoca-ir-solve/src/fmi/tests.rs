@@ -46,6 +46,7 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
         maximum: Some(vec![3.0, 4.0]),
         nominal: Some(vec![1.0, 1.0]),
         text_start: None,
+        enumeration: None,
         unit: Some("m".to_string()),
         description: Some("state".to_string()),
         causality: FmiCausality::Local,
@@ -292,6 +293,7 @@ mod max_step_duration_local {
             evaluable: false,
             declaration: fixture_span(),
             text_start: None,
+            enumeration: None,
         }
     }
 

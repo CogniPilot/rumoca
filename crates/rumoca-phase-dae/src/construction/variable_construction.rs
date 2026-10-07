@@ -327,6 +327,7 @@ fn lower_variable_attributes<'dae>(
         unit: variable.flat.unit.clone(),
         state_select: variable.flat.state_select,
         description: variable.flat.description.clone(),
+        enumeration: enumeration_declaration(context.flat, variable.flat),
         causality,
         declared_causality: declared_causality(&variable.flat.causality),
         is_tunable: matches!(variable.role, RuntimeVariableRole::Parameter)
@@ -534,4 +535,19 @@ fn default_start_expression<'dae>(
         }
     };
     construction.expressions(|expressions| expressions.at(provenance).literal(literal))
+}
+
+/// The declaration of the enumeration type of `variable` (MLS §4.9.5): the
+/// exact canonical type identity Flat carries for the variable keys the
+/// declaration its flattening collected, so a derived enumeration type reaches
+/// the declaration of the type it derives from.
+fn enumeration_declaration(
+    flat: &flat::Model,
+    variable: &flat::Variable,
+) -> Option<rumoca_core::EnumerationDeclaration> {
+    let canonical = flat
+        .effective_types
+        .get(&variable.type_id)?
+        .canonical_type();
+    flat.enumeration_declarations.get(&canonical).cloned()
 }

@@ -410,3 +410,56 @@ fn a_clock_anchored_at_the_simulation_start_is_refused() {
         "{refused}"
     );
 }
+
+fn mode_declaration() -> rumoca_core::EnumerationDeclaration {
+    rumoca_core::EnumerationDeclaration {
+        name: "Flight.Mode".to_string(),
+        literals: vec!["Off".to_string(), "Climb".to_string()],
+    }
+}
+
+/// SPEC_0044 ME-EVENT-002: only an enumeration variable carries an
+/// enumeration declaration, so a Real that names one is not a checked entry.
+#[test]
+fn an_enumeration_declaration_belongs_to_enumeration_variables_only() {
+    let (mut model, mut input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    input.enumeration = Some(mode_declaration());
+    let error = FmiComponent::construct(model, vec![input])
+        .expect_err("a Real variable has no enumeration type");
+    assert!(
+        matches!(
+            error,
+            crate::fmi::FmiComponentError::StorageTypeMismatch { .. }
+        ),
+        "{error:?}"
+    );
+}
+
+/// An enumeration variable publishes its type definition once, however many
+/// variables are declared with it.
+#[test]
+fn an_enumeration_variable_publishes_its_type_definition() {
+    let (mut model, mut input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    let kind = crate::SolveVariableValueKind::Enumeration;
+    model.problem.solve_layout.variable_storage_runs[0].value_kind = kind;
+    model.problem.solve_layout.variable_declarations = vec![crate::SolveVariableDeclaration::new(
+        crate::SolveVariableStorageRole::Parameter,
+        kind,
+    )];
+    input.value_kind = kind;
+    input.start = vec![2.0];
+    input.enumeration = Some(mode_declaration());
+    let view = FmiComponent::construct(model, vec![input])
+        .expect("an enumeration variable with its declaration is checked")
+        .into_codegen_view()
+        .try_c()
+        .expect("an enumeration parameter is exported");
+    let json = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        json["enumerations"],
+        serde_json::json!([{"name": "Flight.Mode", "literals": ["Off", "Climb"]}])
+    );
+    assert_eq!(json["variables"][0]["enumeration"]["name"], "Flight.Mode");
+}

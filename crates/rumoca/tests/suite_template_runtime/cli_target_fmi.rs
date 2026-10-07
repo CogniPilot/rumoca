@@ -14,6 +14,7 @@ mod chart_switching;
 mod co_simulation_step;
 mod declared_causality;
 mod derivative_kinks;
+mod enumerations;
 mod integer_parameter;
 mod lifecycle;
 mod mass_matrix;

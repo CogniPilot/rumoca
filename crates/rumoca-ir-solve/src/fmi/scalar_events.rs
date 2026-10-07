@@ -50,6 +50,11 @@ pub(super) struct ScalarEventProfile {
     guarded_clocks: Vec<Option<usize>>,
     /// The time events the component announces and stops at.
     time_events: super::time_events::TimeEvents,
+    /// Every scalar of a discrete-valued external input, as a parameter
+    /// index. A discrete-time input changes only at events (MLS §4.5), so a
+    /// change the importer makes between Co-Simulation steps is an event at
+    /// the next step's first instant.
+    discrete_inputs: Vec<usize>,
     post_commit_targets: Vec<Slot>,
     /// The parameters actions read at their event-entry value.
     condition_memories: Vec<usize>,
@@ -199,6 +204,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             model.problem.clocks.periodic_event_schedules.len(),
         )?,
         time_events: super::time_events::derive(model)?,
+        discrete_inputs: discrete_inputs(&problem.solve_layout)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
         schedule: discrete.event_iteration_plan.schedule.clone(),
@@ -334,4 +340,25 @@ fn guarded_clocks(
         clocks.extend(std::iter::repeat_n(clock, outputs));
     }
     Ok(clocks)
+}
+
+/// The parameter index of every scalar of a discrete-valued external input.
+fn discrete_inputs(layout: &crate::SolveLayout) -> Result<Vec<usize>, &'static str> {
+    let mut inputs = Vec::new();
+    for run in &layout.variable_storage_runs {
+        let discrete = matches!(
+            run.value_kind,
+            crate::SolveVariableValueKind::Integer
+                | crate::SolveVariableValueKind::Boolean
+                | crate::SolveVariableValueKind::Enumeration
+        );
+        if run.role != crate::SolveVariableStorageRole::ExternalInput || !discrete {
+            continue;
+        }
+        let ScalarSlot::P { index, .. } = run.base else {
+            return Err("a discrete input lives outside the parameters");
+        };
+        inputs.extend(index..index + run.scalar_count);
+    }
+    Ok(inputs)
 }

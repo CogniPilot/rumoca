@@ -213,6 +213,10 @@ pub struct Model {
     /// integer ordinals used by runtime numeric evaluation.
     #[serde(default)]
     pub enum_literal_ordinals: IndexMap<String, i64>,
+    /// Declaration of each enumeration type, keyed by the exact canonical type
+    /// identity of `enumeration_type_roots` (MLS §4.9.5).
+    #[serde(default)]
+    pub enumeration_declarations: IndexMap<TypeId, rumoca_core::EnumerationDeclaration>,
     /// Exact occurrence graph transferred from the instantiated tree.
     ///
     /// Source `DefId`s remain declaration provenance. Concrete containment and
