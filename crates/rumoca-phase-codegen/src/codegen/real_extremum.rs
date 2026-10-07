@@ -188,7 +188,64 @@ pub(crate) fn mlir_call(minimum: bool, dst: &str, lhs: &str, rhs: &str) -> Strin
     )
 }
 
-pub(super) fn real_extremum_prelude_function(language: String) -> Result<String, minijinja::Error> {
+/// The render-context key that says whether the rendered Solve problem or its
+/// artifacts apply a Real `min` or `max` at all.
+pub(super) const USES_CONTEXT_KEY: &str = "uses_real_extremum";
+
+/// Whether `problem` or `artifacts` apply a Real `min` or `max` anywhere,
+/// including nested fold, conditional and tensor programs.
+pub(super) fn used_by(
+    problem: &rumoca_ir_solve::SolveProblem,
+    artifacts: &rumoca_ir_solve::SolveArtifacts,
+) -> bool {
+    use rumoca_ir_solve::{BinaryOp, LinearOp, LinearOpSliceKind, SolveVisitor};
+
+    struct Uses(bool);
+
+    impl SolveVisitor for Uses {
+        type Error = std::convert::Infallible;
+
+        fn visit_linear_op(
+            &mut self,
+            _kind: LinearOpSliceKind,
+            _index: usize,
+            op: &LinearOp,
+        ) -> Result<(), Self::Error> {
+            if let LinearOp::Binary {
+                op: BinaryOp::Min | BinaryOp::Max,
+                ..
+            }
+            | LinearOp::TensorBinary {
+                op: BinaryOp::Min | BinaryOp::Max,
+                ..
+            } = op
+            {
+                self.0 = true;
+            }
+            Ok(())
+        }
+    }
+
+    let mut uses = Uses(false);
+    let Ok(()) = uses.visit_solve_problem(problem);
+    let Ok(()) = uses.visit_solve_artifacts(artifacts);
+    uses.0
+}
+
+/// The template function `real_extremum_prelude(language)`: the helper
+/// definitions, or nothing when the Solve render context proves the product
+/// applies no Real `min` or `max`, so a translation unit never defines an
+/// unused helper. Contexts without a Solve problem always declare them.
+pub(super) fn real_extremum_prelude_function(
+    state: &minijinja::State,
+    language: String,
+) -> Result<String, minijinja::Error> {
+    if state
+        .lookup(USES_CONTEXT_KEY)
+        .is_some_and(|uses| !uses.is_true())
+    {
+        return Ok(String::new());
+    }
     prelude(&language).ok_or_else(|| {
         minijinja::Error::new(
             minijinja::ErrorKind::InvalidOperation,

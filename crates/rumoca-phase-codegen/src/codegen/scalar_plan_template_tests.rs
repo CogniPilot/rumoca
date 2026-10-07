@@ -1,4 +1,4 @@
-use super::codegen_test_support::builtin_template;
+use super::codegen_test_support::{builtin_template, derivative_problem};
 use super::*;
 use rumoca_ir_solve as solve;
 
@@ -10,14 +10,6 @@ fn fixture_provenance() -> rumoca_core::ProvenanceSpan {
     )
     .require_provenance("scalar plan fixture")
     .expect("fixture span is source-backed")
-}
-
-fn derivative_problem(program: Vec<solve::LinearOp>) -> solve::SolveProblem {
-    let block = solve::ScalarProgramBlock::with_source_span(vec![program], fixture_provenance())
-        .expect("fixture scalar program is checked");
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(block);
-    problem
 }
 
 #[test]

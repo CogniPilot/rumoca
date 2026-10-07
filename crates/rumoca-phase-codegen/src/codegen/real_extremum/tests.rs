@@ -110,3 +110,51 @@ fn every_language_prints_the_same_rule() {
         "%d = func.call @rumoca_real_min(%x, %y) : (f64, f64) -> f64"
     );
 }
+
+/// A C translation unit defines the helpers only when its problem applies a
+/// Real `min` or `max`; an unused `static inline` definition is an error
+/// under `-Werror` on clang, which the generated C must compile under.
+#[test]
+fn the_c_helpers_are_declared_only_for_a_problem_that_applies_min_or_max() {
+    use crate::codegen::codegen_test_support::{builtin_template, derivative_problem};
+    use rumoca_ir_solve::{BinaryOp, LinearOp, SolveArtifacts};
+
+    let render = |program: Vec<LinearOp>| {
+        crate::codegen::render_solve_template_with_name(
+            &derivative_problem(program),
+            &SolveArtifacts::default(),
+            builtin_template("c-ode", "model_ode.c.jinja"),
+            "Extremum",
+        )
+        .expect("the C target renders")
+    };
+    let operands = || {
+        vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::Const { dst: 1, value: 2.0 },
+        ]
+    };
+    let binary = |op: BinaryOp| {
+        let mut program = operands();
+        program.push(LinearOp::Binary {
+            dst: 2,
+            op,
+            lhs: 0,
+            rhs: 1,
+        });
+        program.push(LinearOp::StoreOutput { src: 2 });
+        program
+    };
+
+    let without = render(binary(BinaryOp::Add));
+    assert!(!without.contains(helper_name(true)), "{without}");
+    assert!(!without.contains(helper_name(false)), "{without}");
+    for op in [BinaryOp::Min, BinaryOp::Max] {
+        let with = render(binary(op));
+        assert!(
+            with.contains(&format!("static inline double {}(", helper_name(true)))
+                && with.contains(&format!("static inline double {}(", helper_name(false))),
+            "{with}"
+        );
+    }
+}

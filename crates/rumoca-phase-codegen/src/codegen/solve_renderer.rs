@@ -273,6 +273,7 @@ fn solve_render_context_value_with_handles(
     let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
         full_jacobian_rows.programs().to_vec(),
     ));
+    let uses_real_extremum = super::real_extremum::used_by(solve_problem, artifacts);
     Ok(match model_name {
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),
@@ -287,6 +288,7 @@ fn solve_render_context_value_with_handles(
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
             solve_full_jacobian_rows => full_jacobian_rows,
+            uses_real_extremum => uses_real_extremum,
         },
         None => minijinja::context! {
             dae => dae_entry.clone(),
@@ -300,6 +302,7 @@ fn solve_render_context_value_with_handles(
             solve_implicit_rows => implicit_rows,
             solve_jacobian_rows => implicit_jacobian_rows,
             solve_full_jacobian_rows => full_jacobian_rows,
+            uses_real_extremum => uses_real_extremum,
         },
     })
 }

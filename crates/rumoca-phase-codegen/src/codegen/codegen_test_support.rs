@@ -50,3 +50,16 @@ pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::Solv
     };
     problem
 }
+
+/// A Solve problem whose continuous derivative block is the one scalar
+/// `program`, for template tests that render one block.
+pub(super) fn derivative_problem(program: Vec<solve::LinearOp>) -> solve::SolveProblem {
+    let provenance = fixture_span()
+        .require_provenance("codegen scalar program fixture")
+        .expect("fixture span is source-backed");
+    let block = solve::ScalarProgramBlock::with_source_span(vec![program], provenance)
+        .expect("fixture scalar program is checked");
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(block);
+    problem
+}
