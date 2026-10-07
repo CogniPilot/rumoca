@@ -1621,8 +1621,7 @@ impl FunctionDefinitions {
     /// certificate when the conditional has no `else`.
     fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
         let mut paths = branches.iter().map(|branch| &branch.facts);
-        let first = paths.next().expect("a conditional has at least one branch");
-        let mut joined = first.clone();
+        let mut joined = paths.next().unwrap_or(&self.facts).clone();
         for facts in paths {
             joined.join_path(facts);
         }

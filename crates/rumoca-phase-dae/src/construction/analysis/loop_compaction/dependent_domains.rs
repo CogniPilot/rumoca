@@ -222,9 +222,13 @@ fn rectangularize_conditional(
 ) -> Result<rumoca_core::Statement, ToDaeError> {
     let conditions = branches.iter().map(|block| &block.cond).collect::<Vec<_>>();
     let mut entries = facts.branch_entries(&conditions, scope.facts());
-    let mut fallthrough = entries
-        .pop()
-        .expect("branch entries end with the fall-through");
+    let mut fallthrough = entries.pop().ok_or_else(|| {
+        ToDaeError::unsupported_flat(
+            "bounded loop conditional",
+            "a conditional has no fall-through entry",
+            span,
+        )
+    })?;
     let cond_blocks = branches
         .iter()
         .zip(&mut entries)

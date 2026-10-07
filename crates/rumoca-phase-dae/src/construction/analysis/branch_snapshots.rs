@@ -164,7 +164,13 @@ impl Snapshots<'_> {
             });
             selections.push(selection);
         }
-        let remaining = remaining.expect("a conditional has at least one branch");
+        let remaining = remaining.ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "loop prefix conditional",
+                "a conditional has no branch",
+                span,
+            )
+        })?;
         let mut remainders = Vec::with_capacity(cond_blocks.len());
         for (block, selection) in cond_blocks.iter().zip(&selections) {
             let remainder = self.hoist_loop_prefix(&block.stmts, selection, normalized)?;

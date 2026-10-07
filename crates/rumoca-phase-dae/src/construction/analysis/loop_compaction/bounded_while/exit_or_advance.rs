@@ -164,7 +164,7 @@ impl PassProof<'_> {
             .map(|block| &block.cond)
             .collect::<Vec<_>>();
         let mut entries = facts.branch_entries(&conditions, self.facts());
-        let fallthrough = entries.pop().expect("an if has a fall-through entry");
+        let fallthrough = entries.pop()?;
         let mut joined = Outcomes::new();
         let mut exits = Vec::with_capacity(entries.len() + 1);
         let branches = cond_blocks.iter().map(|block| block.stmts.as_slice());

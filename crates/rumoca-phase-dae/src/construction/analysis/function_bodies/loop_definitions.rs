@@ -310,7 +310,7 @@ fn resolve_fold_iteration(
                 rumoca_core::Statement::FunctionCall { args, span, .. },
                 FunctionStatementPlan::MultiOutputCall { outputs },
             ) => resolve_fold_multi_output(args, *span, outputs, context, definitions)?,
-            _ => unreachable!("analysis admits only checked transition statements in a fold"),
+            (statement, _) => return Err(fold_plan_mismatch(statement, context)),
         }
         definitions.advance_facts_over(std::slice::from_ref(&statements[index]), context);
         index += 1;
@@ -326,7 +326,7 @@ fn resolve_fold_record_assembly(
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
-            unreachable!("record assembly certificate contains assignments")
+            return Err(fold_plan_mismatch(statement, context));
         };
         definitions.require_readable(value, context, *span)?;
     }
@@ -462,4 +462,24 @@ fn reads_enclosing_binder(
                     depth >= 16 || reads_enclosing_binder(&definition.value, context, depth + 1)
                 })
     })
+}
+
+/// A fold iteration statement that its checked plan cannot describe. Analysis
+/// only certifies matching statement and plan shapes, so reaching this is a
+/// refused transition rather than a supported one.
+fn fold_plan_mismatch(
+    statement: &rumoca_core::Statement,
+    context: FunctionValidationContext<'_>,
+) -> ToDaeError {
+    match required_statement_span(statement, "function loop transition") {
+        Ok(span) => ToDaeError::unsupported_flat(
+            "function loop transition",
+            format!(
+                "`{}` has a fold statement that its checked plan does not cover",
+                context.function.name
+            ),
+            span,
+        ),
+        Err(error) => error,
+    }
 }

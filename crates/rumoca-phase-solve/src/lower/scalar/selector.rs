@@ -531,7 +531,9 @@ impl<'dae> ScalarSelector<'dae> {
         let values = self
             .view
             .domain(domain)
-            .expect("checked comprehension domain resolves")
+            .ok_or_else(|| {
+                LowerError::contract("comprehension domain identity does not resolve", span)
+            })?
             .structured()
             .index_tuple_at(scalar / count)
             .map_err(|error| LowerError::contract(error.to_string(), span))?

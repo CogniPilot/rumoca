@@ -242,7 +242,9 @@ impl FoldScopes {
             None if value => self.dependent_membership(scope, condition, context),
             None => None,
         };
-        let scope = self.scopes.last_mut().expect("checked above");
+        let Some(scope) = self.scopes.last_mut() else {
+            return true;
+        };
         match narrowed {
             Some((region, origins)) => {
                 scope.region = region;
