@@ -29,6 +29,8 @@ struct OperationKey {
 pub(super) struct ValueKey {
     id: usize,
     base: Term,
+    /// The number of outputs the key was issued with.
+    width: usize,
 }
 
 /// The hash-consed terms and interned operation shapes of one derivation or
@@ -67,6 +69,7 @@ impl Terms {
         let next = ValueKey {
             id: self.operations.len(),
             base: self.next,
+            width,
         };
         let key = *self
             .operations
@@ -78,10 +81,11 @@ impl Terms {
         key
     }
 
-    /// The term of output `output` of `key`; the caller keeps `output` below
-    /// the width the key was issued with.
-    pub(super) fn value(key: &ValueKey, output: usize) -> Term {
-        key.base + output
+    /// The term of output `output` of `key`; `None` when `output` is not
+    /// below the width the key was issued with, since that term would belong
+    /// to the next value.
+    pub(super) fn value(key: &ValueKey, output: usize) -> Option<Term> {
+        (output < key.width).then_some(key.base + output)
     }
 }
 
@@ -264,11 +268,11 @@ fn value_step(
     let written = op.dst_register().map_or(0, |_| op.dst_register_count());
     let key = terms.key(&shape.shape, operands, stored.max(written));
     for ordinal in 0..stored {
-        outputs.push(Terms::value(&key, ordinal));
+        outputs.push(Terms::value(&key, ordinal)?);
     }
     if let Some(start) = op.dst_register() {
         for offset in 0..written {
-            registers.insert(start + offset as Reg, Terms::value(&key, offset));
+            registers.insert(start + offset as Reg, Terms::value(&key, offset)?);
         }
     }
     Some(())

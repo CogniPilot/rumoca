@@ -105,7 +105,29 @@ impl SharedValueSegments {
                 None => builder.push_opaque(index, program),
             }
         }
+        if builder.violated {
+            return Self::unshared(programs);
+        }
         builder.finish()
+    }
+
+    /// Every program as its own unchanged segment: the sharing a violated
+    /// construction invariant declines to, which shares nothing and so
+    /// proves itself.
+    fn unshared(programs: &[AssignmentProgram<'_>]) -> Self {
+        Self {
+            segments: programs
+                .iter()
+                .enumerate()
+                .map(|(index, program)| SharedValueSegment {
+                    ops: program.ops.to_vec(),
+                    targets: program.targets.to_vec(),
+                    first_program: index,
+                })
+                .collect(),
+            shared: 0,
+            capped: Vec::new(),
+        }
     }
 
     /// Evaluate `programs` and the segments symbolically and require every
@@ -180,6 +202,9 @@ pub fn share_program_values(program: Vec<LinearOp>) -> Vec<LinearOp> {
             .collect::<Vec<_>>();
         let mut builder = Builder::default();
         builder.append(0, &targets, &fusible);
+        if builder.violated {
+            return program;
+        }
         admit_proven(builder.finish(), &program, &targets)
     };
     match shared {
@@ -333,6 +358,9 @@ struct Builder {
     /// Values of segments closed at the cap.
     closed: HashSet<ValueKey>,
     segment: Segment,
+    /// Whether a register or output the classification proved present was
+    /// absent: the sharing declines as a whole.
+    violated: bool,
 }
 
 /// The consecutive registers one value's outputs occupy.
@@ -460,7 +488,10 @@ impl Builder {
             }
         };
         for offset in 0..count {
-            map.insert(dst + offset as Reg, Terms::value(&key, offset));
+            let Some(term) = Terms::value(&key, offset) else {
+                return false;
+            };
+            map.insert(dst + offset as Reg, term);
         }
         false
     }
@@ -552,11 +583,10 @@ impl ProgramBuilder<'_, '_> {
             } => self.load_slots(op, dst, first, count),
             // A copy names the value it copies; a range reading it gathers
             // the value into place.
-            &Step::Copy { dst, src } => {
-                if let Some(held) = self.map.get(src) {
-                    self.map.insert(dst, held);
-                }
-            }
+            &Step::Copy { dst, src } => match self.map.get(src) {
+                Some(held) => self.map.insert(dst, held),
+                None => self.violate(),
+            },
             Step::Store(registers) => self.store_all(registers),
             &Step::Value {
                 op,
@@ -567,16 +597,26 @@ impl ProgramBuilder<'_, '_> {
         }
     }
 
+    /// Record that a register or output the classification proved present is
+    /// not: the builder declines the whole sharing rather than drop the
+    /// operation.
+    fn violate(&mut self) {
+        self.builder.violated = true;
+    }
+
     fn segment(&mut self) -> &mut Segment {
         &mut self.builder.segment
     }
 
     /// Store the value each of `registers` holds, in output order.
     fn store_all(&mut self, registers: &[Reg]) {
-        let held = registers
+        let Some(held) = registers
             .iter()
-            .filter_map(|register| self.map.get(*register))
-            .collect::<Vec<_>>();
+            .map(|register| self.map.get(*register))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.violate();
+        };
         for register in held {
             self.store(register);
         }
@@ -584,7 +624,7 @@ impl ProgramBuilder<'_, '_> {
 
     fn store(&mut self, register: Reg) {
         let Some(&target) = self.targets.get(self.output) else {
-            return;
+            return self.violate();
         };
         self.output += 1;
         let segment = self.segment();
@@ -595,14 +635,18 @@ impl ProgramBuilder<'_, '_> {
     /// Emit `op` with its destination at this program's offset, recording the
     /// term of every register it writes.
     fn emit(&mut self, op: LinearOp, key: &ValueKey, dst: Reg, count: usize) {
+        let Some(terms) = (0..count)
+            .map(|offset| Terms::value(key, offset))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.violate();
+        };
         let run = RegisterRun {
             start: self.base + dst,
             count,
         };
-        for (offset, register) in run.registers().enumerate() {
-            self.segment()
-                .terms
-                .insert(register, Terms::value(key, offset));
+        for ((offset, register), term) in run.registers().enumerate().zip(terms) {
+            self.segment().terms.insert(register, term);
             self.map.insert(dst + offset as Reg, register);
         }
         self.segment().ops.push(op);
@@ -704,7 +748,7 @@ impl ProgramBuilder<'_, '_> {
             .map(|&(field, register)| Some((field, self.term(register)?)))
             .collect::<Option<Vec<_>>>()
         else {
-            return;
+            return self.violate();
         };
         let key = self.builder.terms.key(&shape.shape, operands, count);
         // A renamed call is value-only and its owner reads only its inputs
@@ -720,48 +764,52 @@ impl ProgramBuilder<'_, '_> {
                 operation: op.kind_name(),
             });
         }
-        let renamed = self.renamed(op, shape);
+        let Some(renamed) = self.renamed(op, shape) else {
+            return self.violate();
+        };
         self.emit(renamed, &key, dst, count);
     }
 
     /// `op` in the segment's register file: scalar operands read the register
     /// holding their value; a range operand is first gathered at this
     /// program's offset, so every range keeps its layout.
-    fn renamed(&mut self, op: &LinearOp, shape: &ValueShape) -> LinearOp {
+    /// `None` when a register the operation reads holds no value.
+    fn renamed(&mut self, op: &LinearOp, shape: &ValueShape) -> Option<LinearOp> {
         if shape.ranged {
             for &register in &shape.reads {
-                self.gather(register);
+                self.gather(register)?;
             }
         }
         let (base, map, ranged) = (self.base, &self.map, shape.ranged);
         let mut renamed = op.clone();
+        let mut complete = true;
         visit_registers(&mut renamed, &mut |role, register| {
             *register = match role {
-                Role::Scalar if !ranged => map.get(*register).unwrap_or(*register),
+                Role::Scalar if !ranged => map.get(*register).unwrap_or_else(|| {
+                    complete = false;
+                    *register
+                }),
                 _ => base + *register,
             };
         });
-        renamed
+        complete.then_some(renamed)
     }
 
     /// Place the value of `register` at this program's offset.
-    fn gather(&mut self, register: Reg) {
+    fn gather(&mut self, register: Reg) -> Option<()> {
         let own = self.base + register;
-        let Some(held) = self.map.get(register) else {
-            return;
-        };
+        let held = self.map.get(register)?;
         if own == held {
-            return;
+            return Some(());
         }
-        let Some(term) = self.builder.segment.terms.get(held) else {
-            return;
-        };
+        let term = self.builder.segment.terms.get(held)?;
         self.segment().ops.push(LinearOp::Move {
             dst: own,
             src: held,
         });
         self.segment().terms.insert(own, term);
         self.map.insert(register, own);
+        Some(())
     }
 }
 

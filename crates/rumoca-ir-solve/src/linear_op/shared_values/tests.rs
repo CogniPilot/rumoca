@@ -492,8 +492,8 @@ fn a_wide_operations_outputs_are_one_private_block_of_terms() {
     let again = terms.key("wide", vec![(0, slot)], 1_000);
     assert_eq!(wide, again, "one operation over one operand is one value");
     let other = terms.key("wide", vec![(0, slot + 1)], 1_000);
-    let wide_terms = (0..1_000).map(|lane| Terms::value(&wide, lane));
-    let other_terms = (0..1_000).map(|lane| Terms::value(&other, lane));
+    let wide_terms = (0..1_000).map(|lane| Terms::value(&wide, lane).unwrap());
+    let other_terms = (0..1_000).map(|lane| Terms::value(&other, lane).unwrap());
     let mut all = wide_terms
         .chain(other_terms)
         .chain(std::iter::once(slot))
@@ -526,4 +526,71 @@ fn register_state_is_dense_and_counts_the_registers_it_holds() {
     assert!(set.insert(9) && !set.insert(9));
     set.remove(9);
     assert!(!set.contains(9) && set.insert(9));
+}
+
+/// A term past the width a key was issued with belongs to the next value, so
+/// it is refused.
+#[test]
+fn a_value_term_past_the_key_width_is_refused() {
+    let mut terms = Terms::default();
+    let slot = terms.slot(0);
+    let key = terms.key("pair", vec![(0, slot)], 2);
+    assert!(Terms::value(&key, 1).is_some());
+    assert_eq!(Terms::value(&key, 2), None);
+    let wider = terms.key("pair", vec![(0, slot)], 3);
+    assert_eq!(
+        wider, key,
+        "the operation keeps the width it was issued with"
+    );
+    assert_eq!(Terms::value(&wider, 2), None);
+}
+
+/// Run `step` over a program builder whose register map holds nothing, as a
+/// violated classification would leave it, and report whether the builder
+/// declined.
+fn declines_over_empty_map(step: &Step<'_>, targets: &[usize]) -> bool {
+    let mut builder = Builder::default();
+    let mut program = ProgramBuilder {
+        builder: &mut builder,
+        base: 0,
+        map: RegisterTable::default(),
+        output: 0,
+        targets,
+    };
+    program.step(step);
+    builder.violated
+}
+
+#[test]
+fn an_inconsistent_register_map_declines_the_whole_sharing() {
+    let add = LinearOp::Binary {
+        dst: 2,
+        op: BinaryOp::Add,
+        lhs: 0,
+        rhs: 1,
+    };
+    let shape = value_shape(&add).unwrap();
+    assert!(declines_over_empty_map(&Step::Store(vec![3]), &[10]));
+    assert!(declines_over_empty_map(&Step::Copy { dst: 1, src: 0 }, &[]));
+    assert!(declines_over_empty_map(
+        &Step::Value {
+            op: &add,
+            shape,
+            dst: 2,
+            count: 1
+        },
+        &[]
+    ));
+    // A store with no target left is the same violation.
+    let mut builder = Builder::default();
+    let mut program = ProgramBuilder {
+        builder: &mut builder,
+        base: 0,
+        map: RegisterTable::default(),
+        output: 0,
+        targets: &[],
+    };
+    program.map.insert(0, 0);
+    program.step(&Step::Store(vec![0]));
+    assert!(builder.violated);
 }
