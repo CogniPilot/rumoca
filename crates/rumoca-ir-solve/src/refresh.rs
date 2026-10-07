@@ -30,8 +30,8 @@ pub use assignment_shape::{
 use dependency::AssignmentDependencies;
 pub use dependency::ScalarProgramYDependency;
 pub use materialization::{
-    IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
-    materialize_target_assignment,
+    ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
+    isolated_parts, materialize_target_assignment,
 };
 pub use native_assignment::{
     NativeDerivedOutput, NativeEvaluationRefusal, NativeInputLane, NativeIntegerSource,
@@ -1175,15 +1175,15 @@ fn materialize_exact_assignment_program(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let overflow = || ContinuousRefreshConstructionError {
+        reason: "exact continuous refresh assignment program overflows registers".to_string(),
+    };
+    let mut program = ExactAssignmentProgramBuilder::new(&mut operations).ok_or_else(overflow)?;
     for shape in &owner.assignment_shapes {
-        let (result, _) =
-            materialize_target_assignment(shape, &mut operations).ok_or_else(|| {
-                ContinuousRefreshConstructionError {
-                    reason: "exact continuous refresh assignment program overflows registers"
-                        .to_string(),
-                }
-            })?;
-        operations.push(LinearOp::StoreOutput { src: result });
+        let (result, _) = program.materialize_guarded(shape).ok_or_else(overflow)?;
+        program
+            .push(LinearOp::StoreOutput { src: result })
+            .ok_or_else(overflow)?;
     }
     let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
         .map_err(|error| ContinuousRefreshConstructionError {
