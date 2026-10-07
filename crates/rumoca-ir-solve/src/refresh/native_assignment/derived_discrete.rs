@@ -57,9 +57,8 @@ pub enum NativeEvaluationRefusal {
     /// Program registers are Real; an Integer output read by a later stage
     /// would round above 2^53.
     IntegerReaderRequiresTypedRegisters,
-    /// An indexed or compact family read of a derived output or typed input,
-    /// or a tensor read covering it that is not one consecutive rebound range.
-    ReboundSlotCompactRead,
+    /// An indexed, tensor or compact family read of a derived output.
+    DerivedOutputCompactRead,
 }
 
 impl std::fmt::Display for NativeEvaluationRefusal {
@@ -98,8 +97,8 @@ impl std::fmt::Display for NativeEvaluationRefusal {
             Self::IntegerReaderRequiresTypedRegisters => {
                 "an Integer output read by a later stage requires typed program registers"
             }
-            Self::ReboundSlotCompactRead => {
-                "a derived discrete output or typed input is read through an indexed, partial tensor or compact family load"
+            Self::DerivedOutputCompactRead => {
+                "a derived discrete output is read through an indexed, tensor or compact family load"
             }
         })
     }

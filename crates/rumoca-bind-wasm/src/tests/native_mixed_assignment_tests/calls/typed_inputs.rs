@@ -76,7 +76,7 @@ fn offset(artifact: &serde_json::Value, table: &str, name: &str) -> usize {
 
 fn prepare(model: &str) -> serde_json::Value {
     serde_json::from_str(
-        &crate::native_program_api::prepare_native_program_impl(SOURCE, model)
+        &crate::native_program_api::prepare_native_program(SOURCE, model)
             .expect("the model prepares natively"),
     )
     .unwrap()
