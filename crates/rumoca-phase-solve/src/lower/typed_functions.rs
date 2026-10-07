@@ -1576,7 +1576,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let leaves = self.mapped_leaves(body, domain_id, domain, at)?;
             return Ok(LoweredValue { value_type, leaves });
         }
-        let value = self.expression(body)?.only_register(at)?;
+        let body_value = self.expression(body)?;
+        if body_value.leaves.len() != 1 {
+            return self.filled_record_comprehension(
+                value_type,
+                body_node.value_type_id(),
+                body_value,
+                at,
+            );
+        }
+        let value = body_value.only_register(at)?;
         if !body_node.value_type().dimensions().is_empty() {
             let body_type =
                 lower_primitive_type(self.view, body_node.value_type_id(), arithmetic_profile())?;
@@ -1600,6 +1609,38 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .to_vec();
         let result = self.builder.fill(value, dimensions, at)?;
         Ok(LoweredValue::scalar(value_type, result))
+    }
+
+    /// A comprehension whose body is one record that no binder selects: every
+    /// element is the same record, so each scalar field leaf of the record is
+    /// filled over the comprehension's dimensions (MLS 3.7 section 10.4.1).
+    fn filled_record_comprehension(
+        &mut self,
+        value_type: dae::ValueTypeId<'dae>,
+        body_type: dae::ValueTypeId<'dae>,
+        body: LoweredValue<'program, 'dae>,
+        at: rumoca_core::Span,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let leaf_types = lower_value_type_leaves(self.view, body_type, arithmetic_profile())?;
+        let scalar_fields = leaf_types.len() == body.leaves.len()
+            && leaf_types.iter().all(|leaf| leaf.dimensions().is_empty());
+        if !scalar_fields {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
+                provenance: at,
+            });
+        }
+        let dimensions = self
+            .view
+            .value_type(value_type)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
+            .dimensions()
+            .to_vec();
+        let leaves = body
+            .leaves
+            .iter()
+            .map(|leaf| self.builder.fill(*leaf, dimensions.clone(), at))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LoweredValue { value_type, leaves })
     }
 
     fn load_domain_binders(

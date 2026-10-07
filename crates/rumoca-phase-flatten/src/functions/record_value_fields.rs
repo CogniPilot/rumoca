@@ -114,6 +114,24 @@ impl SplitField {
         )
     }
 
+    /// The record local holding one whole element of an array of records.
+    fn element_local(&self) -> String {
+        format!("{}__element", self.local)
+    }
+
+    /// The declaration of [`Self::element_local`]: one record of the array.
+    fn element_param(&self) -> rumoca_core::FunctionParam {
+        let mut param = record_field_column_param(self.element_local(), &[], &[], &self.param);
+        param.effective_type = rumoca_core::EffectiveType::new(
+            self.param.effective_type.nominal_type(),
+            self.param.effective_type.canonical_type(),
+            Vec::new(),
+        )
+        .expect("a record element keeps the declared type contract");
+        param.shape_expr = Vec::new();
+        param
+    }
+
     /// Whether a whole read of this node can be reassembled: a field held
     /// in one local, or one split record value (no enclosing or own array
     /// axes) with a constructor whose split fields are reassembled in turn.
@@ -196,6 +214,7 @@ fn branch_assigned_records(
                     &name,
                     (&[], &[]),
                     &constructor.inputs,
+                    root.read_whole,
                 )?,
                 param: value.clone(),
                 constructor: constructor_reference(constructor),
@@ -207,8 +226,10 @@ fn branch_assigned_records(
             collect_nodes(&record.fields, &mut |field| {
                 mixed |= field.written_whole_and_by_field
             });
-            (mixed || assigns_field_in_nested_statement(&function.body, &record.name, false))
-                .then_some(())?;
+            (mixed
+                || paths.overwrites_below(&record.name)
+                || assigns_field_in_nested_statement(&function.body, &record.name, false))
+            .then_some(())?;
             (!field_locals_collide(function, &record)
                 && (!root.read_whole
                     || record.constructor.is_some()
@@ -244,9 +265,12 @@ fn fresh_holder_name(function: &rumoca_core::Function, record: &SplitRecord) -> 
         .chain(&function.locals)
         .map(|value| value.name.as_str())
         .collect::<HashSet<_>>();
+    let mut elements = Vec::new();
     collect_nodes(&record.fields, &mut |field| {
         taken.insert(field.local.as_str());
+        elements.push(field.element_local());
     });
+    taken.extend(elements.iter().map(String::as_str));
     let base = format!("{}__whole", record.name);
     std::iter::once(base.clone())
         .chain((1..).map(|ordinal| format!("{base}{ordinal}")))
@@ -280,6 +304,7 @@ fn split_fields(
     prefix: &str,
     enclosing: (&[i64], &[rumoca_core::Subscript]),
     fields: &[rumoca_core::FunctionParam],
+    read_whole_above: bool,
 ) -> Option<Vec<SplitField>> {
     fields
         .iter()
@@ -300,8 +325,9 @@ fn split_fields(
                 .cloned()
                 .collect::<Vec<_>>();
             let uses = paths.uses(&field_path);
-            // A node read whole splits only when its constructor can
-            // reassemble the read from the field locals.
+            // A node read whole, or below a node read whole, splits only when
+            // its constructor can reassemble the read from the field locals;
+            // otherwise it stays one local while the nodes around it split.
             let nested = (field.type_class == Some(rumoca_core::ClassType::Record))
                 .then(|| record_constructor(constructors, field))
                 .flatten()
@@ -314,6 +340,7 @@ fn split_fields(
                         &local,
                         (&field_enclosing, &field_enclosing_shape),
                         &constructor.inputs,
+                        read_whole_above || uses.read_whole,
                     );
                     (fields, constructor_reference(constructor))
                 });
@@ -325,7 +352,11 @@ fn split_fields(
                 constructor.is_some() && fields.iter().all(SplitField::reconstructable)
             };
             let (fields, constructor) = match fields {
-                Some(fields) if uses.read_whole && !reconstructable(&fields) => (None, None),
+                Some(fields)
+                    if (read_whole_above || uses.read_whole) && !reconstructable(&fields) =>
+                {
+                    (None, None)
+                }
                 fields => (fields, constructor),
             };
             Some(SplitField {
@@ -398,16 +429,19 @@ fn is_field_of(comp: &ComponentReference, record: &str) -> bool {
 fn field_locals_collide(function: &rumoca_core::Function, record: &SplitRecord) -> bool {
     let mut locals = Vec::new();
     collect_nodes(&record.fields, &mut |field| {
-        locals.push(field.local.as_str())
+        locals.push(field.local.clone());
+        locals.push(field.element_local());
     });
-    locals.iter().any(|local| {
-        function
-            .inputs
-            .iter()
-            .chain(&function.outputs)
-            .chain(&function.locals)
-            .any(|value| value.name == *local)
-    })
+    let distinct = locals.iter().collect::<HashSet<_>>().len() == locals.len();
+    !distinct
+        || locals.iter().any(|local| {
+            function
+                .inputs
+                .iter()
+                .chain(&function.outputs)
+                .chain(&function.locals)
+                .any(|value| value.name == *local)
+        })
 }
 
 /// Visit every field of the split tree, depth first in declaration order.
@@ -444,7 +478,13 @@ fn split_record(
         .then(|| record_field_column_param(record.holder.clone(), &[], &[], &record.param));
     let value_locals = root_holder
         .into_iter()
-        .chain(expander.value_locals.iter().map(|node| node.local_param()))
+        .chain(expander.value_locals.iter().map(|(node, element)| {
+            if *element {
+                node.element_param()
+            } else {
+                node.local_param()
+            }
+        }))
         .collect::<Vec<_>>();
     let mut body = SplitRewriter { record }.rewrite_statements(&expanded);
     let mut locals = Vec::new();

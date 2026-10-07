@@ -34,6 +34,13 @@ fn expression_path(expr: &Expression) -> Option<ExpressionPath> {
                 .push(part(field, *field_def_id, Vec::new(), *span));
             Some(path)
         }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            let mut path = expression_path(base)?;
+            path.trailing.extend(subscripts.iter().cloned());
+            Some(path)
+        }
         _ => None,
     }
 }
@@ -107,6 +114,9 @@ pub(super) struct NodeUses {
     pub(super) written_whole: bool,
     /// Some statement writes a path strictly below the node.
     pub(super) written_below: bool,
+    /// Statements that write exactly this path, with no subscript on any part
+    /// (a subscripted write updates one element, not the whole value).
+    pub(super) writes: usize,
 }
 
 /// The uses of every component path a function body reads or writes, by
@@ -127,6 +137,13 @@ impl BodyPaths {
         self.uses.get(path).copied().unwrap_or_default()
     }
 
+    /// Whether some path below `root` is written by more than one statement.
+    pub(super) fn overwrites_below(&self, root: &str) -> bool {
+        self.uses
+            .iter()
+            .any(|(path, uses)| path.len() > 1 && path[0] == root && uses.writes > 1)
+    }
+
     fn entry(&mut self, parts: &[ComponentRefPart]) -> &mut NodeUses {
         let idents = parts.iter().map(|part| part.ident.clone()).collect();
         self.uses.entry(idents).or_default()
@@ -134,7 +151,9 @@ impl BodyPaths {
 
     fn target(&mut self, comp: &ComponentReference) {
         let parts = comp.parts();
-        self.entry(parts).written_whole = true;
+        let node = self.entry(parts);
+        node.written_whole = true;
+        node.writes += usize::from(parts.iter().all(|part| part.subs.is_empty()));
         for prefix in 1..parts.len() {
             self.entry(&parts[..prefix]).written_below = true;
         }
@@ -277,6 +296,19 @@ impl ColumnSubscripts {
         self.extend(subs);
         self.selected
     }
+
+    /// Whether the path selects one element of an array of records of `rank`
+    /// axes: every axis has a scalar subscript.
+    fn selects_element(&self, rank: usize) -> bool {
+        self.pending.is_empty()
+            && self.selected.len() == rank
+            && self.selected.iter().all(|subscript| {
+                matches!(
+                    subscript,
+                    rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Index { .. }
+                )
+            })
+    }
 }
 
 /// Where a path under the split record lands.
@@ -341,7 +373,7 @@ pub(super) struct WholeWriteExpander<'record> {
     pub(super) aggregate_values: &'record HashSet<String>,
     /// Split nodes whose record-valued local holds a whole value, in first
     /// use order.
-    pub(super) value_locals: Vec<&'record SplitField>,
+    pub(super) value_locals: Vec<(&'record SplitField, bool)>,
     /// Whether the record's holder holds a whole value of the root.
     pub(super) root_held: bool,
 }
@@ -437,14 +469,14 @@ impl<'record> WholeWriteExpander<'record> {
         span: Span,
         expanded: &mut Vec<Statement>,
     ) -> Result<(), FlattenError> {
-        let Some((node, local)) = self.split_node(comp) else {
+        let Some((node, local, element)) = self.split_node(comp) else {
             expanded.push(statement.clone());
             return Ok(());
         };
         let writes = if has_field_projection(value) && !reads_record(value, &self.record.name) {
             self.field_writes(node, comp, value, span)?
         } else {
-            let held = self.hold(node, &local, span);
+            let held = self.hold(node, &local, element, span);
             expanded.push(Statement::Assignment {
                 comp: local,
                 value: value.clone(),
@@ -467,10 +499,10 @@ impl<'record> WholeWriteExpander<'record> {
         let Some(output) = output else {
             return Ok(None);
         };
-        let Some((node, local)) = self.split_node(output) else {
+        let Some((node, local, element)) = self.split_node(output) else {
             return Ok(Some(output.clone()));
         };
-        let held = self.hold(node, &local, span);
+        let held = self.hold(node, &local, element, span);
         projected.extend(self.field_writes(node, output, &held, span)?);
         Ok(Some(local))
     }
@@ -480,18 +512,25 @@ impl<'record> WholeWriteExpander<'record> {
     fn split_node(
         &self,
         comp: &ComponentReference,
-    ) -> Option<(SplitNode<'record>, ComponentReference)> {
+    ) -> Option<(SplitNode<'record>, ComponentReference, bool)> {
         let Landing::Node(node, columns) =
             land(self.record, comp.parts(), &mut |subs| subs.to_vec())?
         else {
             return None;
         };
         let span = comp.span();
+        // One element of an array of records is held in a record local of its
+        // own, not in an element of the array-valued local.
+        let element = matches!(node, SplitNode::Field(field)
+            if field.enclosing.is_empty() && !columns.is_empty() && columns.selects_element(field.rank()));
         let local = match node {
             SplitNode::Root(record) => part(&record.holder, record.def_id, Vec::new(), span),
+            SplitNode::Field(field) if element => {
+                part(&field.element_local(), field.def_id, Vec::new(), span)
+            }
             SplitNode::Field(field) => part(&field.local, field.def_id, columns.finish(&[]), span),
         };
-        Some((node, reference(false, span, vec![local])))
+        Some((node, reference(false, span, vec![local]), element))
     }
 
     /// Declare `node`'s record-valued local and read it at `local`.
@@ -499,17 +538,16 @@ impl<'record> WholeWriteExpander<'record> {
         &mut self,
         node: SplitNode<'record>,
         local: &ComponentReference,
+        element: bool,
         span: Span,
     ) -> Expression {
         match node {
             SplitNode::Root(_) => self.root_held = true,
             SplitNode::Field(node) => {
-                if !self
-                    .value_locals
-                    .iter()
-                    .any(|held| std::ptr::eq(*held, node))
-                {
-                    self.value_locals.push(node);
+                if !self.value_locals.iter().any(|(held, held_element)| {
+                    std::ptr::eq(*held, node) && *held_element == element
+                }) {
+                    self.value_locals.push((node, element));
                 }
             }
         }
