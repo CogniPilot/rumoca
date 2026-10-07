@@ -1,3 +1,4 @@
+use super::registers::RegisterSet;
 use super::*;
 
 /// `y[target] = y[a] * y[b] + k`, the product computed at the program's own
@@ -477,4 +478,52 @@ fn compaction_keeps_operand_spans_only_where_the_key_records_them() {
         ranged[2],
         LinearOp::TensorBinary { lhs_start: 0, rhs_start, .. } if rhs_start == far
     ));
+}
+
+/// Every output of a wide operation is a term in one consecutive block that no
+/// slot or other value shares, and the same operation over the same operands
+/// is the same block, so a wide operation costs no table entry per lane.
+#[test]
+fn a_wide_operations_outputs_are_one_private_block_of_terms() {
+    let mut terms = Terms::default();
+    let slot = terms.slot(7);
+    assert_eq!(terms.slot(7), slot, "a slot is one term");
+    let wide = terms.key("wide", vec![(0, slot)], 1_000);
+    let again = terms.key("wide", vec![(0, slot)], 1_000);
+    assert_eq!(wide, again, "one operation over one operand is one value");
+    let other = terms.key("wide", vec![(0, slot + 1)], 1_000);
+    let wide_terms = (0..1_000).map(|lane| Terms::value(&wide, lane));
+    let other_terms = (0..1_000).map(|lane| Terms::value(&other, lane));
+    let mut all = wide_terms
+        .chain(other_terms)
+        .chain(std::iter::once(slot))
+        .collect::<Vec<_>>();
+    let count = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), count, "no two outputs share a term");
+    let later_slot = terms.slot(8);
+    assert!(
+        !all.contains(&later_slot),
+        "a slot seen after a wide operation is not one of its outputs"
+    );
+}
+
+#[test]
+fn register_state_is_dense_and_counts_the_registers_it_holds() {
+    let mut table = RegisterTable::<usize>::default();
+    assert_eq!(table.get(5), None);
+    table.insert(5, 50);
+    table.insert(5, 51);
+    table.insert(2, 20);
+    assert_eq!(
+        (table.get(5), table.get(2), table.len()),
+        (Some(51), Some(20), 2)
+    );
+    table.remove(5);
+    assert_eq!((table.get(5), table.len()), (None, 1));
+    let mut set = RegisterSet::default();
+    assert!(set.insert(9) && !set.insert(9));
+    set.remove(9);
+    assert!(!set.contains(9) && set.insert(9));
 }

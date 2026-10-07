@@ -1753,11 +1753,18 @@ pub(crate) fn program_register_y_dependencies(
         apply_dependency_op(&mut walk, operation)?;
     }
     // Registers that share one dependency set keep sharing it: a wide
-    // operation whose lanes all read one input owns one set, not one a lane.
+    // operation whose lanes all read one input owns one set, not one a lane,
+    // and every register that reads nothing shares the one empty set.
+    let empty = Arc::new(IndexIntervals::default());
     Ok(walk
         .registers
         .into_iter()
-        .map(|dependencies| dependencies.map(DependencyState::into_shared))
+        .map(|dependencies| {
+            dependencies.map(|state| match state {
+                DependencyState::Empty => Arc::clone(&empty),
+                other => other.into_shared(),
+            })
+        })
         .collect())
 }
 

@@ -5,19 +5,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::super::*;
-use super::registers::{Role, read_registers, records_operand_offsets, renamable, visit_registers};
+use super::registers::{
+    RegisterTable, Role, read_registers, records_operand_offsets, renamable, visit_registers,
+};
 
 /// The id of one hash-consed symbolic value.
 pub(super) type Term = usize;
-
-/// One symbolic value.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum TermKey {
-    /// A solver slot as the sequence found it.
-    Slot(usize),
-    /// Output `output` of the operation value `key`.
-    Value { key: ValueKey, output: usize },
-}
 
 /// An operation's interned shape and its operands as (field or register
 /// offset, term): the structure a [`ValueKey`] stands for.
@@ -27,44 +20,68 @@ struct OperationKey {
     operands: Vec<(usize, Term)>,
 }
 
-/// The hash-consed id of one operation's [`OperationKey`]. Each output of an
-/// operation is a term over this id, so the operands of a wide operation are
-/// hashed once per operation, not once per output.
+/// The hash-consed id of one operation's [`OperationKey`] and the first term of
+/// its outputs. Each output of an operation is a term over this id, so the
+/// operands of a wide operation are hashed once per operation, not once per
+/// output, and its outputs are one block of consecutive terms that no table
+/// holds an entry for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ValueKey(usize);
+pub(super) struct ValueKey {
+    id: usize,
+    base: Term,
+}
 
 /// The hash-consed terms and interned operation shapes of one derivation or
 /// check.
 #[derive(Default)]
 pub(super) struct Terms {
-    ids: HashMap<TermKey, Term>,
-    operations: HashMap<OperationKey, usize>,
+    slots: HashMap<usize, Term>,
+    operations: HashMap<OperationKey, ValueKey>,
     shapes: BTreeMap<String, usize>,
+    /// The first term no value or slot owns yet.
+    next: Term,
 }
 
 impl Terms {
-    fn intern(&mut self, key: TermKey) -> Term {
-        let next = self.ids.len();
-        *self.ids.entry(key).or_insert(next)
+    /// The term of solver slot `index` as the sequence found it.
+    pub(super) fn slot(&mut self, index: usize) -> Term {
+        let next = self.next;
+        let term = *self.slots.entry(index).or_insert(next);
+        self.next += usize::from(term == next);
+        term
     }
 
-    /// The key of the value of shape `shape` over `operands`.
-    pub(super) fn key(&mut self, shape: &str, operands: Vec<(usize, Term)>) -> ValueKey {
+    /// The key of the value of shape `shape` over `operands`, with `width`
+    /// outputs.
+    pub(super) fn key(
+        &mut self,
+        shape: &str,
+        operands: Vec<(usize, Term)>,
+        width: usize,
+    ) -> ValueKey {
         let next = self.shapes.len();
         let shape = match self.shapes.get(shape) {
             Some(&id) => id,
             None => *self.shapes.entry(shape.to_string()).or_insert(next),
         };
-        let next = self.operations.len();
-        let id = *self
+        let next = ValueKey {
+            id: self.operations.len(),
+            base: self.next,
+        };
+        let key = *self
             .operations
             .entry(OperationKey { shape, operands })
             .or_insert(next);
-        ValueKey(id)
+        if key == next {
+            self.next += width;
+        }
+        key
     }
 
-    pub(super) fn value(&mut self, key: &ValueKey, output: usize) -> Term {
-        self.intern(TermKey::Value { key: *key, output })
+    /// The term of output `output` of `key`; the caller keeps `output` below
+    /// the width the key was issued with.
+    pub(super) fn value(key: &ValueKey, output: usize) -> Term {
+        key.base + output
     }
 }
 
@@ -139,7 +156,7 @@ impl SymbolicSlots {
     pub(super) fn slot(&self, terms: &mut Terms, index: usize) -> Term {
         match self.slots.get(&index) {
             Some(&term) => term,
-            None => terms.intern(TermKey::Slot(index)),
+            None => terms.slot(index),
         }
     }
 
@@ -162,7 +179,7 @@ impl SymbolicSlots {
         ops: &[LinearOp],
         targets: &[usize],
     ) -> Option<Vec<Term>> {
-        let mut registers: HashMap<Reg, Term> = HashMap::new();
+        let mut registers = RegisterTable::<Term>::default();
         let mut outputs = Vec::with_capacity(targets.len());
         for op in ops {
             self.step(terms, op, &mut registers, &mut outputs)?;
@@ -178,7 +195,7 @@ impl SymbolicSlots {
         &self,
         terms: &mut Terms,
         op: &LinearOp,
-        registers: &mut HashMap<Reg, Term>,
+        registers: &mut RegisterTable<Term>,
         outputs: &mut Vec<Term>,
     ) -> Option<()> {
         match *op {
@@ -201,10 +218,10 @@ impl SymbolicSlots {
                 }
             }
             LinearOp::Move { dst, src } => {
-                let term = *registers.get(&src)?;
+                let term = registers.get(src)?;
                 registers.insert(dst, term);
             }
-            LinearOp::StoreOutput { src } => outputs.push(*registers.get(&src)?),
+            LinearOp::StoreOutput { src } => outputs.push(registers.get(src)?),
             LinearOp::StoreOutputRange {
                 start,
                 count,
@@ -212,7 +229,7 @@ impl SymbolicSlots {
             } => {
                 for ordinal in 0..count {
                     let register = start + (ordinal * stride) as Reg;
-                    outputs.push(*registers.get(&register)?);
+                    outputs.push(registers.get(register)?);
                 }
             }
             _ => return value_step(terms, op, registers, outputs),
@@ -226,16 +243,15 @@ impl SymbolicSlots {
 fn value_step(
     terms: &mut Terms,
     op: &LinearOp,
-    registers: &mut HashMap<Reg, Term>,
+    registers: &mut RegisterTable<Term>,
     outputs: &mut Vec<Term>,
 ) -> Option<()> {
     let shape = value_shape(op)?;
     let operands = shape
         .operands
         .iter()
-        .map(|&(field, register)| Some((field, *registers.get(&register)?)))
+        .map(|&(field, register)| Some((field, registers.get(register)?)))
         .collect::<Option<Vec<_>>>()?;
-    let key = terms.key(&shape.shape, operands);
     let stored = match op {
         LinearOp::StoreOutputFunctionFold { count, .. } => *count,
         LinearOp::StoreOutputFoldTensorUpdate {
@@ -245,12 +261,14 @@ fn value_step(
         }),
         _ => 0,
     };
+    let written = op.dst_register().map_or(0, |_| op.dst_register_count());
+    let key = terms.key(&shape.shape, operands, stored.max(written));
     for ordinal in 0..stored {
-        outputs.push(terms.value(&key, ordinal));
+        outputs.push(Terms::value(&key, ordinal));
     }
     if let Some(start) = op.dst_register() {
-        for offset in 0..op.dst_register_count() {
-            registers.insert(start + offset as Reg, terms.value(&key, offset));
+        for offset in 0..written {
+            registers.insert(start + offset as Reg, Terms::value(&key, offset));
         }
     }
     Some(())

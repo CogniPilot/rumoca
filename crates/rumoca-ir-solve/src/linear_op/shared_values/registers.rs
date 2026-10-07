@@ -232,3 +232,86 @@ pub(super) fn compact_registers(mut ops: Vec<LinearOp>) -> Vec<LinearOp> {
     }
     ops
 }
+
+/// A table keyed by register, held densely: a program's registers are numbered
+/// from zero, so an entry costs its value and not a hash slot, and a wide
+/// operation's outputs fill one contiguous run.
+#[derive(Clone, Debug)]
+pub(super) struct RegisterTable<T> {
+    entries: Vec<Option<T>>,
+    len: usize,
+}
+
+impl<T> Default for RegisterTable<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T: Copy> RegisterTable<T> {
+    /// The value of `register`.
+    pub(super) fn get(&self, register: Reg) -> Option<T> {
+        self.entries.get(register as usize).copied().flatten()
+    }
+
+    /// Set the value of `register`.
+    pub(super) fn insert(&mut self, register: Reg, value: T) {
+        let index = register as usize;
+        if index >= self.entries.len() {
+            self.entries.resize(index + 1, None);
+        }
+        if let Some(entry) = self.entries.get_mut(index) {
+            self.len += usize::from(entry.is_none());
+            *entry = Some(value);
+        }
+    }
+
+    /// Drop the value of `register`.
+    pub(super) fn remove(&mut self, register: Reg) {
+        if let Some(entry) = self.entries.get_mut(register as usize) {
+            self.len -= usize::from(entry.is_some());
+            *entry = None;
+        }
+    }
+
+    /// How many registers hold a value.
+    pub(super) const fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// A set of registers, held densely like [`RegisterTable`].
+#[derive(Clone, Debug, Default)]
+pub(super) struct RegisterSet {
+    members: Vec<bool>,
+}
+
+impl RegisterSet {
+    pub(super) fn contains(&self, register: Reg) -> bool {
+        self.members
+            .get(register as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Add `register`; `false` when it was already a member.
+    pub(super) fn insert(&mut self, register: Reg) -> bool {
+        let index = register as usize;
+        if index >= self.members.len() {
+            self.members.resize(index + 1, false);
+        }
+        match self.members.get_mut(index) {
+            Some(member) => !std::mem::replace(member, true),
+            None => false,
+        }
+    }
+
+    pub(super) fn remove(&mut self, register: Reg) {
+        if let Some(member) = self.members.get_mut(register as usize) {
+            *member = false;
+        }
+    }
+}
