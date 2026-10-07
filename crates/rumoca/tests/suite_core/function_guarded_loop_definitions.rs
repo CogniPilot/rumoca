@@ -147,3 +147,120 @@ fn a_per_iteration_guard_leaves_the_scratch_undefined() {
         "{error}"
     );
 }
+
+const SPLIT_BRANCHES: &str = r#"
+package U
+  constant Integer cap = 3;
+  record State
+    Integer generation;
+    Real total;
+    Real weights[cap];
+  end State;
+  function Empty
+    input Integer generation = 1;
+    output State result;
+  algorithm
+    result.generation := generation;
+    result.total := 0;
+    result.weights := zeros(cap);
+  end Empty;
+  function Unrelated
+    input State previous;
+    input Boolean reset;
+    input Boolean other;
+    output Real y;
+  protected
+    State working;
+  algorithm
+    if reset then
+      working := Empty(5);
+    end if;
+    if other then
+      working := previous;
+      for i in 1:cap loop
+        working.total := working.total + previous.weights[i];
+      end for;
+    end if;
+    y := 0;
+    if reset or other then
+      y := working.generation;
+    end if;
+  end Unrelated;
+  function Score
+    input State previous;
+    input Boolean reset;
+    input Boolean requested;
+    output Real y;
+  protected
+    State working;
+    Boolean valid;
+  algorithm
+    y := -1;
+    if requested then
+      valid := true;
+      if reset then
+        working := Empty(5);
+      else
+        working := previous;
+        for i in 1:cap loop
+          valid := valid and previous.weights[i] >= 0;
+        end for;
+      end if;
+      if valid then
+        working.total := working.generation + sum(working.weights);
+        y := working.total;
+      end if;
+    end if;
+  end Score;
+end U;
+model Split
+  parameter Real w = 2;
+  Real kept = U.Score(U.State(2, 0, {w, 3, 4}), false, true);
+  Real reset = U.Score(U.State(2, 0, {w, 3, 4}), true, true);
+  Real idle = U.Score(U.State(2, 0, {w, 3, 4}), false, false);
+  Real bad = U.Score(U.State(2, 0, {w, -3, 4}), false, true);
+end Split;
+model Unrelated
+  parameter Real w = 2;
+  Real y = U.Unrelated(U.State(2, 0, {w, 3, 4}), false, true);
+end Unrelated;
+"#;
+
+/// MLS 3.7 section 11.2.6: a conditional whose branches both define a record
+/// value, one of them through a loop, defines it on every path; the
+/// compiler splits the conditional into guarded sequences and joins the
+/// guard and its complement.
+#[test]
+fn both_sides_of_a_split_conditional_define_a_record() {
+    let compiled = Compiler::new()
+        .model("Split")
+        .compile_str(SPLIT_BRANCHES, "Split.mo")
+        .expect("both branches define every field of the record");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the split conditional DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    assert_eq!(solver_value(&probe.report, "kept"), 11.0);
+    assert_eq!(solver_value(&probe.report, "reset"), 5.0);
+    assert_eq!(solver_value(&probe.report, "idle"), -1.0);
+    assert_eq!(solver_value(&probe.report, "bad"), -1.0);
+}
+
+/// Two conditionals over unrelated conditions do not define a value together:
+/// neither condition is the complement of the other.
+#[test]
+fn unrelated_conditionals_do_not_define_a_record_together() {
+    let error = Compiler::new()
+        .model("Unrelated")
+        .compile_str(SPLIT_BRANCHES, "Unrelated.mo")
+        .expect_err("the record is defined only when one of two unrelated conditions holds");
+    assert!(error.to_string().contains("only some branches"), "{error}");
+}
+
+fn solver_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
+    report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name.replace(' ', "") == name)
+        .unwrap_or_else(|| panic!("missing solver value {name}"))
+        .value
+}

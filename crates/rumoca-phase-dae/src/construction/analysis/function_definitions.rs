@@ -278,6 +278,30 @@ impl FunctionDefinitions {
             if self.values.contains_key(target) {
                 continue;
             }
+            // A value proven under a guard and now under the guard's other
+            // side is defined wherever the two sides together hold.
+            if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)
+                && let (Some(guard), Some(proven)) = (&proof.guard, &proof.coverage)
+                && let Some(defined) = branch.values.get(target)
+                && proven.is_total()
+                && defined.is_total()
+                && let Some(union) = guard_union(guard, condition, context)
+            {
+                match union {
+                    None => {
+                        self.branch_only.remove(target);
+                        self.values.insert(target.clone(), ValueCoverage::Whole);
+                    }
+                    Some(union) => {
+                        let mut joined = proof.clone();
+                        joined.span = span;
+                        joined.guard = Some(union);
+                        joined.coverage = Some(ValueCoverage::Whole);
+                        self.branch_only.insert(target.clone(), joined);
+                    }
+                }
+                continue;
+            }
             if let Some((_, proof)) = prior.0.iter().find(|(name, _)| name == target)
                 && let Some(guard) = &proof.guard
                 && condition_implies_guard(condition, guard, context, 0)
@@ -1767,4 +1791,50 @@ impl FunctionDefinitions {
         );
         Ok(true)
     }
+}
+
+/// The guard under which `guard` or `condition` holds when they are the two
+/// sides of one split, `None` for every path. `guard` is `a and not b` (as an
+/// if-expression, a conjunction, or a bare `not b` for `a` true) and
+/// `condition` is `b`, which implies `a`: either `a` and `not b`, or `b`,
+/// holds exactly where `a` holds.
+fn guard_union(
+    guard: &Expression,
+    condition: &Expression,
+    context: FunctionValidationContext<'_>,
+) -> Option<Option<Expression>> {
+    let equivalent = |left: &Expression, right: &Expression| {
+        condition_implies_guard(left, right, context, 0)
+            && condition_implies_guard(right, left, context, 0)
+    };
+    let negation_of_condition = |negated: &Expression| match negated {
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => equivalent(rhs, condition),
+        _ => false,
+    };
+    if negation_of_condition(guard) {
+        return Some(None);
+    }
+    let (whole, negated) = match guard {
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } if is_boolean_false(else_branch) => match branches.as_slice() {
+            [(whole, negated)] => (whole, negated),
+            _ => return None,
+        },
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } => (lhs.as_ref(), rhs.as_ref()),
+        _ => return None,
+    };
+    (negation_of_condition(negated) && condition_implies_guard(condition, whole, context, 0))
+        .then(|| Some(whole.clone()))
 }

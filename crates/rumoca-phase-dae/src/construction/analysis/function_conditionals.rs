@@ -590,6 +590,11 @@ pub(super) fn is_immutable_guard(
         && references.iter().all(|target| {
             context.static_integers.contains_key(target)
                 || context
+                    .function
+                    .inputs
+                    .iter()
+                    .any(|input| input.name == target.as_str())
+                || context
                     .generated_booleans
                     .iter()
                     .any(|definition| &definition.target == target)
