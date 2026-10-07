@@ -44,9 +44,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
         let mut product = base;
         for _ in 1..factors {
-            product = self
-                .builder
-                .binary(solve::SolveBinaryOperator::Multiply, product, base, at)?;
+            product =
+                self.builder
+                    .binary(solve::SolveBinaryOperator::Multiply, product, base, at)?;
         }
         Ok(product)
     }
