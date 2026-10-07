@@ -309,18 +309,18 @@ enum FunctionConditionalCaptureSource<'dae> {
         count: usize,
     },
     /// A register of the compiler that owns the conditional, one scalar wide.
-    ParentRegister {
-        source: solve::Reg,
-    },
+    ParentRegister { source: solve::Reg },
+    /// A register an enclosing fold update passes in as a capture, resolved in
+    /// the compiler that owns the conditional.
+    ParentInherited { source: solve::Reg },
 }
 
 impl<'dae> FunctionConditionalCaptureSource<'dae> {
     const fn width(self) -> usize {
         match self {
-            Self::DefinitionRange { count, .. } | Self::DefinitionRecordFieldRange { count, .. } => {
-                count
-            }
-            Self::ParentRegister { .. } => 1,
+            Self::DefinitionRange { count, .. }
+            | Self::DefinitionRecordFieldRange { count, .. } => count,
+            Self::ParentRegister { .. } | Self::ParentInherited { .. } => 1,
         }
     }
 
@@ -345,6 +345,7 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
                 count,
             },
             Self::ParentRegister { source } => Self::ParentRegister { source },
+            Self::ParentInherited { source } => Self::ParentInherited { source },
         }
     }
 }
@@ -354,6 +355,21 @@ struct DeferredFunctionConditionalCaptures<'dae> {
     owner_context: u64,
     sources: Vec<FunctionConditionalCaptureSource<'dae>>,
     locals: Vec<(FunctionConditionalCaptureSource<'dae>, solve::Reg)>,
+    visible: RegionVisiblePoints<'dae>,
+}
+
+/// The enclosing folds' symbolic points and carried tuples a conditional region
+/// may read, as capture sources.
+#[derive(Default)]
+struct RegionVisiblePoints<'dae> {
+    symbolic: Vec<(
+        dae::DomainId<'dae>,
+        Vec<FunctionConditionalCaptureSource<'dae>>,
+    )>,
+    folds: Vec<(
+        dae::FunctionFoldId<'dae>,
+        Vec<Vec<FunctionConditionalCaptureSource<'dae>>>,
+    )>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
