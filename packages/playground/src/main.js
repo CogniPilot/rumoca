@@ -13,6 +13,8 @@ import {
 } from './modules/result_file_editor.js';
 import { setupMonacoWorkspace } from './modules/monaco_setup.js';
 import { createScenarioInterface } from './modules/scenario_interface.js';
+import { createAssistant } from './modules/assistant/index.js';
+import { createAssistantHost } from './modules/assistant/host.js';
 import { buildScenarioVisualizationViewStorage } from './modules/visualization_view_storage.js';
 import {
     createWorkspaceFilesystem,
@@ -4123,9 +4125,10 @@ function augmentLanguagePayload(command, payload = {}) {
     if (!languageCommandNeedsWorkspaceSources(command)) {
         return payload;
     }
-    const activePath = workspaceFs?.getActiveDocumentPath?.() || '';
+    const { focusPath, ...rest } = payload;
+    const activePath = focusPath ?? (workspaceFs?.getActiveDocumentPath?.() || '');
     return {
-        ...payload,
+        ...rest,
         workspaceSources: collectWorkspaceModelicaSourcesJson(activePath),
     };
 }
@@ -4884,6 +4887,46 @@ setupCommandPalette({
     getQuickOpenItems: buildQuickOpenItems,
     getSymbolItems: buildDocumentSymbolItems,
 });
+
+async function assistantRunScenario(path) {
+    const context = await scenarioContextForPath(path);
+    if (!context) throw new Error(`${path} is not a scenario file`);
+    if (context.task === 'codegen') throw new Error('Codegen scenarios do not simulate.');
+    if (scenarioUsesInputRuntime(context.config)) {
+        throw new Error('Interactive scenarios run in the interactive viewer, not through the assistant.');
+    }
+    return await runSimulationWithContext({
+        modelName: context.modelName,
+        source: context.source,
+        focusPath: context.path,
+        excludePath: context.modelPath || context.path,
+    });
+}
+
+const assistant = createAssistant({
+    getMonaco: () => monacoApi,
+    host: createAssistantHost({
+        workspaceFs,
+        isScenarioPath: (path) => shared.isRumocaScenarioPath(path),
+        flushEditors: persistActivePaneDocument,
+        sendLanguageCommand,
+        sendScenarioCommand: async (command, payload) => JSON.parse(
+            await sendRequest('scenarioCommand', { command, payload }),
+        ),
+        normalizeDiagnostics: normalizeDiagnosticsPayload,
+        diagnosticCode: diagnosticCodeString,
+        runScenario: assistantRunScenario,
+        runModel: (modelName) => runSimulationWithContext({ modelName }),
+        normalizeRun: (document) => shared.normalizePersistedSimulationRun(document),
+        openDocument: (path) => openWorkspaceDocument(path, { focusEditor: false, forceReload: true }),
+        didChangeFiles() {
+            renderExplorerPane();
+            scheduleWorkspacePersistence();
+        },
+    }),
+});
+window.toggleAssistant = () => assistant.toggle();
+void assistant.start();
 
 // Monaco Editor
 require.config({ paths: { 'vs': './vendor/monaco/vs' }});

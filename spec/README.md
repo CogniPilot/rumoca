@@ -46,6 +46,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~212 | PROPOSED |
 | [SPEC_0052](SPEC_0052_RUMOCA_LEAN_CYBER_PHYSICAL_SYSTEMS.md) | Rumoca plus Lean: Roadmap for Formally Verified Cyber-Physical Systems | architecture/verification | ~100 | PROPOSED |
 | [SPEC_0053](SPEC_0053_CONSTRAINED_STATE_SELECTION.md) | Constrained State Selection | compiler/runtime | ~94 | DRAFT |
+| [SPEC_0054](SPEC_0054_PLAYGROUND_ASSISTANT.md) | Playground Assistant | tooling/web | ~110 | PROPOSED |
 
 ### Reference annexes
 

@@ -88,6 +88,11 @@ fn check_playground_js_syntax(root: &Path) -> Result<()> {
     let js_checks = [
         "packages/playground/src/main.js",
         "packages/playground/src/modules/command_palette.js",
+        "packages/playground/src/modules/assistant/agent.js",
+        "packages/playground/src/modules/assistant/host.js",
+        "packages/playground/src/modules/assistant/index.js",
+        "packages/playground/src/modules/assistant/panel.js",
+        "packages/playground/src/modules/assistant/session.js",
         "packages/playground/src/modules/default_workspace.js",
         "packages/playground/src/modules/diagnostics_panel.js",
         "packages/playground/src/modules/file_actions.js",

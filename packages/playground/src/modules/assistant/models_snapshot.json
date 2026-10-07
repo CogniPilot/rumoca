@@ -1,0 +1,356 @@
+{
+ "openai": {
+  "chatgpt-image-latest": {
+   "name": "chatgpt-image-latest",
+   "toolCall": false,
+   "context": 0
+  },
+  "gpt-5.4": {
+   "name": "GPT-5.4",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.4-pro": {
+   "name": "GPT-5.4 Pro",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-3.5-turbo": {
+   "name": "GPT-3.5-turbo",
+   "toolCall": false,
+   "context": 16385
+  },
+  "gpt-5.5-pro": {
+   "name": "GPT-5.5 Pro",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "text-embedding-3-small": {
+   "name": "text-embedding-3-small",
+   "toolCall": false,
+   "context": 8191
+  },
+  "gpt-5.4-nano": {
+   "name": "GPT-5.4 nano",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-realtime-2.1": {
+   "name": "GPT-Realtime-2.1",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-4o-2024-05-13": {
+   "name": "GPT-4o (2024-05-13)",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-4o": {
+   "name": "GPT-4o",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-5-mini": {
+   "name": "GPT-5 Mini",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-image-2": {
+   "name": "gpt-image-2",
+   "toolCall": false,
+   "context": 0
+  },
+  "gpt-5.2-pro": {
+   "name": "GPT-5.2 Pro",
+   "toolCall": true,
+   "context": 400000
+  },
+  "o4-mini": {
+   "name": "o4-mini",
+   "toolCall": true,
+   "context": 200000
+  },
+  "o3-mini": {
+   "name": "o3-mini",
+   "toolCall": true,
+   "context": 200000
+  },
+  "text-embedding-ada-002": {
+   "name": "text-embedding-ada-002",
+   "toolCall": false,
+   "context": 8192
+  },
+  "gpt-4": {
+   "name": "GPT-4",
+   "toolCall": true,
+   "context": 8192
+  },
+  "gpt-5.3-codex": {
+   "name": "GPT-5.3 Codex",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-4.1-nano": {
+   "name": "GPT-4.1 nano",
+   "toolCall": true,
+   "context": 1047576
+  },
+  "gpt-5-nano": {
+   "name": "GPT-5 Nano",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-5.6": {
+   "name": "GPT-5.6",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.2-chat-latest": {
+   "name": "GPT-5.2 Chat",
+   "toolCall": true,
+   "context": 128000
+  },
+  "o1": {
+   "name": "o1",
+   "toolCall": true,
+   "context": 200000
+  },
+  "gpt-5-pro": {
+   "name": "GPT-5 Pro",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-5.3-codex-spark": {
+   "name": "GPT-5.3 Codex Spark",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-6.1-sol": {
+   "name": "GPT-6.1 Sol",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "text-embedding-3-large": {
+   "name": "text-embedding-3-large",
+   "toolCall": false,
+   "context": 8191
+  },
+  "gpt-4o-2024-08-06": {
+   "name": "GPT-4o (2024-08-06)",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-6-astra": {
+   "name": "GPT-6 Astra",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.1": {
+   "name": "GPT-5.1",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-4o-mini": {
+   "name": "GPT-4o mini",
+   "toolCall": true,
+   "context": 128000
+  },
+  "o3-pro": {
+   "name": "o3-pro",
+   "toolCall": true,
+   "context": 200000
+  },
+  "gpt-image-1": {
+   "name": "gpt-image-1",
+   "toolCall": false,
+   "context": 0
+  },
+  "gpt-daybreak-blue-latest": {
+   "name": "Daybreak Blue",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.4-mini": {
+   "name": "GPT-5.4 mini",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-5.6-luna": {
+   "name": "GPT-5.6 Luna",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.2": {
+   "name": "GPT-5.2",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-5.5": {
+   "name": "GPT-5.5",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-4.1": {
+   "name": "GPT-4.1",
+   "toolCall": true,
+   "context": 1047576
+  },
+  "gpt-4o-2024-11-20": {
+   "name": "GPT-4o (2024-11-20)",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-4.1-mini": {
+   "name": "GPT-4.1 mini",
+   "toolCall": true,
+   "context": 1047576
+  },
+  "gpt-6-luna": {
+   "name": "GPT-6 Luna",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-5.3-chat-latest": {
+   "name": "GPT-5.3 Chat (latest)",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-image-1-mini": {
+   "name": "gpt-image-1-mini",
+   "toolCall": false,
+   "context": 0
+  },
+  "gpt-image-1.5": {
+   "name": "gpt-image-1.5",
+   "toolCall": false,
+   "context": 0
+  },
+  "gpt-5.6-terra": {
+   "name": "GPT-5.6 Terra",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-4-turbo": {
+   "name": "GPT-4 Turbo",
+   "toolCall": true,
+   "context": 128000
+  },
+  "gpt-daybreak-red-latest": {
+   "name": "Daybreak Red",
+   "toolCall": true,
+   "context": 400000
+  },
+  "o3": {
+   "name": "o3",
+   "toolCall": true,
+   "context": 200000
+  },
+  "gpt-5": {
+   "name": "GPT-5",
+   "toolCall": true,
+   "context": 400000
+  },
+  "gpt-5.6-sol": {
+   "name": "GPT-5.6 Sol",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "gpt-6-sol": {
+   "name": "GPT-6 Sol",
+   "toolCall": true,
+   "context": 1050000
+  },
+  "o1-pro": {
+   "name": "o1-pro",
+   "toolCall": true,
+   "context": 200000
+  }
+ },
+ "anthropic": {
+  "claude-haiku-4-5": {
+   "name": "Claude Haiku 4.5 (latest)",
+   "toolCall": true,
+   "context": 200000
+  },
+  "claude-opus-4-5": {
+   "name": "Claude Opus 4.5 (latest)",
+   "toolCall": true,
+   "context": 200000
+  },
+  "claude-sonnet-4-5": {
+   "name": "Claude Sonnet 4.5 (latest)",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-opus-5-5": {
+   "name": "Claude Opus 5.5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-fable-5-1": {
+   "name": "Claude Fable 5.1",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-opus-4-5-20251101": {
+   "name": "Claude Opus 4.5",
+   "toolCall": true,
+   "context": 200000
+  },
+  "claude-opus-5": {
+   "name": "Claude Opus 5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-fable-5": {
+   "name": "Claude Fable 5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-opus-4-8": {
+   "name": "Claude Opus 4.8",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-sonnet-4-5-20250929": {
+   "name": "Claude Sonnet 4.5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-sonnet-5": {
+   "name": "Claude Sonnet 5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-opus-4-6": {
+   "name": "Claude Opus 4.6",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-haiku-4-5-20251001": {
+   "name": "Claude Haiku 4.5",
+   "toolCall": true,
+   "context": 200000
+  },
+  "claude-haiku-5-5": {
+   "name": "Claude Haiku 5.5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-sonnet-4-6": {
+   "name": "Claude Sonnet 4.6",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-sonnet-5-5": {
+   "name": "Claude Sonnet 5.5",
+   "toolCall": true,
+   "context": 1000000
+  },
+  "claude-opus-4-7": {
+   "name": "Claude Opus 4.7",
+   "toolCall": true,
+   "context": 1000000
+  }
+ }
+}

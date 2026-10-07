@@ -116,6 +116,10 @@ fn handle_http_request(
         return write_redirect_response(stream, &location, include_body);
     }
 
+    if let Some(location) = callback_redirect_location(target) {
+        return write_redirect_response(stream, &location, include_body);
+    }
+
     match resolve_static_path(root, url) {
         Some(path) if path.is_file() => {
             if is_wasm_editor_index(root, &path) {
@@ -204,6 +208,13 @@ fn write_redirect_response(
     }
     stream.flush().context("failed flushing HTTP redirect")?;
     Ok(())
+}
+
+/// Sign in with ChatGPT accepts only a loopback `/callback` redirect; hand the
+/// response (query included) to the editor page, which completes the sign-in.
+fn callback_redirect_location(target: &str) -> Option<String> {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    (path == "/callback").then(|| format!("/rumoca/?{query}"))
 }
 
 fn is_wasm_editor_index(root: &Path, path: &Path) -> bool {
@@ -325,6 +336,15 @@ fn mime_for_path(path: &Path) -> &'static str {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn callback_hands_the_authorization_response_to_the_editor() {
+        assert_eq!(
+            callback_redirect_location("/callback?code=c&state=s"),
+            Some("/rumoca/?code=c&state=s".to_string())
+        );
+        assert_eq!(callback_redirect_location("/rumoca/"), None);
+    }
 
     #[test]
     fn default_url_uses_first_configured_url() {

@@ -2633,6 +2633,7 @@
             <img src="../../assets/brand/rumoca.svg" alt="">
         </button>
         <div class="mobile-appbar-title" id="mobileAppbarTitle">Rumoca</div>
+        <button class="mobile-appbar-button" id="mobileAssistantBtn" type="button" onclick="toggleAssistant()" title="Assistant" aria-label="Assistant">AI</button>
     </div>
     <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
     <div class="main-container">
@@ -2771,6 +2772,10 @@
                                 </button>
                                 <div id="editorTabs" class="editor-tabs" role="tablist" aria-label="Open files"></div>
                                 <div class="editor-actions" data-editor-actions data-pane-id="primary">
+                                    <button class="small toolbar-icon" id="assistantBtn" type="button" onclick="toggleAssistant()" title="Open the assistant">
+                                        <span class="button-icon" aria-hidden="true">✦</span>
+                                        <span>Assistant</span>
+                                    </button>
                                     <button class="small toolbar-icon" id="editorCodegenBtn" data-editor-codegen-btn data-pane-id="primary" onclick="createScenarioForModelPane('primary')" title="Create Scenario for This Model">
                                         <span class="button-icon" aria-hidden="true">⚡</span>
                                         <span>Create Scenario</span>
@@ -2855,6 +2860,7 @@
         </div>
     </div>
 
+    <link rel="stylesheet" href="./src/modules/assistant/panel.css">
     <link rel="stylesheet" href="./vendor/results_app.css">
     <link rel="stylesheet" href="./vendor/uplot.min.css">
     <script src="./vendor/monaco/vs/loader.js"></script>
@@ -2862,6 +2868,8 @@
         window.rumocaRepoAssetBase = '../../';
         window.rumocaWasmPkgBase = '../rumoca/dist';
         window.rumocaWasmPkgSubdir = 'release-full-web';
+        // Assistant deployment settings; the site build fills the Sign in with ChatGPT client id.
+        window.rumocaAssistantConfig = { openaiSiwcClientId: '', ...window.rumocaAssistantConfig };
     </script>
     <script type="module" src="./src/main.js"></script>
 </body>
