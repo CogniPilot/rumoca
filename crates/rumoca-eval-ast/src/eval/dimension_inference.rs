@@ -49,6 +49,9 @@ pub fn infer_dimensions_from_binding_with_scope(
                 .map(|p| p.ident.text.as_ref())
                 .collect::<Vec<_>>()
                 .join(".");
+            if let Some(dims) = ctx.declared_constant_dimensions(cr, scope) {
+                return Some(dims);
+            }
             let Some(base_dims) = ctx.lookup_dimensions(&unindexed_path, scope) else {
                 return (ctx.is_declared_scalar_reference(cr)
                     || ctx.scalar_value_known(&unindexed_path, scope))

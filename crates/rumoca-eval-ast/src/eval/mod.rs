@@ -45,6 +45,16 @@ pub trait DimensionInferenceContext {
         false
     }
 
+    /// Dimensions of the constant a resolved reference names, from that
+    /// constant's own binding (MLS 5.3).
+    fn declared_constant_dimensions(
+        &self,
+        _reference: &rumoca_ir_ast::ComponentReference,
+        _scope: &str,
+    ) -> Option<Vec<usize>> {
+        None
+    }
+
     fn infer_user_function_dimensions(
         &self,
         _function: &str,
@@ -120,6 +130,8 @@ fn component_reference_path(cr: &rumoca_ir_ast::ComponentReference) -> Cow<'_, s
 }
 
 pub struct TypeCheckEvalContext {
+    /// Cycle guard for dimension inference through constant bindings.
+    dimension_walk: crate::declared_constants::ConstantWalk,
     pub integers: FxHashMap<String, i64>,
     pub reals: FxHashMap<String, f64>,
     pub booleans: FxHashMap<String, bool>,
@@ -155,6 +167,7 @@ impl TypeCheckEvalContext {
             dimensions: FxHashMap::default(),
             declared_dimensions: Arc::default(),
             declared_constants: Default::default(),
+            dimension_walk: Default::default(),
             functions: Arc::new(FxHashMap::default()),
             func_eval_depth: 0,
             enum_sizes: FxHashMap::default(),
@@ -220,6 +233,17 @@ impl TypeCheckEvalContext {
 }
 
 impl DimensionInferenceContext for TypeCheckEvalContext {
+    fn declared_constant_dimensions(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+        scope: &str,
+    ) -> Option<Vec<usize>> {
+        self.dimension_walk
+            .enter(&self.declared_constants, reference, |binding| {
+                infer_dimensions_from_binding_with_scope(binding, self, scope)
+            })
+    }
+
     fn is_declared_scalar_reference(&self, reference: &rumoca_ir_ast::ComponentReference) -> bool {
         self.declared_dimensions.proves_scalar_reference(reference)
     }

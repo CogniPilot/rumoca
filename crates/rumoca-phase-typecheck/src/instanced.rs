@@ -331,7 +331,37 @@ impl TypeChecker {
         Self::collect_component_type_nested_constants(tree, overlay, &mut self.eval_ctx);
         Self::collect_function_defs(tree, &mut self.eval_ctx);
         Self::collect_instance_class_override_constants(tree, overlay, &mut self.eval_ctx);
+        self.expose_constants_through_enclosing_packages(tree, overlay, model_name);
         true
+    }
+
+    /// Read each enclosing package's extends-modified constants as that package
+    /// exposes them (MLS 7.2): the packages enclosing the component types first,
+    /// the model's own enclosing package last so it takes precedence.
+    fn expose_constants_through_enclosing_packages(
+        &mut self,
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        model_name: &str,
+    ) {
+        let mut type_names: Vec<&str> = overlay
+            .components
+            .values()
+            .filter_map(|data| tree.def_map.get(&data.type_def_id?).map(String::as_str))
+            .collect();
+        type_names.sort_unstable();
+        type_names.dedup();
+        for name in type_names.into_iter().chain([model_name]) {
+            let Some(package) = tree
+                .enclosing_class_names_of(name)
+                .next()
+                .and_then(|enclosing| tree.get_class_by_qualified_name(enclosing))
+            else {
+                continue;
+            };
+            self.eval_ctx.declared_constants =
+                self.eval_ctx.declared_constants.exposed_by(tree, package);
+        }
     }
 
     /// Check equation compatibility for a specific instanced model.

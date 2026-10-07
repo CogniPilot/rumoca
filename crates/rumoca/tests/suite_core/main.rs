@@ -30,6 +30,7 @@ mod initial_boolean_parameter;
 mod actual_stream_product_events;
 mod additive_torque;
 mod affine_coefficient_aggregates;
+mod extends_modified_constant_dimensions;
 mod affine_switching_circuit;
 mod algebraic_observation_accuracy;
 mod algorithm_carried_loops;

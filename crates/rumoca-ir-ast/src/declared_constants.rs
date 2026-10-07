@@ -88,3 +88,77 @@ fn collect_class(
         collect_class(nested, modified, bindings);
     }
 }
+
+impl DeclaredConstants {
+    /// The constants as one exposing package gives them (MLS 3.7 section 7.2).
+    ///
+    /// A constant that an extends clause modifies takes, for a declaration
+    /// read through `exposing`, the value its outermost modification gives it;
+    /// a constant that no modification on that package's extends chain names
+    /// keeps its own binding. A reading scope that is not in the package's
+    /// lexical or extends hierarchy never calls this and sees only the fixed
+    /// declarations.
+    pub fn exposed_by(&self, tree: &ClassTree, exposing: &ClassDef) -> Self {
+        let mut bindings = (*self.bindings).clone();
+        let mut pinned = FxHashSet::default();
+        let mut visited = FxHashSet::default();
+        apply_exposure(tree, exposing, &mut bindings, &mut pinned, &mut visited);
+        Self {
+            bindings: Arc::new(bindings),
+        }
+    }
+}
+
+fn apply_exposure(
+    tree: &ClassTree,
+    class: &ClassDef,
+    bindings: &mut FxHashMap<DefId, Expression>,
+    pinned: &mut FxHashSet<DefId>,
+    visited: &mut FxHashSet<DefId>,
+) {
+    if let Some(def_id) = class.def_id
+        && !visited.insert(def_id)
+    {
+        return;
+    }
+    for extend in &class.extends {
+        let Some(base) = extend
+            .base_def_id
+            .and_then(|base_def_id| tree.get_class_by_def_id(base_def_id))
+        else {
+            continue;
+        };
+        for modification in &extend.modifications {
+            let Expression::Modification { target, value, .. } = &modification.expr else {
+                continue;
+            };
+            if let [part] = target.parts.as_slice()
+                && let Some(def_id) = constant_in_hierarchy(tree, base, part.ident.text.as_ref())
+                && pinned.insert(def_id)
+            {
+                bindings.insert(def_id, (**value).clone());
+            }
+        }
+        apply_exposure(tree, base, bindings, pinned, visited);
+    }
+    for component in class.components.values() {
+        if matches!(component.variability, Variability::Constant(_))
+            && let (Some(def_id), Some(binding)) = (component.def_id, component.binding.as_ref())
+            && !pinned.contains(&def_id)
+        {
+            bindings.entry(def_id).or_insert_with(|| binding.clone());
+        }
+    }
+}
+
+fn constant_in_hierarchy(tree: &ClassTree, class: &ClassDef, name: &str) -> Option<DefId> {
+    if let Some(component) = class.components.get(name)
+        && matches!(component.variability, Variability::Constant(_))
+    {
+        return component.def_id;
+    }
+    class.extends.iter().find_map(|extend| {
+        let base = tree.get_class_by_def_id(extend.base_def_id?)?;
+        constant_in_hierarchy(tree, base, name)
+    })
+}
