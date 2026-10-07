@@ -34,7 +34,7 @@ pub(crate) fn structured_array_equation_family(
             body: vec![equation.residual.clone()],
             scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
         }),
-        interiors_materialized: true,
+        interiors: flat::FamilyInteriors::Materialized,
     }))
 }
 

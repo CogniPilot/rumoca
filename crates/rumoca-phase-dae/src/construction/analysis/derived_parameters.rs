@@ -22,7 +22,10 @@ pub(super) fn analyze_derived_parameters(
     let mut families = HashSet::new();
     let mut rows = HashSet::new();
     for (family_index, family) in selected.iter().enumerate() {
-        if family.interiors_materialized {
+        // Only a family flattened as a proven parameter-variability
+        // assignment is promoted; any other placeholder family is owned by its
+        // own template construction (SPEC_0043 §6c).
+        if family.interiors != flat::FamilyInteriors::ParameterAssignment {
             continue;
         }
         let Some(template) = family.template else {

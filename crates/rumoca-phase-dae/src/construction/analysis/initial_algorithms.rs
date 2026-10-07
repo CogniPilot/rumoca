@@ -128,7 +128,7 @@ pub(super) fn claimed_initial_families(
             let Some(rows) = family.materialized_rows() else {
                 return false;
             };
-            family.interiors_materialized
+            family.interiors_materialized()
                 && !rows.is_empty()
                 && rows.into_iter().all(|row| claimed.contains(&row))
         })

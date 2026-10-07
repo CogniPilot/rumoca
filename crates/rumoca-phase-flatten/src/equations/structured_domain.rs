@@ -117,7 +117,7 @@ pub(super) fn lift_full_iteration_child_family(
         // The lifted 2-D family is cheapened iff the child (inner-binder) families
         // were: nested cheapening happens in the inner `expand_for_equation`, whose
         // families this lift consumes.
-        interiors_materialized: first_family.interiors_materialized,
+        interiors: first_family.interiors,
     };
     let insert_at = remove_indices[0];
     for index in remove_indices.iter().rev() {

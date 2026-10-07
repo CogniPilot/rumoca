@@ -37,7 +37,7 @@ fn family(
             }],
             scalar_view: view,
         }),
-        interiors_materialized: true,
+        interiors: flat::FamilyInteriors::Materialized,
     }
 }
 

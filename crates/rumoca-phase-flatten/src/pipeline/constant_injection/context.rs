@@ -162,11 +162,14 @@ pub(crate) struct Context {
     /// Mirror of `FlattenOptions::materialize_structured_families`. When false, a
     /// regular elementwise for-family materializes only its corner cells (base + one
     /// neighbor per binder) with full bodies; interior cells get a cheap placeholder
-    /// body and the family is marked `interiors_materialized = false` so downstream
-    /// phases reconstruct interior incidence/strides from the corners.
+    /// body and the family records which owner reads its template instead
+    /// (`flat::FamilyInteriors`).
     pub materialize_structured_families: bool,
     /// Checked occurrence-scoped evidence for parameter-variability families. Its
     /// private representation prevents equation lowering from manufacturing a proof
     /// from display names.
     pub param_variability_families: crate::param_variability::ParameterVariabilityFamilies,
+    /// Checked occurrence-scoped evidence for continuous algebraic family
+    /// targets (SPEC_0043 §6c).
+    pub continuous_algebraic_targets: crate::continuous_algebraic::ContinuousAlgebraicTargets,
 }

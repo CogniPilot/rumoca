@@ -255,8 +255,8 @@ fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
 }
 
 /// The Flat JSON dump is the self-describing sibling of the export above: it
-/// serializes the cheapened rows AND the `interiors_materialized` flag that
-/// says they are cheapened, so it makes no claim a checked view could falsify
+/// serializes the cheapened rows AND the `interiors` owner that says
+/// they are cheapened, so it makes no claim a checked view could falsify
 /// and is deliberately not refused.
 #[test]
 fn flat_json_publishes_the_materialization_flag_with_the_cheapened_rows() {
@@ -274,7 +274,7 @@ fn flat_json_publishes_the_materialization_flag_with_the_cheapened_rows() {
     assert!(
         families
             .iter()
-            .any(|family| family["interiors_materialized"] == serde_json::json!(false)),
+            .any(|family| family["interiors"] != serde_json::json!("Materialized")),
         "the dump must state that its interior rows are not materialized:\n{out}"
     );
 }

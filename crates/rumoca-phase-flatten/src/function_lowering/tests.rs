@@ -333,7 +333,7 @@ fn record_param_lowering_rewrites_compact_structured_templates() {
                 }],
                 scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
             }),
-            interiors_materialized: false,
+            interiors: flat::FamilyInteriors::ContinuousAlgebraic,
         });
 
     lower_record_function_params(&mut flat)
