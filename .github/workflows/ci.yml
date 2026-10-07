@@ -346,9 +346,15 @@ jobs:
         # Enabling it on Linux too is what stops ubuntu recompiling all of rumoca
         # every run (it previously had NO compiler cache — rust-cache keeps deps
         # but not workspace crates). Relies on the global CARGO_INCREMENTAL=0.
+        # The GHA cache service is an optimization, not a dependency: when it
+        # is unreachable the step is tolerated, the wrapper stays off and the
+        # later steps (MSL, CMM, tests) still run.
+        id: sccache
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Enable sccache wrapper
+        if: steps.sccache.outcome == 'success'
         shell: bash
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
