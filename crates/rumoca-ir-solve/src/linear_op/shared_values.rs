@@ -484,7 +484,7 @@ impl ProgramBuilder<'_, '_> {
             self.map.insert(dst + offset as Reg, register);
         }
         self.segment().ops.push(op);
-        self.segment().values.insert(key.clone(), registers);
+        self.segment().values.insert(*key, registers);
     }
 
     /// Read `dst` from `registers` computed earlier: nothing is emitted.

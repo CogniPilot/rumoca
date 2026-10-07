@@ -19,19 +19,26 @@ enum TermKey {
     Value { key: ValueKey, output: usize },
 }
 
-/// The value key of one operation: its interned shape and its operands as
-/// (field or register offset, term).
+/// An operation's interned shape and its operands as (field or register
+/// offset, term): the structure a [`ValueKey`] stands for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ValueKey {
+struct OperationKey {
     shape: usize,
     operands: Vec<(usize, Term)>,
 }
+
+/// The hash-consed id of one operation's [`OperationKey`]. Each output of an
+/// operation is a term over this id, so the operands of a wide operation are
+/// hashed once per operation, not once per output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ValueKey(usize);
 
 /// The hash-consed terms and interned operation shapes of one derivation or
 /// check.
 #[derive(Default)]
 pub(super) struct Terms {
     ids: HashMap<TermKey, Term>,
+    operations: HashMap<OperationKey, usize>,
     shapes: BTreeMap<String, usize>,
 }
 
@@ -48,14 +55,16 @@ impl Terms {
             Some(&id) => id,
             None => *self.shapes.entry(shape.to_string()).or_insert(next),
         };
-        ValueKey { shape, operands }
+        let next = self.operations.len();
+        let id = *self
+            .operations
+            .entry(OperationKey { shape, operands })
+            .or_insert(next);
+        ValueKey(id)
     }
 
     pub(super) fn value(&mut self, key: &ValueKey, output: usize) -> Term {
-        self.intern(TermKey::Value {
-            key: key.clone(),
-            output,
-        })
+        self.intern(TermKey::Value { key: *key, output })
     }
 }
 
