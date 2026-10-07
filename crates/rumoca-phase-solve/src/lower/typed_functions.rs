@@ -19,8 +19,8 @@ mod tensor;
 mod total_conditionals;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
-use indexed_values::leading_index_axes;
 pub(crate) use family_owner::AlgebraicFamilyForm;
+use indexed_values::leading_index_axes;
 use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
