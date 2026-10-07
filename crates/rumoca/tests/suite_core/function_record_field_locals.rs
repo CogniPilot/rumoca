@@ -213,10 +213,11 @@ fn nested_record_fields_written_in_control_flow_assemble() {
     assert_eq!(value(&probe.report, "straight[2]"), 6.0);
 }
 
-/// A nested record read whole keeps its record-valued local, so a field of it
-/// written inside a branch is still refused rather than assembled.
+/// A nested record read whole and written field by field inside a branch is
+/// split, and the whole read is reassembled by its constructor from the field
+/// locals current at the read (MLS §12.6).
 #[test]
-fn nested_record_read_whole_keeps_its_record_local() {
+fn nested_record_read_whole_is_reassembled_from_its_field_locals() {
     let source = r#"
 within;
 package R
@@ -253,14 +254,12 @@ model ObserveWholeRead
   Real y = R.Observe(time + 1);
 end ObserveWholeRead;
 "#;
-    let error = Compiler::new()
+    let compiled = Compiler::new()
         .model("ObserveWholeRead")
         .compile_str(source, "ObserveWholeRead.mo")
-        .expect_err("a record field read whole and written in a branch is not assembled");
-    assert!(
-        error
-            .to_string()
-            .contains("has no value the record assembly represents"),
-        "unexpected diagnostic: {error}"
-    );
+        .expect("a record field read whole and written in a branch is reassembled");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the reassembled record DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    assert_eq!(value(&probe.report, "y"), 5.0);
 }

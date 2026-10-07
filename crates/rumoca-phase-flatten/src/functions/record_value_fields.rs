@@ -9,23 +9,32 @@
 //! assigned inside a nested statement is rewritten here into function locals:
 //! every field write and read names a local, and a record result is assembled
 //! from its locals, in declaration order, at the end of the algorithm. The
-//! record value is only ever observed through its fields, so the rewrite
-//! preserves every value the function computes.
+//! record value is observed through its fields, or reassembled from them
+//! where it is read whole, so the rewrite preserves every value the function
+//! computes.
 //!
 //! The rewrite is recursive over record nesting. A record-typed field (or an
-//! array-of-records field) that is never read whole, and whose whole writes
-//! all assign a value with a field-wise projection (a record constructor, a
-//! component reference, or an array or comprehension of those), is split in
-//! turn: `r.f.g` becomes `r__f__g`, and a field of the elements of an array of
-//! records becomes one column over the element extents (`r.f[i].g` is
-//! `r__f__g[i]`, struct of arrays). A whole write of a split field becomes one
-//! write per field of its projected value, so a field assigned whole and then
-//! updated field by field inside a branch is an ordinary sequence of local
-//! writes. Any other record-typed field becomes one record-valued local
-//! (`r.f.g` becomes `r__f.g`).
+//! array-of-records field) written below its own level is split in turn,
+//! unless it is read whole and cannot be reassembled: `r.f.g` becomes
+//! `r__f__g`, and a field of the elements of an array of records becomes one
+//! column over the element extents (`r.f[i].g` is `r__f__g[i]`, struct of
+//! arrays). A whole write of a split field becomes one
+//! write per field of its value, projected in place when the value has a
+//! field-wise projection (a record constructor, a component reference, or an
+//! array or comprehension of those) and otherwise held once in the field's
+//! record-valued local, so a field assigned whole and then updated field by
+//! field inside a branch is an ordinary sequence of local writes. Any other
+//! record-typed field becomes one record-valued local (`r.f.g` becomes
+//! `r__f.g`).
 //!
-//! A record that is read or written whole, or whose function returns early,
-//! keeps its source form and the existing record-assembly rules.
+//! A whole write of the record itself is expanded the same way, a value with
+//! no field-wise projection being held once in a fresh record-valued local.
+//! A whole read of a split record, or of a split field with no enclosing
+//! array, is reassembled by its record constructor from the current field
+//! locals (MLS §12.6), so a record a function builds from a call, updates
+//! inside branches and then returns or passes on is split too. A record whose
+//! function returns early, or whose whole reads cannot be reassembled, keeps
+//! its source form and the existing record-assembly rules.
 
 mod paths;
 
@@ -60,6 +69,15 @@ struct SplitRecord {
     def_id: rumoca_core::DefId,
     is_output: bool,
     fields: Vec<SplitField>,
+    /// The record value's declaration.
+    param: rumoca_core::FunctionParam,
+    /// The record constructor that reassembles a whole read of the value,
+    /// present whenever the body reads the value whole.
+    constructor: Option<rumoca_core::Reference>,
+    /// The record-valued local a whole write of a value with no field-wise
+    /// projection is held in; no other function value or split local uses
+    /// the name.
+    holder: String,
 }
 
 /// One field of a split record value.
@@ -77,6 +95,9 @@ struct SplitField {
     /// The fields of a split record-typed field, `None` for a field held in
     /// one local.
     fields: Option<Vec<SplitField>>,
+    /// The record constructor of a split record-typed field, which
+    /// reassembles a whole read of it.
+    constructor: Option<rumoca_core::Reference>,
     /// A split field the body writes both whole and through its fields.
     written_whole_and_by_field: bool,
 }
@@ -90,6 +111,18 @@ impl SplitField {
             &self.enclosing_shape,
             &self.param,
         )
+    }
+
+    /// Whether a whole read of this node can be reassembled: a field held
+    /// in one local, or one split record value (no enclosing or own array
+    /// axes) with a constructor whose split fields are reassembled in turn.
+    fn reconstructable(&self) -> bool {
+        self.fields.as_deref().is_none_or(|fields| {
+            self.enclosing.is_empty()
+                && self.rank() == 0
+                && self.constructor.is_some()
+                && fields.iter().all(Self::reconstructable)
+        })
     }
 
     /// The array rank this field adds to the columns below it.
@@ -110,6 +143,13 @@ impl<'tree> SplitNode<'tree> {
         match self {
             Self::Root(record) => &record.fields,
             Self::Field(field) => field.fields.as_deref().unwrap_or_default(),
+        }
+    }
+
+    fn constructor(self) -> Option<&'tree rumoca_core::Reference> {
+        match self {
+            Self::Root(record) => record.constructor.as_ref(),
+            Self::Field(field) => field.constructor.as_ref(),
         }
     }
 }
@@ -142,11 +182,11 @@ fn branch_assigned_records(
             let name = value.name.clone();
             let path = vec![name.clone()];
             let root = paths.uses(&path);
-            (assigns_every_field(&function.body, &name, &constructor.inputs)
-                && !root.read_whole
-                && !root.written_whole)
+            // A whole write defines every field; a whole read reassembles the
+            // value from its field locals through the constructor.
+            (root.written_whole || assigns_every_field(&function.body, &name, &constructor.inputs))
                 .then_some(())?;
-            let record = SplitRecord {
+            let mut record = SplitRecord {
                 def_id: value.def_id.filter(|id| id.index() != 0)?,
                 fields: split_fields(
                     &paths,
@@ -156,6 +196,9 @@ fn branch_assigned_records(
                     (&[], &[]),
                     &constructor.inputs,
                 )?,
+                param: value.clone(),
+                constructor: constructor_reference(constructor),
+                holder: String::new(),
                 name,
                 is_output,
             };
@@ -163,11 +206,51 @@ fn branch_assigned_records(
             collect_nodes(&record.fields, &mut |field| {
                 mixed |= field.written_whole_and_by_field
             });
-            ((mixed || assigns_field_in_nested_statement(&function.body, &record.name, false))
-                && !field_locals_collide(function, &record))
-            .then_some(record)
+            (mixed || assigns_field_in_nested_statement(&function.body, &record.name, false))
+                .then_some(())?;
+            (!field_locals_collide(function, &record)
+                && (!root.read_whole
+                    || record.constructor.is_some()
+                        && record.fields.iter().all(SplitField::reconstructable)))
+            .then_some(())?;
+            record.holder = fresh_holder_name(function, &record);
+            Some(record)
         })
         .collect()
+}
+
+/// A resolved reference to a record constructor, for a call that reassembles
+/// a split record value.
+fn constructor_reference(constructor: &rumoca_core::Function) -> Option<rumoca_core::Reference> {
+    Some(
+        rumoca_core::Reference::from_var_name(constructor.name.clone()).with_resolved_function(
+            rumoca_core::ResolvedFunctionReference {
+                instance_id: constructor.instance_id?,
+                base_part_count: 0,
+                transitively_non_replaceable: constructor.transitively_non_replaceable,
+            },
+        ),
+    )
+}
+
+/// `<record>__whole`, suffixed by the first ordinal that names no function
+/// value and no split local.
+fn fresh_holder_name(function: &rumoca_core::Function, record: &SplitRecord) -> String {
+    let mut taken = function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+        .map(|value| value.name.as_str())
+        .collect::<HashSet<_>>();
+    collect_nodes(&record.fields, &mut |field| {
+        taken.insert(field.local.as_str());
+    });
+    let base = format!("{}__whole", record.name);
+    std::iter::once(base.clone())
+        .chain((1..).map(|ordinal| format!("{base}{ordinal}")))
+        .find(|name| !taken.contains(name.as_str()))
+        .unwrap_or(base)
 }
 
 /// The constructor of a record value's type, when every field carries an
@@ -216,23 +299,33 @@ fn split_fields(
                 .cloned()
                 .collect::<Vec<_>>();
             let uses = paths.uses(&field_path);
+            // A node read whole splits only when its constructor can
+            // reassemble the read from the field locals.
             let nested = (field.type_class == Some(rumoca_core::ClassType::Record))
                 .then(|| record_constructor(constructors, field))
                 .flatten()
-                .filter(|_| !uses.read_whole && uses.written_below)
+                .filter(|_| uses.written_below)
                 .map(|constructor| {
-                    split_fields(
+                    let fields = split_fields(
                         paths,
                         constructors,
                         &field_path,
                         &local,
                         (&field_enclosing, &field_enclosing_shape),
                         &constructor.inputs,
-                    )
+                    );
+                    (fields, constructor_reference(constructor))
                 });
-            let fields = match nested {
-                Some(fields) => Some(fields?),
-                None => None,
+            let (fields, constructor) = match nested {
+                Some((fields, reference)) => (Some(fields?), reference),
+                None => (None, None),
+            };
+            let reconstructable = |fields: &[SplitField]| {
+                constructor.is_some() && fields.iter().all(SplitField::reconstructable)
+            };
+            let (fields, constructor) = match fields {
+                Some(fields) if uses.read_whole && !reconstructable(&fields) => (None, None),
+                fields => (fields, constructor),
             };
             Some(SplitField {
                 param: field.clone(),
@@ -242,6 +335,7 @@ fn split_fields(
                 enclosing_shape: enclosing.1.to_vec(),
                 written_whole_and_by_field: fields.is_some() && uses.written_whole,
                 fields,
+                constructor,
             })
         })
         .collect()
@@ -341,12 +435,15 @@ fn split_record(
         function_name: function.name.as_str(),
         aggregate_values: &aggregate_values,
         value_locals: Vec::new(),
+        root_held: false,
     };
     let expanded = expander.expand(&function.body)?;
-    let value_locals = expander
-        .value_locals
-        .iter()
-        .map(|node| node.local_param())
+    let root_holder = expander
+        .root_held
+        .then(|| record_field_column_param(record.holder.clone(), &[], &[], &record.param));
+    let value_locals = root_holder
+        .into_iter()
+        .chain(expander.value_locals.iter().map(|node| node.local_param()))
         .collect::<Vec<_>>();
     let mut body = SplitRewriter { record }.rewrite_statements(&expanded);
     let mut locals = Vec::new();

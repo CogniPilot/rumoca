@@ -213,6 +213,11 @@ struct ColumnSubscripts {
 }
 
 impl ColumnSubscripts {
+    /// Whether the path crosses no enclosing array of records.
+    fn is_empty(&self) -> bool {
+        self.selected.is_empty() && self.pending.is_empty()
+    }
+
     fn push(&mut self, subs: &[rumoca_core::Subscript], rank: usize, span: Span) {
         self.extend(subs);
         self.pending
@@ -289,8 +294,9 @@ fn land<'tree, 'path>(
 /// A value with a field-wise projection is projected in place. Any other
 /// value (a function call, a conditional expression, a call result) is first
 /// written whole to the node's own record-valued local, named like the
-/// node's field prefix, and the node's fields are projected from that local,
-/// so the value is evaluated exactly once.
+/// node's field prefix (the record's holder for the root), and the node's
+/// fields are projected from that local, so the value is evaluated exactly
+/// once.
 pub(super) struct WholeWriteExpander<'record> {
     pub(super) record: &'record SplitRecord,
     pub(super) function_name: &'record str,
@@ -298,6 +304,8 @@ pub(super) struct WholeWriteExpander<'record> {
     /// Split nodes whose record-valued local holds a whole value, in first
     /// use order.
     pub(super) value_locals: Vec<&'record SplitField>,
+    /// Whether the record's holder holds a whole value of the root.
+    pub(super) root_held: bool,
 }
 
 impl<'record> WholeWriteExpander<'record> {
@@ -429,35 +437,43 @@ impl<'record> WholeWriteExpander<'record> {
         Ok(Some(local))
     }
 
-    /// The split field node a target names whole, and the reference to the
-    /// node's record-valued local at the same element selection.
+    /// The split node a target names whole, and the reference to the node's
+    /// record-valued local at the same element selection.
     fn split_node(
         &self,
         comp: &ComponentReference,
-    ) -> Option<(&'record SplitField, ComponentReference)> {
-        let Landing::Node(SplitNode::Field(node), columns) =
+    ) -> Option<(SplitNode<'record>, ComponentReference)> {
+        let Landing::Node(node, columns) =
             land(self.record, comp.parts(), &mut |subs| subs.to_vec())?
         else {
             return None;
         };
         let span = comp.span();
-        let local = part(&node.local, node.def_id, columns.finish(&[]), span);
+        let local = match node {
+            SplitNode::Root(record) => part(&record.holder, record.def_id, Vec::new(), span),
+            SplitNode::Field(field) => part(&field.local, field.def_id, columns.finish(&[]), span),
+        };
         Some((node, reference(false, span, vec![local])))
     }
 
     /// Declare `node`'s record-valued local and read it at `local`.
     fn hold(
         &mut self,
-        node: &'record SplitField,
+        node: SplitNode<'record>,
         local: &ComponentReference,
         span: Span,
     ) -> Expression {
-        if !self
-            .value_locals
-            .iter()
-            .any(|held| std::ptr::eq(*held, node))
-        {
-            self.value_locals.push(node);
+        match node {
+            SplitNode::Root(_) => self.root_held = true,
+            SplitNode::Field(node) => {
+                if !self
+                    .value_locals
+                    .iter()
+                    .any(|held| std::ptr::eq(*held, node))
+                {
+                    self.value_locals.push(node);
+                }
+            }
         }
         Expression::VarRef {
             name: rumoca_core::Reference::with_component_reference(
@@ -472,12 +488,12 @@ impl<'record> WholeWriteExpander<'record> {
     /// `node := value` as `node.f := value.f` for every field `f` of the node.
     fn field_writes(
         &self,
-        node: &SplitField,
+        node: SplitNode<'_>,
         comp: &ComponentReference,
         value: &Expression,
         span: Span,
     ) -> Result<Vec<Statement>, FlattenError> {
-        let fields = node.fields.as_deref().unwrap_or_default();
+        let fields = node.fields();
         let params = fields
             .iter()
             .map(|field| field.param.clone())
@@ -568,6 +584,13 @@ impl ExpressionRewriter for SplitRewriter<'_> {
         let Some(landing) = self.land_path(&path.parts) else {
             return self.walk_expression(expr);
         };
+        if let Landing::Node(node, columns) = &landing
+            && columns.is_empty()
+            && path.trailing.is_empty()
+            && let Some(value) = reassembled(*node, expr.span().unwrap_or(path.parts[0].span))
+        {
+            return value;
+        }
         let Some((parts, subscripts)) = self.local_parts(landing, &path.trailing) else {
             return self.walk_expression(expr);
         };
@@ -602,4 +625,30 @@ impl StatementRewriter for SplitRewriter<'_> {
         }
         reference(false, comp.span(), parts)
     }
+}
+
+/// A whole read of a split record node, reassembled through its constructor
+/// from the current values of its field locals (MLS §12.6). Admission splits
+/// a node read whole only when [`SplitField::reconstructable`] holds, so every
+/// node below it has a constructor and no array axes.
+fn reassembled(node: SplitNode<'_>, span: Span) -> Option<Expression> {
+    let args = node
+        .fields()
+        .iter()
+        .map(|field| match field.fields {
+            Some(_) => reassembled(SplitNode::Field(field), span),
+            None => Some(local_reference(
+                &field.local,
+                field.def_id,
+                Vec::new(),
+                span,
+            )),
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Expression::FunctionCall {
+        name: node.constructor()?.clone(),
+        args,
+        is_constructor: true,
+        span,
+    })
 }
