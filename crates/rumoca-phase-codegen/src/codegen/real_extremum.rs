@@ -1,4 +1,4 @@
-//! Real `min`/`max` (SPEC_0040 SOLVE-C65) in every generated language.
+//! Real `min`/`max` (SPEC_0040 SOLVE-C66) in every generated language.
 //!
 //! The rule is written once, as [`rule`], and printed per language, so each
 //! target defines `rumoca_real_min`/`rumoca_real_max` helpers with the value
