@@ -1603,3 +1603,48 @@ fn a_duplicate_variable_name_is_refused() {
             if key == "x" && span == second.span()
     ));
 }
+
+/// A walk nested in another walk's visitor must not size a stamp table to the
+/// arena again: a query from inside a visitor is the shape that made a
+/// multi-root query cost roots times arena.
+#[test]
+fn nested_expression_walks_reuse_their_stamp_tables() {
+    use crate::expr_query::STAMP_TABLE_GROWTHS;
+
+    let source = TestSource::new("1 + 1 + 1 + 1");
+    let at = source.source("1 + 1 + 1 + 1", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let mut sum = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            for _ in 0..64 {
+                let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+                sum = expressions.at(at).binary(BinaryOperator::Add, sum, one)?;
+            }
+            Ok(())
+        })
+    })
+    .expect("expression construction succeeds");
+
+    dae.inspect(|view| {
+        let root = view.expression_id(view.expression_count() - 1).expect("root");
+        let before = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get);
+        let mut inner_visits = 0usize;
+        for _ in 0..50 {
+            for_each_expression_pruned(view, root, |outer, _| {
+                // Each outer node starts a nested walk and a doubly nested one.
+                for_each_expression_pruned(view, outer, |nested, _| {
+                    for_each_expression_pruned(view, nested, |_, _| {
+                        inner_visits += 1;
+                        true
+                    });
+                    true
+                });
+                true
+            });
+        }
+        assert!(inner_visits > 0);
+        let growths = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get) - before;
+        // One table per nesting depth, sized once; none per query.
+        assert!(growths <= 3, "stamp tables grew {growths} times");
+    });
+}
