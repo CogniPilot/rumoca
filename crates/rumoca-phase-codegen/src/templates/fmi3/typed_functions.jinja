@@ -42,6 +42,20 @@ if (!fold_done)
 if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
 {% for binder in op.domain.binders %} } {% endfor %}
 }
+{% elif op.operation == "map" -%}
+{#- One body call per domain point in row-major order, writing its element. -#}
+{
+size_t map_point=0;
+{% for binder in op.domain.binders -%}
+{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower)//binder.step + 1 -%}
+int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
+for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
+{% endfor -%}
+if ({{ region_name }}_map((const void*[]){ {% for input in op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ r{{ op.destination }} + map_point*{{ op.body.outputs[0].scalar_count }} })) return 1;
+++map_point;
+{% for binder in op.domain.binders %} } {% endfor %}
+}
 {% else -%}
 {{ tensor(op, program) -}}
 {% endif -%}
@@ -54,6 +68,8 @@ if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op
 {% if op.operation == "conditional" -%}
 {{ definition(op.if_true.body, child ~ "_true", prefix) -}}
 {{ definition(op.if_false.body, child ~ "_false", prefix) -}}
+{% elif op.operation == "map" -%}
+{{ definition(op.body.body, child ~ "_map", prefix) -}}
 {% elif op.operation == "fold" -%}
 {{ definition(op.transition.body, child ~ "_fold", prefix) -}}
 {% if op.continuation -%}

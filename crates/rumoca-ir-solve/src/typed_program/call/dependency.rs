@@ -2,6 +2,7 @@
 
 pub(in crate::typed_program) mod affinity;
 mod coordinates;
+mod map_access;
 mod operations;
 pub(in crate::typed_program) mod value_projection;
 
@@ -85,8 +86,10 @@ pub(in crate::typed_program) fn derive(
         });
     }
     let mut registers = vec![Vec::new(); body.register_types().len()];
+    let mut integers = map_access::IntegerValues::new(body.register_types().len());
     for spanned in body.operations() {
         let operation = spanned.operation();
+        integers.track(operation);
         match operation {
             SolveOperation::Load { destination, slot } => {
                 registers[destination.index()] = slots[slot.index()].clone();
@@ -107,6 +110,23 @@ pub(in crate::typed_program) fn derive(
                     available,
                     spanned.provenance(),
                 )?;
+            }
+            SolveOperation::Map {
+                domain,
+                captures,
+                destination,
+                body: region,
+            } => {
+                let captured = captures
+                    .iter()
+                    .map(|capture| (registers[capture.index()].clone(), integers.value(*capture)))
+                    .collect::<Vec<_>>();
+                match map_access::derive(domain, &captured, region, spanned.provenance()) {
+                    Some(dependencies) => registers[destination.index()] = dependencies,
+                    None => {
+                        operations::derive(body, operation, &mut registers, spanned.provenance())?;
+                    }
+                }
             }
             operation => operations::derive(body, operation, &mut registers, spanned.provenance())?,
         }

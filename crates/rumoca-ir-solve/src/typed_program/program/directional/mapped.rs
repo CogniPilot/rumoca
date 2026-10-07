@@ -1,4 +1,10 @@
-//! Replay one map iteration into a compact fold carrying its primal and tangent.
+//! The directional form of one map.
+//!
+//! A scalar-bodied map stays pointwise: its primal and its tangent are each
+//! one map over the source domain whose body replays the iteration and keeps
+//! its lane, so every element's dependencies remain the elements its body
+//! reads. A map with an aggregate body replays its iterations into a compact
+//! fold carrying the primal and the tangent.
 
 use super::*;
 
@@ -12,6 +18,24 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         provenance: Span,
     ) -> Result<(), SolveProgramConstructionError> {
         let value_type = self.primal.register_types()[destination.index()].clone();
+        let body_type = body.outputs()[0].clone();
+        if body_type.dimensions().is_empty() {
+            let captures = self.expanded_registers(captures, provenance)?;
+            let lanes = if is_real(&value_type) { 2 } else { 1 };
+            let available = self.available;
+            let mut results = Vec::with_capacity(lanes);
+            for lane in 0..lanes {
+                results.push(lane_map(
+                    self.builder,
+                    domain,
+                    &captures,
+                    body,
+                    lane,
+                    available,
+                )?);
+            }
+            return self.bind_expanded(&[destination], &results, provenance);
+        }
         let initial = empty_map_value(self.builder, &value_type, provenance)?;
         let initial = if is_real(&value_type) {
             vec![initial, initial]
@@ -42,6 +66,33 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )?;
         self.bind_expanded(&[destination], &result, provenance)
     }
+}
+
+/// One lane (primal 0, tangent 1) of a scalar-bodied map's directional form.
+fn lane_map<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    domain: &StructuredIndexDomain,
+    captures: &[ProgramRegister<'program>],
+    body: &SolveProgramRegion,
+    lane: usize,
+    available: SolvePureCallTableView<'_>,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let provenance = body.provenance();
+    builder.map(
+        domain.clone(),
+        captures,
+        body.outputs()[0].clone(),
+        provenance,
+        |builder, captures, binders, output| {
+            let mut inputs = captures.to_vec();
+            inputs.extend_from_slice(binders);
+            let values = replay_iteration(builder, body, &inputs, available)?;
+            let value = values
+                .get(lane)
+                .ok_or(SolveProgramConstructionError::InvalidMap { provenance })?;
+            builder.store(output, *value, provenance)
+        },
+    )
 }
 
 fn store_iteration_results<'program>(
