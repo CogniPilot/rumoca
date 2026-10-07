@@ -590,6 +590,7 @@ fn lower_conditional_statements<'dae>(
             construction,
             body,
             symbols,
+            binders,
             &statements[index..],
             &plans[index],
             &mut state.values,
@@ -713,6 +714,7 @@ fn lower_conditional_record_assembly<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     statements: &[rumoca_core::Statement],
     plan: &FunctionStatementPlan,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
@@ -721,8 +723,14 @@ fn lower_conditional_record_assembly<'dae>(
         return Ok(None);
     };
     let count = assembly.statement_count;
-    let (_, record, _) =
-        lower_function_record_value(construction, symbols, body, &statements[..count], assembly)?;
+    let (_, record, _) = lower_function_record_value(
+        construction,
+        symbols,
+        body,
+        binders,
+        &statements[..count],
+        assembly,
+    )?;
     values.insert(assembly.target.clone(), record);
     Ok(Some(count))
 }
@@ -1352,6 +1360,7 @@ fn lower_function_loop_statements<'dae>(
                 construction,
                 symbols,
                 &mut loop_body,
+                binders,
                 &statements[index..index + count],
                 assembly,
             )?;

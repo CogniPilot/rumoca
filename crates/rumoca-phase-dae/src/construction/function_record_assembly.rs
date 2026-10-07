@@ -10,7 +10,7 @@ pub(super) fn lower_function_record_assembly<'dae>(
     plan: &FunctionRecordAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
     let (target, record, generated) =
-        lower_function_record_value(construction, symbols, body, source, plan)?;
+        lower_function_record_value(construction, symbols, body, &HashMap::new(), source, plan)?;
     construction.functions(|functions| functions.assign(body, target, record, generated))
 }
 
@@ -18,18 +18,29 @@ pub(super) fn lower_function_loop_record_assembly<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     source: &[rumoca_core::Statement],
     plan: &FunctionRecordAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
-    let (target, record, generated) =
-        lower_function_record_value(construction, symbols, loop_body.body(), source, plan)?;
+    let (target, record, generated) = lower_function_record_value(
+        construction,
+        symbols,
+        loop_body.body(),
+        binders,
+        source,
+        plan,
+    )?;
     construction.functions(|functions| functions.assign_loop(loop_body, target, record, generated))
 }
 
+/// The record `plan` assembles from `source`, with every member expression
+/// lowered in the scope of the enclosing loop `binders` (empty at the
+/// function's top level).
 pub(super) fn lower_function_record_value<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     body: &dae::FunctionBody<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     source: &[rumoca_core::Statement],
     plan: &FunctionRecordAssemblyPlan,
 ) -> Result<
@@ -68,7 +79,7 @@ pub(super) fn lower_function_record_value<'dae>(
                 values: Some(&staged_values),
                 owner_clock: None,
             },
-            &HashMap::new(),
+            binders,
             &value,
             None,
         )?);

@@ -255,3 +255,48 @@ fn a_nested_record_carry_is_rejected_by_a_coded_and_spanned_diagnostic() {
         "the rejection must carry an honest source span"
     );
 }
+
+/// `p` is rebuilt field by field on every iteration, which is one record
+/// assembly per iteration rather than a whole assignment, and read only after
+/// the loop. With `x = 1` the last iteration stores `a = 4`, `b = 5` and
+/// OpenModelica evaluates `y` to `9.0`.
+const ASSEMBLED_RECORD_CARRY: &str = r#"
+model ObserveAssembledRecordCarry
+  record P
+    Real a;
+    Real b;
+  end P;
+
+  function acc
+    input Real r[4];
+    output Real y;
+  protected
+    P p;
+  algorithm
+    p := P(-1, -1);
+    for i in 1:4 loop
+      p.a := r[i];
+      p.b := r[i] + 1;
+    end for;
+    y := p.a + p.b;
+  end acc;
+
+  Real x(start = 1.0, fixed = true);
+  Real y;
+equation
+  der(x) = 0;
+  y = acc({x, 2 * x, 3 * x, 4 * x});
+end ObserveAssembledRecordCarry;
+"#;
+
+#[test]
+fn a_record_assembled_field_by_field_in_a_loop_keeps_its_last_assembly() {
+    assert_eq!(
+        simulated_output(
+            ASSEMBLED_RECORD_CARRY,
+            "ObserveAssembledRecordCarry",
+            "ObserveAssembledRecordCarry.mo",
+        ),
+        9.0
+    );
+}
