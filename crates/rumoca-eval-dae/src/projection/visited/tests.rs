@@ -30,7 +30,7 @@ fn compare_all_lexical_keys(
                 let key = ScalarExpressionDependency {
                     activation: crate::projection::Activation::Guaranteed,
                     expression,
-                    field,
+                    field: field.map(crate::projection::FieldPath::Field),
                     scalar,
                     domain_context: context,
                 };
@@ -97,7 +97,7 @@ fn fold_node_clear_replays_membership_without_carrying_previous_node_addresses()
             let key = ScalarExpressionDependency {
                 activation: crate::projection::Activation::Guaranteed,
                 expression,
-                field,
+                field: field.map(crate::projection::FieldPath::Field),
                 scalar,
                 domain_context: Default::default(),
             };
@@ -116,7 +116,7 @@ fn fold_node_clear_replays_membership_without_carrying_previous_node_addresses()
         let key = ScalarExpressionDependency {
             activation: crate::projection::Activation::Guaranteed,
             expression,
-            field,
+            field: field.map(crate::projection::FieldPath::Field),
             scalar,
             domain_context: Default::default(),
         };
@@ -260,7 +260,7 @@ fn activation_retains_dense_scoped_and_sparse_membership_in_both_orders() {
                 let key = ScalarExpressionDependency {
                     activation,
                     expression,
-                    field,
+                    field: field.map(crate::projection::FieldPath::Field),
                     scalar,
                     domain_context: DomainContextId::test_identity(context),
                 };

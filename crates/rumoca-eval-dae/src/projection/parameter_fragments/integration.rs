@@ -1,11 +1,12 @@
 use super::*;
+use crate::projection::FieldPath;
 use crate::projection::{FunctionFrame, Projection, ProjectionError, fold_graph};
 
 impl<'dae> Projection<'_, 'dae> {
     pub(in crate::projection) fn begin_parameter_fragment(
         &mut self,
         expression: dae::ExprId<'dae>,
-        field: Option<usize>,
+        field: Option<FieldPath>,
         scalar: usize,
     ) -> Start {
         #[cfg(test)]
@@ -19,7 +20,7 @@ impl<'dae> Projection<'_, 'dae> {
         let key = ScalarExpressionDependency {
             activation: self.activation,
             expression: expression.index(),
-            field,
+            field: field.clone(),
             scalar,
             domain_context: self.expression_domain_context(expression),
         };
@@ -120,7 +121,7 @@ impl<'dae> Projection<'_, 'dae> {
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         carried: u32,
-        field: Option<usize>,
+        field: Option<FieldPath>,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         let transition = self

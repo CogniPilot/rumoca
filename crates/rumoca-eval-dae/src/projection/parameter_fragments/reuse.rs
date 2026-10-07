@@ -2,14 +2,14 @@
 use crate::projection::HashMap;
 use std::sync::Arc;
 
-use crate::projection::{FunctionParameterDependency, domain_context::Context};
+use crate::projection::{FieldPath, FunctionParameterDependency, domain_context::Context};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(in crate::projection) struct Key {
     pub(in crate::projection) activation: crate::projection::Activation,
     pub(in crate::projection) function: u32,
     pub(in crate::projection) expression: u32,
-    pub(in crate::projection) field: Option<usize>,
+    pub(in crate::projection) field: Option<FieldPath>,
     pub(in crate::projection) scalar: usize,
     pub(in crate::projection) parent: Arc<Context>,
 }

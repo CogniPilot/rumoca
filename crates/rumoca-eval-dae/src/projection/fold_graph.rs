@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use rumoca_ir_dae as dae;
 
-use super::FunctionParameterDependency;
 use super::dependencies::OrderedDependencies;
 use super::domain_context::Context;
+use super::{FieldPath, FunctionParameterDependency};
 
 /// One source transition at an exact lexical parent environment. The selected
 /// initial/update expressions retain the construction-issued read versions.
@@ -17,7 +17,7 @@ pub(super) struct FoldNode<'dae> {
     pub(super) activation: super::Activation,
     pub(super) fold: dae::FunctionFoldId<'dae>,
     pub(super) carried: u32,
-    pub(super) field: Option<usize>,
+    pub(super) field: Option<FieldPath>,
     pub(super) scalar: usize,
     pub(super) initial: dae::ExprId<'dae>,
     pub(super) update: dae::ExprId<'dae>,

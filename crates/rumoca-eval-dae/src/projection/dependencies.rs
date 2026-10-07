@@ -45,13 +45,13 @@ mod tests {
         let c = FunctionParameterDependency::RecordField {
             activation: crate::projection::Activation::Guaranteed,
             parameter: 0,
-            field: 0,
+            field: crate::projection::FieldPath::Field(0),
             scalar: 11,
         };
         let d = FunctionParameterDependency::RecordField {
             activation: crate::projection::Activation::Guaranteed,
             parameter: 0,
-            field: 1,
+            field: crate::projection::FieldPath::Field(1),
             scalar: 11,
         };
         let e = FunctionParameterDependency::Scalar {

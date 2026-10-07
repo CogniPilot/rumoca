@@ -220,39 +220,17 @@ fn a_record_carry_with_an_array_field_keeps_its_last_write() {
 }
 
 #[test]
-fn a_nested_record_carry_is_rejected_by_a_coded_and_spanned_diagnostic() {
-    let compiled = Compiler::new()
-        .model("ObserveNestedRecordCarry")
-        .compile_str(NESTED_RECORD_CARRY, "ObserveNestedRecordCarry.mo")
-        .expect("a nested loop-carried record must reach Solve lowering");
-    let error = simulate_dae_with_diagnostics(
-        &compiled.dae,
-        &SimOptions {
-            t_end: 1.0,
-            ..SimOptions::default()
-        },
-    )
-    .expect_err("a nested loop-carried record is outside per-field projection");
-    assert_eq!(
-        error.diagnostic_code(),
-        "EL005",
-        "the rejection must carry its stable SPEC_0008 code: {error}"
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("Inner.u"),
-        "the rejection must name the field it could not read: {message}"
+fn a_nested_record_carry_keeps_its_last_write() {
+    // The carried record's inner field is projected through its enclosing
+    // record: y = r[4] + (r[4] + 1) with r[4] = x + 3 = 4.
+    let y = simulated_output(
+        NESTED_RECORD_CARRY,
+        "ObserveNestedRecordCarry",
+        "ObserveNestedRecordCarry.mo",
     );
     assert!(
-        message.contains("a field of an enclosing record"),
-        "the rejection must name the construct it could not look through: {message}"
-    );
-    let span = error
-        .source_span()
-        .expect("the rejection must point at source, not at compiler internals");
-    assert!(
-        !span.is_dummy(),
-        "the rejection must carry an honest source span"
+        (y - 9.0).abs() < 1.0e-12,
+        "expected 9.0 from the last iteration's nested record, got {y}"
     );
 }
 

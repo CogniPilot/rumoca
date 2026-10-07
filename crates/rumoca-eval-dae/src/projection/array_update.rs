@@ -27,7 +27,7 @@ impl<'dae> Projection<'_, 'dae> {
         base: dae::ExprId<'dae>,
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
-        field: usize,
+        field: &FieldPath,
         scalar: usize,
     ) -> Result<(), ProjectionError> {
         let width = self.record_field_width(base, field);

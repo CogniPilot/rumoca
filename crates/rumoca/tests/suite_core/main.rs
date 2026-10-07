@@ -215,6 +215,7 @@ mod native_linear_solve;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
 mod nested_loop_conditional;
+mod nested_record_field_projection;
 mod nested_record_function_redeclaration;
 mod neural_ode_tensor_solve_ir;
 mod no_derivative_state_selection;
