@@ -2,6 +2,7 @@
 
 mod assertions;
 mod captures;
+mod family_owner;
 mod folds;
 pub(crate) mod formal_stages;
 mod indexed_slices;
@@ -19,6 +20,7 @@ mod total_conditionals;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
 use indexed_values::leading_index_axes;
+pub(crate) use family_owner::AlgebraicFamilyForm;
 use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
@@ -315,6 +317,8 @@ struct CallRegistration<'dae> {
     reserved: Option<solve::SolvePureCallIdentity>,
     next: u64,
     calls: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    /// SOLVE-C70 owners, keyed by the DAE family they lower.
+    families: HashMap<dae::ContinuousFamilyId<'dae>, solve::SolvePureCallSite>,
     /// Functions whose call SCC was already examined for a SOLVE-C62 group.
     examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
 }
@@ -325,6 +329,7 @@ impl CallRegistration<'_> {
             reserved,
             next: 1,
             calls: HashMap::new(),
+            families: HashMap::new(),
             examined_functions: std::collections::HashSet::new(),
         }
     }
@@ -614,6 +619,37 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     /// Whether each expression evaluates without failure or effect (see
     /// `total_conditionals`).
     totality: HashMap<dae::ExprId<'dae>, bool>,
+}
+
+impl<'builder, 'program, 'dae> ExpressionLowerer<'builder, 'program, 'dae> {
+    /// A lowerer for an owner body over captured model coordinates alone: no
+    /// function parameters, definitions, folds, or nested calls.
+    fn for_model_coordinates(
+        view: dae::DaeView<'dae>,
+        builder: &'builder mut solve::TypedProgramBuilder<'program>,
+        model_coordinates: HashMap<ModelCoordinateKey<'dae>, LoweredValue<'program, 'dae>>,
+    ) -> Self {
+        Self {
+            view,
+            builder,
+            model_coordinates,
+            parameters: HashMap::new(),
+            function_values: HashMap::new(),
+            conditional_groups: HashMap::new(),
+            fold_parameters: HashMap::new(),
+            fold_values: HashMap::new(),
+            binders: HashMap::new(),
+            callees: HashMap::new(),
+            predicate_ranges: HashMap::new(),
+            cache: HashMap::new(),
+            call_values: HashMap::new(),
+            predicate_values: Vec::new(),
+            assertion_slots: std::sync::Arc::from([]),
+            next_direct_assertion: 0,
+            direct_assertion_count: 0,
+            totality: HashMap::new(),
+        }
+    }
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {

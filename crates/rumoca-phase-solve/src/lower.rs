@@ -10,6 +10,7 @@ use rumoca_phase_structural::{self as structural, BltBlock, EquationRef, Unknown
 use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
+mod algebraic_family;
 pub(crate) mod call_scoped_actions;
 pub(crate) mod clock_ownership;
 mod clocks;
@@ -529,7 +530,7 @@ fn lower_continuous<'dae>(
                     row += 1;
                 }
             }
-            dae::ContinuousOwnerView::Structured { family, .. } => {
+            dae::ContinuousOwnerView::Structured { id, family } => {
                 let count = family.scalar_rows() as usize;
                 let mut owner_rows = row..checked_ordinal_add(
                     row,
@@ -551,7 +552,18 @@ fn lower_continuous<'dae>(
                         family.provenance().span(),
                     ));
                 }
-                row = lower_continuous_family(context, &mut output, row, family)?;
+                let end = owner_rows.end;
+                row = if algebraic_family::lower_algebraic_family_call(
+                    context,
+                    &mut output,
+                    row,
+                    id,
+                    family,
+                )? {
+                    end
+                } else {
+                    lower_continuous_family(context, &mut output, row, family)?
+                };
             }
         }
         owner_index += 1;

@@ -6,6 +6,7 @@ pub(in crate::lower) use call_scoped_actions::action_kind;
 mod conditions;
 mod constants;
 mod coordinates;
+mod family_calls;
 mod functions;
 mod literal_values;
 mod operators;

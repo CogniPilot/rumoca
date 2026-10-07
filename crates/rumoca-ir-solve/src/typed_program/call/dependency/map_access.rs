@@ -1,4 +1,4 @@
-//! Element-exact dependencies of a pointwise map (SPEC_0040 SOLVE-C68).
+//! Element-exact dependencies of a pointwise map (SPEC_0040 SOLVE-C70).
 //!
 //! A map body that reads its captured aggregates only at Integer coordinates
 //! affine in the map binders (and in the binders of maps nested inside it,
