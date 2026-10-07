@@ -123,3 +123,32 @@ fn fields_of_record_fields_project_through_the_enclosing_record() {
         }
     });
 }
+
+fn value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
+    report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name.replace(' ', "") == name)
+        .unwrap_or_else(|| panic!("missing solver value {name}: {:?}", report.solver_y))
+        .value
+}
+
+/// Solve lowering reads each continuous scalar of a record output bound to a
+/// function result through the nested field paths, including the columns of
+/// an array-of-records field the function fills in a loop.
+#[test]
+fn nested_record_function_results_lower_field_by_field() {
+    let source = SOURCE.replace(
+        "  input Real w;\n  output P.State s = P.Seed(w);",
+        "  parameter Real w = 1.5;\n  output P.State s = P.Seed(w);\n  output Real y = s.identity.weight + s.edges[3].r[1] + s.edges[1].r[2];",
+    );
+    let compiled = Compiler::new()
+        .model("NestedFieldProjection")
+        .compile_str(&source, "NestedFieldProjection.mo")
+        .expect("a record output bound to a function result compiles");
+    let probe =
+        rumoca_sim::eval_dae_at(&compiled.dae, &rumoca_sim::SimOptions::default(), &[], 0.0)
+            .expect("nested record fields of a function result lower");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    assert_eq!(value(&probe.report, "y"), 1.5 + 4.5 + 2.0);
+}

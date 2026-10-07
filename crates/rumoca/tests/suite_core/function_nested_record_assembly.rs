@@ -192,10 +192,13 @@ fn record_field_written_whole_then_by_field_assembles() {
     let source = nested_function(
         "  result.birth := Birth(g, 1);\n  result.birth.epoch := 2;\n  result.time := 0.0;",
     );
-    Compiler::new()
+    let compiled = Compiler::new()
         .model("ObserveBuild")
         .compile_str(&source, "ObserveBuild.mo")
         .expect("a nested field update of a whole-assigned record is split into field locals");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("a nested record output of a function call lowers field by field");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
 }
 
 #[test]
