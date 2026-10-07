@@ -2503,3 +2503,14 @@ fn first_model_span(view: dae::DaeView<'_>) -> Span {
     view.responsible_span()
         .expect("nonempty checked DAE has responsible provenance")
 }
+
+/// The number of factors of a literal Integer exponent that every lowering of
+/// `x ^ n` evaluates as a product of `x` (`x*x`, `x*x*x`), so a scalar row, a
+/// typed call body, and a synthesized family owner round alike.
+const fn product_power_factors(exponent: i64) -> Option<u8> {
+    match exponent {
+        2 => Some(2),
+        3 => Some(3),
+        _ => None,
+    }
+}
