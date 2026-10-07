@@ -771,3 +771,42 @@ fn a_record_array_field_copied_whole_into_an_output_record_is_copied_by_column()
     // Reset to revision 1, whose second edge is the empty one, accepted.
     assert_eq!(value(&probe.report, "b"), 1000.0 + 0.5);
 }
+
+/// MLS 3.7 section 8.3.1: a whole-record equation whose value is a record
+/// constructor nested in another equates every leaf field with the matching
+/// field of the nested constructor, through the scalar record-lane path.
+const NESTED_RECORD_EQUATION: &str = r#"
+record Part
+  Real a;
+  Real b[2];
+end Part;
+record Wrap
+  Part part;
+  Real c;
+end Wrap;
+model M
+  parameter Real u = 2;
+  Wrap o;
+  Real y = o.part.b[1] + o.c + o.part.a;
+  Real z(start = 0);
+equation
+  o = Wrap(Part(u, {u + 1, 5}), 7);
+  der(z) = -z + o.part.b[2];
+end M;
+"#;
+
+#[test]
+fn a_record_equation_over_a_nested_constructor_projects_each_lane() {
+    let compiled = Compiler::new()
+        .model("M")
+        .compile_str(NESTED_RECORD_EQUATION, "NestedRecordEquation.mo")
+        .expect("a nested record constructor equation compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the nested record equation DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    assert_eq!(value(&probe.report, "o.part.a"), 2.0);
+    assert_eq!(value(&probe.report, "o.part.b[1]"), 3.0);
+    assert_eq!(value(&probe.report, "o.part.b[2]"), 5.0);
+    assert_eq!(value(&probe.report, "o.c"), 7.0);
+    assert_eq!(value(&probe.report, "y"), 12.0);
+}
