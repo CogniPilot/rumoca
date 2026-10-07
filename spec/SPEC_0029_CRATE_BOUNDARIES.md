@@ -29,12 +29,6 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 contain only data types, display/debug implementations, and serde
 serialization. No evaluation logic, phase logic, or side effects.
 
-Types decoded from a positional binary cache (parsed `rumoca-ir-ast`
-artifacts, `rumoca-compile` persisted summaries, source maps) MUST NOT omit
-fields by value (`skip_serializing_if`): a positional reader cannot detect the
-omission. Format-dependent omission belongs in an explicit `Serialize` keyed
-on `is_human_readable`.
-
 Every source-language parser, generated grammar, recoverable CST, parser state,
 and syntax diagnostic belongs in a `rumoca-phase-parse*` crate. IR crates MUST
 NOT contain or feature-gate source parsers. Current-version wire replay through

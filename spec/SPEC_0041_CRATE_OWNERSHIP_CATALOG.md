@@ -90,6 +90,12 @@ import that path.
 | package-membership / namespace state | DAE-IR artifacts |
 | model names, class dependency graphs, dependency fingerprints | solve-IR artifacts |
 
+Persisted cache types (parsed `rumoca-ir-ast` artifacts, `rumoca-compile`
+persisted summaries, source maps) are decoded positionally and MUST NOT omit
+fields by value (`skip_serializing_if`): a positional reader cannot detect the
+omission. Format-specific omission belongs in an explicit `Serialize` keyed on
+`is_human_readable`, as `rumoca-ir-solve` does for its human-readable wire.
+
 ### 4. Layering Ownership Catalog (SPEC_0029 §12)
 
 | Rule | Owner | Why |

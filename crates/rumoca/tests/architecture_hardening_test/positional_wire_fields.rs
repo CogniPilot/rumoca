@@ -4,7 +4,7 @@ use std::fs;
 /// Source files whose serde types are decoded from a positional binary cache:
 /// parsed `StoredDefinition` artifacts, persisted semantic summaries, and
 /// source maps. A positional reader cannot detect a field omitted by value, so
-/// these types never use `skip_serializing_if` (SPEC_0029 §3).
+/// these types never use `skip_serializing_if` (SPEC_0041 §3).
 const POSITIONALLY_DECODED_FILES: &[&str] = &[
     "crates/rumoca-ir-ast/src/lib.rs",
     "crates/rumoca-ir-ast/src/nodes.rs",
