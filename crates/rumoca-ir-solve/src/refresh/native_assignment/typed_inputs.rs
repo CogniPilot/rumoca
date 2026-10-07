@@ -86,6 +86,7 @@ impl NativeRefreshAssignmentStage {
 /// The typed input lanes of one problem and the P slots they rebind.
 pub(super) struct TypedInputs {
     pub(super) lanes: Vec<NativeInputLane>,
+    /// The input lane region, a multiple of 8 bytes.
     pub(super) lane_bytes: usize,
 }
 
@@ -127,7 +128,11 @@ impl TypedInputs {
                 lane_bytes += lane.lane.width();
             }
         }
-        Ok(Self { lanes, lane_bytes })
+        // Padded so the output lanes that follow start 8-byte aligned.
+        Ok(Self {
+            lanes,
+            lane_bytes: lane_bytes.next_multiple_of(8),
+        })
     }
 
     /// The Integer lane offset of an Integer input's P slot.

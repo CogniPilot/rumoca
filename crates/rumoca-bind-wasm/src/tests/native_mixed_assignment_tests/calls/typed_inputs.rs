@@ -205,3 +205,19 @@ fn an_integer_input_also_passed_as_a_real_argument_is_checked() {
     execution.set_input("count", (1 << 53) + 1);
     assert_eq!(execution.run_typed(&parameters).0, 2);
 }
+
+/// Boolean input lanes are one byte each, so the input lane region is
+/// padded to 8 bytes: the output lanes after it stay aligned for a host
+/// `BigInt64Array` view of an Integer output.
+#[test]
+fn output_lanes_after_boolean_inputs_stay_eight_byte_aligned() {
+    let _lock = session_test_guard();
+    let artifact = prepare("Step");
+    let abi = &artifact["abi"];
+    let typed = abi["typed_lanes_offset"].as_u64().unwrap();
+    let inputs = abi["input_lanes_bytes"].as_u64().unwrap();
+    let outputs = abi["output_lanes_offset"].as_u64().unwrap();
+    assert_eq!(outputs, typed + inputs);
+    assert_eq!(outputs % 8, 0, "output lanes at {outputs}");
+    assert_eq!(offset(&artifact, "derived_outputs", "receivedSequence") % 8, 0);
+}
