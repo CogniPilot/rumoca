@@ -309,3 +309,76 @@ fn compact_ranges_refuse_cycles_target_aliases_and_register_overwrites() {
         "native tensor program has overlapping destination versions"
     );
 }
+
+/// Two output segments of one program (a record-valued source: a tensor
+/// field, then a scalar field), each after its own residual (SOLVE-C68).
+fn segmented(scalar_value: LinearOp) -> Vec<LinearOp> {
+    vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorLoad {
+            dst_start: 2,
+            input: TensorInputKind::P,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorBinary {
+            dst_start: 4,
+            op: BinaryOp::Sub,
+            lhs_start: 0,
+            rhs_start: 2,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 4,
+            count: 2,
+            stride: 1,
+        },
+        LinearOp::LoadY { dst: 6, index: 2 },
+        scalar_value,
+        LinearOp::Binary {
+            dst: 8,
+            op: BinaryOp::Sub,
+            lhs: 6,
+            rhs: 7,
+        },
+        LinearOp::StoreOutput { src: 8 },
+    ]
+}
+
+#[test]
+fn segmented_record_stores_issue_one_stage_over_their_adjacent_targets() {
+    let targets = (0..3)
+        .map(|index| Some(scalar_slot_y(index)))
+        .collect::<Vec<_>>();
+    let layout = VarLayout::from_parts(Default::default(), 3, 3);
+    let block = source(vec![segmented(LinearOp::LoadP { dst: 7, index: 2 })]);
+    let schedule = derive(&block, &targets, &layout).unwrap();
+    assert_eq!(schedule.stages.len(), 1);
+    assert_eq!(schedule.stages[0].target_range().unwrap(), 0..3);
+    // A segment value that reads a target the stage owns is coupled.
+    let coupled = source(vec![segmented(LinearOp::LoadY { dst: 7, index: 0 })]);
+    assert_eq!(
+        derive(&coupled, &targets, &layout).unwrap_err().0,
+        "native tensor residual couples its owned target range"
+    );
+    // Segment targets that are not one dense range are refused.
+    let layout = VarLayout::from_parts(Default::default(), 4, 3);
+    let sparse = vec![
+        Some(scalar_slot_y(0)),
+        Some(scalar_slot_y(1)),
+        Some(scalar_slot_y(3)),
+    ];
+    assert!(derive(&block, &sparse, &layout).is_err());
+}

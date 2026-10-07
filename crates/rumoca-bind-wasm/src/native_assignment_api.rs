@@ -69,9 +69,9 @@ fn model_artifact(
 ) -> Result<String, WasmError> {
     let problem = &model.problem;
     let schedule = checked_native_schedule(model)?;
-    if !schedule.derived_outputs().is_empty() {
+    if !schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty() {
         return Err(WasmError::new(
-            "derived discrete outputs are published through typed output lanes of the native program ABI, not the separate-stage copy ABI",
+            "typed input and output lanes belong to the native program ABI, not the separate-stage copy ABI",
         ));
     }
     let y_count = problem.layout.y_scalars();

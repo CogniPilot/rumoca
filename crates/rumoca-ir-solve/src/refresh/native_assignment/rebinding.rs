@@ -45,7 +45,7 @@ pub(super) fn rebind_block(
             }
             _ => {
                 if node_reads(node, rebinding) {
-                    return Err(NativeEvaluationRefusal::DerivedOutputCompactRead.into());
+                    return Err(NativeEvaluationRefusal::ReboundSlotCompactRead.into());
                 }
                 node.clone()
             }
@@ -89,7 +89,7 @@ pub(super) fn rebind_operations(
                 },
             )),
             _ if reads_rebound(std::slice::from_ref(operation), rebinding) => {
-                Err(NativeEvaluationRefusal::DerivedOutputCompactRead.into())
+                Err(NativeEvaluationRefusal::ReboundSlotCompactRead.into())
             }
             _ => Ok(operation.clone()),
         })
@@ -116,12 +116,12 @@ fn refuse_family_reads(
                 address_range(*index, terms, &extents, p_scalars)?
             }
             _ if reads_rebound(std::slice::from_ref(operation), rebinding) => {
-                return Err(NativeEvaluationRefusal::DerivedOutputCompactRead.into());
+                return Err(NativeEvaluationRefusal::ReboundSlotCompactRead.into());
             }
             _ => continue,
         };
         if rebinding.range(range).next().is_some() {
-            return Err(NativeEvaluationRefusal::DerivedOutputCompactRead.into());
+            return Err(NativeEvaluationRefusal::ReboundSlotCompactRead.into());
         }
     }
     Ok(())

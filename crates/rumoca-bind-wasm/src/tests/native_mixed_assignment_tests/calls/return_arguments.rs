@@ -45,24 +45,12 @@ fn failed_call_keeps_output(execution: &mut CallExecution, parameters: &[f64]) {
         .iter()
         .flat_map(|v| v.to_le_bytes())
         .collect::<Vec<_>>();
-    execution
-        .memory
-        .write(&mut execution.store, execution.p, &bytes)
-        .unwrap();
     let mut before = vec![0; execution.y * 8];
     execution
         .memory
         .read(&execution.store, 0, &mut before)
         .unwrap();
-    let CallEntry::Checked(call) = execution.call else {
-        panic!("invalid actual arguments require checked status ABI");
-    };
-    let status = call
-        .call(
-            &mut execution.store,
-            (0, execution.p as i32, 0.0, execution.scratch as i32, 0),
-        )
-        .unwrap();
+    let (status, _) = execution.run_typed(parameters);
     assert_ne!(
         status, 0,
         "call actual must fault before callee early return"
@@ -87,29 +75,27 @@ fn native_wasm_return_predicates_keep_call_actual_faults() {
     for guarded in [false, true] {
         let artifact = prepare(guarded);
         let mut execution = CallExecution::new(&artifact);
-        let mut parameters = artifact["parameters"]
+        let parameters = artifact["parameters"]
             .as_array()
             .unwrap()
             .iter()
             .map(|value| value.as_f64().unwrap())
             .collect::<Vec<_>>();
-        let first = slot(&artifact, "first", "P");
-        let index = slot(&artifact, "k", "P");
         let result = slot(&artifact, "result", "Y");
-        for (value, expected) in [(1.0, 1.0), (0.0, 2.0)] {
-            parameters[first] = value;
+        for (value, expected) in [(1, 1.0), (0, 2.0)] {
+            execution.set_input("first", value);
             assert_eq!(execution.run(&parameters)[result], expected);
         }
-        parameters[index] = 2.0;
-        parameters[first] = 1.0;
+        execution.set_input("k", 2);
+        execution.set_input("first", 1);
         if guarded {
             assert_eq!(execution.run(&parameters)[result], 1.0);
         } else {
             failed_call_keeps_output(&mut execution, &parameters);
         }
-        parameters[first] = 0.0;
+        execution.set_input("first", 0);
         failed_call_keeps_output(&mut execution, &parameters);
-        parameters[index] = 1.0;
+        execution.set_input("k", 1);
         assert_eq!(execution.run(&parameters)[result], 2.0);
     }
 }

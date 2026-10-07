@@ -13,6 +13,16 @@ pub(in crate::emit) struct CallProgramPlan {
     /// output pointer only after every stage succeeds.
     pub lanes: u32,
     pub lane_bytes: u32,
+    /// Typed input lanes the host writes at the start of its typed lane
+    /// buffer; the published output lanes follow them (SOLVE-C69).
+    pub input_lane_bytes: u32,
+    /// Private copy of P whose typed-input slots hold the Real views of
+    /// their lanes (offset, bytes); empty without typed input lanes.
+    pub p_copy: u32,
+    pub p_copy_bytes: u32,
+    /// Scratch cell holding the host typed lane pointer, which stage bodies
+    /// read after they reuse the pointer argument for their targets.
+    pub typed_lanes_cell: u32,
     pub input: u32,
     pub output: u32,
     pub scratch: u32,
@@ -66,6 +76,10 @@ impl CallProgramPlan {
             host_y_bytes: work_bytes,
             lanes: 0,
             lane_bytes: 0,
+            input_lane_bytes: 0,
+            p_copy: 0,
+            p_copy_bytes: 0,
+            typed_lanes_cell: 0,
             input: work_bytes,
             output: output_offset,
             scratch: scratch_offset,
@@ -78,12 +92,18 @@ impl CallProgramPlan {
     }
 
     /// Publish `host_y` of the work scalars to the host Y buffer and stage
-    /// `lane_bytes` of typed output lanes after the existing storage.
-    pub(in crate::emit) fn with_output_lanes(
+    /// `lane_bytes` of typed output lanes after the existing storage; the
+    /// host lane buffer starts with `input_lane_bytes` of typed input lanes,
+    /// whose Real views a private copy of the `p_scalars` P slots holds.
+    pub(in crate::emit) fn with_typed_lanes(
         mut self,
         host_y: usize,
         lane_bytes: usize,
+        input_lane_bytes: usize,
+        p_scalars: usize,
     ) -> Result<Self, String> {
+        self.input_lane_bytes =
+            u32::try_from(input_lane_bytes).map_err(|_| "native input lanes overflow")?;
         let host_y_bytes = host_y
             .checked_mul(8)
             .and_then(|n| u32::try_from(n).ok())
@@ -102,6 +122,25 @@ impl CallProgramPlan {
         self.lanes = lanes;
         self.lane_bytes = lane_bytes;
         self.bytes = bytes;
+        if self.input_lane_bytes != 0 {
+            self.p_copy_bytes = p_scalars
+                .checked_mul(8)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or("native P copy overflows")?;
+            self.p_copy = self
+                .bytes
+                .checked_next_multiple_of(8)
+                .ok_or("native P copy overflows")?;
+            self.typed_lanes_cell = self
+                .p_copy
+                .checked_add(self.p_copy_bytes)
+                .ok_or("native P copy overflows")?;
+            self.bytes = self
+                .typed_lanes_cell
+                .checked_add(8)
+                .filter(|&n| n <= 64 * 1024 * 1024)
+                .ok_or("native whole-program scratch exceeds 64 MiB")?;
+        }
         Ok(self)
     }
 
@@ -111,5 +150,22 @@ impl CallProgramPlan {
             .find(|(issued, _)| issued == site)
             .map(|(_, layout)| *layout)
             .ok_or_else(|| "native call differs from the issued model table".into())
+    }
+}
+
+impl CallProgramPlan {
+    /// [`Self::with_typed_lanes`] for the typed lanes `schedule` issues over
+    /// the host `layout`.
+    pub(in crate::emit) fn with_schedule_lanes(
+        self,
+        schedule: &solve::NativeRefreshAssignmentSchedule,
+        layout: &VarLayout,
+    ) -> Result<Self, String> {
+        self.with_typed_lanes(
+            layout.y_scalars(),
+            schedule.lane_bytes(),
+            schedule.input_lane_bytes(),
+            layout.p_scalars(),
+        )
     }
 }

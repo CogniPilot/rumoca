@@ -34,9 +34,9 @@ pub use materialization::{
     materialize_target_assignment,
 };
 pub use native_assignment::{
-    NativeDerivedOutput, NativeEvaluationRefusal, NativeIntegerSource, NativeOutputLane,
-    NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule, NativeRefreshAssignmentStage,
-    NativeScheduleRefusal, NativeStageSource,
+    NativeDerivedOutput, NativeEvaluationRefusal, NativeInputLane, NativeIntegerSource,
+    NativeOutputLane, NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule,
+    NativeRefreshAssignmentStage, NativeScheduleRefusal, NativeStageSource,
 };
 pub use shared_schedule::SharedAssignmentSchedule;
 pub use staged_execution::{

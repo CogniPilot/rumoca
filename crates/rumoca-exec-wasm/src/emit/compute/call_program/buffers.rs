@@ -1,7 +1,11 @@
 //! Fail before external writes; publish all target values only after success.
 use super::*;
 impl BodyEmitter<'_> {
-    pub(in crate::emit) fn begin_call_program(&mut self, layout: &VarLayout) -> Result<(), String> {
+    pub(in crate::emit) fn begin_call_program(
+        &mut self,
+        layout: &VarLayout,
+        inputs: &[solve::NativeInputLane],
+    ) -> Result<(), String> {
         let plan = self.calls.ok_or("missing native call layout")?;
         self.guard_call_spans(layout)?;
         self.push(Instruction::LocalGet(Y_PTR_PARAM));
@@ -15,6 +19,29 @@ impl BodyEmitter<'_> {
         });
         self.push(Instruction::LocalGet(SEED_PTR_PARAM));
         self.push(Instruction::LocalSet(Y_PTR_PARAM));
+        if !inputs.is_empty() {
+            // Stages read P through a private copy whose typed-input slots
+            // hold the Real views of their lanes; the host P is unchanged.
+            self.call_address(plan.p_copy);
+            self.push(Instruction::LocalGet(P_PTR_PARAM));
+            self.push(Instruction::I32Const(plan.p_copy_bytes as i32));
+            self.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            self.call_address(plan.p_copy);
+            self.push(Instruction::LocalSet(P_PTR_PARAM));
+            self.call_address(plan.typed_lanes_cell);
+            self.push(Instruction::LocalGet(OUT_PTR_PARAM));
+            self.push(Instruction::I32Store(MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            }));
+        }
+        for input in inputs {
+            self.write_input_view(input)?;
+        }
         self.reset_call_memos();
         Ok(())
     }
@@ -30,10 +57,14 @@ impl BodyEmitter<'_> {
 
     fn guard_call_spans(&mut self, layout: &VarLayout) -> Result<(), String> {
         let plan = self.calls.ok_or("missing native call layout")?;
-        // The output pointer is reserved (zero) unless the program publishes
-        // typed output lanes through it.
+        // The output pointer is reserved (zero) unless the program reads typed
+        // input lanes or publishes typed output lanes through it.
+        let typed_lanes = plan
+            .input_lane_bytes
+            .checked_add(plan.lane_bytes)
+            .ok_or("native typed lanes overflow")?;
         self.push(Instruction::LocalGet(OUT_PTR_PARAM));
-        if plan.lane_bytes != 0 {
+        if typed_lanes != 0 {
             self.push(Instruction::I32Eqz);
         }
         self.return_status_if(1);
@@ -57,7 +88,7 @@ impl BodyEmitter<'_> {
                 .map_err(|_| "native P overflow")?,
             ),
             (SEED_PTR_PARAM, plan.bytes),
-            (OUT_PTR_PARAM, plan.lane_bytes),
+            (OUT_PTR_PARAM, typed_lanes),
         ];
         for &(pointer, bytes) in &spans {
             self.guard_call_buffer(pointer, bytes);
@@ -149,6 +180,23 @@ impl BodyEmitter<'_> {
                 }
                 (
                     solve::NativeOutputLane::Integer,
+                    Some(solve::NativeIntegerSource::Input { lane_offset }),
+                ) => {
+                    self.call_address(lane);
+                    self.push(Instruction::LocalGet(OUT_PTR_PARAM));
+                    self.push(Instruction::I64Load(MemArg {
+                        offset: lane_offset as u64,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                    self.push(Instruction::I64Store(MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
+                }
+                (
+                    solve::NativeOutputLane::Integer,
                     Some(solve::NativeIntegerSource::CallCell { .. }),
                 ) => {}
                 (solve::NativeOutputLane::Integer, None) => {
@@ -158,6 +206,8 @@ impl BodyEmitter<'_> {
         }
         if plan.lane_bytes != 0 {
             self.push(Instruction::LocalGet(OUT_PTR_PARAM));
+            self.push(Instruction::I32Const(plan.input_lane_bytes as i32));
+            self.push(Instruction::I32Add);
             self.call_address(plan.lanes);
             self.push(Instruction::I32Const(plan.lane_bytes as i32));
             self.push(Instruction::MemoryCopy {

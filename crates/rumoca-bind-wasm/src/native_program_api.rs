@@ -5,10 +5,12 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 /// Compile one stateless assignment module with shared Y/P storage.
-/// The host writes P and calls `eval_assignments` once. Derived discrete outputs
-/// (Integer, Boolean, discrete Real) are published through typed output lanes
-/// listed in the artifact's `derived_outputs`; read Integer lanes with
-/// [`read_native_integer_lane`] or a `BigInt64Array`.
+/// The host writes P and calls `eval_assignments` once. Integer and Boolean
+/// inputs are written to the typed input lanes listed in `input_lanes` (i64,
+/// u8) at the start of the typed lane buffer, never to P. Derived discrete
+/// outputs (Integer, Boolean, discrete Real) are published through the typed
+/// output lanes listed in `derived_outputs`, after the input lanes; read
+/// Integer lanes with [`read_native_integer_lane`] or a `BigInt64Array`.
 /// All source-issued stage ordering and direct target writes live in the module.
 #[wasm_bindgen]
 pub fn prepare_native_program(source: &str, model_name: &str) -> Result<String, WasmError> {
@@ -35,10 +37,14 @@ pub(crate) fn model_artifact(
     }
     let (bytes, profile, mut abi_extra, math_imports, faults) = compile_program(model, schedule)?;
     let scratch_bytes = abi_extra["scratch_bytes"].as_u64().unwrap_or(0) as usize;
+    let input_lane_bytes = schedule.input_lane_bytes();
     let lane_bytes = schedule.lane_bytes();
-    let lanes_offset = storage_bytes
+    let typed_lanes_offset = storage_bytes
         .checked_add(scratch_bytes)
         .and_then(|end| end.checked_next_multiple_of(8))
+        .ok_or_else(|| WasmError::new("native program memory exceeds the 64 MiB profile"))?;
+    let lanes_offset = typed_lanes_offset
+        .checked_add(input_lane_bytes)
         .ok_or_else(|| WasmError::new("native program memory exceeds the 64 MiB profile"))?;
     let memory_bytes = lanes_offset
         .checked_add(lane_bytes)
@@ -46,6 +52,13 @@ pub(crate) fn model_artifact(
         .ok_or_else(|| WasmError::new("native program memory exceeds the 64 MiB profile"))?;
     if scratch_bytes != 0 {
         abi_extra["scratch_offset"] = serde_json::json!(storage_bytes);
+    }
+    if input_lane_bytes + lane_bytes != 0 {
+        abi_extra["typed_lanes_offset"] = serde_json::json!(typed_lanes_offset);
+    }
+    if input_lane_bytes != 0 {
+        abi_extra["input_lanes_offset"] = serde_json::json!(typed_lanes_offset);
+        abi_extra["input_lanes_bytes"] = serde_json::json!(input_lane_bytes);
     }
     if lane_bytes != 0 {
         abi_extra["output_lanes_offset"] = serde_json::json!(lanes_offset);
@@ -84,6 +97,7 @@ pub(crate) fn model_artifact(
             "y_count": y_count, "p_count": p_count, "reserved_pointer_value": 0 },
         "var_layout": host_layout(problem, schedule)?,
         "derived_outputs": derived_outputs(problem, schedule),
+        "input_lanes": input_lanes(problem, schedule),
         "input_names": problem.solve_layout.input_scalar_names(),
         "parameters": model.parameters,
         "issued_schedule": issued_schedule,
@@ -159,7 +173,11 @@ fn compile_program(
         "native-direct-program-f64-v3",
         serde_json::json!({
             "arguments":["yPtr:i32","pPtr:i32","time:f64","scratchPtr:i32",
-                if schedule.lane_bytes() == 0 { "reservedZero:i32" } else { "outputLanesPtr:i32" }],
+                match (schedule.input_lane_bytes(), schedule.lane_bytes()) {
+                    (0, 0) => "reservedZero:i32",
+                    (0, _) => "outputLanesPtr:i32",
+                    _ => "typedLanesPtr:i32",
+                }],
             "result":"status:i32", "success_status":0, "scratch_bytes":compiled.scratch_bytes(),
             "transactional_y":true,"p_readonly":true,
         }),
@@ -188,7 +206,8 @@ fn requires_checked_entry(schedule: &rumoca_ir_solve::NativeRefreshAssignmentSch
             Ok(())
         }
     }
-    let mut calls = Calls(!schedule.derived_outputs().is_empty());
+    let mut calls =
+        Calls(!schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty());
     for stage in schedule.stages() {
         let Ok(()) = calls.visit_compute_block(stage.value_kernel());
     }
@@ -210,12 +229,13 @@ pub(crate) fn stage_source(
 }
 
 /// Every derived-discrete output a host reads from the typed output lanes:
-/// its scalar name, storage representation (f64, i64 or u8) and byte offset.
+/// its scalar name, storage representation (f64, i64 or u8) and byte offset
+/// from the start of the output lanes.
 fn derived_outputs(
     problem: &rumoca_ir_solve::SolveProblem,
     schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
 ) -> serde_json::Value {
-    let names = derived_names(problem, schedule);
+    let names = lane_slot_names(problem, schedule);
     schedule
         .derived_outputs()
         .iter()
@@ -229,23 +249,55 @@ fn derived_outputs(
         .collect()
 }
 
-/// The scalar binding name of each derived output's Solve P slot: an array
-/// element's own name rather than its array base.
-fn derived_names(
+/// Every Integer or Boolean input a host writes to the typed input lanes
+/// (SPEC_0040 SOLVE-C69): its scalar name, representation (i64 or u8), byte
+/// offset from the start of the typed lane buffer, and the Solve P slot
+/// (whose `parameters` entry is its declared start value) it replaces.
+fn input_lanes(
     problem: &rumoca_ir_solve::SolveProblem,
     schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
-) -> std::collections::BTreeMap<usize, String> {
-    let derived = schedule
+) -> serde_json::Value {
+    let names = lane_slot_names(problem, schedule);
+    schedule
+        .input_lanes()
+        .iter()
+        .map(|input| {
+            serde_json::json!({
+                "name": names.get(&input.p_index()),
+                "representation": input.lane().as_str(),
+                "byte_offset": input.lane_offset(),
+                "p_index": input.p_index(),
+            })
+        })
+        .collect()
+}
+
+/// The Solve P slots a host reaches through typed lanes instead of P: every
+/// derived output and every typed input.
+fn lane_slots(
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+) -> std::collections::BTreeSet<usize> {
+    schedule
         .derived_outputs()
         .iter()
         .map(|output| output.p_index())
-        .collect::<std::collections::BTreeSet<_>>();
+        .chain(schedule.input_lanes().iter().map(|input| input.p_index()))
+        .collect()
+}
+
+/// The scalar binding name of each typed-lane P slot: an array element's own
+/// name rather than its array base.
+fn lane_slot_names(
+    problem: &rumoca_ir_solve::SolveProblem,
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+) -> std::collections::BTreeMap<usize, String> {
+    let slots = lane_slots(schedule);
     let mut names = std::collections::BTreeMap::<usize, String>::new();
     for (name, slot) in problem.layout.bindings() {
         let rumoca_ir_solve::ScalarSlot::P { index, .. } = *slot else {
             continue;
         };
-        if !derived.contains(&index) {
+        if !slots.contains(&index) {
             continue;
         }
         let name = name.as_str();
@@ -259,27 +311,23 @@ fn derived_names(
     names
 }
 
-/// The host-visible layout: the problem layout without any binding of a
-/// derived output's Solve P slot, which the program never reads or publishes.
-/// Hosts read those values from the typed output lanes.
+/// The host-visible layout: the problem layout without any binding that
+/// covers a typed-lane P slot (a derived output, which the program never reads
+/// or publishes, or a typed input, which the host writes to its lane).
 fn host_layout(
     problem: &rumoca_ir_solve::SolveProblem,
     schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
 ) -> Result<serde_json::Value, WasmError> {
     let mut layout = serde_json::to_value(&problem.layout)
         .map_err(|error| WasmError::new(format!("native layout JSON failed: {error}")))?;
-    if schedule.derived_outputs().is_empty() {
+    let slots = lane_slots(schedule);
+    if slots.is_empty() {
         return Ok(layout);
     }
-    let derived = schedule
-        .derived_outputs()
-        .iter()
-        .map(|output| output.p_index())
-        .collect::<Vec<_>>();
     let mut removed = Vec::new();
     for (name, slot) in problem.layout.bindings() {
         if let rumoca_ir_solve::ScalarSlot::P { index, .. } = *slot
-            && derived.contains(&index)
+            && slots.contains(&index)
         {
             removed.push(name.as_str().to_owned());
         }

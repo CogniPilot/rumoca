@@ -7,6 +7,7 @@ use super::*;
 fn family(targets: Coverage, reads: Vec<Coverage>) -> Family {
     Family {
         stage: NativeRefreshAssignmentStage {
+            integer_bindings: Default::default(),
             source: NativeStageSource::Continuous { node: 0 },
             targets,
             value_kernel: ComputeBlock::default(),

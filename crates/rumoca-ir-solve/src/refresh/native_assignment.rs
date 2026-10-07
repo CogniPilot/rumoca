@@ -8,6 +8,7 @@ mod rebinding;
 mod scalar;
 mod span_index;
 mod targets;
+mod typed_inputs;
 mod varying_constants;
 
 use std::ops::Range;
@@ -20,6 +21,7 @@ use crate::{
 pub use derived_discrete::{
     NativeDerivedOutput, NativeEvaluationRefusal, NativeIntegerSource, NativeOutputLane,
 };
+pub use typed_inputs::NativeInputLane;
 
 /// The canonical Solve owner a native stage evaluates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,7 @@ pub enum NativeStageSource {
 /// An exact native value stage, retaining its canonical source identity.
 #[derive(Clone, Debug)]
 pub struct NativeRefreshAssignmentStage {
+    integer_bindings: typed_inputs::NativeIntegerBindings,
     source: NativeStageSource,
     targets: coverage::Coverage,
     value_kernel: ComputeBlock,
@@ -75,6 +78,8 @@ impl NativeRefreshAssignmentStage {
 pub struct NativeRefreshAssignmentSchedule {
     stages: Vec<NativeRefreshAssignmentStage>,
     derived_outputs: Vec<NativeDerivedOutput>,
+    input_lanes: Vec<NativeInputLane>,
+    input_lane_bytes: usize,
     work_layout: VarLayout,
     lane_bytes: usize,
 }
@@ -86,6 +91,15 @@ impl NativeRefreshAssignmentSchedule {
     /// Derived-discrete outputs in P-slot order, each with its typed lane.
     pub fn derived_outputs(&self) -> &[NativeDerivedOutput] {
         &self.derived_outputs
+    }
+    /// Typed Integer and Boolean input lanes in P-slot order (SOLVE-C69).
+    pub fn input_lanes(&self) -> &[NativeInputLane] {
+        &self.input_lanes
+    }
+    /// Size of the typed input lanes at the start of the typed lane buffer;
+    /// the output lanes follow them.
+    pub fn input_lane_bytes(&self) -> usize {
+        self.input_lane_bytes
     }
     /// The layout stage kernels address: the problem layout with one private
     /// Y work slot per derived output after the solver coordinates.
@@ -155,7 +169,8 @@ struct Family {
 pub(super) fn derive_for_problem(
     problem: &SolveProblem,
 ) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
-    let derived = derived_discrete::classify(problem)?;
+    let mut inputs = typed_inputs::TypedInputs::classify(problem)?;
+    let derived = derived_discrete::classify(problem, &inputs)?;
     let work_layout = problem.layout.with_private_y(derived.outputs.len()).ok_or(
         NativeRefreshAssignmentRefusal("native work layout overflows"),
     )?;
@@ -192,10 +207,16 @@ pub(super) fn derive_for_problem(
             }
         }
     }
-    let stages = families.into_iter().map(|family| family.stage).collect();
+    let mut stages = families
+        .into_iter()
+        .map(|family| family.stage)
+        .collect::<Vec<_>>();
+    typed_inputs::bind_stages(&mut stages, &mut inputs, &derived.outputs);
     Ok(NativeRefreshAssignmentSchedule {
         stages,
         derived_outputs: derived.outputs,
+        input_lanes: inputs.lanes,
+        input_lane_bytes: inputs.lane_bytes,
         work_layout,
         lane_bytes: derived.lane_bytes,
     })
@@ -227,6 +248,8 @@ fn derive(
             .map(|family| family.stage)
             .collect(),
         derived_outputs: Vec::new(),
+        input_lanes: Vec::new(),
+        input_lane_bytes: 0,
         work_layout: layout.clone(),
         lane_bytes: 0,
     })
@@ -464,6 +487,7 @@ fn derive_family(
     }
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
+            integer_bindings: Default::default(),
             source: NativeStageSource::Continuous { node: source_node },
             targets: target_coverage,
             value_kernel: ComputeBlock {

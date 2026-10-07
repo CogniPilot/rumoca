@@ -45,47 +45,29 @@ fn native_wasm_return_predicates_preserve_inactive_and_active_gathers() {
         .iter()
         .map(|value| value.as_f64().unwrap())
         .collect::<Vec<_>>();
-    let first = slot(&artifact, "first", "P");
     let sample = slot(&artifact, "samples", "P");
-    let index = slot(&artifact, "k", "P");
     let result = slot(&artifact, "result", "Y");
     for (enabled, value, k, expected) in [
-        (1.0, 5.0, 2.0, 1.0),
-        (0.0, 5.0, 1.0, 2.0),
-        (0.0, -5.0, 1.0, 3.0),
-        (1.0, -5.0, 2.0, 1.0),
+        (1, 5.0, 2, 1.0),
+        (0, 5.0, 1, 2.0),
+        (0, -5.0, 1, 3.0),
+        (1, -5.0, 2, 1.0),
     ] {
-        parameters[first] = enabled;
+        execution.set_input("first", enabled);
         parameters[sample] = value;
-        parameters[index] = k;
+        execution.set_input("k", k);
         assert_eq!(execution.run(&parameters)[result], expected);
     }
     // The same artifact must fault when the invalid gather becomes active.
     // Its transactional ABI leaves the previously committed result intact.
-    parameters[first] = 0.0;
-    parameters[index] = 2.0;
-    let bytes = parameters
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect::<Vec<_>>();
-    execution
-        .memory
-        .write(&mut execution.store, execution.p, &bytes)
-        .unwrap();
+    execution.set_input("first", 0);
+    execution.set_input("k", 2);
     let mut before = vec![0; execution.y * 8];
     execution
         .memory
         .read(&execution.store, 0, &mut before)
         .unwrap();
-    let CallEntry::Checked(call) = execution.call else {
-        panic!("a faulting gather requires the status ABI");
-    };
-    let status = call
-        .call(
-            &mut execution.store,
-            (0, execution.p as i32, 0.0, execution.scratch as i32, 0),
-        )
-        .expect("a checked gather reports status without trapping");
+    let (status, _) = execution.run_typed(&parameters);
     assert_ne!(status, 0, "an active invalid gather must fail");
     let mut after = vec![0; before.len()];
     execution
@@ -93,6 +75,6 @@ fn native_wasm_return_predicates_preserve_inactive_and_active_gathers() {
         .read(&execution.store, 0, &mut after)
         .unwrap();
     assert_eq!(after, before, "failed invocation must not commit output");
-    parameters[first] = 1.0;
+    execution.set_input("first", 1);
     assert_eq!(execution.run(&parameters)[result], 1.0);
 }

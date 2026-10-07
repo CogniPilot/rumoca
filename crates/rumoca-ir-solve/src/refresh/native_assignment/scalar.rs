@@ -110,6 +110,7 @@ fn derive_program(
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native scalar value projection"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
+            integer_bindings: Default::default(),
             source: NativeStageSource::Continuous {
                 node: source.node() as usize,
             },
@@ -261,6 +262,7 @@ pub(super) fn derive_discrete(
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native discrete value program"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
+            integer_bindings: Default::default(),
             source: NativeStageSource::Discrete { row: output.row },
             targets: coverage::Coverage::dense(target..target + 1),
             value_kernel: ComputeBlock {
