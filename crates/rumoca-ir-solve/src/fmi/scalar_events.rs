@@ -14,8 +14,8 @@
 use serde::Serialize;
 
 use crate::{
-    DiscreteEventPreMode, DiscreteRowRole, EventIterationOwner, PreParamSource, RootSearchPlan,
-    RootSearchRole, RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel,
+    DiscreteEventPreMode, DiscreteRowRole, PreParamSource, RootSearchPlan, RootSearchRole,
+    RootZeroDomain, ScalarSlot, SolveEventActionKind, SolveModel,
 };
 
 /// The Solve IR facts the generated component reads to execute events.
@@ -153,8 +153,10 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         .collect::<Vec<_>>();
     let mut iteration_lanes = Vec::new();
     for run in &discrete.event_iteration_plan.runs {
-        if !matches!(run.owner, EventIterationOwner::ScalarRows { .. }) {
-            return Err("the C profile iterates only scalar discrete rows");
+        // A clock-owned run advances its history on its tick when the event
+        // commits and takes no part in the pass-to-pass fixed point.
+        if discrete.event_iteration_run_clock(run)?.is_some() {
+            continue;
         }
         let storage = layout
             .variable_storage_runs

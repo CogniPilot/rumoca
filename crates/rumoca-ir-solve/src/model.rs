@@ -966,6 +966,43 @@ pub struct StructuredDiscreteTargetMap {
 }
 
 impl DiscreteSolveSystem {
+    /// The periodic clock that owns one event-iteration run, `None` for a run
+    /// that iterates with the event (SPEC_0044 ME-EVENT-006). Clock-owned runs
+    /// advance their `previous()` history on their tick when the event commits
+    /// and take no part in the pass-to-pass fixed point.
+    pub fn event_iteration_run_clock(
+        &self,
+        run: &EventIterationRun,
+    ) -> Result<Option<PeriodicClockId>, &'static str> {
+        match run.owner {
+            EventIterationOwner::Hold => Ok(None),
+            EventIterationOwner::ScalarRows { start_row } => self
+                .clock_owners
+                .get(start_row)
+                .copied()
+                .ok_or("event-iteration scalar owner clock is out of bounds"),
+            EventIterationOwner::StructuredUpdate { update_index } => self
+                .structured_updates
+                .get(update_index)
+                .map(|update| update.clock_owner)
+                .ok_or("event-iteration structured owner clock is out of bounds"),
+            EventIterationOwner::GuardedAssignment { program_index, .. } => self
+                .guarded_assignments
+                .get(program_index)
+                .map(GuardedAssignmentProgram::clock_owner)
+                .ok_or("event-iteration guarded owner clock is out of bounds"),
+            EventIterationOwner::EventTransaction {
+                program_index,
+                target_index,
+            } => self
+                .event_transactions
+                .get(program_index)
+                .and_then(|transaction| transaction.targets().get(target_index))
+                .map(EventTransactionTarget::clock_owner)
+                .ok_or("event-iteration transaction owner clock is out of bounds"),
+        }
+    }
+
     /// Checked scalar adapter view for one compact structured update.
     ///
     /// Each pair is `(target slot, structured_rhs output lane)`. Backends use

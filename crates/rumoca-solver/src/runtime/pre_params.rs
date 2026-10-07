@@ -186,53 +186,11 @@ fn event_iteration_run_clock(
     model: &solve::SolveModel,
     run: &solve::EventIterationRun,
 ) -> Result<Option<solve::PeriodicClockId>, RuntimeSolveError> {
-    match run.owner {
-        solve::EventIterationOwner::Hold => Ok(None),
-        solve::EventIterationOwner::ScalarRows { start_row } => model
-            .problem
-            .discrete
-            .clock_owners
-            .get(start_row)
-            .copied()
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir("event-iteration scalar owner clock is out of bounds")
-            }),
-        solve::EventIterationOwner::StructuredUpdate { update_index } => model
-            .problem
-            .discrete
-            .structured_updates
-            .get(update_index)
-            .map(|update| update.clock_owner)
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "event-iteration structured owner clock is out of bounds",
-                )
-            }),
-        solve::EventIterationOwner::GuardedAssignment { program_index, .. } => model
-            .problem
-            .discrete
-            .guarded_assignments
-            .get(program_index)
-            .map(solve::GuardedAssignmentProgram::clock_owner)
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir("event-iteration guarded owner clock is out of bounds")
-            }),
-        solve::EventIterationOwner::EventTransaction {
-            program_index,
-            target_index,
-        } => model
-            .problem
-            .discrete
-            .event_transactions
-            .get(program_index)
-            .and_then(|transaction| transaction.targets().get(target_index))
-            .map(solve::EventTransactionTarget::clock_owner)
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "event-iteration transaction owner clock is out of bounds",
-                )
-            }),
-    }
+    model
+        .problem
+        .discrete
+        .event_iteration_run_clock(run)
+        .map_err(RuntimeSolveError::solve_ir)
 }
 
 fn pre_binding_source_value(binding: &solve::PreParamBinding, y: &[f64], p: &[f64]) -> Option<f64> {
