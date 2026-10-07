@@ -255,7 +255,7 @@ pre-versioned payloads are rejected.
 explicit arithmetic profile (pending: 2026-08-08 plan, M3-4). It is not a mode
 of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C57` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C70` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Initialization planning follows matched rows through algebraic and derivative
