@@ -1,12 +1,12 @@
 mod linear_solve;
 mod native;
 mod number;
+mod payload;
 mod tensor;
 #[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, hash_map::Entry};
-use std::sync::Arc;
 
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
@@ -21,6 +21,7 @@ use number::{
     eval_binary_element, eval_binary_typed, eval_compare_typed, eval_convert_typed,
     eval_unary_typed,
 };
+use payload::Payload;
 
 #[cfg(test)]
 thread_local! {
@@ -37,7 +38,7 @@ thread_local! {
 pub struct TypedValue {
     value_type: SolveValueType,
     // Registers expose immutable payloads; updates construct a distinct value.
-    elements: Arc<[SolveValueKind]>,
+    elements: Payload,
 }
 
 impl TypedValue {
@@ -57,7 +58,7 @@ impl TypedValue {
         }
         Ok(Self {
             value_type,
-            elements: elements.into(),
+            elements: Payload::of(elements),
         })
     }
 
@@ -74,7 +75,7 @@ impl TypedValue {
     fn scalar(value: &SolveValue) -> Self {
         Self {
             value_type: value.value_type().clone(),
-            elements: Arc::from([value.kind()]),
+            elements: Payload::Scalar(value.kind()),
         }
     }
 
@@ -101,10 +102,10 @@ impl TypedValue {
             return Err(invalid());
         }
         #[cfg(test)]
-        if Arc::strong_count(&self.elements) > 1 {
+        if self.elements.is_shared() {
             PAYLOAD_COPIES.with(|copies| copies.set(copies.get() + 1));
         }
-        update(Arc::make_mut(&mut self.elements)).ok_or_else(invalid)?;
+        update(self.elements.make_mut()).ok_or_else(invalid)?;
         self.value_type = value_type;
         Ok(self)
     }
@@ -372,8 +373,9 @@ fn eval_owner_in_scope(
         }
     };
     validate_arguments(inputs, arguments, owner.provenance())?;
-    let mut frame = EvalFrame::new(table, body, invocations, mode, chain);
-    for (slot, value) in frame.slots.iter_mut().zip(arguments) {
+    let mut storage = FrameStorage::default();
+    let mut frame = EvalFrame::new(table, body, invocations, &mut storage, mode, chain);
+    for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
     frame.run()?;
@@ -383,9 +385,10 @@ fn eval_owner_in_scope(
         .enumerate()
         .map(|(output, _)| {
             frame
+                .storage
                 .slots
-                .get(output_start + output)
-                .and_then(Clone::clone)
+                .get_mut(output_start + output)
+                .and_then(Option::take)
                 .ok_or(TypedProgramEvalError::InvalidCheckedProgram {
                     operation: "read pure-call output",
                     provenance: owner.provenance(),
@@ -443,6 +446,7 @@ fn eval_region(
     table: &SolvePureCallTable,
     region: &SolveProgramRegion,
     arguments: Vec<TypedValue>,
+    storage: &mut FrameStorage,
     invocations: &mut InvocationScope,
     mode: EvaluationMode,
     chain: RecursionChain,
@@ -459,9 +463,9 @@ fn eval_region(
             provenance: region.provenance(),
         });
     }
-    let mut frame = EvalFrame::new(table, region.body(), invocations, mode, chain);
+    let mut frame = EvalFrame::new(table, region.body(), invocations, storage, mode, chain);
     let output_start = arguments.len();
-    for (slot, value) in frame.slots.iter_mut().zip(arguments) {
+    for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value);
     }
     frame.run()?;
@@ -471,15 +475,35 @@ fn eval_region(
         .enumerate()
         .map(|(output, _)| {
             frame
+                .storage
                 .slots
-                .get(output_start + output)
-                .and_then(Clone::clone)
+                .get_mut(output_start + output)
+                .and_then(Option::take)
                 .ok_or(TypedProgramEvalError::InvalidCheckedProgram {
                     operation: "read structured region output",
                     provenance: region.provenance(),
                 })
         })
         .collect()
+}
+
+/// Register and slot storage one frame runs in. A loop evaluates its body once
+/// per domain point in the same storage, so a point allocates none.
+#[derive(Default)]
+struct FrameStorage {
+    slots: Vec<Option<TypedValue>>,
+    registers: Vec<Option<TypedValue>>,
+}
+
+impl FrameStorage {
+    /// Empty storage for one run of `program`.
+    fn reset(&mut self, program: &TypedProgram) {
+        self.slots.clear();
+        self.slots.resize_with(program.slots().len(), || None);
+        self.registers.clear();
+        self.registers
+            .resize_with(program.register_types().len(), || None);
+    }
 }
 
 /// Results already issued in one exact function/domain invocation.
@@ -540,8 +564,7 @@ struct EvalFrame<'model, 'scope> {
     invocations: &'scope mut InvocationScope,
     mode: EvaluationMode,
     chain: RecursionChain,
-    slots: Vec<Option<TypedValue>>,
-    registers: Vec<Option<TypedValue>>,
+    storage: &'scope mut FrameStorage,
     /// Index of the operation being evaluated.
     operation: usize,
 }
@@ -551,17 +574,18 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         table: &'model SolvePureCallTable,
         program: &'model TypedProgram,
         invocations: &'scope mut InvocationScope,
+        storage: &'scope mut FrameStorage,
         mode: EvaluationMode,
         chain: RecursionChain,
     ) -> Self {
+        storage.reset(program);
         Self {
             table,
             program,
             invocations,
             mode,
             chain,
-            slots: vec![None; program.slots().len()],
-            registers: vec![None; program.register_types().len()],
+            storage,
             operation: 0,
         }
     }
@@ -852,6 +876,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         let tuples = domain
             .index_tuple_iter()
             .map_err(|_| invalid_error("iterate compact fold domain", provenance))?;
+        let mut storage = FrameStorage::default();
         for tuple in tuples {
             // MLS §11.2.3: a bounded `while` stops before the first pass whose
             // condition is false, with the tuple that pass would have read.
@@ -873,6 +898,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 self.table,
                 transition,
                 arguments,
+                &mut storage,
                 &mut iteration,
                 self.mode,
                 self.chain,
@@ -903,6 +929,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             self.table,
             continuation,
             arguments,
+            &mut FrameStorage::default(),
             &mut scope,
             self.mode,
             self.chain,
@@ -931,6 +958,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         let tuples = domain
             .index_tuple_iter()
             .map_err(|_| invalid_error("iterate compact map domain", provenance))?;
+        let mut storage = FrameStorage::default();
         for tuple in tuples {
             let mut arguments = captures.clone();
             arguments.extend(
@@ -944,6 +972,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 self.table,
                 body,
                 arguments,
+                &mut storage,
                 &mut iteration,
                 self.mode,
                 self.chain,
@@ -991,6 +1020,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             self.table,
             selected,
             captures,
+            &mut FrameStorage::default(),
             self.invocations,
             self.mode,
             self.chain,
@@ -1305,6 +1335,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     ) -> Result<TypedValue, TypedProgramEvalError> {
         if self.program.register_last_read_at(register, self.operation)
             && let Some(value) = self
+                .storage
                 .registers
                 .get_mut(register.index())
                 .and_then(Option::take)
@@ -1321,7 +1352,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         provenance: Span,
     ) -> Result<TypedValue, TypedProgramEvalError> {
         if self.program.slot_last_load_at(slot, self.operation)
-            && let Some(value) = self.slots.get_mut(slot.index()).and_then(Option::take)
+            && let Some(value) = self
+                .storage
+                .slots
+                .get_mut(slot.index())
+                .and_then(Option::take)
         {
             return Ok(value);
         }
@@ -1333,7 +1368,8 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         register: SolveRegisterId,
         provenance: Span,
     ) -> Result<&TypedValue, TypedProgramEvalError> {
-        self.registers
+        self.storage
+            .registers
             .get(register.index())
             .and_then(Option::as_ref)
             .ok_or(invalid_error("read register", provenance))
@@ -1349,6 +1385,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             return invalid("write register", provenance);
         }
         let destination = self
+            .storage
             .registers
             .get_mut(register.index())
             .ok_or(invalid_error("write register", provenance))?;
@@ -1374,7 +1411,8 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         slot: SolveSlotId,
         provenance: Span,
     ) -> Result<&TypedValue, TypedProgramEvalError> {
-        self.slots
+        self.storage
+            .slots
             .get(slot.index())
             .and_then(Option::as_ref)
             .ok_or(invalid_error("read slot", provenance))
@@ -1395,6 +1433,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             return invalid("write slot", provenance);
         }
         let destination = self
+            .storage
             .slots
             .get_mut(slot.index())
             .ok_or(invalid_error("write slot", provenance))?;

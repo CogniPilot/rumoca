@@ -15,12 +15,12 @@ fn cloned_full_tensor_payload_is_shared_immutable_and_survives_original_drop() {
         .collect::<Vec<_>>();
     let original = TypedValue::construct(value_type, expected.clone()).unwrap();
     let cloned = original.clone();
-    assert!(std::sync::Arc::ptr_eq(&original.elements, &cloned.elements));
-    assert_eq!(std::sync::Arc::strong_count(&original.elements), 2);
+    assert!(original.elements.is_same_allocation(&cloned.elements));
+    assert_eq!(original.elements.holders(), 2);
     assert_eq!(original, cloned);
     drop(original);
     assert_eq!(cloned.elements(), expected);
-    assert_eq!(std::sync::Arc::strong_count(&cloned.elements), 1);
+    assert_eq!(cloned.elements.holders(), 1);
 }
 
 #[test]
@@ -59,10 +59,7 @@ fn aggregate_update_retains_old_ssa_alias_and_original_input_bits() {
     assert_eq!(input.elements(), original);
     assert_eq!(result[0].elements(), original);
     assert_eq!(result[1].elements(), expected);
-    assert!(!std::sync::Arc::ptr_eq(
-        &result[0].elements,
-        &result[1].elements
-    ));
+    assert!(!result[0].elements.is_same_allocation(&result[1].elements));
 }
 
 /// A fold that rewrites one element of its carried aggregate per iteration
