@@ -78,6 +78,50 @@ equation
     n = pre(n) + 1;
   end when;
 end WhenRelation;
+
+model CoincidentStateAndTimeEvents
+  Real x(start = 0, fixed = true);
+  Integer n(start = 0, fixed = true);
+  Integer m(start = 0, fixed = true);
+  Integer s(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when x >= 0.5 then
+    n = pre(n) + 1;
+  end when;
+  when time >= 0.5 then
+    m = pre(m) + 1;
+  end when;
+  s = n + 10 * m;
+end CoincidentStateAndTimeEvents;
+
+model RootJustBeforeTimeEvent
+  Real x(start = 0, fixed = true);
+  Integer n(start = 0, fixed = true);
+  Integer m(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when x >= 0.499999999999997 then
+    n = pre(n) + 1;
+  end when;
+  when sample(0.5, 1) then
+    m = pre(m) + 1;
+  end when;
+end RootJustBeforeTimeEvent;
+
+model AssertOnTime
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  assert(time < 0.5, "late");
+end AssertOnTime;
+
+model AssertOnState
+  Real x(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  assert(x < 0.5, "late");
+end AssertOnState;
 "#;
 
 /// FMPy's rows of one interface, `interface,time,value...` per line.
@@ -171,15 +215,21 @@ fn simulated(compiled: &rumoca::CompilationResult, case: &Case) -> Rows {
         .collect()
 }
 
+fn fmu_driver(driver: &Path, archive: &Path, case: &Case) -> Command {
+    let mut command = Command::new("python3");
+    command
+        .arg(driver)
+        .arg(archive)
+        .arg(case.stop.to_string())
+        .arg(case.interval.to_string())
+        .arg(case.variables.join(","))
+        .arg(case.input_argument());
+    command
+}
+
 fn fmu_rows(driver: &Path, archive: &Path, case: &Case) -> [Rows; 2] {
     let output = checked_output(
-        Command::new("python3")
-            .arg(driver)
-            .arg(archive)
-            .arg(case.stop.to_string())
-            .arg(case.interval.to_string())
-            .arg(case.variables.join(","))
-            .arg(case.input_argument()),
+        &mut fmu_driver(driver, archive, case),
         &format!("{} FMPy trace", case.model),
     );
     let mut interfaces: [Rows; 2] = [Vec::new(), Vec::new()];
@@ -358,4 +408,94 @@ fn packaged_fmi_relations_on_inputs_follow_the_importer_supplied_signal() {
             held: input_and_relation,
         },
     }]);
+}
+
+/// A coincident state event and time event are one event iteration (MLS
+/// section 8.5): the state crossing `x >= 0.5` and the time event at 0.5 both
+/// fire at the instant, in every interface, though a Co-Simulation substep
+/// integrator reaches the instant with `x` a rounding short of 0.5.
+#[test]
+fn packaged_fmi_coincident_state_and_time_events_share_one_iteration() {
+    assert_cases_agree(&[
+        Case {
+            model: "CoincidentStateAndTimeEvents",
+            variables: &["x", "n", "m", "s"],
+            stop: 1.0,
+            interval: 0.25,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+        Case {
+            model: "RootJustBeforeTimeEvent",
+            variables: &["n", "m"],
+            stop: 1.0,
+            interval: 0.25,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+        Case {
+            model: "CoincidentStateAndTimeEvents",
+            variables: &["n", "m", "s"],
+            stop: 1.0,
+            interval: 0.3,
+            input: &[],
+            reference: Reference::Simulation,
+        },
+    ]);
+}
+
+/// An assertion whose predicate reads time or a state is admitted through the
+/// scalar event profile: it holds while the predicate does, and fails with the
+/// simulation's own error once it stops holding.
+#[test]
+fn packaged_fmi_assertions_on_time_and_states_hold_and_fail_like_the_simulation() {
+    let held = |model| Case {
+        model,
+        variables: &["x"],
+        stop: 0.4,
+        interval: 0.1,
+        input: &[],
+        reference: Reference::Simulation,
+    };
+    assert_cases_agree(&[held("AssertOnTime"), held("AssertOnState")]);
+    if !conformance_prerequisites_are_available() {
+        return;
+    }
+    assert_pinned_fmpy();
+    let work = tempdir().expect("assertion FMI work directory");
+    let driver = work.path().join("events.py");
+    fs::write(&driver, DRIVER).expect("write the FMPy event driver");
+    for model in ["AssertOnTime", "AssertOnState"] {
+        let case = Case {
+            stop: 1.0,
+            interval: 0.25,
+            ..held(model)
+        };
+        let compiled = rumoca::Compiler::new()
+            .model(model)
+            .compile_str(SOURCE, "Events.mo")
+            .unwrap_or_else(|error| panic!("compile {model}: {error:?}"));
+        let simulation = rumoca_sim::simulate_dae_with_diagnostics(
+            &compiled.dae,
+            &rumoca_sim::SimOptions {
+                t_end: case.stop,
+                dt: Some(case.interval),
+                ..rumoca_sim::SimOptions::default()
+            },
+        );
+        assert!(
+            simulation.is_err(),
+            "{model}: the simulation fails its assertion"
+        );
+        for target in ["fmi2", "fmi3"] {
+            let fmu = build_named_fmu(&work.path().join(model), &compiled, target, model);
+            let output = fmu_driver(&driver, &fmu.archive, &case)
+                .output()
+                .expect("run the FMPy assertion driver");
+            assert!(
+                !output.status.success(),
+                "{model} {target}: the FMU fails the assertion the simulation fails"
+            );
+        }
+    }
 }

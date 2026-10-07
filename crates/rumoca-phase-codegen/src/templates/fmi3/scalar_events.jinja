@@ -166,26 +166,32 @@ static bool rmc_clock_active(size_t clock, double t) {
     double ticks = (t - phase) / period;
     return ticks >= 0.0 && rmc_time_match(ticks, round(ticks));
 }
+/* The answer of a time-event query: no event in the window, the next event, or
+   a clock whose ticks the match tolerance cannot tell apart from `current`
+   (the schedule lattice is finer than the time resolution). */
+typedef enum { RMC_NO_EVENT, RMC_EVENT, RMC_EVENT_UNRESOLVED } RmcNext;
 /* timeline.rs next_schedule_event_time: the first tick of `clock` after
-   `current` and within `target`. */
-static bool rmc_clock_next(size_t clock, double current, double target, double* event) {
+   `current` and within `target`. The linked runtime gives up after four ticks
+   and reports no event; a tick it cannot resolve here is RMC_EVENT_UNRESOLVED,
+   which the entry points return as an FMI error, never a dropped tick. */
+static RmcNext rmc_clock_next(size_t clock, double current, double target, double* event) {
     double period = rmc_clock_period[clock], phase = rmc_clock_phase[clock];
-    if (!isfinite(period) || !isfinite(phase) || period <= 0.0 || !isfinite(current) || !isfinite(target)) return false;
+    if (!isfinite(period) || !isfinite(phase) || period <= 0.0 || !isfinite(current) || !isfinite(target)) return RMC_NO_EVENT;
     double tick = fmax(floor((current - phase) / period), 0.0);
     for (int attempt = 0; attempt < 4; ++attempt) {
         double at = rmc_clock_tick_time(clock, tick);
-        if (rmc_time_in_window(at, current, target) && !rmc_time_match(at, current)) { *event = at; return true; }
-        if (at > target && !rmc_time_match(at, target)) return false;
+        if (rmc_time_in_window(at, current, target) && !rmc_time_match(at, current)) { *event = at; return RMC_EVENT; }
+        if (at > target && !rmc_time_match(at, target)) return RMC_NO_EVENT;
         double first_distinct = current + {{ te.match_tolerance }} * (1.0 + fmax(fabs(at), fabs(current)));
         double next = fmax(fmax(floor((first_distinct - phase) / period) + 1.0, tick + 1.0), 0.0);
-        if (!isfinite(next) || next <= tick) return false;
+        if (!isfinite(next) || next <= tick) return RMC_NO_EVENT;
         tick = next;
     }
-    return false;
+    return RMC_EVENT_UNRESOLVED;
 }
 /* runtime/schedule.rs next_stop: the earliest time event after `current` and
    within `target`, instants and clock ticks alike. */
-static bool rmc_next_time_event(double current, double target, double* event) {
+static RmcNext rmc_next_time_event(double current, double target, double* event) {
     bool found = false;
     for (size_t k = 0; k != RMC_TIME_INSTANTS; ++k) {
         double at = rmc_time_instant[k];
@@ -193,9 +199,11 @@ static bool rmc_next_time_event(double current, double target, double* event) {
     }
     for (size_t k = 0; k != RMC_CLOCKS; ++k) {
         double at = 0.0;
-        if (rmc_clock_next(k, current, target, &at) && (!found || at < *event)) { *event = at; found = true; }
+        RmcNext next = rmc_clock_next(k, current, target, &at);
+        if (next == RMC_EVENT_UNRESOLVED) return RMC_EVENT_UNRESOLVED;
+        if (next == RMC_EVENT && (!found || at < *event)) { *event = at; found = true; }
     }
-    return found;
+    return found ? RMC_EVENT : RMC_NO_EVENT;
 }
 /* solve_ops.rs write_clock_activation_params: every activation lane reads
    whether its clock ticks at `t`; an event holds them for its iteration. */
@@ -811,7 +819,7 @@ static {{ prefix }}Status rmc_cs_start(ModelInstance* m) {
 
 /* The time event Event Mode announces: the first instant or clock tick after
    the current time (`nextEventTime`). */
-static bool rmc_next_event(const ModelInstance* m, double* event) {
+static RmcNext rmc_next_event(const ModelInstance* m, double* event) {
     return rmc_next_time_event(m->time, DBL_MAX, event);
 }
 {%- endmacro %}
@@ -882,10 +890,13 @@ static double rmc_scan_resolution(double width) {
     width = fabs(width);
     return isfinite(width) && width > 0.0 ? fmax(width * {{ plan.scan_fraction }}, DBL_MIN) : {{ plan.fallback_scan_resolution }};
 }
+/* RootLocationPlan::interval_roundoff. */
+static double rmc_interval_roundoff(double start, double duration) {
+    return fmax({{ plan.roundoff_epsilons }} * DBL_EPSILON * (fabs(start) + fabs(duration)), DBL_MIN);
+}
 /* RootLocationPlan::location_tolerance over interval_roundoff. */
 static double rmc_location_tolerance(double start, double scan) {
-    double roundoff = fmax({{ plan.roundoff_epsilons }} * DBL_EPSILON * (fabs(start) + fabs(scan)), DBL_MIN);
-    return fmin(roundoff, scan);
+    return fmin(rmc_interval_roundoff(start, scan), scan);
 }
 /* The indicators `z` at the current coordinate, and whether any has left the
    domain its relation memory holds. */
@@ -896,28 +907,13 @@ static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool*
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
     return {{ prefix }}OK;
 }
-/* One scan interval from `t`: integrate; when a domain changed, narrow the
-   interval to the location tolerance by the plan's refinement (root.rs
-   refine_earliest), integrate to the located crossing, and run Event Mode
-   there. `*advanced` is the time covered. */
-static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, double* advanced) {
-    double y0[Y_LEN];
-    /* Every indicator buffer is defined on every path: rmc_domains_changed
-       leaves its output untouched while no domain is armed, and the
-       refinement copies whole buffers. */
+/* Narrow the interval [t, t + h], whose end has a changed domain (`z_high`)
+   and whose start has none (`z_low`), to the location tolerance by the plan's
+   refinement (root.rs refine_earliest), and integrate to the application
+   coordinate the tie-break picks; `*application` is its distance from `t`. */
+static {{ prefix }}Status rmc_cs_locate(ModelInstance* m, double t, double h, const double* y0, double* z_low, double* z_high, double* application) {
     double z[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
-    double z_low[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
-    double z_high[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
     bool changed = false;
-    memcpy(y0, m->y, sizeof(m->y));
-    {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
-    if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
-    if (rmc_domains_changed(m, z_high, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
-    *advanced = h;
-    if (!changed) return {{ prefix }}OK;
-    memcpy(m->y, y0, sizeof(m->y));
-    m->time = t;
-    if (rmc_event_indicators(m, z_low) != {{ prefix }}OK) return {{ prefix }}Error;
     RmcRootBracket bracket = rmc_root_open(0.0, h, rmc_location_tolerance(t, h));
     bool exhausted = true;
     for (size_t iter = 0; iter < {{ plan.refinement_iteration_cap }}; ++iter) {
@@ -937,22 +933,72 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     /* RootTieBreak::ToleranceWindow (root.rs window_application): the window
        end applies every change within one tolerance after the left limit when
        a changed indicator stands in its new domain there. */
-    double application = bracket.high, window = rmc_root_window(&bracket, h);
+    *application = bracket.high;
+    double window = rmc_root_window(&bracket, h);
     bool integrated_to_application = false;
     if (window > bracket.high) {
         memcpy(m->y, y0, sizeof(m->y));
         if ({{ integrate }}(m, t, window) != {{ prefix }}OK || rmc_domains_changed(m, z, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
-        if (changed) { application = window; integrated_to_application = true; }
+        if (changed) { *application = window; integrated_to_application = true; }
     }
     if (!integrated_to_application) {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, application) != {{ prefix }}OK) return {{ prefix }}Error;
+        if ({{ integrate }}(m, t, *application) != {{ prefix }}OK) return {{ prefix }}Error;
+    }
+    return {{ prefix }}OK;
+}
+/* One scan interval from `t`: integrate; when a domain changed, locate the
+   crossing (rmc_cs_locate), integrate to it, and run Event Mode there.
+   `*advanced` is the time covered.
+   An interval that ends at a time event also looks one location tolerance
+   past its end, the window the tie-break above applies after a located root:
+   a state root the substep integrator reaches a rounding short of the instant
+   joins the time event's iteration, as it does in the simulation, whose
+   integration reaches the instant. */
+static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, bool ends_at_time_event, double* advanced) {
+    double y0[Y_LEN];
+    /* Every indicator buffer is defined on every path: rmc_domains_changed
+       leaves its output untouched while no domain is armed, and the
+       refinement copies whole buffers. */
+    double z[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    double z_low[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    double z_high[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    bool changed = false;
+    memcpy(y0, m->y, sizeof(m->y));
+    {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
+    if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
+    if (rmc_domains_changed(m, z_high, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
+    *advanced = h;
+    if (!changed && ends_at_time_event && RMC_EVENT_INDICATORS != 0 && m->rmc_domain_valid) {
+        double settled[Y_LEN], substep = m->rmc_cs_substep;
+        memcpy(settled, m->y, sizeof(settled));
+        memcpy(m->y, y0, sizeof(m->y));
+        bool past_end = false;
+        if ({{ integrate }}(m, t, h + rmc_location_tolerance(t, h)) != {{ prefix }}OK || rmc_domains_changed(m, z, &past_end) != {{ prefix }}OK) return {{ prefix }}Error;
+        if (!past_end) { memcpy(m->y, settled, sizeof(settled)); m->rmc_cs_substep = substep; }
+        m->time = t + h;
+        /* The caller's time event iteration observes the changed domain. */
+        return {{ prefix }}OK;
+    }
+    if (!changed) return {{ prefix }}OK;
+    memcpy(m->y, y0, sizeof(m->y));
+    m->time = t;
+    if (rmc_event_indicators(m, z_low) != {{ prefix }}OK) return {{ prefix }}Error;
+    if (rmc_cs_locate(m, t, h, y0, z_low, z_high, advanced) != {{ prefix }}OK) return {{ prefix }}Error;
+    /* RootLocationPlan::coincides_with_time_event: a root located within the
+       interval's roundoff of the time event it ends at is not applied on its
+       own; the interval ends at the event and the event's iteration handles
+       it. */
+    if (ends_at_time_event && fabs(h - *advanced) <= rmc_interval_roundoff(t, h)) {
+        memcpy(m->y, y0, sizeof(m->y));
+        if ({{ integrate }}(m, t, h) != {{ prefix }}OK) return {{ prefix }}Error;
+        *advanced = h;
+        return {{ prefix }}OK;
     }
     bool enter = false;
     if (rmc_events_completed(m, &enter) != {{ prefix }}OK) return {{ prefix }}Error;
     bool reinit = false;
     if (enter && (rmc_events_update(m, &reinit) != {{ prefix }}OK || rmc_events_continuous(m) != {{ prefix }}OK)) return {{ prefix }}Error;
-    *advanced = application;
     return {{ prefix }}OK;
 }
 static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double step) {
@@ -975,9 +1021,11 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
         double h = fmin(end - t, scan), advanced = 0.0, event = 0.0;
         /* A time event inside the interval ends it exactly at the event, and
            an event at the interval's end is handled at the end. */
-        bool at_event = rmc_next_time_event(t, t + h, &event);
+        RmcNext next = rmc_next_time_event(t, t + h, &event);
+        if (next == RMC_EVENT_UNRESOLVED) { RMC_LOG(m, "a clock tick is finer than the time resolution"); return {{ prefix }}Error; }
+        bool at_event = next == RMC_EVENT;
         if (at_event) h = fmin(event, t + h) - t;
-        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, &advanced);
+        {{ prefix }}Status interval = rmc_cs_interval(m, t, h, at_event, &advanced);
         if (interval != {{ prefix }}OK) return interval == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
         t = advanced == end - t ? end : t + advanced;
         m->time = t;
