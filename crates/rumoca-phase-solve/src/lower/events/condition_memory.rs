@@ -35,6 +35,17 @@ pub(super) fn lower_condition_memory<'dae>(
         // A condition built from clocked relations is only meaningful on its clock's
         // ticks, and its operands only resolve while that schedule is active.
         let clock = condition_operand_clock(view, clocks, condition, span)?;
+        // A condition no clock owns is a step of its clock's partition only
+        // when it reads a `previous` coordinate, which resolves on that clock's
+        // ticks alone. Otherwise (a `when` on a variable a clock updates) the
+        // buffer is refreshed with the other unowned buffers, after the `when`
+        // that reads it has seen the edge: a buffer refreshed in the partition,
+        // right after the variable it reads, would hide the edge from that
+        // `when`.
+        let clock = clock.filter(|_| {
+            condition_clock_owner(view, condition).is_some()
+                || condition_reads_previous(view, condition)
+        });
         let program = match clock {
             Some((clock, _)) => ScalarCompiler::new(view, layout, None)
                 .clocked_condition_program(clock, condition)?,
@@ -67,6 +78,50 @@ pub(super) fn lower_condition_memory<'dae>(
         }
     }
     Ok(())
+}
+
+/// Whether a relation or discrete operand of `condition` reads a `previous`
+/// coordinate.
+fn condition_reads_previous<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionId<'dae>,
+) -> bool {
+    let mut reads = false;
+    let mut pending = vec![condition];
+    while let Some(current) = pending.pop() {
+        let Some(node) = view.condition(current) else {
+            continue;
+        };
+        let expression = match node.operation() {
+            dae::ConditionOperation::Relation(relation) => view
+                .relation(relation)
+                .map(|relation| relation.expression()),
+            dae::ConditionOperation::Discrete(expression) => Some(expression),
+            dae::ConditionOperation::Not(operand) => {
+                pending.push(operand);
+                None
+            }
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
+                pending.push(lhs);
+                pending.push(rhs);
+                None
+            }
+            dae::ConditionOperation::Initial
+            | dae::ConditionOperation::Always
+            | dae::ConditionOperation::Clock(_) => None,
+        };
+        if let Some(expression) = expression {
+            dae::for_each_expression(view, expression, |_, node| {
+                reads |= matches!(
+                    node.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Previous(_))
+                );
+            });
+        }
+    }
+    reads
 }
 
 /// The elements `bi` of every vector activation `{b1, ..., bn}` that no clock
