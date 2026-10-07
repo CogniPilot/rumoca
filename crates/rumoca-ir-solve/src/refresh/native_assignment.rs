@@ -211,7 +211,7 @@ pub(super) fn derive_for_problem(
         .into_iter()
         .map(|family| family.stage)
         .collect::<Vec<_>>();
-    typed_inputs::bind_stages(&mut stages, &mut inputs, &derived.outputs);
+    typed_inputs::bind_stages(&mut stages, &mut inputs, &derived.outputs)?;
     Ok(NativeRefreshAssignmentSchedule {
         stages,
         derived_outputs: derived.outputs,

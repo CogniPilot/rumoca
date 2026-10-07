@@ -51,6 +51,19 @@ equation
   next = Carry.Advance(previous, requested, 1);
   receivedSequence = previous.identity.sequence;
 end Step;
+function Mixed
+  input Integer n;
+  input Real x;
+  output Real y;
+algorithm
+  y := x - n;
+end Mixed;
+model SharedArgument
+  input Integer count = 1;
+  output Real difference;
+equation
+  difference = Mixed(count, count);
+end SharedArgument;
 model RealView
   input Integer count = 1;
   output Real scaled;
@@ -168,5 +181,27 @@ fn real_views_of_integer_inputs_are_exact_or_refused() {
         .map(|value| value.as_f64().unwrap())
         .collect::<Vec<_>>();
     execution.set_input("requested", 2);
+    assert_eq!(execution.run_typed(&parameters).0, 2);
+}
+
+/// One Integer input passed both as an Integer argument (bound to its lane)
+/// and as a Real argument of the same call reads its Real view too, so a
+/// magnitude above 2^53 is refused rather than rounded into the Real cell.
+#[test]
+fn an_integer_input_also_passed_as_a_real_argument_is_checked() {
+    let _lock = session_test_guard();
+    let artifact = prepare("SharedArgument");
+    let mut execution = CallExecution::new(&artifact);
+    let parameters = artifact["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_f64().unwrap())
+        .collect::<Vec<_>>();
+    execution.set_input("count", 1 << 53);
+    let (status, values) = execution.run_typed(&parameters);
+    assert_eq!(status, 0);
+    assert_eq!(values[slot(&artifact, "difference", "Y")], 0.0);
+    execution.set_input("count", (1 << 53) + 1);
     assert_eq!(execution.run_typed(&parameters).0, 2);
 }

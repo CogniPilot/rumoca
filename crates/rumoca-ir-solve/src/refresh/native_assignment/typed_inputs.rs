@@ -145,7 +145,7 @@ pub(super) fn bind_stages(
     stages: &mut [NativeRefreshAssignmentStage],
     inputs: &mut TypedInputs,
     outputs: &[NativeDerivedOutput],
-) {
+) -> Result<(), NativeEvaluationRefusal> {
     let views = inputs
         .lanes
         .iter()
@@ -179,7 +179,7 @@ pub(super) fn bind_stages(
         if let [ComputeNode::ScalarPrograms(block)] = stage.value_kernel.nodes.as_slice()
             && let [program] = block.programs()
         {
-            flow.program(program);
+            flow.program(program)?;
         }
         // A P load outside the one analysed program (a nested region, a
         // family node) is an unbound reader.
@@ -196,6 +196,7 @@ pub(super) fn bind_stages(
     for (lane, checked) in inputs.lanes.iter_mut().zip(checked) {
         lane.checked = checked;
     }
+    Ok(())
 }
 
 /// Every element load of an Integer input's P slot anywhere in a stage, per
@@ -281,22 +282,33 @@ struct StageFlow<'a> {
 }
 
 impl StageFlow<'_> {
-    fn program(&mut self, operations: &[LinearOp]) {
+    fn program(&mut self, operations: &[LinearOp]) -> Result<(), NativeEvaluationRefusal> {
         let mut registers = RegisterSources::default();
         for (position, op) in operations.iter().enumerate() {
-            self.operation(&mut registers, position, op);
+            self.operation(&mut registers, position, op)?;
         }
         self.bindings.unread_results = registers
             .cells
             .difference(&registers.read_results)
             .copied()
             .collect();
+        Ok(())
     }
 
     /// Follow one operation: its unbound reads, then what its writes hold.
-    fn operation(&mut self, registers: &mut RegisterSources, position: usize, op: &LinearOp) {
+    fn operation(
+        &mut self,
+        registers: &mut RegisterSources,
+        position: usize,
+        op: &LinearOp,
+    ) -> Result<(), NativeEvaluationRefusal> {
         let bound = self.bound_reads(position, op, &registers.views);
-        let reads = crate::linear_op::op_read_registers(op).unwrap_or_default();
+        // An unknown read set could read any held Integer value unchecked.
+        let reads = match crate::linear_op::op_read_registers(op) {
+            Some(reads) => reads,
+            None if registers.views.is_empty() && registers.results.is_empty() => Vec::new(),
+            None => return Err(NativeEvaluationRefusal::UnresolvedTypedRead),
+        };
         for register in reads
             .into_iter()
             .filter(|register| !bound.contains(register))
@@ -318,6 +330,7 @@ impl StageFlow<'_> {
         {
             registers.call_results(position, *dst_start, site);
         }
+        Ok(())
     }
 
     /// The registers `op` reads through a bound sink: Integer argument cells
@@ -334,11 +347,22 @@ impl StageFlow<'_> {
             LinearOp::PureCall {
                 input_starts, site, ..
             } => {
-                let cells = integer_argument_cells(input_starts, site)
-                    .filter_map(|(flat, register)| Some((flat, register, *views.get(&register)?)))
+                // A register a Real argument cell of the same call also reads
+                // stays an unbound read of its Real view.
+                let real_reads = argument_cells(input_starts, site)
+                    .filter(|&(_, _, integer)| !integer)
+                    .map(|(_, register, _)| register)
+                    .collect::<BTreeSet<_>>();
+                let cells = argument_cells(input_starts, site)
+                    .filter(|&(_, _, integer)| integer)
+                    .filter_map(|(flat, register, _)| {
+                        Some((flat, register, *views.get(&register)?))
+                    })
                     .collect::<Vec<_>>();
                 for (flat, register, ordinal) in cells {
-                    bound.insert(register);
+                    if !real_reads.contains(&register) {
+                        bound.insert(register);
+                    }
                     self.bindings
                         .inputs
                         .insert((position, flat), self.lanes[ordinal].lane_offset);
@@ -364,11 +388,12 @@ impl StageFlow<'_> {
     }
 }
 
-/// The `(flat cell, register)` pairs of every Integer argument cell of a call.
-fn integer_argument_cells<'a>(
+/// The `(flat cell, register, is Integer)` triple of every argument cell of a
+/// call.
+fn argument_cells<'a>(
     input_starts: &'a [Reg],
     site: &'a crate::SolvePureCallSite,
-) -> impl Iterator<Item = (u32, Reg)> + 'a {
+) -> impl Iterator<Item = (u32, Reg, bool)> + 'a {
     let mut flat = 0u32;
     input_starts
         .iter()
@@ -378,8 +403,7 @@ fn integer_argument_cells<'a>(
             flat += value.scalar_count();
             let integer = matches!(value.element_type(), crate::SolveScalarType::Integer(_));
             (0..value.scalar_count())
-                .filter(move |_| integer)
-                .filter_map(move |cell| Some((first + cell, start.checked_add(cell)?)))
+                .filter_map(move |cell| Some((first + cell, start.checked_add(cell)?, integer)))
         })
 }
 

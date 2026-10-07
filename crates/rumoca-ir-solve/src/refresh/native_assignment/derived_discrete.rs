@@ -59,6 +59,10 @@ pub enum NativeEvaluationRefusal {
     IntegerReaderRequiresTypedRegisters,
     /// An indexed, tensor or compact family read of a derived output.
     DerivedOutputCompactRead,
+    /// An operation whose register reads cannot be computed while a
+    /// register holds an Integer input view or Integer call result, so no
+    /// exact binding or check can be proven for it.
+    UnresolvedTypedRead,
 }
 
 impl std::fmt::Display for NativeEvaluationRefusal {
@@ -99,6 +103,9 @@ impl std::fmt::Display for NativeEvaluationRefusal {
             }
             Self::DerivedOutputCompactRead => {
                 "a derived discrete output is read through an indexed, tensor or compact family load"
+            }
+            Self::UnresolvedTypedRead => {
+                "an operation with no computable read set may read an Integer value held in a Real register"
             }
         })
     }
