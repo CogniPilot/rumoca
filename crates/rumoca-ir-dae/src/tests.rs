@@ -1645,6 +1645,14 @@ fn nested_expression_walks_reuse_their_stamp_tables() {
             });
         }
         assert!(inner_visits > 0);
+        for _ in 0..50 {
+            let mut visits = 0usize;
+            ExpressionTraversal::new().visit_pruned(view, [root], |_, _| {
+                visits += 1;
+                true
+            });
+            assert!(visits > 0);
+        }
         let growths = STAMP_TABLE_GROWTHS.with(std::cell::Cell::get) - before;
         // One table per nesting depth, sized once; none per query.
         assert!(growths <= 3, "stamp tables grew {growths} times");
