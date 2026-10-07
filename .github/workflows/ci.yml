@@ -814,10 +814,10 @@ jobs:
     name: Coverage Gate
     runs-on: ubuntu-24.04
     # This job installs cargo-llvm-cov and generates full workspace artifacts
-    # before running the trim/gate steps, so 30 minutes is too tight on cold
-    # GitHub runners. Keep explicit headroom here to avoid job-level
+    # before running the trim/gate steps; a full run takes about 45 minutes on
+    # cold GitHub runners. Keep explicit headroom here to avoid job-level
     # cancellation while tests are still progressing.
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
