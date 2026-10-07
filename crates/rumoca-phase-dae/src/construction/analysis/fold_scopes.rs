@@ -64,6 +64,10 @@ struct SymbolicWrite {
     /// Binder values (one coordinate per binder of every scope up to the
     /// writing scope) at which the write certainly runs.
     region: IndexUnion,
+    /// Whether the write runs at every binder value of `region`. A write on a
+    /// path that only some executions take (a runtime guard no binder range
+    /// selects) is read-visible on that path alone and leaves no definition.
+    certain: bool,
 }
 
 /// The certain state at the end of one iteration of a scope.
@@ -145,7 +149,7 @@ impl FoldScopes {
             writes: scope
                 .writes
                 .iter()
-                .filter(|write| !iteration_locals.contains(&write.target))
+                .filter(|write| write.certain && !iteration_locals.contains(&write.target))
                 .cloned()
                 .collect(),
             defined,
@@ -161,11 +165,15 @@ impl FoldScopes {
         let inner_start = scope.region.0.len() - scope.binders.len();
         let mut realized = Vec::new();
         let mut outer = Vec::new();
-        let results = scope.writes.iter().flat_map(|write| {
-            write.region.boxes().iter().filter_map(move |part| {
-                realize_write(write, part, inner_start).map(|done| (write, done))
-            })
-        });
+        let results = scope
+            .writes
+            .iter()
+            .filter(|write| write.certain)
+            .flat_map(|write| {
+                write.region.boxes().iter().filter_map(move |part| {
+                    realize_write(write, part, inner_start).map(|done| (write, done))
+                })
+            });
         for (write, done) in results {
             match done {
                 Realized::Defined(set) => realized.push((write.target.clone(), set)),
@@ -192,9 +200,14 @@ impl FoldScopes {
         };
         for branch in branches {
             if let Some(branch_scope) = branch.scopes.last() {
-                scope
-                    .writes
-                    .extend(branch_scope.writes.iter().skip(before).cloned());
+                scope.writes.extend(
+                    branch_scope
+                        .writes
+                        .iter()
+                        .skip(before)
+                        .filter(|write| write.certain)
+                        .cloned(),
+                );
             }
         }
     }
@@ -647,13 +660,14 @@ impl FoldScopes {
             return;
         };
         let exact = matches!(image(&axes, &scope.region), Some(SetAnswer::Exact(_)));
-        if !scope.exact || scope.region.is_empty() || !exact {
+        if scope.region.is_empty() || !exact {
             return;
         }
         scope.writes.push(SymbolicWrite {
             target: target.clone(),
             axes,
             region: IndexUnion::of([scope.region.clone()]),
+            certain: scope.exact,
         });
     }
 
@@ -1018,6 +1032,7 @@ fn realize_write(write: &SymbolicWrite, part: &IndexBox, inner_start: usize) -> 
         target: write.target.clone(),
         axes,
         region: IndexUnion::of([IndexBox(part.0[..inner_start].to_vec())]),
+        certain: true,
     }))
 }
 

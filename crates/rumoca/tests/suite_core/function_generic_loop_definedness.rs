@@ -348,3 +348,57 @@ fn a_branch_no_iteration_selects_changes_nothing() {
         [1.0, 2.0, 3.0, 6.0]
     );
 }
+
+const GUARDED_DEPENDENT_SCRATCH: &str = r#"
+function guardedScratch
+  input Real m[3, 3];
+  input Integer mode;
+  output Real lower[3];
+protected
+  Real tmp[3];
+  Real y[3, 3];
+algorithm
+  y := m;
+  for column in 1:2 loop
+    if mode == 2 then
+      for row in column + 1:3 loop
+        tmp[row] := y[row, column];
+        y[row, column] := tmp[row] + 1.0;
+      end for;
+    end if;
+  end for;
+  lower := {y[2, 1], y[3, 1], y[3, 2]};
+end guardedScratch;
+
+model GuardedScratch
+  output Real lower[3];
+equation
+  lower = guardedScratch({{11.0, 12.0, 13.0}, {21.0, 22.0, 23.0}, {31.0, 32.0, 33.0}}, 2);
+end GuardedScratch;
+"#;
+
+/// A scratch element written and then read in one iteration of a dependent
+/// inner loop is defined for that read, however many runtime guards the
+/// enclosing iteration is under.
+#[test]
+fn a_same_iteration_write_defines_a_scratch_under_a_runtime_guard() {
+    let compiled = Compiler::new()
+        .model("GuardedScratch")
+        .compile_str(GUARDED_DEPENDENT_SCRATCH, "GuardedScratch.mo")
+        .unwrap_or_else(|error| panic!("GuardedScratch should compile: {error}"));
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .unwrap_or_else(|error| panic!("GuardedScratch should evaluate: {error}"));
+    let value = |name: &str| {
+        probe
+            .report
+            .solver_y
+            .iter()
+            .find(|slot| slot.name.replace(' ', "") == name)
+            .unwrap_or_else(|| panic!("GuardedScratch has no {name}"))
+            .value
+    };
+    assert_eq!(
+        ["lower[1]", "lower[2]", "lower[3]"].map(value),
+        [22.0, 32.0, 33.0]
+    );
+}
