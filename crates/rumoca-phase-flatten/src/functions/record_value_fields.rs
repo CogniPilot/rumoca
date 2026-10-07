@@ -21,7 +21,8 @@
 //! arrays). A whole write of a split field becomes one
 //! write per field of its value, projected in place when the value has a
 //! field-wise projection (a record constructor, a component reference, or an
-//! array or comprehension of those) and otherwise held once in the field's
+//! array or comprehension of those) that reads no path of the record, and
+//! otherwise held once in the field's
 //! record-valued local, so a field assigned whole and then updated field by
 //! field inside a branch is an ordinary sequence of local writes. Any other
 //! record-typed field becomes one record-valued local (`r.f.g` becomes

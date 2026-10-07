@@ -61,6 +61,42 @@ fn has_field_projection(value: &Expression) -> bool {
     }
 }
 
+/// Whether `value` reads any path of the record named `root`. A whole write
+/// projected field by field would let a later field's value see an earlier
+/// field's new value; MLS §11.2.1 evaluates the whole value first.
+fn reads_record(value: &Expression, root: &str) -> bool {
+    struct Reads<'root> {
+        root: &'root str,
+        found: bool,
+    }
+    impl ExpressionVisitor for Reads<'_> {
+        fn visit_var_ref(
+            &mut self,
+            name: &rumoca_core::Reference,
+            subscripts: &[rumoca_core::Subscript],
+        ) {
+            match name.component_ref() {
+                Some(comp) => {
+                    self.found |= comp
+                        .parts()
+                        .first()
+                        .is_some_and(|part| part.ident == self.root);
+                    for part in comp.parts() {
+                        for subscript in &part.subs {
+                            self.visit_subscript(subscript);
+                        }
+                    }
+                }
+                None => self.found |= name.segments().first() == Some(&self.root),
+            }
+            self.walk_var_ref(name, subscripts);
+        }
+    }
+    let mut reads = Reads { root, found: false };
+    reads.visit_expression(value);
+    reads.found
+}
+
 /// How a body uses the record node at a path.
 #[derive(Clone, Copy, Default)]
 pub(super) struct NodeUses {
@@ -291,8 +327,9 @@ fn land<'tree, 'path>(
 /// Expands every whole write of a split record node into one write per field
 /// of its value, recursively, in statement order.
 ///
-/// A value with a field-wise projection is projected in place. Any other
-/// value (a function call, a conditional expression, a call result) is first
+/// A value with a field-wise projection that reads no path of the record is
+/// projected in place. Any other value (a function call, a conditional
+/// expression, a call result, or a value reading the record it writes) is first
 /// written whole to the node's own record-valued local, named like the
 /// node's field prefix (the record's holder for the root), and the node's
 /// fields are projected from that local, so the value is evaluated exactly
@@ -403,7 +440,7 @@ impl<'record> WholeWriteExpander<'record> {
             expanded.push(statement.clone());
             return Ok(());
         };
-        let writes = if has_field_projection(value) {
+        let writes = if has_field_projection(value) && !reads_record(value, &self.record.name) {
             self.field_writes(node, comp, value, span)?
         } else {
             let held = self.hold(node, &local, span);

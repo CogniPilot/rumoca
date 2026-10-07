@@ -242,3 +242,60 @@ end ObserveUndefined;
         "unexpected diagnostic: {message}"
     );
 }
+
+/// MLS 3.7 §11.2.1: a whole assignment evaluates its value before it writes
+/// the record, so a value that reads the record being written sees its old
+/// fields, not the fields an earlier part of the same write just stored.
+#[test]
+fn a_whole_write_reading_its_own_record_sees_the_old_fields() {
+    let source = r#"
+within;
+package S
+  record R
+    Real x;
+    Real y;
+  end R;
+  function Swap
+    input Real v;
+    output Real y;
+  protected
+    R r;
+  algorithm
+    r := R(v, 2 * v);
+    if v > 0 then
+      r.x := r.x + 1;
+    end if;
+    r := R(r.y, r.x);
+    y := 100 * r.x + r.y;
+  end Swap;
+  function Named
+    input Real v;
+    output Real y;
+  protected
+    R r;
+  algorithm
+    r := R(v, v);
+    if v > 0 then
+      r.x := r.x + 1;
+    end if;
+    r := R(x = 1, y = r.x + 10);
+    y := 100 * r.x + r.y;
+  end Named;
+end S;
+model ObserveSelfReads
+  Real swapped = S.Swap(3);
+  Real named = S.Named(3);
+end ObserveSelfReads;
+"#;
+    let compiled = Compiler::new()
+        .model("ObserveSelfReads")
+        .compile_str(source, "ObserveSelfReads.mo")
+        .expect("a whole write reading its own record compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the self-reading record DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    // r = (4, 6) before the swap, so the swap gives (6, 4).
+    assert_eq!(value(&probe.report, "swapped"), 604.0);
+    // r.x = 4 before the write, so y = 4 + 10.
+    assert_eq!(value(&probe.report, "named"), 114.0);
+}
