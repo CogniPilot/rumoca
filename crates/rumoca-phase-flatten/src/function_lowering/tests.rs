@@ -788,28 +788,35 @@ fn record_param_lowering_reconstructs_whole_record_uses() {
             .collect::<Vec<_>>(),
         vec!["source_a", "source_b"]
     );
-    let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
-        panic!("expected assignment");
-    };
-    let rumoca_core::Expression::FunctionCall {
-        name,
-        args,
-        is_constructor,
-        ..
-    } = value
-    else {
-        panic!("expected reconstructed record constructor, got {value:?}");
-    };
-    assert!(*is_constructor);
-    assert_eq!(name.as_str(), "Pkg.Record");
-    assert_eq!(name.target_def_id(), Some(RECORD_DEF_ID));
-    assert!(matches!(
-        args.as_slice(),
-        [
-            rumoca_core::Expression::VarRef { name: first, .. },
-            rumoca_core::Expression::VarRef { name: second, .. }
-        ] if first.as_str() == "source_a" && second.as_str() == "source_b"
-    ));
+    // MLS 12.4.4: the whole-record copy is one assignment per field, built
+    // without a constructor call.
+    let copies = function
+        .body
+        .iter()
+        .map(|statement| {
+            let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
+                panic!("expected field assignment, got {statement:?}");
+            };
+            let rumoca_core::Expression::VarRef { name, .. } = value else {
+                panic!("expected a field read, got {value:?}");
+            };
+            (
+                comp.parts()
+                    .iter()
+                    .map(|part| part.ident.as_str())
+                    .collect::<Vec<_>>()
+                    .join("."),
+                name.as_str().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        copies,
+        vec![
+            ("result.a".to_string(), "source_a".to_string()),
+            ("result.b".to_string(), "source_b".to_string()),
+        ]
+    );
 }
 
 #[test]
