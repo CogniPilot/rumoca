@@ -644,3 +644,130 @@ fn an_array_of_records_filled_from_calls_and_read_by_fields_is_split() {
     assert_eq!(value(&probe.report, "second"), 6.0);
     assert_eq!(value(&probe.report, "total"), 2.0);
 }
+
+/// MLS 3.7 section 12.4.4: a record local with an array-of-records field,
+/// copied whole into a field of the output record, is split into columns and
+/// the copy reads each column, since a constructor cannot reassemble an array
+/// of records from them.
+const RECORD_ARRAY_COPY: &str = r#"
+package G
+  constant Integer cap = 3;
+  record Edge
+    Boolean enabled;
+    Integer id;
+    Real w;
+  end Edge;
+  record State
+    Integer generation;
+    Integer revision;
+    Edge edges[cap];
+  end State;
+  record Insertion
+    State state;
+    Boolean accepted;
+  end Insertion;
+  function EmptyEdge
+    output Edge result;
+  algorithm
+    result.enabled := false; result.id := 0; result.w := 0;
+  end EmptyEdge;
+  function Empty
+    input Integer generation = 1;
+    output State result;
+  algorithm
+    result.generation := generation; result.revision := 0;
+    for i in 1:cap loop
+      result.edges[i] := EmptyEdge();
+    end for;
+  end Empty;
+  function Insert
+    input State state;
+    input Real w;
+    output Insertion result;
+  algorithm
+    result.state := state;
+    result.accepted := false;
+    for i in 1:cap loop
+      if not result.state.edges[i].enabled and not result.accepted then
+        result.state.edges[i].enabled := true;
+        result.state.edges[i].id := i;
+        result.state.edges[i].w := w;
+        result.accepted := true;
+      end if;
+    end for;
+  end Insert;
+  function Total
+    input State s;
+    output Real y;
+  algorithm
+    y := s.revision * 100 + s.generation * 10;
+    for i in 1:cap loop
+      if s.edges[i].enabled then y := y + s.edges[i].w; end if;
+    end for;
+  end Total;
+  record Update
+    State state;
+    Boolean accepted;
+  end Update;
+  function Capture
+    input State previous;
+    input Boolean reset;
+    input Real w;
+    output Update result;
+  protected
+    State working; Insertion insertion; Boolean valid; Real y;
+  algorithm
+    result.state := previous; result.accepted := false; y := -1;
+    if reset then
+      working := Empty(5);
+    else
+      working := previous;
+    end if;
+    valid := true;
+    for slot in 1:cap loop
+      if working.edges[slot].enabled and working.edges[slot].w > 100 then
+        working.edges[slot] := EmptyEdge();
+      end if;
+    end for;
+    insertion := Insert(working, w);
+    working := insertion.state;
+    valid := insertion.accepted;
+    if valid then
+      working.revision := if reset then 1 else previous.revision + 1;
+      y := Total(working);
+      result.state := working; result.accepted := true;
+    end if;
+  end Capture;
+  function Probe
+    input State previous;
+    input Boolean reset;
+    input Real w;
+    output Real y;
+  protected
+    Update u;
+  algorithm
+    u := Capture(previous, reset, w);
+    y := u.state.revision * 1000 + u.state.edges[2].w + (if u.accepted then 0.5 else 0);
+  end Probe;
+end G;
+model M
+  parameter Real w = 7;
+  Real a = G.Probe(G.State(2, 3, {G.Edge(true, 1, 1.5), G.Edge(false, 0, 0), G.Edge(false, 0, 0)}), false, w);
+  Real b = G.Probe(G.State(2, 3, {G.Edge(true, 1, 1.5), G.Edge(false, 0, 0), G.Edge(false, 0, 0)}), true, w);
+end M;
+"#;
+
+#[test]
+fn a_record_array_field_copied_whole_into_an_output_record_is_copied_by_column() {
+    let compiled = Compiler::new()
+        .model("M")
+        .compile_str(RECORD_ARRAY_COPY, "RecordArrayCopy.mo")
+        .expect("a whole copy of a split record with a record-array field compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the copied record DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    // Revision 4 with the new edge of weight 7 beside the kept 1.5, accepted.
+    assert_eq!(value(&probe.report, "a"), 4000.0 + 7.0 + 0.5);
+    // Reset to revision 1, whose second edge is the empty one, accepted.
+    assert_eq!(value(&probe.report, "b"), 1000.0 + 0.5);
+}

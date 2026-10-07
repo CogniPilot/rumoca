@@ -108,8 +108,11 @@ impl ExpressionVisitor for RecordReads<'_> {
 /// How a body uses the record node at a path.
 #[derive(Clone, Copy, Default)]
 pub(super) struct NodeUses {
-    /// The node is read as one value (not through one of its fields).
+    /// The node is read as one value (not through one of its fields) other
+    /// than as the whole source of an assignment.
     pub(super) read_whole: bool,
+    /// The node is the whole source of an assignment (a copy).
+    pub(super) copy_read: bool,
     /// The node is written whole (an assignment or a call result).
     pub(super) written_whole: bool,
     /// Some statement writes a path strictly below the node.
@@ -119,6 +122,15 @@ pub(super) struct NodeUses {
     /// Statements that write exactly this path, with no subscript on any part
     /// (a subscripted write updates one element, not the whole value).
     pub(super) writes: usize,
+}
+
+impl NodeUses {
+    /// Whether the node is read as one value that a record constructor must
+    /// reassemble. A copy of an array-of-records node is expanded into one
+    /// copy per column instead, so it asks no reassembly.
+    pub(super) fn read_whole(&self, array_of_records: bool) -> bool {
+        self.read_whole || (self.copy_read && !array_of_records)
+    }
 }
 
 /// The uses of every component path a function body reads or writes, by
@@ -176,6 +188,20 @@ impl BodyPaths {
         }
     }
 
+    /// The value of an assignment: a component path read whole is a copy.
+    fn source(&mut self, value: &Expression) {
+        match expression_path(value) {
+            Some(path) if path.trailing.is_empty() => {
+                self.entry(&path.parts).copy_read = true;
+                for prefix in 1..path.parts.len() {
+                    self.entry(&path.parts[..prefix]).read_below = true;
+                }
+                self.part_subscripts(&path.parts);
+            }
+            _ => self.visit_expression(value),
+        }
+    }
+
     fn statements(&mut self, statements: &[Statement]) {
         for statement in statements {
             self.statement(statement);
@@ -186,7 +212,7 @@ impl BodyPaths {
         match statement {
             Statement::Assignment { comp, value, .. } => {
                 self.target(comp);
-                self.visit_expression(value);
+                self.source(value);
             }
             Statement::FunctionCall { args, outputs, .. } => {
                 for arg in args {
@@ -732,4 +758,122 @@ fn reassembled(node: SplitNode<'_>, span: Span) -> Option<Expression> {
         is_constructor: true,
         span,
     })
+}
+
+/// Expands the copy of a split array-of-records node, `target := r.f`, into
+/// one copy per column, `target.g := r.f.g` for every field `g` of the
+/// elements (recursively through record-typed fields). The columns are the
+/// node's own locals, and a constructor call cannot reassemble an array of
+/// records from them, so the copy reads each column where it is.
+pub(super) fn expand_array_copies(
+    record: &SplitRecord,
+    statements: &[Statement],
+) -> Vec<Statement> {
+    statements
+        .iter()
+        .flat_map(|statement| match statement {
+            Statement::Assignment { comp, value, span } => {
+                array_copy(record, comp, value, *span).unwrap_or_else(|| vec![statement.clone()])
+            }
+            Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            } => vec![Statement::If {
+                cond_blocks: cond_blocks
+                    .iter()
+                    .map(|block| rumoca_core::StatementBlock {
+                        cond: block.cond.clone(),
+                        stmts: expand_array_copies(record, &block.stmts),
+                    })
+                    .collect(),
+                else_block: else_block
+                    .as_deref()
+                    .map(|block| expand_array_copies(record, block)),
+                span: *span,
+            }],
+            Statement::For {
+                indices,
+                equations,
+                span,
+            } => vec![Statement::For {
+                indices: indices.clone(),
+                equations: expand_array_copies(record, equations),
+                span: *span,
+            }],
+            Statement::While { block, span } => vec![Statement::While {
+                block: rumoca_core::StatementBlock {
+                    cond: block.cond.clone(),
+                    stmts: expand_array_copies(record, &block.stmts),
+                },
+                span: *span,
+            }],
+            other => vec![other.clone()],
+        })
+        .collect()
+}
+
+/// The per-column copies of `comp := value` when `value` is a whole split
+/// array-of-records node, `None` for any other statement.
+fn array_copy(
+    record: &SplitRecord,
+    comp: &ComponentReference,
+    value: &Expression,
+    span: Span,
+) -> Option<Vec<Statement>> {
+    let source = expression_path(value)?;
+    if !source.trailing.is_empty() || source.parts.iter().any(|part| !part.subs.is_empty()) {
+        return None;
+    }
+    let Landing::Node(SplitNode::Field(field), _) =
+        land(record, &source.parts, &mut |subs| subs.to_vec())?
+    else {
+        return None;
+    };
+    if field.rank() == 0 || !field.enclosing.is_empty() {
+        return None;
+    }
+    let mut copies = Vec::new();
+    let mut names = Vec::new();
+    column_copies(field, comp, &source.parts, &mut names, &mut copies, span);
+    Some(copies)
+}
+
+/// One copy per leaf column below `node`, `names` being the fields walked
+/// from the array node down to it.
+fn column_copies<'tree>(
+    node: &'tree SplitField,
+    target: &ComponentReference,
+    source: &[ComponentRefPart],
+    names: &mut Vec<&'tree SplitField>,
+    copies: &mut Vec<Statement>,
+    span: Span,
+) {
+    for child in node.fields.as_deref().unwrap_or_default() {
+        names.push(child);
+        if child.fields.is_some() {
+            column_copies(child, target, source, names, copies, span);
+        } else {
+            let below = names
+                .iter()
+                .map(|step| part(&step.param.name, step.def_id, Vec::new(), span))
+                .collect::<Vec<_>>();
+            let target_parts = [target.parts(), below.as_slice()].concat();
+            let source_parts = [source, below.as_slice()].concat();
+            let source_ref = reference(false, span, source_parts);
+            copies.push(Statement::Assignment {
+                comp: reference(target.local(), target.span(), target_parts),
+                value: Expression::VarRef {
+                    name: rumoca_core::Reference::with_component_reference(
+                        source_ref.to_var_name().as_str(),
+                        source_ref,
+                    ),
+                    subscripts: Vec::new(),
+                    span,
+                },
+                span,
+            });
+        }
+        names.pop();
+    }
 }

@@ -41,7 +41,7 @@ mod paths;
 
 use super::*;
 use crate::function_lowering::{expand_record_arg, record_field_column_param};
-use paths::{BodyPaths, SplitRewriter, WholeWriteExpander};
+use paths::{BodyPaths, SplitRewriter, WholeWriteExpander, expand_array_copies};
 use rumoca_core::{ComponentRefPart, ComponentReference, Expression, Span, Statement};
 
 /// Rewrite every function whose record values are assigned field by field
@@ -57,7 +57,18 @@ pub(crate) fn split_branch_assigned_records(flat: &mut flat::Model) -> Result<()
         if function.is_constructor || function.external.is_some() {
             continue;
         }
-        for record in branch_assigned_records(function, &constructors) {
+        // Each split rewrites the statements the next record's analysis reads
+        // (a copy of one record into another becomes field copies), so the
+        // next candidate is found in the rewritten body. A split record keeps
+        // only straight-line field assignments, so a value splits at most once.
+        let values = function.outputs.len() + function.locals.len();
+        for _ in 0..values {
+            let Some(record) = branch_assigned_records(function, &constructors)
+                .into_iter()
+                .next()
+            else {
+                break;
+            };
             split_record(function, &record)?;
         }
     }
@@ -214,7 +225,7 @@ fn branch_assigned_records(
                     &name,
                     (&[], &[]),
                     &constructor.inputs,
-                    root.read_whole,
+                    root.read_whole(false),
                 )?,
                 param: value.clone(),
                 constructor: constructor_reference(constructor),
@@ -231,7 +242,7 @@ fn branch_assigned_records(
                 || assigns_field_in_nested_statement(&function.body, &record.name, false))
             .then_some(())?;
             (!field_locals_collide(function, &record)
-                && (!root.read_whole
+                && (!root.read_whole(false)
                     || record.constructor.is_some()
                         && record.fields.iter().all(SplitField::reconstructable)))
             .then_some(())?;
@@ -345,7 +356,7 @@ fn split_fields(
                         &local,
                         (&field_enclosing, &field_enclosing_shape),
                         &constructor.inputs,
-                        read_whole_above || uses.read_whole,
+                        read_whole_above || uses.read_whole(!field.dimensions().is_empty()),
                     );
                     (fields, constructor_reference(constructor))
                 });
@@ -358,7 +369,8 @@ fn split_fields(
             };
             let (fields, constructor) = match fields {
                 Some(fields)
-                    if (read_whole_above || uses.read_whole) && !reconstructable(&fields) =>
+                    if (read_whole_above || uses.read_whole(!field.dimensions().is_empty()))
+                        && !reconstructable(&fields) =>
                 {
                     (None, None)
                 }
@@ -477,7 +489,7 @@ fn split_record(
         value_locals: Vec::new(),
         root_held: false,
     };
-    let expanded = expander.expand(&function.body)?;
+    let expanded = expand_array_copies(record, &expander.expand(&function.body)?);
     let root_holder = expander
         .root_held
         .then(|| record_field_column_param(record.holder.clone(), &[], &[], &record.param));
