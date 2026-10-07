@@ -174,6 +174,32 @@ model WindowCells
 equation
   cells = windowCells(8, reach, y);
 end WindowCells;
+
+function reselectedPasses
+  input Integer n;
+  output Real passes;
+protected
+  Integer k;
+  Integer j;
+algorithm
+  j := 0;
+  k := n;
+  k := if k > 5 then 1 else 2;
+  while j < 3 and k <> 1 loop
+    j := j + 1;
+  end while;
+  passes := j;
+end reselectedPasses;
+
+model ReselectedPasses
+  input Integer high = 10;
+  input Integer low = 0;
+  output Real highPasses;
+  output Real lowPasses;
+equation
+  highPasses = reselectedPasses(high);
+  lowPasses = reselectedPasses(low);
+end ReselectedPasses;
 "#;
 
 fn values(model: &str, names: &[&str]) -> Vec<f64> {
@@ -236,4 +262,16 @@ fn a_sift_down_while_advances_its_index_by_the_index_itself() {
 fn a_window_range_is_bounded_by_its_half_bounded_operands() {
     // n = 8, border 1, r = 2, y = 1: max(1, -1):min(6, 3) = 1:3.
     assert_eq!(values("WindowCells", &["cells"]), vec![3.0]);
+}
+
+/// A selection written over its own old value (`k := if k > 5 then 1 else
+/// 2`) keeps no fact about the old `k` in its arms, so `k <> 1` is decided by
+/// the arm the new value holds, not by the condition that selected it.
+#[test]
+fn a_reselected_local_keeps_no_fact_of_its_old_value() {
+    // n = 10 selects 1, so the loop never runs; n = 0 selects 2: 3 passes.
+    assert_eq!(
+        values("ReselectedPasses", &["highPasses", "lowPasses"]),
+        vec![0.0, 3.0]
+    );
 }

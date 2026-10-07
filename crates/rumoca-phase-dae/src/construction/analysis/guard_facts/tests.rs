@@ -256,3 +256,21 @@ fn a_bounded_product_bounds_each_factor_proven_at_least_one() {
     assert_eq!(bound(&entry, "w"), IntegerInterval::finite(1, 12));
     assert_eq!(bound(&entry, "h"), IntegerInterval::finite(1, 12));
 }
+
+#[test]
+fn a_selection_over_its_own_old_value_keeps_no_fact_of_it() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    let high = binary(OpBinary::Gt, var("r"), integer(5));
+    facts.after(
+        &assign("r", if_expression(high, integer(1), integer(2))),
+        names.scope(),
+    );
+    // The 1 arm was selected by the old `r > 5`; that fact says nothing
+    // about the new `r`, so `r <> 1` and `r == 1` both stay reachable.
+    let differs = binary(OpBinary::Neq, var("r"), integer(1));
+    let entries = facts.branch_entries(&[&differs], names.scope());
+    assert!(!entries[0].is_unreachable());
+    assert!(!entries[1].is_unreachable());
+    assert_eq!(bound(&facts, "r"), IntegerInterval::finite(1, 2));
+}

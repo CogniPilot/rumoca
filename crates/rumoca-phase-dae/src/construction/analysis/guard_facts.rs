@@ -314,7 +314,14 @@ impl GuardFacts {
         // hold before the target changes.
         let subject = FactSubject::scalar(target.clone());
         let fact = self.assigned_fact(&subject, value, scope);
-        let selection = self.selection_of(&subject, value, scope);
+        // Each arm's path facts describe the target's old value, which the
+        // write ends.
+        let selection = self
+            .selection_of(&subject, value, scope)
+            .map(|mut selection| {
+                selection.for_each_arm(|facts| forget_in(facts, &target));
+                selection
+            });
         self.forget(&target);
         if let (Some(path), Some(fact)) = (&mut self.path, fact) {
             path.insert(subject, fact);
@@ -365,15 +372,10 @@ impl GuardFacts {
     }
 
     fn forget(&mut self, name: &VarName) {
-        let drop_name = |facts: &mut PathFacts| {
-            if let Some(facts) = facts {
-                facts.retain(|subject, _| &subject.name != name);
-            }
-        };
-        drop_name(&mut self.path);
+        forget_in(&mut self.path, name);
         self.selections.remove(name);
         for selection in self.selections.values_mut() {
-            selection.for_each_arm(drop_name);
+            selection.for_each_arm(|facts| forget_in(facts, name));
         }
     }
 
@@ -761,5 +763,12 @@ impl<'scope> FunctionValidationContext<'scope> {
     /// What value facts read in this function.
     pub(super) fn fact_scope(self) -> FactScope<'scope> {
         self.scalars.scope(self.shapes)
+    }
+}
+
+/// Drop every fact about `name` from one path's facts.
+fn forget_in(facts: &mut PathFacts, name: &VarName) {
+    if let Some(facts) = facts {
+        facts.retain(|subject, _| &subject.name != name);
     }
 }
