@@ -421,6 +421,7 @@ fn execute_emitted_fmi3_kernel(
 typedef void* fmi3Instance;
 typedef double fmi3Float64;
 typedef int32_t fmi3Int32;
+typedef int64_t fmi3Int64;
 typedef const char* fmi3String;
 typedef int fmi3Boolean;
 typedef unsigned int fmi3ValueReference;
