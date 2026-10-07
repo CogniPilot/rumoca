@@ -274,3 +274,35 @@ fn a_selection_over_its_own_old_value_keeps_no_fact_of_it() {
     assert!(!entries[1].is_unreachable());
     assert_eq!(bound(&facts, "r"), IntegerInterval::finite(1, 2));
 }
+
+fn while_loop(cond: Expression, stmts: Vec<rumoca_core::Statement>) -> rumoca_core::Statement {
+    rumoca_core::Statement::While {
+        block: rumoca_core::StatementBlock { cond, stmts },
+        span: span(),
+    }
+}
+
+/// A normal exit evaluated the condition false; a `break` leaves with it
+/// either way, so a loop that can break proves no exit fact from it.
+#[test]
+fn only_a_loop_without_break_exits_with_its_condition_false() {
+    let names = Names::new();
+    let below = binary(OpBinary::Lt, var("r"), integer(3));
+    let step = assign("r", binary(OpBinary::Add, var("r"), integer(1)));
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("r", integer(0)), names.scope());
+    facts.after(&while_loop(below.clone(), vec![step.clone()]), names.scope());
+    assert_eq!(bound(&facts, "r").lower, Some(3));
+
+    let leave = branch(
+        vec![(
+            binary(OpBinary::Eq, var("n"), integer(0)),
+            vec![rumoca_core::Statement::Break { span: span() }],
+        )],
+        None,
+    );
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("r", integer(0)), names.scope());
+    facts.after(&while_loop(below, vec![leave, step]), names.scope());
+    assert_eq!(bound(&facts, "r").lower, None);
+}

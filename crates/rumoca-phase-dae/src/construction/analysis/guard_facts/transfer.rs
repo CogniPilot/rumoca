@@ -70,7 +70,13 @@ impl GuardFacts {
             rumoca_core::Statement::While { block, .. } => {
                 let mut exit = self.while_head(block, scope);
                 exit.observe_accesses(&block.cond, scope);
-                *self = exit.assuming(&block.cond, false, scope);
+                // Only a normal exit evaluated the condition false; a `break`
+                // leaves with the condition holding or not.
+                *self = if statements_break(&block.stmts) {
+                    exit
+                } else {
+                    exit.assuming(&block.cond, false, scope)
+                };
             }
             _ => self.forget_written(statement),
         }
