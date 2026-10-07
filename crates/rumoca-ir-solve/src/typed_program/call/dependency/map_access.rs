@@ -175,6 +175,11 @@ fn region(
     slots.get(output).cloned()
 }
 
+/// The symbol of a register, or `None` for an id outside the program.
+fn read(registers: &[Symbol], register: SolveRegisterId) -> Option<&Symbol> {
+    registers.get(register.index())
+}
+
 fn step(
     operation: &SolveOperation,
     slots: &mut [Symbol],
@@ -184,7 +189,7 @@ fn step(
 ) -> Option<()> {
     let symbol = match operation {
         SolveOperation::Load { destination, slot } => {
-            registers[destination.index()] = slots.get(slot.index())?.clone();
+            *registers.get_mut(destination.index())? = slots.get(slot.index())?.clone();
             return Some(());
         }
         SolveOperation::Store { slot, source } => {
@@ -202,16 +207,16 @@ fn step(
         },
         SolveOperation::Binary {
             operator, lhs, rhs, ..
-        } => binary(*operator, &registers[lhs.index()], &registers[rhs.index()])?,
-        SolveOperation::Unary { operand, .. } => scalar(&[&registers[operand.index()]])?,
+        } => binary(*operator, read(registers, *lhs)?, read(registers, *rhs)?)?,
+        SolveOperation::Unary { operand, .. } => scalar(&[read(registers, *operand)?])?,
         SolveOperation::Convert {
             operator, operand, ..
-        } => match (operator, &registers[operand.index()]) {
+        } => match (operator, read(registers, *operand)?) {
             (SolveConversionOperator::IntegerToReal, Symbol::Integer(_)) => Symbol::Independent,
             (_, symbol) => scalar(&[symbol])?,
         },
         SolveOperation::Compare { lhs, rhs, .. } => {
-            scalar(&[&registers[lhs.index()], &registers[rhs.index()]])?
+            scalar(&[read(registers, *lhs)?, read(registers, *rhs)?])?
         }
         SolveOperation::Select {
             condition,
@@ -219,9 +224,9 @@ fn step(
             if_false,
             ..
         } => scalar(&[
-            &registers[condition.index()],
-            &registers[if_true.index()],
-            &registers[if_false.index()],
+            read(registers, *condition)?,
+            read(registers, *if_true)?,
+            read(registers, *if_false)?,
         ])?,
         SolveOperation::ProjectElementDynamic {
             aggregate, indices, ..
@@ -234,7 +239,7 @@ fn step(
         } => nested_map(registers, domain, captures, body, space, provenance)?,
         SolveOperation::Reduce {
             operator, operand, ..
-        } if *operator != SolveReductionOperator::All => match &registers[operand.index()] {
+        } if *operator != SolveReductionOperator::All => match read(registers, *operand)? {
             // The nested binders stay free axes of each dependency: the
             // reduction reads every element they enumerate.
             Symbol::Mapped(dependencies) => Symbol::Scalar(dependencies.clone()),
@@ -259,12 +264,12 @@ fn project(
     space: &Space,
     provenance: Span,
 ) -> Option<Symbol> {
-    let Symbol::Aggregate(dependencies) = &registers[aggregate.index()] else {
+    let Symbol::Aggregate(dependencies) = read(registers, aggregate)? else {
         return None;
     };
     let subscripts = indices
         .iter()
-        .map(|index| match &registers[index.index()] {
+        .map(|index| match read(registers, *index)? {
             Symbol::Integer(form) => {
                 let mut zero_based = form.clone();
                 zero_based.constant = zero_based.constant.checked_sub(1)?;
@@ -309,7 +314,7 @@ fn nested_map(
     };
     let captured = captures
         .iter()
-        .map(|capture| widen_symbol(&registers[capture.index()], &nested))
+        .map(|capture| widen_symbol(read(registers, *capture)?, &nested))
         .collect::<Option<Vec<_>>>()?;
     match region(domain, &captured, body, &nested, space.width(), provenance)? {
         Symbol::Scalar(dependencies) => Some(Symbol::Mapped(dependencies)),
