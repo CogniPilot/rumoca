@@ -1,4 +1,5 @@
 //! Review-only typed pure-call backend. This is not a model assignment profile.
+mod aggregates;
 mod calls;
 mod control;
 mod emit;

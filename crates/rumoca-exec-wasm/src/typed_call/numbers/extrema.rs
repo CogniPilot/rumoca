@@ -5,13 +5,12 @@ impl Emitter<'_> {
     pub(super) fn real_extremum(
         &mut self,
         operator: solve::SolveBinaryOperator,
-        lhs: solve::SolveRegisterId,
-        rhs: solve::SolveRegisterId,
-        broadcast: Option<solve::SolveRegisterId>,
+        lhs: Operand,
+        rhs: Operand,
     ) {
-        self.load_binary_operand(lhs, broadcast, true);
+        self.load_operand(lhs, true);
         self.push(I::LocalSet(8));
-        self.load_binary_operand(rhs, broadcast, true);
+        self.load_operand(rhs, true);
         self.push(I::LocalSet(9));
         self.is_nan(8);
         self.is_nan(9);

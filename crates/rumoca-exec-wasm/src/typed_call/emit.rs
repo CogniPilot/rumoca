@@ -238,11 +238,16 @@ impl<'a> Emitter<'a> {
     }
 
     pub(super) fn cells(&mut self, count: u32, body: impl FnOnce(&mut Self)) {
-        self.push(I::I32Const(0));
+        self.cells_from(0, count, body);
+    }
+
+    /// Run `body` once per cell index `start..count` held in local 3.
+    pub(super) fn cells_from(&mut self, start: u32, count: u32, body: impl FnOnce(&mut Self)) {
+        self.push(I::I32Const(start as i32));
         self.push(I::LocalSet(3));
-        if count == 1 {
+        if count == start + 1 {
             body(self);
-            self.push(I::I32Const(1));
+            self.push(I::I32Const(count as i32));
             self.push(I::LocalSet(3));
             return;
         }
@@ -406,6 +411,11 @@ impl<'a> Emitter<'a> {
             O::Scale { .. } | O::Identity { .. } => self.tensor_operation(index, spanned),
             O::MatrixMultiply { .. } => self.matrix_operation(index, spanned),
             O::Call { .. } => self.call_operation(index, spanned),
+            O::Cross { .. }
+            | O::Reduce { .. }
+            | O::Diagonal { .. }
+            | O::Concatenate { .. }
+            | O::SelectElement { .. } => self.aggregate_operation(index, spanned),
             O::ProjectElementDynamic { .. } | O::UpdateElement { .. } => {
                 self.dynamic_operation(index, spanned);
                 Ok(())
@@ -603,7 +613,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn indexed_address(&mut self, range: CellRange) {
+    pub(super) fn indexed_address(&mut self, range: CellRange) {
         self.address(range);
         self.push(I::LocalGet(4));
         self.push(I::I64Const(8));

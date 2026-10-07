@@ -3,9 +3,19 @@ mod quotients;
 #[cfg(test)]
 mod tests;
 use super::emit::{CELL, Emitter};
+use super::layout::CellRange;
 use super::{TypedCallCompileError, TypedCallFaultKind, math};
 use rumoca_ir_solve as solve;
 use wasm_encoder::{BlockType, Instruction as I};
+
+/// Where one binary operand cell is read from.
+#[derive(Clone, Copy)]
+pub(super) enum Operand {
+    /// The cell of a register at the current cell index (local 3).
+    Cells(CellRange),
+    /// The first cell of a range, whatever the cell index.
+    Fixed(CellRange),
+}
 
 impl Emitter<'_> {
     pub(super) fn number_operation(
@@ -66,7 +76,11 @@ impl Emitter<'_> {
                 } => e.unary(*operator, *operand, status),
                 O::Binary {
                     operator, lhs, rhs, ..
-                } => e.binary(*operator, *lhs, *rhs, status, None),
+                } => {
+                    let scalar = e.scalar(*lhs);
+                    let (lhs, rhs) = (Operand::Cells(e.reg(*lhs)), Operand::Cells(e.reg(*rhs)));
+                    e.binary(*operator, scalar, (lhs, rhs), status);
+                }
                 O::Compare {
                     operator, lhs, rhs, ..
                 } => e.compare(*operator, *lhs, *rhs),
@@ -119,9 +133,19 @@ impl Emitter<'_> {
         } else {
             (*aggregate, *scalar)
         };
+        // The scalar operand is one fixed cell for every element.
+        let operand = |register: solve::SolveRegisterId| {
+            if register == *scalar {
+                Operand::Fixed(self.reg(register))
+            } else {
+                Operand::Cells(self.reg(register))
+            }
+        };
+        let operands = (operand(lhs), operand(rhs));
+        let element = self.scalar(*aggregate);
         self.cells(destination.bytes / 8, |e| {
             e.cell_address(destination);
-            e.binary(*operator, lhs, rhs, status, Some(*scalar));
+            e.binary(*operator, element, operands, status);
             e.push(if real_result {
                 I::F64Store(CELL)
             } else {
@@ -237,22 +261,23 @@ impl Emitter<'_> {
         self.push(I::Select);
     }
 
-    fn binary(
+    /// One element of `lhs <operator> rhs` over `scalar` on the operand stack,
+    /// with the checked Integer overflow and domain faults at `status`.
+    pub(super) fn binary(
         &mut self,
         operator: solve::SolveBinaryOperator,
-        lhs: solve::SolveRegisterId,
-        rhs: solve::SolveRegisterId,
+        scalar: solve::SolveScalarType,
+        (lhs, rhs): (Operand, Operand),
         status: u32,
-        broadcast: Option<solve::SolveRegisterId>,
     ) {
         use solve::SolveBinaryOperator as B;
-        match self.scalar(lhs) {
+        match scalar {
             solve::SolveScalarType::Real { .. } => {
                 if matches!(operator, B::Min | B::Max) {
-                    self.real_extremum(operator, lhs, rhs, broadcast);
+                    self.real_extremum(operator, lhs, rhs);
                 } else {
-                    self.load_binary_operand(lhs, broadcast, true);
-                    self.load_binary_operand(rhs, broadcast, true);
+                    self.load_operand(lhs, true);
+                    self.load_operand(rhs, true);
                     self.push(match operator {
                         B::Add => I::F64Add,
                         B::Subtract => I::F64Sub,
@@ -267,8 +292,8 @@ impl Emitter<'_> {
                 }
             }
             solve::SolveScalarType::Boolean => {
-                self.load_binary_operand(lhs, broadcast, false);
-                self.load_binary_operand(rhs, broadcast, false);
+                self.load_operand(lhs, false);
+                self.load_operand(rhs, false);
                 self.push(if operator == B::And {
                     I::I64And
                 } else {
@@ -276,9 +301,9 @@ impl Emitter<'_> {
                 });
             }
             solve::SolveScalarType::Integer(domain) => {
-                self.load_binary_operand(lhs, broadcast, false);
+                self.load_operand(lhs, false);
                 self.push(I::LocalSet(5));
-                self.load_binary_operand(rhs, broadcast, false);
+                self.load_operand(rhs, false);
                 self.push(I::LocalSet(6));
                 self.integer_binary(operator, status);
                 self.integer_domain(domain, status);
@@ -287,21 +312,18 @@ impl Emitter<'_> {
         }
     }
 
-    fn load_binary_operand(
-        &mut self,
-        operand: solve::SolveRegisterId,
-        broadcast: Option<solve::SolveRegisterId>,
-        real: bool,
-    ) {
-        if broadcast == Some(operand) {
-            self.address(self.reg(operand));
-            self.push(if real {
-                I::F64Load(CELL)
-            } else {
-                I::I64Load(CELL)
-            });
+    fn load_operand(&mut self, operand: Operand, real: bool) {
+        let load = if real {
+            I::F64Load(CELL)
         } else {
-            self.load_cell(self.reg(operand), real);
+            I::I64Load(CELL)
+        };
+        match operand {
+            Operand::Cells(range) => self.load_cell(range, real),
+            Operand::Fixed(range) => {
+                self.address(range);
+                self.push(load);
+            }
         }
     }
 
@@ -459,7 +481,10 @@ fn unary_supported(operator: solve::SolveUnaryOperator, scalar: solve::SolveScal
     }
 }
 
-fn binary_supported(operator: solve::SolveBinaryOperator, scalar: solve::SolveScalarType) -> bool {
+pub(super) fn binary_supported(
+    operator: solve::SolveBinaryOperator,
+    scalar: solve::SolveScalarType,
+) -> bool {
     use solve::SolveBinaryOperator as B;
     match scalar {
         solve::SolveScalarType::Real { .. } => {
