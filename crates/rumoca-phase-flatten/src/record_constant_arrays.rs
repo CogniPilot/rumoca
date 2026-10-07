@@ -19,6 +19,38 @@ pub(crate) fn component_type_is_record(
         .is_some_and(|class_def| class_def.class_type == rumoca_core::ClassType::Record)
 }
 
+/// Whether `comp` may hold an enumeration value (MLS 3.7 §4.8.5): its
+/// declared type is an enumeration class, directly or through a short type
+/// definition, or is not resolved here (a type reached through a replaceable
+/// package, which only a binding that evaluates to a literal settles). A
+/// predefined or any other resolved class never holds one.
+pub(crate) fn component_type_may_be_enumeration(
+    comp: &ast::Component,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> bool {
+    let Some(mut class) = comp
+        .type_def_id
+        .and_then(|type_def_id| class_index.get(type_def_id))
+    else {
+        return comp.type_def_id.is_none();
+    };
+    // A short type definition `type T = E` extends exactly one class; the
+    // chain is acyclic after Resolve, and the class count bounds it.
+    for _ in 0..=class_index.def_ids().count() {
+        if !class.enum_literals.is_empty() {
+            return true;
+        }
+        let [extend] = class.extends.as_slice() else {
+            return false;
+        };
+        let Some(base) = extend.base_def_id.and_then(|base| class_index.get(base)) else {
+            return false;
+        };
+        class = base;
+    }
+    false
+}
+
 pub(crate) fn try_extract_record_array_constructor_constant(
     expr: &ast::Expression,
     ctx: &mut Context,

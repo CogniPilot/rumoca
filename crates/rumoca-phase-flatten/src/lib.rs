@@ -107,8 +107,8 @@ pub(crate) use function_precollect::{
 use pipeline::*;
 use postprocess::*;
 use record_constant_arrays::{
-    component_type_is_record, synthesize_component_modification_binding,
-    try_extract_record_array_constructor_constant,
+    component_type_is_record, component_type_may_be_enumeration,
+    synthesize_component_modification_binding, try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
     ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,

@@ -1648,12 +1648,10 @@ fn extract_single_constant_with_prefix_and_function_scope(
         insert_with_prefix(&mut ctx.constant_values, prefix, local, full, val);
     }
     // Enumeration constants (e.g., `ThermoStates = IndependentVariables.ph`).
-    // MLS 3.7 §4.8: a declaration of a predefined scalar type never holds an
+    // MLS 3.7 §4.8: only a declaration of enumeration type holds an
     // enumeration value, whatever its binding spells.
-    if !matches!(
-        type_name.as_str(),
-        "Real" | "Integer" | "Boolean" | "String"
-    ) && (!preserve_existing || !ctx.enum_parameter_values.contains_key(full))
+    if component_type_may_be_enumeration(comp, class_index)
+        && (!preserve_existing || !ctx.enum_parameter_values.contains_key(full))
         && let Some(val) = try_eval_const_enum_with_scope(expr, ctx, prefix)
     {
         insert_with_prefix(&mut ctx.enum_parameter_values, prefix, local, full, val);

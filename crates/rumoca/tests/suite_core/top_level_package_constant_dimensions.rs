@@ -37,3 +37,41 @@ fn top_level_package_constant_sizes_a_top_level_model() {
         .value;
     assert_eq!(s, 16.0);
 }
+
+/// MLS 3.7 §4.8.5: whether a constant holds an enumeration value follows its
+/// declared type, not the spelling of its type name: a short type definition
+/// of `Integer` holds the Integer a path-shaped binding names, and a short
+/// type definition of an enumeration holds the literal.
+#[test]
+fn declared_types_through_short_definitions_decide_enumeration_values() {
+    let source = r#"
+within;
+package Shapes
+  type Mode = enumeration(Fast, Slow);
+  type Speed = Mode;
+  type Count = Integer(min = 1);
+  constant Count rows = 3;
+  constant Speed speed = Mode.Slow;
+end Shapes;
+model Sized
+  parameter Shapes.Count n = Shapes.rows;
+  Real cells[n] = fill(2.0, n);
+  Real s = sum(cells) + (if Shapes.speed == Shapes.Mode.Slow then 10.0 else 0.0);
+end Sized;
+"#;
+    let compiled = Compiler::new()
+        .model("Sized")
+        .compile_str(source, "Sized.mo")
+        .expect("short type definitions keep their declared kinds");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the model should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    let s = probe
+        .report
+        .solver_y
+        .iter()
+        .find(|slot| slot.name == "s")
+        .expect("s is a solver value")
+        .value;
+    assert_eq!(s, 16.0);
+}
