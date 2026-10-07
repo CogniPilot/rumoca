@@ -175,6 +175,7 @@ fn coverage_steps() -> Vec<GateStep> {
         "--output-path",
         "target/llvm-cov/workspace-full.json",
     ];
+    run.extend_from_slice(crate::test_cmd::COVERAGE_TEST_FEATURES);
     run.extend_from_slice(&SKIP_SNAPSHOT_ONLY_TESTS);
     let steps = vec![
         GateStep::cargo("coverage-run", &run),

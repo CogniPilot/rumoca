@@ -76,6 +76,13 @@ pub(crate) const WORKSPACE_TEST_EXCLUDES: &[&str] = &[
 /// do not discover. CI stages the pinned MSL cache before this command.
 pub(crate) const WORKSPACE_TEST_FEATURES: &[&str] = &["--features", "rumoca/msl-sim-tests"];
 
+/// Host-run tests a crate keeps behind a Cargo feature so its default
+/// (wasm32) package build stays lean: the native-program path of the
+/// `full-web` build. The coverage lane runs the whole workspace without the
+/// binding excludes, so it is where these execute in CI.
+pub(crate) const COVERAGE_TEST_FEATURES: &[&str] =
+    &["--features", "rumoca-bind-wasm/native-assignments"];
+
 /// Unit + integration tests under nextest, then doctests. nextest schedules
 /// individual tests across every core in isolated processes; plain
 /// `cargo test` runs one binary at a time, so suites that serialize on an

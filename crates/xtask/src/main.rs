@@ -887,6 +887,11 @@ fn cmd_coverage_run(args: CoverageRunArgs) -> Result<()> {
         "--output-path".to_string(),
         "target/llvm-cov/workspace-full.json".to_string(),
     ]);
+    full_args.extend(
+        test_cmd::COVERAGE_TEST_FEATURES
+            .iter()
+            .map(|arg| arg.to_string()),
+    );
     full_args.extend(package_args.clone());
     if args.no_clean {
         full_args.push("--no-clean".to_string());
