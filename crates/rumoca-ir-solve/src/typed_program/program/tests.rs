@@ -713,3 +713,60 @@ fn wire_rejects_forged_register_dominance() {
         .expect_err("wire cannot forge a forward register definition");
     assert!(error.to_string().contains("does not replay"), "{error}");
 }
+
+/// A view update whose value is its own aggregate is admitted only when the
+/// view covers the whole aggregate in order, so the update rewrites each cell
+/// with itself and never permutes one: an executor may alias its destination
+/// to a last-read aggregate without a transposing hazard.
+#[test]
+fn a_view_update_of_an_aggregate_by_itself_is_the_identity_view() {
+    let arithmetic = profile();
+    TypedProgram::construct(arithmetic, |builder| {
+        let full = [
+            ProgramTensorViewAxis::Span {
+                origin: 0,
+                extent: 2,
+            },
+            ProgramTensorViewAxis::Span {
+                origin: 0,
+                extent: 2,
+            },
+        ];
+        let partial = [
+            ProgramTensorViewAxis::Span {
+                origin: 1,
+                extent: 1,
+            },
+            ProgramTensorViewAxis::Span {
+                origin: 0,
+                extent: 2,
+            },
+        ];
+        let one = builder.constant(SolveValue::real(arithmetic, 1.0), span(0))?;
+        let square = builder.fill(one, vec![2, 2], span(1))?;
+        builder.update_view(square, square, &full, span(2))?;
+        assert!(
+            builder
+                .update_view(square, square, &partial, span(3))
+                .is_err()
+        );
+        let index = builder.constant(
+            SolveValue::integer(arithmetic, 1).expect("index fits the checked domain"),
+            span(4),
+        )?;
+        let reduced = [
+            ProgramTensorViewAxis::Index(index),
+            ProgramTensorViewAxis::Span {
+                origin: 0,
+                extent: 2,
+            },
+        ];
+        assert!(
+            builder
+                .update_view(square, square, &reduced, span(5))
+                .is_err()
+        );
+        Ok(())
+    })
+    .expect("the identity view constructs");
+}
