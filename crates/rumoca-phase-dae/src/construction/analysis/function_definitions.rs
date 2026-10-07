@@ -282,7 +282,18 @@ impl FunctionDefinitions {
                 && let Some(guard) = &proof.guard
                 && condition_implies_guard(condition, guard, context, 0)
             {
-                self.branch_only.insert(target.clone(), proof.clone());
+                // Under an equivalent guard the branch ran on exactly the
+                // guarded paths, so what it covers by its end (the earlier
+                // proof plus its own writes) is what the guard proves.
+                let equivalent = condition_implies_guard(guard, condition, context, 0);
+                let mut proof = proof.clone();
+                proof.coverage = branch
+                    .values
+                    .get(target)
+                    .filter(|_| equivalent)
+                    .cloned()
+                    .or(proof.coverage);
+                self.branch_only.insert(target.clone(), proof);
                 continue;
             }
             let Some(coverage) = branch.values.get(target) else {
@@ -648,6 +659,11 @@ impl FunctionDefinitions {
         span: Span,
     ) -> Result<(), ToDaeError> {
         let name = reference.var_name();
+        // MLS §11.2.2: a loop binder shadows every outer value of its name and
+        // holds a value in every iteration.
+        if context.loop_binders.contains(name) {
+            return Ok(());
+        }
         // A branch value of an if-expression is evaluated only when its
         // condition holds (MLS §3.6.5), so a value proven under a guard that
         // condition implies is defined there, as in a guarded statement branch.

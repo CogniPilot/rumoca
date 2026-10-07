@@ -62,20 +62,45 @@ fn field_inputs(view: dae::DaeView<'_>) -> Vec<(String, Vec<BTreeSet<usize>>)> {
             continue;
         };
         let inputs = (0..scalars)
-            .map(|scalar| {
-                let mut inputs = BTreeSet::new();
-                for_each_scalar_coordinate(view, expression, scalar, None, |coordinate, at| {
-                    if let dae::CoordinateView::Input(_) = coordinate {
-                        inputs.insert(at);
-                    }
-                })
-                .expect("a field of a record field projects through its enclosing record");
-                inputs
-            })
+            .map(|scalar| scalar_inputs(view, expression, scalar))
             .collect();
         projected.push((name, inputs));
     }
     projected
+}
+
+/// The input scalars one scalar of `expression` reads.
+fn scalar_inputs<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    scalar: usize,
+) -> BTreeSet<usize> {
+    let mut inputs = BTreeSet::new();
+    for_each_scalar_coordinate(view, expression, scalar, None, |coordinate, at| {
+        if let dae::CoordinateView::Input(_) = coordinate {
+            inputs.insert(at);
+        }
+    })
+    .expect("a field of a record field projects through its enclosing record");
+    inputs
+}
+
+/// Element-major columns of `len` scalars: the even scalars read `w`, the
+/// odd ones nothing.
+fn alternating_columns(
+    len: usize,
+    w: &BTreeSet<usize>,
+    none: &BTreeSet<usize>,
+) -> Vec<BTreeSet<usize>> {
+    (0..len)
+        .map(|scalar| {
+            if scalar % 2 == 0 {
+                w.clone()
+            } else {
+                none.clone()
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -110,15 +135,7 @@ fn fields_of_record_fields_project_through_the_enclosing_record() {
         for inputs in reads("r") {
             // Element-major columns: r[k, 1] = k * w reads w, r[k, 2] = 2 * k
             // reads nothing.
-            let expected = (0..inputs.len())
-                .map(|scalar| {
-                    if scalar % 2 == 0 {
-                        w.clone()
-                    } else {
-                        none.clone()
-                    }
-                })
-                .collect::<Vec<_>>();
+            let expected = alternating_columns(inputs.len(), &w, &none);
             assert_eq!(inputs, expected);
         }
     });
