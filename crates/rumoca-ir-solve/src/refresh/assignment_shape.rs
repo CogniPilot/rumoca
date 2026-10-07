@@ -187,18 +187,14 @@ pub fn derive_target_assignment_shapes(
                     .or_insert_with(|| dependency_candidates::derive(producers.view(), output))
                     .as_ref()
             });
-        // Every shape isolates a target loaded on the output's projectable
-        // operand walk, so a target the output reads only through another
-        // operation (a call's inputs) is never a candidate; testing it would
-        // cost each output the width of that operation.
         let candidates = match walked {
             Some(walked) => {
                 let mut candidates = dependencies.register_dependencies(output).map_or_else(
-                    || walked.targets.clone(),
+                    || targets.clone(),
                     |scalar| {
                         scalar
                             .iter()
-                            .filter(|index| walked.targets.contains(index))
+                            .filter(|index| targets.contains(index))
                             .collect()
                     },
                 );

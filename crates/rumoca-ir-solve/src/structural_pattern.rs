@@ -1102,20 +1102,27 @@ impl StructuralPattern {
         let mut order: Vec<usize> = (0..column_rows.len()).collect();
         order.sort_by_key(|column| (Reverse(column_rows[*column].len()), *column));
 
+        // Greedy distance-2 coloring: each column joins the first group none
+        // of its rows already occupies. The groups a row occupies are kept per
+        // row, so a column's choice costs its rows' groups, not every group.
         let mut groups: Vec<Vec<u32>> = Vec::new();
-        let mut occupied_rows: Vec<BTreeSet<usize>> = Vec::new();
-        for column in order {
+        let mut row_groups: Vec<Vec<usize>> = vec![Vec::new(); self.rows as usize];
+        let mut blocked_by: Vec<usize> = Vec::new();
+        for (stamp, column) in order.into_iter().enumerate() {
             let rows = &column_rows[column];
-            if let Some((group_index, occupied)) = occupied_rows
-                .iter_mut()
-                .enumerate()
-                .find(|(_, occupied)| rows.iter().all(|row| !occupied.contains(row)))
-            {
-                groups[group_index].push(column as u32);
-                occupied.extend(rows);
-            } else {
-                groups.push(vec![column as u32]);
-                occupied_rows.push(rows.iter().copied().collect());
+            for &group in rows.iter().flat_map(|row| &row_groups[*row]) {
+                blocked_by[group] = stamp + 1;
+            }
+            let group = (0..groups.len())
+                .find(|group| blocked_by[*group] != stamp + 1)
+                .unwrap_or_else(|| {
+                    groups.push(Vec::new());
+                    blocked_by.push(0);
+                    groups.len() - 1
+                });
+            groups[group].push(column as u32);
+            for row in rows {
+                row_groups[*row].push(group);
             }
         }
         for group in &mut groups {

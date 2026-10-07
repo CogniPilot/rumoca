@@ -3,30 +3,47 @@ use std::sync::Mutex;
 
 use crate::{IndexIntervals, LinearOp, Reg, TargetAssignmentShape};
 
-pub(super) fn assignment_y_dependencies_for_shapes(
-    source_program: &[LinearOp],
-    shapes: &[TargetAssignmentShape],
-) -> Box<[IndexIntervals]> {
-    let mut prefix_dependencies = BTreeMap::new();
-    shapes
-        .iter()
-        .map(|shape| {
-            let prefix_len = shape.expr_eval_len();
-            let (loaded, dependency) = prefix_dependencies.entry(prefix_len).or_insert_with(|| {
-                let prefix = source_program.get(..prefix_len).unwrap_or(source_program);
-                (
-                    IndexIntervals::of(y_load_indices(prefix)),
-                    ScalarProgramYDependency::new(prefix),
-                )
-            });
-            // The loaded indices inside the footprint, met interval by
-            // interval: the cost follows the two sets' structure.
-            match dependency.footprint(shape.value_registers()) {
-                Some(footprint) => footprint.intersection(loaded),
-                None => loaded.clone(),
-            }
-        })
-        .collect()
+/// The solver-Y dependencies of assignment shapes, one analysis per source
+/// program and expression prefix however many programs its rows are issued
+/// in.
+#[derive(Default)]
+pub(super) struct AssignmentDependencies<'a> {
+    prefixes: BTreeMap<
+        (crate::RefreshScalarProgramSource, usize),
+        (IndexIntervals, ScalarProgramYDependency<'a>),
+    >,
+}
+
+impl<'a> AssignmentDependencies<'a> {
+    /// The loaded indices inside each shape's footprint, met interval by
+    /// interval: the cost follows the two sets' structure.
+    pub(super) fn for_shapes(
+        &mut self,
+        source: crate::RefreshScalarProgramSource,
+        source_program: &'a [LinearOp],
+        shapes: &[TargetAssignmentShape],
+    ) -> Box<[IndexIntervals]> {
+        shapes
+            .iter()
+            .map(|shape| {
+                let prefix_len = shape.expr_eval_len();
+                let (loaded, dependency) = self
+                    .prefixes
+                    .entry((source, prefix_len))
+                    .or_insert_with(|| {
+                        let prefix = source_program.get(..prefix_len).unwrap_or(source_program);
+                        (
+                            IndexIntervals::of(y_load_indices(prefix)),
+                            ScalarProgramYDependency::new(prefix),
+                        )
+                    });
+                match dependency.footprint(shape.value_registers()) {
+                    Some(footprint) => footprint.intersection(loaded),
+                    None => loaded.clone(),
+                }
+            })
+            .collect()
+    }
 }
 
 pub(super) fn y_load_indices(program: &[LinearOp]) -> BTreeSet<usize> {

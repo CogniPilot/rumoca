@@ -10,6 +10,7 @@ mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
 mod parameter_static;
+mod ready_queue;
 mod row_analysis;
 mod schedule;
 mod source_catalog;
@@ -17,7 +18,7 @@ mod target_catalog;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -30,8 +31,8 @@ use causal_proofs::causal_step_certifies_exact_assignment;
 pub use causal_proofs::{causal_step_coefficient_proof, causal_step_is_proven};
 
 use capacity::{
-    reserve_refresh_deque_capacity, reserve_refresh_index_map_capacity,
-    reserve_refresh_index_set_capacity, reserve_refresh_vec_capacity,
+    reserve_refresh_index_map_capacity, reserve_refresh_index_set_capacity,
+    reserve_refresh_vec_capacity,
 };
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
@@ -42,6 +43,7 @@ use row_analysis::{
 #[cfg(test)]
 use parameter_static::parameter_static_refresh_program;
 use parameter_static::parameter_static_refresh_targets;
+use ready_queue::SourceBatchedQueue;
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, ContinuousStaticParameters, RefreshPlan, RefreshRowOwnerId,
     RefreshRowSelection, RefreshRows, RefreshStage,
@@ -1545,26 +1547,24 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
             indegree[row_pos] += 1;
         }
     }
-    let mut ready = VecDeque::new();
-    reserve_refresh_deque_capacity(&mut ready, rows.len(), "refresh order queue", span)?;
-    ready.extend(
-        indegree
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, degree)| (*degree == 0).then_some(idx)),
-    );
+    let mut ready = SourceBatchedQueue::default();
+    for (idx, degree) in indegree.iter().enumerate() {
+        if *degree == 0 {
+            ready.push(rows[idx].source(), idx);
+        }
+    }
     let mut ordered = Vec::new();
     reserve_refresh_vec_capacity(&mut ordered, rows.len(), "ordered refresh rows", span)?;
     let mut emitted = Vec::new();
     reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
     emitted.resize(rows.len(), false);
-    while let Some(row_pos) = ready.pop_front() {
+    while let Some(row_pos) = ready.pop() {
         ordered.push(rows[row_pos].clone());
         emitted[row_pos] = true;
         for &next in &edges[row_pos] {
             indegree[next] -= 1;
             if indegree[next] == 0 {
-                ready.push_back(next);
+                ready.push(rows[next].source(), next);
             }
         }
     }
