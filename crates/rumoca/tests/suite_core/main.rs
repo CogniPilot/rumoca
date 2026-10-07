@@ -48,6 +48,7 @@ mod backend_executor_differential;
 mod balance_diagnostic;
 mod bilinear_function_constraint;
 mod call_actual_faults;
+mod call_owner_refresh_units;
 mod cli_diagnostic_rendering;
 mod cli_emit;
 mod cli_fmt_lint;
