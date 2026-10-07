@@ -184,3 +184,46 @@ fn replicated_array_elements_keep_their_structural_integer() {
         );
     }
 }
+
+/// MLS 3.7 §7.2: an extends modification of a model parameter reaches only
+/// the declaration it names, so a package constant that merely shares the
+/// parameter's name keeps its binding and still sizes a record field reached
+/// through a constant alias chain.
+#[test]
+fn modifying_a_parameter_leaves_a_same_named_package_constant_fixed() {
+    let source = r#"
+package W
+  package Profile
+    constant Integer height = 4;
+  end Profile;
+  package Anchors
+    constant Integer imageHeight = 3;
+    constant Integer imageWidth = 2;
+    constant Integer mapCapacity = imageHeight*imageWidth;
+  end Anchors;
+  package Mapping
+    constant Integer mapCapacity = Anchors.mapCapacity;
+    record State
+      Real point[mapCapacity, 3];
+    end State;
+  end Mapping;
+  partial model Interface
+    parameter Integer imageHeight(min = 1) = 3;
+    input Mapping.State previous;
+    input Real rgb[imageHeight];
+    output Real s;
+  end Interface;
+  model Base
+    extends Interface;
+  equation
+    s = sum(previous.point) + sum(rgb);
+  end Base;
+  model Narrow
+    extends Base(imageHeight = Profile.height);
+  end Narrow;
+end W;
+"#;
+    let model = flatten_source(source, "W.Narrow");
+    assert_eq!(dims_of(&model, "previous.point"), vec![6, 3]);
+    assert_eq!(dims_of(&model, "rgb"), vec![4]);
+}
