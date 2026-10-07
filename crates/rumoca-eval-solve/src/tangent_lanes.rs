@@ -1,6 +1,8 @@
 //! Evaluation of checked multi-lane tangent programs.
 
 use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use rumoca_ir_solve::{ColoredTangentPlan, TangentLaneProgram, TornTangentPlan};
 
@@ -385,17 +387,48 @@ fn seed_group(
 /// A [`ColoredTangentPlan`] prepared for repeated evaluation.
 pub struct ColoredTangentEvaluator {
     plan: ColoredTangentPlan,
-    programs: Vec<PreparedTangentLaneProgram>,
+    programs: Vec<Rc<PreparedTangentLaneProgram>>,
+}
+
+/// The prepared lane programs that several colored evaluators share: each
+/// widened program (by identity) is prepared once, with one scratch.
+#[derive(Default)]
+pub struct PreparedLaneCatalog {
+    entries: Vec<(Arc<TangentLaneProgram>, Rc<PreparedTangentLaneProgram>)>,
+}
+
+impl PreparedLaneCatalog {
+    fn prepare(&mut self, program: &Arc<TangentLaneProgram>) -> Rc<PreparedTangentLaneProgram> {
+        if let Some((_, prepared)) = self
+            .entries
+            .iter()
+            .find(|(widened, _)| Arc::ptr_eq(widened, program))
+        {
+            return Rc::clone(prepared);
+        }
+        let prepared = Rc::new(PreparedTangentLaneProgram::new(TangentLaneProgram::clone(
+            program,
+        )));
+        self.entries
+            .push((Arc::clone(program), Rc::clone(&prepared)));
+        prepared
+    }
 }
 
 impl ColoredTangentEvaluator {
     #[must_use]
     pub fn new(plan: ColoredTangentPlan) -> Self {
+        Self::sharing(plan, &mut PreparedLaneCatalog::default())
+    }
+
+    /// [`Self::new`] for one of several evaluators whose plans share widened
+    /// programs: each is prepared once into `catalog`.
+    #[must_use]
+    pub fn sharing(plan: ColoredTangentPlan, catalog: &mut PreparedLaneCatalog) -> Self {
         let programs = plan
             .programs()
             .iter()
-            .cloned()
-            .map(PreparedTangentLaneProgram::new)
+            .map(|program| catalog.prepare(program))
             .collect();
         Self { plan, programs }
     }

@@ -77,8 +77,8 @@ pub use refresh::*;
 pub use root_search::{RootSearchPlan, RootSearchRole, TimeRootSign, root_neighborhoods};
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use tangent_lanes::{
-    ColoredLaneCall, ColoredTangentPlan, TangentLaneError, TangentLaneProgram, TangentRowSource,
-    TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
+    ColoredLaneCall, ColoredTangentPlan, TangentLaneCatalog, TangentLaneError, TangentLaneProgram,
+    TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
 };
 pub use typed_program::*;
 pub use visitor::{
@@ -352,6 +352,13 @@ impl ScalarProgramBlock {
     }
 
     /// Exact register capacity proved when this program entered the block.
+    /// Whether both blocks are clones of one construction, sharing every
+    /// program.
+    #[must_use]
+    pub fn shares_programs_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
     pub fn program_register_count(&self, index: usize) -> Option<usize> {
         self.data.program_register_counts.get(index).copied()
     }

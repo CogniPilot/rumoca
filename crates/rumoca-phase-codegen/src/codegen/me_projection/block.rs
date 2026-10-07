@@ -449,7 +449,7 @@ fn record_lane_calls(
     let mut calls = Vec::new();
     for call in plan.calls() {
         let lanes = call.colors.len();
-        let program = plan.programs()[call.program].clone();
+        let program = plan.programs()[call.program].as_ref().clone();
         check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         let seeds = lane_seed_positions(program.ops(), &call.colors, application);
