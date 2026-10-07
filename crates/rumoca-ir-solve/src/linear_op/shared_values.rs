@@ -557,13 +557,7 @@ impl ProgramBuilder<'_, '_> {
                     self.map.insert(dst, held);
                 }
             }
-            Step::Store(registers) => {
-                for register in registers {
-                    if let Some(held) = self.map.get(*register) {
-                        self.store(held);
-                    }
-                }
-            }
+            Step::Store(registers) => self.store_all(registers),
             &Step::Value {
                 op,
                 ref shape,
@@ -575,6 +569,17 @@ impl ProgramBuilder<'_, '_> {
 
     fn segment(&mut self) -> &mut Segment {
         &mut self.builder.segment
+    }
+
+    /// Store the value each of `registers` holds, in output order.
+    fn store_all(&mut self, registers: &[Reg]) {
+        let held = registers
+            .iter()
+            .filter_map(|register| self.map.get(*register))
+            .collect::<Vec<_>>();
+        for register in held {
+            self.store(register);
+        }
     }
 
     fn store(&mut self, register: Reg) {

@@ -17,30 +17,45 @@ pub(super) struct ReadFlow {
     slot_last_load: Box<[Option<usize>]>,
 }
 
+/// The last operation to read each register and how many times it lists the
+/// register.
+struct RegisterReads {
+    last_read: Vec<Option<usize>>,
+    occurrences: Vec<usize>,
+}
+
+impl RegisterReads {
+    fn record(&mut self, register: usize, operation: usize) {
+        let (Some(last), Some(count)) = (
+            self.last_read.get_mut(register),
+            self.occurrences.get_mut(register),
+        ) else {
+            return;
+        };
+        if *last == Some(operation) {
+            *count += 1;
+        } else {
+            *last = Some(operation);
+            *count = 1;
+        }
+    }
+}
+
 impl ReadFlow {
     pub(super) fn of(
         operations: &[SolveSpannedOperation],
         register_count: usize,
         slots: &[SolveSlot],
     ) -> Self {
-        let mut register_last_read = vec![None; register_count];
-        let mut occurrences = vec![0_usize; register_count];
+        let mut reads = RegisterReads {
+            last_read: vec![None; register_count],
+            occurrences: vec![0; register_count],
+        };
         let mut slot_last_load = vec![None; slots.len()];
         for (index, operation) in operations.iter().enumerate() {
-            operation.operation().visit_input_registers(|register| {
-                let (Some(last), Some(count)) = (
-                    register_last_read.get_mut(register.index()),
-                    occurrences.get_mut(register.index()),
-                ) else {
-                    return;
-                };
-                if *last == Some(index) {
-                    *count += 1;
-                } else {
-                    *last = Some(index);
-                    *count = 1;
-                }
-            });
+            operation
+                .operation()
+                .visit_input_registers(|register| reads.record(register.index(), index));
             if let SolveOperation::Load { slot, .. } = operation.operation()
                 && let Some(last) = slot_last_load.get_mut(slot.index())
             {
@@ -49,7 +64,11 @@ impl ReadFlow {
         }
         // A register an operation lists twice cannot move out of that operation:
         // its second read would find it gone.
-        for (last, count) in register_last_read.iter_mut().zip(&occurrences) {
+        let RegisterReads {
+            mut last_read,
+            occurrences,
+        } = reads;
+        for (last, count) in last_read.iter_mut().zip(&occurrences) {
             if *count > 1 {
                 *last = None;
             }
@@ -62,7 +81,7 @@ impl ReadFlow {
             }
         }
         Self {
-            register_last_read: register_last_read.into_boxed_slice(),
+            register_last_read: last_read.into_boxed_slice(),
             slot_last_load: slot_last_load.into_boxed_slice(),
         }
     }
