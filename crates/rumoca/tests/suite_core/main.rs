@@ -270,6 +270,7 @@ mod zero_size_function_values;
 mod noncommutative_product_derivatives;
 mod record_array_dimension_chain;
 mod record_array_equation;
+mod record_array_field_equations;
 mod record_array_member_slice_test;
 mod record_connector_equation_test;
 mod record_constant_members;

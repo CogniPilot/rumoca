@@ -250,6 +250,7 @@ fn record_leaves(
             flat,
             &child,
             vec![ordinal],
+            &[],
             span,
             &mut HashSet::new(),
             &mut fields,
@@ -277,6 +278,7 @@ pub(in crate::construction) fn reference_leaf_coordinates(
         flat,
         name,
         Vec::new(),
+        &[],
         record.source_span,
         &mut HashSet::new(),
         &mut leaves,
@@ -284,15 +286,27 @@ pub(in crate::construction) fn reference_leaf_coordinates(
     Ok(leaves.into_iter().map(|leaf| leaf.coordinate).collect())
 }
 
+/// `prefix` holds the extents of the enclosing arrays of records: Flat holds
+/// an array of records as one column per leaf field, whose leading extents
+/// are the array's (struct of arrays), and a field projection of an array of
+/// records is that column (MLS 3.7 §10.6.1).
 fn collect_record_equation_leaves(
     flat: &flat::Model,
     name: &VarName,
     projection: Vec<usize>,
+    prefix: &[i64],
     span: Span,
     active: &mut HashSet<DefId>,
     fields: &mut Vec<RecordLeaf>,
 ) -> Result<(), ToDaeError> {
-    if flat.variables.contains_key(name) {
+    if let Some(variable) = flat.variables.get(name) {
+        if !variable.dims.starts_with(prefix) {
+            return Err(ToDaeError::unsupported_flat(
+                "record equation",
+                format!("`{name}` is not one column of extents {prefix:?} of its array of records"),
+                span,
+            ));
+        }
         fields.push(RecordLeaf {
             coordinate: name.clone(),
             projection: projection.into_boxed_slice(),
@@ -306,13 +320,7 @@ fn collect_record_equation_leaves(
             span,
         )
     })?;
-    if !instance.dims.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "record equation",
-            format!("nested record array `{name}` requires a compact record-family owner"),
-            span,
-        ));
-    }
+    let prefix = [prefix, instance.dims.as_slice()].concat();
     if !active.insert(instance.type_def_id) {
         return Err(ToDaeError::unsupported_flat(
             "record equation",
@@ -334,7 +342,15 @@ fn collect_record_equation_leaves(
         let child = VarName::new(format!("{name}.{}", field.name));
         let mut child_projection = projection.clone();
         child_projection.push(ordinal);
-        collect_record_equation_leaves(flat, &child, child_projection, span, active, fields)?;
+        collect_record_equation_leaves(
+            flat,
+            &child,
+            child_projection,
+            &prefix,
+            span,
+            active,
+            fields,
+        )?;
     }
     active.remove(&instance.type_def_id);
     Ok(())
