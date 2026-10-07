@@ -532,3 +532,65 @@ fn a_guarded_fold_in_a_callee_under_an_outer_loop_lowers_inline() {
         .expect("valid is visible");
     assert_eq!(simulation.data[variable].first().copied(), Some(0.0));
 }
+
+/// A carried value of an outer loop guards a fold inside the callee.
+const CARRIED_GUARD: &str = r#"
+function gated
+  input Real a;
+  input Real R[3, 3];
+  output Real y;
+algorithm
+  y := a;
+  if a > 0 then
+    for i in 1:3 loop
+      y := y + R[i, i];
+    end for;
+  end if;
+end gated;
+
+function chain
+  input Real u;
+  input Real w[:];
+  input Real rotations[:, 3, 3];
+  output Real total;
+  output Real peak;
+algorithm
+  peak := max(w) * u;
+  total := u;
+  for slot in 1:size(rotations, 1) loop
+    total := gated(total, rotations[slot, :, :]);
+  end for;
+end chain;
+
+model Chain
+  Real x(start = 1.0, fixed = true);
+  Real total;
+  Real peak;
+equation
+  der(x) = 0;
+  (total, peak) = chain(x, {1.0, 4.0}, {identity(3), identity(3)});
+end Chain;
+"#;
+
+#[test]
+fn a_carried_value_of_an_outer_loop_guards_a_fold_in_a_callee() {
+    let compiled = Compiler::new()
+        .model("Chain")
+        .compile_str(CARRIED_GUARD, "chain.mo")
+        .expect("a guarded fold under a carried value constructs checked DAE");
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    let simulation = simulate_dae(&compiled.dae, &options)
+        .expect("the carried guard lowers to Solve rows");
+    for (name, expected) in [("total", 7.0), ("peak", 4.0)] {
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        assert_eq!(simulation.data[variable].first().copied(), Some(expected));
+    }
+}
