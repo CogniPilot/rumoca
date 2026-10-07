@@ -416,8 +416,10 @@ pub struct ExternalFunction {
     /// Annotation arguments attached to the external clause (MLS §12.9.4).
     ///
     /// These remain syntax-preserving AST expressions so annotations such as
-    /// `Library` and `Include` are not collapsed into rendered strings.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// `Library` and `Include` are not collapsed into rendered strings. The
+    /// field is always written: the parsed-artifact cache decodes this type
+    /// positionally, so no field may be omitted by value.
+    #[serde(default)]
     pub annotation: Vec<Expression>,
 }
 

@@ -13,8 +13,10 @@ mod instantiate_value_fabrication;
 mod parser_contract;
 mod parser_ownership;
 mod phase_diagnostics;
+mod positional_wire_fields;
 mod process_allocator;
 mod public_api_surface;
+mod repository_hygiene;
 mod size_and_validation;
 mod solver_backend_boundary;
 mod source_comment_hygiene;
@@ -28,54 +30,6 @@ use std::path::Path;
 use architecture_hardening_support::*;
 
 const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[];
-
-#[test]
-fn test_no_tail_rs_files_in_crates() {
-    let root = workspace_root().join("crates");
-    let mut rs_files = Vec::new();
-    collect_rs_files(&root, &mut rs_files);
-
-    let offenders: Vec<String> = rs_files
-        .iter()
-        .filter_map(|path| {
-            let stem = path.file_stem()?.to_string_lossy();
-            (stem.contains("_tail")).then(|| path.display().to_string())
-        })
-        .collect();
-
-    assert!(
-        offenders.is_empty(),
-        "found banned *_tail*.rs files: {offenders:?}"
-    );
-}
-
-#[test]
-fn test_no_ignored_tests() {
-    let root = workspace_root().join("crates");
-    let mut rs_files = Vec::new();
-    collect_rs_files(&root, &mut rs_files);
-
-    let mut offenders = Vec::new();
-    let ignore_attr = concat!("#[", "ignore");
-    for path in rs_files {
-        if path.ends_with("crates/rumoca/tests/architecture_hardening_test/main.rs") {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        for (line_idx, line) in content.lines().enumerate() {
-            if line.contains(ignore_attr) {
-                offenders.push(format!("{}:{}", path.display(), line_idx + 1));
-            }
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "found ignored tests; use Cargo features/filters for heavy suites or remove stale tests: {offenders:?}"
-    );
-}
 
 #[test]
 fn test_no_direct_dot_tokenization_for_model_paths() {
