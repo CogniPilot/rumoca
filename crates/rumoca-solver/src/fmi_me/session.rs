@@ -64,6 +64,7 @@ pub struct MeRetainedComponent {
     kernel: Rc<RefCell<SolveMeKernel>>,
     pristine: super::MeFmuState,
     state_count: usize,
+    leases: u64,
 }
 
 impl MeRetainedComponent {
@@ -83,12 +84,19 @@ impl MeRetainedComponent {
             kernel,
             pristine,
             state_count,
+            leases: 0,
         })
     }
 
     #[must_use]
     pub fn state_count(&self) -> usize {
         self.state_count
+    }
+
+    /// Runs this component has been leased for, each one an initialization.
+    #[must_use]
+    pub const fn lease_count(&self) -> u64 {
+        self.leases
     }
 
     /// Lease the sole FMI instance for one run: rewind to the pristine
@@ -102,6 +110,7 @@ impl MeRetainedComponent {
         &mut self,
         options: MeSessionOptions,
     ) -> Result<MeComponentHost<'_>, MeSessionError> {
+        self.leases += 1;
         self.kernel
             .borrow_mut()
             .reset_to_fmu_state(&self.pristine)?;

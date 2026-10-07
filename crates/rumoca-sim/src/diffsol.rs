@@ -238,7 +238,6 @@ fn build_simulation_artifact(
         root_location: artifact.root_location(),
         retained: RefCell::new(retained),
     };
-    drop(check_prepared_component(&prepared));
     Ok(prepared)
 }
 
@@ -1649,5 +1648,21 @@ mod native_policy_tests {
             1,
             "the zero-state path retained its supplied evaluator after completion"
         );
+    }
+
+    /// Building a prepared simulation initializes nothing: its component is
+    /// leased, and so initialized, once per run, whatever refresh phases the
+    /// initialization itself executes.
+    #[test]
+    fn building_a_prepared_simulation_does_not_initialize_the_component() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = zero_state_fixture(&opts);
+        let prepared = build_simulation_artifact(model.artifact(), &opts, None)
+            .expect("zero-state simulation builds");
+        assert_eq!(prepared.retained.borrow().lease_count(), 0);
+        prepared.run().expect("zero-state run succeeds");
+        assert_eq!(prepared.retained.borrow().lease_count(), 1);
+        prepared.run().expect("a prepared run repeats");
+        assert_eq!(prepared.retained.borrow().lease_count(), 2);
     }
 }
