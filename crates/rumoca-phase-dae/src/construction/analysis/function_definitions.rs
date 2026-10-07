@@ -1259,11 +1259,19 @@ fn function_value_seed(
     let constructor = record_constructor(declaration, context)?;
     let mut seen = HashSet::new();
     seen.insert(type_id);
-    function_record_seed(declaration, dimensions, constructor, context, &mut seen)
+    function_record_seed(
+        declaration,
+        type_id,
+        dimensions,
+        constructor,
+        context,
+        &mut seen,
+    )
 }
 
 fn function_record_seed(
     declaration: &rumoca_core::FunctionParam,
+    type_id: rumoca_core::DefId,
     dimensions: Vec<u32>,
     constructor: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
@@ -1303,7 +1311,8 @@ fn function_record_seed(
                 ));
             }
             let nested = record_constructor(field, context)?;
-            let seed = function_record_seed(field, field_dimensions, nested, context, seen)?;
+            let seed =
+                function_record_seed(field, type_id, field_dimensions, nested, context, seen)?;
             seen.remove(&type_id);
             seed
         } else {
@@ -1311,8 +1320,23 @@ fn function_record_seed(
         };
         fields.push((VarName::new(&field.name), seed));
     }
+    // The seed names its record type by the Flat layout owner, exactly as
+    // the declared function value type does: a nested field carries its
+    // type name as written, which need not be the canonical record name.
+    let name = context
+        .flat
+        .record_types
+        .get(&type_id)
+        .map(|record| VarName::new(&record.name))
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function aggregate seed",
+                format!("`{}` has no Flat record layout", declaration.type_name),
+                declaration.span,
+            )
+        })?;
     Ok(FunctionValueSeed::Record {
-        name: VarName::new(&declaration.type_name),
+        name,
         dimensions,
         fields,
     })

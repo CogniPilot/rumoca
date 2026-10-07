@@ -1147,17 +1147,35 @@ fn decomposed_record_field_param(
     original_param: &rumoca_core::FunctionParam,
     field: &rumoca_core::FunctionParam,
 ) -> rumoca_core::FunctionParam {
+    record_field_column_param(
+        format!("{}_{}", param_name, field.name),
+        original_param.dimensions(),
+        &original_param.shape_expr,
+        field,
+    )
+}
+
+/// The function value holding record field `field` of every element of an
+/// enclosing record value with extents `enclosing` (struct of arrays): the
+/// field's type with shape `enclosing ++ field extents` and no binding.
+///
+/// A record field binding is a constructor default, not a default for every
+/// function value whose type happens to be that record. Calls already pass
+/// every projected field when they supply the record argument, and a record
+/// result or local is initialized by its own algorithm. Retaining the
+/// constructor binding here both changes MLS function-default semantics and
+/// leaves sibling field references (for example `weight = mass * g`) outside
+/// the decomposed coordinate space.
+pub(crate) fn record_field_column_param(
+    name: String,
+    enclosing: &[i64],
+    enclosing_shape: &[rumoca_core::Subscript],
+    field: &rumoca_core::FunctionParam,
+) -> rumoca_core::FunctionParam {
     let mut param = field.clone();
-    param.name = format!("{}_{}", param_name, field.name);
-    // A record field binding is a constructor default, not a default for every
-    // function input whose type happens to be that record. Calls already pass
-    // every projected field when they supply the record argument. Retaining
-    // the constructor binding here both changes MLS function-default semantics
-    // and leaves sibling field references (for example `weight = mass * g`)
-    // outside the decomposed function-input coordinate space.
+    param.name = name;
     param.default = None;
-    let dimensions = original_param
-        .dimensions()
+    let dimensions = enclosing
         .iter()
         .chain(field.dimensions().iter())
         .copied()
@@ -1168,8 +1186,7 @@ fn decomposed_record_field_param(
         dimensions,
     )
     .expect("concatenating checked function dimensions preserves the type contract");
-    param.shape_expr = original_param
-        .shape_expr
+    param.shape_expr = enclosing_shape
         .iter()
         .chain(field.shape_expr.iter())
         .cloned()
@@ -1422,7 +1439,7 @@ fn named_function_arg_marker(
 }
 
 /// Expand a record argument into scalar field arguments.
-fn expand_record_arg(
+pub(crate) fn expand_record_arg(
     function_name: &str,
     arg: &rumoca_core::Expression,
     fields: &[rumoca_core::FunctionParam],

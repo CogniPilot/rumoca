@@ -188,20 +188,48 @@ fn staged_nested_field_paths_assemble() {
 }
 
 #[test]
-fn record_field_written_whole_and_by_field_is_refused() {
+fn record_field_written_whole_then_by_field_assembles() {
     let source = nested_function(
         "  result.birth := Birth(g, 1);\n  result.birth.epoch := 2;\n  result.time := 0.0;",
     );
-    let error = Compiler::new()
+    Compiler::new()
         .model("ObserveBuild")
         .compile_str(&source, "ObserveBuild.mo")
-        .expect_err("a nested field update of a whole-assigned record is not assembled");
-    assert!(
-        error
-            .to_string()
-            .contains("is assigned both whole and field by field"),
-        "unexpected diagnostic: {error}"
-    );
+        .expect("a nested field update of a whole-assigned record is split into field locals");
+}
+
+#[test]
+fn record_field_written_whole_by_field_and_copied_compiles() {
+    // Reading `birth` whole keeps it one record value; its straight-line
+    // whole write and field update are coalesced before assembly.
+    let source = r#"
+within;
+record Birth
+  Integer generation;
+  Integer epoch;
+end Birth;
+record State
+  Birth birth;
+  Birth copy;
+end State;
+function Build
+  input Integer g;
+  output State result;
+algorithm
+  result.birth := Birth(g, 1);
+  result.birth.epoch := 2;
+  result.copy := result.birth;
+end Build;
+model ObserveBuild
+  State state;
+equation
+  state = Build(3);
+end ObserveBuild;
+"#;
+    Compiler::new()
+        .model("ObserveBuild")
+        .compile_str(source, "ObserveBuild.mo")
+        .expect("a straight-line field update of a whole-assigned record compiles");
 }
 
 #[test]
