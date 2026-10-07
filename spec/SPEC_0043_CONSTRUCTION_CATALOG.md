@@ -63,7 +63,7 @@ valid LOC reductions.
 |---|---|---|---|
 | `dae-core-loc` | 11,000 | 18,750 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 5,750 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 24,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 24,500 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -141,6 +141,16 @@ action (DAE-C31), its view, and its wire replay. The derived rule rounds the
 core up to the next 250-line step, so the `dae-core-loc` ceiling moves to
 18,750; the review triggers, wire and total ceilings, and totality-debt
 ceilings are unchanged.
+
+**2026-10-07 fold-continuation and nested-record review:** measured production
+source moved to 18,718 core, 5,570 wire, and 24,288 total lines with the
+continuation predicate of a compact function fold that ends a bounded
+`while` loop (SPEC_0022 ALG-018), its checks and wire replay, and the
+declared field and element types a nested record or record-array column is
+assembled at (SPEC_0022 FUNC-045). No duplicate view or replay code was
+found to retire. The derived rule rounds the total up to the next 250-line
+step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers,
+core and wire ceilings, and totality-debt ceilings are unchanged.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
