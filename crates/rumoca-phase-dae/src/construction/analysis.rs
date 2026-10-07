@@ -87,10 +87,10 @@ use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     PreContext, validate_expression, validate_expression_in_context_with_literals,
-    validate_expression_scoped_with_record_array_fields, validate_model_algorithm_range,
-    validate_model_expression_with_record_array_fields, validate_specialized_expression,
-    validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
-    when_body_context,
+    validate_expression_scoped_with_record_array_fields, validate_model_algorithm_expression,
+    validate_model_algorithm_range, validate_model_expression_with_record_array_fields,
+    validate_specialized_expression, validate_specialized_subscripts, validate_subscripts_scoped,
+    validate_when_expression, when_body_context,
 };
 use fixed_loops::{IndexBinding, fixed_range, range_values};
 pub use folded_guards::StructuralSelection;
@@ -1476,6 +1476,14 @@ pub(super) fn analyze_record_array_field_plans(
         all_model_expressions(flat)
             .chain(continuous.expressions())
             .chain(initialization.expressions())
+            .chain(
+                flat.algorithms
+                    .iter()
+                    .chain(&flat.initial_algorithms)
+                    .flat_map(|algorithm| {
+                        function_shapes::statement_expression_roots(&algorithm.statements)
+                    }),
+            )
             .chain(
                 flat.functions
                     .values()

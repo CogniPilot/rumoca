@@ -157,6 +157,28 @@ pub(super) fn validate_specialized_expression(
     .validate(expression)
 }
 
+/// Validate an expression a model algorithm statement evaluates: a field of an
+/// array-of-records element reads the coordinate or member projection its
+/// record-array field plan proves, exactly as in a model equation.
+pub(super) fn validate_model_algorithm_expression(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    model_values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    let binders = HashSet::new();
+    ExpressionValidator {
+        roles,
+        states,
+        binders: &binders,
+        record_array_fields: model_values.record_array_fields(),
+        enumeration_literals: None,
+        values: None,
+        when_clause: PreContext::Continuous,
+    }
+    .validate(expression)
+}
+
 /// Validate a model-algorithm range with the same translation-time value proof
 /// used by model equation ranges.
 ///
@@ -459,13 +481,9 @@ impl<'a> ExpressionValidator<'a> {
 
 fn unsupported_record_field(expression: &Expression, span: Span) -> ToDaeError {
     let detail = match expression {
-        Expression::FieldAccess {
-            field,
-            field_def_id,
-            ..
-        } => format!(
-            "record-field `{field}` declaration {} requires its typed semantic owner",
-            field_def_id.index()
+        Expression::FieldAccess { field, .. } => format!(
+            "record field `{field}` read here selects no record-array coordinate, member \
+             projection or declared record field of its base"
         ),
         _ => "record-field lowering requires its typed semantic owner".to_string(),
     };
