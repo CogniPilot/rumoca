@@ -998,6 +998,68 @@ mod native_policy_tests {
         }
     }
 
+    /// A backend that declines every compile request.
+    struct DecliningBackend;
+
+    const FORCED_DECLINE: &str = "forced decline";
+
+    impl SolveExecutionBackend for DecliningBackend {
+        fn compile_expression(
+            &self,
+            _block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_jacobian_expression(
+            &self,
+            _block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_assignment_schedule(
+            &self,
+            _source: &solve::ComputeBlock,
+            _owners: &solve::ContinuousRefreshOwners,
+            _schedule: &solve::ExactRefreshAssignmentSchedule,
+        ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_event_transaction(
+            &self,
+            _program: &solve::EventTransactionProgram,
+        ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+    }
+
+    /// A program the backend declines runs in the interpreter, and the
+    /// session's receipt says so instead of leaving the fallback silent.
+    #[test]
+    fn a_declined_program_is_recorded_in_the_session_receipt() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = state_fixture(&opts);
+        let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
+        let mut session =
+            super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
+                .expect("a declined program falls back to the interpreter");
+        session.advance_to(0.2).expect("interpreter runs the model");
+        let receipt = session.execution_receipt();
+        assert!(
+            !receipt.declined.is_empty(),
+            "declined compile requests must be listed: {receipt:?}"
+        );
+        assert!(
+            receipt
+                .declined
+                .iter()
+                .all(|decline| decline.reason == FORCED_DECLINE && decline.count > 0),
+            "{receipt:?}"
+        );
+    }
+
     /// Discriminator (a): the Auto/native BDF path really executes compiled
     /// expression, JVP, and exact-assignment native calls — SUCCESSFULLY. Each
     /// class asserts `succeeded > 0` (recorded only after the delegated

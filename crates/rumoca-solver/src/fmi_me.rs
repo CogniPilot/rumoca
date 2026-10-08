@@ -61,6 +61,7 @@
 //!   component mints that stage where the failure happens rather than letting a
 //!   host re-derive it from rendered text.
 
+mod decline_log;
 pub mod driver;
 pub mod fixed_step;
 pub mod integrator;
@@ -241,16 +242,35 @@ impl<'a> From<&'a rumoca_ir_solve::fmi::FmiComponent> for MeModelSource<'a> {
 /// API. Hosts name this handle instead, and can only hand it to
 /// `SolveMeKernel::instantiate_with_execution_backend`.
 #[derive(Clone)]
-pub struct MeExecutionBackend(Rc<dyn crate::SolveExecutionBackend>);
+pub struct MeExecutionBackend {
+    backend: Rc<dyn crate::SolveExecutionBackend>,
+    declines: decline_log::DeclineLog,
+}
 
 impl MeExecutionBackend {
+    /// Wrap a host backend; every compile request it declines is recorded and
+    /// readable through [`Self::declined`] on any clone of the handle.
     #[must_use]
     pub fn new(backend: Rc<dyn crate::SolveExecutionBackend>) -> Self {
-        Self(backend)
+        let declines = decline_log::DeclineLog::default();
+        Self {
+            backend: Rc::new(decline_log::RecordingBackend::new(
+                backend,
+                declines.clone(),
+            )),
+            declines,
+        }
+    }
+
+    /// The compile requests the backend has declined so far; each names a
+    /// program that runs in the interpreter instead.
+    #[must_use]
+    pub fn declined(&self) -> Vec<crate::SimNativeDecline> {
+        self.declines.snapshot()
     }
 
     pub(crate) fn into_runtime_backend(self) -> Rc<dyn crate::SolveExecutionBackend> {
-        self.0
+        self.backend
     }
 }
 
@@ -338,7 +358,7 @@ impl MeModelArtifact {
     /// The engine selection recorded at preparation, when one was made.
     #[must_use]
     pub fn execution_receipt(&self) -> Option<crate::SimExecutionReceipt> {
-        self.execution
+        self.execution.clone()
     }
 
     #[must_use]

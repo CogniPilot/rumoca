@@ -48,6 +48,6 @@ fn the_execution_receipt_names_the_engine_and_any_refusal() {
         serde_json::from_str(&session.execution_receipt_json().unwrap()).unwrap();
     assert_eq!(
         receipt,
-        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states"})
+        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states", "declined": []})
     );
 }

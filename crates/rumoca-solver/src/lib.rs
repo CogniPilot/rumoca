@@ -106,7 +106,7 @@ pub use runtime::trajectory_objective::{
 #[cfg(not(kani))]
 pub use solver::{
     DEFAULT_CHECKPOINT_BUDGET_BYTES, DiffsolMethod, MODEL_MESSAGE_CODE, SimBackend, SimDiagnostic,
-    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeRefusal, SimOptions,
-    SimPacingMode, SimResult, SimSolverMode, SimTermination, SimVariableMeta,
-    WARNING_ASSERTION_CODE,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimTermination,
+    SimVariableMeta, WARNING_ASSERTION_CODE,
 };
