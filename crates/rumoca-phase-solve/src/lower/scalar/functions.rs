@@ -835,7 +835,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         })
     }
 
-    fn fork_for_function_conditional_region(
+    pub(super) fn fork_for_function_conditional_region(
         &self,
         owner_function: dae::FunctionId<'dae>,
         owner_context: u64,

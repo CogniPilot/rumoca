@@ -74,3 +74,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })
     }
 }
+
+#[cfg(test)]
+mod tests;
