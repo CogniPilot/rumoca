@@ -11,6 +11,7 @@ mod family_calls;
 mod functions;
 mod literal_values;
 mod operators;
+mod region_catalog;
 mod register_folding;
 mod selected_arm;
 mod selector;
@@ -316,6 +317,11 @@ enum FunctionConditionalCaptureSource<'dae> {
     /// A register an enclosing fold update passes in as a capture, resolved in
     /// the compiler that owns the conditional.
     ParentInherited { source: solve::Reg },
+    /// The scalar at `ordinal` of the capture catalog of the compiler that owns
+    /// the conditional, when that compiler is itself a conditional region: a
+    /// region nested in a region reads the enclosing folds through the outer
+    /// region, which loads only the scalars the inner one reads.
+    ParentCatalog { ordinal: usize },
 }
 
 impl<'dae> FunctionConditionalCaptureSource<'dae> {
@@ -323,7 +329,9 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
         match self {
             Self::DefinitionRange { count, .. }
             | Self::DefinitionRecordFieldRange { count, .. } => count,
-            Self::ParentRegister { .. } | Self::ParentInherited { .. } => 1,
+            Self::ParentRegister { .. }
+            | Self::ParentInherited { .. }
+            | Self::ParentCatalog { .. } => 1,
         }
     }
 
@@ -349,6 +357,7 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
             },
             Self::ParentRegister { source } => Self::ParentRegister { source },
             Self::ParentInherited { source } => Self::ParentInherited { source },
+            Self::ParentCatalog { ordinal } => Self::ParentCatalog { ordinal },
         }
     }
 }

@@ -10,6 +10,8 @@ use crate::source_root_api::sync_workspace_sources_with_cache_root_for_tests;
 
 mod compile_wire_tests;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
+mod function_fold_scope_tests;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
 mod function_tuple_loop_tests;
 #[cfg(feature = "sim-rk45")]
 mod input_event_tests;

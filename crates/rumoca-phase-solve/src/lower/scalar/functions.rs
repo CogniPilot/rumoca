@@ -1086,6 +1086,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     count: 1,
                 })
             }
+            FunctionConditionalCaptureSource::ParentCatalog { ordinal } => {
+                let inherited = self.region_catalog_source(ordinal, span)?;
+                self.function_conditional_capture_range(inherited, span)
+            }
             FunctionConditionalCaptureSource::DefinitionRecordFieldRange {
                 context,
                 definition,
@@ -3806,6 +3810,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .collect();
                 visible.folds.push((*fold, tuple));
             }
+        }
+        if let Some(captures) = &self.deferred_function_conditional_captures {
+            let forwarded = captures.visible.forwarded();
+            visible.symbolic.extend(forwarded.symbolic);
+            visible.folds.extend(forwarded.folds);
         }
         visible
     }
