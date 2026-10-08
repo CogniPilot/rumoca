@@ -141,6 +141,38 @@ fn assert_emit_ok(file: &Path, emit: &str) -> String {
 }
 
 #[test]
+fn default_compile_reports_model_counts_balance_and_next_commands() {
+    let (_dir, file) = fixture_file();
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .output()
+        .expect("run default compile summary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for expected in [
+        "Compilation successful!",
+        "Model: EmitFixture",
+        "States: 2",
+        "Parameters: 1",
+        "Balance: 0 (equations - unknowns)",
+        "Status: BALANCED",
+        "Use `rumoca compile <file> --emit dae-mo`",
+        "Use `rumoca compile <file> --target <TARGET>`",
+        "Use `rumoca sim <file> --inspect structure`",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing `{expected}` in:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn emit_modelica_stages_render() {
     let (_dir, file) = fixture_file();
     // Each Modelica-form stage renders non-empty source. (The `when` equation

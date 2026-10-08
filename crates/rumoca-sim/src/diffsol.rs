@@ -1040,15 +1040,45 @@ mod native_policy_tests {
     #[test]
     fn a_declined_program_is_recorded_in_the_session_receipt() {
         let opts = sim_opts(SimExecutionPolicy::Auto);
-        let model = state_fixture(&opts);
+        let model = lower(
+            r#"
+function increment
+  input Real value;
+  output Real result;
+algorithm
+  result := value + 1;
+end increment;
+
+model DeclinedEvent
+  Real x(start = 0, fixed = true);
+  discrete Real n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+algorithm
+  when sample(0.1, 0.1) then
+    n := increment(pre(n));
+  end when;
+end DeclinedEvent;
+"#,
+            "DeclinedEvent",
+            &opts,
+        );
         let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
         let mut session =
             super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
                 .expect("a declined program falls back to the interpreter");
-        session.advance_to(0.2).expect("interpreter runs the model");
+        session
+            .advance_to(0.25)
+            .expect("interpreter runs the model");
+        assert_eq!(session.get("n").expect("read sampled counter"), Some(2.0));
+        let x = session.get("x").expect("read integrated state").expect("x");
+        assert!((x - 0.25).abs() < 1e-8, "x = {x}");
         let receipt = session.execution_receipt();
         assert!(
-            !receipt.declined.is_empty(),
+            receipt
+                .declined
+                .iter()
+                .any(|decline| decline.program == "event_transaction"),
             "declined compile requests must be listed: {receipt:?}"
         );
         assert!(
