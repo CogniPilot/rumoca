@@ -209,6 +209,8 @@ mod tests {
         assert!([1, 2, 3, 7].iter().all(|index| set.contains(*index)));
         assert!(![0, 4, 6, 8].iter().any(|index| set.contains(*index)));
         assert_eq!(set.len(), 4);
+        assert!(!set.is_empty());
+        assert!(IndexIntervals::of([]).is_empty());
         let mut grown = set.clone();
         for index in [4, 6, 5, 0, 20, usize::MAX] {
             grown.insert(index);

@@ -594,3 +594,26 @@ fn an_inconsistent_register_map_declines_the_whole_sharing() {
     program.step(&Step::Store(vec![0]));
     assert!(builder.violated);
 }
+
+/// The decline target of a violated construction invariant shares nothing,
+/// keeps every program and its targets, and proves itself.
+#[test]
+fn the_unshared_sequence_keeps_every_program_and_checks() {
+    let rows = [
+        (product_plus(0, 1, 1.0), vec![10]),
+        (product_plus(0, 1, 2.0), vec![11]),
+    ];
+    let programs = programs(&rows);
+    let unshared = SharedValueSegments::unshared(&programs);
+    unshared.check(&programs).unwrap();
+    assert_eq!(unshared.shared_operations(), 0);
+    assert!(unshared.capped().is_empty());
+    let [first, second] = unshared.segments() else {
+        panic!("one segment per program");
+    };
+    assert_eq!((first.ops(), first.targets()), (&rows[0].0[..], &[10][..]));
+    assert_eq!(
+        (second.ops(), second.targets(), second.first_program()),
+        (&rows[1].0[..], &[11][..], 1)
+    );
+}

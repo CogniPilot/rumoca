@@ -1434,6 +1434,7 @@ fn the_common_host_integrates_a_component_through_the_thin_plugin_contract() {
     })
     .expect("the fixture options are admissible");
 
+    assert_eq!(retained.lease_count(), 0);
     let host = retained.lease(options).expect("the sole lease is granted");
     let state_count = host.state_count();
     assert_eq!(state_count, 2);
