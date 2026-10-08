@@ -3,6 +3,7 @@ mod arrays;
 mod builtins;
 mod call_scoped_actions;
 pub(in crate::lower) use call_scoped_actions::action_kind;
+mod conditional_emission;
 mod conditions;
 mod constants;
 mod coordinates;
@@ -1440,7 +1441,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 base,
                 value,
                 subscripts,
-            } => self.array_update(base, value, subscripts, scalar),
+            } => self.array_update(expression, base, value, subscripts, scalar),
             dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
                 builtin,
                 arguments,
@@ -1543,6 +1544,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn array_update(
         &mut self,
+        expression: dae::ExprId<'dae>,
         base: dae::ExprId<'dae>,
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
@@ -1561,6 +1563,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 if reason == "array subscript is not compile-time computable"
                     || reason == "binder-valued subscript has no active domain" =>
             {
+                if subscripts
+                    .iter()
+                    .any(|subscript| matches!(subscript, dae::SubscriptView::Slice { .. }))
+                {
+                    // A window with run-time bounds is one compact tensor update
+                    // per call frame; this scalar reads one of its registers.
+                    return self
+                        .windowed_update_scalar(expression, base, value, subscripts, scalar);
+                }
                 return self.dynamic_scalar_array_update(base, value, subscripts, scalar);
             }
             Err(error) => return Err(error),

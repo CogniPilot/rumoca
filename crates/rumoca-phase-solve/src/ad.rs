@@ -2034,37 +2034,15 @@ impl<'a> AdBuilder<'a> {
             let subscripts = update
                 .subscripts
                 .iter()
-                .map(|subscript| match *subscript {
-                    rumoca_ir_solve::TensorSubscript::Whole => {
-                        Ok(rumoca_ir_solve::TensorSubscript::Whole)
-                    }
-                    rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Constant(coordinate),
-                    ) => Ok(rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Constant(coordinate),
-                    )),
-                    rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) => Ok(rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(self.lookup(register)?.re),
-                    )),
-                })
+                .map(|subscript| self.primal_update_subscript(subscript))
                 .collect::<Result<Vec<_>, LowerError>>()?
                 .into_boxed_slice();
             let condition = update
                 .condition
                 .map(|condition| self.lookup(condition).map(|dual| dual.re))
                 .transpose()?;
-            let value_count = dimensions
-                .iter()
-                .zip(subscripts.iter())
-                .try_fold(1usize, |count, (&extent, subscript)| {
-                    if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                        count.checked_mul(extent as usize)
-                    } else {
-                        Some(count)
-                    }
-                })
+            let value_count = update
+                .value_count(dimensions)
                 .ok_or_else(|| unsupported("function-fold tensor update AD extent overflow"))?;
             let mut values = Vec::with_capacity(value_count.saturating_mul(2));
             for element in 0..value_count {
@@ -2642,6 +2620,44 @@ impl<'a> AdBuilder<'a> {
         Ok(())
     }
 
+    /// One tensor-update axis for the dual program: coordinates are read at
+    /// their primal value, and a slice repacks its index range primal-only.
+    fn primal_update_subscript(
+        &mut self,
+        subscript: &rumoca_ir_solve::TensorUpdateSubscript,
+    ) -> Result<rumoca_ir_solve::TensorUpdateSubscript, LowerError> {
+        Ok(match subscript {
+            rumoca_ir_solve::TensorUpdateSubscript::Whole => {
+                rumoca_ir_solve::TensorUpdateSubscript::Whole
+            }
+            rumoca_ir_solve::TensorUpdateSubscript::Index(
+                rumoca_ir_solve::TensorIndex::Constant(coordinate),
+            ) => rumoca_ir_solve::TensorUpdateSubscript::Index(
+                rumoca_ir_solve::TensorIndex::Constant(*coordinate),
+            ),
+            rumoca_ir_solve::TensorUpdateSubscript::Index(
+                rumoca_ir_solve::TensorIndex::Runtime(register),
+            ) => rumoca_ir_solve::TensorUpdateSubscript::Index(
+                rumoca_ir_solve::TensorIndex::Runtime(self.lookup(*register)?.re),
+            ),
+            rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                let slice_count = dimensions.iter().try_fold(1usize, |count, extent| {
+                    checked_ad_product(count, *extent as usize, self.span, "tensor update slice")
+                })?;
+                let mut primal = Vec::with_capacity(slice_count);
+                for offset in 0..slice_count {
+                    let register =
+                        checked_ad_reg_offset(*start, offset, self.span, "tensor update slice")?;
+                    primal.push(self.lookup(register)?.re);
+                }
+                rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                    start: self.pack_registers(&primal)?,
+                    dimensions: dimensions.clone(),
+                }
+            }
+        })
+    }
+
     // SPEC_0021: Exception - exhaustive tensor-update subscript AD dispatch.
     #[allow(clippy::excessive_nesting)]
     fn lower_tensor_update(
@@ -2665,57 +2681,12 @@ impl<'a> AdBuilder<'a> {
         let mut value_count = 1usize;
         let mut dual_subscripts = Vec::with_capacity(subscripts.len());
         for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-            match subscript {
-                rumoca_ir_solve::TensorUpdateSubscript::Whole => {
-                    value_count = checked_ad_product(
-                        value_count,
-                        extent as usize,
-                        self.span,
-                        "tensor update value",
-                    )?;
-                    dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Whole);
-                }
-                rumoca_ir_solve::TensorUpdateSubscript::Index(
-                    rumoca_ir_solve::TensorIndex::Constant(coordinate),
-                ) => dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Index(
-                    rumoca_ir_solve::TensorIndex::Constant(*coordinate),
-                )),
-                rumoca_ir_solve::TensorUpdateSubscript::Index(
-                    rumoca_ir_solve::TensorIndex::Runtime(register),
-                ) => dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Index(
-                    rumoca_ir_solve::TensorIndex::Runtime(self.lookup(*register)?.re),
-                )),
-                rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                    let slice_count = dimensions.iter().try_fold(1usize, |count, extent| {
-                        checked_ad_product(
-                            count,
-                            *extent as usize,
-                            self.span,
-                            "tensor update slice",
-                        )
-                    })?;
-                    value_count = checked_ad_product(
-                        value_count,
-                        slice_count,
-                        self.span,
-                        "tensor update sliced value",
-                    )?;
-                    let mut primal = Vec::with_capacity(slice_count);
-                    for offset in 0..slice_count {
-                        let register = checked_ad_reg_offset(
-                            *start,
-                            offset,
-                            self.span,
-                            "tensor update slice",
-                        )?;
-                        primal.push(self.lookup(register)?.re);
-                    }
-                    dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Slice {
-                        start: self.pack_registers(&primal)?,
-                        dimensions: dimensions.clone(),
-                    });
-                }
-            }
+            let axis_count = subscript
+                .value_extent(extent)
+                .ok_or_else(|| unsupported("tensor update value extent overflow"))?;
+            value_count =
+                checked_ad_product(value_count, axis_count, self.span, "tensor update value")?;
+            dual_subscripts.push(self.primal_update_subscript(subscript)?);
         }
         let value_start = self.pack_dual_register_range(value_start, value_count)?;
         let dual_start = self.next_reg;

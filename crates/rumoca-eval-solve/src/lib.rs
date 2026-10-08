@@ -2949,7 +2949,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 for element in 0..count {
                     let mut offsets = Vec::with_capacity(updates.len());
                     for update in &updates {
-                        offsets.push(tensor_update_value_offset(
+                        offsets.push(tensor_update_register_value_offset(
                             &dimensions,
                             &update.subscripts,
                             element,
@@ -3691,7 +3691,7 @@ fn eval_fold_tensor_update(
     for element in 0..count {
         offsets.clear();
         for update in updates {
-            offsets.push(tensor_update_value_offset(
+            offsets.push(tensor_update_register_value_offset(
                 dimensions,
                 &update.subscripts,
                 element,
@@ -4077,36 +4077,6 @@ fn eval_function_conditional_region(
     let mut sink = OutputCursor::new(&mut values);
     eval_row_prepared_fast(nested, &mut scratch, &mut sink)?;
     Ok(values)
-}
-
-fn tensor_update_value_offset<E>(
-    dimensions: &[u32],
-    subscripts: &[rumoca_ir_solve::TensorSubscript],
-    element: usize,
-    mut read: impl FnMut(Reg) -> Result<f64, E>,
-) -> Result<Option<usize>, E> {
-    let mut value_offset = 0usize;
-    let mut axis_stride = dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    });
-    for (&extent, subscript) in dimensions.iter().zip(subscripts) {
-        axis_stride /= extent as usize;
-        let coordinate = (element / axis_stride) % extent as usize;
-        match *subscript {
-            rumoca_ir_solve::TensorSubscript::Whole => {
-                value_offset = value_offset * extent as usize + coordinate;
-            }
-            rumoca_ir_solve::TensorSubscript::Index(index) => {
-                let Some(selected) = tensor_index_coordinate(index, extent, &mut read)? else {
-                    return Ok(None);
-                };
-                if selected != coordinate {
-                    return Ok(None);
-                }
-            }
-        }
-    }
-    Ok(Some(value_offset))
 }
 
 fn tensor_update_register_value_offset<E>(

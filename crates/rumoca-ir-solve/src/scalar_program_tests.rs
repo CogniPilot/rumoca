@@ -854,3 +854,108 @@ fn scalar_program_wire_rejects_non_current_fields() {
         "unexpected error: {error}"
     );
 }
+
+/// One fold over a four-element carried tensor whose body patches the window
+/// `a[s:s + 1]`: the coordinate registers are `window_start` and the next one.
+fn window_fold(
+    update: Vec<LinearOp>,
+    window_start: Reg,
+) -> Result<FunctionFoldProgram, ScalarProgramRegisterError> {
+    let mut body = update;
+    body.push(LinearOp::StoreOutputFoldTensorUpdate {
+        source_base: 0,
+        source_stride: 1,
+        dimensions: Box::new([4]),
+        updates: Box::new([FoldTensorUpdate {
+            subscripts: Box::new([TensorUpdateSubscript::Slice {
+                start: window_start,
+                dimensions: Box::new([2]),
+            }]),
+            condition: None,
+            value_start: 3,
+            value_stride: 1,
+        }]),
+        nodes: Box::new([FoldTensorNode::Update { base: 0, update: 0 }]),
+        result: 1,
+        lanes: 1,
+    });
+    FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "start".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        4,
+        0,
+        body,
+    )
+}
+
+fn window_registers() -> Vec<LinearOp> {
+    vec![
+        LinearOp::LoadFoldIndex {
+            dst: 0,
+            dimension: 0,
+        },
+        LinearOp::Const { dst: 2, value: 1.0 },
+        LinearOp::Binary {
+            dst: 1,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 2,
+        },
+        LinearOp::Const {
+            dst: 3,
+            value: 100.0,
+        },
+        LinearOp::Const {
+            dst: 4,
+            value: 200.0,
+        },
+    ]
+}
+
+#[test]
+fn a_fold_patch_window_reads_its_whole_coordinate_range() {
+    window_fold(window_registers(), 0)
+        .expect("a window over defined coordinate registers is a checked fold patch");
+}
+
+#[test]
+fn a_fold_patch_window_with_an_undefined_coordinate_is_refused() {
+    // The window `{r1, r2}` reads r1 and r2; dropping the definition of r1
+    // leaves the second coordinate undefined.
+    let mut registers = window_registers();
+    registers.retain(|operation| !matches!(operation, LinearOp::Binary { dst: 1, .. }));
+    assert!(window_fold(registers, 1).is_err());
+}
+
+#[test]
+fn a_fold_patch_counts_its_window_extent_in_its_value() {
+    let window = FoldTensorUpdate {
+        subscripts: Box::new([
+            TensorUpdateSubscript::Index(TensorIndex::Constant(1)),
+            TensorUpdateSubscript::Slice {
+                start: 0,
+                dimensions: Box::new([2]),
+            },
+        ]),
+        condition: None,
+        value_start: 0,
+        value_stride: 1,
+    };
+    assert_eq!(window.value_count(&[3, 4]), Some(2));
+    assert_eq!(window.last_coordinate_register(), Some(1));
+    let whole = FoldTensorUpdate {
+        subscripts: Box::new([TensorUpdateSubscript::Whole, TensorUpdateSubscript::Whole]),
+        condition: None,
+        value_start: 0,
+        value_stride: 1,
+    };
+    assert_eq!(whole.value_count(&[3, 4]), Some(12));
+    assert_eq!(whole.last_coordinate_register(), None);
+}
