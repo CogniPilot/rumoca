@@ -1,4 +1,5 @@
 use indexmap::IndexMap;
+use rumoca_core::VarName;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
@@ -90,11 +91,11 @@ pub(crate) fn lower_layout<'dae>(
         &mut shape_spans,
         &mut variables,
     )?;
-    let pre = append_pre_variables(view, &variables, p.names.len())?;
+    let pre = append_pre_variables(view, &variables, p.scalar_count)?;
 
     let y_scalars = y.names.len();
-    let runtime = append_runtime_layout(view, p.names.len(), pre.scalar_count)?;
-    let layout = solve::VarLayout::from_parts_with_shapes_and_spans(
+    let runtime = append_runtime_layout(view, p.scalar_count, pre.scalar_count)?;
+    let layout = solve::VarLayout::from_interned_parts_with_shapes_and_spans(
         bindings,
         shapes,
         shape_spans,
@@ -595,9 +596,9 @@ struct YColumns {
 
 fn append_y_variables(
     view: dae::DaeView<'_>,
-    bindings: &mut IndexMap<String, solve::ScalarSlot>,
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, rumoca_core::Span>,
+    bindings: &mut IndexMap<VarName, solve::ScalarSlot>,
+    shapes: &mut IndexMap<VarName, Vec<usize>>,
+    shape_spans: &mut IndexMap<VarName, rumoca_core::Span>,
     slots: &mut [VariableSlot],
 ) -> Result<YColumns, LowerError> {
     let mut columns = YColumns {
@@ -618,7 +619,7 @@ fn append_y_variables(
             let base = columns.names.len();
             insert_scalar_bindings(
                 bindings,
-                &mut columns.names,
+                |name| columns.names.push(name),
                 variable,
                 StorageClass::Y,
                 base,
@@ -643,7 +644,8 @@ fn append_y_variables(
 }
 
 struct PColumns {
-    names: Vec<String>,
+    /// The number of scalar columns; the names live in the layout bindings.
+    scalar_count: usize,
     parameter_count: usize,
     input_names: Vec<String>,
     discrete_real_names: Vec<String>,
@@ -652,13 +654,13 @@ struct PColumns {
 
 fn append_p_variables(
     view: dae::DaeView<'_>,
-    bindings: &mut IndexMap<String, solve::ScalarSlot>,
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, rumoca_core::Span>,
+    bindings: &mut IndexMap<VarName, solve::ScalarSlot>,
+    shapes: &mut IndexMap<VarName, Vec<usize>>,
+    shape_spans: &mut IndexMap<VarName, rumoca_core::Span>,
     slots: &mut [VariableSlot],
 ) -> Result<PColumns, LowerError> {
     let mut columns = PColumns {
-        names: Vec::new(),
+        scalar_count: 0,
         parameter_count: 0,
         input_names: Vec::new(),
         discrete_real_names: Vec::new(),
@@ -675,20 +677,15 @@ fn append_p_variables(
             .variables()
             .filter(|(_, variable)| variable.role() == role)
         {
-            let base = columns.names.len();
-            insert_scalar_bindings(
-                bindings,
-                &mut columns.names,
-                variable,
-                StorageClass::P,
-                base,
-            )?;
+            let base = columns.scalar_count;
+            insert_scalar_bindings(bindings, |_| {}, variable, StorageClass::P, base)?;
             record_shape(shapes, shape_spans, variable);
             slots[id.index() as usize] = VariableSlot {
                 storage: StorageClass::P,
                 base,
                 count: variable.scalar_count(),
             };
+            columns.scalar_count += variable.scalar_count();
             append_parameter_role_names(&mut columns, variable)?;
         }
     }
@@ -699,6 +696,16 @@ fn append_parameter_role_names(
     columns: &mut PColumns,
     variable: dae::VariableView<'_>,
 ) -> Result<(), LowerError> {
+    if variable.causality() != dae::VariableCausality::Input
+        && matches!(
+            variable.role(),
+            dae::VariableRole::Parameter | dae::VariableRole::Constant
+        )
+    {
+        // A plain parameter is only counted; the bindings already name it.
+        columns.parameter_count += variable.scalar_count();
+        return Ok(());
+    }
     let names = variable_scalar_names(variable)?;
     if variable.causality() == dae::VariableCausality::Input {
         columns.input_names.extend(names);
@@ -706,7 +713,7 @@ fn append_parameter_role_names(
     }
     match variable.role() {
         dae::VariableRole::Parameter | dae::VariableRole::Constant => {
-            columns.parameter_count += names.len();
+            unreachable!("plain parameters return above")
         }
         dae::VariableRole::Input => columns.input_names.extend(names),
         dae::VariableRole::DiscreteReal => columns.discrete_real_names.extend(names),
@@ -719,8 +726,8 @@ fn append_parameter_role_names(
 }
 
 fn insert_scalar_bindings(
-    bindings: &mut IndexMap<String, solve::ScalarSlot>,
-    names: &mut Vec<String>,
+    bindings: &mut IndexMap<VarName, solve::ScalarSlot>,
+    mut keep_name: impl FnMut(String),
     variable: dae::VariableView<'_>,
     storage: StorageClass,
     base: usize,
@@ -730,7 +737,7 @@ fn insert_scalar_bindings(
             StorageClass::Y => solve::scalar_slot_y(base),
             StorageClass::P => solve::scalar_slot_p(base),
         };
-        if bindings.insert(variable.name().to_string(), slot).is_some() {
+        if bindings.insert(variable.name().clone(), slot).is_some() {
             return Err(LowerError::contract(
                 format!("duplicate aggregate layout name `{}`", variable.name()),
                 variable.declaration().span(),
@@ -757,26 +764,26 @@ fn insert_scalar_bindings(
             StorageClass::Y => solve::scalar_slot_y(index),
             StorageClass::P => solve::scalar_slot_p(index),
         };
-        if bindings.insert(name.clone(), slot).is_some() {
+        if bindings.insert(VarName::intern(&name), slot).is_some() {
             return Err(LowerError::contract(
                 format!("duplicate scalar layout name `{name}`"),
                 variable.declaration().span(),
             ));
         }
-        names.push(name);
+        keep_name(name);
     }
     Ok(())
 }
 
 fn record_shape(
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    spans: &mut IndexMap<String, rumoca_core::Span>,
+    shapes: &mut IndexMap<VarName, Vec<usize>>,
+    spans: &mut IndexMap<VarName, rumoca_core::Span>,
     variable: dae::VariableView<'_>,
 ) {
     if variable.value_type().is_scalar() {
         return;
     }
-    let name = variable.name().to_string();
+    let name = variable.name().clone();
     shapes.insert(
         name.clone(),
         variable

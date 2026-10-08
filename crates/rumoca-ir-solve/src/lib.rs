@@ -73,8 +73,8 @@ pub use linear_op::{
     FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
     FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg,
     ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape,
-    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript,
-    UnaryOp, prune_dead_constants, resolve_indexed_slot,
+    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorUpdateSubscript, UnaryOp,
+    prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
 pub use parameter_classification::{ExcludedParameter, ExclusionReason, ParameterClassification};
@@ -100,7 +100,7 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 73;
+pub const SOLVE_SCHEMA_VERSION: u16 = 74;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)

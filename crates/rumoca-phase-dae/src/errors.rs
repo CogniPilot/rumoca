@@ -256,6 +256,24 @@ impl ToDaeError {
         }
     }
 
+    /// Name the function whose body raised this refusal, unless its detail
+    /// already does (SPEC_0008: every refusal carries its provenance).
+    #[must_use]
+    pub fn within_function(self, function: &str) -> Self {
+        match self {
+            Self::UnsupportedFlatSemantics {
+                feature,
+                detail,
+                span,
+            } if !detail.contains(function) => Self::UnsupportedFlatSemantics {
+                feature,
+                detail: format!("in function `{function}`: {detail}"),
+                span,
+            },
+            other => other,
+        }
+    }
+
     /// SPEC_0022 §4.16.1 attributes every clock coordinate that reaches DAE
     /// construction without a static schedule to its own code, `ED009`, so the
     /// clock constructor stays the first owner of the failure instead of the

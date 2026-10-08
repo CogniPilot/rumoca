@@ -68,6 +68,7 @@ fn register_call_body<'dae>(
             provenance: call_node.provenance().span(),
         });
     };
+    let function_id = function;
     let function = view
         .function(function)
         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
@@ -82,8 +83,8 @@ fn register_call_body<'dae>(
             table, view, function, binding, identity, arithmetic, provenance,
         );
     }
-    let assertions = assertion_conditions(view, function)?;
-    let nested_call_ids = nested_calls(view, function, &assertions);
+    let facts = FunctionFacts::of(view, function_id, arithmetic, identities)?;
+    let (assertions, nested_call_ids) = (&facts.assertions, &facts.nested_calls);
     let mut callees = HashMap::new();
     for nested_call in nested_call_ids.iter().copied() {
         let registered = register_call(
@@ -97,18 +98,18 @@ fn register_call_body<'dae>(
         )?;
         callees.insert(nested_call, registered.callee);
     }
-    let interface = FunctionInterface::lower(view, function, arithmetic)?;
+    let interface = &facts.interface;
     let layout = assertion_layout(
         view,
-        &assertions,
-        &nested_call_ids,
+        assertions,
+        nested_call_ids,
         &callees,
         interface.result_leaf_count(),
         arithmetic,
     )?;
     let body = OwnerBody {
         function,
-        interface: &interface,
+        interface,
         callees,
         assertion_count: assertions.len(),
         layout,
@@ -127,6 +128,41 @@ fn register_call_body<'dae>(
         callee: body.callee(owner),
         site,
     })
+}
+
+/// What a Modelica function body fixes for every owner issued from it: its
+/// assertions, the owners its body calls, and its typed interface. A function
+/// called from many sites is read once, not once per owner.
+pub(super) struct FunctionFacts<'dae> {
+    pub(super) assertions: Vec<assertions::FunctionAssertion<'dae>>,
+    pub(super) nested_calls: Vec<dae::ExprId<'dae>>,
+    pub(super) interface: FunctionInterface<'dae>,
+}
+
+impl<'dae> FunctionFacts<'dae> {
+    fn of(
+        view: dae::DaeView<'dae>,
+        key: dae::FunctionId<'dae>,
+        arithmetic: solve::SolveArithmeticProfile,
+        identities: &mut CallRegistration<'dae>,
+    ) -> Result<std::rc::Rc<Self>, solve::SolveProgramConstructionError> {
+        if let Some(facts) = identities.function_facts.get(&key) {
+            return Ok(facts.clone());
+        }
+        let function = view
+            .function(key)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        let assertions = assertion_conditions(view, function)?;
+        let nested_calls = nested_calls(view, function, &assertions);
+        let interface = FunctionInterface::lower(view, function, arithmetic)?;
+        let facts = std::rc::Rc::new(Self {
+            assertions,
+            nested_calls,
+            interface,
+        });
+        identities.function_facts.insert(key, facts.clone());
+        Ok(facts)
+    }
 }
 
 /// The typed leaf interface of one Modelica function.

@@ -39,6 +39,14 @@ impl GuardFacts {
                     _ => self.forget_written(statement),
                 }
             }
+            // The statement a generated Boolean is captured by: from here on it
+            // holds the value of its definition.
+            rumoca_core::Statement::Empty { span } => {
+                if let Some(definition) = scope.generated.iter().find(|guard| guard.span == *span) {
+                    self.observe_accesses(&definition.value, scope);
+                    self.assign(definition.target.clone(), &definition.value, scope);
+                }
+            }
             rumoca_core::Statement::FunctionCall { args, .. } => {
                 for arg in args {
                     self.observe_accesses(arg, scope);
@@ -102,8 +110,40 @@ impl GuardFacts {
         body: &[rumoca_core::Statement],
         binders: &[VarName],
     ) -> Self {
+        self.entry_forgetting(assigned_function_targets(body), binders)
+    }
+
+    /// The facts at the head of a loop over `body` as one path sees it: a
+    /// branch of the body that these facts exclude never runs, so what it
+    /// writes stays known. The exclusions hold at every pass only when no
+    /// value they rely on is written by a branch that does run; otherwise
+    /// every write counts, as in [`Self::loop_entry`].
+    ///
+    /// A generated Boolean the body captures is read through its definition,
+    /// which the facts at the capture evaluate.
+    pub(in crate::construction::analysis) fn loop_entry_on_path(
+        &self,
+        body: &[rumoca_core::Statement],
+        binders: &[VarName],
+        scope: FactScope<'_>,
+    ) -> Self {
+        let mut runs = HashSet::new();
+        let mut relied_on = HashSet::new();
+        self.clone()
+            .collect_running_writes(body, scope, (&mut runs, &mut relied_on));
+        if relied_on.iter().any(|name| runs.contains(name)) {
+            return self.loop_entry(body, binders);
+        }
+        self.entry_forgetting(runs, binders)
+    }
+
+    fn entry_forgetting(
+        &self,
+        assigned: impl IntoIterator<Item = String>,
+        binders: &[VarName],
+    ) -> Self {
         let mut entry = self.clone();
-        for name in assigned_function_targets(body) {
+        for name in assigned {
             entry.forget(&VarName::new(name));
         }
         for binder in binders {
@@ -112,6 +152,79 @@ impl GuardFacts {
         entry
     }
 
+    /// [`Self::collect_running_writes`] for one conditional: a branch these
+    /// facts exclude contributes the values its conditions read.
+    fn collect_running_writes_in_if(
+        &self,
+        (cond_blocks, else_block): (
+            &[rumoca_core::StatementBlock],
+            Option<&[rumoca_core::Statement]>,
+        ),
+        scope: FactScope<'_>,
+        (runs, relied_on): (&mut HashSet<String>, &mut HashSet<String>),
+    ) {
+        let conditions = cond_blocks
+            .iter()
+            .map(|block| &block.cond)
+            .collect::<Vec<_>>();
+        let branches = cond_blocks
+            .iter()
+            .map(|block| block.stmts.as_slice())
+            .chain(else_block);
+        let mut excluded = false;
+        for (mut entry, branch) in self
+            .branch_entries(&conditions, scope)
+            .into_iter()
+            .zip(branches)
+        {
+            excluded |= entry.is_unreachable();
+            if !entry.is_unreachable() {
+                entry.collect_running_writes(branch, scope, (runs, relied_on));
+            }
+        }
+        if excluded {
+            for condition in &conditions {
+                reads_through_captures(condition, scope, relied_on, 0);
+            }
+        }
+    }
+
+    /// Walk `statements` once from these facts: `runs` collects the values
+    /// the branches that are not excluded may write, and `relied_on` the
+    /// values the exclusions read.
+    fn collect_running_writes(
+        &mut self,
+        statements: &[rumoca_core::Statement],
+        scope: FactScope<'_>,
+        (runs, relied_on): (&mut HashSet<String>, &mut HashSet<String>),
+    ) {
+        for statement in statements {
+            match statement {
+                rumoca_core::Statement::Empty { .. } => self.after(statement, scope),
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    ..
+                } => self.collect_running_writes_in_if(
+                    (cond_blocks, else_block.as_deref()),
+                    scope,
+                    (runs, relied_on),
+                ),
+                // A nested loop runs its body: the writes it holds are the ones of
+                // the branches not excluded.
+                rumoca_core::Statement::For { equations, .. } => {
+                    self.clone()
+                        .collect_running_writes(equations, scope, (runs, relied_on));
+                }
+                rumoca_core::Statement::While { block, .. } => {
+                    reads_through_captures(&block.cond, scope, relied_on, 0);
+                    self.clone()
+                        .collect_running_writes(&block.stmts, scope, (runs, relied_on));
+                }
+                other => runs.extend(assigned_function_targets(std::slice::from_ref(other))),
+            }
+        }
+    }
     /// The invariant at the head of a `for` loop, which is also what holds
     /// after it; the binders are not part of it.
     pub(in crate::construction::analysis) fn for_head(
@@ -142,7 +255,7 @@ impl GuardFacts {
             for binder in &binders {
                 pass.forget(binder);
             }
-            pass.path = conjoin(pass.path, Some(binder_facts.clone()));
+            pass.path = conjoin(pass.path, Some(binder_facts.clone().into()));
             pass.after_sequence(body, scope);
             for binder in &binders {
                 pass.forget(binder);
@@ -175,7 +288,7 @@ impl GuardFacts {
         pass: impl Fn(&Self) -> Self,
     ) -> Self {
         if statements_break(body) {
-            return self.loop_entry(body, binders);
+            return self.loop_entry_on_path(body, binders, scope);
         }
         let next = |head: &Self| {
             let mut joined = self.clone();
@@ -202,7 +315,7 @@ impl GuardFacts {
             };
             head = head.widened(&candidate, steps);
         }
-        self.loop_entry(body, binders)
+        self.loop_entry_on_path(body, binders, scope)
     }
 
     /// Whether every fact `other` proves is proven here at least as tightly.
@@ -324,7 +437,7 @@ impl GuardFacts {
         if facts.is_empty() {
             return;
         }
-        self.path = conjoin(self.path.take(), Some(facts));
+        self.path = conjoin(self.path.take(), Some(facts.into()));
         if self.path.is_none() {
             self.selections.clear();
         }
@@ -526,4 +639,30 @@ fn statements_break(statements: &[rumoca_core::Statement]) -> bool {
         }
         _ => false,
     })
+}
+
+/// How many captured definitions deep a condition's reads are followed.
+const MAX_CAPTURE_DEPTH: usize = 8;
+
+/// Every value `expression` reads, following each generated Boolean to the
+/// values its definition reads.
+fn reads_through_captures(
+    expression: &Expression,
+    scope: FactScope<'_>,
+    reads: &mut HashSet<String>,
+    depth: usize,
+) {
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    for reference in references {
+        reads.insert(reference.as_str().to_string());
+        if depth < MAX_CAPTURE_DEPTH
+            && let Some(definition) = scope
+                .generated
+                .iter()
+                .find(|guard| guard.target == reference)
+        {
+            reads_through_captures(&definition.value, scope, reads, depth + 1);
+        }
+    }
 }

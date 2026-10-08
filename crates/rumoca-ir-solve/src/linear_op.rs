@@ -375,20 +375,15 @@ pub enum TensorIndex {
     Runtime(Reg),
 }
 
-/// One axis of a compact tensor update.
+/// One axis of a compact tensor update, ordinary or one patch of a tensor-valued
+/// fold transition (`FoldTensorUpdate`).
 ///
 /// `Whole` preserves that axis in the update value. `Index` removes it and
 /// selects one zero-based constant or one-based runtime Modelica coordinate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TensorSubscript {
-    Whole,
-    Index(TensorIndex),
-}
-
-/// One axis of a compact ordinary tensor update.
-///
-/// A slice remains a packed register range of one-based Modelica indices; it
-/// is never enumerated into an extent-sized select graph in Solve IR.
+/// A slice remains a packed register range of one-based Modelica indices (the
+/// window `a[s:s + k - 1]` is `k` registers holding `s`, `s + 1`, ...); the
+/// update value keeps that axis at the slice extent. It is never enumerated
+/// into an extent-sized select graph in Solve IR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorUpdateSubscript {
     Whole,
@@ -399,10 +394,63 @@ pub enum TensorUpdateSubscript {
 /// One ordered patch in a compact tensor-valued fold transition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FoldTensorUpdate {
-    pub subscripts: Box<[TensorSubscript]>,
+    pub subscripts: Box<[TensorUpdateSubscript]>,
     pub condition: Option<Reg>,
     pub value_start: Reg,
     pub value_stride: usize,
+}
+
+impl TensorUpdateSubscript {
+    /// Extent this axis contributes to the update value: the whole `extent`,
+    /// one for an index, the slice extent for a slice. `None` on overflow.
+    #[must_use]
+    pub fn value_extent(&self, extent: u32) -> Option<usize> {
+        match self {
+            Self::Whole => Some(extent as usize),
+            Self::Index(_) => Some(1),
+            Self::Slice { dimensions, .. } => dimensions
+                .iter()
+                .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize)),
+        }
+    }
+
+    /// First register and register count of the run-time coordinates this axis
+    /// reads: one register for a run-time index, the packed index range of a
+    /// slice. A whole or constant-index axis reads none.
+    #[must_use]
+    pub fn runtime_registers(&self) -> Option<(Reg, usize)> {
+        match self {
+            Self::Whole | Self::Index(TensorIndex::Constant(_)) => None,
+            Self::Index(TensorIndex::Runtime(register)) => Some((*register, 1)),
+            Self::Slice { start, .. } => Some((*start, self.value_extent(0)?)),
+        }
+    }
+}
+
+impl FoldTensorUpdate {
+    /// Scalars one patch of a tensor of `dimensions` carries per lane, or
+    /// `None` on overflow.
+    #[must_use]
+    pub fn value_count(&self, dimensions: &[u32]) -> Option<usize> {
+        dimensions
+            .iter()
+            .zip(self.subscripts.iter())
+            .try_fold(1usize, |count, (&extent, subscript)| {
+                count.checked_mul(subscript.value_extent(extent)?)
+            })
+    }
+
+    /// Last register this patch's run-time coordinates read, if any.
+    #[must_use]
+    pub fn last_coordinate_register(&self) -> Option<Reg> {
+        self.subscripts
+            .iter()
+            .filter_map(TensorUpdateSubscript::runtime_registers)
+            .filter_map(|(start, count)| {
+                start.checked_add(Reg::try_from(count.checked_sub(1)?).ok()?)
+            })
+            .max()
+    }
 }
 
 /// One compact tensor-expression node. Node id zero is the carried source;
@@ -2207,7 +2255,7 @@ fn fold_tensor_patches(
         }
         for (&extent, subscript) in dimensions.iter().zip(update.subscripts.iter()) {
             value_count =
-                fold_tensor_subscript(cx, extent, *subscript, value_count, &mut max_register)?;
+                fold_tensor_subscript(cx, extent, subscript, value_count, &mut max_register)?;
         }
         let value_last_offset = (value_count - 1)
             .checked_mul(update.value_stride)
@@ -2229,26 +2277,17 @@ fn fold_tensor_patches(
 fn fold_tensor_subscript(
     cx: OpSources<'_>,
     extent: u32,
-    subscript: TensorSubscript,
+    subscript: &TensorUpdateSubscript,
     value_count: usize,
     max_register: &mut Option<Reg>,
 ) -> Result<usize, ScalarProgramRegisterError> {
-    match subscript {
-        TensorSubscript::Whole => value_count
-            .checked_mul(extent as usize)
-            .ok_or_else(|| cx.tensor_error("tensor update value extent overflows")),
-        TensorSubscript::Index(TensorIndex::Constant(coordinate)) => {
-            if coordinate >= extent {
-                return Err(cx.tensor_error("constant tensor update coordinate is out of range"));
-            }
-            Ok(value_count)
-        }
-        TensorSubscript::Index(TensorIndex::Runtime(register)) => {
-            cx.require(register)?;
-            *max_register = Some(max_register.map_or(register, |last: Reg| last.max(register)));
-            Ok(value_count)
-        }
+    // `last` stays zero, the smallest register, unless the axis reads registers.
+    let mut last = 0;
+    let value_count = tensor_update_subscript(cx, extent, subscript, value_count, &mut last)?;
+    if subscript.runtime_registers().is_some() {
+        *max_register = Some(max_register.map_or(last, |previous: Reg| previous.max(last)));
     }
+    Ok(value_count)
 }
 
 /// Element-major lane values read by one aggregate tensor patch.

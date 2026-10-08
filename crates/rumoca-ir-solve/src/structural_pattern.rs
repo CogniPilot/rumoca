@@ -2794,16 +2794,8 @@ impl DependencyWalk<'_> {
         update: &crate::FoldTensorUpdate,
         lanes: usize,
     ) -> Result<DependencyState, StructuralPatternError> {
-        let value_count = dimensions
-            .iter()
-            .zip(update.subscripts.iter())
-            .try_fold(1usize, |count, (&extent, subscript)| {
-                if matches!(subscript, crate::TensorSubscript::Whole) {
-                    count.checked_mul(extent as usize)
-                } else {
-                    Some(count)
-                }
-            })
+        let value_count = update
+            .value_count(dimensions)
             .ok_or_else(|| dependency_error("tensor update value extent overflow", self.span))?;
         if let Some(condition) = update.condition {
             update_dependency = update_dependency.union(self.get(condition)?);
@@ -2814,11 +2806,13 @@ impl DependencyWalk<'_> {
                 update_dependency = update_dependency.union(self.get(update.value_start + offset)?);
             }
         }
-        for subscript in &update.subscripts {
-            if let crate::TensorSubscript::Index(crate::TensorIndex::Runtime(register_id)) =
-                subscript
-            {
-                update_dependency = update_dependency.union(self.get(*register_id)?);
+        for (start, count) in update
+            .subscripts
+            .iter()
+            .filter_map(crate::TensorUpdateSubscript::runtime_registers)
+        {
+            for offset in 0..count {
+                update_dependency = update_dependency.union(self.get(start + offset as Reg)?);
             }
         }
         Ok(update_dependency)

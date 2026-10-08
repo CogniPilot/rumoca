@@ -182,7 +182,7 @@ package U
       end for;
     end if;
     y := 0;
-    if reset or other then
+    if reset or not other then
       y := working.generation;
     end if;
   end Unrelated;
@@ -245,8 +245,8 @@ fn both_sides_of_a_split_conditional_define_a_record() {
     assert_eq!(solver_value(&probe.report, "bad"), -1.0);
 }
 
-/// Two conditionals over unrelated conditions do not define a value together:
-/// neither condition is the complement of the other.
+/// Two conditionals over unrelated conditions leave the value undefined where
+/// neither holds, and a later read under `reset or not other` is reached there.
 #[test]
 fn unrelated_conditionals_do_not_define_a_record_together() {
     let error = Compiler::new()
