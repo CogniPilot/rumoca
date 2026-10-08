@@ -62,7 +62,8 @@ pub struct ScratchReport {
     pub memo_bytes: u32,
     pub typed_lane_bytes: u32,
     pub p_copy_bytes: u32,
-    /// Sum of the unshared frame sizes of the root call owners' scratch.
+    /// Unshared scratch of the widest root call owner, the figure the layout
+    /// charged before sequential operations shared one frame.
     pub unshared_call_scratch_bytes: u32,
     /// The root owner whose frame sets the shared call input/output/scratch.
     pub widest_owner: Option<usize>,
