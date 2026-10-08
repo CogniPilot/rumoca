@@ -6,7 +6,7 @@ use rumoca_ir_solve as solve;
 use rumoca_ir_solve::RefreshPlan;
 
 use super::RefreshProgramAccess;
-use super::static_domain::ContinuousStaticParameters;
+use rumoca_ir_solve::ContinuousStaticParameters;
 
 pub(super) fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
     plan: &RefreshPlan,

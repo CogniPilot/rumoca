@@ -63,7 +63,7 @@
 
 {%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none) %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
-{%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
+{%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = rmc_now(m);
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];
@@ -566,6 +566,19 @@ static {{ prefix }}Status settle_values(ModelInstance* m) {
     if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
 }
+{%- if scalar_events %}
+static {{ prefix }}Status rmc_observe(ModelInstance* m);
+{%- endif %}
+/* The values a public read observes: settled, then the rows a public
+   observation recomputes. */
+static {{ prefix }}Status settle_public_values(ModelInstance* m) {
+    if (settle_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- if scalar_events %}
+    return rmc_observe(m);
+{%- else %}
+    return {{ prefix }}OK;
+{%- endif %}
+}
 static {{ prefix }}Status settle_derivative_values(ModelInstance* m) {
     if (refresh_derivative_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
@@ -596,8 +609,10 @@ static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
 
 {#- The FMI value type of one inventory entry: Real is Float64, Integer and
     enumeration ordinals are Int32, Boolean is Boolean, String is String. -#}
-{%- macro rmc_kind(variable) -%}
-{%- if variable.value_kind == "Real" %}RMC_KIND_FLOAT64{% elif variable.value_kind in ["Integer", "Enumeration"] %}RMC_KIND_INT32{% elif variable.value_kind == "Boolean" %}RMC_KIND_BOOLEAN{% elif variable.value_kind == "String" %}RMC_KIND_STRING{% else %}{{ fail("unsupported-feature:fmi.c.value-kind " ~ variable.value_kind) }}{% endif -%}
+{#- `enumeration_kind` is the kind an importer reads an enumeration with:
+    FMI 2 Integer, FMI 3 Int64 (FMI 3.0.2 section 2.4.7.1). -#}
+{%- macro rmc_kind(variable, enumeration_kind="RMC_KIND_INT32") -%}
+{%- if variable.value_kind == "Real" %}RMC_KIND_FLOAT64{% elif variable.value_kind == "Enumeration" %}{{ enumeration_kind }}{% elif variable.value_kind == "Integer" %}RMC_KIND_INT32{% elif variable.value_kind == "Boolean" %}RMC_KIND_BOOLEAN{% elif variable.value_kind == "String" %}RMC_KIND_STRING{% else %}{{ fail("unsupported-feature:fmi.c.value-kind " ~ variable.value_kind) }}{% endif -%}
 {%- endmacro %}
 
 {#- Instance storage of the String texts: the current text of every String

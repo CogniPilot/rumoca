@@ -1087,16 +1087,22 @@ end FmiSwitchedDecay;
     #[cfg(feature = "fmu-packaging")]
     fn compile_time_event_target_demo() -> CompilationResult {
         let source = r#"
-model FmiTimeEventDecay
-  Real x(start = 1.0);
+model FmiDynamicTimeEvent
+  Real deadline(start = 1.0, fixed = true);
+  Integer n(start = 0, fixed = true);
 equation
-  der(x) = if time > 0.5 then -1.0 else 1.0;
-end FmiTimeEventDecay;
+  when time > 0.3 then
+    deadline = time + 1.0;
+  end when;
+  when time >= pre(deadline) then
+    n = pre(n) + 1;
+  end when;
+end FmiDynamicTimeEvent;
 "#;
 
         Compiler::new()
-            .model("FmiTimeEventDecay")
-            .compile_str(source, "FmiTimeEventDecay.mo")
+            .model("FmiDynamicTimeEvent")
+            .compile_str(source, "FmiDynamicTimeEvent.mo")
             .expect("time-event target demo should compile")
     }
 
@@ -1208,7 +1214,7 @@ end FmiUndelayedDecay;
             let out_dir = tempfile::tempdir().expect("temp output dir");
             let error = compile_packaged_target(
                 &result,
-                "FmiTimeEventDecay",
+                "FmiDynamicTimeEvent",
                 target,
                 out_dir.path().to_path_buf(),
             )
@@ -1217,6 +1223,11 @@ end FmiUndelayedDecay;
                 error
                     .downcast_ref::<rumoca_ir_solve::fmi::FmiCCodegenError>()
                     .is_some(),
+                "{target}: {error:#}"
+            );
+            assert!(
+                format!("{error:#}")
+                    .contains("the C profile cannot execute dynamic or scheduled-root time events"),
                 "{target}: {error:#}"
             );
             assert_eq!(

@@ -63,6 +63,7 @@ pub(super) struct VariableAttributesInput {
     pub(super) unit: Option<String>,
     pub(super) state_select: rumoca_core::StateSelect,
     pub(super) description: Option<String>,
+    pub(super) enumeration: Option<rumoca_core::EnumerationDeclaration>,
     pub(super) causality: VariableCausality,
     pub(super) declared_causality: DeclaredCausality,
     pub(super) is_tunable: bool,

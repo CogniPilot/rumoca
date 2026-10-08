@@ -178,6 +178,7 @@ fn lower_variable<'dae>(
         evaluable: variable.is_evaluable(),
         declaration: variable.declaration().span(),
         text_start: text_start(view, variable),
+        enumeration: variable.enumeration().cloned(),
     })
 }
 

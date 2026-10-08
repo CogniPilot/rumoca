@@ -131,6 +131,11 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
                 root_zero_domains: vec![solve::RootZeroDomain::Previous; 5],
                 ..Default::default()
             },
+            // Both parameters are declared, so neither is an external input.
+            solve_layout: solve::SolveLayout {
+                parameter_count: 2,
+                ..Default::default()
+            },
             ..Default::default()
         },
         parameters: vec![2.5, 9.0],

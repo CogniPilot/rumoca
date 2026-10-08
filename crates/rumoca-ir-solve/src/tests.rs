@@ -2508,3 +2508,37 @@ fn state_coordinate_is_named_by_its_source_and_omitted_when_absent() {
     let decoded: SolveVariableMeta = serde_json::from_str(&plain).expect("decode plain");
     assert_eq!(decoded.state_coordinate, None);
 }
+
+#[test]
+fn an_event_iteration_run_reports_the_clock_of_its_owner() {
+    let discrete = DiscreteSolveSystem {
+        clock_owners: vec![None],
+        ..DiscreteSolveSystem::default()
+    };
+    let run = |owner| EventIterationRun {
+        variable: 0,
+        pre_binding_start: 0,
+        owner,
+    };
+    assert_eq!(
+        discrete.event_iteration_run_clock(&run(EventIterationOwner::Hold)),
+        Ok(None)
+    );
+    assert_eq!(
+        discrete.event_iteration_run_clock(&run(EventIterationOwner::ScalarRows { start_row: 0 })),
+        Ok(None)
+    );
+    assert!(
+        discrete
+            .event_iteration_run_clock(&run(EventIterationOwner::ScalarRows { start_row: 1 }))
+            .is_err()
+    );
+    assert!(
+        discrete
+            .event_iteration_run_clock(&run(EventIterationOwner::GuardedAssignment {
+                program_index: 0,
+                target_range_index: 0,
+            }))
+            .is_err()
+    );
+}

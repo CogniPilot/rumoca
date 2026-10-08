@@ -120,6 +120,9 @@ pub struct FmiVariable {
     /// The per-scalar literal start of a `String` entry, absent for every
     /// other kind and for a `String` whose declaration gives no literal.
     pub(super) text_start: Option<Vec<String>>,
+    /// The declaration of the enumeration type of an `Enumeration` entry,
+    /// absent for every other kind.
+    pub(super) enumeration: Option<rumoca_core::EnumerationDeclaration>,
     pub(super) unit: Option<String>,
     pub(super) description: Option<String>,
     pub(super) causality: FmiCausality,
@@ -210,6 +213,11 @@ impl FmiVariable {
     #[must_use]
     pub fn text_start(&self) -> Option<&[String]> {
         self.text_start.as_deref()
+    }
+
+    #[must_use]
+    pub const fn enumeration(&self) -> Option<&rumoca_core::EnumerationDeclaration> {
+        self.enumeration.as_ref()
     }
 
     #[must_use]
@@ -315,6 +323,7 @@ impl Serialize for SerializedFmiVariable<'_> {
         entry.serialize_entry("maximum", &variable.maximum)?;
         entry.serialize_entry("nominal", &variable.nominal)?;
         entry.serialize_entry("text_start", &variable.text_start)?;
+        entry.serialize_entry("enumeration", &variable.enumeration)?;
         entry.serialize_entry("unit", &variable.unit)?;
         entry.serialize_entry("description", &variable.description)?;
         entry.serialize_entry("causality", &variable.causality)?;
@@ -444,4 +453,8 @@ pub struct FmiVariableInput {
     /// The literal start of each scalar of a `String` declaration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_start: Option<Vec<String>>,
+    /// The declaration of the enumeration type of an `Enumeration`
+    /// declaration (MLS §4.9.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<rumoca_core::EnumerationDeclaration>,
 }

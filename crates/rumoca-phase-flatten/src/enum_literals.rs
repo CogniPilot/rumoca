@@ -9,6 +9,40 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// The declaration of every enumeration type of the tree, keyed by the exact
+/// type identity Flat carries for it (MLS §4.9.5). A class that declares
+/// literals is the one owner of its literal order; a type without a Flat
+/// identity is not an enumeration any variable of the model can have.
+pub(crate) fn collect_enumeration_declarations(
+    tree: &ast::ClassTree,
+    flat: &flat::Model,
+) -> indexmap::IndexMap<rumoca_core::TypeId, rumoca_core::EnumerationDeclaration> {
+    let mut declarations = indexmap::IndexMap::new();
+    for (def_id, qualified_name) in &tree.def_map {
+        let Some(class_def) = tree.get_class_by_def_id(*def_id) else {
+            continue;
+        };
+        if class_def.enum_literals.is_empty() {
+            continue;
+        }
+        let Some(type_id) = flat.type_ids_by_def_id.get(def_id) else {
+            continue;
+        };
+        declarations.insert(
+            *type_id,
+            rumoca_core::EnumerationDeclaration {
+                name: qualified_name.clone(),
+                literals: class_def
+                    .enum_literals
+                    .iter()
+                    .map(|literal| literal.ident.text.to_string())
+                    .collect(),
+            },
+        );
+    }
+    declarations
+}
+
 /// Canonicalize enum literal references in the final flat model.
 pub(crate) fn canonicalize_flat_enum_literals(
     flat: &mut flat::Model,

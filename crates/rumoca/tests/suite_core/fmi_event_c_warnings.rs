@@ -30,6 +30,25 @@ equation
     reinit(v, -e * pre(v));
   end when;
 end BouncingBall;
+
+model StateAndTimeEvents
+  Real x(start = 0, fixed = true);
+  Integer n(start = 0, fixed = true);
+  Integer m(start = 0, fixed = true);
+  Integer ticks(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when x >= 0.5 then
+    n = pre(n) + 1;
+  end when;
+  when time >= 0.5 then
+    m = pre(m) + 1;
+  end when;
+  when sample(0.05, 0.1) then
+    ticks = pre(ticks) + 1;
+  end when;
+  assert(time < 2, "late");
+end StateAndTimeEvents;
 "#;
 
 /// The FMI headers of `target`: the FMI 3 headers the fmi-ls-wasm target
@@ -111,6 +130,8 @@ fn generated_state_event_c_compiles_without_warnings_when_optimized() {
         ("RelationSwitch", "fmi3"),
         ("BouncingBall", "fmi2"),
         ("BouncingBall", "fmi3"),
+        ("StateAndTimeEvents", "fmi2"),
+        ("StateAndTimeEvents", "fmi3"),
     ] {
         let (sources, units) = render(work.path(), model, target);
         for (level, unit) in ["-O2", "-O3"]

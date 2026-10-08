@@ -633,6 +633,8 @@ impl<'dae> VariableView<'dae> {
         fn state_select -> StateSelect = |view| view.attributes().state_select;
         fn description -> Option<&'dae str> =
             |view| view.attributes().description.as_deref();
+        fn enumeration -> Option<&'dae rumoca_core::EnumerationDeclaration> =
+            |view| view.attributes().enumeration.as_ref();
         fn causality -> VariableCausality = |view| view.attributes().causality;
         fn declared_causality -> DeclaredCausality =
             |view| view.attributes().declared_causality;

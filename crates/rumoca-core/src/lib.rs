@@ -70,6 +70,7 @@ mod build_identity_tests;
 
 pub mod dependency_graph;
 mod effective_type;
+mod enumeration_declaration;
 mod expression_rewriter;
 mod expression_visitor;
 mod generated_function_locals;
@@ -88,6 +89,7 @@ pub use clock_lattice::{
 };
 pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
 pub use effective_type::{EffectiveType, EffectiveTypeError};
+pub use enumeration_declaration::EnumerationDeclaration;
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use generated_function_locals::{

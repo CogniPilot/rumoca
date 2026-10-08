@@ -13,7 +13,6 @@ mod parameter_static;
 mod row_analysis;
 mod schedule;
 mod source_catalog;
-mod static_domain;
 mod target_catalog;
 #[cfg(test)]
 mod tests;
@@ -44,12 +43,11 @@ use row_analysis::{
 use parameter_static::parameter_static_refresh_program;
 use parameter_static::parameter_static_refresh_targets;
 use rumoca_ir_solve::{
-    AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
-    RefreshStage,
+    AlgebraicRefreshRow, ContinuousStaticParameters, RefreshPlan, RefreshRowOwnerId,
+    RefreshRowSelection, RefreshRows, RefreshStage,
 };
 use schedule::build_refresh_stages;
 use source_catalog::CanonicalScalarProgramCatalog;
-use static_domain::ContinuousStaticParameters;
 use target_catalog::{ExactAssignmentAccess, TargetAssignmentCatalog};
 
 pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshPlan) {

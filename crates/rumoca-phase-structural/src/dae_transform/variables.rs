@@ -233,6 +233,7 @@ fn define_variable<'target>(
         unit: source.unit().map(str::to_owned),
         state_select: source.state_select(),
         description: source.description().map(str::to_owned),
+        enumeration: source.enumeration().cloned(),
         causality: source.causality(),
         declared_causality: source.declared_causality(),
         is_tunable: source.is_tunable(),

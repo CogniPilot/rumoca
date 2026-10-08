@@ -31,6 +31,19 @@
       <BaseUnit s="1"/>
     </Unit>
   </UnitDefinitions>
+{%- if fmi.enumerations|length > 0 %}
+  <TypeDefinitions>
+{%- for enumeration in fmi.enumerations %}
+    <SimpleType name="{{ enumeration.name | xml_escape }}">
+      <Enumeration>
+{%- for literal in enumeration.literals %}
+        <Item name="{{ literal | xml_escape }}" value="{{ loop.index }}"/>
+{%- endfor %}
+      </Enumeration>
+    </SimpleType>
+{%- endfor %}
+  </TypeDefinitions>
+{%- endif %}
   <LogCategories>
     <Category name="error" description="Failures of the generated kernel"/>
     <Category name="projection" description="Algebraic projection sites whose fallback rate exceeds the reporting threshold"/>
@@ -46,7 +59,9 @@
 {%- set kind = variable.value_kind %}
 {%- if kind == "Real" %}
       <Real{% if variable.start is defined %} start="{{ variable.start[scalar] }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] }}"{% endif %}{% if variable.nominal %} nominal="{{ variable.nominal[scalar] }}"{% endif %}/>
-{%- elif kind in ["Integer", "Enumeration"] %}
+{%- elif kind == "Enumeration" %}
+      <Enumeration declaredType="{{ variable.enumeration.name | xml_escape }}"{% if variable.start is defined %} start="{{ variable.start[scalar] | int }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] | int }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] | int }}"{% endif %}/>
+{%- elif kind == "Integer" %}
       <Integer{% if variable.start is defined %} start="{{ variable.start[scalar] | int }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] | int }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] | int }}"{% endif %}/>
 {%- elif kind == "Boolean" %}
       <Boolean{% if variable.start is defined %} start="{{ "true" if variable.start[scalar] != 0 else "false" }}"{% endif %}/>

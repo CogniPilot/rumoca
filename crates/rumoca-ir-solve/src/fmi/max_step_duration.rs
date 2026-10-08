@@ -57,6 +57,7 @@ pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
         maximum: None,
         nominal: None,
         text_start: None,
+        enumeration: None,
         unit: Some(MAX_STEP_DURATION_UNIT.to_string()),
         description: Some(MAX_STEP_DURATION_DESCRIPTION.to_string()),
         causality: FmiCausality::Local,
