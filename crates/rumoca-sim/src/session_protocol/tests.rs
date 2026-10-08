@@ -268,14 +268,49 @@ fn serve_ends_on_protocol_mismatch() {
     );
 }
 
-struct FailingWriter(io::ErrorKind);
+/// A writer whose `write` or `flush` fails with one error kind, so both
+/// failure points of the serve loop are driven.
+struct FailingWriter {
+    kind: io::ErrorKind,
+    fail_on: FailingCall,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailingCall {
+    Write,
+    Flush,
+}
+
+impl FailingWriter {
+    fn on_write(kind: io::ErrorKind) -> Self {
+        Self {
+            kind,
+            fail_on: FailingCall::Write,
+        }
+    }
+
+    fn on_flush(kind: io::ErrorKind) -> Self {
+        Self {
+            kind,
+            fail_on: FailingCall::Flush,
+        }
+    }
+}
 
 impl Write for FailingWriter {
-    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-        Err(self.0.into())
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.fail_on == FailingCall::Write {
+            Err(self.kind.into())
+        } else {
+            Ok(bytes.len())
+        }
     }
     fn flush(&mut self) -> io::Result<()> {
-        Err(self.0.into())
+        if self.fail_on == FailingCall::Flush {
+            Err(self.kind.into())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -285,14 +320,14 @@ fn serve_maps_a_broken_pipe_to_disconnect_and_surfaces_other_write_errors() {
     let exit = serve_session(
         &mut s,
         Cursor::new(String::new()),
-        &mut FailingWriter(io::ErrorKind::BrokenPipe),
+        &mut FailingWriter::on_write(io::ErrorKind::BrokenPipe),
     )
     .unwrap();
     assert_eq!(exit, SessionServeExit::ParentDisconnected);
     let error = serve_session(
         &mut s,
         Cursor::new(String::new()),
-        &mut FailingWriter(io::ErrorKind::PermissionDenied),
+        &mut FailingWriter::on_flush(io::ErrorKind::PermissionDenied),
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
