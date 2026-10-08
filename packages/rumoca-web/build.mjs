@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { buildAssistantIndex } from './assistant_index.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const webRoot = path.dirname(__filename);
@@ -77,6 +78,46 @@ async function bundleStdinModule(contents, outfile, options = {}) {
     legalComments: 'none',
     globalName: options.globalName,
   });
+}
+
+// Bundle third-party packages into one ESM file and write the license text of
+// every package that ended up in the bundle next to it, so the shipped bundle
+// keeps the notices its dependencies require.
+async function bundleWithLicenses(contents, outfile, licenseFile) {
+  const result = await build({
+    stdin: { contents, resolveDir: webRoot, sourcefile: 'third-party-entry.js', loader: 'js' },
+    outfile,
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    legalComments: 'none',
+    metafile: true,
+  });
+  const packageNames = new Set();
+  for (const input of Object.keys(result.metafile.inputs)) {
+    const match = input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//u);
+    if (match) packageNames.add(match[1]);
+  }
+  const notices = [];
+  for (const name of [...packageNames].sort()) {
+    const dir = path.join(webRoot, 'node_modules', name);
+    const licenseName = (await fs.readdir(dir)).find((entry) => /^licen[cs]e(\.|$)/iu.test(entry));
+    if (licenseName) {
+      const text = await fs.readFile(path.join(dir, licenseName), 'utf8');
+      notices.push(`== ${name} ==\n${text.trim()}\n`);
+      continue;
+    }
+    // A few packages publish without a license file; record their declared
+    // SPDX identifier so the bundle still names the terms it ships under.
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, 'package.json'), 'utf8'));
+    if (!manifest.license) {
+      throw new Error(`bundled package ${name} declares no license`);
+    }
+    notices.push(`== ${name} ==\nLicense: ${manifest.license} (no license file published with the package)\n`);
+  }
+  await fs.writeFile(licenseFile, notices.join('\n'));
 }
 
 async function stripSourceMapComments(rootDir) {
@@ -173,6 +214,18 @@ async function main() {
     path.join(vendorRoot, 'web_deps.js'),
     { sourcefile: 'web-deps-entry.js' },
   );
+  await bundleWithLicenses(
+    [
+      `export { streamText, tool, jsonSchema, stepCountIs } from 'ai';`,
+      `export { createOpenAI } from '@ai-sdk/openai';`,
+      `export { createAnthropic } from '@ai-sdk/anthropic';`,
+      `export { createOpenAICompatible } from '@ai-sdk/openai-compatible';`,
+      `export * as oauth from 'oauth4webapi';`,
+      `export { createLocalJWKSet, jwtVerify } from 'jose';`,
+    ].join('\n'),
+    path.join(vendorRoot, 'assistant_sdk.js'),
+    path.join(vendorRoot, 'assistant_sdk.LICENSES.txt'),
+  );
   await bundleStdinModule(
     [
       `import * as THREE from 'three';`,
@@ -182,6 +235,10 @@ async function main() {
     ].join('\n'),
     path.join(vendorRoot, 'three_viewer.js'),
     { sourcefile: 'three-viewer-entry.js' },
+  );
+  await fs.writeFile(
+    path.join(vendorRoot, 'assistant_index.json'),
+    JSON.stringify(await buildAssistantIndex(path.resolve(webRoot, '..', '..'))),
   );
   await fs.copyFile(
     path.join(webRoot, 'viz', 'results_app.css'),

@@ -27,14 +27,21 @@
   },
   "files": [
     "build.mjs",
+    "assistant_index.mjs",
     "viz",
     "runtime"
   ],
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.75",
+    "@ai-sdk/openai": "4.0.87",
+    "@ai-sdk/openai-compatible": "3.0.65",
+    "ai": "7.0.131",
     "esbuild": "^0.28.1",
+    "jose": "6.2.12",
     "jszip": "3.10.1",
     "marked": "^18.0.5",
     "monaco-editor": "0.45.0",
+    "oauth4webapi": "3.8.8",
     "three": "0.164.1",
     "uplot": "1.6.32"
   }

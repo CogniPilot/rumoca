@@ -286,6 +286,14 @@ export function setupCommandPalette(options = {}) {
             },
         },
         {
+            label: 'Assistant: Open',
+            description: 'Open the AI assistant for Modelica, configuration and diagnostics help',
+            tags: ['assistant', 'ai', 'chat', 'help'],
+            run: () => {
+                if (typeof window.toggleAssistant === 'function') void window.toggleAssistant();
+            },
+        },
+        {
             label: 'Quick Fix: At Cursor',
             description: 'Show language-server quick fixes at the active cursor',
             shortcut: 'Ctrl+.',

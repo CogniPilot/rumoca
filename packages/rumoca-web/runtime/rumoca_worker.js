@@ -60,6 +60,7 @@ let get_source_root_document_count;
 let export_parsed_source_roots_binary;
 let merge_parsed_source_roots_binary;
 let prime_source_root_completion_cache;
+let lint;
 let lsp_diagnostics;
 let lsp_hover;
 let lsp_completion;
@@ -122,6 +123,7 @@ async function loadWasmModule() {
     export_parsed_source_roots_binary = mod.export_parsed_source_roots_binary;
     merge_parsed_source_roots_binary = mod.merge_parsed_source_roots_binary;
     prime_source_root_completion_cache = mod.prime_source_root_completion_cache;
+    lint = mod.lint;
     lsp_diagnostics = mod.lsp_diagnostics;
     lsp_hover = mod.lsp_hover;
     lsp_completion = mod.lsp_completion;
@@ -278,6 +280,9 @@ self.onmessage = async (e) => {
                             payload.sourceRootCacheUrl || '',
                         );
                         result = lsp_diagnostics(payload.source || '');
+                        break;
+                    case 'rumoca.language.lint':
+                        result = lint(payload.source || '');
                         break;
                     case 'rumoca.language.hover':
                         result = lsp_hover(payload.source || '', payload.line, payload.character);

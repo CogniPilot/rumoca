@@ -1,0 +1,50 @@
+.assistant-panel {
+    position: fixed; z-index: 1000; top: 0; right: 0; bottom: 0; width: min(440px, 100vw);
+    display: flex; flex-direction: column;
+    background: var(--app-panel, #fff); color: var(--app-text, #0f172a);
+    border-left: 1px solid var(--app-border, #ccc); box-shadow: -4px 0 16px var(--app-shadow, rgba(0,0,0,.2));
+    font-size: 13px;
+}
+.assistant-panel[hidden] { display: none; }
+.assistant-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--app-border, #ccc); background: var(--app-panel-2, #f5f5f5); }
+.assistant-spacer { flex: 1; }
+.assistant-chip { padding: 1px 8px; border-radius: 10px; background: var(--app-accent-strong, #0284c7); color: #fff; font-size: 11px; }
+.assistant-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.assistant-chat { overflow: hidden; }
+.assistant-log { flex: 1; min-height: 80px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.assistant-msg { padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-user { align-self: flex-end; background: var(--app-accent-strong, #0284c7); color: #fff; max-width: 90%; }
+.assistant-assistant { background: var(--app-panel-3, #eee); }
+.assistant-tool { font-size: 11px; color: var(--app-muted, #666); }
+.assistant-tool pre { margin: 4px 0; white-space: pre-wrap; max-height: 140px; overflow: auto; }
+.assistant-proposals { max-height: 42%; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.assistant-proposal { border: 1px solid var(--app-border, #ccc); border-radius: 6px; padding: 6px; }
+.assistant-proposal summary { cursor: pointer; }
+.assistant-diff { height: 220px; margin: 6px 0; border: 1px solid var(--app-border-soft, #ddd); }
+.assistant-composer { display: flex; gap: 6px; align-items: flex-end; }
+.assistant-composer textarea { flex: 1; resize: vertical; min-height: 40px; font: inherit; }
+.assistant-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.assistant-note { color: var(--app-muted, #666); font-size: 12px; margin: 2px 0; }
+.assistant-error { padding: 6px 10px; background: var(--app-danger-bg, #fee); color: var(--app-danger, #b00); display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.assistant-card { border: 1px solid var(--app-border, #ccc); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.assistant-card header { display: flex; justify-content: space-between; align-items: baseline; }
+.assistant-card h3 { margin: 0; font-size: 14px; }
+.assistant-card-state { font-size: 11px; color: var(--app-muted, #666); }
+.assistant-card-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.assistant-method { display: flex; flex-direction: column; gap: 6px; }
+.assistant-method input, .assistant-panel select { width: 100%; min-width: 0; padding: 5px; font: inherit; }
+.assistant-test-result { font-size: 12px; overflow-wrap: anywhere; }
+.assistant-test-result[data-ok="false"] { color: var(--app-danger, #b00); }
+.assistant-advanced { margin: 8px 0; }
+.assistant-advanced summary { cursor: pointer; margin-bottom: 6px; }
+.assistant-signin { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 14px; border-radius: 6px; border: 0; background: #000; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.assistant-signin:disabled { background: var(--app-panel-3, #888); color: var(--app-muted, #ddd); cursor: not-allowed; }
+.assistant-primary, .assistant-secondary, .assistant-icon { padding: 5px 10px; border-radius: 5px; border: 1px solid var(--app-border, #ccc); font: inherit; cursor: pointer; text-decoration: none; }
+.assistant-primary { background: var(--app-accent-strong, #0284c7); color: #fff; border-color: transparent; }
+.assistant-secondary, .assistant-icon { background: var(--app-panel-3, #eee); color: inherit; }
+.assistant-link { background: none; border: 0; color: var(--app-accent-strong, #0284c7); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+.assistant-dialog { border: 1px solid var(--app-border, #ccc); border-radius: 8px; background: var(--app-panel, #fff); color: var(--app-text, #000); max-width: 360px; }
+@media (max-width: 760px) {
+    .assistant-panel { top: auto; left: 0; width: 100vw; height: 78vh; border-left: 0; border-top: 1px solid var(--app-border, #ccc); border-radius: 12px 12px 0 0; }
+    .assistant-diff { height: 160px; }
+}

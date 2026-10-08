@@ -1910,6 +1910,9 @@ jobs:
         #                                          diffsol is excluded, it pulls a
         #                                          non-browser-safe relaxed-SIMD graph)
         #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
+        env:
+          # Sign in with ChatGPT client id for the hosted site; empty until issued.
+          OPENAI_SIWC_CLIENT_ID: ${{ vars.OPENAI_SIWC_CLIENT_ID }}
         run: |
           nix develop .#ci-wasm --command bash <<'EOF'
           set -euo pipefail
@@ -1960,6 +1963,7 @@ jobs:
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               -e "s|window.rumocaWasmPkgSubdir = 'release-full-web-rayon';|window.rumocaWasmPkgSubdir = '$PKG_SUBDIR';|g" \
               -e "s|window.rumocaRepoAssetBase = '../../';|window.rumocaRepoAssetBase = './';|g" \
+              -e "s|openaiSiwcClientId: ''|openaiSiwcClientId: '${OPENAI_SIWC_CLIENT_ID}'|g" \
               -e "s|../../assets/brand/rumoca.svg|assets/brand/rumoca.svg|g" \
               packages/playground/index.html > gh-pages/index.html
 
