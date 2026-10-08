@@ -312,3 +312,36 @@ impl GuardFacts {
         Some(selection)
     }
 }
+
+impl Selection {
+    /// Whether both selections admit the same literal values.
+    pub(super) fn same_values(&self, other: &Self) -> bool {
+        self.arms.len() == other.arms.len()
+            && self.arms.iter().all(|arm| {
+                other
+                    .arms
+                    .iter()
+                    .any(|candidate| candidate.value == arm.value)
+            })
+    }
+}
+
+impl Selection {
+    /// Whether this selection holds both truth values and some arm proves a
+    /// Boolean among `names`.
+    pub(super) fn correlates_with(&self, names: &HashSet<String>) -> bool {
+        self.arms.len() >= 2
+            && self.arms.iter().any(|arm| {
+                matches!(arm.value, ArmValue::Boolean(_))
+                    && arm
+                        .implied
+                        .iter()
+                        .any(|(implied, _)| names.contains(implied.as_str()))
+            })
+    }
+
+    /// Whether no arm is left.
+    pub(super) fn is_empty(&self) -> bool {
+        self.arms.is_empty()
+    }
+}

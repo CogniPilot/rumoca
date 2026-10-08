@@ -200,7 +200,9 @@ pub(super) fn resolve_function_conditional(
     // paths still rejoin, so the facts after it hold on every path through it
     // and not only on the fall-through.
     if branch_states.is_empty() || (ordered.is_empty() && (carries_assertions || pruned)) {
-        definitions.join_facts(&branch_states, exhaustive);
+        let conditions = blocks.iter().map(|block| &block.cond).collect::<Vec<_>>();
+        let fallthrough = definitions.fallthrough_facts(&conditions, context);
+        definitions.join_facts(&branch_states, exhaustive, &fallthrough);
         return Ok(ordered);
     }
     if ordered.is_empty() {
@@ -223,9 +225,10 @@ pub(super) fn resolve_function_conditional(
     let remembers_guard =
         !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context);
     let prior = remembers_guard.then(|| definitions.guarded_proofs(&ordered));
+    let conditions = blocks.iter().map(|block| &block.cond).collect::<Vec<_>>();
     let joined = definitions.join_branches(
         joined_states,
-        exhaustive,
+        (exhaustive, &conditions),
         &ordered,
         &admit_path_partial,
         context,
