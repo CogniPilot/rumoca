@@ -137,10 +137,11 @@ fn conditional_arms_share_one_span_and_a_scalar_result_is_not_doubled() {
     let site = table.call_site(id).unwrap();
     let owners = report(table.finish(), &site);
     let frame = &owner(&owners, 0).frame;
-    // Parent: output 8 + result register 8. Each arm: output slot 8, local
-    // 800, element 8, placed at the same base.
-    assert_eq!(frame.high_water_bytes, 16 + 816);
-    assert_eq!(frame.unshared_bytes, 16 + 2 * 816);
+    // Parent: output 8 + result register 8. Each arm: local 800 and element 8;
+    // its output slot is the element register, so it adds nothing. Both arms
+    // start above the result register.
+    assert_eq!(frame.high_water_bytes, 16 + 808);
+    assert_eq!(frame.unshared_bytes, 16 + 2 * 808);
     let roles = frame
         .regions
         .iter()
@@ -156,9 +157,15 @@ fn conditional_publication_of_a_large_array_keeps_one_result_and_one_arm_span() 
     let site = table.call_site(id).unwrap();
     let owners = report(table.finish(), &site);
     let frame = &owner(&owners, 0).frame;
-    // Parent: output 800 + result 800. Each arm: output slot 800 + local 800.
-    assert_eq!(frame.high_water_bytes, 1600 + 1600);
-    assert_eq!(frame.unshared_bytes, 1600 + 2 * 1600);
+    // Parent: output 800 + result 800. Each arm: local 800, which is also its
+    // output slot.
+    assert_eq!(frame.high_water_bytes, 1600 + 800);
+    assert_eq!(frame.unshared_bytes, 1600 + 2 * 800);
+    // An arm that returns its local as the result owns no output slot.
+    for region in &frame.regions {
+        assert_eq!(region.frame.slot_bytes, 0);
+        assert_eq!(region.frame.base_bytes, 1600);
+    }
 }
 
 fn branch<'r>(

@@ -80,7 +80,10 @@ impl FramePlan {
             .position(|output| *output == slot);
         let inputs = interface(program, solve::SolveStorageClass::Input);
         ordinal.is_some_and(|ordinal| {
-            ordinal < count && inputs.get(ordinal).is_some_and(|input| range == self.slots[input.index()])
+            ordinal < count
+                && inputs
+                    .get(ordinal)
+                    .is_some_and(|input| range == self.slots[input.index()])
         })
     }
 

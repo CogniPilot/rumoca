@@ -254,7 +254,10 @@ impl FramePlan {
                     arms.push(arm);
                 }
                 self.place_conditional_results(program, destinations, &mut arms, base)?;
-                let top = arms.iter().map(|arm| arm.scratch_bytes).fold(base, u32::max);
+                let top = arms
+                    .iter()
+                    .map(|arm| arm.scratch_bytes)
+                    .fold(base, u32::max);
                 Ok((arms, None, top))
             }
             solve::SolveOperation::Map {
@@ -492,17 +495,18 @@ impl FramePlan {
         count: u32,
     ) -> Option<CellRange> {
         let source = *initial.get(ordinal)?;
-        let listed_once = initial.iter().filter(|register| **register == source).count() == 1
+        let listed_once = initial
+            .iter()
+            .filter(|register| **register == source)
+            .count()
+            == 1
             && !captures.contains(&source);
         let range = self.registers[source.index()];
         (listed_once
             && range.bytes == count
-            && self.lifetimes.can_consume(
-                index,
-                source,
-                &self.registers,
-                &self.register_reusable,
-            ))
+            && self
+                .lifetimes
+                .can_consume(index, source, &self.registers, &self.register_reusable))
         .then_some(range)
     }
 
@@ -542,7 +546,9 @@ impl FramePlan {
             } => destinations
                 .iter()
                 .position(|carried| *carried == destination)
-                .and_then(|ordinal| self.consumed_initial(index, initial, captures, ordinal, count)),
+                .and_then(|ordinal| {
+                    self.consumed_initial(index, initial, captures, ordinal, count)
+                }),
             _ => None,
         };
         let range = match alias {
