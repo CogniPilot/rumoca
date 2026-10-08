@@ -159,6 +159,7 @@ mod function_record_field_branches;
 mod function_record_field_locals;
 mod function_record_multi_output;
 mod function_record_whole_values;
+mod function_region_binder_captures;
 mod function_scratch_arrays;
 mod function_single_body;
 mod function_slice_compaction_rank_position;
