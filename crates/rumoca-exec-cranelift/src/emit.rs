@@ -5804,21 +5804,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     "function-fold tensor patch rank mismatch".to_string(),
                 ));
             }
-            let value_count = dimensions
-                .iter()
-                .zip(update.subscripts.iter())
-                .try_fold(1usize, |count, (&extent, subscript)| {
-                    if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                        count.checked_mul(extent as usize)
-                    } else {
-                        Some(count)
-                    }
-                })
-                .ok_or_else(|| {
-                    CompileError::Backend(
-                        "function-fold tensor update value extent overflow".to_string(),
-                    )
-                })?;
+            let value_count = update.value_count(dimensions).ok_or_else(|| {
+                CompileError::Backend(
+                    "function-fold tensor update value extent overflow".to_string(),
+                )
+            })?;
             let value_bytes = value_count
                 .checked_mul(lanes)
                 .and_then(|count| count.checked_mul(std::mem::size_of::<f64>()))
@@ -5912,13 +5902,13 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 } else {
                     self.fb.ins().urem_imm(coordinate, i64::from(extent))
                 };
-                match *subscript {
-                    rumoca_ir_solve::TensorSubscript::Whole => {
+                match subscript {
+                    rumoca_ir_solve::TensorUpdateSubscript::Whole => {
                         value_element = self.fb.ins().imul_imm(value_element, i64::from(extent));
                         value_element = self.fb.ins().iadd(value_element, coordinate);
                     }
-                    rumoca_ir_solve::TensorSubscript::Index(index) => {
-                        let selected = match index {
+                    rumoca_ir_solve::TensorUpdateSubscript::Index(index) => {
+                        let selected = match *index {
                             rumoca_ir_solve::TensorIndex::Constant(selected) => {
                                 self.fb.ins().iconst(types::I64, i64::from(selected))
                             }
@@ -5945,6 +5935,27 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         };
                         let matches = self.fb.ins().icmp(IntCC::Equal, coordinate, selected);
                         valid = self.fb.ins().band(valid, matches);
+                    }
+                    rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                        start,
+                        dimensions: slice_dimensions,
+                    } => {
+                        let slice_count = slice_dimensions
+                            .iter()
+                            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+                            .ok_or_else(|| {
+                                CompileError::Backend("tensor update slice overflow".into())
+                            })?;
+                        let (found, position) =
+                            self.lower_slice_position(*start, slice_count, coordinate)?;
+                        valid = self.fb.ins().band(valid, found);
+                        value_element = self.fb.ins().imul_imm(
+                            value_element,
+                            i64::try_from(slice_count).map_err(|_| {
+                                CompileError::Backend("tensor update slice exceeds i64".into())
+                            })?,
+                        );
+                        value_element = self.fb.ins().iadd(value_element, position);
                     }
                 }
             }
@@ -6044,6 +6055,39 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
+    /// Position of the zero-based `coordinate` in the packed one-based index
+    /// range `start..start + count` of a fold-patch slice axis, and whether it
+    /// is present. The registers are SSA values of the fold body, so the scan
+    /// is unrolled over the constant slice extent; the first match wins.
+    fn lower_slice_position(
+        &mut self,
+        start: u32,
+        count: usize,
+        coordinate: cranelift_codegen::ir::Value,
+    ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), CompileError> {
+        let wanted = self.fb.ins().iadd_imm(coordinate, 1);
+        let wanted = self.fb.ins().fcvt_from_uint(types::F64, wanted);
+        let mut found = self.fb.ins().iconst(types::I8, 0);
+        let mut position = self.fb.ins().iconst(types::I64, 0);
+        for offset in (0..count).rev() {
+            let candidate = self.lookup(checked_reg_offset(
+                start,
+                offset,
+                "function-fold tensor update slice",
+            )?)?;
+            let matches = self.fb.ins().fcmp(FloatCC::Equal, candidate, wanted);
+            let offset = self.fb.ins().iconst(
+                types::I64,
+                i64::try_from(offset).map_err(|_| {
+                    CompileError::Backend("tensor update slice offset exceeds i64".into())
+                })?,
+            );
+            position = self.fb.ins().select(matches, offset, position);
+            found = self.fb.ins().bor(found, matches);
+        }
+        Ok((found, position))
+    }
+
     fn try_lower_scalar_fold_tensor_update(
         &mut self,
         carried: StackSlot,
@@ -6071,8 +6115,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .subscripts
             .iter()
             .map(|subscript| match subscript {
-                rumoca_ir_solve::TensorSubscript::Index(index) => Some(*index),
-                rumoca_ir_solve::TensorSubscript::Whole => None,
+                rumoca_ir_solve::TensorUpdateSubscript::Index(index) => Some(*index),
+                rumoca_ir_solve::TensorUpdateSubscript::Whole
+                | rumoca_ir_solve::TensorUpdateSubscript::Slice { .. } => None,
             })
             .collect::<Option<Vec<_>>>();
         let Some(indices) = indices else {
@@ -7649,19 +7694,9 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
         } => {
             let mut last = 0;
             for update in updates {
-                let value_count = dimensions
-                    .iter()
-                    .zip(update.subscripts.iter())
-                    .try_fold(1usize, |count, (&extent, subscript)| {
-                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                            count.checked_mul(extent as usize)
-                        } else {
-                            Some(count)
-                        }
-                    })
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor update value extent overflow".to_string())
-                    })?;
+                let value_count = update.value_count(&dimensions).ok_or_else(|| {
+                    CompileError::Backend("tensor update value extent overflow".to_string())
+                })?;
                 let value_last = checked_strided_register(
                     update.value_start,
                     value_count.saturating_sub(1),
@@ -7675,13 +7710,8 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
                     CompileError::Backend("tensor update value register overflow".to_string())
                 })?;
                 last = last.max(value_last);
-                for subscript in update.subscripts {
-                    if let rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) = subscript
-                    {
-                        last = last.max(register);
-                    }
+                if let Some(coordinate) = update.last_coordinate_register() {
+                    last = last.max(coordinate);
                 }
                 if let Some(condition) = update.condition {
                     last = last.max(condition);
@@ -7933,19 +7963,9 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
                 if let Some(condition) = update.condition {
                     validate_reg_defined(defined, condition)?;
                 }
-                let value_count = dimensions
-                    .iter()
-                    .zip(update.subscripts.iter())
-                    .try_fold(1usize, |count, (&extent, subscript)| {
-                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                            count.checked_mul(extent as usize)
-                        } else {
-                            Some(count)
-                        }
-                    })
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor update value extent overflow".to_string())
-                    })?;
+                let value_count = update.value_count(&dimensions).ok_or_else(|| {
+                    CompileError::Backend("tensor update value extent overflow".to_string())
+                })?;
                 for element in 0..value_count {
                     let base = checked_strided_register(
                         update.value_start,
@@ -7967,12 +7987,16 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
                         )?;
                     }
                 }
-                for subscript in update.subscripts {
-                    if let rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) = subscript
-                    {
-                        validate_reg_defined(defined, register)?;
+                for (start, count) in update
+                    .subscripts
+                    .iter()
+                    .filter_map(rumoca_ir_solve::TensorUpdateSubscript::runtime_registers)
+                {
+                    for offset in 0..count {
+                        validate_reg_defined(
+                            defined,
+                            checked_reg_offset(start, offset, "tensor update slice index")?,
+                        )?;
                     }
                 }
             }

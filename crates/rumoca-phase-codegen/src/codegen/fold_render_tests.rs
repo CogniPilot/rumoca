@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
 use rumoca_ir_solve as solve;
-use solve::{BinaryOp, CompareOp, LinearOp, TensorIndex, TensorSubscript};
+use solve::{BinaryOp, CompareOp, LinearOp, TensorIndex, TensorUpdateSubscript};
 
 use crate::codegen::codegen_test_support::builtin_template;
 
@@ -108,7 +108,7 @@ fn tensor_update() -> Arc<solve::FunctionFoldProgram> {
             source_stride: 1,
             dimensions: vec![3].into(),
             updates: vec![solve::FoldTensorUpdate {
-                subscripts: vec![TensorSubscript::Index(TensorIndex::Runtime(0))].into(),
+                subscripts: vec![TensorUpdateSubscript::Index(TensorIndex::Runtime(0))].into(),
                 condition: None,
                 value_start: 2,
                 value_stride: 1,
@@ -317,4 +317,85 @@ fn every_fold_form_matches_the_linked_evaluator_bit_for_bit() {
     assert_eq!(expected[4..6], [0.5, 1.0]);
     // The continued fold stops after four halvings of 1.0.
     assert_eq!(expected[15], 0.0625);
+}
+
+/// `a[s:s + 1] := {100, 200}` for `s in 1:2` over a carried 4-vector: the
+/// window is the coordinate registers `{s, s + 1}`.
+fn window_update() -> Arc<solve::FunctionFoldProgram> {
+    let update = vec![
+        LinearOp::LoadFoldIndex {
+            dst: 0,
+            dimension: 0,
+        },
+        LinearOp::Const { dst: 2, value: 1.0 },
+        binary(1, BinaryOp::Add, 0, 2),
+        LinearOp::Const {
+            dst: 3,
+            value: 100.0,
+        },
+        LinearOp::Const {
+            dst: 4,
+            value: 200.0,
+        },
+        LinearOp::StoreOutputFoldTensorUpdate {
+            source_base: 0,
+            source_stride: 1,
+            dimensions: vec![4].into(),
+            updates: vec![solve::FoldTensorUpdate {
+                subscripts: vec![TensorUpdateSubscript::Slice {
+                    start: 0,
+                    dimensions: vec![2].into(),
+                }]
+                .into(),
+                condition: None,
+                value_start: 3,
+                value_stride: 1,
+            }]
+            .into(),
+            nodes: vec![solve::FoldTensorNode::Update { base: 0, update: 0 }].into(),
+            result: 1,
+            lanes: 1,
+        },
+    ];
+    Arc::new(solve::FunctionFoldProgram::checked(domain(2), 4, 0, update).expect("checked fold"))
+}
+
+#[test]
+fn a_run_time_window_patch_matches_the_linked_evaluator_bit_for_bit() {
+    let operations = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::LoadY { dst: 2, index: 2 },
+        LinearOp::LoadY { dst: 3, index: 3 },
+        LinearOp::FunctionFold {
+            dst_start: 4,
+            initial_start: 0,
+            capture_start: 0,
+            program: window_update(),
+        },
+        LinearOp::StoreOutputRange {
+            start: 4,
+            count: 4,
+            stride: 1,
+        },
+    ];
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fold_render_fixture.mo"),
+        1,
+        2,
+    )
+    .require_provenance("fold render fixture")
+    .expect("fixture span is source-backed");
+    let block = Arc::new(
+        solve::ScalarProgramBlock::with_source_span(vec![operations], span)
+            .expect("fixture window program is checked"),
+    );
+    let mut expected = vec![0.0; 4];
+    rumoca_eval_solve::eval_scalar_program_block(&block, &Y, &[], 0.0, None, &mut expected)
+        .expect("the linked evaluator runs the window patch");
+    // The carried vector starts as Y = {0.75, 1, 2, 0}; start 1 writes {100, 200}
+    // at a[1:2] and start 2 writes them at a[2:3].
+    assert_eq!(expected, [100.0, 100.0, 200.0, 0.0]);
+    let actual = run_c(&render(block, 4));
+    assert_eq!(actual, expected, "C {actual:?} vs evaluator {expected:?}");
 }

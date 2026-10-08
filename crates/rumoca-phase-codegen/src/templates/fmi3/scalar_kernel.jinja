@@ -348,6 +348,9 @@
 {%- for subscript in update.subscripts %}{% set extent = op.dimensions[loop.index0] %}
 {%- if subscript == "Whole" %}
             value_offset = value_offset*{{ extent }} + (long long)c{{ loop.index0 }};
+{%- elif subscript.Slice is defined %}{% set slice_count = subscript.Slice.dimensions|product %}
+            { long long found = -1; for (size_t s=0; s<{{ slice_count }}; ++s) { double v = r[{{ subscript.Slice.start }}+s]; if (isfinite(v) && round(v) == v && v >= 1.0 && (size_t)v - 1 == c{{ loop.index0 }}) { found = (long long)s; break; } }
+              if (found < 0) selected = 0; else value_offset = value_offset*{{ slice_count }} + found; }
 {%- elif subscript.Index.Constant is defined %}
             if (c{{ loop.index0 }} != {{ subscript.Index.Constant }}) selected = 0;
 {%- else %}
