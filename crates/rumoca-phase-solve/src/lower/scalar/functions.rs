@@ -3926,6 +3926,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// The domain binders and carried tuples the update and initial values of
     /// `fold` may read from enclosing folds, through nested folds and the
     /// arguments of the calls in scope.
+    // SPEC_0021: Exception - exhaustive worklist over expression operation variants.
+    #[allow(clippy::excessive_nesting)]
     fn fold_scope_reads(&self, fold: dae::FunctionFoldId<'dae>) -> FoldScopeReads<'dae> {
         let mut reads = FoldScopeReads::default();
         let mut pending_folds = vec![fold];
