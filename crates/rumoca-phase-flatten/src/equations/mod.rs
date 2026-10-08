@@ -1169,29 +1169,16 @@ fn expand_for_equation(
     if nested_family_lifted {
         return Ok(result);
     }
-    // Row count per domain point: every point issues the same count, or the
-    // body is mixed. Zero rows at every point (a zero-size array equation,
-    // MLS 3.7 §10.3.1) is uniform and owns nothing, so no family exists.
-    let uniform_rows = iterations
-        .first()
-        .map(|first| first.equation_count)
-        .filter(|count| {
-            iterations
-                .iter()
-                .all(|iteration| iteration.equation_count == *count)
-        });
-    let equations_per_point = match uniform_rows {
-        Some(0) => return Ok(result),
-        Some(count) => count,
-        None => {
-            if cheapen_plan.is_some() {
-                return Err(FlattenError::unsupported_equation(
-                    "cheapened structured equation family has a non-uniform body row count",
-                    span,
-                ));
-            }
-            return Ok(result);
+    let equations_per_point = match PointRows::of(&iterations) {
+        PointRows::None => return Ok(result),
+        PointRows::Uniform(count) => count,
+        PointRows::Mixed if cheapen_plan.is_some() => {
+            return Err(FlattenError::unsupported_equation(
+                "cheapened structured equation family has a non-uniform body row count",
+                span,
+            ));
         }
+        PointRows::Mixed => return Ok(result),
     };
     // A template is an optional compact rendering/evaluation aid; the emitted
     // scalar rows remain authoritative.  Some source bodies contain equations
@@ -1230,6 +1217,36 @@ fn expand_for_equation(
         });
 
     Ok(result)
+}
+
+/// Rows a family body issues at its domain points.
+enum PointRows {
+    /// No point issues a row (a zero-size array equation, MLS 3.7 §10.3.1): the
+    /// body owns nothing, so no family exists.
+    None,
+    /// Every point issues this many rows.
+    Uniform(usize),
+    /// Points issue different counts.
+    Mixed,
+}
+
+impl PointRows {
+    fn of(iterations: &[SourceStructuredIteration]) -> Self {
+        let Some(first) = iterations.first().map(|iteration| iteration.equation_count) else {
+            return Self::None;
+        };
+        if !iterations
+            .iter()
+            .all(|iteration| iteration.equation_count == first)
+        {
+            return Self::Mixed;
+        }
+        if first == 0 {
+            Self::None
+        } else {
+            Self::Uniform(first)
+        }
+    }
 }
 
 fn classify_regular_for_body(
