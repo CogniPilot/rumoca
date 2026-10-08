@@ -54,6 +54,17 @@ impl EffectiveType {
     pub fn dimensions(&self) -> &[i64] {
         &self.dimensions
     }
+
+    /// The type of one element: the same nominal and canonical types with no
+    /// array axes. The types are already resolved and no extent remains to
+    /// check, so no error is possible.
+    pub fn element(&self) -> Self {
+        Self {
+            nominal_type: self.nominal_type,
+            canonical_type: self.canonical_type,
+            dimensions: Box::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -38,3 +38,13 @@ fn deserialization_replays_checked_construction() {
     assert!(serde_json::from_value::<EffectiveType>(unknown_canonical).is_err());
     assert!(serde_json::from_value::<EffectiveType>(negative_extent).is_err());
 }
+
+#[test]
+fn an_element_type_keeps_both_types_and_drops_the_axes() {
+    let array = EffectiveType::new(TypeId::new(8), TypeId::new(1), [2, 3]).unwrap();
+
+    assert_eq!(
+        array.element(),
+        EffectiveType::new(TypeId::new(8), TypeId::new(1), []).unwrap()
+    );
+}

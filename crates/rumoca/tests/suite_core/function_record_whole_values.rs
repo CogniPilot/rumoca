@@ -874,3 +874,155 @@ fn element_field_writes_after_a_whole_call_write_are_split() {
     // u = 2: x = {2, 10}, edge 1 weighs 2, edge 2 enabled and weighs 4.
     assert_eq!(value(&probe.report, "large"), 18.0);
 }
+
+/// MLS 3.7 section 11.2.1: an element of an array of records copied whole
+/// from another element of the same output record reads that element's
+/// current field values, including the field writes before the copy.
+fn element_copy_model(body: &str) -> String {
+    format!(
+        r#"
+record E Real u; Real w[2]; end E;
+record S Integer n; E edges[2]; end S;
+function L2
+  input Real x;
+  output S s;
+algorithm
+  s.n := 1;
+  s.edges := {{E(1, {{1, 2}}), E(2, {{3, 4}})}};
+{body}
+end L2;
+model ElementCopy
+  S s = L2(7);
+end ElementCopy;
+"#
+    )
+}
+
+fn assert_edges(body: &str, expected: [[f64; 3]; 2]) {
+    let compiled = Compiler::new()
+        .model("ElementCopy")
+        .compile_str(&element_copy_model(body), "ElementCopy.mo")
+        .expect("an element copy of an output record compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the element-copy DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    for (index, [u, w1, w2]) in expected.iter().enumerate() {
+        let edge = index + 1;
+        assert_eq!(value(&probe.report, &format!("s.edges[{edge}].u")), *u);
+        assert_eq!(value(&probe.report, &format!("s.edges[{edge}].w[1]")), *w1);
+        assert_eq!(value(&probe.report, &format!("s.edges[{edge}].w[2]")), *w2);
+    }
+}
+
+#[test]
+fn an_element_copy_after_field_writes_keeps_the_writes_and_a_later_update() {
+    assert_edges(
+        "  s.edges[2].u := x;
+  s.edges[1] := s.edges[2];
+  s.edges[1].w[1] := 9;",
+        [[7.0, 9.0, 4.0], [7.0, 3.0, 4.0]],
+    );
+}
+
+#[test]
+fn an_element_copy_keeps_a_written_array_field_element() {
+    assert_edges(
+        "  s.edges[2].w[1] := x;
+  s.edges[1] := s.edges[2];",
+        [[2.0, 7.0, 4.0], [2.0, 7.0, 4.0]],
+    );
+}
+
+#[test]
+fn an_element_copy_keeps_a_written_scalar_field() {
+    assert_edges(
+        "  s.edges[2].u := x;
+  s.edges[1] := s.edges[2];",
+        [[7.0, 3.0, 4.0], [7.0, 3.0, 4.0]],
+    );
+}
+
+#[test]
+fn a_chain_of_element_copies_carries_each_update() {
+    assert_edges(
+        "  s.edges[2].u := x;
+  s.edges[1] := s.edges[2];
+  s.edges[1].w[2] := 8;
+  s.edges[2] := s.edges[1];",
+        [[7.0, 3.0, 8.0], [7.0, 3.0, 8.0]],
+    );
+}
+
+/// A whole-record copy between two field writes of the output replaces every
+/// earlier field write and is itself replaced field by field afterwards.
+fn whole_copy_model(body: &str) -> String {
+    format!(
+        r#"
+record Ed Real u; Real w[2]; end Ed;
+record S Real m; Ed edges[2]; end S;
+function L2
+  input Real x;
+  output S s;
+protected
+  S t;
+algorithm
+  t.m := 100;
+  t.edges := {{Ed(10, {{11, 12}}), Ed(20, {{21, 22}})}};
+{body}
+end L2;
+model WholeCopy
+  S s = L2(7);
+end WholeCopy;
+"#
+    )
+}
+
+fn whole_copy_values(body: &str) -> rumoca_sim::EvalAtReport {
+    let compiled = Compiler::new()
+        .model("WholeCopy")
+        .compile_str(&whole_copy_model(body), "WholeCopy.mo")
+        .expect("a whole-record copy in an output record compiles");
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("the whole-copy DAE should evaluate");
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    probe.report
+}
+
+#[test]
+fn a_field_write_before_a_whole_record_copy_is_replaced_by_the_copy() {
+    let report = whole_copy_values(
+        "  s.m := 5;
+  s := t;
+  s.edges := {Ed(1, {1, 2}), Ed(2, {3, 4})};",
+    );
+    assert_eq!(value(&report, "s.m"), 100.0);
+    assert_eq!(value(&report, "s.edges[1].u"), 1.0);
+    assert_eq!(value(&report, "s.edges[2].w[2]"), 4.0);
+}
+
+#[test]
+fn an_element_field_write_after_a_whole_record_copy_updates_the_copy() {
+    let report = whole_copy_values(
+        "  s.m := 5;
+  s := t;
+  s.edges[2].u := x;",
+    );
+    assert_eq!(value(&report, "s.m"), 100.0);
+    assert_eq!(value(&report, "s.edges[1].u"), 10.0);
+    assert_eq!(value(&report, "s.edges[2].u"), 7.0);
+    assert_eq!(value(&report, "s.edges[2].w[1]"), 21.0);
+}
+
+#[test]
+fn an_element_copy_after_a_whole_record_copy_reads_the_copied_element() {
+    let report = whole_copy_values(
+        "  s.m := 5;
+  s := t;
+  s.edges[2].u := x;
+  s.edges[1] := s.edges[2];",
+    );
+    assert_eq!(value(&report, "s.m"), 100.0);
+    assert_eq!(value(&report, "s.edges[1].u"), 7.0);
+    assert_eq!(value(&report, "s.edges[1].w[2]"), 22.0);
+    assert_eq!(value(&report, "s.edges[2].u"), 7.0);
+}

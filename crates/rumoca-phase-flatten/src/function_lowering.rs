@@ -575,6 +575,16 @@ fn record_write_may_move(
     output: &str,
     value: &rumoca_core::Expression,
 ) -> bool {
+    // A write moves only past statements disjoint from its target. The test
+    // is by field name, conservative for subscripted parts: a write to the
+    // whole output or to a field of the same name would be reordered with the
+    // moved write, so the later one would no longer win.
+    let moved_field = match &statements[start] {
+        rumoca_core::Statement::Assignment { comp, .. } => {
+            comp.parts().get(1).map(|field| field.ident.as_str())
+        }
+        _ => None,
+    };
     let mut references = Vec::new();
     value.collect_var_refs(&mut references);
     let dependencies = references
@@ -587,6 +597,17 @@ fn record_write_may_move(
         let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
             return false;
         };
+        let overlaps = comp
+            .parts()
+            .first()
+            .is_some_and(|root| root.ident == output)
+            && comp
+                .parts()
+                .get(1)
+                .is_none_or(|field| Some(field.ident.as_str()) == moved_field);
+        if overlaps {
+            return false;
+        }
         let assigned = comp.parts().first().map(|part| part.ident.as_str());
         if assigned.is_some_and(|assigned| dependencies.contains(assigned)) {
             return false;

@@ -4,6 +4,14 @@
 
 use super::*;
 
+/// Whether a subscript selects one index of its axis.
+fn scalar_subscript(subscript: &rumoca_core::Subscript) -> bool {
+    matches!(
+        subscript,
+        rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Index { .. }
+    )
+}
+
 /// A component path read by an expression: a reference, or a field access
 /// chain over one. `trailing` holds the expression subscripts of the last
 /// part of a reference.
@@ -106,13 +114,20 @@ impl ExpressionVisitor for RecordReads<'_> {
 }
 
 /// How a body uses the record node at a path.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(super) struct NodeUses {
     /// The node is read as one value (not through one of its fields) other
     /// than as the whole source of an assignment.
     pub(super) read_whole: bool,
     /// The node is the whole source of an assignment (a copy).
     pub(super) copy_read: bool,
+    /// The scalar subscript counts of the last part where the node is the whole
+    /// source of a copy that selects one element, `node[i]` or `node[i, j]`,
+    /// with no subscript on an earlier part.
+    pub(super) element_copies: Vec<usize>,
+    /// The node is the whole source of a copy through subscripts that do not
+    /// select one element (a slice, or a subscript on an earlier part).
+    pub(super) sliced_copy: bool,
     /// The node is written whole (an assignment or a call result).
     pub(super) written_whole: bool,
     /// Some statement writes a path strictly below the node.
@@ -128,6 +143,17 @@ pub(super) struct NodeUses {
 }
 
 impl NodeUses {
+    /// Whether the node is the source of a copy through subscripts, and every
+    /// such copy selects one element of an array of records of `rank` axes.
+    pub(super) fn copies_elements_only(&self, rank: usize) -> bool {
+        !self.sliced_copy && self.element_copies.iter().all(|arity| *arity == rank)
+    }
+
+    /// Whether the node is the source of a copy through subscripts.
+    pub(super) fn copied_through_subscripts(&self) -> bool {
+        self.sliced_copy || !self.element_copies.is_empty()
+    }
+
     /// Whether the node is read as one value that a record constructor must
     /// reassemble. A copy of an array-of-records node is expanded into one
     /// copy per column instead, so it asks no reassembly.
@@ -151,7 +177,7 @@ impl BodyPaths {
     }
 
     pub(super) fn uses(&self, path: &[String]) -> NodeUses {
-        self.uses.get(path).copied().unwrap_or_default()
+        self.uses.get(path).cloned().unwrap_or_default()
     }
 
     /// Whether some path below `root` is written by more than one statement.
@@ -200,12 +226,32 @@ impl BodyPaths {
         match expression_path(value) {
             Some(path) if path.trailing.is_empty() => {
                 self.entry(&path.parts).copy_read = true;
+                self.subscripted_copy(&path.parts);
                 for prefix in 1..path.parts.len() {
                     self.entry(&path.parts[..prefix]).read_below = true;
                 }
                 self.part_subscripts(&path.parts);
             }
             _ => self.visit_expression(value),
+        }
+    }
+
+    /// Classify the subscripts of a copy source path.
+    fn subscripted_copy(&mut self, parts: &[ComponentRefPart]) {
+        let Some((last, earlier)) = parts.split_last() else {
+            return;
+        };
+        if last.subs.is_empty() && earlier.iter().all(|part| part.subs.is_empty()) {
+            return;
+        }
+        let element = !last.subs.is_empty()
+            && last.subs.iter().all(scalar_subscript)
+            && earlier.iter().all(|part| part.subs.is_empty());
+        let node = self.entry(parts);
+        if element {
+            node.element_copies.push(last.subs.len());
+        } else {
+            node.sliced_copy = true;
         }
     }
 
@@ -335,17 +381,29 @@ impl ColumnSubscripts {
         self.selected
     }
 
+    /// The element subscripts a whole read of `node` reassembles at: none for
+    /// a node outside every array of records, the selected indices for one
+    /// element of an array of records.
+    fn read_elements(&self, node: SplitNode<'_>) -> Option<&[rumoca_core::Subscript]> {
+        if self.is_empty() {
+            return Some(&[]);
+        }
+        match node {
+            SplitNode::Field(field)
+                if field.enclosing.is_empty() && self.selects_element(field.rank()) =>
+            {
+                Some(&self.selected)
+            }
+            _ => None,
+        }
+    }
+
     /// Whether the path selects one element of an array of records of `rank`
     /// axes: every axis has a scalar subscript.
     fn selects_element(&self, rank: usize) -> bool {
         self.pending.is_empty()
             && self.selected.len() == rank
-            && self.selected.iter().all(|subscript| {
-                matches!(
-                    subscript,
-                    rumoca_core::Subscript::Expr { .. } | rumoca_core::Subscript::Index { .. }
-                )
-            })
+            && self.selected.iter().all(scalar_subscript)
     }
 }
 
@@ -699,9 +757,10 @@ impl ExpressionRewriter for SplitRewriter<'_> {
             return self.walk_expression(expr);
         };
         if let Landing::Node(node, columns) = &landing
-            && columns.is_empty()
             && path.trailing.is_empty()
-            && let Some(value) = reassembled(*node, expr.span().unwrap_or(path.parts[0].span))
+            && let Some(elements) = columns.read_elements(*node)
+            && let Some(value) =
+                reassembled(*node, elements, expr.span().unwrap_or(path.parts[0].span))
         {
             return value;
         }
@@ -744,17 +803,25 @@ impl StatementRewriter for SplitRewriter<'_> {
 /// A whole read of a split record node, reassembled through its constructor
 /// from the current values of its field locals (MLS §12.6). Admission splits
 /// a node read whole only when [`SplitField::reconstructable`] holds, so every
-/// node below it has a constructor and no array axes.
-fn reassembled(node: SplitNode<'_>, span: Span) -> Option<Expression> {
+/// node below it has a constructor and no array axes. `element` selects one
+/// element of the array of records the node is, empty for a node outside
+/// every array of records; admission splits an array of records copied
+/// through subscripts only when the columns reassemble one element
+/// ([`SplitField::elements_reconstructable`]).
+fn reassembled(
+    node: SplitNode<'_>,
+    element: &[rumoca_core::Subscript],
+    span: Span,
+) -> Option<Expression> {
     let args = node
         .fields()
         .iter()
         .map(|field| match field.fields {
-            Some(_) => reassembled(SplitNode::Field(field), span),
+            Some(_) => reassembled(SplitNode::Field(field), element, span),
             None => Some(local_reference(
                 &field.local,
                 field.def_id,
-                Vec::new(),
+                element.to_vec(),
                 span,
             )),
         })
