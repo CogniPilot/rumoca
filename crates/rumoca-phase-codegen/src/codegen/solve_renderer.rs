@@ -98,13 +98,16 @@ impl SolveTemplateRenderer {
         let assertion_messages = super::fmi_c_assertions::messages(component.problem())?;
         let assertion_message_rows = assertion_messages.rows_value()?;
         let assertion_messages = Value::from_serialize(&assertion_messages.parts);
+        let uses_real_extremum =
+            super::real_extremum::used_by(component.problem(), component.artifacts())
+                || super::real_extremum::used_by_calls(component.pure_calls());
         let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
         let fmi = handle.fmi_value();
         require_dense_value_references(&fmi)?;
         let text_starts = super::fmi_c_assertions::text_starts(&fmi)?;
         let context = solve_render_context_value_with_handles(handle, None, Value::default())?;
         Ok(Self {
-            context: minijinja::context! { typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
+            context: minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
         })
     }
 
