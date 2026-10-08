@@ -131,7 +131,8 @@ pub mod rk45;
 mod trajectory_sensitivity;
 #[cfg(feature = "solver-rk45")]
 pub use trajectory_sensitivity::{
-    TrajectorySession, trajectory_objective_gradient_for_dae, trajectory_sensitivity_for_dae,
+    TrajectoryPlugin, TrajectorySession, trajectory_objective_gradient_for_dae,
+    trajectory_sensitivity_for_dae,
 };
 
 #[cfg(all(
