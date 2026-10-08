@@ -155,6 +155,7 @@ mod function_projection_eigen6;
 mod function_proven_branch_test;
 mod function_purity_contexts;
 mod function_quotient_sim;
+mod function_read_before_write;
 mod function_record_array_test;
 mod function_record_defaults;
 mod function_record_field_bindings;

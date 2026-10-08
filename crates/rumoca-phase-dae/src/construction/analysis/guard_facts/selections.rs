@@ -204,6 +204,80 @@ pub(super) fn literal_arms(value: &Expression) -> Option<Vec<LiteralArm<'_>>> {
     Some(arms)
 }
 
+/// The operands of `if a then b else false`, which is `a and b`: one branch
+/// whose else is the literal `false`. A chain of several branches is not one
+/// conjunction, so it has no such operands.
+pub(super) fn single_branch_and(expression: &Expression) -> Option<[&Expression; 2]> {
+    let [(condition, arm)] = false_else_branches(expression)? else {
+        return None;
+    };
+    Some([condition, arm])
+}
+
+/// The branches of a Boolean if-expression whose else is the literal `false`,
+/// which is true exactly where one branch is selected and holds.
+fn false_else_branches(expression: &Expression) -> Option<&[(Expression, Expression)]> {
+    let Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    ArmValue::of_literal(else_branch)
+        .is_some_and(|literal| literal.is_boolean(false))
+        .then_some(branches.as_slice())
+}
+
+/// The Booleans implied when the Boolean if-expression `expression` evaluates
+/// to `value`. `if a then b else false` is `a and b`. A longer chain is a
+/// disjunction of such conjunctions: true, it proves what every branch
+/// proves; false, it proves no operand pair.
+fn implied_conditional(
+    expression: &Expression,
+    value: bool,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
+    if let Some(operands) = single_branch_and(expression) {
+        implied_operands(operands, (true, value), known, implied);
+        return;
+    }
+    let Some(branches) = false_else_branches(expression).filter(|_| value) else {
+        return;
+    };
+    let entries = chain_implied_booleans(branches, known);
+    let fresh = entries
+        .into_iter()
+        .filter(|entry| !implied.contains(entry))
+        .collect::<Vec<_>>();
+    implied.extend(fresh);
+}
+
+/// The Booleans every branch of a chain proves when the chain is true: the
+/// chain is the disjunction of its branches, each holding when its earlier
+/// conditions failed, its own held, and its value is true.
+fn chain_implied_booleans(
+    branches: &[(Expression, Expression)],
+    known: &dyn Fn(&VarName) -> Option<bool>,
+) -> Vec<(VarName, bool)> {
+    let mut common: Option<Vec<(VarName, bool)>> = None;
+    for (position, (condition, arm)) in branches.iter().enumerate() {
+        let mut implied = Vec::new();
+        for (earlier, _) in &branches[..position] {
+            implied_booleans(earlier, false, known, &mut implied);
+        }
+        implied_booleans(condition, true, known, &mut implied);
+        implied_booleans(arm, true, known, &mut implied);
+        match &mut common {
+            Some(common) => common.retain(|entry| implied.contains(entry)),
+            None => common = Some(implied),
+        }
+    }
+    common.unwrap_or_default()
+}
+
 /// The Booleans that hold wherever `expression` evaluates to `value`: the
 /// local it reads, both operands of a true `and` (a Boolean if-expression with
 /// a `false` else branch is one), both operands of a false `or`. A false `and`
@@ -235,25 +309,7 @@ fn implied_booleans(
             let operands = [lhs.as_ref(), rhs.as_ref()];
             implied_operands(operands, (conjunction, value), known, implied);
         }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } if matches!(
-            else_branch.as_ref(),
-            Expression::Literal {
-                value: Literal::Boolean(false),
-                ..
-            }
-        ) =>
-        {
-            // `if a then b else false` is `a and b`.
-            for (condition, arm) in branches {
-                if value || branches.len() == 1 {
-                    implied_operands([condition, arm], (true, value), known, implied);
-                }
-            }
-        }
+        Expression::If { .. } => implied_conditional(expression, value, known, implied),
         _ => {}
     }
 }
