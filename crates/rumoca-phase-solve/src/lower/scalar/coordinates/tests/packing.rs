@@ -135,7 +135,6 @@ fn compare_sampled<'dae>(view: dae::DaeView<'dae>, layout: &LoweredLayout<'dae>,
         );
         assert_eq!(actual.ops, reference.ops);
         assert_eq!(actual.next_register, reference.next_register);
-        assert_eq!(actual.integer_registers, reference.integer_registers);
         assert_eq!(actual.tensor_load_cache, reference.tensor_load_cache);
         let before = actual.ops.clone();
         assert_eq!(
@@ -145,7 +144,7 @@ fn compare_sampled<'dae>(view: dae::DaeView<'dae>, layout: &LoweredLayout<'dae>,
             Some(expected)
         );
         assert_eq!(actual.ops, before);
-        assert_eq!(actual.integer_registers.len(), 14400);
+        assert_eq!(actual.next_register, 14400);
     }
 }
 
@@ -166,8 +165,7 @@ fn register_overflow_does_not_publish_tensor_load_or_cache() {
             .unwrap_err();
         assert!(error.to_string().contains("Solve register index overflow"));
         assert_eq!(error.source_span(), Some(node.provenance().span()));
-        assert_eq!(compiler.next_register, solve::Reg::MAX);
-        assert_eq!(compiler.integer_registers, vec![None]);
+        assert_eq!(compiler.next_register, solve::Reg::MAX - 1);
         assert!(compiler.ops.is_empty());
         assert!(compiler.tensor_load_cache.is_empty());
     });

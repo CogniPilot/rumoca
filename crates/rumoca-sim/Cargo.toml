@@ -11,6 +11,7 @@ homepage.workspace = true
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45"]
 fmi = []
+tracing = ["rumoca-phase-solve/tracing"]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]

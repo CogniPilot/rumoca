@@ -10,6 +10,7 @@ mod functions;
 mod literal_values;
 mod operators;
 mod register_folding;
+mod register_ledger;
 mod selected_arm;
 mod selector;
 
@@ -438,11 +439,10 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     active_parameters: Vec<u32>,
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
-    integer_registers: Vec<Option<i64>>,
-    /// The exact value of each register loaded from a literal or folded from
-    /// literals, and the operand of each register that negates another.
-    real_registers: Vec<Option<f64>>,
-    negated_registers: Vec<Option<solve::Reg>>,
+    /// The exact facts known about registers (a literal value, an exact
+    /// Integer value, the operand a register negates), the owner of every
+    /// allocated range, and the register budget.
+    ledger: register_ledger::RegisterLedger,
     /// The incidence proofs of exactly zero product terms, shared with
     /// structural analysis so both omit the same terms.
     zero_coefficients: rumoca_eval_dae::ZeroCoefficients<'dae>,
@@ -520,9 +520,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             active_parameters: Vec::new(),
             ops: Vec::new(),
             next_register: 0,
-            integer_registers: Vec::new(),
-            real_registers: Vec::new(),
-            negated_registers: Vec::new(),
+            ledger: register_ledger::RegisterLedger::new(),
             zero_coefficients: rumoca_eval_dae::ZeroCoefficients::default(),
             unary_values: HashMap::new(),
             expression_cache: rustc_hash::FxHashMap::default(),
@@ -1563,7 +1561,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             solve::ScalarSlot::Time => self.ops.push(solve::LinearOp::LoadTime { dst }),
             solve::ScalarSlot::Constant(value) => {
                 self.ops.push(solve::LinearOp::Const { dst, value });
-                self.real_registers[dst as usize] = Some(value);
+                self.ledger.set_real(dst, value);
             }
         }
         Ok(dst)
@@ -1598,36 +1596,95 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn constant(&mut self, value: f64, span: Span) -> Result<solve::Reg, LowerError> {
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Const { dst, value });
-        self.real_registers[dst as usize] = Some(value);
+        self.ledger.set_real(dst, value);
         self.set_integer_register(dst, exact_i64(value));
         Ok(dst)
     }
 
     fn integer_register(&self, register: solve::Reg) -> Option<i64> {
-        self.integer_registers
-            .get(register as usize)
-            .copied()
-            .flatten()
+        self.ledger.integer(register)
     }
 
     fn set_integer_register(&mut self, register: solve::Reg, value: Option<i64>) {
-        let slot = self
-            .integer_registers
-            .get_mut(register as usize)
-            .expect("registered Solve scalar owns constant metadata");
-        *slot = value;
+        self.ledger.set_integer(register, value);
     }
 
+    /// Allocate one scalar register.
+    #[track_caller]
     fn register(&mut self, span: Span) -> Result<solve::Reg, LowerError> {
-        let register = self.next_register;
-        self.next_register = self
-            .next_register
-            .checked_add(1)
+        self.register_range(1, span)
+    }
+
+    /// Allocate `count` consecutive registers and return the first.
+    ///
+    /// A tensor, a typed call result, or a packed record field is one range:
+    /// the register file grows by its width and no per-register metadata is
+    /// created. The range is charged to the innermost function being lowered
+    /// and refused, before anything is recorded, when the program would pass
+    /// its register budget.
+    #[track_caller]
+    pub(super) fn register_range(
+        &mut self,
+        count: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let owner = self.function_arguments.last().map(|frame| frame.function);
+        self.allocate_registers(owner, count, span)
+    }
+
+    /// Allocate the result range of a typed pure call of `callee`, charged to
+    /// the callee whose aggregate the range holds.
+    #[track_caller]
+    pub(super) fn register_call_results(
+        &mut self,
+        callee: dae::FunctionId<'dae>,
+        count: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        self.allocate_registers(Some(callee), count, span)
+    }
+
+    #[track_caller]
+    fn allocate_registers(
+        &mut self,
+        owner: Option<dae::FunctionId<'dae>>,
+        count: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let start = self.next_register;
+        let end = solve::Reg::try_from(count)
+            .ok()
+            .and_then(|width| start.checked_add(width))
             .ok_or_else(|| LowerError::contract("Solve register index overflow", span))?;
-        self.integer_registers.push(None);
-        self.real_registers.push(None);
-        self.negated_registers.push(None);
-        Ok(register)
+        let view = self.view;
+        let site = std::panic::Location::caller();
+        self.ledger.admit(
+            register_ledger::OwnerKey {
+                function: owner.map(|function| function.index()),
+                site,
+            },
+            || {
+                let holder = match owner.and_then(|function| view.function(function)) {
+                    Some(definition) => format!("`{}`", definition.name()),
+                    None => "the model row".to_string(),
+                };
+                format!(
+                    "{holder} at {}:{}",
+                    std::path::Path::new(site.file())
+                        .file_name()
+                        .map_or(site.file(), |name| name.to_str().unwrap_or(site.file())),
+                    site.line()
+                )
+            },
+            register_ledger::Allocation {
+                count: u64::from(end - start),
+                end: u64::from(end),
+                operations: self.ops.len(),
+            },
+            span,
+        )?;
+        self.next_register = end;
+        Ok(start)
     }
 
     fn node(&self, expression: dae::ExprId<'dae>) -> dae::ExpressionView<'dae> {

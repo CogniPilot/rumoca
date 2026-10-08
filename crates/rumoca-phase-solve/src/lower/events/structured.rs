@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 pub(super) fn lower_discrete_value_owners<'dae>(
     view: dae::DaeView<'dae>,
@@ -165,15 +166,36 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             Vec::new(),
             owner_values[0].2,
         );
-        return rows.push_clocked_owner_group(
+        return rows.push_owner_group(
             program,
             &outputs,
             owner_values[0].2,
             solve::DiscreteRowRole::Equation,
-            solve_clock,
+            Some(solve_clock),
         );
     }
-    for (target, value, span, variable, clock, sampled, scalar_count) in owner_values {
+    let projected = lower_call_projection_values(
+        view,
+        layout,
+        rows,
+        owner.observed(),
+        &owner_values
+            .iter()
+            .map(|entry| CallProjectionValue {
+                value: entry.1,
+                span: entry.2,
+                variable: entry.3,
+                scalar_count: entry.6,
+                unclocked: entry.4.is_none(),
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    for (index, (target, value, span, variable, clock, sampled, scalar_count)) in
+        owner_values.into_iter().enumerate()
+    {
+        if projected[index] {
+            continue;
+        }
         if let Some((clock_id, solve_clock)) = clock
             && scalar_count > 1
         {
@@ -254,6 +276,85 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         }
     }
     Ok(())
+}
+
+/// One value of an unconditional B.1c owner, as the call-projection lowering reads it.
+struct CallProjectionValue<'dae> {
+    value: dae::ExprId<'dae>,
+    span: Span,
+    variable: dae::VariableId<'dae>,
+    scalar_count: usize,
+    unclocked: bool,
+}
+
+/// Lower the unclocked values that project one pure call occurrence together.
+///
+/// A call occurrence is one evaluation of its callee. The values of an owner
+/// that read fields of the same occurrence are therefore one program that
+/// evaluates the call once and stores every projected scalar, wherever the
+/// values sit in the owner; a row program per scalar would evaluate the callee
+/// once per scalar. A program that calls a typed pure function reads storage
+/// the root-refresh dependency proof does not model, so these rows are never
+/// root-refresh candidates and need no per-scalar program for one.
+///
+/// Returns, per value, whether it was lowered here.
+fn lower_call_projection_values<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    rows: &mut DiscreteRows<'dae>,
+    observed: bool,
+    values: &[CallProjectionValue<'dae>],
+) -> Result<Vec<bool>, LowerError> {
+    let mut handled = vec![false; values.len()];
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_of = HashMap::new();
+    for (index, entry) in values.iter().enumerate() {
+        if !entry.unclocked {
+            continue;
+        }
+        let Some(call) = crate::lower::pure_call_projection_root(view, entry.value) else {
+            continue;
+        };
+        let group = *group_of.entry(call).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push(index);
+    }
+    for members in groups {
+        let scalars: usize = members
+            .iter()
+            .map(|&index| values[index].scalar_count)
+            .sum();
+        if scalars <= 1 {
+            continue;
+        }
+        let program = ScalarCompiler::new(view, layout, None)
+            .aggregate_program(members.iter().map(|&index| values[index].value))?;
+        let mut outputs = Vec::with_capacity(scalars);
+        for &index in &members {
+            let entry = &values[index];
+            let pre_mode = expression_pre_mode(view, entry.value, false);
+            for scalar in 0..entry.scalar_count {
+                let target =
+                    variable_scalar_slot(layout, entry.variable.index(), scalar, entry.span)?;
+                outputs.push((entry.variable, target, pre_mode));
+            }
+            handled[index] = true;
+        }
+        let first_row = rows.targets.len();
+        if observed {
+            rows.observed_rows.extend(first_row..first_row + scalars);
+        }
+        rows.push_owner_group(
+            program,
+            &outputs,
+            values[members[0]].span,
+            solve::DiscreteRowRole::Equation,
+            None,
+        )?;
+    }
+    Ok(handled)
 }
 
 fn lower_structured_discrete_value_owner<'dae>(

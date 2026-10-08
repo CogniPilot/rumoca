@@ -6,6 +6,7 @@ mod folds;
 pub(crate) mod formal_stages;
 mod indexed_slices;
 mod indexed_values;
+mod leaf_count;
 mod model_calls;
 mod model_coordinates;
 pub(in crate::lower) mod model_events;
@@ -19,6 +20,7 @@ mod total_conditionals;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
 use indexed_values::leading_index_axes;
+use leaf_count::value_type_leaf_count;
 use model_coordinates::ModelCoordinateKey;
 pub(super) use model_events::lower_model_event_transactions;
 use regions::{
@@ -472,7 +474,6 @@ fn record_field_leaf_range<'dae>(
     view: dae::DaeView<'dae>,
     record: dae::ValueTypeId<'dae>,
     field: usize,
-    arithmetic: solve::SolveArithmeticProfile,
 ) -> Result<Range<usize>, solve::SolveProgramConstructionError> {
     let value_type = view
         .value_type(record)
@@ -489,7 +490,7 @@ fn record_field_leaf_range<'dae>(
                 provenance: value_type_provenance(view, record),
             },
         )?;
-        let width = lower_value_type_leaves(view, field_type, arithmetic)?.len();
+        let width = value_type_leaf_count(view, field_type)?;
         if ordinal == field {
             return Ok(start..start + width);
         }
@@ -522,7 +523,7 @@ pub(crate) fn record_field_scalar_leaf<'dae>(
     let invalid = || solve::SolveProgramConstructionError::InvalidCallInterface {
         provenance: value_type_provenance(view, record),
     };
-    let leaves = record_field_leaf_range(view, record, field, arithmetic_profile())?;
+    let leaves = record_field_leaf_range(view, record, field)?;
     let (_, field_type) = view.record_field(record, field).ok_or_else(invalid)?;
     let nested = view.value_type(field_type).ok_or_else(invalid)?;
     if !nested.is_record() {
@@ -1533,12 +1534,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
         let base_value = self.expression(base)?;
-        let range = record_field_leaf_range(
-            self.view,
-            base_value.value_type,
-            field as usize,
-            arithmetic_profile(),
-        )?;
+        let range = record_field_leaf_range(self.view, base_value.value_type, field as usize)?;
         let leaves = base_value
             .leaves
             .get(range)
@@ -1717,12 +1713,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 let value_type = node.value_type_id();
                 let mut selected = None;
                 for (ordinal, argument) in arguments.iter().enumerate() {
-                    let range = record_field_leaf_range(
-                        self.view,
-                        value_type,
-                        ordinal,
-                        arithmetic_profile(),
-                    )?;
+                    let range = record_field_leaf_range(self.view, value_type, ordinal)?;
                     selected = selected.or(range.contains(&leaf).then_some((
                         ordinal,
                         argument,

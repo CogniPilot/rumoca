@@ -224,10 +224,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?;
         let result_count = program.result_count;
-        let dst_start = self.next_register;
-        for _ in 0..result_count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(result_count, span)?;
         self.ops.push(solve::LinearOp::FunctionConditional {
             dst_start,
             capture_start: 0,
@@ -451,10 +448,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ));
             }
         };
-        let dst_start = self.next_register;
-        for _ in 0..target.width {
-            self.register(target.span)?;
-        }
+        let dst_start = self.register_range(target.width, target.span)?;
         self.ops.push(solve::LinearOp::TensorLoad {
             dst_start,
             input,

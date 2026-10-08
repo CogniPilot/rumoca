@@ -676,7 +676,7 @@ impl<'dae> DiscreteRows<'dae> {
         Ok(())
     }
 
-    fn push_clocked_owner_group(
+    fn push_owner_group(
         &mut self,
         program: Vec<solve::LinearOp>,
         outputs: &[(
@@ -686,7 +686,7 @@ impl<'dae> DiscreteRows<'dae> {
         )],
         span: Span,
         role: solve::DiscreteRowRole,
-        clock_owner: solve::PeriodicClockId,
+        clock_owner: Option<solve::PeriodicClockId>,
     ) -> Result<(), LowerError> {
         let first_output = self.targets.len();
         for &(variable, target, pre_mode) in outputs {
@@ -694,7 +694,7 @@ impl<'dae> DiscreteRows<'dae> {
             self.targets.push(target);
             self.roles.push(role);
             self.pre_modes.push(pre_mode);
-            self.clock_owners.push(Some(clock_owner));
+            self.clock_owners.push(clock_owner);
         }
         self.rows
             .push_outputs(program, span, first_output..first_output + outputs.len());

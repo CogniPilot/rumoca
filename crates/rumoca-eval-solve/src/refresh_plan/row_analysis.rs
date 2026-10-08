@@ -129,7 +129,9 @@ impl AssignmentCertificates {
 /// The assignment shapes and causality of one canonical program, derived once
 /// for every output row it owns.
 struct ProgramFacts {
-    shapes: Vec<(usize, solve::TargetAssignmentShape)>,
+    /// The shapes derived for each output, indexed by output so a program that
+    /// owns many outputs is not rescanned once per row.
+    shapes: std::collections::HashMap<usize, Vec<solve::TargetAssignmentShape>>,
     causal: bool,
 }
 
@@ -145,7 +147,14 @@ impl RowAnalysisCache {
             self.programs.resize_with(index + 1, || None);
         }
         self.programs[index].get_or_insert_with(|| ProgramFacts {
-            shapes: solve::derive_target_assignment_shapes(operations),
+            shapes: {
+                let mut by_output: std::collections::HashMap<usize, Vec<_>> =
+                    std::collections::HashMap::new();
+                for (output, shape) in solve::derive_target_assignment_shapes(operations) {
+                    by_output.entry(output).or_default().push(shape);
+                }
+                by_output
+            },
             causal: !operations.iter().any(crate::prepared::non_causal_linear_op),
         })
     }
@@ -178,16 +187,16 @@ pub(super) fn analyze_refresh_row(
         return Ok(Some(reused));
     }
     let facts = cache.facts(program_index, program.operations);
-    let shape = facts
-        .shapes
-        .iter()
-        .find(|(output, shape)| *output == output_offset && shape.target_y_index() == target_index)
-        .map(|(_, shape)| shape.clone());
+    let output_shapes = facts.shapes.get(&output_offset);
+    let shape = output_shapes
+        .and_then(|shapes| {
+            shapes
+                .iter()
+                .find(|shape| shape.target_y_index() == target_index)
+        })
+        .cloned();
     let evaluable = shape.is_some()
-        || (!facts
-            .shapes
-            .iter()
-            .any(|(output, _)| *output == output_offset)
+        || (output_shapes.is_none_or(|shapes| shapes.is_empty())
             && !crate::prepared::row_output_depends_on_y_index(
                 program.operations,
                 output_offset,

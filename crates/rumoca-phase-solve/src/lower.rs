@@ -441,35 +441,36 @@ fn lower_continuous<'dae>(
     };
     let mut row = 0usize;
     let owners = view.continuous_owners().collect::<Vec<_>>();
+    let mut aggregate_calls = AggregateCallOwners::collect(context, &owners)?;
     let mut owner_index = 0usize;
     while owner_index < owners.len() {
-        if let Some(first) = continuous_aggregate_call_candidate(context, row, owners[owner_index])?
-        {
-            let mut group = vec![first];
-            let mut next_owner = owner_index + 1;
-            let mut next_row = first.end_row();
-            while let Some(&owner) = owners.get(next_owner) {
-                let Some(candidate) =
-                    continuous_aggregate_call_candidate(context, next_row, owner)?
-                else {
-                    break;
-                };
-                if candidate.call != first.call {
-                    break;
-                }
-                next_row = candidate.end_row();
-                group.push(candidate);
-                next_owner += 1;
-            }
+        if aggregate_calls.is_lowered(owner_index) {
+            row = checked_ordinal_add(
+                row,
+                aggregate_calls.rows(owner_index),
+                "continuous row ordinal overflow",
+                owner_provenance(owners[owner_index]).span(),
+            )?;
+            owner_index += 1;
+            continue;
+        }
+        if let Some(group) = aggregate_calls.group(owner_index) {
             let reads_derivative = group
                 .iter()
                 .any(|candidate| aggregate_call_reads_derivative(view, candidate.call));
             if group.len() > 1 && structural.derivative_blocks.is_empty() && !reads_derivative {
                 lower_continuous_aggregate_call_group(context, &mut output, &group)?;
-                row = next_row;
-                owner_index = next_owner;
+                aggregate_calls.mark_lowered(owner_index);
+                row = checked_ordinal_add(
+                    row,
+                    aggregate_calls.rows(owner_index),
+                    "continuous row ordinal overflow",
+                    owner_provenance(owners[owner_index]).span(),
+                )?;
+                owner_index += 1;
                 continue;
             }
+            aggregate_calls.decline(owner_index);
         }
         let owner = owners[owner_index];
         match owner {
@@ -688,6 +689,98 @@ impl ContinuousAggregateCallCandidate<'_> {
     }
 }
 
+/// The owners whose residual is a projection of a pure aggregate call, grouped by
+/// the call occurrence they project.
+///
+/// A call occurrence is one evaluation of its callee, so every owner that
+/// projects it is lowered together into one program wherever the owners sit in
+/// the system; lowering the projections separately would evaluate the callee
+/// once per separated run.
+struct AggregateCallOwners<'dae> {
+    rows: Vec<usize>,
+    candidates: Vec<Option<ContinuousAggregateCallCandidate<'dae>>>,
+    by_call: HashMap<dae::ExprId<'dae>, Vec<usize>>,
+    lowered: Vec<bool>,
+    declined: std::collections::HashSet<dae::ExprId<'dae>>,
+}
+
+impl<'dae> AggregateCallOwners<'dae> {
+    fn collect(
+        context: ContinuousContext<'_, 'dae>,
+        owners: &[dae::ContinuousOwnerView<'dae>],
+    ) -> Result<Self, LowerError> {
+        let mut rows = Vec::with_capacity(owners.len());
+        let mut candidates = Vec::with_capacity(owners.len());
+        let mut by_call: HashMap<dae::ExprId<'dae>, Vec<usize>> = HashMap::new();
+        let mut first_row = 0usize;
+        for (index, owner) in owners.iter().copied().enumerate() {
+            let count = match owner {
+                dae::ContinuousOwnerView::Residual { equation, .. } => {
+                    scalar_count(context.view, equation.residual())
+                }
+                dae::ContinuousOwnerView::Structured { family, .. } => {
+                    family.scalar_rows() as usize
+                }
+            };
+            let candidate = continuous_aggregate_call_candidate(context, first_row, owner)?;
+            if let Some(candidate) = candidate {
+                by_call.entry(candidate.call).or_default().push(index);
+            }
+            candidates.push(candidate);
+            rows.push(count);
+            first_row = checked_ordinal_add(
+                first_row,
+                count,
+                "continuous row ordinal overflow",
+                owner_provenance(owner).span(),
+            )?;
+        }
+        Ok(Self {
+            lowered: vec![false; owners.len()],
+            rows,
+            candidates,
+            by_call,
+            declined: std::collections::HashSet::new(),
+        })
+    }
+
+    fn rows(&self, owner: usize) -> usize {
+        self.rows[owner]
+    }
+
+    fn is_lowered(&self, owner: usize) -> bool {
+        self.lowered[owner]
+    }
+
+    /// Every owner projecting the call `owner` projects, when `owner` is one.
+    fn group(&self, owner: usize) -> Option<Vec<ContinuousAggregateCallCandidate<'dae>>> {
+        let call = self.candidates[owner]?.call;
+        if self.declined.contains(&call) {
+            return None;
+        }
+        Some(
+            self.by_call[&call]
+                .iter()
+                .filter_map(|&index| self.candidates[index])
+                .collect(),
+        )
+    }
+
+    fn mark_lowered(&mut self, owner: usize) {
+        if let Some(candidate) = self.candidates[owner] {
+            for &index in &self.by_call[&candidate.call] {
+                self.lowered[index] = true;
+            }
+        }
+    }
+
+    fn decline(&mut self, owner: usize) {
+        if let Some(candidate) = self.candidates[owner] {
+            self.declined.insert(candidate.call);
+        }
+    }
+}
+
 fn continuous_aggregate_call_candidate<'dae>(
     context: ContinuousContext<'_, 'dae>,
     first_row: usize,
@@ -764,7 +857,16 @@ fn pure_aggregate_call_projection<'dae>(
     if !algebraic_projection_target(view, lhs) {
         return None;
     }
-    let mut projection = rhs;
+    pure_call_projection_root(view, rhs)
+}
+
+/// The call occurrence `expression` projects through fields and indices, when
+/// it is a projection of a pure call.
+pub(super) fn pure_call_projection_root<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<dae::ExprId<'dae>> {
+    let mut projection = expression;
     let mut projected = false;
     loop {
         match view.expression(projection)?.operation() {

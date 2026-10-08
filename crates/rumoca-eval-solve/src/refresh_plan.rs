@@ -44,7 +44,7 @@ use parameter_static::parameter_static_refresh_program;
 use parameter_static::parameter_static_refresh_targets;
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, ContinuousStaticParameters, RefreshPlan, RefreshRowOwnerId,
-    RefreshRowSelection, RefreshRows, RefreshStage,
+    RefreshRowSelection, RefreshStage,
 };
 use schedule::build_refresh_stages;
 use source_catalog::CanonicalScalarProgramCatalog;
@@ -1318,12 +1318,21 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         span,
     )?;
     plan.value_projection_plan = if plan.causal_solution_certified {
+        let exactly_seeded = plan
+            .causal_rows()
+            .iter()
+            .filter(|seed| {
+                seed.assignment_target() == Some(seed.target_index())
+                    && seed.exact_assignment_certified()
+            })
+            .map(|seed| (seed.equation_index(), seed.target_index()))
+            .collect::<std::collections::HashSet<_>>();
         solve::AlgebraicProjectionPlan {
             blocks: plan
                 .simultaneous_plan
                 .blocks
                 .iter()
-                .filter(|block| !block_is_exactly_seeded(block, plan.causal_rows()))
+                .filter(|block| !block_is_exactly_seeded(block, &exactly_seeded))
                 .cloned()
                 .collect(),
         }
@@ -1361,24 +1370,18 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     Ok(())
 }
 
+/// Whether `block` is one row solved for one target by an exact assignment seed.
+///
+/// `exactly_seeded` holds the (equation, target) pair of every exact seed, so
+/// the test is one lookup per block rather than a scan of every seed.
 fn block_is_exactly_seeded(
     block: &solve::AlgebraicProjectionBlock,
-    seed_rows: RefreshRows<'_>,
+    exactly_seeded: &std::collections::HashSet<(usize, usize)>,
 ) -> bool {
-    block.rows.len() == 1
-        && block.y_indices.len() == 1
-        && block
-            .rows
-            .iter()
-            .zip(&block.y_indices)
-            .all(|(&row, &target)| {
-                seed_rows.iter().any(|seed| {
-                    seed.equation_index() == row
-                        && seed.target_index() == target
-                        && seed.assignment_target() == Some(target)
-                        && seed.exact_assignment_certified()
-                })
-            })
+    matches!(
+        (block.rows.as_slice(), block.y_indices.as_slice()),
+        ([row], [target]) if exactly_seeded.contains(&(*row, *target))
+    )
 }
 
 fn dependency_causal_projection_is_certified(
