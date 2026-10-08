@@ -1,5 +1,5 @@
 use super::fold_scopes::{FoldScopes, SymbolicIndices};
-use super::guard_facts::GuardFacts;
+use super::guard_facts::{GuardFacts, UndefinedPaths};
 use super::*;
 use rumoca_core::FallibleExpressionVisitor;
 use rumoca_core::{IndexBox, IndexUnion, Progression};
@@ -54,11 +54,14 @@ struct BranchOnlyCoverage {
     /// The facts that hold on every path that leaves the value undefined.
     /// A later path whose facts contradict them has the value defined, with
     /// `coverage` (see `guard_facts`).
-    undefined_when: Option<GuardFacts>,
+    undefined_when: Option<UndefinedPaths>,
     /// What the value covers on every path that defines it, for a path that
     /// contradicts `undefined_when`.
     defined_coverage: Option<ValueCoverage>,
 }
+
+/// The coverage of a value defined as a whole.
+static WHOLE_COVERAGE: ValueCoverage = ValueCoverage::Whole;
 
 #[derive(Clone)]
 enum ValueCoverage {
@@ -699,14 +702,30 @@ impl FunctionDefinitions {
         }
         // A branch value of an if-expression is evaluated only when its
         // condition holds (MLS §3.6.5), so a value proven under a guard that
-        // condition implies is defined there, as in a guarded statement branch.
+        // condition implies, or whose undefined paths the condition excludes,
+        // is defined there, as in a guarded statement branch.
         let admitted = self.branch_only.get(name).and_then(|conditional| {
-            let guard = conditional.guard.as_ref()?;
-            let coverage = conditional.coverage.as_ref()?;
-            selected_by
-                .iter()
-                .any(|condition| condition_implies_guard(condition, guard, context, 0))
-                .then_some(coverage)
+            let by_guard = || {
+                let guard = conditional.guard.as_ref()?;
+                let coverage = conditional.coverage.as_ref()?;
+                selected_by
+                    .iter()
+                    .any(|condition| condition_implies_guard(condition, guard, context, 0))
+                    .then_some(coverage)
+            };
+            let by_facts = || {
+                let mut paths = conditional.undefined_when.clone()?;
+                for condition in selected_by {
+                    paths = paths.entering(&[condition], 0, context.fact_scope());
+                }
+                paths.is_unreachable().then(|| {
+                    conditional
+                        .defined_coverage
+                        .as_ref()
+                        .unwrap_or(&WHOLE_COVERAGE)
+                })
+            };
+            by_guard().or_else(by_facts)
         });
         if let Some(conditional) = self.branch_only.get(name)
             && admitted.is_none()
@@ -829,6 +848,7 @@ impl FunctionDefinitions {
             self.values.insert(target.clone(), coverage);
             joined.push(target.clone());
         }
+        self.join_untouched_undefined_paths(branches, exhaustive, ordered_targets);
         // Tracking reads each path's own facts, so the join comes last.
         self.join_facts(branches, exhaustive);
         Ok(joined)
@@ -1598,7 +1618,7 @@ impl FunctionDefinitions {
         self.facts.assign(target.clone(), value, scope);
         for definition in self.branch_only.values_mut() {
             if let Some(facts) = &mut definition.undefined_when {
-                facts.assign(target.clone(), value, scope);
+                facts.assign(target, value, scope);
             }
         }
     }
@@ -1651,7 +1671,7 @@ impl FunctionDefinitions {
             let Some(facts) = &mut definition.undefined_when else {
                 continue;
             };
-            *facts = facts.branch_entries(conditions, scope).swap_remove(ordinal);
+            *facts = facts.entering(conditions, ordinal, scope);
             if facts.is_unreachable() {
                 defined.push((name.clone(), definition.defined_coverage.clone()));
             }
@@ -1746,16 +1766,16 @@ impl FunctionDefinitions {
         (context, span): (FunctionValidationContext<'_>, Span),
     ) -> Result<bool, ToDaeError> {
         let fallthrough = (!exhaustive).then_some(&*self);
-        let mut undefined: Option<GuardFacts> = None;
+        let mut undefined: Option<UndefinedPaths> = None;
         let mut coverage: Option<ValueCoverage> = None;
         for path in branches.iter().chain(fallthrough) {
             let (facts, defined) = match (path.values.get(target), path.branch_only.get(target)) {
                 (Some(defined), _) => (None, Some(defined.clone())),
                 (None, Some(tracked)) => match &tracked.undefined_when {
                     Some(facts) => (Some(facts.clone()), tracked.defined_coverage.clone()),
-                    None => (Some(path.facts.clone()), None),
+                    None => (Some(UndefinedPaths::single(path.facts.clone())), None),
                 },
-                (None, None) => (Some(path.facts.clone()), None),
+                (None, None) => (Some(UndefinedPaths::single(path.facts.clone())), None),
             };
             if let Some(defined) = defined {
                 coverage = Some(match coverage {
@@ -1846,4 +1866,49 @@ fn guard_union(
     };
     (negation_of_condition(negated) && condition_implies_guard(condition, whole, context, 0))
         .then(|| Some(whole.clone()))
+}
+
+impl FunctionDefinitions {
+    /// Advance the undefined paths of every tracked value the conditional does
+    /// not write across the conditional: they are the paths each branch (and
+    /// the fall-through, when there is no `else`) leaves them on, after the
+    /// statements of the branch ran. A branch that no longer lists a value as
+    /// undefined defines it on every path it takes.
+    fn join_untouched_undefined_paths(
+        &mut self,
+        branches: &[Self],
+        exhaustive: bool,
+        written: &[VarName],
+    ) {
+        let mut defined = Vec::new();
+        for (name, definition) in &mut self.branch_only {
+            if written.contains(name) {
+                continue;
+            }
+            let Some(before) = definition.undefined_when.take() else {
+                continue;
+            };
+            let mut after: Option<UndefinedPaths> = None;
+            let fallthrough = (!exhaustive).then_some(&before);
+            let paths = branches
+                .iter()
+                .filter_map(|branch| branch.branch_only.get(name)?.undefined_when.as_ref())
+                .chain(fallthrough);
+            for paths in paths {
+                match &mut after {
+                    Some(joined) => joined.join_path(paths),
+                    None => after = Some(paths.clone()),
+                }
+            }
+            match after {
+                Some(after) if !after.is_unreachable() => definition.undefined_when = Some(after),
+                _ => defined.push((name.clone(), definition.defined_coverage.clone())),
+            }
+        }
+        for (name, coverage) in defined {
+            self.branch_only.remove(&name);
+            self.values
+                .insert(name, coverage.unwrap_or(ValueCoverage::Whole));
+        }
+    }
 }

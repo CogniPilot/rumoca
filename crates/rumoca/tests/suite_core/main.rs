@@ -129,6 +129,7 @@ mod function_guard_fact_definedness;
 mod function_guarded_element_writes;
 mod function_guarded_loop_definedness;
 mod function_guarded_loop_definitions;
+mod function_guarded_problem_definedness;
 mod function_guarded_remainder;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;

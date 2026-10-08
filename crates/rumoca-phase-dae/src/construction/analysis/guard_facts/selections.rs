@@ -70,50 +70,96 @@ pub(super) fn exact_real(value: i64) -> Option<f64> {
     (-EXACT..=EXACT).contains(&value).then_some(value as f64)
 }
 
+/// One literal a local may hold, the facts of the path that stores it, and the
+/// Booleans that path proves: `b := x and y` holds `true` only where `x` and
+/// `y` held, so a read of `b` as true proves them too, for as long as the
+/// values they name are unchanged.
+#[derive(Clone, PartialEq, Debug)]
+struct Arm {
+    value: ArmValue,
+    facts: PathFacts,
+    implied: Vec<(VarName, bool)>,
+}
+
 /// The facts on the path of each literal a local may hold. A value with no
 /// arm cannot be held.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) struct Selection {
-    arms: Vec<(ArmValue, PathFacts)>,
+    arms: Vec<Arm>,
 }
 
 impl Selection {
     /// A Boolean known only to be `true` or `false`.
     pub(super) fn booleans() -> Self {
+        let arm = |value| Arm {
+            value: ArmValue::Boolean(value),
+            facts: Some(BTreeMap::new()),
+            implied: Vec::new(),
+        };
         Self {
-            arms: vec![
-                (ArmValue::Boolean(true), Some(BTreeMap::new())),
-                (ArmValue::Boolean(false), Some(BTreeMap::new())),
-            ],
+            arms: vec![arm(true), arm(false)],
         }
     }
 
-    fn insert(&mut self, value: ArmValue, facts: PathFacts) {
+    fn insert(&mut self, value: ArmValue, facts: PathFacts, implied: Vec<(VarName, bool)>) {
         if facts.is_none() {
             return;
         }
-        match self.arms.iter_mut().find(|(arm, _)| *arm == value) {
-            Some((_, existing)) => *existing = disjoin(existing.take(), facts),
-            None => self.arms.push((value, facts)),
+        match self.arms.iter_mut().find(|arm| arm.value == value) {
+            Some(existing) => {
+                existing.facts = disjoin(existing.facts.take(), facts);
+                // Either path may have stored the value: only what both prove.
+                existing.implied.retain(|entry| implied.contains(entry));
+            }
+            None => self.arms.push(Arm {
+                value,
+                facts,
+                implied,
+            }),
         }
+    }
+
+    /// The arms `admitted` keeps.
+    pub(super) fn arms_when(
+        &self,
+        admitted: impl Fn(ArmValue) -> bool,
+    ) -> impl Iterator<Item = (&PathFacts, &[(VarName, bool)])> {
+        self.arms
+            .iter()
+            .filter(move |arm| admitted(arm.value))
+            .map(|arm| (&arm.facts, arm.implied.as_slice()))
     }
 
     /// What holds on the path of any arm `admitted` keeps; `None` when it
     /// keeps none.
     pub(super) fn facts_when(&self, admitted: impl Fn(ArmValue) -> bool) -> PathFacts {
-        self.arms
-            .iter()
-            .filter(|(arm, _)| admitted(*arm))
-            .fold(None, |joined, (_, facts)| disjoin(joined, facts.clone()))
+        self.arms_when(admitted)
+            .fold(None, |joined, (facts, _)| disjoin(joined, facts.clone()))
+    }
+
+    /// The Booleans every arm `admitted` keeps proves.
+    pub(super) fn implied_when(&self, admitted: impl Fn(ArmValue) -> bool) -> Vec<(VarName, bool)> {
+        let mut arms = self.arms_when(admitted).map(|(_, implied)| implied);
+        let Some(first) = arms.next() else {
+            return Vec::new();
+        };
+        let mut common = first.to_vec();
+        for implied in arms {
+            common.retain(|entry| implied.contains(entry));
+        }
+        common
     }
 
     pub(super) fn retain(&mut self, admitted: impl Fn(ArmValue) -> bool) {
-        self.arms.retain(|(arm, _)| admitted(*arm));
+        self.arms.retain(|arm| admitted(arm.value));
     }
 
-    pub(super) fn for_each_arm(&mut self, mut visit: impl FnMut(&mut PathFacts)) {
-        for (_, facts) in &mut self.arms {
-            visit(facts);
+    /// Drop everything the arms record about the value `name`, which a write
+    /// changes.
+    pub(super) fn forget_name(&mut self, name: &VarName) {
+        for arm in &mut self.arms {
+            forget_in(&mut arm.facts, name);
+            arm.implied.retain(|(implied, _)| implied != name);
         }
     }
 
@@ -123,8 +169,8 @@ impl Selection {
         let Some(other) = other else {
             return false;
         };
-        for (value, facts) in &other.arms {
-            self.insert(*value, facts.clone());
+        for arm in &other.arms {
+            self.insert(arm.value, arm.facts.clone(), arm.implied.clone());
         }
         true
     }
@@ -158,6 +204,53 @@ pub(super) fn literal_arms(value: &Expression) -> Option<Vec<LiteralArm<'_>>> {
     Some(arms)
 }
 
+/// The Booleans that hold wherever `expression` evaluates to `value`: the
+/// local it reads, both operands of a true `and` (a Boolean if-expression with
+/// a `false` else branch is one), both operands of a false `or`.
+fn implied_booleans(expression: &Expression, value: bool, implied: &mut Vec<(VarName, bool)>) {
+    match expression {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            let entry = (name.var_name().clone(), value);
+            if !implied.contains(&entry) {
+                implied.push(entry);
+            }
+        }
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => implied_booleans(rhs, !value, implied),
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!(op, OpBinary::And) == value
+                && matches!(op, OpBinary::And | OpBinary::Or) =>
+        {
+            implied_booleans(lhs, value, implied);
+            implied_booleans(rhs, value, implied);
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } if value
+            && matches!(
+                else_branch.as_ref(),
+                Expression::Literal {
+                    value: Literal::Boolean(false),
+                    ..
+                }
+            ) =>
+        {
+            for (condition, arm) in branches {
+                implied_booleans(condition, true, implied);
+                implied_booleans(arm, true, implied);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl GuardFacts {
     /// The selection a write of `value` gives `subject`: the two truth values
     /// of a Boolean, or the literal arms of a numeric value. Each arm also
@@ -174,17 +267,28 @@ impl GuardFacts {
         let mut selection = Selection { arms: Vec::new() };
         let when_true = self.facts(value, true, scope);
         let when_false = self.facts(value, false, scope);
-        if trivial(&when_true) && trivial(&when_false) && trivial(&self.path) {
+        let mut implied_true = Vec::new();
+        implied_booleans(value, true, &mut implied_true);
+        let mut implied_false = Vec::new();
+        implied_booleans(value, false, &mut implied_false);
+        if trivial(&when_true)
+            && trivial(&when_false)
+            && trivial(&self.path)
+            && implied_true.is_empty()
+            && implied_false.is_empty()
+        {
             return None;
         }
         // The path facts that held at the write are implied by either value.
         selection.insert(
             ArmValue::Boolean(true),
             conjoin(self.path.clone(), when_true),
+            implied_true,
         );
         selection.insert(
             ArmValue::Boolean(false),
             conjoin(self.path.clone(), when_false),
+            implied_false,
         );
         Some(selection)
     }
@@ -203,7 +307,7 @@ impl GuardFacts {
                 .fold(self.clone(), |path, (condition, holds)| {
                     path.assuming(condition, holds, scope)
                 });
-            selection.insert(literal, path.path);
+            selection.insert(literal, path.path, Vec::new());
         }
         Some(selection)
     }

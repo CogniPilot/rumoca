@@ -309,3 +309,84 @@ fn only_a_loop_without_break_exits_with_its_condition_false() {
     facts.after(&while_loop(below, vec![leave, step]), names.scope());
     assert_eq!(bound(&facts, "r").lower, None);
 }
+
+#[test]
+fn a_conjunction_local_proves_its_operands_where_it_holds() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("v", binary(OpBinary::Gt, var("r"), integer(4))),
+        names.scope(),
+    );
+    facts.after(
+        &assign("g", binary(OpBinary::And, var("v"), var("other"))),
+        names.scope(),
+    );
+    let entries = facts.branch_entries(&[&var("g")], names.scope());
+    assert_eq!(bound(&entries[0], "r").lower, Some(5));
+    // `v` is true wherever `g` is, so the path that selects `g` cannot take `not v`.
+    assert!(
+        entries[0]
+            .assuming(&var("v"), false, names.scope())
+            .is_unreachable()
+    );
+    // `g` false proves neither operand.
+    assert!(
+        !entries[1]
+            .assuming(&var("v"), false, names.scope())
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn a_write_forgets_what_a_conjunction_local_proved_of_the_value_it_names() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("v", binary(OpBinary::Gt, var("r"), integer(4))),
+        names.scope(),
+    );
+    facts.after(
+        &assign("g", binary(OpBinary::And, var("v"), var("other"))),
+        names.scope(),
+    );
+    facts.after(
+        &assign("v", binary(OpBinary::Lt, var("n"), integer(0))),
+        names.scope(),
+    );
+    let entries = facts.branch_entries(&[&var("g")], names.scope());
+    // What `v` meant about `r` when `g` was assigned still holds, `r` being unwritten.
+    assert_eq!(bound(&entries[0], "r").lower, Some(5));
+    // The new `v` is no operand of `g`, so `g` no longer excludes `not v`.
+    assert!(
+        !entries[0]
+            .assuming(&var("v"), false, names.scope())
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn the_paths_leaving_a_value_undefined_stay_apart() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut decided = GuardFacts::entry();
+    decided.after(
+        &assign("a", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    let decided = decided.assuming(&var("a"), false, scope);
+    let mut paths = UndefinedPaths::single(decided);
+    paths.join_path(&UndefinedPaths::single(GuardFacts::entry().assuming(
+        &var("b"),
+        true,
+        scope,
+    )));
+    // One path knows `a` is false, the other never saw `a`: a later `a`
+    // true contradicts only the first, so the set stays reachable.
+    let after_a = paths.entering(&[&var("a")], 0, scope);
+    assert!(!after_a.is_unreachable());
+    // `a` and `not b` together contradict both.
+    let mut both = paths.entering(&[&var("a")], 0, scope);
+    both = both.entering(&[&var("b")], 1, scope);
+    assert!(both.is_unreachable());
+}
