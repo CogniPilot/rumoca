@@ -63,6 +63,7 @@ pub(super) fn register_native_call<'dae>(
                 next_direct_assertion: 0,
                 direct_assertion_count: 0,
                 totality: HashMap::new(),
+                eager: EagerScope::default(),
             };
             let operands = binding
                 .inputs()

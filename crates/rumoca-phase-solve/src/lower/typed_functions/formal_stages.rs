@@ -9,7 +9,8 @@ use rumoca_phase_structural::{FormalDerivativeStage, FormalDerivativeView, Forma
 
 use super::model_coordinates::collect_model_coordinate_types;
 use super::{
-    ExpressionLowerer, LoweredValue, PureCallRegistry, arithmetic_profile, lower_primitive_type,
+    EagerScope, ExpressionLowerer, LoweredValue, PureCallRegistry, arithmetic_profile,
+    lower_primitive_type,
 };
 
 /// Analysis kernels retain their issuing formal root. They are not a prepared
@@ -383,6 +384,7 @@ impl<'formal> PureCallRegistry<'formal> {
                         next_direct_assertion: 0,
                         direct_assertion_count: 0,
                         totality: HashMap::new(),
+                        eager: EagerScope::default(),
                     };
                     for (&body, &output) in bodies.iter().zip(outputs) {
                         let value = lowerer.residual_body(body, domain.as_ref(), at)?;

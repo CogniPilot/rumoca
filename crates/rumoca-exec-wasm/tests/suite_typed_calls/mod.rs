@@ -2,6 +2,7 @@ mod aggregate_folds;
 mod aggregate_ops;
 mod assertion_outputs;
 mod broadcast;
+mod call_region_laziness;
 mod calls;
 mod capture_borrows;
 mod carried_lifetimes;

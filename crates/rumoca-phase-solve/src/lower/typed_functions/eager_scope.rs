@@ -6,11 +6,12 @@
 //! condition of an if-expression is evaluated by every execution of the scope.
 //! Lowering such a call where the first consumer happens to sit (inside the
 //! lazy branch of a sibling conditional) would evaluate it once per consumer
-//! region. This module instead issues each eagerly demanded call in the scope
-//! itself, before any region is built, so every region that reads the value
-//! captures it (`environment_requirements`), and fuses the sibling conditionals
-//! that share their conditions into one region pair, so the calls only their
-//! arms demand are evaluated once per selected arm.
+//! region. This module instead keeps one value per demanded call in the scope:
+//! the call is issued at its first source-order use (or, for a nested region
+//! that captures it earlier, when the region is built), so every later reader
+//! captures that value (`environment_requirements`), and the sibling
+//! conditionals that share their conditions are fused into one region pair,
+//! so the calls only their arms demand are evaluated once per selected arm.
 //!
 //! The decision is made from the DAE expression graph at construction. Nothing
 //! is cached or compared at run time (SPEC_0007, SPEC_0036).
@@ -73,19 +74,90 @@ struct ConditionalGroup<'dae> {
     members: Vec<dae::ExprId<'dae>>,
 }
 
+/// The eagerly demanded values of one scope that no consumer has issued yet.
+///
+/// Calls are not issued ahead of the statements that read them: the scope
+/// lowers its results in source order, so a call is issued where its first
+/// use lowers it and every later use reads that value. The only reader that
+/// can need a value before its source-order use is a nested region, which
+/// captures from the scope (see `issue_demanded_calls`).
+#[derive(Default)]
+pub(super) struct EagerScope<'dae> {
+    /// Calls the scope computes whatever its inputs are, in walk order.
+    calls: HashMap<dae::ExprId<'dae>, usize>,
+    groups: Vec<ConditionalGroup<'dae>>,
+    /// Group index of every member, until the group is lowered.
+    group_of: HashMap<dae::ExprId<'dae>, usize>,
+}
+
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
-    /// Issue the eagerly demanded calls of `roots`, then the correlated
-    /// conditional groups among them.
-    pub(super) fn lower_eager_demand(
-        &mut self,
-        roots: impl IntoIterator<Item = dae::ExprId<'dae>>,
-    ) -> Result<(), solve::SolveProgramConstructionError> {
+    /// Record the calls and correlated conditional groups the scope demands
+    /// from `roots`. Nothing is issued here: each is lowered at its first
+    /// source-order use.
+    pub(super) fn plan_eager_demand(&mut self, roots: impl IntoIterator<Item = dae::ExprId<'dae>>) {
         let demand = self.eager_demand(roots);
-        for call in demand.calls {
-            self.expression(call)?;
+        for (ordinal, call) in demand.calls.into_iter().enumerate() {
+            self.eager.calls.insert(call, ordinal);
         }
         for group in self.conditional_groups_of(demand.conditionals) {
-            self.lower_fused_conditionals(&group)?;
+            let ordinal = self.eager.groups.len();
+            for member in &group.members {
+                self.eager.group_of.insert(*member, ordinal);
+            }
+            self.eager.groups.push(group);
+        }
+    }
+
+    /// Lower the correlated group `expression` belongs to when it is the first
+    /// of its members the scope reaches; every member is then issued.
+    pub(super) fn lower_group_of(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<(), solve::SolveProgramConstructionError> {
+        let Some(ordinal) = self.eager.group_of.get(&expression).copied() else {
+            return Ok(());
+        };
+        let group = &mut self.eager.groups[ordinal];
+        let group = ConditionalGroup {
+            conditions: group.conditions.clone(),
+            members: std::mem::take(&mut group.members),
+        };
+        for member in &group.members {
+            self.eager.group_of.remove(member);
+        }
+        self.lower_fused_conditionals(&group)
+    }
+
+    /// Issue the scope's demanded calls that `expressions` read, before a
+    /// region over them captures from the scope.
+    ///
+    /// A region cannot lower such a call itself: the scope computes it once,
+    /// and a second lowering inside the region would be a second identity. The
+    /// call is issued at this point, which is its first use in source order
+    /// whenever the region precedes the call's other consumers; the region and
+    /// every later consumer then read the one value.
+    pub(super) fn issue_demanded_calls(
+        &mut self,
+        traversal: &mut dae::ExpressionTraversal<'dae>,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+    ) -> Result<(), solve::SolveProgramConstructionError> {
+        if self.eager.calls.is_empty() {
+            return Ok(());
+        }
+        let mut reached = Vec::new();
+        traversal.visit_pruned(self.view, expressions, |id, _| {
+            if self.cache.contains_key(&id) {
+                return false;
+            }
+            if let Some(ordinal) = self.eager.calls.get(&id) {
+                reached.push((*ordinal, id));
+                return false;
+            }
+            true
+        });
+        reached.sort_unstable();
+        for (_, call) in reached {
+            self.expression(call)?;
         }
         Ok(())
     }

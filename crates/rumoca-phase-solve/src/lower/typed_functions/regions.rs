@@ -6,8 +6,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue,
-    ModelCoordinateKey,
+    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, EagerScope, ExpressionLowerer,
+    LoweredValue, ModelCoordinateKey,
 };
 
 #[derive(Clone)]
@@ -118,7 +118,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
-    lowerer.lower_eager_demand(results.iter().map(|(_, expression)| *expression))?;
+    lowerer.plan_eager_demand(results.iter().map(|(_, expression)| *expression));
     let mut values = Vec::new();
     for (value_type, expression) in results {
         // Publishing at the target's declared type is the same rule the
@@ -249,6 +249,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         next_direct_assertion: 0,
         direct_assertion_count: context.direct_assertion_count,
         totality: HashMap::new(),
+        eager: EagerScope::default(),
     })
 }
 
@@ -267,7 +268,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
-    lowerer.lower_eager_demand(operands.first().copied())?;
+    lowerer.plan_eager_demand(operands.first().copied());
     let value = if let [fallback] = operands.as_slice() {
         lowerer.expression(*fallback)?
     } else {

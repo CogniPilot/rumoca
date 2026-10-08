@@ -215,6 +215,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         // the whole expression arena, so sizing it per root would cost
         // `roots * arena` before either walk touched an operand.
         let mut traversal = dae::ExpressionTraversal::new();
+        self.issue_demanded_calls(&mut traversal, expressions.clone())?;
         for definition in self.pending_definitions(&mut traversal, expressions.clone(), scope)? {
             self.function_definition_value(definition)?;
         }

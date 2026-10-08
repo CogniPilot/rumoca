@@ -6,8 +6,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    ExpressionLowerer, LoweredValue, PureCallRegistry, RegisteredAssertion, arithmetic_profile,
-    lower_primitive_type, lower_value_type_leaves,
+    EagerScope, ExpressionLowerer, LoweredValue, PureCallRegistry, RegisteredAssertion,
+    arithmetic_profile, lower_primitive_type, lower_value_type_leaves,
     model_calls::RegisteredExpressionAssertion,
     model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types},
     regions::{RegionContext, RegionOutput, RegionValues, lower_region_values},
@@ -218,6 +218,7 @@ impl<'dae> PureCallRegistry<'dae> {
                     next_direct_assertion: 0,
                     direct_assertion_count: 0,
                     totality: HashMap::new(),
+                    eager: EagerScope::default(),
                 };
                 let mut values = vec![None; definitions.len()];
                 for clock in &transaction.clock_owners {
@@ -398,7 +399,7 @@ fn activated_assignment_group<'program, 'dae>(
         .iter()
         .map(|&index| definitions[index].value)
         .collect::<Vec<_>>();
-    let pending = lowerer.pending_predicates(expressions.iter().copied());
+    let pending = lowerer.pending_predicates(expressions.iter().copied())?;
     let (mut captures, environment) =
         lowerer.capture_environment_for(expressions.iter().copied())?;
     let fallback_ranges =

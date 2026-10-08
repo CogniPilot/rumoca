@@ -91,24 +91,25 @@ fn cg(r0: &[f64], max_iterations: i64) -> (Vec<f64>, f64) {
     let mut running = rho > 1e-12;
     let mut iterations = 0.0;
     for k in 1..=50 {
-        if running && k <= max_iterations {
-            iterations += 1.0;
-            let p = heavy(&d);
-            let den = dot(&d, &p);
-            if den > 0.0 {
-                let alpha = rho / den;
-                xs = xs.iter().zip(&d).map(|(x, d)| x + alpha * d).collect();
-                r = r.iter().zip(&p).map(|(r, p)| r - alpha * p).collect();
-                let rn = dot(&r, &r);
-                running = rn > 1e-12;
-                if running {
-                    let beta = rn / rho;
-                    d = r.iter().zip(&d).map(|(r, d)| r + beta * d).collect();
-                    rho = rn;
-                }
-            } else {
-                running = false;
-            }
+        if !(running && k <= max_iterations) {
+            continue;
+        }
+        iterations += 1.0;
+        let p = heavy(&d);
+        let den = dot(&d, &p);
+        if den <= 0.0 {
+            running = false;
+            continue;
+        }
+        let alpha = rho / den;
+        xs = xs.iter().zip(&d).map(|(x, d)| x + alpha * d).collect();
+        r = r.iter().zip(&p).map(|(r, p)| r - alpha * p).collect();
+        let rn = dot(&r, &r);
+        running = rn > 1e-12;
+        if running {
+            let beta = rn / rho;
+            d = r.iter().zip(&d).map(|(r, d)| r + beta * d).collect();
+            rho = rn;
         }
     }
     (xs, iterations)

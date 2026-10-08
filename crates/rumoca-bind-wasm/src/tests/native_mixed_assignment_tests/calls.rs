@@ -2,6 +2,7 @@
 mod call_identity;
 mod derived_discrete;
 mod families;
+mod fault_order;
 mod gathers;
 mod lazy_windows;
 mod maps;

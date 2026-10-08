@@ -239,6 +239,7 @@ impl<'dae> OwnerBody<'_, 'dae> {
             next_direct_assertion: 0,
             direct_assertion_count: self.assertion_count,
             totality: HashMap::new(),
+            eager: EagerScope::default(),
         };
         lowerer.statements(function.statements())?;
         for ((definition, value_type), range) in function

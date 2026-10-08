@@ -184,7 +184,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         initial_flat: &mut Vec<solve::ProgramRegister<'program>>,
         provenance: rumoca_core::Span,
     ) -> Result<FoldAssertions, solve::SolveProgramConstructionError> {
-        let slots = self.pending_predicates(transition.update_expressions.iter().copied());
+        let slots = self.pending_predicates(transition.update_expressions.iter().copied())?;
         let start = initial_flat.len();
         let mut kinds = Vec::with_capacity(slots.len());
         for slot in &slots {

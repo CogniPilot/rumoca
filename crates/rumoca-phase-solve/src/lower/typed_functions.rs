@@ -3,6 +3,7 @@
 mod assertions;
 mod captures;
 mod eager_scope;
+use eager_scope::EagerScope;
 mod family_owner;
 mod folds;
 pub(crate) mod formal_stages;
@@ -432,6 +433,8 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     /// Whether each expression evaluates without failure or effect (see
     /// `total_conditionals`).
     totality: HashMap<dae::ExprId<'dae>, bool>,
+    /// Eagerly demanded calls and correlated conditionals not yet issued.
+    eager: EagerScope<'dae>,
 }
 
 impl<'builder, 'program, 'dae> ExpressionLowerer<'builder, 'program, 'dae> {
@@ -461,6 +464,7 @@ impl<'builder, 'program, 'dae> ExpressionLowerer<'builder, 'program, 'dae> {
             next_direct_assertion: 0,
             direct_assertion_count: 0,
             totality: HashMap::new(),
+            eager: EagerScope::default(),
         }
     }
 }
@@ -596,7 +600,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                     ..
                 } => {
                     if !assertion_is_map_independent(self.view, condition)
-                        || !self.pending_predicates([condition]).is_empty()
+                        || !self.pending_predicates([condition])?.is_empty()
                     {
                         return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
                             provenance: provenance.span(),
@@ -692,7 +696,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             return Ok(value);
         }
         let condition = self.expression(operands[0])?.only_register(provenance)?;
-        let pending = self.pending_predicates(operands[1..].iter().copied());
+        let pending = self.pending_predicates(operands[1..].iter().copied())?;
         let mut output_types =
             lower_value_type_leaves(self.view, value_type, arithmetic_profile())?;
         let value_leaf_count = output_types.len();
@@ -840,17 +844,21 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         kind.unselected(self.builder, provenance)
     }
 
+    /// The assertion slots `expressions` would settle that no value in this
+    /// scope settled yet, once the demanded calls among them are issued here
+    /// (a region over `expressions` publishes only the slots still open).
     fn pending_predicates(
-        &self,
-        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
-    ) -> Vec<usize> {
+        &mut self,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>> + Clone,
+    ) -> Result<Vec<usize>, solve::SolveProgramConstructionError> {
+        self.issue_demanded_calls(&mut dae::ExpressionTraversal::new(), expressions.clone())?;
         let mut pending = BTreeSet::new();
         for root in expressions {
             dae::for_each_expression(self.view, root, |_, node| {
                 self.collect_pending_call_predicates(node, &mut pending);
             });
         }
-        pending.into_iter().collect()
+        Ok(pending.into_iter().collect())
     }
 
     fn collect_pending_call_predicates(
@@ -1095,7 +1103,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 .copied()
                 .chain(branches.iter().flatten().copied())
                 .chain(fallback.iter().copied()),
-        );
+        )?;
         let mut value_ranges = Vec::with_capacity(value_types.len());
         let mut value_leaf_count = 0;
         for value_type in value_types {
@@ -1205,11 +1213,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
                 self.binary(node.value_type_id(), operator, lhs, rhs, at)?
             }
-            dae::ExpressionOperation::Conditional(operands) => self.conditional(
-                node.value_type_id(),
-                &operands.iter().collect::<Vec<_>>(),
-                at,
-            )?,
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.lower_group_of(expression)?;
+                if let Some(value) = self.cache.get(&expression).cloned() {
+                    return Ok(value);
+                }
+                self.conditional(
+                    node.value_type_id(),
+                    &operands.iter().collect::<Vec<_>>(),
+                    at,
+                )?
+            }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 self.builtin(node.value_type_id(), builtin, arguments, at)?
             }
@@ -1526,7 +1540,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         domain: rumoca_core::StructuredIndexDomain,
         at: rumoca_core::Span,
     ) -> Result<Vec<solve::ProgramRegister<'program>>, solve::SolveProgramConstructionError> {
-        if !self.pending_predicates([body]).is_empty() {
+        if !self.pending_predicates([body])?.is_empty() {
             return Err(solve::SolveProgramConstructionError::InvalidCallInterface {
                 provenance: at,
             });
