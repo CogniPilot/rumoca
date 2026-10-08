@@ -1752,3 +1752,13 @@ impl<'dae> MergedCaptures<'dae> {
         Ok(base)
     }
 }
+
+/// The worklist of one fold scope scan.
+#[derive(Default)]
+struct FoldScopeScan<'dae> {
+    reads: FoldScopeReads<'dae>,
+    folds: Vec<dae::FunctionFoldId<'dae>>,
+    visited_folds: HashSet<dae::FunctionFoldId<'dae>>,
+    pending: Vec<dae::ExprId<'dae>>,
+    visited: HashSet<dae::ExprId<'dae>>,
+}

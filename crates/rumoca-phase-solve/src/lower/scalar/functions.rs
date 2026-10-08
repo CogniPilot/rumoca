@@ -3926,61 +3926,72 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// The domain binders and carried tuples the update and initial values of
     /// `fold` may read from enclosing folds, through nested folds and the
     /// arguments of the calls in scope.
-    // SPEC_0021: Exception - exhaustive worklist over expression operation variants.
-    #[allow(clippy::excessive_nesting)]
     fn fold_scope_reads(&self, fold: dae::FunctionFoldId<'dae>) -> FoldScopeReads<'dae> {
-        let mut reads = FoldScopeReads::default();
-        let mut pending_folds = vec![fold];
-        let mut visited_folds = HashSet::new();
-        let mut pending = Vec::new();
-        let mut visited = HashSet::new();
-        while !pending_folds.is_empty() || !pending.is_empty() {
-            if let Some(next) = pending_folds.pop() {
-                if !visited_folds.insert(next) {
-                    continue;
-                }
-                if let Some(view) = self.view.function_fold(next) {
-                    pending.extend(view.initial_values().rhs_iter());
-                    pending.extend(view.update_values().rhs_iter());
-                    pending.extend(view.continuation());
-                }
-            }
-            while let Some(root) = pending.pop() {
-                if !visited.insert(root) {
-                    continue;
-                }
-                dae::for_each_expression(self.view, root, |_, expression| {
-                    match expression.operation() {
-                        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(
-                            binder,
-                        )) => {
-                            reads.domains.insert(binder.domain());
-                        }
-                        dae::ExpressionOperation::Coordinate(
-                            dae::CoordinateView::FunctionParameter(parameter),
-                        ) => {
-                            pending.extend(
-                                self.function_arguments
-                                    .iter()
-                                    .rfind(|frame| frame.function == parameter.function())
-                                    .and_then(|frame| {
-                                        frame.arguments.get(parameter.ordinal() as usize)
-                                    })
-                                    .copied(),
-                            );
-                        }
-                        dae::ExpressionOperation::FunctionFoldParameter { fold: read, .. } => {
-                            reads.folds.insert(read);
-                        }
-                        dae::ExpressionOperation::FunctionFoldOutput { fold: nested, .. } => {
-                            pending_folds.push(nested);
-                        }
-                        _ => {}
-                    }
-                });
+        let mut scan = FoldScopeScan::default();
+        scan.folds.push(fold);
+        loop {
+            if let Some(next) = scan.folds.pop() {
+                self.enqueue_fold_expressions(next, &mut scan);
+            } else if let Some(root) = scan.pending.pop() {
+                self.scan_expression_reads(root, &mut scan);
+            } else {
+                return scan.reads;
             }
         }
-        reads
+    }
+
+    /// Queue the initial, update and continuation expressions of a fold not
+    /// scanned before.
+    fn enqueue_fold_expressions(
+        &self,
+        fold: dae::FunctionFoldId<'dae>,
+        scan: &mut FoldScopeScan<'dae>,
+    ) {
+        if !scan.visited_folds.insert(fold) {
+            return;
+        }
+        let Some(view) = self.view.function_fold(fold) else {
+            return;
+        };
+        scan.pending.extend(view.initial_values().rhs_iter());
+        scan.pending.extend(view.update_values().rhs_iter());
+        scan.pending.extend(view.continuation());
+    }
+
+    /// Record what one expression reads from enclosing folds and queue the
+    /// folds and call arguments it reaches.
+    fn scan_expression_reads(&self, root: dae::ExprId<'dae>, scan: &mut FoldScopeScan<'dae>) {
+        if !scan.visited.insert(root) {
+            return;
+        }
+        dae::for_each_expression(self.view, root, |_, expression| {
+            match expression.operation() {
+                dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
+                    scan.reads.domains.insert(binder.domain());
+                }
+                dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                    parameter,
+                )) => scan.pending.extend(self.call_argument(parameter)),
+                dae::ExpressionOperation::FunctionFoldParameter { fold, .. } => {
+                    scan.reads.folds.insert(fold);
+                }
+                dae::ExpressionOperation::FunctionFoldOutput { fold, .. } => scan.folds.push(fold),
+                _ => {}
+            }
+        });
+    }
+
+    /// The argument expression bound to a function parameter in the active
+    /// call frames.
+    fn call_argument(
+        &self,
+        parameter: dae::FunctionParameterId<'dae>,
+    ) -> Option<dae::ExprId<'dae>> {
+        let frame = self
+            .function_arguments
+            .iter()
+            .rfind(|frame| frame.function == parameter.function())?;
+        frame.arguments.get(parameter.ordinal() as usize).copied()
     }
 
     /// The symbolic domain points and active fold tuples that `reads` names,
