@@ -135,3 +135,22 @@ fn only_continuous_real_declarations_of_the_occurrence_are_targets() {
         );
     }
 }
+
+/// A body that issues no row at any domain point (a slice equation over a
+/// zero-size dimension, MLS 3.7 §10.3.1) owns nothing: it is no family, and
+/// neither an owner nor a flatten error.
+#[test]
+fn a_body_issuing_no_rows_at_any_point_is_no_family() {
+    let probe = families(
+        "  parameter Integer n = 0;\n  Real e[2, n];\n  Real f[2, n];\n  Real y[2];",
+        "  for i in 1:2 loop\n    y[i] = x*i;\n    e[i, :] = f[i, :] - x*f[i, :];\n  end for;",
+    );
+    assert_eq!(
+        probe
+            .iter()
+            .map(|(interiors, _)| *interiors)
+            .collect::<Vec<_>>(),
+        [FamilyInteriors::ContinuousAlgebraic],
+        "only the one-row family remains: {probe:?}"
+    );
+}

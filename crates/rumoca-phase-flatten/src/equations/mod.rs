@@ -1169,23 +1169,29 @@ fn expand_for_equation(
     if nested_family_lifted {
         return Ok(result);
     }
-    let Some(equations_per_point) = iterations
+    // Row count per domain point: every point issues the same count, or the
+    // body is mixed. Zero rows at every point (a zero-size array equation,
+    // MLS 3.7 §10.3.1) is uniform and owns nothing, so no family exists.
+    let uniform_rows = iterations
         .first()
-        .map(|iteration| iteration.equation_count)
-        .filter(|count| *count > 0)
+        .map(|first| first.equation_count)
         .filter(|count| {
             iterations
                 .iter()
                 .all(|iteration| iteration.equation_count == *count)
-        })
-    else {
-        if cheapen_plan.is_some() {
-            return Err(FlattenError::unsupported_equation(
-                "cheapened structured equation family has a non-uniform body row count",
-                span,
-            ));
+        });
+    let equations_per_point = match uniform_rows {
+        Some(0) => return Ok(result),
+        Some(count) => count,
+        None => {
+            if cheapen_plan.is_some() {
+                return Err(FlattenError::unsupported_equation(
+                    "cheapened structured equation family has a non-uniform body row count",
+                    span,
+                ));
+            }
+            return Ok(result);
         }
-        return Ok(result);
     };
     // A template is an optional compact rendering/evaluation aid; the emitted
     // scalar rows remain authoritative.  Some source bodies contain equations
