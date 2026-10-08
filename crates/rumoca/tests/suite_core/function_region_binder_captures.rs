@@ -4,7 +4,7 @@
 //! functions follow a corner detector over a circle of samples.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, lower_dae_for_simulation};
+use rumoca_sim::{SimOptions, lower_dae_for_simulation, simulate_dae};
 
 const SOURCE: &str = r#"
 package FastCircleStencil
@@ -133,22 +133,61 @@ algorithm
   s := frame(rgb, 20.0*u);
 end wrap;
 model Frame
+  parameter Real level = 30.0;
   Real x(start = 1.0, fixed = true);
-  input Real rgb[12,12,3] = fill(0.0,12,12,3);
-  output Real s[144];
-  output Real peak;
+  Real s[49];
+  Real peak;
 equation
   der(x) = 0;
-  (s, peak) = wrap(x*rgb, {1.0, 2.0}, x);
+  (s, peak) = wrap(x * {{{if i == 4 and j == 4 then 0.0 else level for k in 1:3} for j in 1:7} for i in 1:7}, {1.0, 2.0}, x);
 end Frame;
+
+model Dim
+  extends Frame(level = 10.0);
+end Dim;
 "#;
 
-#[test]
-fn a_conditional_region_in_a_loop_nest_captures_both_loop_binders() {
-    let compiled = Compiler::new()
-        .model("Frame")
+fn compile(model: &str) -> rumoca::CompilationResult {
+    Compiler::new()
+        .model(model)
         .compile_str(SOURCE, "frame.mo")
-        .expect("the loop nest constructs checked DAE");
-    lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
+        .expect("the loop nest constructs checked DAE")
+}
+
+fn first(simulation: &rumoca_sim::SimResult, name: &str) -> Option<f64> {
+    let variable = simulation
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .unwrap_or_else(|| panic!("{name} is visible"));
+    simulation.data[variable].first().copied()
+}
+
+fn run(model: &str) -> rumoca_sim::SimResult {
+    let compiled = compile(model);
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+    lower_dae_for_simulation(&compiled.dae, &options)
         .expect("the region captures the enclosing binders");
+    simulate_dae(&compiled.dae, &options).expect("the scoring simulates")
+}
+
+#[test]
+fn a_candidate_above_the_floor_scores_its_circle_minimum() {
+    // The only scored pixel is the centre (4, 4), flat 0 inside a ring of 30:
+    // every window of nine circle samples has minimum 30, above the floor 20.
+    let simulation = run("Frame");
+    assert_eq!(first(&simulation, "s[25]"), Some(30.0));
+    assert_eq!(first(&simulation, "s[24]"), Some(0.0));
+    assert_eq!(first(&simulation, "peak"), Some(2.0));
+}
+
+#[test]
+fn a_candidate_below_the_floor_is_not_scored() {
+    // A ring of 10 never reaches the floor 20, so the guarded score is skipped.
+    let simulation = run("Dim");
+    assert_eq!(first(&simulation, "s[25]"), Some(0.0));
 }
