@@ -6,6 +6,7 @@ mod native_program;
 #[cfg(any(target_arch = "wasm32", test))]
 mod private_arena;
 mod private_program;
+mod scratch_report;
 mod typed_call;
 #[cfg(target_arch = "wasm32")]
 mod wasm_runtime;
@@ -15,6 +16,7 @@ pub use native_program::{
     compile_native_assignment_schedule_with_calls_wasm,
 };
 pub use private_program::{CompiledPrivateProgramWasm, compile_private_program_wasm};
+pub use scratch_report::{ScratchCall, ScratchFrame, ScratchOwner, ScratchRegion, ScratchReport};
 #[cfg(target_arch = "wasm32")]
 use wasm_runtime::WasmKernelRuntime;
 

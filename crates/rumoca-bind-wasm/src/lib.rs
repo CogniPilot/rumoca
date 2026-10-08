@@ -14,6 +14,8 @@ mod native_assignment_api;
 #[cfg(feature = "native-assignments")]
 mod native_program_api;
 #[cfg(feature = "native-assignments")]
+mod native_scratch_report;
+#[cfg(feature = "native-assignments")]
 pub use native_assignment_api::prepare_native_assignments;
 #[cfg(feature = "native-assignments")]
 pub use native_program_api::{prepare_native_program, read_native_integer_lane};

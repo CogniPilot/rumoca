@@ -119,6 +119,7 @@ fn emit_with_budget(
     Ok(CompiledNativeCallProgramWasm {
         bytes: module.finish(),
         scratch_bytes: call_plan.bytes,
+        scratch_report: call_plan.scratch_report(helpers.owner_scratch(table)),
         faults,
         gather_faults: gather_faults.entries,
         math_imports: imports.iter().map(|import| import.symbol()).collect(),

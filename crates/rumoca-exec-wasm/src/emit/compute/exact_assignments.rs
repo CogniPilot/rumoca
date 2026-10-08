@@ -87,6 +87,7 @@ fn emit_module_with_storage(
     Ok(CompiledNativeCallProgramWasm {
         bytes: module.finish(),
         scratch_bytes: ready.calls.bytes,
+        scratch_report: ready.scratch_report,
         faults: ready.faults,
         gather_faults,
         math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),

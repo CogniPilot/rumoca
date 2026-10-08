@@ -179,6 +179,7 @@ fn compile_program(
                     _ => "typedLanesPtr:i32",
                 }],
             "result":"status:i32", "success_status":0, "scratch_bytes":compiled.scratch_bytes(),
+            "scratch_report":crate::native_scratch_report::scratch_report_json(compiled.scratch_report()),
             "transactional_y":true,"p_readonly":true,
         }),
         serde_json::json!(compiled.math_imports()),

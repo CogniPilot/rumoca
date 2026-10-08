@@ -41,6 +41,7 @@ impl FramePlan {
         &mut self,
         destinations: &[solve::SolveRegisterId],
         branches: &[Self],
+        base: u32,
     ) {
         // Region slots retain their issued order, including output ordinal.
         let first = branches[0].returned_outputs();
@@ -48,7 +49,13 @@ impl FramePlan {
         for ((destination, (left, left_reusable)), (right, right_reusable)) in
             destinations.iter().zip(first).zip(second)
         {
-            if left != right || left.bytes != self.registers[destination.index()].bytes {
+            // Arm-private ranges are placed at the same base and die with the
+            // operation, so only a range the parent already owns (below `base`)
+            // may become a register of the parent.
+            if left != right
+                || left.bytes != self.registers[destination.index()].bytes
+                || !parent_owned(left, base)
+            {
                 continue;
             }
             self.registers[destination.index()] = left;
@@ -105,4 +112,14 @@ fn interface(
         .filter(|slot| slot.storage() == storage)
         .map(|slot| slot.id())
         .collect()
+}
+
+/// A range a parent body keeps alive: an input span, or scratch below the
+/// base where the operation's private storage starts.
+fn parent_owned(range: super::CellRange, base: u32) -> bool {
+    range.base != 2
+        || range
+            .offset
+            .checked_add(range.bytes)
+            .is_some_and(|end| end <= base)
 }
