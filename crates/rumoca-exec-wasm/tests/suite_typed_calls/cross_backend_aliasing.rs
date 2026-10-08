@@ -5,13 +5,13 @@
 use super::*;
 use rumoca_eval_solve::PureCallInvocation;
 
-const BITS: [f64; 3] = [-0.0, f64::INFINITY, 1.25];
+pub(super) const BITS: [f64; 3] = [-0.0, f64::INFINITY, 1.25];
 
-fn aggregate_type() -> solve::SolveValueType {
+pub(super) fn aggregate_type() -> solve::SolveValueType {
     solve::SolveValueType::tensor(solve::SolveScalarType::real(profile()), vec![3]).unwrap()
 }
 
-fn scalar_type() -> solve::SolveValueType {
+pub(super) fn scalar_type() -> solve::SolveValueType {
     solve::SolveValueType::scalar(solve::SolveScalarType::real(profile()))
 }
 
@@ -87,14 +87,14 @@ fn run_everywhere(table: &solve::SolvePureCallTable, site: &solve::SolvePureCall
     interpreted
 }
 
-fn decode(bytes: &[u8]) -> Vec<u64> {
+pub(super) fn decode(bytes: &[u8]) -> Vec<u64> {
     bytes
         .chunks_exact(8)
         .map(|cell| u64::from_le_bytes(cell.try_into().unwrap()))
         .collect()
 }
 
-fn bits(values: &[f64]) -> Vec<u64> {
+pub(super) fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().map(|value| value.to_bits()).collect()
 }
 
