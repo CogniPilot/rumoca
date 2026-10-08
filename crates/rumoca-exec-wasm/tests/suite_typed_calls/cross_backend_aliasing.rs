@@ -54,7 +54,10 @@ fn inputs() -> Vec<Vec<solve::SolveValueKind>> {
 }
 
 /// The output cells of one program on all three executors, which must agree.
-fn run_everywhere(table: &solve::SolvePureCallTable, site: &solve::SolvePureCallSite) -> Vec<u8> {
+pub(super) fn run_everywhere(
+    table: &solve::SolvePureCallTable,
+    site: &solve::SolvePureCallSite,
+) -> Vec<u8> {
     let input = inputs();
     let interpreted = oracle(table, site, &input).unwrap();
 

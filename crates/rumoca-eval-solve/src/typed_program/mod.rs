@@ -6,8 +6,6 @@ mod tensor;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, hash_map::Entry};
-
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
@@ -319,15 +317,7 @@ fn eval_owner(
     arguments: &[TypedValue],
     chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
-    let mut invocations = InvocationScope::new(table);
-    eval_owner_in_scope(
-        table,
-        owner,
-        arguments,
-        &mut invocations,
-        EvaluationMode::Primal,
-        chain,
-    )
+    eval_owner_in_scope(table, owner, arguments, EvaluationMode::Primal, chain)
 }
 
 fn eval_directional_owner(
@@ -336,22 +326,13 @@ fn eval_directional_owner(
     arguments: &[TypedValue],
     chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
-    let mut invocations = InvocationScope::new(table);
-    eval_owner_in_scope(
-        table,
-        owner,
-        arguments,
-        &mut invocations,
-        EvaluationMode::Directional,
-        chain,
-    )
+    eval_owner_in_scope(table, owner, arguments, EvaluationMode::Directional, chain)
 }
 
 fn eval_owner_in_scope(
     table: &SolvePureCallTable,
     owner: &SolvePureCallOwner,
     arguments: &[TypedValue],
-    invocations: &mut InvocationScope,
     mode: EvaluationMode,
     chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
@@ -374,7 +355,7 @@ fn eval_owner_in_scope(
     };
     validate_arguments(inputs, arguments, owner.provenance())?;
     let mut storage = FrameStorage::default();
-    let mut frame = EvalFrame::new(table, body, invocations, &mut storage, mode, chain);
+    let mut frame = EvalFrame::new(table, body, &mut storage, mode, chain);
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
@@ -395,32 +376,6 @@ fn eval_owner_in_scope(
                 })
         })
         .collect()
-}
-
-#[cfg(test)]
-fn eval_pure_call_with_invocation_counts(
-    table: &SolvePureCallTable,
-    owner: SolvePureCallOwnerId,
-    arguments: &[TypedValue],
-) -> Result<(Vec<TypedValue>, Vec<u32>), TypedProgramEvalError> {
-    let owner = table
-        .owner(owner)
-        .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-    let mut invocations = InvocationScope::new(table);
-    let outputs = eval_owner_in_scope(
-        table,
-        owner,
-        arguments,
-        &mut invocations,
-        EvaluationMode::Primal,
-        RecursionChain::ROOT,
-    )?;
-    let counts = table
-        .owners()
-        .iter()
-        .map(|owner| invocations.misses.get(&owner.id()).copied().unwrap_or(0))
-        .collect();
-    Ok((outputs, counts))
 }
 
 fn validate_arguments(
@@ -447,7 +402,6 @@ fn eval_region(
     region: &SolveProgramRegion,
     arguments: Vec<TypedValue>,
     storage: &mut FrameStorage,
-    invocations: &mut InvocationScope,
     mode: EvaluationMode,
     chain: RecursionChain,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
@@ -463,7 +417,7 @@ fn eval_region(
             provenance: region.provenance(),
         });
     }
-    let mut frame = EvalFrame::new(table, region.body(), invocations, storage, mode, chain);
+    let mut frame = EvalFrame::new(table, region.body(), storage, mode, chain);
     let output_start = arguments.len();
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value);
@@ -506,62 +460,9 @@ impl FrameStorage {
     }
 }
 
-/// Results already issued in one exact function/domain invocation.
-///
-/// Conditional regions inherit this scope because they are lazy projections
-/// of the same sequential function invocation. A compact `Map` or `Fold`
-/// creates one fresh scope per domain point because its binder values are part
-/// of the invocation coordinate.
-/// Only executed calls occupy result storage; unrelated model owners require
-/// no slots, including in leaf calls and per-coordinate loop scopes.
-struct InvocationScope {
-    owner_count: usize,
-    calls: HashMap<SolvePureCallOwnerId, Vec<TypedValue>>,
-    #[cfg(test)]
-    misses: HashMap<SolvePureCallOwnerId, u32>,
-}
-
-impl InvocationScope {
-    fn new(table: &SolvePureCallTable) -> Self {
-        Self {
-            owner_count: table.owners().len(),
-            calls: HashMap::new(),
-            #[cfg(test)]
-            misses: HashMap::new(),
-        }
-    }
-
-    fn get(&self, owner: SolvePureCallOwnerId) -> Option<&[TypedValue]> {
-        self.calls.get(&owner).map(Vec::as_slice)
-    }
-
-    fn insert(
-        &mut self,
-        owner: SolvePureCallOwnerId,
-        values: Vec<TypedValue>,
-        provenance: Span,
-    ) -> Result<(), TypedProgramEvalError> {
-        if owner.index() as usize >= self.owner_count {
-            return Err(TypedProgramEvalError::UnknownOwner { owner });
-        }
-        match self.calls.entry(owner) {
-            Entry::Vacant(destination) => {
-                destination.insert(values);
-            }
-            Entry::Occupied(_) => return invalid("redefine pure-call invocation", provenance),
-        }
-        #[cfg(test)]
-        {
-            *self.misses.entry(owner).or_default() += 1;
-        }
-        Ok(())
-    }
-}
-
 struct EvalFrame<'model, 'scope> {
     table: &'model SolvePureCallTable,
     program: &'model TypedProgram,
-    invocations: &'scope mut InvocationScope,
     mode: EvaluationMode,
     chain: RecursionChain,
     storage: &'scope mut FrameStorage,
@@ -573,7 +474,6 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     fn new(
         table: &'model SolvePureCallTable,
         program: &'model TypedProgram,
-        invocations: &'scope mut InvocationScope,
         storage: &'scope mut FrameStorage,
         mode: EvaluationMode,
         chain: RecursionChain,
@@ -582,7 +482,6 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         Self {
             table,
             program,
-            invocations,
             mode,
             chain,
             storage,
@@ -893,13 +792,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                     .map(|value| self.fold_binder(value, provenance))
                     .collect::<Result<Vec<_>, _>>()?,
             );
-            let mut iteration = InvocationScope::new(self.table);
             carried = eval_region(
                 self.table,
                 transition,
                 arguments,
                 &mut storage,
-                &mut iteration,
                 self.mode,
                 self.chain,
             )?;
@@ -924,13 +821,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     ) -> Result<bool, TypedProgramEvalError> {
         let mut arguments = carried.to_vec();
         arguments.extend(captures.iter().cloned());
-        let mut scope = InvocationScope::new(self.table);
         let predicate = eval_region(
             self.table,
             continuation,
             arguments,
             &mut FrameStorage::default(),
-            &mut scope,
             self.mode,
             self.chain,
         )?;
@@ -967,13 +862,11 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                     .map(|value| self.fold_binder(value, provenance))
                     .collect::<Result<Vec<_>, _>>()?,
             );
-            let mut iteration = InvocationScope::new(self.table);
             let outputs = eval_region(
                 self.table,
                 body,
                 arguments,
                 &mut storage,
-                &mut iteration,
                 self.mode,
                 self.chain,
             )?;
@@ -1021,7 +914,6 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             selected,
             captures,
             &mut FrameStorage::default(),
-            self.invocations,
             self.mode,
             self.chain,
         )?;
@@ -1288,9 +1180,6 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         destinations: &[SolveRegisterId],
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
-        if let Some(outputs) = self.invocations.get(owner).map(<[TypedValue]>::to_vec) {
-            return self.transfer_call_outputs(outputs, destinations, provenance);
-        }
         let arguments = arguments
             .iter()
             .map(|argument| self.read(*argument, provenance).cloned())
@@ -1306,8 +1195,6 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 eval_directional_owner(self.table, called, &arguments, chain)?
             }
         };
-        self.invocations
-            .insert(owner, outputs.clone(), provenance)?;
         self.transfer_call_outputs(outputs, destinations, provenance)
     }
 
