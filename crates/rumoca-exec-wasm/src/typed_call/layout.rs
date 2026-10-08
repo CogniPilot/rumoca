@@ -1,5 +1,6 @@
 mod lifetimes;
 mod outputs;
+mod relocate;
 mod report;
 use super::TypedCallCompileError;
 use lifetimes::Lifetimes;
@@ -47,6 +48,10 @@ pub(super) struct FramePlan {
     pub counter: CellRange,
     pub calls: Vec<Option<CallFrame>>,
     output_slots: Vec<usize>,
+    /// Whether each slot already has its storage; a region places an output
+    /// slot where the body first accesses it (see `place_output`).
+    placed: Vec<bool>,
+    output_policy: OutputPolicy,
     slot_reusable: Vec<bool>,
     register_reusable: Vec<bool>,
     lifetimes: Lifetimes,
@@ -88,6 +93,8 @@ impl FramePlan {
             },
             calls: Vec::new(),
             output_slots: Vec::new(),
+            placed: Vec::new(),
+            output_policy: OutputPolicy::Returned,
             slot_reusable: Vec::new(),
             register_reusable: Vec::new(),
             lifetimes: Lifetimes::default(),
@@ -136,6 +143,7 @@ impl FramePlan {
                 plan.output_slots.push(plan.slots.len());
             }
             plan.slots.push(range);
+            plan.placed.push(true);
             plan.slot_reusable.push(false);
         }
         plan.plan_regions(program, callees)?;
@@ -152,6 +160,7 @@ impl FramePlan {
         output_policy: OutputPolicy,
     ) -> Result<Self, TypedCallCompileError> {
         let mut plan = Self::at(base);
+        plan.output_policy = output_policy;
         let mut input_index = 0;
         for slot in program.slots() {
             let count = bytes(slot.value_type())?;
@@ -164,16 +173,25 @@ impl FramePlan {
             } else {
                 None
             };
+            let output = slot.storage() == solve::SolveStorageClass::Output;
             let range = match borrowed {
                 Some(borrow) => checked_capture(slot, borrow.range, count, base)?,
+                // An output slot is placed at its first access, so a completed
+                // return can take its source's range without a dead span.
+                None if output => CellRange {
+                    base: 2,
+                    offset: base,
+                    bytes: count,
+                },
                 None => {
                     advance(&mut plan.slot_bytes, count)?;
                     plan.keep(count)?
                 }
             };
-            if slot.storage() == solve::SolveStorageClass::Output {
+            if output {
                 plan.output_slots.push(plan.slots.len());
             }
+            plan.placed.push(!output);
             plan.slots.push(range);
             plan.slot_reusable
                 .push(borrowed.is_some_and(|borrow| borrow.reusable));
@@ -182,7 +200,6 @@ impl FramePlan {
             return Err(TypedCallCompileError::SizeLimit);
         }
         plan.plan_regions(program, callees)?;
-        plan.borrow_completed_outputs(program, output_policy);
         Ok(plan)
     }
 
@@ -193,15 +210,19 @@ impl FramePlan {
     ) -> Result<(), TypedCallCompileError> {
         self.lifetimes = Lifetimes::construct(program, &self.slots);
         for (index, operation) in program.operations().iter().enumerate() {
+            self.place_accessed_output(program, operation.operation())?;
             self.plan_operation_registers(program, index, operation.operation())?;
             // Every register is below `base`; nothing the operation places at
             // or above it outlives the operation.
             let base = self.cursor;
             let (regions, call, top) =
-                self.plan_private_storage(index, operation.operation(), base, callees)?;
+                self.plan_private_storage(program, index, operation.operation(), base, callees)?;
             self.scratch_bytes = self.scratch_bytes.max(top);
             self.regions.push(regions);
             self.calls.push(call);
+        }
+        for slot in 0..self.slots.len() {
+            self.place_output(program, slot, None)?;
         }
         Ok(())
     }
@@ -210,6 +231,7 @@ impl FramePlan {
     /// from `base`, and the end of that storage.
     fn plan_private_storage(
         &mut self,
+        program: &solve::TypedProgram,
         index: usize,
         operation: &solve::SolveOperation,
         base: u32,
@@ -224,16 +246,15 @@ impl FramePlan {
                 ..
             } => {
                 let borrows = self.conditional_borrows(index, captures);
-                let mut top = base;
                 let mut arms = Vec::new();
                 for arm in [if_true, if_false] {
                     let arm =
                         Self::region(arm.body(), base, callees, &borrows, OutputPolicy::Returned)?;
-                    top = top.max(arm.scratch_bytes);
                     self.adopt(arm.unshared_bytes)?;
                     arms.push(arm);
                 }
-                self.borrow_conditional_results(destinations, &arms, base);
+                self.place_conditional_results(program, destinations, &mut arms, base)?;
+                let top = arms.iter().map(|arm| arm.scratch_bytes).fold(base, u32::max);
                 Ok((arms, None, top))
             }
             solve::SolveOperation::Map {
@@ -279,9 +300,12 @@ impl FramePlan {
                 // A bounded `while` predicate reads copies of the tuple and the
                 // captures and returns one Boolean; it runs between iterations,
                 // so it cannot share the transition's storage.
-                let inputs = destinations.len() + captures.len();
-                let predicate =
-                    self.plan_fold_predicate(continuation.as_deref(), top, inputs, callees)?;
+                let predicate = self.plan_fold_predicate(
+                    continuation.as_deref(),
+                    top,
+                    (destinations, captures),
+                    callees,
+                )?;
                 if let Some(predicate) = predicate {
                     top = predicate.scratch_bytes;
                     self.adopt(predicate.unshared_bytes)?;
@@ -309,23 +333,26 @@ impl FramePlan {
         }
     }
 
-    /// A bounded `while` fold's predicate reads copies of the carried tuple
-    /// and the captures and returns one Boolean.
+    /// A bounded `while` fold's predicate reads the carried tuple and the
+    /// captures, which stay unchanged while it runs, and returns one Boolean.
+    /// Both are borrowed from the parent, never copied into the predicate.
     fn plan_fold_predicate(
         &self,
         predicate: Option<&solve::SolveProgramRegion>,
         base: u32,
-        inputs: usize,
+        (carried, captures): (&[solve::SolveRegisterId], &[solve::SolveRegisterId]),
         callees: &[Option<Self>],
     ) -> Result<Option<Self>, TypedCallCompileError> {
         let Some(predicate) = predicate else {
             return Ok(None);
         };
+        let mut borrows = self.capture_borrows(carried, false);
+        borrows.extend(self.capture_borrows(captures, false));
         Self::region(
             predicate.body(),
             base,
             callees,
-            &vec![None; inputs],
+            &borrows,
             OutputPolicy::Returned,
         )
         .map(Some)
@@ -397,6 +424,10 @@ impl FramePlan {
         index: usize,
         operation: &solve::SolveOperation,
     ) -> Result<(), TypedCallCompileError> {
+        // A conditional places its results after its arms are planned.
+        if matches!(operation, solve::SolveOperation::Conditional { .. }) {
+            return Ok(());
+        }
         let mut destinations = Vec::new();
         operation.visit_output_registers(|r| destinations.push(r));
         for destination in destinations {
@@ -428,6 +459,53 @@ impl FramePlan {
         .then_some(source)
     }
 
+    /// Storage of a register that owns its value to the end of the body.
+    fn fresh_register(&mut self, count: u32) -> Result<CellRange, TypedCallCompileError> {
+        advance(&mut self.register_bytes, count)?;
+        self.register_count += 1;
+        self.largest_register = self.largest_register.max(count);
+        self.keep(count)
+    }
+
+    /// Checked SSA construction defines registers in their issuance order.
+    fn push_register(
+        &mut self,
+        destination: solve::SolveRegisterId,
+        range: CellRange,
+    ) -> Result<(), TypedCallCompileError> {
+        if destination.index() != self.registers.len() {
+            return Err(TypedCallCompileError::SizeLimit);
+        }
+        self.registers.push(range);
+        Ok(())
+    }
+
+    /// The range a fold's carried value `ordinal` is rewritten in: its initial
+    /// value's own storage when the fold is that value's last read and
+    /// neither a capture nor another carried value shares it.
+    fn consumed_initial(
+        &self,
+        index: usize,
+        initial: &[solve::SolveRegisterId],
+        captures: &[solve::SolveRegisterId],
+        ordinal: usize,
+        count: u32,
+    ) -> Option<CellRange> {
+        let source = *initial.get(ordinal)?;
+        let listed_once = initial.iter().filter(|register| **register == source).count() == 1
+            && !captures.contains(&source);
+        let range = self.registers[source.index()];
+        (listed_once
+            && range.bytes == count
+            && self.lifetimes.can_consume(
+                index,
+                source,
+                &self.registers,
+                &self.register_reusable,
+            ))
+        .then_some(range)
+    }
+
     fn plan_register(
         &mut self,
         program: &solve::TypedProgram,
@@ -454,22 +532,24 @@ impl FramePlan {
             | solve::SolveOperation::UpdateView {
                 aggregate, value, ..
             } => self.consumed_update(index, *aggregate, Some(*value), count),
+            // A carried value whose initial value nothing reads afterwards is
+            // rewritten in the initial value's own storage (SOLVE-C71).
+            solve::SolveOperation::Fold {
+                initial,
+                captures,
+                destinations,
+                ..
+            } => destinations
+                .iter()
+                .position(|carried| *carried == destination)
+                .and_then(|ordinal| self.consumed_initial(index, initial, captures, ordinal, count)),
             _ => None,
         };
         let range = match alias {
             Some(range) => range,
-            None => {
-                advance(&mut self.register_bytes, count)?;
-                self.register_count += 1;
-                self.largest_register = self.largest_register.max(count);
-                self.keep(count)?
-            }
+            None => self.fresh_register(count)?,
         };
-        // Checked SSA construction defines registers in their issuance order.
-        if destination.index() != self.registers.len() {
-            return Err(TypedCallCompileError::SizeLimit);
-        }
-        self.registers.push(range);
+        self.push_register(destination, range)?;
         self.register_reusable.push(match operation {
             solve::SolveOperation::Load { slot, .. }
                 if program.slots()[slot.index()].storage() == solve::SolveStorageClass::Input =>
@@ -505,14 +585,14 @@ fn checked_capture(
     Ok(range)
 }
 
-fn bytes(value_type: &solve::SolveValueType) -> Result<u32, TypedCallCompileError> {
+pub(super) fn bytes(value_type: &solve::SolveValueType) -> Result<u32, TypedCallCompileError> {
     value_type
         .scalar_count()
         .checked_mul(8)
         .ok_or(TypedCallCompileError::SizeLimit)
 }
 
-fn advance(cursor: &mut u32, count: u32) -> Result<(), TypedCallCompileError> {
+pub(super) fn advance(cursor: &mut u32, count: u32) -> Result<(), TypedCallCompileError> {
     *cursor = cursor
         .checked_add(count)
         .ok_or(TypedCallCompileError::SizeLimit)?;
