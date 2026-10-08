@@ -255,7 +255,7 @@ impl GuardFacts {
             for binder in &binders {
                 pass.forget(binder);
             }
-            pass.path = conjoin(pass.path, Some(binder_facts.clone()));
+            pass.path = conjoin(pass.path, Some(binder_facts.clone().into()));
             pass.after_sequence(body, scope);
             for binder in &binders {
                 pass.forget(binder);
@@ -437,7 +437,7 @@ impl GuardFacts {
         if facts.is_empty() {
             return;
         }
-        self.path = conjoin(self.path.take(), Some(facts));
+        self.path = conjoin(self.path.take(), Some(facts.into()));
         if self.path.is_none() {
             self.selections.clear();
         }
