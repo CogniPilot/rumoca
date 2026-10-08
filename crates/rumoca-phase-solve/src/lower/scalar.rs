@@ -1231,6 +1231,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     return self.pack_expression(alias);
                 }
             }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                if let Some(operand) = self.identity_operand_aggregate(operator, lhs, rhs) {
+                    return self.pack_expression(operand);
+                }
+            }
             _ => {}
         }
         let count = scalar_count(self.view, expression);
