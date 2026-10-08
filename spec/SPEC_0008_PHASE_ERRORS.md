@@ -143,7 +143,7 @@ Error codes use mnemonic prefixes for readability:
 | EM0xx | class merge | **M**erge | Class-tree merge errors |
 | ES0xx | structural | **S**tructural | Matching/BLT/singularity (`ES001`-`ES002` warnings, `ES01x` errors) |
 | EL0xx | solve lowering | so**L**ve | DAE → Solve-IR lowering (`EL001`-`EL011` rows, `EL02x` assembly, `EL03x` overrides) |
-| EX0xx | sim runtime | e**X**ecution | Solver, runtime preparation, overrides, singular mode, session protocol `EX010`-`EX012` |
+| EX0xx | sim runtime | e**X**ecution | Solver, runtime-preparation, overrides, singular-mode, session-protocol `EX010`-`EX012` |
 | WX0xx | sim runtime | e**X**ecution | Non-aborting diagnostics: `WX001` warning assertion (§8.3.7), `WX002` terminal print (§12.9) |
 | EG0xx | GALEC IR | **G**ALEC | GALEC IR parse/validation errors |
 | EGT0xx | GALEC target projection | **G**ALEC **T**arget | DAE-to-GALEC projection/export errors |
