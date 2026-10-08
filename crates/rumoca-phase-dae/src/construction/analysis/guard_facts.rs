@@ -32,12 +32,14 @@
 //! branch. They never select a branch or fold a value.
 
 mod intervals;
+mod path_set;
 mod selections;
 #[cfg(test)]
 mod tests;
 mod transfer;
 
 use super::*;
+pub(super) use path_set::UndefinedPaths;
 use rumoca_core::{IntegerInterval, RealInterval};
 use selections::{ArmValue, Selection};
 use std::collections::BTreeMap;
@@ -143,6 +145,9 @@ fn named_access(expression: &Expression) -> Option<(&VarName, &[Subscript])> {
         _ => None,
     }
 }
+
+/// How many Booleans deep a selection follows what its arms prove.
+const MAX_IMPLICATION_DEPTH: usize = 8;
 
 /// Facts that hold on one path: a fact per subject. `None` is an unreachable
 /// path, where every fact holds.
@@ -319,7 +324,7 @@ impl GuardFacts {
         let selection = self
             .selection_of(&subject, value, scope)
             .map(|mut selection| {
-                selection.for_each_arm(|facts| forget_in(facts, &target));
+                selection.forget_name(&target);
                 selection
             });
         self.forget(&target);
@@ -375,7 +380,7 @@ impl GuardFacts {
         forget_in(&mut self.path, name);
         self.selections.remove(name);
         for selection in self.selections.values_mut() {
-            selection.for_each_arm(|facts| forget_in(facts, name));
+            selection.forget_name(name);
         }
     }
 
@@ -413,12 +418,7 @@ impl GuardFacts {
             Expression::Binary { op, lhs, rhs, .. } => self.comparison(op, lhs, rhs, value, scope),
             Expression::VarRef {
                 name, subscripts, ..
-            } if subscripts.is_empty() => self
-                .selections
-                .get(name.var_name())
-                .map_or(Some(BTreeMap::new()), |selection| {
-                    selection.facts_when(|arm| arm.is_boolean(value))
-                }),
+            } if subscripts.is_empty() => self.boolean_facts(name.var_name(), value, 0),
             _ => Some(BTreeMap::new()),
         }
     }
@@ -519,6 +519,42 @@ impl GuardFacts {
         Some(facts)
     }
 
+    /// The facts that hold where the Boolean `name` has `value`: those of the
+    /// arms of its selection that store it, and what each such arm proves of
+    /// other Booleans.
+    fn boolean_facts(&self, name: &VarName, value: bool, depth: usize) -> PathFacts {
+        let Some(selection) = self.selections.get(name) else {
+            return Some(BTreeMap::new());
+        };
+        selection
+            .arms_when(|arm| arm.is_boolean(value))
+            .fold(None, |joined, (facts, implied)| {
+                let mut arm = facts.clone();
+                if depth < MAX_IMPLICATION_DEPTH {
+                    for (other, holds) in implied {
+                        arm = conjoin(arm, self.boolean_facts(other, *holds, depth + 1));
+                    }
+                }
+                disjoin(joined, arm)
+            })
+    }
+
+    /// Keep only the arms of the Boolean `name` that store `value`, and narrow
+    /// the Booleans every remaining arm proves.
+    fn narrow_boolean(&mut self, name: &VarName, value: bool, depth: usize) {
+        let selection = self
+            .selections
+            .entry(name.clone())
+            .or_insert_with(Selection::booleans);
+        selection.retain(|arm| arm.is_boolean(value));
+        if depth >= MAX_IMPLICATION_DEPTH {
+            return;
+        }
+        for (other, holds) in selection.implied_when(|arm| arm.is_boolean(value)) {
+            self.narrow_boolean(&other, holds, depth + 1);
+        }
+    }
+
     /// Keep only the arms of a selection that `condition` having `value`
     /// admits: a Boolean read directly, or a relation with a literal.
     fn narrow_selections(&mut self, condition: &Expression, value: bool) {
@@ -539,12 +575,7 @@ impl GuardFacts {
             }
             Expression::VarRef {
                 name, subscripts, ..
-            } if subscripts.is_empty() => {
-                self.selections
-                    .entry(name.var_name().clone())
-                    .or_insert_with(Selection::booleans)
-                    .retain(|arm| arm.is_boolean(value));
-            }
+            } if subscripts.is_empty() => self.narrow_boolean(name.var_name(), value, 0),
             Expression::Binary { op, lhs, rhs, .. } => {
                 let Some(relation) = Relation::of(op) else {
                     return;
