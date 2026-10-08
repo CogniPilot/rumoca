@@ -872,10 +872,24 @@ pub fn validate_solve_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    validate_solve_target_capabilities_with_calls(solve, None, manifest, capabilities)
+}
+
+/// [`validate_solve_target_capabilities`] for a renderer that receives the
+/// model's pure-call owners from the same Solve lowering
+/// (`SolveTemplateRenderer::new_owned_with_dae_and_calls`): a scalar target
+/// then inlines `PureCall` ops, so programs holding them stay renderable.
+pub fn validate_solve_target_capabilities_with_calls(
+    solve: &rumoca_ir_solve::SolveProblem,
+    pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
     solve.validate()?;
     if capabilities.residual_equations != Some(true)
         && solve_requires_residual_equations(
             solve,
+            pure_calls,
             capabilities.exact_algebraic_assignments,
             capabilities.algebraic_projection,
         )
@@ -894,7 +908,7 @@ pub fn validate_solve_target_capabilities(
     // assignments into parameter and state slots.
     let parameter_only_initialization = manifest.ir == TargetTemplateIr::Solve
         && capabilities.parameter_initialization == Some(true)
-        && rumoca_phase_codegen::explicit_initialization_renderable(solve);
+        && rumoca_phase_codegen::explicit_initialization_renderable_with_calls(solve, pure_calls);
     if capabilities.initialization == Some(false)
         && !supports_parameter_initialization(manifest, capabilities)
         && !parameter_only_initialization

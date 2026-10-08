@@ -14,6 +14,7 @@ use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
     TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
     validate_flat_target_capabilities, validate_solve_target_capabilities,
+    validate_solve_target_capabilities_with_calls,
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
@@ -674,9 +675,17 @@ fn validate_target_requirements(
                 validated.fmi_component = Some(component);
                 return Ok(validated);
             }
-            let solve = rumoca_sim::lower_solve_problem(&result.dae)
+            // The renderer inlines pure calls from the owners lowered with
+            // the problem (`build_solve_template_renderer`), so the gate reads
+            // the same pair.
+            let solve = rumoca_sim::lower_solve_package(&result.dae)
                 .context("Lower Solve IR for target capability validation")?;
-            validate_solve_target_capabilities(&solve, manifest, capabilities)?;
+            validate_solve_target_capabilities_with_calls(
+                &solve.problem,
+                Some(&solve.pure_calls),
+                manifest,
+                capabilities,
+            )?;
         }
         // A Flat template that declares a `[capabilities]` table is held to
         // it: `events` / `algorithms` declared unsupported refuse a model whose

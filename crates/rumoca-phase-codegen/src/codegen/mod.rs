@@ -34,6 +34,7 @@ mod me_projection;
 #[cfg(test)]
 mod native_scalar_laziness_tests;
 mod pure_call_families;
+mod pure_call_inlining;
 mod real_extremum;
 mod render_expr;
 mod render_solve;
@@ -76,7 +77,10 @@ use symbol_alloc::{
 };
 
 pub use me_projection::me_refresh_admissible;
-pub use solve_lazy::{explicit_algebraic_assignment_complete, explicit_initialization_renderable};
+pub use solve_lazy::{
+    explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls,
+    explicit_initialization_renderable, explicit_initialization_renderable_with_calls,
+};
 
 /// Result type for internal render functions.
 pub(crate) type RenderResult = Result<String, minijinja::Error>;
@@ -258,6 +262,7 @@ fn render_solve_context(
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Value, CodegenError> {
     Ok(minijinja::context! {
         continuous => minijinja::context! {
@@ -267,14 +272,14 @@ fn solve_template_blocks_value(
             // The same rows with single-lane tensor register ops lowered to
             // scalar ops, for templates that render scalar ops only. Absent
             // (none) when a program holds an op no scalar template renders.
-            derivative_rhs_scalar => match solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs)? {
+            derivative_rhs_scalar => match solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs, pure_calls)? {
                 Some(block) => solve_template_compute_block_json(&block)?,
                 None => Value::from(()),
             },
             // Exact algebraic refresh for pure-RHS targets: render before
             // `derivative_rhs` so every algebraic `y` slot it reads is set.
             // Absent (none) unless every algebraic slot has an exact assignment.
-            algebraic_assignments => match solve_lazy::explicit_algebraic_assignment_block(solve_problem)? {
+            algebraic_assignments => match solve_lazy::explicit_algebraic_assignment_block(solve_problem, pure_calls)? {
                 Some(block) => solve_template_compute_block_json(&block)?,
                 None => Value::from(()),
             },
@@ -283,13 +288,13 @@ fn solve_template_blocks_value(
         // parameters such as a weight matrix built from other parameters) for
         // targets without an initialization solver: render as
         // `init_params(p)`. Absent (none) when there are none.
-        parameter_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::Parameters)? {
+        parameter_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::Parameters, pure_calls)? {
             Some(block) => solve_template_compute_block_json(&block)?,
             None => Value::from(()),
         },
         // Explicit state starts computed from parameters, rendered as
         // `init_state(p)`; absent (none) when there are none.
-        state_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::States)? {
+        state_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::States, pure_calls)? {
             Some(block) => solve_template_compute_block_json(&block)?,
             None => Value::from(()),
         },

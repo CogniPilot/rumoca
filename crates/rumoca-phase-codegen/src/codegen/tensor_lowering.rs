@@ -8,6 +8,9 @@
 //! register range, so expansion writes the same registers the aggregate would;
 //! reductions use fresh registers above every register the program defines.
 //!
+//! A `PureCall` is inlined from its owner body when the caller supplies the
+//! model's pure-call table (`pure_call_inlining`).
+//!
 //! Only primal (`lanes == 1`) ops are lowered. Any other op that a scalar
 //! template cannot render (AD lanes, concatenation, patches, tables, random
 //! numbers) makes the whole program unlowerable, so the caller can refuse the
@@ -35,12 +38,13 @@ fn is_scalar_op(op: &LinearOp) -> bool {
     )
 }
 
-struct Lowering {
+struct Lowering<'a> {
     out: Vec<LinearOp>,
     next: Reg,
+    pure_calls: Option<&'a rumoca_ir_solve::SolvePureCallTable>,
 }
 
-impl Lowering {
+impl Lowering<'_> {
     fn fresh(&mut self) -> Option<Reg> {
         let reg = self.next;
         self.next = self.next.checked_add(1)?;
@@ -290,6 +294,16 @@ impl Lowering {
                 rhs_start,
                 lanes: 1,
             } => self.cross(*dst_start, *lhs_start, *rhs_start)?,
+            LinearOp::PureCall {
+                dst_start,
+                input_starts,
+                site,
+            } => super::pure_call_inlining::Inliner::new(
+                self.pure_calls?,
+                &mut self.out,
+                &mut self.next,
+            )
+            .call_site(*dst_start, input_starts, site)?,
             _ => return None,
         }
         Some(())
@@ -298,7 +312,13 @@ impl Lowering {
 
 /// The scalar expansion of `program`, or `None` when it contains an op no
 /// scalar template can render.
-pub(super) fn lower_tensor_ops(program: &[LinearOp]) -> Option<Vec<LinearOp>> {
+///
+/// Each `PureCall` is inlined from `pure_calls`; without a table, a program
+/// holding one is unlowerable.
+pub(super) fn lower_tensor_ops(
+    program: &[LinearOp],
+    pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
+) -> Option<Vec<LinearOp>> {
     if program.iter().all(is_scalar_op) {
         return Some(program.to_vec());
     }
@@ -313,6 +333,7 @@ pub(super) fn lower_tensor_ops(program: &[LinearOp]) -> Option<Vec<LinearOp>> {
     let mut lowering = Lowering {
         out: Vec::with_capacity(program.len()),
         next,
+        pure_calls,
     };
     for op in program {
         lowering.lower(op)?;
@@ -346,7 +367,7 @@ mod tests {
             LinearOp::StoreOutput { src: 6 },
             LinearOp::StoreOutput { src: 7 },
         ];
-        let lowered = lower_tensor_ops(&program).expect("primal matmul lowers");
+        let lowered = lower_tensor_ops(&program, None).expect("primal matmul lowers");
         assert!(lowered.iter().all(is_scalar_op));
         let mut regs = std::collections::HashMap::new();
         let mut outputs = Vec::new();
@@ -382,6 +403,6 @@ mod tests {
             seed_start: None,
             lanes: 2,
         }];
-        assert!(lower_tensor_ops(&program).is_none());
+        assert!(lower_tensor_ops(&program, None).is_none());
     }
 }

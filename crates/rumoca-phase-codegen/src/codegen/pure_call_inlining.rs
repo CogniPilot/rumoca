@@ -1,0 +1,1171 @@
+//! Inline compiler-issued pure calls as straight-line scalar ops.
+//!
+//! Solve lowering may issue one `PureCall` for a function call or for a
+//! compacted algebraic family (SPEC_0043 §6c), whose body is a checked
+//! [`solve::TypedProgram`]. The scalar ODE right-hand-side templates render
+//! only scalar ops, so a call is expanded here into the equivalent scalar
+//! sequence: every typed register becomes its row-major elements, maps and
+//! folds are unrolled over their compact domains, and nested calls are inlined.
+//!
+//! An element is either a runtime register or a value known at expansion
+//! time. Loop binders are known, so integer index arithmetic over them folds
+//! and a run-time subscript resolves to one static element. Only index-like
+//! arithmetic (integer and Boolean operations, comparisons, rounding) folds;
+//! every other operation is emitted for the target runtime, so a constant
+//! transcendental expression evaluates where it always did.
+//!
+//! The semantics mirror the reference evaluator (`rumoca-eval-solve`
+//! `typed_program`). Anything that cannot be expanded faithfully — a subscript
+//! that stays a runtime value, a runtime `while` predicate, a linear solve, a
+//! native body, an assertion output, or an expansion past the op budget —
+//! makes the whole call unexpandable, so the caller refuses the model at the
+//! capability gate instead of emitting a different function.
+
+use rumoca_ir_solve as solve;
+use solve::{
+    BinaryOp, CompareOp, LinearOp, Reg, SolveBinaryOperator, SolveCompareOperator,
+    SolveConversionOperator, SolveOperation, SolveProgramRegion, SolvePureCallOutputKind,
+    SolvePureCallOwnerId, SolveReductionOperator, SolveRegisterId, SolveTensorViewAxis,
+    SolveUnaryOperator, SolveValueKind, TypedProgram, UnaryOp,
+};
+
+/// Ops one model's inlined calls may emit before the expansion is refused.
+const OP_BUDGET: usize = 4_000_000;
+/// Nested call depth before a (recursive) call is refused.
+const CALL_DEPTH: usize = 64;
+
+#[derive(Clone, Copy)]
+enum Elem {
+    Reg(Reg),
+    Num(f64),
+}
+
+#[derive(Clone)]
+struct Val {
+    dims: Vec<u32>,
+    elems: Vec<Elem>,
+}
+
+impl Val {
+    fn scalar(elem: Elem) -> Self {
+        Self {
+            dims: Vec::new(),
+            elems: vec![elem],
+        }
+    }
+
+    fn one(&self) -> Option<Elem> {
+        match self.elems.as_slice() {
+            [elem] => Some(*elem),
+            _ => None,
+        }
+    }
+}
+
+pub(super) struct Inliner<'a> {
+    table: &'a solve::SolvePureCallTable,
+    out: &'a mut Vec<LinearOp>,
+    next: &'a mut Reg,
+    depth: usize,
+    /// Inside a branch of a runtime conditional, where an out-of-range
+    /// constant subscript is a value the select discards, not a fault.
+    speculative: bool,
+}
+
+impl<'a> Inliner<'a> {
+    pub(super) fn new(
+        table: &'a solve::SolvePureCallTable,
+        out: &'a mut Vec<LinearOp>,
+        next: &'a mut Reg,
+    ) -> Self {
+        Self {
+            table,
+            out,
+            next,
+            depth: 0,
+            speculative: false,
+        }
+    }
+
+    /// Expand `PureCall { dst_start, input_starts, site }`: read each input's
+    /// registers, run the owner body, and write every result scalar to
+    /// consecutive registers from `dst_start`.
+    pub(super) fn call_site(
+        &mut self,
+        dst_start: Reg,
+        input_starts: &[Reg],
+        site: &solve::SolvePureCallSite,
+    ) -> Option<()> {
+        let owner = self.table.owner(site.owner())?;
+        if input_starts.len() != owner.inputs().len() {
+            return None;
+        }
+        let arguments = owner
+            .inputs()
+            .iter()
+            .zip(input_starts)
+            .map(|(value_type, start)| {
+                let elems = (0..value_type.scalar_count())
+                    .map(|offset| start.checked_add(offset).map(Elem::Reg))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Val {
+                    dims: value_type.dimensions().to_vec(),
+                    elems,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let results = self.owner(site.owner(), arguments)?;
+        let mut dst = dst_start;
+        for elem in results.iter().flat_map(|value| value.elems.iter()) {
+            let src = self.materialize(*elem)?;
+            self.push(LinearOp::Move { dst, src })?;
+            dst = dst.checked_add(1)?;
+        }
+        Some(())
+    }
+
+    fn owner(&mut self, id: SolvePureCallOwnerId, arguments: Vec<Val>) -> Option<Vec<Val>> {
+        let owner = self.table.owner(id)?;
+        if owner
+            .outputs()
+            .iter()
+            .any(|output| output.kind() != SolvePureCallOutputKind::Result)
+            || self.depth >= CALL_DEPTH
+        {
+            return None;
+        }
+        self.depth += 1;
+        let results = self.program(owner.body(), arguments, owner.outputs().len());
+        self.depth -= 1;
+        results
+    }
+
+    fn region(&mut self, region: &SolveProgramRegion, arguments: Vec<Val>) -> Option<Vec<Val>> {
+        if arguments.len() != region.inputs().len() {
+            return None;
+        }
+        self.program(region.body(), arguments, region.outputs().len())
+    }
+
+    /// Run `program` with its leading slots bound to `arguments`; its outputs
+    /// are the `output_count` slots that follow.
+    fn program(
+        &mut self,
+        program: &TypedProgram,
+        arguments: Vec<Val>,
+        output_count: usize,
+    ) -> Option<Vec<Val>> {
+        let input_count = arguments.len();
+        let mut frame = Frame {
+            program,
+            slots: vec![None; program.slots().len()],
+            registers: vec![None; program.register_types().len()],
+        };
+        for (slot, value) in frame.slots.iter_mut().zip(arguments) {
+            *slot = Some(value);
+        }
+        for operation in program.operations() {
+            self.operation(&mut frame, operation.operation())?;
+        }
+        (input_count..input_count.checked_add(output_count)?)
+            .map(|slot| frame.slots.get_mut(slot)?.take())
+            .collect()
+    }
+}
+
+struct Frame<'p> {
+    program: &'p TypedProgram,
+    slots: Vec<Option<Val>>,
+    registers: Vec<Option<Val>>,
+}
+
+impl Frame<'_> {
+    fn read(&self, register: SolveRegisterId) -> Option<&Val> {
+        self.registers.get(register.index())?.as_ref()
+    }
+
+    fn reads(&self, registers: &[SolveRegisterId]) -> Option<Vec<Val>> {
+        registers
+            .iter()
+            .map(|register| self.read(*register).cloned())
+            .collect()
+    }
+
+    fn dims(&self, register: SolveRegisterId) -> Option<Vec<u32>> {
+        Some(
+            self.program
+                .register_types()
+                .get(register.index())?
+                .dimensions()
+                .to_vec(),
+        )
+    }
+
+    fn write(&mut self, register: SolveRegisterId, elems: Vec<Elem>) -> Option<()> {
+        let dims = self.dims(register)?;
+        let count = dims
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
+        if count != elems.len() {
+            return None;
+        }
+        *self.registers.get_mut(register.index())? = Some(Val { dims, elems });
+        Some(())
+    }
+
+    fn write_val(&mut self, register: SolveRegisterId, value: Val) -> Option<()> {
+        self.write(register, value.elems)
+    }
+}
+
+impl Inliner<'_> {
+    fn push(&mut self, op: LinearOp) -> Option<()> {
+        if self.out.len() >= OP_BUDGET {
+            return None;
+        }
+        self.out.push(op);
+        Some(())
+    }
+
+    fn fresh(&mut self) -> Option<Reg> {
+        let reg = *self.next;
+        *self.next = reg.checked_add(1)?;
+        Some(reg)
+    }
+
+    fn materialize(&mut self, elem: Elem) -> Option<Reg> {
+        match elem {
+            Elem::Reg(reg) => Some(reg),
+            Elem::Num(value) => {
+                let dst = self.fresh()?;
+                self.push(LinearOp::Const { dst, value })?;
+                Some(dst)
+            }
+        }
+    }
+
+    fn unary(&mut self, op: UnaryOp, arg: Elem) -> Option<Elem> {
+        if let Elem::Num(value) = arg
+            && let Some(folded) = fold_unary(op, value)
+        {
+            return Some(Elem::Num(folded));
+        }
+        let arg = self.materialize(arg)?;
+        let dst = self.fresh()?;
+        self.push(LinearOp::Unary { dst, op, arg })?;
+        Some(Elem::Reg(dst))
+    }
+
+    fn binary(&mut self, op: BinaryOp, lhs: Elem, rhs: Elem) -> Option<Elem> {
+        if let (Elem::Num(lhs), Elem::Num(rhs)) = (lhs, rhs)
+            && let Some(folded) = fold_binary(op, lhs, rhs)
+        {
+            return Some(Elem::Num(folded));
+        }
+        let lhs = self.materialize(lhs)?;
+        let rhs = self.materialize(rhs)?;
+        let dst = self.fresh()?;
+        self.push(LinearOp::Binary { dst, op, lhs, rhs })?;
+        Some(Elem::Reg(dst))
+    }
+
+    fn compare(&mut self, op: CompareOp, lhs: Elem, rhs: Elem) -> Option<Elem> {
+        if let (Elem::Num(lhs), Elem::Num(rhs)) = (lhs, rhs) {
+            return Some(Elem::Num(f64::from(u8::from(op.compare(lhs, rhs)))));
+        }
+        let lhs = self.materialize(lhs)?;
+        let rhs = self.materialize(rhs)?;
+        let dst = self.fresh()?;
+        self.push(LinearOp::Compare { dst, op, lhs, rhs })?;
+        Some(Elem::Reg(dst))
+    }
+
+    fn select(&mut self, cond: Elem, if_true: Elem, if_false: Elem) -> Option<Elem> {
+        if let Elem::Num(cond) = cond {
+            return Some(if cond != 0.0 { if_true } else { if_false });
+        }
+        let cond = self.materialize(cond)?;
+        let if_true = self.materialize(if_true)?;
+        let if_false = self.materialize(if_false)?;
+        let dst = self.fresh()?;
+        self.push(LinearOp::Select {
+            dst,
+            cond,
+            if_true,
+            if_false,
+        })?;
+        Some(Elem::Reg(dst))
+    }
+
+    /// MLS `div` / `mod` / `rem` and every other typed binary operator.
+    fn typed_binary(&mut self, op: SolveBinaryOperator, lhs: Elem, rhs: Elem) -> Option<Elem> {
+        let quotient = |inliner: &mut Self, round: UnaryOp| {
+            let ratio = inliner.binary(BinaryOp::Div, lhs, rhs)?;
+            inliner.unary(round, ratio)
+        };
+        let remainder = |inliner: &mut Self, round: UnaryOp| {
+            let rounded = quotient(inliner, round)?;
+            let multiple = inliner.binary(BinaryOp::Mul, rounded, rhs)?;
+            inliner.binary(BinaryOp::Sub, lhs, multiple)
+        };
+        match op {
+            SolveBinaryOperator::IntegerQuotient => quotient(self, UnaryOp::Trunc),
+            SolveBinaryOperator::IntegerModulo => remainder(self, UnaryOp::Floor),
+            SolveBinaryOperator::IntegerRemainder => remainder(self, UnaryOp::Trunc),
+            op => self.binary(binary_op(op), lhs, rhs),
+        }
+    }
+
+    fn zip_binary(&mut self, op: SolveBinaryOperator, lhs: &Val, rhs: &Val) -> Option<Vec<Elem>> {
+        if lhs.elems.len() != rhs.elems.len() {
+            return None;
+        }
+        lhs.elems
+            .iter()
+            .zip(&rhs.elems)
+            .map(|(lhs, rhs)| self.typed_binary(op, *lhs, *rhs))
+            .collect()
+    }
+
+    fn sum(&mut self, terms: impl IntoIterator<Item = Elem>) -> Option<Elem> {
+        let mut terms = terms.into_iter();
+        let mut total = terms.next()?;
+        for term in terms {
+            total = self.binary(BinaryOp::Add, total, term)?;
+        }
+        Some(total)
+    }
+}
+
+/// Fold only index-like arithmetic, whose result is exact in every target.
+fn fold_unary(op: UnaryOp, value: f64) -> Option<f64> {
+    Some(match op {
+        UnaryOp::Neg => -value,
+        UnaryOp::Not => f64::from(u8::from(value == 0.0)),
+        UnaryOp::Abs => value.abs(),
+        UnaryOp::Floor => value.floor(),
+        UnaryOp::Ceil => value.ceil(),
+        UnaryOp::Trunc => value.trunc(),
+        _ => return None,
+    })
+}
+
+fn fold_binary(op: BinaryOp, lhs: f64, rhs: f64) -> Option<f64> {
+    let exact_integers = lhs.fract() == 0.0 && rhs.fract() == 0.0;
+    Some(match op {
+        BinaryOp::Add if exact_integers => lhs + rhs,
+        BinaryOp::Sub if exact_integers => lhs - rhs,
+        BinaryOp::Mul if exact_integers => lhs * rhs,
+        BinaryOp::Div if exact_integers && rhs != 0.0 => lhs / rhs,
+        BinaryOp::And => f64::from(u8::from(lhs != 0.0 && rhs != 0.0)),
+        BinaryOp::Or => f64::from(u8::from(lhs != 0.0 || rhs != 0.0)),
+        BinaryOp::Min => solve::real_extremum(lhs, rhs, true),
+        BinaryOp::Max => solve::real_extremum(lhs, rhs, false),
+        _ => return None,
+    })
+}
+
+fn unary_op(op: SolveUnaryOperator) -> UnaryOp {
+    match op {
+        SolveUnaryOperator::Negate => UnaryOp::Neg,
+        SolveUnaryOperator::Not => UnaryOp::Not,
+        SolveUnaryOperator::Abs => UnaryOp::Abs,
+        SolveUnaryOperator::Sign => UnaryOp::Sign,
+        SolveUnaryOperator::Sqrt => UnaryOp::Sqrt,
+        SolveUnaryOperator::Floor => UnaryOp::Floor,
+        SolveUnaryOperator::Ceiling => UnaryOp::Ceil,
+        SolveUnaryOperator::Truncate => UnaryOp::Trunc,
+        SolveUnaryOperator::Sin => UnaryOp::Sin,
+        SolveUnaryOperator::Cos => UnaryOp::Cos,
+        SolveUnaryOperator::Tan => UnaryOp::Tan,
+        SolveUnaryOperator::Asin => UnaryOp::Asin,
+        SolveUnaryOperator::Acos => UnaryOp::Acos,
+        SolveUnaryOperator::Atan => UnaryOp::Atan,
+        SolveUnaryOperator::Sinh => UnaryOp::Sinh,
+        SolveUnaryOperator::Cosh => UnaryOp::Cosh,
+        SolveUnaryOperator::Tanh => UnaryOp::Tanh,
+        SolveUnaryOperator::Exp => UnaryOp::Exp,
+        SolveUnaryOperator::Log => UnaryOp::Log,
+        SolveUnaryOperator::Log10 => UnaryOp::Log10,
+    }
+}
+
+/// Every typed binary operator except the Integer quotient family, which
+/// [`Inliner::typed_binary`] expands.
+fn binary_op(op: SolveBinaryOperator) -> BinaryOp {
+    match op {
+        SolveBinaryOperator::Add => BinaryOp::Add,
+        SolveBinaryOperator::Subtract => BinaryOp::Sub,
+        SolveBinaryOperator::Multiply => BinaryOp::Mul,
+        SolveBinaryOperator::Divide
+        | SolveBinaryOperator::IntegerQuotient
+        | SolveBinaryOperator::IntegerModulo
+        | SolveBinaryOperator::IntegerRemainder => BinaryOp::Div,
+        SolveBinaryOperator::Power => BinaryOp::Pow,
+        SolveBinaryOperator::And => BinaryOp::And,
+        SolveBinaryOperator::Or => BinaryOp::Or,
+        SolveBinaryOperator::Atan2 => BinaryOp::Atan2,
+        SolveBinaryOperator::Min => BinaryOp::Min,
+        SolveBinaryOperator::Max => BinaryOp::Max,
+    }
+}
+
+fn compare_op(op: SolveCompareOperator) -> CompareOp {
+    match op {
+        SolveCompareOperator::Equal => CompareOp::Eq,
+        SolveCompareOperator::NotEqual => CompareOp::Ne,
+        SolveCompareOperator::Less => CompareOp::Lt,
+        SolveCompareOperator::LessEqual => CompareOp::Le,
+        SolveCompareOperator::Greater => CompareOp::Gt,
+        SolveCompareOperator::GreaterEqual => CompareOp::Ge,
+    }
+}
+
+fn constant(kind: SolveValueKind) -> f64 {
+    match kind {
+        SolveValueKind::Real32(bits) => f64::from(f32::from_bits(bits)),
+        SolveValueKind::Real64(bits) => f64::from_bits(bits),
+        // Integer values in a typed program are bounded far below 2^53.
+        #[allow(clippy::cast_precision_loss)]
+        SolveValueKind::Integer(value) => value as f64,
+        SolveValueKind::Boolean(value) => f64::from(u8::from(value)),
+    }
+}
+
+fn row_major_offset(dims: &[u32], coordinate: &[u32]) -> Option<usize> {
+    if dims.len() != coordinate.len() {
+        return None;
+    }
+    dims.iter()
+        .zip(coordinate)
+        .try_fold(0usize, |offset, (extent, index)| {
+            (index < extent).then(|| offset * *extent as usize + *index as usize)
+        })
+}
+
+/// Every row-major coordinate of `dims`, in order.
+fn coordinates(dims: &[u32]) -> impl Iterator<Item = Vec<u32>> + '_ {
+    let count = dims
+        .iter()
+        .map(|extent| *extent as usize)
+        .product::<usize>();
+    let mut coordinate = vec![0u32; dims.len()];
+    (0..count).map(move |ordinal| {
+        if ordinal > 0 {
+            advance(&mut coordinate, dims);
+        }
+        coordinate.clone()
+    })
+}
+
+/// The next row-major coordinate of `dims`.
+fn advance(coordinate: &mut [u32], dims: &[u32]) {
+    for axis in (0..coordinate.len()).rev() {
+        coordinate[axis] += 1;
+        if coordinate[axis] < dims[axis] {
+            return;
+        }
+        coordinate[axis] = 0;
+    }
+}
+
+/// MLS transpose of the first two axes, retaining every trailing axis.
+fn transpose(operand: &Val) -> Option<Vec<Elem>> {
+    let [rows, columns, trailing @ ..] = operand.dims.as_slice() else {
+        return None;
+    };
+    let (rows, columns) = (*rows as usize, *columns as usize);
+    let width = trailing
+        .iter()
+        .map(|extent| *extent as usize)
+        .product::<usize>();
+    (0..columns)
+        .flat_map(|column| (0..rows).map(move |row| (row * columns + column) * width))
+        .map(|start| operand.elems.get(start..start + width))
+        .collect::<Option<Vec<_>>>()
+        .map(|blocks| blocks.concat())
+}
+
+/// Axis concatenation of compact same-rank operands into `dims`.
+fn concatenate(dims: &[u32], axis: usize, operands: &[Val]) -> Option<Vec<Elem>> {
+    let extent = |dims: &[u32]| dims.iter().map(|e| *e as usize).product::<usize>();
+    let inner = extent(dims.get(axis + 1..)?);
+    let outer = extent(dims.get(..axis)?);
+    (0..outer)
+        .flat_map(|block| operands.iter().map(move |operand| (block, operand)))
+        .map(|(block, operand)| {
+            let width = *operand.dims.get(axis).unwrap_or(&1) as usize * inner;
+            operand.elems.get(block * width..(block + 1) * width)
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|blocks| blocks.concat())
+}
+
+impl Inliner<'_> {
+    /// A one-based Modelica subscript known at expansion time, as a zero-based
+    /// coordinate.
+    fn static_index(frame: &Frame<'_>, register: SolveRegisterId) -> Option<i64> {
+        match frame.read(register)?.one()? {
+            Elem::Num(value) if value.fract() == 0.0 =>
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                Some(value as i64 - 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Element at `coordinate` of `value`; outside the extents it is a fault,
+    /// except speculatively, where a discarded NaN stands in.
+    fn element(&self, value: &Val, coordinate: &[i64]) -> Option<Elem> {
+        let coordinate = coordinate
+            .iter()
+            .map(|index| u32::try_from(*index).ok())
+            .collect::<Option<Vec<_>>>();
+        match coordinate.and_then(|coordinate| row_major_offset(&value.dims, &coordinate)) {
+            Some(offset) => value.elems.get(offset).copied(),
+            None if self.speculative => Some(Elem::Num(f64::NAN)),
+            None => None,
+        }
+    }
+
+    /// Resolved view axes: `Some(index)` fixes an axis, `None` keeps it.
+    fn view_axes(
+        frame: &Frame<'_>,
+        axes: &[SolveTensorViewAxis],
+    ) -> Option<Vec<(Option<i64>, u32)>> {
+        axes.iter()
+            .map(|axis| match *axis {
+                SolveTensorViewAxis::Index(register) => {
+                    Some((Some(Self::static_index(frame, register)?), 0))
+                }
+                SolveTensorViewAxis::Span { origin, .. } => Some((None, origin)),
+            })
+            .collect()
+    }
+
+    fn view_coordinate(axes: &[(Option<i64>, u32)], retained: &[u32]) -> Option<Vec<i64>> {
+        let mut retained = retained.iter();
+        let coordinate = axes
+            .iter()
+            .map(|(index, origin)| match index {
+                Some(index) => Some(*index),
+                None => Some(i64::from(*origin) + i64::from(*retained.next()?)),
+            })
+            .collect::<Option<Vec<_>>>()?;
+        retained.next().is_none().then_some(coordinate)
+    }
+}
+
+impl Inliner<'_> {
+    // Exhaustive dispatch over the closed typed operation vocabulary, in the
+    // order the reference evaluator lists it.
+    // SPEC_0021: Exception - one arm per typed operation stays contiguous so the vocabulary is auditable.
+    #[allow(clippy::too_many_lines)]
+    fn operation(&mut self, frame: &mut Frame<'_>, operation: &SolveOperation) -> Option<()> {
+        match operation {
+            SolveOperation::Constant { destination, value } => {
+                frame.write(*destination, vec![Elem::Num(constant(value.kind()))])
+            }
+            SolveOperation::Load { destination, slot } => {
+                let value = frame.slots.get(slot.index())?.clone()?;
+                frame.write_val(*destination, value)
+            }
+            SolveOperation::Store { slot, source } => {
+                let value = frame.read(*source)?.clone();
+                *frame.slots.get_mut(slot.index())? = Some(value);
+                Some(())
+            }
+            SolveOperation::Unary {
+                destination,
+                operator,
+                operand,
+            } => {
+                let operand = frame.read(*operand)?.clone();
+                let elems = operand
+                    .elems
+                    .iter()
+                    .map(|elem| self.unary(unary_op(*operator), *elem))
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Binary {
+                destination,
+                operator,
+                lhs,
+                rhs,
+            } => {
+                let (lhs, rhs) = (frame.read(*lhs)?.clone(), frame.read(*rhs)?.clone());
+                let elems = self.zip_binary(*operator, &lhs, &rhs)?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Compare {
+                destination,
+                operator,
+                lhs,
+                rhs,
+            } => {
+                let (lhs, rhs) = (frame.read(*lhs)?.clone(), frame.read(*rhs)?.clone());
+                if lhs.elems.len() != rhs.elems.len() {
+                    return None;
+                }
+                let elems = lhs
+                    .elems
+                    .iter()
+                    .zip(&rhs.elems)
+                    .map(|(lhs, rhs)| self.compare(compare_op(*operator), *lhs, *rhs))
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Convert {
+                destination,
+                operator,
+                operand,
+            } => {
+                let operand = frame.read(*operand)?.clone();
+                let elems = operand
+                    .elems
+                    .iter()
+                    .map(|elem| match operator {
+                        SolveConversionOperator::IntegerToReal => Some(*elem),
+                        SolveConversionOperator::RealToIntegerTowardZero => {
+                            self.unary(UnaryOp::Trunc, *elem)
+                        }
+                        SolveConversionOperator::RealToIntegerTowardNegativeInfinity => {
+                            self.unary(UnaryOp::Floor, *elem)
+                        }
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Select {
+                destination,
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let condition = frame.read(*condition)?.one()?;
+                let (if_true, if_false) = (
+                    frame.read(*if_true)?.clone(),
+                    frame.read(*if_false)?.clone(),
+                );
+                if if_true.elems.len() != if_false.elems.len() {
+                    return None;
+                }
+                let elems = if_true
+                    .elems
+                    .iter()
+                    .zip(&if_false.elems)
+                    .map(|(if_true, if_false)| self.select(condition, *if_true, *if_false))
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Conditional {
+                condition,
+                captures,
+                destinations,
+                if_true,
+                if_false,
+            } => self.conditional(
+                frame,
+                *condition,
+                captures,
+                destinations,
+                (if_true, if_false),
+            ),
+            SolveOperation::Map {
+                domain,
+                captures,
+                destination,
+                body,
+            } => {
+                let captures = frame.reads(captures)?;
+                let mut elems = Vec::new();
+                for tuple in domain.index_tuple_iter().ok()? {
+                    let mut arguments = captures.clone();
+                    arguments.extend(binders(&tuple));
+                    let [output] = <[Val; 1]>::try_from(self.region(body, arguments)?).ok()?;
+                    elems.extend(output.elems);
+                }
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Fold {
+                domain,
+                initial,
+                captures,
+                destinations,
+                transition,
+                continuation,
+            } => {
+                let carried = self.fold(
+                    domain,
+                    frame.reads(initial)?,
+                    &frame.reads(captures)?,
+                    transition,
+                    continuation.as_deref(),
+                )?;
+                if carried.len() != destinations.len() {
+                    return None;
+                }
+                for (destination, value) in destinations.iter().zip(carried) {
+                    frame.write_val(*destination, value)?;
+                }
+                Some(())
+            }
+            SolveOperation::Scale {
+                destination,
+                aggregate,
+                scalar,
+            } => {
+                let aggregate = frame.read(*aggregate)?.clone();
+                let scalar = frame.read(*scalar)?.one()?;
+                let elems = aggregate
+                    .elems
+                    .iter()
+                    .map(|elem| self.binary(BinaryOp::Mul, *elem, scalar))
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::BroadcastBinary {
+                destination,
+                operator,
+                aggregate,
+                scalar,
+                scalar_on_lhs,
+            } => {
+                let aggregate = frame.read(*aggregate)?.clone();
+                let scalar = frame.read(*scalar)?.one()?;
+                let elems = aggregate
+                    .elems
+                    .iter()
+                    .map(|elem| match scalar_on_lhs {
+                        true => self.typed_binary(*operator, scalar, *elem),
+                        false => self.typed_binary(*operator, *elem, scalar),
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Transpose {
+                destination,
+                operand,
+            } => {
+                let elems = transpose(frame.read(*operand)?)?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::MatrixMultiply {
+                destination,
+                lhs,
+                rhs,
+            } => {
+                let (lhs, rhs) = (frame.read(*lhs)?.clone(), frame.read(*rhs)?.clone());
+                let elems = self.matrix_multiply(&lhs, &rhs)?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Cross {
+                destination,
+                lhs,
+                rhs,
+            } => {
+                let (lhs, rhs) = (frame.read(*lhs)?.clone(), frame.read(*rhs)?.clone());
+                let [a0, a1, a2] = <[Elem; 3]>::try_from(lhs.elems).ok()?;
+                let [b0, b1, b2] = <[Elem; 3]>::try_from(rhs.elems).ok()?;
+                let mut component = |p: Elem, q: Elem, r: Elem, s: Elem| {
+                    let positive = self.binary(BinaryOp::Mul, p, q)?;
+                    let negative = self.binary(BinaryOp::Mul, r, s)?;
+                    self.binary(BinaryOp::Sub, positive, negative)
+                };
+                let elems = vec![
+                    component(a1, b2, a2, b1)?,
+                    component(a2, b0, a0, b2)?,
+                    component(a0, b1, a1, b0)?,
+                ];
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Reduce {
+                destination,
+                operator,
+                operand,
+            } => {
+                let operand = frame.read(*operand)?.clone();
+                let op = match operator {
+                    SolveReductionOperator::Sum => BinaryOp::Add,
+                    SolveReductionOperator::Product => BinaryOp::Mul,
+                    SolveReductionOperator::Minimum => BinaryOp::Min,
+                    SolveReductionOperator::Maximum => BinaryOp::Max,
+                    SolveReductionOperator::All => BinaryOp::And,
+                };
+                let mut elems = operand.elems.into_iter();
+                let mut value = elems.next()?;
+                for elem in elems {
+                    value = self.binary(op, value, elem)?;
+                }
+                frame.write(*destination, vec![value])
+            }
+            SolveOperation::Identity { destination } => {
+                let dims = frame.dims(*destination)?;
+                let [rows, columns] = dims.as_slice() else {
+                    return None;
+                };
+                let elems = (0..*rows)
+                    .flat_map(|row| {
+                        (0..*columns)
+                            .map(move |column| Elem::Num(f64::from(u8::from(row == column))))
+                    })
+                    .collect();
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Diagonal {
+                destination,
+                operand,
+            } => {
+                let operand = frame.read(*operand)?.clone();
+                let extent = operand.elems.len();
+                let mut elems = vec![Elem::Num(0.0); extent * extent];
+                for (ordinal, elem) in operand.elems.into_iter().enumerate() {
+                    elems[ordinal * extent + ordinal] = elem;
+                }
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Concatenate {
+                destination,
+                axis,
+                operands,
+            } => {
+                let dims = frame.dims(*destination)?;
+                let elems = concatenate(&dims, *axis as usize, &frame.reads(operands)?)?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::Fill { destination, value } => {
+                let value = frame.read(*value)?.one()?;
+                let dims = frame.dims(*destination)?;
+                let count = dims
+                    .iter()
+                    .map(|extent| *extent as usize)
+                    .product::<usize>();
+                frame.write(*destination, vec![value; count])
+            }
+            SolveOperation::ConstructAggregate {
+                destination,
+                elements,
+            } => {
+                let elems = frame
+                    .reads(elements)?
+                    .into_iter()
+                    .flat_map(|value| value.elems)
+                    .collect();
+                frame.write(*destination, elems)
+            }
+            SolveOperation::ProjectElement {
+                destination,
+                aggregate,
+                indices,
+            } => {
+                let aggregate = frame.read(*aggregate)?;
+                let coordinate = indices
+                    .iter()
+                    .map(|index| i64::from(*index))
+                    .collect::<Vec<_>>();
+                let elem = self.element(aggregate, &coordinate)?;
+                frame.write(*destination, vec![elem])
+            }
+            SolveOperation::ProjectElementDynamic {
+                destination,
+                aggregate,
+                indices,
+            } => {
+                let coordinate = indices
+                    .iter()
+                    .map(|index| Self::static_index(frame, *index))
+                    .collect::<Option<Vec<_>>>()?;
+                let elem = self.element(frame.read(*aggregate)?, &coordinate)?;
+                frame.write(*destination, vec![elem])
+            }
+            SolveOperation::ProjectSlice {
+                destination,
+                aggregate,
+                origin,
+            } => {
+                let aggregate = frame.read(*aggregate)?.clone();
+                let dims = frame.dims(*destination)?;
+                let elems = coordinates(&dims)
+                    .map(|coordinate| {
+                        let source = coordinate
+                            .iter()
+                            .zip(origin.iter())
+                            .map(|(index, origin)| i64::from(*index) + i64::from(*origin))
+                            .collect::<Vec<_>>();
+                        self.element(&aggregate, &source)
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::ProjectView {
+                destination,
+                aggregate,
+                axes,
+            } => {
+                let axes = Self::view_axes(frame, axes)?;
+                let aggregate = frame.read(*aggregate)?.clone();
+                let dims = frame.dims(*destination)?;
+                let elems = coordinates(&dims)
+                    .map(|coordinate| {
+                        let source = Self::view_coordinate(&axes, &coordinate)?;
+                        self.element(&aggregate, &source)
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                frame.write(*destination, elems)
+            }
+            SolveOperation::SelectElement {
+                destination,
+                aggregate,
+                indices,
+                out_of_range,
+            } => {
+                let coordinate = indices
+                    .iter()
+                    .map(|index| Self::static_index(frame, *index))
+                    .collect::<Option<Vec<_>>>()?;
+                let aggregate = frame.read(*aggregate)?;
+                let elem = coordinate
+                    .iter()
+                    .map(|index| u32::try_from(*index).ok())
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|coordinate| row_major_offset(&aggregate.dims, &coordinate))
+                    .and_then(|offset| aggregate.elems.get(offset).copied());
+                let elem = match elem {
+                    Some(elem) => elem,
+                    None => frame.read(*out_of_range)?.one()?,
+                };
+                frame.write(*destination, vec![elem])
+            }
+            SolveOperation::UpdateElement {
+                destination,
+                aggregate,
+                value,
+                indices,
+            } => {
+                let coordinate = indices
+                    .iter()
+                    .map(|index| Self::static_index(frame, *index))
+                    .collect::<Option<Vec<_>>>()?;
+                let value = frame.read(*value)?.one()?;
+                let mut aggregate = frame.read(*aggregate)?.clone();
+                self.update(&mut aggregate, &coordinate, value)?;
+                frame.write_val(*destination, aggregate)
+            }
+            SolveOperation::UpdateSlice {
+                destination,
+                aggregate,
+                value,
+                origin,
+            } => {
+                let update = frame.read(*value)?.clone();
+                let mut aggregate = frame.read(*aggregate)?.clone();
+                for (coordinate, elem) in coordinates(&update.dims).zip(update.elems.iter()) {
+                    let target = coordinate
+                        .iter()
+                        .zip(origin.iter())
+                        .map(|(index, origin)| i64::from(*index) + i64::from(*origin))
+                        .collect::<Vec<_>>();
+                    self.update(&mut aggregate, &target, *elem)?;
+                }
+                frame.write_val(*destination, aggregate)
+            }
+            SolveOperation::UpdateView {
+                destination,
+                aggregate,
+                value,
+                axes,
+            } => {
+                let axes = Self::view_axes(frame, axes)?;
+                let update = frame.read(*value)?.clone();
+                let mut aggregate = frame.read(*aggregate)?.clone();
+                for (coordinate, elem) in coordinates(&update.dims).zip(update.elems.iter()) {
+                    let target = Self::view_coordinate(&axes, &coordinate)?;
+                    self.update(&mut aggregate, &target, *elem)?;
+                }
+                frame.write_val(*destination, aggregate)
+            }
+            SolveOperation::Call {
+                owner,
+                arguments,
+                destinations,
+            } => {
+                let arguments = frame.reads(arguments)?;
+                let results = self.owner(*owner, arguments)?;
+                if results.len() != destinations.len() {
+                    return None;
+                }
+                for (destination, value) in destinations.iter().zip(results) {
+                    frame.write_val(*destination, value)?;
+                }
+                Some(())
+            }
+            SolveOperation::LinearSolve { .. } | SolveOperation::Native { .. } => None,
+        }
+    }
+
+    /// One compact fold, unrolled. A bounded `while` predicate must be known
+    /// at expansion time on every pass.
+    fn fold(
+        &mut self,
+        domain: &rumoca_core::StructuredIndexDomain,
+        mut carried: Vec<Val>,
+        captures: &[Val],
+        transition: &SolveProgramRegion,
+        continuation: Option<&SolveProgramRegion>,
+    ) -> Option<Vec<Val>> {
+        for tuple in domain.index_tuple_iter().ok()? {
+            if let Some(continuation) = continuation
+                && !self.continues(continuation, &carried, captures)?
+            {
+                break;
+            }
+            let mut arguments = carried;
+            arguments.extend(captures.iter().cloned());
+            arguments.extend(binders(&tuple));
+            carried = self.region(transition, arguments)?;
+        }
+        Some(carried)
+    }
+
+    fn continues(
+        &mut self,
+        continuation: &SolveProgramRegion,
+        carried: &[Val],
+        captures: &[Val],
+    ) -> Option<bool> {
+        let mut arguments = carried.to_vec();
+        arguments.extend(captures.iter().cloned());
+        let [predicate] = <[Val; 1]>::try_from(self.region(continuation, arguments)?).ok()?;
+        match predicate.one()? {
+            Elem::Num(value) => Some(value != 0.0),
+            Elem::Reg(_) => None,
+        }
+    }
+
+    fn update(&self, aggregate: &mut Val, coordinate: &[i64], value: Elem) -> Option<()> {
+        let offset = coordinate
+            .iter()
+            .map(|index| u32::try_from(*index).ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|coordinate| row_major_offset(&aggregate.dims, &coordinate));
+        match offset {
+            Some(offset) => {
+                *aggregate.elems.get_mut(offset)? = value;
+                Some(())
+            }
+            // A speculative branch's out-of-range write is discarded with it.
+            None if self.speculative => Some(()),
+            None => None,
+        }
+    }
+
+    /// MLS vector/matrix products: `[n]·[n]`, `[r,n]·[n]`, `[n]·[n,c]`,
+    /// `[r,n]·[n,c]`, each element a left-to-right sum of products.
+    fn matrix_multiply(&mut self, lhs: &Val, rhs: &Val) -> Option<Vec<Elem>> {
+        let (rows, inner, columns) = match (lhs.dims.as_slice(), rhs.dims.as_slice()) {
+            ([n], [m]) if n == m => (1, *n as usize, 1),
+            ([r, n], [m]) if n == m => (*r as usize, *n as usize, 1),
+            ([n], [m, c]) if n == m => (1, *n as usize, *c as usize),
+            ([r, n], [m, c]) if n == m => (*r as usize, *n as usize, *c as usize),
+            _ => return None,
+        };
+        (0..rows)
+            .flat_map(|row| (0..columns).map(move |column| (row, column)))
+            .map(|(row, column)| {
+                let lhs_terms = (0..inner).map(|shared| match lhs.dims.len() {
+                    1 => shared,
+                    _ => row * inner + shared,
+                });
+                let rhs_terms = (0..inner).map(|shared| match rhs.dims.len() {
+                    1 => shared,
+                    _ => shared * columns + column,
+                });
+                self.dot(lhs, rhs, lhs_terms.zip(rhs_terms))
+            })
+            .collect()
+    }
+
+    /// `sum_k lhs[i_k] * rhs[j_k]`, left to right.
+    fn dot(
+        &mut self,
+        lhs: &Val,
+        rhs: &Val,
+        offsets: impl Iterator<Item = (usize, usize)>,
+    ) -> Option<Elem> {
+        let terms = offsets
+            .map(|(i, j)| self.binary(BinaryOp::Mul, *lhs.elems.get(i)?, *rhs.elems.get(j)?))
+            .collect::<Option<Vec<_>>>()?;
+        self.sum(terms)
+    }
+
+    /// A lazy structured conditional: a condition known at expansion time
+    /// selects one region; otherwise both regions are expanded speculatively
+    /// and every result element is selected at run time.
+    fn conditional(
+        &mut self,
+        frame: &mut Frame<'_>,
+        condition: SolveRegisterId,
+        captures: &[SolveRegisterId],
+        destinations: &[SolveRegisterId],
+        (if_true, if_false): (&SolveProgramRegion, &SolveProgramRegion),
+    ) -> Option<()> {
+        let condition = frame.read(condition)?.one()?;
+        let captures = frame.reads(captures)?;
+        let outputs = match condition {
+            Elem::Num(value) => {
+                self.region(if value != 0.0 { if_true } else { if_false }, captures)?
+            }
+            Elem::Reg(_) => {
+                let speculative = std::mem::replace(&mut self.speculative, true);
+                let taken = self.region(if_true, captures.clone());
+                let other = self.region(if_false, captures);
+                self.speculative = speculative;
+                let (taken, other) = (taken?, other?);
+                if taken.len() != other.len() {
+                    return None;
+                }
+                taken
+                    .into_iter()
+                    .zip(other)
+                    .map(|(taken, other)| self.select_value(condition, taken, &other))
+                    .collect::<Option<Vec<_>>>()?
+            }
+        };
+        if outputs.len() != destinations.len() {
+            return None;
+        }
+        for (destination, value) in destinations.iter().zip(outputs) {
+            frame.write_val(*destination, value)?;
+        }
+        Some(())
+    }
+}
+
+impl Inliner<'_> {
+    /// `condition ? taken : other`, element by element.
+    fn select_value(&mut self, condition: Elem, taken: Val, other: &Val) -> Option<Val> {
+        if taken.elems.len() != other.elems.len() {
+            return None;
+        }
+        let elems = taken
+            .elems
+            .iter()
+            .zip(&other.elems)
+            .map(|(taken, other)| self.select(condition, *taken, *other))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Val {
+            dims: taken.dims,
+            elems,
+        })
+    }
+}
+
+/// One Integer scalar per loop binder, in domain order.
+fn binders(tuple: &[i64]) -> impl Iterator<Item = Val> + '_ {
+    #[allow(clippy::cast_precision_loss)]
+    tuple
+        .iter()
+        .map(|value| Val::scalar(Elem::Num(*value as f64)))
+}

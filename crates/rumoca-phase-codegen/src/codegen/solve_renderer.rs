@@ -60,6 +60,48 @@ impl SolveTemplateRenderer {
         })
     }
 
+    /// [`Self::new_owned_with_dae`] with the model's pure-call owners from the
+    /// same Solve lowering, so scalar targets inline `PureCall` ops instead of
+    /// refusing the programs that contain them.
+    pub fn new_owned_with_dae_and_calls(
+        problem: solve::SolveProblem,
+        artifacts: solve::SolveArtifacts,
+        pure_calls: solve::SolvePureCallTable,
+        dae_model: &dae::Dae,
+    ) -> Result<Self, CodegenError> {
+        let dae_entry = checked_dae_template_value(dae_model)?;
+        let handle = super::solve_lazy::SolveRenderHandle::standalone_with_calls(
+            std::sync::Arc::new(problem),
+            std::sync::Arc::new(artifacts),
+            std::sync::Arc::new(pure_calls),
+        );
+        Ok(Self {
+            context: solve_render_context_value_with_handles(handle, None, dae_entry)?,
+        })
+    }
+
+    /// [`Self::new`] with the model's pure-call owners (see
+    /// [`Self::new_owned_with_dae_and_calls`]).
+    pub fn new_owned_with_calls(
+        problem: solve::SolveProblem,
+        artifacts: solve::SolveArtifacts,
+        pure_calls: solve::SolvePureCallTable,
+        model_name: &str,
+    ) -> Result<Self, CodegenError> {
+        let handle = super::solve_lazy::SolveRenderHandle::standalone_with_calls(
+            std::sync::Arc::new(problem),
+            std::sync::Arc::new(artifacts),
+            std::sync::Arc::new(pure_calls),
+        );
+        Ok(Self {
+            context: solve_render_context_value_with_handles(
+                handle,
+                Some(model_name),
+                Value::default(),
+            )?,
+        })
+    }
+
     /// Renderer for one checked FMI component. The FMI entry is the opaque
     /// constructor-validated metadata/storage binding; Solve operations remain
     /// lazy so large tensor programs are not materialized as template maps.
@@ -99,7 +141,7 @@ impl SolveTemplateRenderer {
         let assertion_message_rows = assertion_messages.rows_value()?;
         let assertion_messages = Value::from_serialize(&assertion_messages.parts);
         let uses_real_extremum =
-            super::real_extremum::used_by(component.problem(), component.artifacts())
+            super::real_extremum::used_by(component.problem(), component.artifacts(), None)
                 || super::real_extremum::used_by_calls(component.pure_calls());
         let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
         let fmi = handle.fmi_value();
@@ -301,7 +343,8 @@ fn solve_render_context_value_with_handles(
     let artifacts = handle.artifacts();
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
-    let solve_blocks = solve_template_blocks_value(solve_problem, artifacts)?;
+    let solve_blocks =
+        solve_template_blocks_value(solve_problem, artifacts, handle.inlined_pure_calls())?;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
         solve_problem.continuous.derivative_rhs.clone(),
     ));
@@ -333,7 +376,8 @@ fn solve_render_context_value_with_handles(
     let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
         full_jacobian_rows.programs().to_vec(),
     ));
-    let uses_real_extremum = super::real_extremum::used_by(solve_problem, artifacts);
+    let uses_real_extremum =
+        super::real_extremum::used_by(solve_problem, artifacts, handle.inlined_pure_calls());
     let parameter_defaults = Value::from(parameter_defaults(solve_problem, &dae_entry));
     let parameter_names = Value::from(parameter_names(solve_problem));
     Ok(match model_name {

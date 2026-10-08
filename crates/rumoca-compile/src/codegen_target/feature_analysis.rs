@@ -163,6 +163,7 @@ pub(super) fn dae_has_dynamic_derivative_subscripts(model: &dae::Dae) -> bool {
 /// certificate before producing any byte.
 pub(super) fn solve_requires_residual_equations(
     problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
     exact_algebraic_assignments: Option<bool>,
     algebraic_projection: Option<bool>,
 ) -> bool {
@@ -172,7 +173,9 @@ pub(super) fn solve_requires_residual_equations(
         || !continuous.algebraic_projection_plan.is_empty()
         || algebraic_count != 0;
     let explicit = exact_algebraic_assignments == Some(true)
-        && rumoca_phase_codegen::explicit_algebraic_assignment_complete(problem);
+        && rumoca_phase_codegen::explicit_algebraic_assignment_complete_with_calls(
+            problem, pure_calls,
+        );
     let projected =
         algebraic_projection == Some(true) && rumoca_phase_codegen::me_refresh_admissible(problem);
     has_algebraic_system && !explicit && !projected

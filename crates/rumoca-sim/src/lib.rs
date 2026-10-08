@@ -16,7 +16,7 @@ use rumoca_ir_dae as dae;
 pub use rumoca_phase_solve::{
     deserialize_solve_model,
     fmi::{deserialize_fmi_component, fmi_component_wire},
-    lower_solve_artifacts, lower_solve_problem, solve_model_wire,
+    lower_solve_artifacts, lower_solve_package, lower_solve_problem, solve_model_wire,
 };
 pub use rumoca_solver::{
     DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,

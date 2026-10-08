@@ -1360,7 +1360,7 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
                 .split_whitespace()
                 .collect::<String>()
                 .replace(",};", "};")
-                == "pubuserumoca_phase_solve::{deserialize_solve_model,fmi::{deserialize_fmi_component,fmi_component_wire},lower_solve_artifacts,lower_solve_problem,solve_model_wire};"
+                == "pubuserumoca_phase_solve::{deserialize_solve_model,fmi::{deserialize_fmi_component,fmi_component_wire},lower_solve_artifacts,lower_solve_package,lower_solve_problem,solve_model_wire};"
         }),
         "rumoca-sim may expose checked Solve wire replay and solve lowering/artifact preparation as its simulation-preparation facade"
     );

@@ -56,7 +56,7 @@ use rumoca_compile::source_roots::{
 };
 use rumoca_core::DiagnosticSeverity;
 use rumoca_phase_resolve::ResolvedTree;
-use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
+use rumoca_sim::{lower_solve_artifacts, lower_solve_package, lower_solve_problem};
 
 use crate::error::CompilerError;
 
@@ -130,21 +130,31 @@ pub enum TemplateIr {
 }
 
 fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
+    let package = lower_solve_package(dae_model)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = lower_solve_artifacts(&problem)
+    let artifacts = lower_solve_artifacts(&package.problem)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae_model)
-        .map_err(CompilerError::TemplateError)
+    SolveTemplateRenderer::new_owned_with_dae_and_calls(
+        package.problem,
+        artifacts,
+        package.pure_calls,
+        dae_model,
+    )
+    .map_err(CompilerError::TemplateError)
 }
 
 fn build_solve_template_renderer_without_dae(
     dae_model: &Dae,
 ) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
+    let package = lower_solve_package(dae_model)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
-    SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
+    SolveTemplateRenderer::new_owned_with_calls(
+        package.problem,
+        rumoca_ir_solve::SolveArtifacts::default(),
+        package.pure_calls,
+        "",
+    )
+    .map_err(CompilerError::TemplateError)
 }
 
 impl CompilationResult {

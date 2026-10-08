@@ -33,6 +33,9 @@ pub(super) enum SolveRenderHandle {
     Standalone {
         problem: Arc<solve::SolveProblem>,
         artifacts: Arc<solve::SolveArtifacts>,
+        /// The model's pure-call owners, when the caller lowered them with
+        /// the problem, so scalar targets can inline `PureCall` ops.
+        pure_calls: Option<Arc<solve::SolvePureCallTable>>,
     },
     Fmi(Arc<solve::fmi::FmiCCodegenView>),
 }
@@ -42,7 +45,32 @@ impl SolveRenderHandle {
         problem: Arc<solve::SolveProblem>,
         artifacts: Arc<solve::SolveArtifacts>,
     ) -> Self {
-        Self::Standalone { problem, artifacts }
+        Self::Standalone {
+            problem,
+            artifacts,
+            pure_calls: None,
+        }
+    }
+
+    pub(super) fn standalone_with_calls(
+        problem: Arc<solve::SolveProblem>,
+        artifacts: Arc<solve::SolveArtifacts>,
+        pure_calls: Arc<solve::SolvePureCallTable>,
+    ) -> Self {
+        Self::Standalone {
+            problem,
+            artifacts,
+            pure_calls: Some(pure_calls),
+        }
+    }
+
+    /// The pure-call owners a standalone scalar target inlines; an FMI
+    /// component renders its owners as typed functions instead.
+    pub(super) fn inlined_pure_calls(&self) -> Option<&solve::SolvePureCallTable> {
+        match self {
+            Self::Standalone { pure_calls, .. } => pure_calls.as_deref(),
+            Self::Fmi(_) => None,
+        }
     }
 
     pub(super) fn fmi(component: solve::fmi::FmiCCodegenView) -> Self {
@@ -447,6 +475,16 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
 /// when the Solve owner was constructed or replayed from wire.
 #[must_use]
 pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> bool {
+    explicit_algebraic_assignment_complete_with_calls(problem, None)
+}
+
+/// [`explicit_algebraic_assignment_complete`] for a target that inlines the
+/// model's pure calls (`pure_calls`, from the same Solve lowering).
+#[must_use]
+pub fn explicit_algebraic_assignment_complete_with_calls(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> bool {
     if problem.validate().is_err() {
         return false;
     }
@@ -511,7 +549,7 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
     }
     assigned == expected_targets
         && rows.len() == continuous.algebraic_projection_plan.blocks.len()
-        && materialized_assignment_programs(problem).is_some()
+        && materialized_assignment_programs(problem, pure_calls).is_some()
 }
 
 /// Every ordered exact assignment program, materialized and lowered to scalar
@@ -523,6 +561,7 @@ type MaterializedAssignment = (Vec<solve::LinearOp>, rumoca_core::Span, Vec<usiz
 
 fn materialized_assignment_programs(
     problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Option<Vec<MaterializedAssignment>> {
     let assignments = ordered_exact_algebraic_assignments(&problem.continuous.refresh_owners)?;
     let mut programs = Vec::new();
@@ -541,7 +580,7 @@ fn materialized_assignment_programs(
             return None;
         };
         let span = block.program_span(0)?;
-        let lowered = super::tensor_lowering::lower_tensor_ops(ops)?;
+        let lowered = super::tensor_lowering::lower_tensor_ops(ops, pure_calls)?;
         programs.push((lowered, span, program.target_indices().to_vec()));
     }
     Some(programs)
@@ -552,11 +591,12 @@ fn materialized_assignment_programs(
 /// template's scalar view. `None` when a program cannot be lowered.
 pub(super) fn scalar_lowered_block(
     block: &solve::ComputeBlock,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
     block
         .nodes
         .iter()
-        .map(scalar_lowered_node)
+        .map(|node| scalar_lowered_node(node, pure_calls))
         .collect::<Option<Vec<_>>>()
         .map(|nodes| {
             nodes
@@ -570,6 +610,7 @@ pub(super) fn scalar_lowered_block(
 /// One node with its scalar programs lowered; `None` when a program cannot be.
 fn scalar_lowered_node(
     node: &solve::ComputeNode,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Option<Result<solve::ComputeNode, CodegenError>> {
     let solve::ComputeNode::ScalarPrograms(programs) = node else {
         return Some(Ok(node.clone()));
@@ -577,7 +618,7 @@ fn scalar_lowered_node(
     let lowered = programs
         .programs()
         .iter()
-        .map(|program| super::tensor_lowering::lower_tensor_ops(program))
+        .map(|program| super::tensor_lowering::lower_tensor_ops(program, pure_calls))
         .collect::<Option<Vec<_>>>()?;
     Some(
         solve::ScalarProgramBlock::with_output_indices(
@@ -596,6 +637,16 @@ fn scalar_lowered_node(
 /// to scalar ops.
 #[must_use]
 pub fn explicit_initialization_renderable(problem: &solve::SolveProblem) -> bool {
+    explicit_initialization_renderable_with_calls(problem, None)
+}
+
+/// [`explicit_initialization_renderable`] for a target that inlines the
+/// model's pure calls.
+#[must_use]
+pub fn explicit_initialization_renderable_with_calls(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> bool {
     solve::solve_initialization_is_explicit(problem)
         && problem
             .initialization
@@ -604,7 +655,7 @@ pub fn explicit_initialization_renderable(problem: &solve::SolveProblem) -> bool
             .iter()
             .all(|program| {
                 solve::ScalarProgramBlock::program_output_count(program) == 1
-                    && super::tensor_lowering::lower_tensor_ops(program).is_some()
+                    && super::tensor_lowering::lower_tensor_ops(program, pure_calls).is_some()
             })
 }
 
@@ -619,10 +670,11 @@ pub fn explicit_initialization_renderable(problem: &solve::SolveProblem) -> bool
 /// such a model is refused at the target capability gate.
 pub(super) fn explicit_algebraic_assignment_block(
     problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
     (problem.solve_layout.algebraic_scalar_count() != 0
-        && explicit_algebraic_assignment_complete(problem))
-    .then(|| materialize_algebraic_assignments(problem))
+        && explicit_algebraic_assignment_complete_with_calls(problem, pure_calls))
+    .then(|| materialize_algebraic_assignments(problem, pure_calls))
     .transpose()
 }
 
@@ -642,9 +694,10 @@ pub(super) enum InitializationTargets {
 pub(super) fn initialization_block(
     problem: &solve::SolveProblem,
     targets: InitializationTargets,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
-    explicit_initialization_renderable(problem)
-        .then(|| initialization_assignments(problem, targets))
+    explicit_initialization_renderable_with_calls(problem, pure_calls)
+        .then(|| initialization_assignments(problem, targets, pure_calls))
         .transpose()
         .map(Option::flatten)
 }
@@ -652,6 +705,7 @@ pub(super) fn initialization_block(
 fn initialization_assignments(
     problem: &solve::SolveProblem,
     targets: InitializationTargets,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
     let initialization = &problem.initialization;
     let update = initialization.update_rhs();
@@ -669,9 +723,12 @@ fn initialization_assignments(
             | (solve::ScalarSlot::Y { index, .. }, InitializationTargets::States) => *index,
             _ => continue,
         };
-        let lowered = super::tensor_lowering::lower_tensor_ops(program).ok_or_else(|| {
-            CodegenError::template("explicit initialization is not scalar-renderable".to_string())
-        })?;
+        let lowered =
+            super::tensor_lowering::lower_tensor_ops(program, pure_calls).ok_or_else(|| {
+                CodegenError::template(
+                    "explicit initialization is not scalar-renderable".to_string(),
+                )
+            })?;
         programs.push(lowered);
         spans.push(update.program_span(index).ok_or_else(|| {
             CodegenError::template("initialization program has no provenance".to_string())
@@ -692,8 +749,9 @@ fn initialization_assignments(
 /// Build one scalar block whose outputs are the assigned `y` slots.
 fn materialize_algebraic_assignments(
     problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<solve::ComputeBlock, CodegenError> {
-    let programs = materialized_assignment_programs(problem).ok_or_else(|| {
+    let programs = materialized_assignment_programs(problem, pure_calls).ok_or_else(|| {
         CodegenError::template("exact algebraic assignments are not scalar-renderable".to_string())
     })?;
     let mut ops = Vec::new();
