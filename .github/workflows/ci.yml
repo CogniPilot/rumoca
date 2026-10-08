@@ -2076,7 +2076,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-          - os: macos-15-intel
+          - os: macos-15
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
             lsp_asset: rumoca-lsp-macos-x86_64
@@ -2217,7 +2217,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             nix_system: aarch64-linux
             name: linux-aarch64-gnu
-          - os: macos-15-intel
+          - os: macos-15
             target: x86_64-apple-darwin
             nix_system: x86_64-darwin
             name: macos-x86_64
@@ -2234,11 +2234,19 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Ensure Rosetta for the x86_64 wheel on Apple Silicon
+        # GitHub no longer offers Intel macOS runners with a supported Nix
+        # installer, so the x86_64-darwin wheel builds on an Apple Silicon
+        # runner through Rosetta with Nix's x86_64-darwin platform enabled.
+        if: matrix.nix_system == 'x86_64-darwin'
+        run: softwareupdate --install-rosetta --agree-to-license
+
       - name: Install Nix
         if: runner.os != 'Windows'
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
+          extra-conf: ${{ matrix.nix_system == 'x86_64-darwin' && 'extra-platforms = x86_64-darwin' || '' }}
 
       - name: GitHub Actions Nix cache
         if: runner.os != 'Windows'
@@ -2266,11 +2274,15 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m pip install maturin
 
+      # The wheel steps run a plain (non-login) shell inside the Nix dev shell:
+      # a login profile re-prepends the runner's rustup and Homebrew paths,
+      # which shadow the pinned Nix toolchain and Python (on Apple Silicon the
+      # rustup host toolchain has no x86_64-apple-darwin standard library).
       - name: Run Python binding Rust tests
         if: matrix.name == 'linux-x86_64-gnu'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             export PYO3_PYTHON="$(command -v python)"
             cargo test --package rumoca-bind-python --lib
@@ -2279,7 +2291,7 @@ jobs:
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             target="${{ matrix.target }}"
             # Linux runners ship a very new glibc, so a native build tags the
@@ -2321,7 +2333,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             python -m venv target/python-wheel-smoke-venv
             . target/python-wheel-smoke-venv/bin/activate
