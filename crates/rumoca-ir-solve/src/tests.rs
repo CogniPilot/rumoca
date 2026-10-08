@@ -1267,8 +1267,7 @@ fn p_slice_returns_some_for_p_array_variable() {
 fn indexed_bindings_are_derived_from_shape_metadata() {
     let layout = make_layout(&[("body.frame.R.T", vec![3, 3])], &[]);
     let entries = layout
-        .indexed_bindings()
-        .get(&ComponentReferenceKey::generated("body.frame.R.T"))
+        .indexed_slots("body.frame.R.T")
         .expect("array layout should expose structured scalar slots");
 
     assert_eq!(entries.len(), 9);

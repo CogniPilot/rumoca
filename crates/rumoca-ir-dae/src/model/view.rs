@@ -715,12 +715,19 @@ impl<'dae> VariableView<'dae> {
         if subscripts.is_empty() {
             return Some(self.entry.name.to_string());
         }
-        let indices = subscripts
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        Some(format!("{}[{indices}]", self.entry.name))
+        use std::fmt::Write as _;
+        let base = self.entry.name.as_str();
+        let mut name = String::with_capacity(base.len() + 4 * subscripts.len() + 2);
+        name.push_str(base);
+        name.push('[');
+        for (position, index) in subscripts.iter().enumerate() {
+            if position > 0 {
+                name.push(',');
+            }
+            write!(name, "{index}").ok()?;
+        }
+        name.push(']');
+        Some(name)
     }
 
     fn attributes(self) -> &'dae VariableAttributesWire {

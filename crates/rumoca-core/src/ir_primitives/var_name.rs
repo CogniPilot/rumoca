@@ -246,9 +246,33 @@ impl From<String> for VarName {
     }
 }
 
+/// An interned payload keyed by its own text, so the interner holds each
+/// spelling once (in the payload) rather than again as a map key.
+struct InternedText(Arc<VarNameData>);
+
+impl std::hash::Hash for InternedText {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (*self.0.text).hash(state);
+    }
+}
+
+impl PartialEq for InternedText {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+
+impl Eq for InternedText {}
+
+impl std::borrow::Borrow<str> for InternedText {
+    fn borrow(&self) -> &str {
+        &self.0.text
+    }
+}
+
 #[derive(Default)]
 struct VarNameInterner {
-    ids: IndexMap<String, VarNameId>,
+    ids: std::collections::HashMap<InternedText, VarNameId>,
     payloads: Vec<Arc<VarNameData>>,
 }
 
@@ -264,7 +288,7 @@ impl VarNameInterner {
         );
         let data = Arc::new(VarNameData::new(text));
         self.payloads.push(data.clone());
-        self.ids.insert(text.to_string(), id);
+        self.ids.insert(InternedText(data.clone()), id);
         VarName { id, data }
     }
 
