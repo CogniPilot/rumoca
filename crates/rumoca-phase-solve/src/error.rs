@@ -19,6 +19,12 @@ pub enum LowerError {
         reason: String,
         span: Span,
     },
+    /// A lowering resource budget would be exceeded; the allocation was refused
+    /// before it was attempted.
+    BudgetExceeded {
+        reason: String,
+        span: Span,
+    },
     /// Span-free: the violated whole-program contract has no single honest source owner.
     UnspannedContractViolation {
         reason: String,
@@ -46,6 +52,13 @@ impl LowerError {
         }
     }
 
+    pub(crate) fn budget_exceeded(reason: impl Into<String>, span: Span) -> Self {
+        Self::BudgetExceeded {
+            reason: reason.into(),
+            span,
+        }
+    }
+
     pub(crate) fn contract(reason: impl Into<String>, span: Span) -> Self {
         if span.is_dummy() {
             return Self::UnspannedContractViolation {
@@ -64,6 +77,7 @@ impl LowerError {
         match self {
             Self::Unsupported { .. } => codes::EL001_UNSUPPORTED_EXPRESSION,
             Self::NonComputable { .. } => codes::EL005_INVALID_SOLVE_CONTRACT,
+            Self::BudgetExceeded { .. } => codes::EL006_SOLVE_RESOURCE_BUDGET,
             Self::Structural { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => codes::EL005_INVALID_SOLVE_CONTRACT,
@@ -76,6 +90,7 @@ impl LowerError {
             Self::Unsupported { span, .. }
             | Self::NonComputable { span, .. }
             | Self::ContractViolation { span, .. }
+            | Self::BudgetExceeded { span, .. }
                 if !span.is_dummy() =>
             {
                 Some(*span)
@@ -84,6 +99,7 @@ impl LowerError {
             Self::Unsupported { .. }
             | Self::NonComputable { .. }
             | Self::ContractViolation { .. }
+            | Self::BudgetExceeded { .. }
             | Self::UnspannedContractViolation { .. } => None,
         }
     }
@@ -100,6 +116,9 @@ impl std::fmt::Display for LowerError {
             }
             Self::Structural { reason, .. } => {
                 write!(formatter, "DAE structural proof failed: {reason}")
+            }
+            Self::BudgetExceeded { reason, .. } => {
+                write!(formatter, "Solve lowering budget exceeded: {reason}")
             }
             Self::ContractViolation { reason, .. }
             | Self::UnspannedContractViolation { reason } => {

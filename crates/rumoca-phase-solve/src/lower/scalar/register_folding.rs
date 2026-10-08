@@ -37,10 +37,7 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
     }
 
     pub(super) fn real_register(&self, register: solve::Reg) -> Option<f64> {
-        self.real_registers
-            .get(register as usize)
-            .copied()
-            .flatten()
+        self.ledger.real(register)
     }
 
     /// The register that already holds `lhs <operator> rhs`, or a new literal
@@ -84,15 +81,11 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
         if let Some(value) = self.real_register(operand) {
             return self.constant(-value, span).map(Some);
         }
-        Ok(self
-            .negated_registers
-            .get(operand as usize)
-            .copied()
-            .flatten())
+        Ok(self.ledger.negated(operand))
     }
 
     pub(super) fn record_negation(&mut self, negated: solve::Reg, operand: solve::Reg) {
-        self.negated_registers[negated as usize] = Some(operand);
+        self.ledger.set_negated(negated, operand);
     }
 }
 

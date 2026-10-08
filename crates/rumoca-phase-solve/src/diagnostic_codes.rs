@@ -5,3 +5,6 @@ pub const EL001_UNSUPPORTED_EXPRESSION: &str = "EL001";
 /// A checked DAE cannot be lowered to a computable Solve problem or a Solve
 /// constructor contract was violated.
 pub const EL005_INVALID_SOLVE_CONTRACT: &str = "EL005";
+/// Solve lowering stopped before a compile-time resource budget (register
+/// file) was exceeded; the diagnostic names the owner and the count.
+pub const EL006_SOLVE_RESOURCE_BUDGET: &str = "EL006";

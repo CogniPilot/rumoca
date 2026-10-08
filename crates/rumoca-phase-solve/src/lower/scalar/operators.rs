@@ -298,10 +298,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::TensorBinary {
             dst_start,
             op,
@@ -489,10 +486,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let count = rows
             .checked_mul(columns)
             .ok_or_else(|| LowerError::contract("matrix product output extent overflow", span))?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::MatrixMultiply {
             dst_start,
             lhs_start,

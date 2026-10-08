@@ -507,18 +507,62 @@ pub(super) fn lower_record_array_field_access<'dae>(
     expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    lower_record_array_field_access_with(
+        construction,
+        symbols,
+        binders,
+        expression,
+        provenance,
+        &mut LowerEachBase,
+    )
+}
+
+/// How the record-valued base of a field projection is lowered.
+pub(super) trait RecordBaseLowering<'e, 'dae> {
+    fn lower_base(
+        &mut self,
+        construction: &mut dae::DaeConstruction<'dae>,
+        symbols: LoweringSymbols<'_, 'dae>,
+        binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+        base: &'e Expression,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError>;
+}
+
+/// Every projection lowers its own copy of its base.
+struct LowerEachBase;
+
+impl<'e, 'dae> RecordBaseLowering<'e, 'dae> for LowerEachBase {
+    fn lower_base(
+        &mut self,
+        construction: &mut dae::DaeConstruction<'dae>,
+        symbols: LoweringSymbols<'_, 'dae>,
+        binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+        base: &'e Expression,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+        lower_expression_scoped(construction, symbols, binders, base, None)
+    }
+}
+
+pub(super) fn lower_record_array_field_access_with<'e, 'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &'e Expression,
+    provenance: dae::DaeProvenance,
+    bases: &mut impl RecordBaseLowering<'e, 'dae>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let fields = &symbols.functions.record_array_fields;
     if fields.function_result(expression).is_some() {
         let Expression::FieldAccess { base, .. } = expression else {
             unreachable!("function-result plans are keyed only by field access")
         };
-        return lower_expression_scoped(construction, symbols, binders, base, None);
+        return bases.lower_base(construction, symbols, binders, base);
     }
     if let Some(plan) = fields.structural(expression) {
         let Expression::FieldAccess { base, .. } = expression else {
             unreachable!("structural field plans are keyed only by field access")
         };
-        let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
+        let base = bases.lower_base(construction, symbols, binders, base)?;
         let ordinal = construction.expressions(|expressions| {
             expressions.record_field_ordinal(base, &plan.name, provenance)
         })?;

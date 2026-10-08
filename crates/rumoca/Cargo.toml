@@ -70,7 +70,7 @@ template-runtime-tests = []
 # Solve function-fold owner lands (SPEC 0036 checklist); see
 # `tests/suite_heavy_solve/main.rs`.
 heavy-solve-tests = []
-tracing = ["dep:tracing-subscriber", "rumoca-compile/tracing"]
+tracing = ["dep:tracing-subscriber", "rumoca-compile/tracing", "rumoca-sim/tracing"]
 
 [dependencies]
 # Internal crates: CLI consumes high-level facades plus the phase-owned

@@ -7,8 +7,8 @@ use super::*;
 /// fields are residuals of the continuous (or initialization) system, a
 /// discrete Real field is a discrete Real residual, and the discrete-valued
 /// fields are assignments of the equation's one planned B.1c owner. Every
-/// discrete field reads its own lowering of the right side, as a discrete
-/// receiver of a multi-result equation does. `discrete` is `None` for an
+/// field reads one lowering of the right side, so the call it holds is one
+/// occurrence however many fields project it. `discrete` is `None` for an
 /// initialization equation, whose fields are all initialization residuals.
 pub(super) fn lower_record_equation<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -28,43 +28,20 @@ pub(super) fn lower_record_equation<'dae>(
     };
     let generated =
         dae::DaeProvenance::generated(dae::DaeGeneration::RecordEquationProjection, equation.span)?;
-    let model_equation = discrete.is_some();
-    let is_discrete = |field: &RecordEquationFieldPlan| {
-        model_equation
-            && matches!(
-                coordinates[&field.target],
-                Coordinate::DiscreteValue(_) | Coordinate::DiscreteReal(_)
-            )
-    };
     let shared = plan
         .fields
         .iter()
         .any(|field| {
-            !is_discrete(field)
-                && matches!(
-                    field.value,
-                    RecordEquationFieldValue::AggregateProjection(_)
-                )
+            matches!(
+                field.value,
+                RecordEquationFieldValue::AggregateProjection(_)
+            )
         })
         .then(|| lower_expression(construction, coordinates, functions, rhs, None))
         .transpose()?;
     let discrete_owner = record_discrete_owner(coordinates, plan, discrete.as_mut(), owner)?;
     for field in &plan.fields {
-        let aggregate = if is_discrete(field) {
-            match field.value {
-                RecordEquationFieldValue::AggregateProjection(_) => Some(lower_expression(
-                    construction,
-                    coordinates,
-                    functions,
-                    rhs,
-                    None,
-                )?),
-                RecordEquationFieldValue::Coordinate(_) => None,
-            }
-        } else {
-            shared
-        };
-        let value = record_field_value(construction, coordinates, field, aggregate, generated)?;
+        let value = record_field_value(construction, coordinates, field, shared, generated)?;
         match (
             coordinates[&field.target],
             discrete.as_mut(),
