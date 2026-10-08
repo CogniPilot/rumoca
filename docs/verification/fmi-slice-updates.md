@@ -147,3 +147,23 @@ The complete `cli_target_fmi::` suite additionally passes: 42 tests,
 zero failures or skips (198.86 s). The four codegen extremum tests pass.
 Full workspace checks and the coverage pre-landing gate have not yet been run;
 this evidence does not authorize landing without SPEC_0025's required gate.
+
+## Internal sample events in the WASM component
+
+The unchanged Bundle experiment next fails `fmi-ls-wasm` admission with
+`unsupported-feature:clocks`. Its target manifest differs from `fmi3` only in
+this capability, although both render the same checked C kernel and the WIT
+adapter already forwards `do-step` to it. A scratch target with that flag enabled
+packages and executes all four Bundle cases in Chromium through Jco 1.37.0
+and preview2-shim 0.28.0, without modifying the checked C profile or model.
+The first divergence is the target capability declaration, rather than the
+Modelica sample implementation or a missing public Clock accessor.
+
+SPEC_0007 requires version adapters to preserve the shared kernel's event
+semantics. MLS 3.6 section 3.7.3 defines these periodic `sample` time events.
+The manifest now admits that shared profile, with public Clock accessors still
+refusing calls. The focused Wasmtime regression builds and validates the component
+with Rust/C warnings as errors, then checks a held value and tick count against
+the native runtime when two periodic events occur in each communication step.
+The focused Cargo test `fmi_ls_wasm_periodic_samples` passes (86.49 s, no skips).
+This is an experimental pinned WIT draft, not an adopted FMI layered standard.
