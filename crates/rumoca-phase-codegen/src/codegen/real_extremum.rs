@@ -289,10 +289,14 @@ fn typed_program_uses(program: &rumoca_ir_solve::TypedProgram) -> bool {
 pub(super) fn real_extremum_prelude_function(
     state: &minijinja::State,
     language: String,
+    always: Option<bool>,
 ) -> Result<String, minijinja::Error> {
-    if state
-        .lookup(USES_CONTEXT_KEY)
-        .is_some_and(|uses| !uses.is_true())
+    // `always`: the caller also renders code the solve-IR scan cannot see
+    // (typed pure-function bodies), so emit the inline helpers regardless.
+    if always != Some(true)
+        && state
+            .lookup(USES_CONTEXT_KEY)
+            .is_some_and(|uses| !uses.is_true())
     {
         return Ok(String::new());
     }
