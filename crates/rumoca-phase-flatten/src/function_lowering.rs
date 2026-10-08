@@ -575,8 +575,10 @@ fn record_write_may_move(
     output: &str,
     value: &rumoca_core::Expression,
 ) -> bool {
-    // Moving the write past another write to the same field would reorder
-    // the two, so the later one would no longer win.
+    // A write moves only past statements disjoint from its target. The test
+    // is by field name, conservative for subscripted parts: a write to the
+    // whole output or to a field of the same name would be reordered with the
+    // moved write, so the later one would no longer win.
     let moved_field = match &statements[start] {
         rumoca_core::Statement::Assignment { comp, .. } => {
             comp.parts().get(1).map(|field| field.ident.as_str())
@@ -595,7 +597,15 @@ fn record_write_may_move(
         let rumoca_core::Statement::Assignment { comp, value, .. } = statement else {
             return false;
         };
-        if comp.parts().get(1).map(|field| field.ident.as_str()) == moved_field {
+        let overlaps = comp
+            .parts()
+            .first()
+            .is_some_and(|root| root.ident == output)
+            && comp
+                .parts()
+                .get(1)
+                .is_none_or(|field| Some(field.ident.as_str()) == moved_field);
+        if overlaps {
             return false;
         }
         let assigned = comp.parts().first().map(|part| part.ident.as_str());

@@ -1245,3 +1245,24 @@ fn coalescing_record_output_writes_still_moves_a_write_past_an_unrelated_field_w
         ["s.edges[2].u", "s.n", "s.edges[1]"]
     );
 }
+
+#[test]
+fn coalescing_record_output_writes_keeps_a_field_write_before_a_whole_output_write() {
+    let mut function = rumoca_core::Function::new("Pkg.g", test_span());
+    function.add_output(
+        crate::test_support::aggregate_param("s", "Pkg.S", Vec::new(), test_span())
+            .with_def_id(OUTPUT_DEF_ID)
+            .with_type_class(ClassType::Record),
+    );
+    let (s, n, edges) = (OUTPUT_DEF_ID, FIELD_A_DEF_ID, FIELD_B_DEF_ID);
+    function.body = vec![
+        write_to(&[("s", None, s), ("n", None, n)], 1.0),
+        write_to(&[("s", None, s)], 2.0),
+        write_to(&[("s", None, s), ("edges", None, edges)], 3.0),
+    ];
+    let before = written_targets(&function);
+
+    coalesce_proven_record_output_assignments(&mut function);
+
+    assert_eq!(written_targets(&function), before);
+}

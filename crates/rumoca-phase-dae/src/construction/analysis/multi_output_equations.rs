@@ -140,7 +140,7 @@ fn validate_multi_output_equation(
         if let Some(record) = record_receiver(flat, receiver) {
             let plan = validate_record_receiver(
                 receiver_context,
-                (record, receiver),
+                record,
                 (result_shape, ordinal),
                 &mut claimed,
             )?;
@@ -265,17 +265,39 @@ fn require_owned_receiver(
     ))
 }
 
+/// A receiving slot that names a whole record: a variable reference that
+/// names no Flat variable.
+struct RecordReceiver<'flat> {
+    record: &'flat flat::RecordInstance,
+    expression: &'flat Expression,
+    name: &'flat rumoca_core::Reference,
+    subscripts: &'flat [rumoca_core::Subscript],
+    span: Span,
+}
+
 /// The whole record a receiving slot names, when it names no Flat variable.
 fn record_receiver<'flat>(
     flat: &'flat flat::Model,
-    receiver: &Expression,
-) -> Option<&'flat flat::RecordInstance> {
-    let Expression::VarRef { name, .. } = receiver else {
+    receiver: &'flat Expression,
+) -> Option<RecordReceiver<'flat>> {
+    let Expression::VarRef {
+        name,
+        subscripts,
+        span,
+    } = receiver
+    else {
         return None;
     };
-    (!flat.variables.contains_key(name.var_name()))
+    let record = (!flat.variables.contains_key(name.var_name()))
         .then(|| flat.record_instances.get(name.var_name()))
-        .flatten()
+        .flatten()?;
+    Some(RecordReceiver {
+        record,
+        expression: receiver,
+        name,
+        subscripts,
+        span: *span,
+    })
 }
 
 /// A whole record receiving one record-valued result: every leaf coordinate
@@ -283,26 +305,20 @@ fn record_receiver<'flat>(
 /// result.
 fn validate_record_receiver(
     context: ReceiverValidation<'_>,
-    (record, receiver): (&flat::RecordInstance, &Expression),
+    receiver: RecordReceiver<'_>,
     (result_shape, ordinal): (&[u32], usize),
     claimed: &mut HashSet<VarName>,
 ) -> Result<RecordEquationPlan, ToDaeError> {
-    let Expression::VarRef {
+    let RecordReceiver {
+        record,
+        expression,
         name,
         subscripts,
         span,
-        ..
-    } = receiver
-    else {
-        return Err(invalid_receiver(
-            receiver,
-            context.equation_span,
-            "must be a variable reference",
-        ));
-    };
+    } = receiver;
     if !subscripts.is_empty() || !context.call_prefix.is_empty() || !result_shape.is_empty() {
         return Err(invalid_receiver(
-            receiver,
+            expression,
             context.equation_span,
             "must receive one whole scalar record result",
         ));
@@ -312,7 +328,7 @@ fn validate_record_receiver(
         record,
         name.var_name(),
         &context.function.outputs[ordinal],
-        *span,
+        span,
     )?;
     for field in &fields {
         if !claimed.insert(field.target.clone()) {
@@ -322,10 +338,10 @@ fn validate_record_receiver(
                     "receiving variable `{}` occurs more than once",
                     field.target
                 ),
-                *span,
+                span,
             ));
         }
-        require_owned_receiver(context, &field.target, *span)?;
+        require_owned_receiver(context, &field.target, span)?;
     }
     Ok(RecordEquationPlan { fields })
 }

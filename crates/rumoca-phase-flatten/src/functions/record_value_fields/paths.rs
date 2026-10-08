@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// Whether a last.subs.iter().all(scalar_self.selected.iter().all(scalar_subscript)); selects one index of its axis.
+/// Whether a subscript selects one index of its axis.
 fn scalar_subscript(subscript: &rumoca_core::Subscript) -> bool {
     matches!(
         subscript,
