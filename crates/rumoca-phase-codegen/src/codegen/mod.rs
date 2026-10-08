@@ -70,7 +70,8 @@ use render_solve::{
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
-    allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
+    allocate_symbols_function, emitted_symbol, emitted_variable_symbol, lookup_symbol_value,
+    symbol_function,
 };
 
 pub use me_projection::me_refresh_admissible;

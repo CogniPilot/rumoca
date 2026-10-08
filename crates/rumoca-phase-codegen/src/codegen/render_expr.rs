@@ -232,7 +232,7 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         {
             return Ok(value.clone());
         }
-        super::emitted_symbol(&raw_name, cfg)
+        super::emitted_variable_symbol(&raw_name, cfg)
     } else if cfg.subscript_underscore {
         // Underscore style: x[1] -> x_1, x[1,2] -> x_1_2.
         let compact_subscripts = subscripts.replace(' ', "");
@@ -243,7 +243,7 @@ fn render_var_ref(var_ref: &Value, cfg: &ExprConfig) -> RenderResult {
         let name = super::emitted_symbol(&raw_name, cfg)?;
         Ok(format!("{}_{}", name, compact_subscripts.replace(',', "_")))
     } else {
-        let name = super::emitted_symbol(&raw_name, cfg)?;
+        let name = super::emitted_variable_symbol(&raw_name, cfg)?;
         Ok(format!("{}[{}]", name, subscripts))
     }
 }
@@ -912,6 +912,18 @@ fn render_array(array: &Value, cfg: &ExprConfig) -> RenderResult {
         }
     }
 
+    // Modelica output keeps the source matrix constructor: `[a, b]` and
+    // `[a; b]` concatenate along a dimension (a 1x2 row stays 1x2), whereas
+    // `{a, b}` builds a vector. Rendering a row as braces drops a dimension.
+    if cfg.modelica_builtins {
+        let kind = get_field(array, "kind").ok();
+        match kind.as_ref().and_then(|kind| kind.as_str()) {
+            Some("Horizontal") => return Ok(format!("[{}]", elem_strs.join(", "))),
+            Some("Vertical") => return Ok(format!("[{}]", elem_strs.join("; "))),
+            _ => {}
+        }
+    }
+
     Ok(format!(
         "{}{}{}",
         cfg.array_start,
@@ -1015,6 +1027,11 @@ fn render_array_comprehension(array_comp: &Value, cfg: &ExprConfig) -> RenderRes
         let range = get_field(&index, "range")
             .map_err(|_| render_err("ArrayComprehension index missing 'range' field"))
             .and_then(|v| render_expression(&v, cfg))?;
+        let name = if cfg.quote_dotted && name.contains('$') && !name.starts_with('\'') {
+            format!("'{name}'")
+        } else {
+            name.to_string()
+        };
         index_clauses.push(format!("{name} in {range}"));
     }
 

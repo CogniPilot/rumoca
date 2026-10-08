@@ -103,7 +103,7 @@ pub(crate) fn render_flat_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult
 /// Render the LHS of an explicit equation (VarName).
 fn render_explicit_lhs(lhs: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw = super::render_expr::render_serialized_name(lhs);
-    super::emitted_symbol(&raw, cfg)
+    super::emitted_variable_symbol(&raw, cfg)
 }
 
 /// Check if a Binary expression's op is Sub or SubElem.

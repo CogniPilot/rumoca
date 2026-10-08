@@ -10,9 +10,16 @@
   "array_end": "}",
   "if_style": "modelica",
   "sanitize_dots": false,
+  "quote_dotted": true,
+  "quote_names": flat.variables,
   "one_based_index": true,
   "modelica_builtins": true
 } -%}
+{#- Macro: a flattened hierarchical name as a quoted Modelica identifier -#}
+{%- macro qname(name) -%}{{ ("'" ~ name ~ "'") if ("." in name or "$" in name) else name }}{%- endmacro -%}
+{#- Macro: one scalar attribute modifier; `each` on an array variable unless
+    the value is itself an array literal (MLS 7.2.5) -#}
+{%- macro scalar_mod(var, key, value) -%}{{ ("each " if var.dims | length > 0 and value[:1] != "{" else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
 {#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
 {%- macro var_attrs(var) -%}
 {%- set ns = namespace(parts="") -%}
@@ -26,19 +33,19 @@
 {%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'displayUnit = "' ~ var.display_unit ~ '"' -%}
 {%- endif -%}
 {%- if var.min is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "min = " ~ render_expr(var.min, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "min", render_expr(var.min, cfg)) -%}
 {%- endif -%}
 {%- if var.max is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "max = " ~ render_expr(var.max, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "max", render_expr(var.max, cfg)) -%}
 {%- endif -%}
 {%- if var.start is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "start = " ~ render_expr(var.start, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "start", render_expr(var.start, cfg)) -%}
 {%- endif -%}
 {%- if var.fixed is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "fixed = " ~ ("true" if var.fixed else "false") -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", ("true" if var.fixed else "false")) -%}
 {%- endif -%}
 {%- if var.nominal is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "nominal = " ~ render_expr(var.nominal, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "nominal", render_expr(var.nominal, cfg)) -%}
 {%- endif -%}
 {%- if var.state_select and var.state_select != "Default" -%}
 {%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ var.state_select -%}
@@ -59,8 +66,10 @@
 {%- if var.variability is mapping and var.variability.Parameter is defined %}parameter {% endif -%}
 {%- if var.variability is mapping and var.variability.Constant is defined %}constant {% endif -%}
 {%- if var.variability is mapping and var.variability.Discrete is defined %}discrete {% endif -%}
-{%- if var.causality is mapping and var.causality.Input is defined %}input {% endif -%}
-{%- if var.causality is mapping and var.causality.Output is defined %}output {% endif -%}
+{#- Causality survives flattening only at the top level: a sub-component's
+    input (`rover.throttle`) is bound by its parent, not by the host. -#}
+{%- if var.causality is mapping and var.causality.Input is defined and "." not in name %}input {% endif -%}
+{%- if var.causality is mapping and var.causality.Output is defined and "." not in name %}output {% endif -%}
 {%- endmacro -%}
 {#- Macro: binding expression -#}
 {%- macro binding(var) -%}
@@ -79,7 +88,7 @@ assert({{ render_expr(assert_eq.condition, cfg) }}, {{ render_expr(assert_eq.mes
 class {{ model_name }}{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
 {%- for name, var in flat.variables | items %}
 {%- if not var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- set ns = namespace(has_protected=false) -%}
@@ -92,7 +101,7 @@ class {{ model_name }}{% if flat.model_description %} "{{ flat.model_description
 protected
 {%- for name, var in flat.variables | items %}
 {%- if var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- endif %}
