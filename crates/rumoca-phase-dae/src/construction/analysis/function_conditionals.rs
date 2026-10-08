@@ -240,7 +240,7 @@ pub(super) fn resolve_function_conditional(
         .collect::<Vec<_>>();
     definitions
         .folds
-        .absorb_branch_writes(writes_before, &branch_folds);
+        .absorb_branch_writes(writes_before, &branch_folds, exhaustive);
     if let Some(prior) = prior.filter(|_| first_reached) {
         definitions.remember_guarded_branch(
             (&blocks[0].cond, prior),
