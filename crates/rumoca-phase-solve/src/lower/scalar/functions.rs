@@ -2369,7 +2369,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let capture_registers = self.inherited_fold_capture_registers();
         let update_expressions = fold_view.update_values().rhs_iter().collect::<Vec<_>>();
         let invariant_tensors = self.fold_invariant_index_bases(fold, &update_expressions)?;
-        let mut update = self.fork_for_fold_update(&capture_registers, None, span)?;
+        let mut update = self.fork_for_fold_update(&capture_registers, fold, span)?;
         update
             .deferred_fold_captures
             .as_mut()
@@ -2444,7 +2444,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             Some(condition) => Some(self.lower_fold_continuation(
                 (fold, condition, &initial_widths),
                 &mut capture_registers,
-                None,
                 span,
             )?),
             None => None,
@@ -2577,7 +2576,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         })?;
         let captures = self.inherited_fold_capture_registers();
         let invariant_tensors = self.fold_invariant_index_bases(fold, &[condition])?;
-        let mut update = self.fork_for_fold_update(&captures, None, span)?;
+        let mut update = self.fork_for_fold_update(&captures, fold, span)?;
         update
             .deferred_fold_captures
             .as_mut()
@@ -2866,7 +2865,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("checked function fold domain resolves");
         let update_expressions = fold_view.update_values().rhs_iter().collect::<Vec<_>>();
         let invariant_tensors = self.fold_invariant_index_bases(fold, &update_expressions)?;
-        let mut update = self.fork_for_fold_update(captures, excluded_parent, span)?;
+        let mut update = self.fork_for_fold_update(captures, fold, span)?;
         update
             .deferred_fold_captures
             .as_mut()
@@ -2943,7 +2942,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             Some(condition) => Some(self.lower_fold_continuation(
                 (fold, condition, widths),
                 &mut capture_sources,
-                excluded_parent,
                 span,
             )?),
             None => None,
@@ -3009,10 +3007,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         &mut self,
         (fold, condition, widths): (dae::FunctionFoldId<'dae>, dae::ExprId<'dae>, &[usize]),
         capture_sources: &mut Vec<solve::Reg>,
-        excluded_parent: Option<dae::FunctionFoldId<'dae>>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let mut region = self.fork_for_fold_update(&[], excluded_parent, span)?;
+        let mut region = self.fork_for_fold_update(&[], fold, span)?;
         let Some(deferred) = region.deferred_fold_captures.as_mut() else {
             return Err(LowerError::contract(
                 "function fold continuation owns no deferred captures",
@@ -3849,29 +3846,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         false
     }
 
-    /// Every symbolic domain point readable from this compiler's register
-    /// file: its own, then those an enclosing fold update passes in as
-    /// captures, each materialized here.
-    fn visible_symbolic_points(
-        &mut self,
-        span: Span,
-    ) -> Result<Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>, LowerError> {
-        let inherited = self
-            .deferred_fold_captures
-            .as_ref()
-            .map(|deferred| deferred.symbolic_domain_points.clone())
-            .unwrap_or_default();
-        let mut points = self.symbolic_domain_points.clone();
-        for (domain, sources) in inherited {
-            let registers = sources
-                .into_iter()
-                .map(|source| self.deferred_fold_capture(source, span))
-                .collect::<Result<Vec<_>, _>>()?;
-            points.push((domain, registers));
-        }
-        Ok(points)
-    }
-
     /// The symbolic domain points and fold tuples of the enclosing fold updates
     /// as capture sources for a conditional region, which loads only those it
     /// reads.
@@ -3966,42 +3940,180 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         ))
     }
 
-    /// Every active fold tuple readable from this compiler's register file: its
-    /// own, then those an enclosing fold update passes in as captures, each
-    /// materialized here.
-    fn visible_fold_values(
+    /// The domain binders and carried tuples the update and initial values of
+    /// `fold` may read from enclosing folds, through nested folds and the
+    /// arguments of the calls in scope.
+    fn fold_scope_reads(&self, fold: dae::FunctionFoldId<'dae>) -> FoldScopeReads<'dae> {
+        let mut reads = FoldScopeReads::default();
+        let mut pending_folds = vec![fold];
+        let mut visited_folds = HashSet::new();
+        let mut pending = Vec::new();
+        let mut visited = HashSet::new();
+        while !pending_folds.is_empty() || !pending.is_empty() {
+            if let Some(next) = pending_folds.pop() {
+                if !visited_folds.insert(next) {
+                    continue;
+                }
+                if let Some(view) = self.view.function_fold(next) {
+                    pending.extend(view.initial_values().rhs_iter());
+                    pending.extend(view.update_values().rhs_iter());
+                    pending.extend(view.continuation());
+                }
+            }
+            while let Some(root) = pending.pop() {
+                if !visited.insert(root) {
+                    continue;
+                }
+                dae::for_each_expression(self.view, root, |_, expression| {
+                    match expression.operation() {
+                        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(
+                            binder,
+                        )) => {
+                            reads.domains.insert(binder.domain());
+                        }
+                        dae::ExpressionOperation::Coordinate(
+                            dae::CoordinateView::FunctionParameter(parameter),
+                        ) => {
+                            pending.extend(
+                                self.function_arguments
+                                    .iter()
+                                    .rfind(|frame| frame.function == parameter.function())
+                                    .and_then(|frame| {
+                                        frame.arguments.get(parameter.ordinal() as usize)
+                                    })
+                                    .copied(),
+                            );
+                        }
+                        dae::ExpressionOperation::FunctionFoldParameter { fold: read, .. } => {
+                            reads.folds.insert(read);
+                        }
+                        dae::ExpressionOperation::FunctionFoldOutput { fold: nested, .. } => {
+                            pending_folds.push(nested);
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+        reads
+    }
+
+    /// The symbolic domain points and active fold tuples that `reads` names,
+    /// as registers of this compiler's file: its own, those an enclosing fold
+    /// update passes in as captures, and those an enclosing conditional
+    /// region captures, each materialized here.
+    fn visible_scope(
         &mut self,
+        reads: &FoldScopeReads<'dae>,
         span: Span,
-    ) -> Result<Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>, LowerError> {
-        let inherited = self
+    ) -> Result<VisibleScope<'dae>, LowerError> {
+        let mut scope = VisibleScope {
+            symbolic: self
+                .symbolic_domain_points
+                .iter()
+                .filter(|(domain, _)| reads.domains.contains(domain))
+                .cloned()
+                .collect(),
+            folds: self
+                .function_fold_values
+                .iter()
+                .filter(|(fold, _)| reads.folds.contains(fold))
+                .cloned()
+                .collect(),
+        };
+        let inherited_symbolic = self
+            .deferred_fold_captures
+            .as_ref()
+            .map(|deferred| deferred.symbolic_domain_points.clone())
+            .unwrap_or_default();
+        for (domain, sources) in inherited_symbolic {
+            if reads.domains.contains(&domain) {
+                let registers = sources
+                    .into_iter()
+                    .map(|source| self.deferred_fold_capture(source, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                scope.symbolic.push((domain, registers));
+            }
+        }
+        let inherited_folds = self
             .deferred_fold_captures
             .as_ref()
             .map(|deferred| deferred.fold_values.clone())
             .unwrap_or_default();
-        let mut values = self.function_fold_values.clone();
-        for (fold, tuple) in inherited {
+        for (fold, tuple) in inherited_folds {
+            if reads.folds.contains(&fold) {
+                let mut resolved = Vec::with_capacity(tuple.len());
+                for carried in tuple {
+                    resolved.push(
+                        carried
+                            .into_iter()
+                            .map(|source| self.deferred_fold_capture(source, span))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
+                scope.folds.push((fold, resolved));
+            }
+        }
+        let region = self
+            .deferred_function_conditional_captures
+            .as_ref()
+            .map(|captures| {
+                let symbolic = captures
+                    .visible
+                    .symbolic
+                    .iter()
+                    .filter(|(domain, _)| reads.domains.contains(domain))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let folds = captures
+                    .visible
+                    .folds
+                    .iter()
+                    .filter(|(fold, _)| reads.folds.contains(fold))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (symbolic, folds)
+            })
+            .unwrap_or_default();
+        for (domain, sources) in region.0 {
+            let registers = sources
+                .into_iter()
+                .map(|source| {
+                    self.function_conditional_capture_range(source, span)
+                        .map(|range| range.start)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            scope.symbolic.push((domain, registers));
+        }
+        for (fold, tuple) in region.1 {
             let mut resolved = Vec::with_capacity(tuple.len());
             for carried in tuple {
                 resolved.push(
                     carried
                         .into_iter()
-                        .map(|source| self.deferred_fold_capture(source, span))
+                        .map(|source| {
+                            self.function_conditional_capture_range(source, span)
+                                .map(|range| range.start)
+                        })
                         .collect::<Result<Vec<_>, _>>()?,
                 );
             }
-            values.push((fold, resolved));
+            scope.folds.push((fold, resolved));
         }
-        Ok(values)
+        Ok(scope)
     }
 
     fn fork_for_fold_update(
         &mut self,
         captures: &[solve::Reg],
-        _excluded: Option<dae::FunctionFoldId<'dae>>,
+        fold: dae::FunctionFoldId<'dae>,
         span: Span,
     ) -> Result<Self, LowerError> {
-        let symbolic_domain_points = self.visible_symbolic_points(span)?;
-        let fold_values = self.visible_fold_values(span)?;
+        let reads = self.fold_scope_reads(fold);
+        let VisibleScope {
+            symbolic: symbolic_domain_points,
+            folds: fold_values,
+        } = self.visible_scope(&reads, span)?;
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.domain_points = self.domain_points.clone();
         if !captures.is_empty() {

@@ -358,6 +358,19 @@ struct DeferredFunctionConditionalCaptures<'dae> {
     visible: RegionVisiblePoints<'dae>,
 }
 
+/// The enclosing-fold values an inner fold may read.
+#[derive(Default)]
+struct FoldScopeReads<'dae> {
+    domains: HashSet<dae::DomainId<'dae>>,
+    folds: HashSet<dae::FunctionFoldId<'dae>>,
+}
+
+/// Symbolic points and carried tuples as registers of one compiler.
+struct VisibleScope<'dae> {
+    symbolic: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
+    folds: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
+}
+
 /// The enclosing folds' symbolic points and carried tuples a conditional region
 /// may read, as capture sources.
 #[derive(Default)]
