@@ -2,7 +2,7 @@
 //!
 //! The number of `Call` operations an owner's body issues for one callee,
 //! counted through every nested region, is a construction fact of the checked
-//! program (SPEC_0040 SOLVE-C72): a callee evaluated once per authored
+//! program (SPEC_0040 SOLVE-C73): a callee evaluated once per authored
 //! occurrence has one site per occurrence. Executors that run every site (the
 //! Cranelift and WASM adapters) evaluate it once per executed site, so this
 //! count is the cost owner a report can pin without running the program.

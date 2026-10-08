@@ -116,7 +116,7 @@ pub(crate) fn model_artifact(
 }
 
 /// Static call sites per (caller, callee) owner pair: a callee evaluated once
-/// per authored occurrence has one site per occurrence (SOLVE-C72), so a host
+/// per authored occurrence has one site per occurrence (SOLVE-C73), so a host
 /// reads the repetition cost of an owner without running the module.
 fn call_sites(table: &rumoca_ir_solve::SolvePureCallTable) -> serde_json::Value {
     table

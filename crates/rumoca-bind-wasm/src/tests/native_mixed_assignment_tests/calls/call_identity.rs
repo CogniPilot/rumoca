@@ -1,5 +1,5 @@
 //! One authored call occurrence is one call site, however deeply the loop
-//! body nests it in conditionals (SPEC_0040 SOLVE-C72), and the native module
+//! body nests it in conditionals (SPEC_0040 SOLVE-C73), and the native module
 //! computes exactly what the source's own operation order computes.
 
 use super::*;
