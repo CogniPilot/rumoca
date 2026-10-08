@@ -256,6 +256,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             {
                 return self.deferred_fold_capture(source, span);
             }
+            if let Some(register) =
+                self.region_symbolic_point(binder.domain(), binder.ordinal() as usize, span)?
+            {
+                return Ok(register);
+            }
             let Some((_, values)) = self
                 .domain_points
                 .iter()

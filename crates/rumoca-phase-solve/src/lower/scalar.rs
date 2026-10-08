@@ -295,7 +295,7 @@ struct DeferredFoldCaptures<'dae> {
     locals: HashMap<solve::Reg, solve::Reg>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum FunctionConditionalCaptureSource<'dae> {
     DefinitionRange {
         context: u64,
@@ -308,6 +308,11 @@ enum FunctionConditionalCaptureSource<'dae> {
         field: usize,
         count: usize,
     },
+    /// A register of the compiler that owns the conditional, one scalar wide.
+    ParentRegister { source: solve::Reg },
+    /// A register an enclosing fold update passes in as a capture, resolved in
+    /// the compiler that owns the conditional.
+    ParentInherited { source: solve::Reg },
 }
 
 impl<'dae> FunctionConditionalCaptureSource<'dae> {
@@ -315,6 +320,7 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
         match self {
             Self::DefinitionRange { count, .. }
             | Self::DefinitionRecordFieldRange { count, .. } => count,
+            Self::ParentRegister { .. } | Self::ParentInherited { .. } => 1,
         }
     }
 
@@ -338,6 +344,8 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
                 field,
                 count,
             },
+            Self::ParentRegister { source } => Self::ParentRegister { source },
+            Self::ParentInherited { source } => Self::ParentInherited { source },
         }
     }
 }
@@ -346,7 +354,38 @@ struct DeferredFunctionConditionalCaptures<'dae> {
     owner_function: dae::FunctionId<'dae>,
     owner_context: u64,
     sources: Vec<FunctionConditionalCaptureSource<'dae>>,
-    locals: Vec<(FunctionConditionalCaptureSource<'dae>, solve::Reg)>,
+    locals: HashMap<FunctionConditionalCaptureSource<'dae>, solve::Reg>,
+    /// The first capture slot of each source and the total slot width.
+    slots: HashMap<FunctionConditionalCaptureSource<'dae>, usize>,
+    width: usize,
+    visible: RegionVisiblePoints<'dae>,
+}
+
+/// The enclosing-fold values an inner fold may read.
+#[derive(Default)]
+struct FoldScopeReads<'dae> {
+    domains: HashSet<dae::DomainId<'dae>>,
+    folds: HashSet<dae::FunctionFoldId<'dae>>,
+}
+
+/// Symbolic points and carried tuples as registers of one compiler.
+struct VisibleScope<'dae> {
+    symbolic: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
+    folds: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
+}
+
+/// The enclosing folds' symbolic points and carried tuples a conditional region
+/// may read, as capture sources.
+#[derive(Default)]
+struct RegionVisiblePoints<'dae> {
+    symbolic: Vec<(
+        dae::DomainId<'dae>,
+        Vec<FunctionConditionalCaptureSource<'dae>>,
+    )>,
+    folds: Vec<(
+        dae::FunctionFoldId<'dae>,
+        Vec<Vec<FunctionConditionalCaptureSource<'dae>>>,
+    )>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1683,4 +1722,43 @@ fn scalar_operand<'dae>(
     } else {
         scalar
     }
+}
+
+/// The capture sources of a conditional program, in owner slot order, with the
+/// first slot of each.
+#[derive(Default)]
+struct MergedCaptures<'dae> {
+    sources: Vec<FunctionConditionalCaptureSource<'dae>>,
+    bases: HashMap<FunctionConditionalCaptureSource<'dae>, usize>,
+    width: usize,
+}
+
+impl<'dae> MergedCaptures<'dae> {
+    /// The first owner slot of `source`, appending it when new.
+    fn base_of(
+        &mut self,
+        source: FunctionConditionalCaptureSource<'dae>,
+        span: Span,
+    ) -> Result<usize, LowerError> {
+        if let Some(&base) = self.bases.get(&source) {
+            return Ok(base);
+        }
+        let base = self.width;
+        self.width = base.checked_add(source.width()).ok_or_else(|| {
+            LowerError::contract("function-conditional owner capture ABI overflows", span)
+        })?;
+        self.bases.insert(source, base);
+        self.sources.push(source);
+        Ok(base)
+    }
+}
+
+/// The worklist of one fold scope scan.
+#[derive(Default)]
+struct FoldScopeScan<'dae> {
+    reads: FoldScopeReads<'dae>,
+    folds: Vec<dae::FunctionFoldId<'dae>>,
+    visited_folds: HashSet<dae::FunctionFoldId<'dae>>,
+    pending: Vec<dae::ExprId<'dae>>,
+    visited: HashSet<dae::ExprId<'dae>>,
 }
