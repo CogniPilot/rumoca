@@ -3966,6 +3966,34 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         ))
     }
 
+    /// Every active fold tuple readable from this compiler's register file: its
+    /// own, then those an enclosing fold update passes in as captures, each
+    /// materialized here.
+    fn visible_fold_values(
+        &mut self,
+        span: Span,
+    ) -> Result<Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>, LowerError> {
+        let inherited = self
+            .deferred_fold_captures
+            .as_ref()
+            .map(|deferred| deferred.fold_values.clone())
+            .unwrap_or_default();
+        let mut values = self.function_fold_values.clone();
+        for (fold, tuple) in inherited {
+            let mut resolved = Vec::with_capacity(tuple.len());
+            for carried in tuple {
+                resolved.push(
+                    carried
+                        .into_iter()
+                        .map(|source| self.deferred_fold_capture(source, span))
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
+            values.push((fold, resolved));
+        }
+        Ok(values)
+    }
+
     fn fork_for_fold_update(
         &mut self,
         captures: &[solve::Reg],
@@ -3973,6 +4001,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<Self, LowerError> {
         let symbolic_domain_points = self.visible_symbolic_points(span)?;
+        let fold_values = self.visible_fold_values(span)?;
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.domain_points = self.domain_points.clone();
         if !captures.is_empty() {
@@ -3983,7 +4012,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         compiler.function_arguments = self.function_arguments.clone();
         compiler.deferred_fold_captures = Some(DeferredFoldCaptures {
-            fold_values: self.function_fold_values.clone(),
+            fold_values,
             symbolic_domain_points,
             packed_expressions: HashMap::new(),
             packed_capture_ranges: HashMap::new(),

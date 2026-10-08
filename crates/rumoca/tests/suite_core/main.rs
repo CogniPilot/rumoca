@@ -141,6 +141,7 @@ mod function_loop_offset_slices;
 mod function_loop_reduction_checked;
 mod function_loop_snapshot_test;
 mod function_matrix_construction;
+mod function_nested_fold_captures;
 mod function_nested_record_assembly;
 mod function_noelse_if_test;
 mod function_output_shadow_state_test;

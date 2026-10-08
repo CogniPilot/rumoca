@@ -583,8 +583,8 @@ fn a_carried_value_of_an_outer_loop_guards_a_fold_in_a_callee() {
         dt: Some(0.1),
         ..SimOptions::default()
     };
-    let simulation = simulate_dae(&compiled.dae, &options)
-        .expect("the carried guard lowers to Solve rows");
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the carried guard lowers to Solve rows");
     for (name, expected) in [("total", 7.0), ("peak", 4.0)] {
         let variable = simulation
             .names
