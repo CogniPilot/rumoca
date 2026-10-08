@@ -1666,7 +1666,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             || {
                 let holder = match owner.and_then(|function| view.function(function)) {
                     Some(definition) => format!("`{}`", definition.name()),
-                    None => "the model row".to_string(),
+                    None => {
+                        let text = dae::DaeProvenance::source(span)
+                            .ok()
+                            .and_then(|provenance| view.source_text(provenance))
+                            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                            .map(|text| match text.char_indices().nth(80) {
+                                Some((cut, _)) => format!("{}...", &text[..cut]),
+                                None => text,
+                            });
+                        match text {
+                            Some(text) => format!("the model expression `{text}`"),
+                            None => "the model row".to_string(),
+                        }
+                    }
                 };
                 format!(
                     "{holder} at {}:{}",

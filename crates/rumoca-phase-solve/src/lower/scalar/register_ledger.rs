@@ -21,12 +21,17 @@ use crate::LowerError;
 /// Run-time bytes one register occupies: one primal and one tangent `f64`.
 pub(super) const REGISTER_BYTES: u64 = 16;
 
-/// Register-file bytes one program may reserve.
-pub(super) const REGISTER_FILE_BYTE_BUDGET: u64 = 256 << 20;
+/// Bytes one program may hold across its register file, its operation list and
+/// its register facts. Each is charged as it grows, so a program unrolled into
+/// scalars is refused before the memory of its operations and facts is spent,
+/// not after the register file alone reaches the limit.
+pub(super) const PROGRAM_BYTE_BUDGET: u64 = 256 << 20;
 
-/// Registers one program may allocate: the register file budget over the bytes
-/// of one register.
-pub(super) const MAX_PROGRAM_REGISTERS: u64 = REGISTER_FILE_BYTE_BUDGET / REGISTER_BYTES;
+/// Bytes of one operation in the operation list.
+const OPERATION_BYTES: u64 = std::mem::size_of::<solve::LinearOp>() as u64;
+
+/// Bytes of one register fact entry.
+const FACT_BYTES: u64 = std::mem::size_of::<(solve::Reg, RegisterFact)>() as u64;
 
 /// A program that allocates at least this many registers reports its owners to
 /// the `rumoca_phase_solve::registers` trace target.
@@ -90,10 +95,16 @@ pub(super) struct RegisterLedger {
 
 impl RegisterLedger {
     pub(super) fn new() -> Self {
-        Self::with_budget(MAX_PROGRAM_REGISTERS)
+        Self::with_byte_budget(PROGRAM_BYTE_BUDGET)
     }
 
-    pub(super) fn with_budget(budget: u64) -> Self {
+    /// A ledger whose register file alone may hold `registers`.
+    #[cfg(test)]
+    pub(super) fn with_budget(registers: u64) -> Self {
+        Self::with_byte_budget(registers * REGISTER_BYTES)
+    }
+
+    fn with_byte_budget(budget: u64) -> Self {
         Self {
             budget,
             facts: FxHashMap::default(),
@@ -120,19 +131,21 @@ impl RegisterLedger {
             end: total,
             operations: ops,
         } = allocation;
-        if total > self.budget {
+        let facts = self.facts.len() as u64;
+        let needed = total
+            .saturating_mul(REGISTER_BYTES)
+            .saturating_add((ops as u64).saturating_mul(OPERATION_BYTES))
+            .saturating_add(facts.saturating_mul(FACT_BYTES));
+        if needed > self.budget {
             let culprit = self.owner_name(owner).unwrap_or_else(name);
             return Err(LowerError::budget_exceeded(
                 format!(
                     "register budget exceeded in {culprit}: the program needs {total} registers \
-                     ({} MiB of register file at {REGISTER_BYTES} bytes each) and may hold {} \
-                     ({} MiB); at most {} registers carried exact facts and {} operations were issued; \
+                     ({REGISTER_BYTES} bytes each), {ops} operations ({OPERATION_BYTES} bytes each) \
+                     and {facts} register facts ({FACT_BYTES} bytes each), {} bytes, and may hold {} bytes; \
                      owners by registers: {}",
-                    total.saturating_mul(REGISTER_BYTES) >> 20,
+                    needed,
                     self.budget,
-                    self.budget.saturating_mul(REGISTER_BYTES) >> 20,
-                    self.peak_facts,
-                    ops.max(self.peak_ops),
                     self.owner_table(REFUSAL_OWNERS),
                 ),
                 span,

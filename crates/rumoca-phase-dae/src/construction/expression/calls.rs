@@ -554,13 +554,17 @@ pub(super) fn lower_record_array_field_access_with<'e, 'dae>(
     let fields = &symbols.functions.record_array_fields;
     if fields.function_result(expression).is_some() {
         let Expression::FieldAccess { base, .. } = expression else {
-            unreachable!("function-result plans are keyed only by field access")
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
         };
         return bases.lower_base(construction, symbols, binders, base);
     }
     if let Some(plan) = fields.structural(expression) {
         let Expression::FieldAccess { base, .. } = expression else {
-            unreachable!("structural field plans are keyed only by field access")
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
         };
         let base = bases.lower_base(construction, symbols, binders, base)?;
         let ordinal = construction.expressions(|expressions| {
@@ -574,9 +578,11 @@ pub(super) fn lower_record_array_field_access_with<'e, 'dae>(
         return construction
             .expressions(|expressions| expressions.at(provenance).field(base, plan.ordinal));
     }
-    let plan = fields
-        .get(expression)
-        .expect("analysis certifies every lowered record-array field projection");
+    let Some(plan) = fields.get(expression) else {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: provenance.span(),
+        });
+    };
     let (coordinates, subscripts) = match plan {
         RecordArrayFieldPlan::MaterializedCoordinate { coordinate, .. } => {
             let coordinate = exact_model_coordinate(symbols, *coordinate, provenance.span())?;

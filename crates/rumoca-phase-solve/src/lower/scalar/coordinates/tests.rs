@@ -269,7 +269,7 @@ fn a_range_past_the_register_budget_is_refused_before_it_is_recorded() {
         );
         assert_eq!(error.source_span(), Some(span));
         let message = error.to_string();
-        assert!(message.contains("the model row"), "{message}");
+        assert!(message.contains("the model expression"), "{message}");
         assert!(message.contains("needs 101 registers"), "{message}");
         assert!(message.contains("60 registers, 960 bytes"), "{message}");
         assert_eq!(
@@ -290,5 +290,29 @@ fn a_register_range_carries_no_per_register_facts() {
         assert_eq!(compiler.real_register(literal), Some(2.0));
         assert_eq!(compiler.integer_register(literal), Some(2));
         assert_eq!(compiler.integer_register(0), None);
+    });
+}
+
+#[test]
+fn issued_operations_and_facts_are_charged_to_the_budget_before_their_memory_is_spent() {
+    with_compiler(|compiler, span| {
+        // A register file of 1000 entries is 16000 bytes. Each literal also
+        // issues an operation and a fact, so the program is refused long
+        // before its register file alone would be full.
+        compiler.ledger = register_ledger::RegisterLedger::with_budget(1000);
+        let mut issued = 0;
+        let error = loop {
+            match compiler.constant(1.0, span) {
+                Ok(_) => issued += 1,
+                Err(error) => break error,
+            }
+            assert!(issued < 1000, "the register file alone was filled");
+        };
+        assert!(matches!(error, LowerError::BudgetExceeded { .. }));
+        let message = error.to_string();
+        assert!(message.contains("register facts"), "{message}");
+        assert!(message.contains("operations"), "{message}");
+        assert!(issued < 200, "{issued}");
+        assert_eq!(compiler.next_register as usize, issued);
     });
 }

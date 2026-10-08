@@ -3,7 +3,7 @@
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{is_text_value, value_type_provenance};
+use super::{is_text_value, lower_primitive_type, value_type_provenance};
 
 /// The number of interface leaves of a value type: the length of
 /// [`lower_value_type_leaves`] without building the leaves, so a consumer that
@@ -12,6 +12,7 @@ use super::{is_text_value, value_type_provenance};
 pub(super) fn value_type_leaf_count<'dae>(
     view: dae::DaeView<'dae>,
     id: dae::ValueTypeId<'dae>,
+    arithmetic: solve::SolveArithmeticProfile,
 ) -> Result<usize, solve::SolveProgramConstructionError> {
     let value_type = view
         .value_type(id)
@@ -20,6 +21,10 @@ pub(super) fn value_type_leaf_count<'dae>(
         return Ok(0);
     }
     if !value_type.is_record() {
+        // The primitive's own construction error stays reachable; the tensor
+        // extension over record extents is validated where the full interface is
+        // built (`lower_value_type_leaves`), which registration runs first.
+        lower_primitive_type(view, id, arithmetic)?;
         return Ok(1);
     }
     if value_type.record_field_count() == 0 {
@@ -34,7 +39,7 @@ pub(super) fn value_type_leaf_count<'dae>(
             },
         )?;
         count
-            .checked_add(value_type_leaf_count(view, field_type)?)
+            .checked_add(value_type_leaf_count(view, field_type, arithmetic)?)
             .ok_or(solve::SolveProgramConstructionError::IdentityOverflow {
                 provenance: value_type_provenance(view, id),
             })
