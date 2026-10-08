@@ -264,3 +264,89 @@ fn an_aggregate_updated_by_itself_is_unchanged_on_every_executor() {
     let (table, site) = table(vec![aggregate_type()], update_by_itself);
     assert_eq!(decode(&run_everywhere(&table, &site)), bits(&BITS));
 }
+
+/// Carries the aggregate through a fold whose conditional rewrites one cell
+/// in place on the selected iteration and passes the aggregate through on
+/// every other, so the carried storage is never copied per iteration.
+fn conditional_view_carry<'p>(
+    b: &mut solve::TypedProgramBuilder<'p>,
+    inputs: &[solve::ProgramSlot<'p>],
+    outputs: &[solve::ProgramSlot<'p>],
+) -> Result<(), solve::SolveProgramConstructionError> {
+    let aggregate = b.load(inputs[0], span(18061))?;
+    let folded = b.fold(
+        domain(1, 3, 1),
+        &[aggregate],
+        &[],
+        span(18063),
+        |r, carried, _captures, binders, outputs| {
+            let old = r.load(carried[0], span(18064))?;
+            let index = r.load(binders[0], span(18066))?;
+            let selected = r.constant(
+                solve::SolveValue::integer(profile(), 2).unwrap(),
+                span(18067),
+            )?;
+            let is_selected = r.compare(
+                solve::SolveCompareOperator::Equal,
+                index,
+                selected,
+                span(18068),
+            )?;
+            let next = r.conditional(
+                is_selected,
+                &[old],
+                vec![aggregate_type()],
+                span(18069),
+                |arm, inputs, outputs| {
+                    let old = arm.load(inputs[0], span(18070))?;
+                    let two = arm.constant(solve::SolveValue::real(profile(), 2.0), span(18071))?;
+                    let doubled = arm.scale(old, two, span(18072))?;
+                    let axes = [solve::ProgramTensorViewAxis::Span {
+                        origin: 0,
+                        extent: 3,
+                    }];
+                    let updated = arm.update_view(old, doubled, &axes, span(18073))?;
+                    arm.store(outputs[0], updated, span(18074))
+                },
+                |arm, inputs, outputs| {
+                    let old = arm.load(inputs[0], span(18075))?;
+                    arm.store(outputs[0], old, span(18076))
+                },
+            )?;
+            r.store(outputs[0], next[0], span(18077))
+        },
+    )?;
+    b.store(outputs[0], folded[0], span(18078))?;
+    b.store(outputs[1], aggregate, span(18079))
+}
+
+#[test]
+fn a_conditional_view_carry_matches_on_every_executor_and_copies_nothing_per_iteration() {
+    let (table, site) = table(
+        vec![aggregate_type(), aggregate_type()],
+        conditional_view_carry,
+    );
+    let out = decode(&run_everywhere(&table, &site));
+    assert_eq!(out[..3], bits(&[-0.0, f64::INFINITY, 2.5]), "carried");
+    assert_eq!(out[3..], bits(&BITS), "the source aggregate is intact");
+    // The fold's carried copy happens once before the loop; the transition
+    // body, the conditional and its arms copy no aggregate (24 bytes).
+    let compiled = compile_pure_call_wasm(&table, &site).unwrap();
+    let aggregate_copies = wasmparser::Parser::new(0)
+        .parse_all(compiled.module_bytes())
+        .filter_map(Result::ok)
+        .filter_map(|payload| match payload {
+            wasmparser::Payload::CodeSectionEntry(body) => Some(body),
+            _ => None,
+        })
+        .flat_map(|body| {
+            body.get_operators_reader()
+                .unwrap()
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        })
+        .filter(|operator| matches!(operator, wasmparser::Operator::MemoryCopy { .. }))
+        .count();
+    assert_eq!(aggregate_copies, 4, "static aggregate copies");
+}
