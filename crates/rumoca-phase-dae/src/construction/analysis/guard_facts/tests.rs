@@ -34,6 +34,7 @@ impl Names {
             shapes: &self.shapes,
             integers: &self.integers,
             reals: &self.reals,
+            generated: &[],
         }
     }
 }
@@ -375,8 +376,8 @@ fn the_paths_leaving_a_value_undefined_stay_apart() {
         scope,
     );
     let decided = decided.assuming(&var("a"), false, scope);
-    let mut paths = UndefinedPaths::single(decided);
-    paths.join_path(&UndefinedPaths::single(GuardFacts::entry().assuming(
+    let mut paths = PathSet::single(decided);
+    paths.join_path(&PathSet::single(GuardFacts::entry().assuming(
         &var("b"),
         true,
         scope,
@@ -389,4 +390,112 @@ fn the_paths_leaving_a_value_undefined_stay_apart() {
     let mut both = paths.entering(&[&var("a")], 0, scope);
     both = both.entering(&[&var("b")], 1, scope);
     assert!(both.is_unreachable());
+}
+
+#[test]
+fn a_loop_branch_the_path_excludes_writes_nothing_on_that_path() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("v", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    facts.after(&assign("w", integer(3)), scope);
+    let facts = facts.assuming(&var("v"), false, scope);
+    let body = vec![branch(
+        vec![(var("v"), vec![assign("w", integer(9))])],
+        None,
+    )];
+    // `v` is false here and the loop never writes it, so `w` keeps its value.
+    let head = facts.loop_entry_on_path(&body, &[], scope);
+    assert_eq!(bound(&head, "w"), IntegerInterval::exact(3));
+    // Where `v` is open the branch may run, and `w` is forgotten.
+    let mut open = GuardFacts::entry();
+    open.after(&assign("w", integer(3)), scope);
+    assert_eq!(
+        bound(&open.loop_entry_on_path(&body, &[], scope), "w").lower,
+        None
+    );
+}
+
+#[test]
+fn a_loop_branch_under_a_condition_the_loop_writes_may_still_run() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("v", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    facts.after(&assign("w", integer(3)), scope);
+    let facts = facts.assuming(&var("v"), false, scope);
+    let body = vec![
+        branch(vec![(var("v"), vec![assign("w", integer(9))])], None),
+        assign("v", binary(OpBinary::Lt, var("n"), integer(0))),
+    ];
+    let head = facts.loop_entry_on_path(&body, &[], scope);
+    assert_eq!(bound(&head, "w").lower, None);
+}
+
+#[test]
+fn capturing_a_boolean_keeps_the_selection_of_the_captured_value() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("v", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    let mut facts = facts.assuming(&var("v"), false, scope);
+    facts.after(&assign("g", var("v")), scope);
+    // `g` holds `v`, which is false here: both are excluded from `true`.
+    assert!(facts.assuming(&var("g"), true, scope).is_unreachable());
+    assert!(facts.assuming(&var("v"), true, scope).is_unreachable());
+}
+
+#[test]
+fn a_guarded_if_expression_proves_its_condition_where_it_holds() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("a", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    // `if a then b else false` is `a and b`.
+    let conjunction = Expression::If {
+        branches: vec![(var("a"), var("b"))],
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
+            span: span(),
+        }),
+        span: span(),
+    };
+    let held = facts.assuming(&conjunction, true, scope);
+    assert_eq!(bound(&held, "r").lower, Some(5));
+    assert!(held.assuming(&var("a"), false, scope).is_unreachable());
+    // Its falsity proves neither operand.
+    let failed = facts.assuming(&conjunction, false, scope);
+    assert!(!failed.assuming(&var("a"), false, scope).is_unreachable());
+}
+
+#[test]
+fn a_captured_boolean_holds_its_definition_after_its_statement() {
+    let names = Names::new();
+    let scope = names.scope();
+    let definition = crate::construction::analysis::function_returns::GeneratedBooleanDefinition {
+        target: VarName::new("g"),
+        value: binary(OpBinary::Gt, var("r"), integer(4)),
+        span: span(),
+    };
+    let generated = [definition];
+    let scope = FactScope {
+        generated: &generated,
+        ..scope
+    };
+    let mut facts = GuardFacts::entry();
+    facts.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let held = facts.assuming(&var("g"), true, scope);
+    assert_eq!(bound(&held, "r").lower, Some(5));
 }

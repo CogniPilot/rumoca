@@ -39,7 +39,7 @@ mod tests;
 mod transfer;
 
 use super::*;
-pub(super) use path_set::UndefinedPaths;
+pub(super) use path_set::PathSet;
 use rumoca_core::{IntegerInterval, RealInterval};
 use selections::{ArmValue, Selection};
 use std::collections::BTreeMap;
@@ -193,6 +193,9 @@ pub(super) struct FactScope<'a> {
     pub(super) shapes: &'a ShapeEnvironment,
     pub(super) integers: &'a HashSet<VarName>,
     pub(super) reals: &'a HashSet<VarName>,
+    /// The generated Booleans, each captured by the `Empty` statement at its
+    /// source span.
+    pub(super) generated: &'a [function_returns::GeneratedBooleanDefinition],
 }
 
 impl FactScope<'_> {
@@ -241,6 +244,39 @@ impl GuardFacts {
             }
         }
         facts
+    }
+
+    /// A Boolean whose arms prove a value among `written`, with more than one
+    /// arm left on this path.
+    pub(super) fn correlated_boolean(&self, written: &HashSet<String>) -> Option<VarName> {
+        self.selections
+            .iter()
+            .find(|(_, selection)| selection.correlates_with(written))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// This path where the Boolean `name` has `value`; unreachable when no arm
+    /// of any selection admits it.
+    pub(super) fn assuming_boolean(&self, name: &VarName, value: bool) -> Self {
+        let mut assumed = self.clone();
+        assumed.narrow_boolean(name, value, 0);
+        if assumed.selections.values().any(Selection::is_empty) {
+            assumed.path = None;
+            assumed.selections.clear();
+        }
+        assumed
+    }
+
+    /// Whether both paths hold the same literal values for each value that
+    /// has a selection.
+    pub(super) fn same_selected_values(&self, other: &Self) -> bool {
+        self.selections.len() == other.selections.len()
+            && self.selections.iter().all(|(name, selection)| {
+                other
+                    .selections
+                    .get(name)
+                    .is_some_and(|candidate| selection.same_values(candidate))
+            })
     }
 
     /// Whether no execution reaches this path: its facts contradict.
@@ -384,6 +420,29 @@ impl GuardFacts {
         }
     }
 
+    /// The facts implied when `lhs and rhs` (`conjunction`) or `lhs or rhs`
+    /// evaluates to `value`.
+    fn junction_facts(
+        &self,
+        (lhs, rhs): (&Expression, &Expression),
+        conjunction: bool,
+        value: bool,
+        scope: FactScope<'_>,
+    ) -> PathFacts {
+        let lhs_facts = self.facts(lhs, value, scope);
+        // `a and b` is true when both are, false when either is.
+        if conjunction == value {
+            // Both operands have this value: the second one's facts are read
+            // with the first one's facts already known.
+            let mut known = self.clone();
+            known.path = conjoin(known.path, lhs_facts.clone());
+            known.path.as_ref()?;
+            conjoin(lhs_facts, known.facts(rhs, value, scope))
+        } else {
+            disjoin(lhs_facts, self.facts(rhs, value, scope))
+        }
+    }
+
     /// The facts implied when `expression` evaluates to `value`.
     fn facts(&self, expression: &Expression, value: bool, scope: FactScope<'_>) -> PathFacts {
         match expression {
@@ -401,19 +460,17 @@ impl GuardFacts {
                 lhs,
                 rhs,
                 ..
-            } => {
-                let lhs_facts = self.facts(lhs, value, scope);
-                // `a and b` is true when both are, false when either is.
-                if matches!(op, OpBinary::And) == value {
-                    // Both operands have this value: the second one's facts
-                    // are read with the first one's facts already known.
-                    let mut known = self.clone();
-                    known.path = conjoin(known.path, lhs_facts.clone());
-                    known.path.as_ref()?;
-                    conjoin(lhs_facts, known.facts(rhs, value, scope))
-                } else {
-                    disjoin(lhs_facts, self.facts(rhs, value, scope))
-                }
+            } => self.junction_facts((lhs, rhs), matches!(op, OpBinary::And), value, scope),
+            // `if a then b else false` is `a and b`.
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } if matches!(branches.as_slice(), [_])
+                && ArmValue::of_literal(else_branch).is_some_and(|arm| arm.is_boolean(false)) =>
+            {
+                let (lhs, rhs) = &branches[0];
+                self.junction_facts((lhs, rhs), true, value, scope)
             }
             Expression::Binary { op, lhs, rhs, .. } => self.comparison(op, lhs, rhs, value, scope),
             Expression::VarRef {
@@ -529,12 +586,13 @@ impl GuardFacts {
         selection
             .arms_when(|arm| arm.is_boolean(value))
             .fold(None, |joined, (facts, implied)| {
-                let mut arm = facts.clone();
-                if depth < MAX_IMPLICATION_DEPTH {
-                    for (other, holds) in implied {
-                        arm = conjoin(arm, self.boolean_facts(other, *holds, depth + 1));
-                    }
-                }
+                let implied = (depth < MAX_IMPLICATION_DEPTH)
+                    .then_some(implied)
+                    .into_iter()
+                    .flatten();
+                let arm = implied.fold(facts.clone(), |arm, (other, holds)| {
+                    conjoin(arm, self.boolean_facts(other, *holds, depth + 1))
+                });
                 disjoin(joined, arm)
             })
     }
@@ -572,6 +630,17 @@ impl GuardFacts {
             } if value => {
                 self.narrow_selections(lhs, true);
                 self.narrow_selections(rhs, true);
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } if value
+                && matches!(branches.as_slice(), [_])
+                && ArmValue::of_literal(else_branch).is_some_and(|arm| arm.is_boolean(false)) =>
+            {
+                self.narrow_selections(&branches[0].0, true);
+                self.narrow_selections(&branches[0].1, true);
             }
             Expression::VarRef {
                 name, subscripts, ..
@@ -780,12 +849,23 @@ impl ValueKinds {
         kinds
     }
 
-    /// The fact scope of these kinds over `shapes`.
+    /// The fact scope of these kinds over `shapes`, before any capture.
     pub(super) fn scope<'a>(&'a self, shapes: &'a ShapeEnvironment) -> FactScope<'a> {
+        self.scope_with(shapes, &[])
+    }
+
+    /// The fact scope of these kinds over `shapes`, where `generated` are
+    /// captured.
+    pub(super) fn scope_with<'a>(
+        &'a self,
+        shapes: &'a ShapeEnvironment,
+        generated: &'a [function_returns::GeneratedBooleanDefinition],
+    ) -> FactScope<'a> {
         FactScope {
             shapes,
             integers: &self.integers,
             reals: &self.reals,
+            generated,
         }
     }
 }
@@ -793,7 +873,8 @@ impl ValueKinds {
 impl<'scope> FunctionValidationContext<'scope> {
     /// What value facts read in this function.
     pub(super) fn fact_scope(self) -> FactScope<'scope> {
-        self.scalars.scope(self.shapes)
+        self.scalars
+            .scope_with(self.shapes, self.generated_booleans)
     }
 }
 
