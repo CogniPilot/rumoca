@@ -324,6 +324,8 @@ struct CallRegistration<'dae> {
     families: HashMap<dae::ContinuousFamilyId<'dae>, solve::SolvePureCallSite>,
     /// Functions whose call SCC was already examined for a SOLVE-C62 group.
     examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
+    /// What each function contributes to every owner of it, derived once.
+    function_facts: HashMap<dae::FunctionId<'dae>, std::rc::Rc<registration::FunctionFacts<'dae>>>,
 }
 
 impl CallRegistration<'_> {
@@ -334,6 +336,7 @@ impl CallRegistration<'_> {
             calls: HashMap::new(),
             families: HashMap::new(),
             examined_functions: std::collections::HashSet::new(),
+            function_facts: HashMap::new(),
         }
     }
 

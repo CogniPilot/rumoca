@@ -1051,9 +1051,25 @@ pub(super) fn require_integer_literal(
     {
         return Ok(*value);
     }
+    let mut reads = Vec::new();
+    expression.collect_var_refs(&mut reads);
+    let reads = if reads.is_empty() {
+        "no named value".to_string()
+    } else {
+        reads
+            .iter()
+            .map(|name| format!("`{}`", name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     Err(ToDaeError::unsupported_flat(
         owner,
-        "the canonical compact range requires an integer literal bound; a run-time value or a tunable parameter stays settable and is never folded, so declare the parameter final or Evaluate = true",
+        format!(
+            "the canonical compact range requires an integer literal bound or one settled at \
+             translation time; this bound reads {reads}; a run-time value or a tunable \
+             parameter stays settable and is never folded, so declare the parameter final \
+             or Evaluate = true"
+        ),
         expression_span(expression)?,
     ))
 }
@@ -1083,6 +1099,39 @@ mod tests {
             subscripts: Vec::new(),
             span,
         }
+    }
+
+    #[test]
+    fn a_refused_range_bound_names_the_values_it_reads_and_its_function() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("range.mo", "1:problem.nodeCount");
+        let span = Span::from_offsets(source, 2, 19);
+        let bound = Expression::VarRef {
+            name: rumoca_core::Reference::generated("problem.nodeCount"),
+            subscripts: Vec::new(),
+            span,
+        };
+        let error = require_integer_literal(&bound, "range end")
+            .expect_err("a run-time value is no literal bound")
+            .within_function("Pkg.Correct");
+        let ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span: reported,
+        } = error
+        else {
+            panic!("a refused bound is an unsupported semantic owner");
+        };
+        assert_eq!(feature, "range end");
+        assert!(
+            detail.starts_with("in function `Pkg.Correct`: "),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("this bound reads `problem.nodeCount`"),
+            "{detail}"
+        );
+        assert_eq!(reported, span);
     }
 
     #[test]

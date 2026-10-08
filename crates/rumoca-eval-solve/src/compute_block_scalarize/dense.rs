@@ -657,14 +657,11 @@ fn max_reg_in_op(
         } => {
             let mut last = 0;
             for update in updates {
-                let value_count = dimensions.iter().zip(update.subscripts.iter()).try_fold(
-                    1usize,
-                    |count, (&extent, subscript)| {
-                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                            checked_product(count, extent as usize, kind, span)
-                        } else {
-                            Ok(count)
-                        }
+                let value_count = update.value_count(&dimensions).ok_or(
+                    ScalarizeError::RegisterIndexOverflow {
+                        kind,
+                        index: usize::MAX,
+                        span,
                     },
                 )?;
                 let element_offset = checked_product(
@@ -681,13 +678,8 @@ fn max_reg_in_op(
                     kind,
                     span,
                 )?);
-                for subscript in &update.subscripts {
-                    if let rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) = subscript
-                    {
-                        last = last.max(*register);
-                    }
+                if let Some(coordinate) = update.last_coordinate_register() {
+                    last = last.max(coordinate);
                 }
                 if let Some(condition) = update.condition {
                     last = last.max(condition);

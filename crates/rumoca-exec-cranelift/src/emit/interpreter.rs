@@ -488,51 +488,9 @@ fn execute_general_op(
                 .iter()
                 .fold(1usize, |count, extent| count * *extent as usize);
             for element in 0..count {
-                let mut value_offset = 0usize;
-                let mut axis_stride = count;
-                let mut selected = true;
-                for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-                    axis_stride /= extent as usize;
-                    let coordinate = (element / axis_stride) % extent as usize;
-                    match subscript {
-                        rumoca_ir_solve::TensorUpdateSubscript::Whole => {
-                            value_offset = value_offset * extent as usize + coordinate;
-                        }
-                        rumoca_ir_solve::TensorUpdateSubscript::Index(index) => {
-                            let index = match *index {
-                                rumoca_ir_solve::TensorIndex::Constant(index) => index as usize,
-                                rumoca_ir_solve::TensorIndex::Runtime(register) => {
-                                    let value = read_reg_value(regs, register as usize);
-                                    if !value.is_finite() || value.round() != value || value < 1.0 {
-                                        selected = false;
-                                        break;
-                                    }
-                                    value as usize - 1
-                                }
-                            };
-                            if index != coordinate {
-                                selected = false;
-                                break;
-                            }
-                        }
-                        rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                            let slice_count = dimensions
-                                .iter()
-                                .fold(1usize, |count, extent| count * *extent as usize);
-                            let slice_offset = (0..slice_count).find(|offset| {
-                                read_reg_value(regs, *start as usize + *offset)
-                                    == (coordinate + 1) as f64
-                            });
-                            let Some(slice_offset) = slice_offset else {
-                                selected = false;
-                                break;
-                            };
-                            value_offset = value_offset * slice_count + slice_offset;
-                        }
-                    }
-                }
+                let selected = tensor_update_value_offset(regs, &dimensions, &subscripts, element);
                 for lane in 0..lanes {
-                    let source = if selected {
+                    let source = if let Some(value_offset) = selected {
                         value_start as usize + value_offset * lanes + lane
                     } else {
                         base_start as usize + element * lanes + lane
@@ -1038,7 +996,7 @@ fn tensor_register_offset(
 fn tensor_update_value_offset(
     regs: &[f64],
     dimensions: &[u32],
-    subscripts: &[rumoca_ir_solve::TensorSubscript],
+    subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
     element: usize,
 ) -> Option<usize> {
     let mut value_offset = 0usize;
@@ -1048,15 +1006,24 @@ fn tensor_update_value_offset(
     for (&extent, subscript) in dimensions.iter().zip(subscripts) {
         axis_stride /= extent as usize;
         let coordinate = (element / axis_stride) % extent as usize;
-        match *subscript {
-            rumoca_ir_solve::TensorSubscript::Whole => {
+        match subscript {
+            rumoca_ir_solve::TensorUpdateSubscript::Whole => {
                 value_offset = value_offset * extent as usize + coordinate;
             }
-            rumoca_ir_solve::TensorSubscript::Index(index) => {
-                let selected = tensor_index_coordinate(regs, extent, index)?;
+            rumoca_ir_solve::TensorUpdateSubscript::Index(index) => {
+                let selected = tensor_index_coordinate(regs, extent, *index)?;
                 if selected != coordinate {
                     return None;
                 }
+            }
+            rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                let slice_count = dimensions.iter().fold(1usize, |count, extent| {
+                    count.saturating_mul(*extent as usize)
+                });
+                let slice_offset = (0..slice_count).find(|offset| {
+                    read_reg_value(regs, *start as usize + *offset) == (coordinate + 1) as f64
+                })?;
+                value_offset = value_offset * slice_count + slice_offset;
             }
         }
     }

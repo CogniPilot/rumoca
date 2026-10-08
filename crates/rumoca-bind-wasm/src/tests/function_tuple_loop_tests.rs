@@ -3,7 +3,12 @@
 use super::*;
 use wasmi::{Engine, Linker, Memory, MemoryType, Module, Store};
 
-fn execute(source: &str, model: &str, inputs: &[(&str, f64)], outputs: &[&str]) -> Vec<f64> {
+pub(super) fn execute(
+    source: &str,
+    model: &str,
+    inputs: &[(&str, f64)],
+    outputs: &[&str],
+) -> Vec<f64> {
     let _guard = session_test_guard();
     let raw = crate::native_program_api::prepare_native_program(source, model).unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&raw).unwrap();

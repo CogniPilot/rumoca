@@ -1,5 +1,7 @@
+mod loop_entry;
+
 use super::fold_scopes::{FoldScopes, SymbolicIndices};
-use super::guard_facts::GuardFacts;
+use super::guard_facts::{GuardFacts, PathSet};
 use super::*;
 use rumoca_core::FallibleExpressionVisitor;
 use rumoca_core::{IndexBox, IndexUnion, Progression};
@@ -27,7 +29,7 @@ pub(super) struct FunctionDefinitions {
     /// The compact loops being resolved as one generic iteration.
     pub(super) folds: FoldScopes,
     /// The value facts proven on the current path.
-    facts: GuardFacts,
+    facts: PathSet,
     /// Dead entry seeds of values a join leaves undefined on some paths whose
     /// facts a later path may contradict: lowering joins them, and the
     /// certificate proves the seed is never read.
@@ -54,11 +56,14 @@ struct BranchOnlyCoverage {
     /// The facts that hold on every path that leaves the value undefined.
     /// A later path whose facts contradict them has the value defined, with
     /// `coverage` (see `guard_facts`).
-    undefined_when: Option<GuardFacts>,
+    undefined_when: Option<PathSet>,
     /// What the value covers on every path that defines it, for a path that
     /// contradicts `undefined_when`.
     defined_coverage: Option<ValueCoverage>,
 }
+
+/// The coverage of a value defined as a whole.
+static WHOLE_COVERAGE: ValueCoverage = ValueCoverage::Whole;
 
 #[derive(Clone)]
 enum ValueCoverage {
@@ -144,7 +149,7 @@ impl FunctionDefinitions {
             branch_only: HashMap::new(),
             admit_path_partial: HashSet::new(),
             folds: FoldScopes::default(),
-            facts: GuardFacts::entry(),
+            facts: PathSet::single(GuardFacts::entry()),
             contradiction_seeds: Vec::new(),
         }
     }
@@ -697,16 +702,21 @@ impl FunctionDefinitions {
         if context.loop_binders.contains(name) {
             return Ok(());
         }
+        self.require_defined_at_loop_entry(name, folds, context, span)?;
         // A branch value of an if-expression is evaluated only when its
         // condition holds (MLS §3.6.5), so a value proven under a guard that
-        // condition implies is defined there, as in a guarded statement branch.
+        // condition implies, or whose undefined paths the condition excludes,
+        // is defined there, as in a guarded statement branch.
         let admitted = self.branch_only.get(name).and_then(|conditional| {
-            let guard = conditional.guard.as_ref()?;
-            let coverage = conditional.coverage.as_ref()?;
-            selected_by
-                .iter()
-                .any(|condition| condition_implies_guard(condition, guard, context, 0))
-                .then_some(coverage)
+            let by_guard = || {
+                let guard = conditional.guard.as_ref()?;
+                let coverage = conditional.coverage.as_ref()?;
+                selected_by
+                    .iter()
+                    .any(|condition| condition_implies_guard(condition, guard, context, 0))
+                    .then_some(coverage)
+            };
+            by_guard().or_else(|| conditional.defined_where_selected(selected_by, context))
         });
         if let Some(conditional) = self.branch_only.get(name)
             && admitted.is_none()
@@ -772,12 +782,13 @@ impl FunctionDefinitions {
     pub(super) fn join_branches(
         &mut self,
         branches: &[Self],
-        exhaustive: bool,
+        (exhaustive, conditions): (bool, &[&Expression]),
         ordered_targets: &[VarName],
         admit_path_partial: &HashSet<VarName>,
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<Vec<VarName>, ToDaeError> {
+        let fallthrough = self.fallthrough_facts(conditions, context);
         let mut joined = Vec::with_capacity(ordered_targets.len());
         for target in ordered_targets {
             let defines_everywhere =
@@ -795,7 +806,7 @@ impl FunctionDefinitions {
                 let path_partial =
                     admit_path_partial.contains(target) && path_partial_join(branches, target);
                 let kept = self.join_some_paths(
-                    (branches, exhaustive),
+                    (branches, exhaustive, &fallthrough),
                     target,
                     path_partial,
                     (context, span),
@@ -829,8 +840,14 @@ impl FunctionDefinitions {
             self.values.insert(target.clone(), coverage);
             joined.push(target.clone());
         }
+        self.join_untouched_undefined_paths(
+            branches,
+            (exhaustive, conditions),
+            ordered_targets,
+            context,
+        );
         // Tracking reads each path's own facts, so the join comes last.
-        self.join_facts(branches, exhaustive);
+        self.join_facts(branches, exhaustive, &fallthrough);
         Ok(joined)
     }
 }
@@ -1595,10 +1612,10 @@ impl FunctionDefinitions {
         context: FunctionValidationContext<'_>,
     ) {
         let scope = context.fact_scope();
-        self.facts.assign(target.clone(), value, scope);
+        self.facts.assign(target, value, scope);
         for definition in self.branch_only.values_mut() {
             if let Some(facts) = &mut definition.undefined_when {
-                facts.assign(target.clone(), value, scope);
+                facts.assign(target, value, scope);
             }
         }
     }
@@ -1623,11 +1640,13 @@ impl FunctionDefinitions {
         &mut self,
         body: &[rumoca_core::Statement],
         binders: &[VarName],
+        context: FunctionValidationContext<'_>,
     ) {
-        self.facts = self.facts.loop_entry(body, binders);
+        let scope = context.fact_scope();
+        self.facts = self.facts.loop_entry(body, binders, scope);
         for definition in self.branch_only.values_mut() {
             if let Some(facts) = &mut definition.undefined_when {
-                *facts = facts.loop_entry(body, binders);
+                *facts = facts.loop_entry(body, binders, scope);
             }
         }
     }
@@ -1642,16 +1661,13 @@ impl FunctionDefinitions {
         context: FunctionValidationContext<'_>,
     ) {
         let scope = context.fact_scope();
-        self.facts = self
-            .facts
-            .branch_entries(conditions, scope)
-            .swap_remove(ordinal);
+        self.facts = self.facts.entering(conditions, ordinal, scope);
         let mut defined = Vec::new();
         for (name, definition) in &mut self.branch_only {
             let Some(facts) = &mut definition.undefined_when else {
                 continue;
             };
-            *facts = facts.branch_entries(conditions, scope).swap_remove(ordinal);
+            *facts = facts.entering(conditions, ordinal, scope);
             if facts.is_unreachable() {
                 defined.push((name.clone(), definition.defined_coverage.clone()));
             }
@@ -1670,11 +1686,26 @@ impl FunctionDefinitions {
         conditions: &[&Expression],
         context: FunctionValidationContext<'_>,
     ) -> Vec<bool> {
-        self.facts
-            .branch_entries(conditions, context.fact_scope())
-            .iter()
-            .map(|entry| !entry.is_unreachable())
+        let scope = context.fact_scope();
+        (0..=conditions.len())
+            .map(|ordinal| {
+                !self
+                    .facts
+                    .entering(conditions, ordinal, scope)
+                    .is_unreachable()
+            })
             .collect()
+    }
+
+    /// The facts on the path that takes none of the branches of a conditional
+    /// over `conditions`.
+    pub(super) fn fallthrough_facts(
+        &self,
+        conditions: &[&Expression],
+        context: FunctionValidationContext<'_>,
+    ) -> PathSet {
+        self.facts
+            .entering(conditions, conditions.len(), context.fact_scope())
     }
 
     /// Whether a join left `target` defined on some paths, so lowering already
@@ -1692,14 +1723,21 @@ impl FunctionDefinitions {
 
     /// The facts after the branches rejoin; the fall-through path is this
     /// certificate when the conditional has no `else`.
-    pub(super) fn join_facts(&mut self, branches: &[Self], exhaustive: bool) {
-        let mut paths = branches.iter().map(|branch| &branch.facts);
-        let mut joined = paths.next().unwrap_or(&self.facts).clone();
-        for facts in paths {
-            joined.join_path(facts);
+    pub(super) fn join_facts(
+        &mut self,
+        branches: &[Self],
+        exhaustive: bool,
+        fallthrough: &PathSet,
+    ) {
+        let mut joined = PathSet::empty();
+        for branch in branches {
+            joined.join_path(&branch.facts);
+        }
+        if branches.is_empty() {
+            joined = self.facts.clone();
         }
         if !exhaustive {
-            joined.join_path(&self.facts);
+            joined.join_path(fallthrough);
         }
         self.facts = joined;
         for (name, seed) in branches
@@ -1721,7 +1759,7 @@ impl FunctionDefinitions {
     /// returns whether the join keeps a value for it.
     fn join_some_paths(
         &mut self,
-        paths: (&[Self], bool),
+        paths: (&[Self], bool, &PathSet),
         target: &VarName,
         path_partial: bool,
         (context, span): (FunctionValidationContext<'_>, Span),
@@ -1740,22 +1778,27 @@ impl FunctionDefinitions {
     /// whether it was tracked.
     fn track_undefined_paths(
         &mut self,
-        (branches, exhaustive): (&[Self], bool),
+        (branches, exhaustive, fallthrough_facts): (&[Self], bool, &PathSet),
         target: &VarName,
         path_partial: bool,
         (context, span): (FunctionValidationContext<'_>, Span),
     ) -> Result<bool, ToDaeError> {
         let fallthrough = (!exhaustive).then_some(&*self);
-        let mut undefined: Option<GuardFacts> = None;
+        let mut undefined: Option<PathSet> = None;
         let mut coverage: Option<ValueCoverage> = None;
-        for path in branches.iter().chain(fallthrough) {
+        for (ordinal, path) in branches.iter().chain(fallthrough).enumerate() {
+            let current = if ordinal < branches.len() {
+                path.facts.clone()
+            } else {
+                fallthrough_facts.clone()
+            };
             let (facts, defined) = match (path.values.get(target), path.branch_only.get(target)) {
                 (Some(defined), _) => (None, Some(defined.clone())),
                 (None, Some(tracked)) => match &tracked.undefined_when {
                     Some(facts) => (Some(facts.clone()), tracked.defined_coverage.clone()),
-                    None => (Some(path.facts.clone()), None),
+                    None => (Some(current), None),
                 },
-                (None, None) => (Some(path.facts.clone()), None),
+                (None, None) => (Some(current), None),
             };
             if let Some(defined) = defined {
                 coverage = Some(match coverage {
@@ -1846,4 +1889,72 @@ fn guard_union(
     };
     (negation_of_condition(negated) && condition_implies_guard(condition, whole, context, 0))
         .then(|| Some(whole.clone()))
+}
+
+impl FunctionDefinitions {
+    /// Advance the undefined paths of every tracked value the conditional does
+    /// not write across the conditional: they are the paths each branch (and
+    /// the fall-through, when there is no `else`) leaves them on, after the
+    /// statements of the branch ran. A branch that no longer lists a value as
+    /// undefined defines it on every path it takes.
+    fn join_untouched_undefined_paths(
+        &mut self,
+        branches: &[Self],
+        (exhaustive, conditions): (bool, &[&Expression]),
+        written: &[VarName],
+        context: FunctionValidationContext<'_>,
+    ) {
+        let scope = context.fact_scope();
+        let mut defined = Vec::new();
+        for (name, definition) in &mut self.branch_only {
+            if written.contains(name) {
+                continue;
+            }
+            let Some(before) = definition.undefined_when.take() else {
+                continue;
+            };
+            let mut after: Option<PathSet> = None;
+            let fallthrough =
+                (!exhaustive).then(|| before.entering(conditions, conditions.len(), scope));
+            let paths = branches
+                .iter()
+                .filter_map(|branch| branch.branch_only.get(name)?.undefined_when.as_ref())
+                .chain(fallthrough.as_ref());
+            for paths in paths {
+                match &mut after {
+                    Some(joined) => joined.join_path(paths),
+                    None => after = Some(paths.clone()),
+                }
+            }
+            match after {
+                Some(after) if !after.is_unreachable() => definition.undefined_when = Some(after),
+                _ => defined.push((name.clone(), definition.defined_coverage.clone())),
+            }
+        }
+        for (name, coverage) in defined {
+            self.branch_only.remove(&name);
+            self.values
+                .insert(name, coverage.unwrap_or(ValueCoverage::Whole));
+        }
+    }
+}
+
+impl BranchOnlyCoverage {
+    /// The coverage of a value whose undefined paths the `selected_by`
+    /// conditions exclude together.
+    fn defined_where_selected(
+        &self,
+        selected_by: &[Expression],
+        context: FunctionValidationContext<'_>,
+    ) -> Option<&ValueCoverage> {
+        let scope = context.fact_scope();
+        let paths = selected_by
+            .iter()
+            .fold(self.undefined_when.clone()?, |paths, condition| {
+                paths.entering(&[condition], 0, scope)
+            });
+        paths
+            .is_unreachable()
+            .then(|| self.defined_coverage.as_ref().unwrap_or(&WHOLE_COVERAGE))
+    }
 }

@@ -451,8 +451,7 @@ end UnguardedPrevious;
 
 /// A whole scalar unassigned at loop entry but assigned by the end of every
 /// iteration is defined by the earlier iteration for a read on a path whose
-/// binder range excludes the first iteration. Read on every iteration, the
-/// first read sees the local's start value (MLS 3.6 §12.4.4), as OpenModelica does.
+/// binder range excludes the first iteration.
 #[test]
 fn a_previous_iteration_whole_is_defined_where_the_first_point_is_excluded() {
     let compiled = Compiler::new()
@@ -470,20 +469,17 @@ fn a_previous_iteration_whole_is_defined_where_the_first_point_is_excluded() {
         .value;
     assert_eq!(y, 2.0 + 3.0);
 
-    let compiled = Compiler::new()
+    // Read on every iteration, the first read has no definition: a function
+    // local has no start value (MLS 3.6 §12.4.4), so the loop is refused.
+    let error = Compiler::new()
         .model("UnguardedPrevious")
         .compile_str(GUARDED_PREVIOUS_WHOLE, "GuardedPrevious.mo")
-        .unwrap_or_else(|error| panic!("UnguardedPrevious should compile: {error}"));
-    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
-        .unwrap_or_else(|error| panic!("UnguardedPrevious should evaluate: {error}"));
-    let y = probe
-        .report
-        .solver_y
-        .iter()
-        .find(|slot| slot.name == "y")
-        .expect("UnguardedPrevious has y")
-        .value;
-    assert_eq!(y, 0.0 + 1.0 + 2.0 + 3.0);
+        .map(|_| ())
+        .expect_err("UnguardedPrevious reads `previous` before any pass defines it");
+    assert!(
+        error.to_string().contains("on the first pass of a loop"),
+        "{error}"
+    );
 }
 
 const BRANCH_DEFINED_PREVIOUS: &str = r#"

@@ -3,6 +3,7 @@ mod arrays;
 mod builtins;
 mod call_scoped_actions;
 pub(in crate::lower) use call_scoped_actions::action_kind;
+mod conditional_emission;
 mod conditions;
 mod constants;
 mod coordinates;
@@ -10,12 +11,14 @@ mod family_calls;
 mod functions;
 mod literal_values;
 mod operators;
+mod region_catalog;
 mod register_folding;
 mod selected_arm;
 mod selector;
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use super::*;
@@ -314,6 +317,11 @@ enum FunctionConditionalCaptureSource<'dae> {
     /// A register an enclosing fold update passes in as a capture, resolved in
     /// the compiler that owns the conditional.
     ParentInherited { source: solve::Reg },
+    /// The scalar at `ordinal` of the capture catalog of the compiler that owns
+    /// the conditional, when that compiler is itself a conditional region: a
+    /// region nested in a region reads the enclosing folds through the outer
+    /// region, which loads only the scalars the inner one reads.
+    ParentCatalog { ordinal: usize },
 }
 
 impl<'dae> FunctionConditionalCaptureSource<'dae> {
@@ -321,7 +329,9 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
         match self {
             Self::DefinitionRange { count, .. }
             | Self::DefinitionRecordFieldRange { count, .. } => count,
-            Self::ParentRegister { .. } | Self::ParentInherited { .. } => 1,
+            Self::ParentRegister { .. }
+            | Self::ParentInherited { .. }
+            | Self::ParentCatalog { .. } => 1,
         }
     }
 
@@ -347,6 +357,7 @@ impl<'dae> FunctionConditionalCaptureSource<'dae> {
             },
             Self::ParentRegister { source } => Self::ParentRegister { source },
             Self::ParentInherited { source } => Self::ParentInherited { source },
+            Self::ParentCatalog { ordinal } => Self::ParentCatalog { ordinal },
         }
     }
 }
@@ -522,11 +533,11 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
     call_action_compilation: bool,
     suppress_function_assertions: bool,
-    context_ids: HashMap<ScalarContextFrame<'dae>, u64>,
-    context_frames: HashMap<u64, ScalarContextFrame<'dae>>,
+    /// The context identities of every compiler forked from one root: an
+    /// identity is allocated once and read by all of them.
+    contexts: Rc<RefCell<ContextTable<'dae>>>,
     context_stack: Vec<u64>,
     context_id: u64,
-    next_context_id: u64,
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
@@ -584,25 +595,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             active_call_assertions: HashSet::new(),
             call_action_compilation: false,
             suppress_function_assertions: false,
-            context_ids: HashMap::new(),
-            context_frames: HashMap::new(),
+            contexts: Rc::default(),
             context_stack: Vec::new(),
             context_id: 0,
-            next_context_id: 1,
         }
     }
 
     fn enter_context(&mut self, frame: ScalarContextFrame<'dae>) {
-        let id = match self.context_ids.get(&frame).copied() {
-            Some(id) => id,
-            None => {
-                let id = self.next_context_id;
-                self.next_context_id += 1;
-                self.context_ids.insert(frame.clone(), id);
-                self.context_frames.insert(id, frame);
-                id
-            }
-        };
+        let id = self.contexts.borrow_mut().intern(frame);
         self.context_stack.push(self.context_id);
         self.context_id = id;
     }
@@ -735,17 +735,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn owning_function_context(&self, function: dae::FunctionId<'dae>) -> u64 {
         let mut context = self.context_id;
         while context != 0 {
-            let frame = self
-                .context_frames
-                .get(&context)
+            let (owns, parent) = self
+                .contexts
+                .borrow()
+                .frame(context, |frame| {
+                    let owns = matches!(frame, ScalarContextFrame::Function { function: candidate, .. } if *candidate == function);
+                    (owns, frame.parent())
+                })
                 .expect("non-root scalar context has a frame");
-            match frame {
-                ScalarContextFrame::Function {
-                    function: candidate,
-                    ..
-                } if *candidate == function => return context,
-                frame => context = frame.parent(),
+            if owns {
+                return context;
             }
+            context = parent;
         }
         0
     }
@@ -1327,11 +1328,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn buffered_relation_slot(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
         let slot = self.layout.buffered_relations.expression_slot(expression)?;
         let mut context = self.context_id;
-        while let Some(frame) = self.context_frames.get(&context) {
-            if matches!(frame, ScalarContextFrame::NoEvent { .. }) {
+        while let Some((no_event, parent)) = self.contexts.borrow().frame(context, |frame| {
+            (
+                matches!(frame, ScalarContextFrame::NoEvent { .. }),
+                frame.parent(),
+            )
+        }) {
+            if no_event {
                 return None;
             }
-            context = frame.parent();
+            context = parent;
         }
         Some(slot)
     }
@@ -1440,7 +1446,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 base,
                 value,
                 subscripts,
-            } => self.array_update(base, value, subscripts, scalar),
+            } => self.array_update(expression, base, value, subscripts, scalar),
             dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
                 builtin,
                 arguments,
@@ -1515,21 +1521,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             if context == 0 {
                 return None;
             }
-            match self
-                .context_frames
-                .get(&context)
-                .expect("non-root scalar context has a frame")
-            {
-                ScalarContextFrame::NoEvent { .. }
-                | ScalarContextFrame::Function { .. }
-                | ScalarContextFrame::DerivativeSeed { .. } => {
-                    return None;
-                }
-                ScalarContextFrame::Activation { parent, .. }
-                | ScalarContextFrame::Domain { parent, .. }
-                | ScalarContextFrame::Parameter { parent, .. }
-                | ScalarContextFrame::Derivative { parent, .. } => context = *parent,
-            }
+            let inherited = self
+                .contexts
+                .borrow()
+                .frame(context, |frame| match frame {
+                    ScalarContextFrame::NoEvent { .. }
+                    | ScalarContextFrame::Function { .. }
+                    | ScalarContextFrame::DerivativeSeed { .. } => None,
+                    frame => Some(frame.parent()),
+                })
+                .expect("non-root scalar context has a frame");
+            context = inherited?;
         }
     }
 
@@ -1543,6 +1545,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn array_update(
         &mut self,
+        expression: dae::ExprId<'dae>,
         base: dae::ExprId<'dae>,
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
@@ -1561,6 +1564,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 if reason == "array subscript is not compile-time computable"
                     || reason == "binder-valued subscript has no active domain" =>
             {
+                if subscripts
+                    .iter()
+                    .any(|subscript| matches!(subscript, dae::SubscriptView::Slice { .. }))
+                {
+                    // A window with run-time bounds is one compact tensor update
+                    // per call frame; this scalar reads one of its registers.
+                    return self
+                        .windowed_update_scalar(expression, base, value, subscripts, scalar);
+                }
                 return self.dynamic_scalar_array_update(base, value, subscripts, scalar);
             }
             Err(error) => return Err(error),
@@ -1762,4 +1774,38 @@ struct FoldScopeScan<'dae> {
     visited_folds: HashSet<dae::FunctionFoldId<'dae>>,
     pending: Vec<dae::ExprId<'dae>>,
     visited: HashSet<dae::ExprId<'dae>>,
+}
+/// Interned scalar context frames, shared by every compiler forked from one
+/// root so a frame has one identity.
+struct ContextTable<'dae> {
+    ids: HashMap<ScalarContextFrame<'dae>, u64>,
+    frames: HashMap<u64, ScalarContextFrame<'dae>>,
+    next: u64,
+}
+
+impl Default for ContextTable<'_> {
+    fn default() -> Self {
+        Self {
+            ids: HashMap::new(),
+            frames: HashMap::new(),
+            next: 1,
+        }
+    }
+}
+
+impl<'dae> ContextTable<'dae> {
+    fn intern(&mut self, frame: ScalarContextFrame<'dae>) -> u64 {
+        if let Some(&id) = self.ids.get(&frame) {
+            return id;
+        }
+        let id = self.next;
+        self.next += 1;
+        self.ids.insert(frame.clone(), id);
+        self.frames.insert(id, frame);
+        id
+    }
+
+    fn frame<T>(&self, id: u64, read: impl FnOnce(&ScalarContextFrame<'dae>) -> T) -> Option<T> {
+        self.frames.get(&id).map(read)
+    }
 }

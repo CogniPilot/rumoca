@@ -1,6 +1,6 @@
 //! Shared IR primitives used by multiple Rumoca IR crates.
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;

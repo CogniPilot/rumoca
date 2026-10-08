@@ -1,9 +1,15 @@
 use super::*;
-use crate::construction::analysis::function_definitions::condition_implies_guard;
+use crate::construction::analysis::function_definitions::{
+    condition_implies_guard, reads_only_immutable,
+};
 
 /// Seed loop scratch that is written and read only under one guard, and return
 /// each seeded value with that guard. The seed is dead only while the guard
 /// selects every read; the caller owns that proof past the sequence.
+/// A guard that reads a value the function can write is never seeded: the
+/// proof would name the value the guard had at the guarded statement while a
+/// later read sees the value it has now, so such a conditional is left to the
+/// value-fact join, which forgets a fact when its value is written.
 pub(super) fn seed_guarded_sequence_scratch(
     statements: &[rumoca_core::Statement],
     plans: &mut [FunctionStatementPlan],
@@ -15,6 +21,9 @@ pub(super) fn seed_guarded_sequence_scratch(
         let Some((guard, branch)) = guarded_sequence(&statements[outer_index]) else {
             continue;
         };
+        if !reads_only_immutable(guard, context) {
+            continue;
+        }
         let Some(inner_len) = guarded_plan_len(&plans[outer_index]) else {
             continue;
         };

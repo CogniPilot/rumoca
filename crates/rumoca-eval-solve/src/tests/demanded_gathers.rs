@@ -1,6 +1,6 @@
 //! Exact demanded addresses, source provenance, and lazy replay reachability.
 use super::*;
-use rumoca_ir_solve::{FunctionConditionalProgram, TensorIndex, TensorSubscript};
+use rumoca_ir_solve::{FunctionConditionalProgram, TensorIndex, TensorUpdateSubscript};
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -264,13 +264,15 @@ fn fold_carried_and_capture_reads_use_strict_addresses_while_update_no_match_rem
             }
         }
     }
-    let subscripts = [TensorSubscript::Index(TensorIndex::Runtime(0))];
+    let subscripts = [TensorUpdateSubscript::Index(TensorIndex::Runtime(0))];
     assert_eq!(
-        tensor_update_value_offset(&[3], &subscripts, 0, |_| Ok::<_, EvalSolveError>(2.)).unwrap(),
+        tensor_update_register_value_offset(&[3], &subscripts, 0, |_| Ok::<_, EvalSolveError>(2.))
+            .unwrap(),
         None
     );
     assert_eq!(
-        tensor_update_value_offset(&[3], &subscripts, 1, |_| Ok::<_, EvalSolveError>(2.)).unwrap(),
+        tensor_update_register_value_offset(&[3], &subscripts, 1, |_| Ok::<_, EvalSolveError>(2.))
+            .unwrap(),
         Some(0)
     );
 }
@@ -307,4 +309,42 @@ fn prepared_model_program_gather_faults_keep_reachability_after_success_and_fail
     assert_eq!(evaluate(1., f64::NAN).unwrap(), 7.);
     assert_eq!(evaluate(0., 2.).unwrap(), 64.);
     assert!(prepared.specialized_row_program(0).is_none());
+}
+
+#[test]
+fn a_fold_patch_slice_selects_the_value_at_its_window_position() {
+    // The window `a[2:3]` of a four-element tensor is the packed index range
+    // {2, 3}; elements 1 and 2 (zero-based) take update values 0 and 1.
+    let registers = [2., 3.];
+    let subscripts = [TensorUpdateSubscript::Slice {
+        start: 0,
+        dimensions: vec![2].into_boxed_slice(),
+    }];
+    let offsets = (0..4)
+        .map(|element| {
+            tensor_update_register_value_offset(&[4], &subscripts, element, |register| {
+                Ok::<_, EvalSolveError>(registers[register as usize])
+            })
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(offsets, [None, Some(0), Some(1), None]);
+
+    // A matrix row window keeps its row index and offsets by the column window.
+    let subscripts = [
+        TensorUpdateSubscript::Index(TensorIndex::Constant(1)),
+        TensorUpdateSubscript::Slice {
+            start: 0,
+            dimensions: vec![2].into_boxed_slice(),
+        },
+    ];
+    let offsets = (0..6)
+        .map(|element| {
+            tensor_update_register_value_offset(&[2, 3], &subscripts, element, |register| {
+                Ok::<_, EvalSolveError>(registers[register as usize])
+            })
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(offsets, [None, None, None, None, Some(0), Some(1)]);
 }

@@ -22,7 +22,7 @@ pub(super) fn resolve_function_loop_definitions(
         .iter()
         .map(|index| VarName::new(&index.ident))
         .collect::<Vec<_>>();
-    definitions.enter_loop_facts(statements, &binders);
+    definitions.enter_loop_facts(statements, &binders, context);
     match lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
             for plan in body {
@@ -100,7 +100,7 @@ fn join_selected_loop(
     definitions.enter_path(&[condition], 1, context);
     definitions.join_branches(
         std::slice::from_ref(&taken),
-        !skipped,
+        (!skipped, &[]),
         targets,
         &HashSet::new(),
         context,
