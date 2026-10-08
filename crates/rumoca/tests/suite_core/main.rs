@@ -149,6 +149,7 @@ mod function_noelse_if_test;
 mod function_output_shadow_state_test;
 mod function_parameter_slicing;
 mod function_path_partial_definitions;
+mod function_piecewise_slice_bounds;
 mod function_projection_array_shape_test;
 mod function_projection_eigen6;
 mod function_proven_branch_test;
