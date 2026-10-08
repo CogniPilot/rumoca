@@ -29,6 +29,44 @@ struct EagerDemand<'dae> {
     conditionals: Vec<dae::ExprId<'dae>>,
 }
 
+impl<'dae> EagerDemand<'dae> {
+    /// Record one expression the walk reaches and report whether the walk
+    /// continues into its operands.
+    fn record(
+        &mut self,
+        id: dae::ExprId<'dae>,
+        operation: dae::ExpressionOperation<'dae>,
+        frontier: &mut Vec<dae::ExprId<'dae>>,
+    ) -> bool {
+        match operation {
+            dae::ExpressionOperation::Call { .. } => {
+                self.calls.push(id);
+                true
+            }
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.conditionals.push(id);
+                frontier.extend(operands.iter().next());
+                false
+            }
+            // Operations the lowerer evaluates in this scope, operands
+            // included.
+            dae::ExpressionOperation::Literal(_)
+            | dae::ExpressionOperation::Coordinate(_)
+            | dae::ExpressionOperation::Unary { .. }
+            | dae::ExpressionOperation::Binary { .. }
+            | dae::ExpressionOperation::Array(_)
+            | dae::ExpressionOperation::Record(_)
+            | dae::ExpressionOperation::Field { .. }
+            | dae::ExpressionOperation::Index { .. }
+            | dae::ExpressionOperation::ArrayUpdate { .. }
+            | dae::ExpressionOperation::Builtin { .. } => true,
+            // A comprehension body and a loop's carried values are regions of
+            // their own, and a definition is issued by the scope that owns it.
+            _ => false,
+        }
+    }
+}
+
 /// Sibling conditional expressions that select by the same conditions.
 struct ConditionalGroup<'dae> {
     conditions: Vec<dae::ExprId<'dae>>,
@@ -70,39 +108,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         while !frontier.is_empty() {
             let current = std::mem::take(&mut frontier);
             traversal.visit_pruned(self.view, current, |id, node| {
-                if self.cache.contains_key(&id) || !seen.insert(id) {
-                    return false;
-                }
-                match node.operation() {
-                    dae::ExpressionOperation::Call { .. } => {
-                        demand.calls.push(id);
-                        true
-                    }
-                    dae::ExpressionOperation::Conditional(operands) => {
-                        demand.conditionals.push(id);
-                        frontier.extend(operands.iter().next());
-                        false
-                    }
-                    // Operations the lowerer evaluates in this scope, operands
-                    // included.
-                    dae::ExpressionOperation::Literal(_)
-                    | dae::ExpressionOperation::Coordinate(_)
-                    | dae::ExpressionOperation::Unary { .. }
-                    | dae::ExpressionOperation::Binary { .. }
-                    | dae::ExpressionOperation::Array(_)
-                    | dae::ExpressionOperation::Record(_)
-                    | dae::ExpressionOperation::Field { .. }
-                    | dae::ExpressionOperation::Index { .. }
-                    | dae::ExpressionOperation::ArrayUpdate { .. }
-                    | dae::ExpressionOperation::Builtin { .. } => true,
-                    // A comprehension body and a loop's carried values are
-                    // regions of their own, and a definition is issued by the
-                    // scope that owns it.
-                    _ => false,
-                }
+                self.is_unissued(id, &mut seen)
+                    && demand.record(id, node.operation(), &mut frontier)
             });
         }
         demand
+    }
+
+    /// Whether the walk reaches `id` for the first time and the scope has not
+    /// issued its value.
+    fn is_unissued(&self, id: dae::ExprId<'dae>, seen: &mut HashSet<dae::ExprId<'dae>>) -> bool {
+        !self.cache.contains_key(&id) && seen.insert(id)
     }
 
     /// The groups of two or more not-yet-issued conditionals that select by
