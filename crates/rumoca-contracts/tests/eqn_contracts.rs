@@ -1542,6 +1542,45 @@ fn eqn_009_binder_derivative_subscripts_are_static() {
     ));
 }
 
+/// A parameter that sizes an array is fixed at translation (MLS 3.7 §10.1),
+/// so `der(x[n])` selects one fixed state, like a literal subscript.
+#[test]
+fn eqn_009_structural_parameter_derivative_subscripts_are_static() {
+    assert!(admits_static_derivative_subscripts(
+        r#"
+        model Test
+            parameter Integer n = 3;
+            Real x[n](each start = 0, each fixed = true);
+        equation
+            for i in 1:n - 1 loop
+                der(x[i]) = -x[i];
+            end for;
+            der(x[n]) = x[n - 1] - x[n];
+        end Test;
+    "#,
+        "Test",
+    ));
+}
+
+/// A tunable parameter can change after translation, so a derivative
+/// subscript reading it stays dynamic.
+#[test]
+fn eqn_009_tunable_parameter_derivative_subscripts_stay_dynamic() {
+    assert!(!admits_static_derivative_subscripts(
+        r#"
+        model Test
+            parameter Integer k = 1;
+            Real x[2](each start = 0, each fixed = true);
+            Real y;
+        equation
+            der(x) = {1, 2};
+            y = der(x[k]);
+        end Test;
+    "#,
+        "Test",
+    ));
+}
+
 /// A derivative subscript read from a discrete variable changes at run time,
 /// so the same target still refuses it.
 #[test]

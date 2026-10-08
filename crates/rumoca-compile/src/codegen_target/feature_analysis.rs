@@ -194,6 +194,12 @@ fn static_index<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -
         .is_some_and(|expression| match expression.operation() {
             dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(_))
             | dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_)) => true,
+            // A parameter fixed at translation (not tunable: e.g. the `N` of
+            // `T[N]`, MLS 3.7 §10.1) cannot change at runtime, so a subscript
+            // reading it selects one fixed element.
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) => view
+                .variable(dae::VariableId::from(id))
+                .is_some_and(|variable| !variable.is_tunable()),
             dae::ExpressionOperation::Unary {
                 operator: dae::UnaryOperator::Negate | dae::UnaryOperator::Plus,
                 operand,
