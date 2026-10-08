@@ -41,7 +41,7 @@ mod transfer;
 use super::*;
 pub(super) use path_set::PathSet;
 use rumoca_core::{IntegerInterval, RealInterval};
-use selections::{ArmValue, Selection};
+use selections::{ArmValue, Selection, single_branch_and};
 use std::collections::BTreeMap;
 
 /// The proven set of one subject's values.
@@ -462,15 +462,10 @@ impl GuardFacts {
                 ..
             } => self.junction_facts((lhs, rhs), matches!(op, OpBinary::And), value, scope),
             // `if a then b else false` is `a and b`.
-            Expression::If {
-                branches,
-                else_branch,
-                ..
-            } if matches!(branches.as_slice(), [_])
-                && ArmValue::of_literal(else_branch).is_some_and(|arm| arm.is_boolean(false)) =>
-            {
-                let (lhs, rhs) = &branches[0];
-                self.junction_facts((lhs, rhs), true, value, scope)
+            Expression::If { .. } if single_branch_and(expression).is_some() => {
+                single_branch_and(expression).map_or(Some(BTreeMap::new()), |[lhs, rhs]| {
+                    self.junction_facts((lhs, rhs), true, value, scope)
+                })
             }
             Expression::Binary { op, lhs, rhs, .. } => self.comparison(op, lhs, rhs, value, scope),
             Expression::VarRef {
@@ -631,16 +626,11 @@ impl GuardFacts {
                 self.narrow_selections(lhs, true);
                 self.narrow_selections(rhs, true);
             }
-            Expression::If {
-                branches,
-                else_branch,
-                ..
-            } if value
-                && matches!(branches.as_slice(), [_])
-                && ArmValue::of_literal(else_branch).is_some_and(|arm| arm.is_boolean(false)) =>
-            {
-                self.narrow_selections(&branches[0].0, true);
-                self.narrow_selections(&branches[0].1, true);
+            Expression::If { .. } if value => {
+                if let Some([condition, arm]) = single_branch_and(condition) {
+                    self.narrow_selections(condition, true);
+                    self.narrow_selections(arm, true);
+                }
             }
             Expression::VarRef {
                 name, subscripts, ..

@@ -1,3 +1,5 @@
+mod loop_entry;
+
 use super::fold_scopes::{FoldScopes, SymbolicIndices};
 use super::guard_facts::{GuardFacts, PathSet};
 use super::*;
@@ -700,6 +702,7 @@ impl FunctionDefinitions {
         if context.loop_binders.contains(name) {
             return Ok(());
         }
+        self.require_defined_at_loop_entry(name, folds, context, span)?;
         // A branch value of an if-expression is evaluated only when its
         // condition holds (MLS §3.6.5), so a value proven under a guard that
         // condition implies, or whose undefined paths the condition excludes,

@@ -544,3 +544,33 @@ fn a_false_capture_proves_the_operand_left_when_the_other_is_known() {
             .is_unreachable()
     );
 }
+
+#[test]
+fn a_chain_proves_only_what_every_branch_proves() {
+    let names = Names::new();
+    let scope = names.scope();
+    let chain = |first: &str, second: &str| Expression::If {
+        branches: vec![(var("a"), var(first)), (var("c"), var(second))],
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
+            span: span(),
+        }),
+        span: span(),
+    };
+    let held = |value: Expression, name: &str| {
+        let mut facts = GuardFacts::entry();
+        facts.after(&assign("g", value), scope);
+        facts
+            .assuming(&var("g"), true, scope)
+            .assuming_boolean(&VarName::new(name), false)
+            .is_unreachable()
+    };
+    // Both branches prove `b`.
+    assert!(held(chain("b", "b"), "b"));
+    // `if a then b elseif c then d else false` is `a and b` or
+    // `not a and c and d`: it proves neither `b` nor `d`.
+    assert!(!held(chain("b", "d"), "b"));
+    assert!(!held(chain("b", "d"), "d"));
+    // The first branch's condition is no fact of the chain.
+    assert!(!held(chain("b", "b"), "a"));
+}
