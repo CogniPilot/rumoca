@@ -940,7 +940,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 owner_function,
                 owner_context,
                 sources: Vec::new(),
-                locals: Vec::new(),
+                locals: HashMap::new(),
+                slots: HashMap::new(),
+                width: 0,
                 visible,
             });
         compiler.function_conditional_owners = self.function_conditional_owners;
@@ -972,15 +974,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        if let Some(&(_, start)) = self
+        if let Some(&start) = self
             .deferred_function_conditional_captures
             .as_ref()
-            .and_then(|captures| {
-                captures
-                    .locals
-                    .iter()
-                    .find(|(candidate, _)| *candidate == source)
-            })
+            .and_then(|captures| captures.locals.get(&source))
         {
             return Ok(FunctionConditionalRegisterRange { start, count });
         }
@@ -999,7 +996,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .as_mut()
             .expect("checked conditional capture remains active")
             .locals
-            .push((source, dst_start));
+            .insert(source, dst_start);
         Ok(FunctionConditionalRegisterRange {
             start: dst_start,
             count,
@@ -1020,15 +1017,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )
             })?;
-        let mut base = 0usize;
-        for candidate in &captures.sources {
-            if *candidate == source {
-                return Ok(base);
-            }
-            base = base.checked_add(candidate.width()).ok_or_else(|| {
-                LowerError::contract("function-conditional capture ABI overflows", span)
-            })?;
+        if let Some(&base) = captures.slots.get(&source) {
+            return Ok(base);
         }
+        let base = captures.width;
+        captures.width = base.checked_add(source.width()).ok_or_else(|| {
+            LowerError::contract("function-conditional capture ABI overflows", span)
+        })?;
+        captures.slots.insert(source, base);
         captures.sources.push(source);
         Ok(base)
     }

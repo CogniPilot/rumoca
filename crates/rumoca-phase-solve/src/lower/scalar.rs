@@ -295,7 +295,7 @@ struct DeferredFoldCaptures<'dae> {
     locals: HashMap<solve::Reg, solve::Reg>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum FunctionConditionalCaptureSource<'dae> {
     DefinitionRange {
         context: u64,
@@ -354,7 +354,10 @@ struct DeferredFunctionConditionalCaptures<'dae> {
     owner_function: dae::FunctionId<'dae>,
     owner_context: u64,
     sources: Vec<FunctionConditionalCaptureSource<'dae>>,
-    locals: Vec<(FunctionConditionalCaptureSource<'dae>, solve::Reg)>,
+    locals: HashMap<FunctionConditionalCaptureSource<'dae>, solve::Reg>,
+    /// The first capture slot of each source and the total slot width.
+    slots: HashMap<FunctionConditionalCaptureSource<'dae>, usize>,
+    width: usize,
     visible: RegionVisiblePoints<'dae>,
 }
 
