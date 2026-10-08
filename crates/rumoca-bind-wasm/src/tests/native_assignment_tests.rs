@@ -1,15 +1,24 @@
 use super::*;
 
+// Every loop covers its target in two halves, so no loop is one compact
+// algebraic family (SOLVE-C70): the separate-stage ABI links no call table, and
+// a family is a call owner that only the native program ABI executes.
 const TWO_STAGE: &str = r#"
 model NativeImage
   input Real rgb[48] = fill(0.0, 48);
   Real gray[16];
   output Real score[16];
 equation
-  for i in 1:16 loop
+  for i in 1:8 loop
     gray[i] = (rgb[3*i-2] + rgb[3*i-1] + rgb[3*i])/3;
   end for;
-  for i in 1:16 loop
+  for i in 9:16 loop
+    gray[i] = (rgb[3*i-2] + rgb[3*i-1] + rgb[3*i])/3;
+  end for;
+  for i in 1:8 loop
+    score[i] = gray[i]*gray[i] + 2;
+  end for;
+  for i in 9:16 loop
     score[i] = gray[i]*gray[i] + 2;
   end for;
 end NativeImage;
@@ -138,7 +147,7 @@ fn native_preparation_preserves_declared_host_input_start() {
     let _lock = session_test_guard();
     let source = "model NativeStart input Real u[16](each start=3); output Real y[16]; equation for i in 1:16 loop y[i]=2*u[i]; end for; end NativeStart;";
     let artifact: serde_json::Value = serde_json::from_str(
-        &crate::native_assignment_api::prepare_native_assignments(source, "NativeStart").unwrap(),
+        &crate::native_program_api::prepare_native_program(source, "NativeStart").unwrap(),
     )
     .unwrap();
     let first = artifact["var_layout"]["bindings"]["u"]["P"]["index"]
@@ -148,7 +157,7 @@ fn native_preparation_preserves_declared_host_input_start() {
     for value in &parameters[first..first + 16] {
         assert_eq!(value.as_f64(), Some(3.0));
     }
-    assert_eq!(issued_target_count(&artifact), 16);
+    assert_eq!(artifact["abi"]["y_count"], 16);
 }
 
 /// Total unknowns the issued stages assign. An algebraic family issues one

@@ -19,7 +19,10 @@ equation
   gain = rgb[1] + shift;
   score[1] = 0;
   score[16] = (-0.25);
-  for i in 1:16 loop
+  for i in 1:8 loop
+    gray[i] = (rgb[3*i-2] + rgb[3*i-1] + rgb[3*i])/3;
+  end for;
+  for i in 9:16 loop
     gray[i] = (rgb[3*i-2] + rgb[3*i-1] + rgb[3*i])/3;
   end for;
   for i in 2:15 loop
