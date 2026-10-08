@@ -306,29 +306,48 @@ pub fn admit_execution_backend(
 /// The generic ME runtime is the only layer that can project this artifact
 /// into a component. Concrete solver crates may store it and request an opaque
 /// [`MeModelSource`], but cannot inspect rows, layouts, opcodes, or events.
-pub struct MeModelArtifact(rumoca_ir_solve::fmi::FmiComponent);
+pub struct MeModelArtifact {
+    component: rumoca_ir_solve::fmi::FmiComponent,
+    execution: Option<crate::SimExecutionReceipt>,
+}
 
 impl MeModelArtifact {
     /// The root-location rules of the artifact's component (SPEC_0044
     /// ME-EVENT-004), which a driver derives its session options from.
     #[must_use]
     pub fn root_location(&self) -> rumoca_ir_solve::fmi::RootLocationPlan {
-        *self.0.root_location()
+        *self.component.root_location()
     }
 
     #[must_use]
     pub fn new(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
-        Self(component)
+        Self {
+            component,
+            execution: None,
+        }
+    }
+
+    /// Record the engine selection made while this artifact was prepared.
+    #[must_use]
+    pub fn with_execution_receipt(mut self, receipt: crate::SimExecutionReceipt) -> Self {
+        self.execution = Some(receipt);
+        self
+    }
+
+    /// The engine selection recorded at preparation, when one was made.
+    #[must_use]
+    pub fn execution_receipt(&self) -> Option<crate::SimExecutionReceipt> {
+        self.execution
     }
 
     #[must_use]
     pub fn source(&self) -> MeModelSource<'_> {
-        MeModelSource::new(&self.0)
+        MeModelSource::new(&self.component)
     }
 
     #[must_use]
     pub fn continuous_state_count(&self) -> usize {
-        self.0.problem().solve_layout.state_scalar_count()
+        self.component.problem().solve_layout.state_scalar_count()
     }
 }
 
@@ -540,7 +559,8 @@ pub struct MeInstanceConfig {
     tolerance: f64,
     /// FMI `startTime`.
     start_time: f64,
-    /// FMI `stopTime` (`stopTimeDefined = true`).
+    /// FMI `stopTime` when `stopTimeDefined = true`; `f64::INFINITY` when it
+    /// is undefined, so no scheduled event lies beyond the horizon.
     stop_time: f64,
     /// Who orders this instance's continuous-time evaluations, which selects
     /// its refresh warm start (Solve IR `RefreshSeedRule`).
@@ -582,6 +602,20 @@ impl MeInstanceConfig {
             stop_time,
             executor: rumoca_ir_solve::RefreshExecutor::IntegratorDriven,
         })
+    }
+
+    /// The request of an open-ended (live) instance: FMI `stopTimeDefined =
+    /// false`. The component's event schedule is then a function of the
+    /// clock definitions and the current time only, with no preparation
+    /// horizon past which scheduled events stop being announced.
+    pub fn open_ended(
+        instance_name: &'static str,
+        relative_tolerance: f64,
+        start_time: f64,
+    ) -> Result<Self, MeError> {
+        let mut config = Self::new(instance_name, relative_tolerance, start_time, start_time)?;
+        config.stop_time = f64::INFINITY;
+        Ok(config)
     }
 
     /// The same request for an importer-driven component, whose trial

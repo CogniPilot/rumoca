@@ -178,6 +178,10 @@ impl SimulationSession {
 
     pub fn ensure_end_time(&mut self, _target_time: f64) {}
 
+    pub fn execution_receipt(&self) -> rumoca_solver::SimExecutionReceipt {
+        self.inner.execution_receipt()
+    }
+
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt > 0.0 {
             self.advance_to(self.time() + dt)?;

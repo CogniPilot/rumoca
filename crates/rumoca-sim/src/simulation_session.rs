@@ -108,6 +108,17 @@ impl SimulationSession {
         }
     }
 
+    /// The engine the session selected for its Solve programs and, when
+    /// compiled execution was refused for an admissible request, why.
+    pub fn execution_receipt(&self) -> rumoca_solver::SimExecutionReceipt {
+        match &self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => session.execution_receipt(),
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => session.execution_receipt(),
+        }
+    }
+
     pub fn time(&self) -> f64 {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]

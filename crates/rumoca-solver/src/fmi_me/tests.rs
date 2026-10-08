@@ -1726,3 +1726,13 @@ fn the_indicator_step_path_never_rebuilds_or_regrows_its_storage() {
         "the sweep must cross the indicator so the armed-crossing path runs"
     );
 }
+
+#[test]
+fn an_open_ended_instance_has_no_defined_stop_time() {
+    let open = MeInstanceConfig::open_ended("live", 1.0e-6, 2.0).expect("checked request");
+    assert_eq!(open.start_time, 2.0);
+    assert!(open.stop_time.is_infinite() && open.stop_time > 0.0);
+    assert!(MeInstanceConfig::open_ended("live", 0.0, 0.0).is_err());
+    assert!(MeInstanceConfig::open_ended("", 1.0e-6, 0.0).is_err());
+    assert!(MeInstanceConfig::open_ended("live", 1.0e-6, f64::NAN).is_err());
+}

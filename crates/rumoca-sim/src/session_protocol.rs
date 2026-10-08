@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
-    EX012_SESSION_INVALID_ARGUMENT, SimulationDiagnosticError, SimulationSession,
+    EX012_SESSION_INVALID_ARGUMENT, SimExecutionReceipt, SimulationDiagnosticError,
+    SimulationSession,
 };
 
 #[cfg(test)]
@@ -77,8 +78,12 @@ pub enum SessionCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SessionEvent {
-    /// The protocol version this build speaks.
-    Hello { protocol_version: u32 },
+    /// The protocol version this build speaks and the execution engine the
+    /// session selected.
+    Hello {
+        protocol_version: u32,
+        engine: SimExecutionReceipt,
+    },
     /// The command took effect; `time` is the session time afterwards.
     Ok { time: f64 },
     /// One variable; `value` is `null` when the name is not a variable.
@@ -161,9 +166,7 @@ impl SimulationSession {
                         ),
                     ));
                 }
-                Ok(SessionEvent::Hello {
-                    protocol_version: SESSION_PROTOCOL_VERSION,
-                })
+                Ok(self.hello())
             }
             SessionCommand::SetInput { name, value } => {
                 self.set_input(&name, value).map_err(fault)?;
@@ -219,6 +222,14 @@ impl SimulationSession {
         }
     }
 
+    /// The `hello` event of this session.
+    pub(crate) fn hello(&self) -> SessionEvent {
+        SessionEvent::Hello {
+            protocol_version: SESSION_PROTOCOL_VERSION,
+            engine: self.execution_receipt(),
+        }
+    }
+
     fn ok(&self) -> SessionEvent {
         SessionEvent::Ok { time: self.time() }
     }
@@ -267,9 +278,7 @@ fn serve_with_line_limit(
     output: &mut impl Write,
     max_line_bytes: usize,
 ) -> io::Result<SessionServeExit> {
-    let hello = SessionEvent::Hello {
-        protocol_version: SESSION_PROTOCOL_VERSION,
-    };
+    let hello = session.hello();
     if let Some(exit) = write_event(output, &hello)? {
         return Ok(exit);
     }
