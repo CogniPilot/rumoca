@@ -66,6 +66,7 @@ pub mod fixed_step;
 pub mod integrator;
 mod kernel;
 pub(crate) mod lifecycle;
+pub mod ode_driver;
 /// Host-private root policy. SPEC_0044 §6 makes the scan/location policy, the
 /// root application, and the domain classification host-private with no
 /// unchecked constructor: none of it belongs in the solver-plugin API

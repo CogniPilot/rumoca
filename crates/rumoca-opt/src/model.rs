@@ -250,99 +250,22 @@ fn available_trainables(parameters: &[TrainableParameter]) -> String {
         .join(", ")
 }
 
+/// Bind every independent tunable parameter to its runtime slot, one entry per
+/// slot. Which parameters qualify is owned by `rumoca-sim`, the same owner the
+/// trajectory sensitivities select with.
 fn collect_model_parameter_slots(
     dae_model: &dae::Dae,
     model: &solve::SolveModel,
 ) -> Vec<TrainableParameter> {
-    dae_model.inspect(|view| {
-        let excluded = parameter_dependency_participants(view);
-        let mut seen_slots = IndexSet::new();
-        let mut parameters = Vec::new();
-        for (id, variable) in view
-            .variables()
-            .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
-        {
-            if independent_trainable_parameter(id, variable, &excluded) {
-                write_trainable_parameter_slots(variable, model, &mut seen_slots, &mut parameters);
-            }
-        }
-        parameters.sort_by_key(|parameter| parameter.slot);
-        parameters
-    })
-}
-
-fn independent_trainable_parameter<'dae>(
-    id: dae::VariableId<'dae>,
-    variable: dae::VariableView<'dae>,
-    excluded: &IndexSet<u32>,
-) -> bool {
-    // Only `Real` parameters are trainable. MLS §3.8.3 makes `Integer`,
-    // `Boolean`, `String`, and enumeration parameters discrete-valued, so a
-    // gradient with respect to them is not defined; the optimizer would perturb
-    // them by fractional steps and hand the runtime a value the source model
-    // cannot take. `parameter Integer n` used as an array dimension is the
-    // concrete case: it reaches the lowered parameter vector like any other
-    // declared parameter, and training it would also invalidate the shapes the
-    // model was lowered with.
-    variable.value_type().scalar_type() == dae::ScalarType::Real
-        && variable.is_tunable()
-        && variable.origin() == dae::VariableOrigin::Source
-        && variable.causality() == dae::VariableCausality::Parameter
-        && !excluded.contains(&id.index())
-}
-
-fn parameter_dependency_participants(view: dae::DaeView<'_>) -> IndexSet<u32> {
-    let mut participants = IndexSet::new();
-    for (id, variable) in view
-        .variables()
-        .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
-    {
-        let refs = parameter_start_refs(view, variable);
-        if refs.is_empty() {
-            continue;
-        }
-        participants.insert(id.index());
-        participants.extend(refs);
-    }
-    participants
-}
-
-fn parameter_start_refs<'dae>(
-    view: dae::DaeView<'dae>,
-    variable: dae::VariableView<'dae>,
-) -> IndexSet<u32> {
-    let Some(start) = variable.start() else {
-        return IndexSet::new();
-    };
-    let mut references = IndexSet::new();
-    dae::for_each_expression(view, start, |_, expression| {
-        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) =
-            expression.operation()
-        {
-            references.insert(id.index());
-        }
-    });
-    references
-}
-
-fn write_trainable_parameter_slots(
-    variable: dae::VariableView<'_>,
-    model: &solve::SolveModel,
-    seen_slots: &mut IndexSet<usize>,
-    parameters: &mut Vec<TrainableParameter>,
-) {
-    for scalar in 0..variable.scalar_count() {
-        let scalar_name = variable
-            .scalar_name(scalar)
-            .expect("checked parameter scalar has a name");
-        if let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(&scalar_name)
-            && !scalar_name.starts_with("__")
+    let mut seen_slots = IndexSet::new();
+    let mut parameters = Vec::new();
+    for name in rumoca_sim::independent_tunable_parameters(dae_model) {
+        if let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(&name)
             && seen_slots.insert(index)
         {
-            parameters.push(TrainableParameter {
-                name: scalar_name,
-                slot: index,
-            });
+            parameters.push(TrainableParameter { name, slot: index });
         }
     }
+    parameters.sort_by_key(|parameter| parameter.slot);
+    parameters
 }

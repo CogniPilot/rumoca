@@ -783,3 +783,81 @@ fn the_solver_flag_offers_exactly_the_solvers_the_tree_runs() {
         assert_eq!(rumoca_core::canonical_solver_name(label), Ok(label));
     }
 }
+
+#[test]
+fn cli_parses_trajectory_objective_flags() {
+    let cli = Cli::try_parse_from([
+        "rumoca",
+        "sim",
+        "Fit.mo",
+        "--model",
+        "Fit",
+        "--inspect",
+        "objective-gradient",
+        "--integral",
+        "x",
+        "--integral",
+        "y",
+        "--terminal",
+        "x",
+        "--fit-data",
+        "measured.csv",
+        "--wrt",
+        "a,b",
+        "--grad-mode",
+        "adjoint",
+        "--checkpoint-budget",
+        "4096",
+    ])
+    .expect("parse trajectory objective flags");
+    match cli.command {
+        Commands::Sim(args) => {
+            assert_eq!(args.inspect, Some(InspectKind::ObjectiveGradient));
+            assert_eq!(args.integral, ["x", "y"]);
+            assert_eq!(args.terminal, ["x"]);
+            assert_eq!(args.fit_data.as_deref(), Some(Path::new("measured.csv")));
+            assert_eq!(args.wrt, ["a", "b"]);
+            assert_eq!(args.grad_mode, GradMode::Adjoint);
+            assert_eq!(args.checkpoint_budget, Some(4096));
+        }
+        other => panic!("expected sim command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_a_steady_objective_beside_a_trajectory_term() {
+    for flag in ["--integral", "--terminal", "--fit-data"] {
+        let error = Cli::try_parse_from([
+            "rumoca",
+            "sim",
+            "Fit.mo",
+            "--inspect",
+            "objective-gradient",
+            "--objective",
+            "x",
+            flag,
+            "x",
+        ])
+        .expect_err("a steady and a trajectory objective conflict");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{flag}"
+        );
+    }
+}
+
+#[test]
+fn cli_parses_the_new_inspection_kinds() {
+    for (name, kind) in [
+        ("trajectory-sensitivity", InspectKind::TrajectorySensitivity),
+        ("linearize", InspectKind::Linearize),
+    ] {
+        let cli = Cli::try_parse_from(["rumoca", "sim", "M.mo", "--inspect", name])
+            .unwrap_or_else(|error| panic!("parse --inspect {name}: {error}"));
+        match cli.command {
+            Commands::Sim(args) => assert_eq!(args.inspect, Some(kind)),
+            other => panic!("expected sim command, got {other:?}"),
+        }
+    }
+}

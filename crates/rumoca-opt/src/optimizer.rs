@@ -91,7 +91,7 @@ impl OptimizationReport {
     }
 }
 
-fn validate_learning_rate(learning_rate: f64) -> Result<(), OptError> {
+pub(crate) fn validate_learning_rate(learning_rate: f64) -> Result<(), OptError> {
     if learning_rate.is_finite() && learning_rate > 0.0 {
         Ok(())
     } else {

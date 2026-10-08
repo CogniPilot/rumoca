@@ -8,6 +8,7 @@ mod error;
 mod model;
 mod objective;
 mod optimizer;
+mod trajectory;
 
 pub use error::OptError;
 pub use model::{DifferentiableModel, OptOptions, TrainableParameter, TrainableSet};
@@ -15,6 +16,7 @@ pub use objective::{
     GradientMode, GradientReport, GradientStrategy, RhsMseObjective, rhs_mse_value_and_gradient,
 };
 pub use optimizer::{GradientDescent, OptimizationReport, OptimizationStep};
+pub use trajectory::{TrajectoryFit, TrajectoryFitReport, TrajectoryFitStep};
 
 #[cfg(test)]
 mod tests;

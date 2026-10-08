@@ -19,18 +19,19 @@ pub use rumoca_phase_solve::{
     lower_solve_artifacts, lower_solve_problem, solve_model_wire,
 };
 pub use rumoca_solver::{
-    DiffsolMethod, HotpathStatsSnapshot, ProjectionFallback, ProjectionFallbackCounts,
-    ProjectionFallbackReport, ProjectionSite, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
-    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
-    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TimeoutBudget,
-    TimeoutExceeded, build_simulation_metrics_value, build_simulation_payload,
-    is_solver_timeout_panic, panic_on_expired_solver_deadline, projection_fallbacks,
-    projection_fallbacks_value, reset_projection_fallbacks, reset_step_counts, run_timeout_result,
-    run_timeout_step, run_timeout_step_result, runtime_progress_snapshot,
-    shared_value_proof_failures, step_counts, stop_time_reached_with_tol, time_advanced_with_tol,
-    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
-    trace_runtime_step_fail, trace_runtime_timeout,
+    DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,
+    ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite, RunningKind, RunningTerm,
+    RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext, SimBackend,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeRefusal, SimOptions,
+    SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
+    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TerminalTerm,
+    TimeoutBudget, TimeoutExceeded, TrajectoryObjective, build_simulation_metrics_value,
+    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
+    projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
+    reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
+    runtime_progress_snapshot, shared_value_proof_failures, step_counts,
+    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
+    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 mod build_timing;
@@ -116,12 +117,22 @@ pub use solve_lowering::{
     steady_state_adjoint_objective_gradient_for_dae, steady_state_objective_gradient_for_dae,
     steady_state_parameter_sensitivity_for_dae, structural_report_for_dae,
 };
+pub use solve_lowering::{
+    ExcludedParameter, ExclusionReason, Linearization, ParameterClassification,
+    independent_tunable_parameters, linearization_for_dae, select_sensitivity_parameters,
+};
 
 #[cfg(feature = "scenario-config")]
 pub mod scenario_config;
 
 #[cfg(feature = "solver-rk45")]
 pub mod rk45;
+#[cfg(feature = "solver-rk45")]
+mod trajectory_sensitivity;
+#[cfg(feature = "solver-rk45")]
+pub use trajectory_sensitivity::{
+    TrajectorySession, trajectory_objective_gradient_for_dae, trajectory_sensitivity_for_dae,
+};
 
 #[cfg(all(
     feature = "scheduled-sim",

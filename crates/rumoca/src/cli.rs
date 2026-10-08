@@ -17,6 +17,7 @@ mod cli_tests;
 mod compile_selectors;
 mod debug_tracing;
 mod model_resolution;
+mod point_inspection;
 mod projection_report;
 pub(crate) mod sim_defaults;
 mod value;
@@ -24,6 +25,7 @@ mod value;
 use debug_tracing::expand_trace_filter;
 pub(crate) use debug_tracing::init_debug_tracing;
 use debug_tracing::trace_requests_viewer;
+use point_inspection::{PointInspection, run_point_inspection, run_sim_inspection};
 use sim_defaults::{direct_sim_window, sim_window};
 
 pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
@@ -35,7 +37,6 @@ use crate::cache_cmd;
 use crate::fmt_cli;
 use crate::main_helpers::{completion_script, discover_workspace_root_for_model_file};
 use crate::sim_bench;
-use crate::sim_inspect;
 use crate::target_manifest;
 use crate::targets_cmd;
 #[cfg(feature = "scheduled-sim")]
@@ -69,7 +70,7 @@ pub(crate) use model_resolution::{
 pub(crate) use model_resolution::{merge_source_root_path_sources, split_path_list};
 
 #[cfg(test)]
-pub(crate) use sim_inspect::parse_eval_at_spec;
+pub(crate) use crate::sim_inspect::parse_eval_at_spec;
 
 /// Git version string
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -533,6 +534,59 @@ pub struct SimCommandArgs {
     #[arg(long, value_enum, default_value_t = GradMode::Forward, requires = "inspect")]
     pub grad_mode: GradMode,
 
+    /// Parameters `--inspect trajectory-sensitivity|objective-gradient`
+    /// differentiates with respect to, comma separated. Defaults to every
+    /// independent tunable parameter some Solve program reads; the parameters left
+    /// out, and why, are printed. A `noEvent` relation of a state, an algebraic, or
+    /// a requested parameter is refused: one-sided sensitivities across a switching
+    /// surface are not constructed. Models are advanced with the `rk-like` solver
+    /// only; `--solver bdf` is refused.
+    #[arg(long, value_name = "NAME", value_delimiter = ',', requires = "inspect")]
+    pub wrt: Vec<String>,
+
+    /// Running objective term `integral NAME dt` over the run (a state or solver
+    /// algebraic); repeatable. Selects the trajectory mode of
+    /// `--inspect objective-gradient`.
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires = "inspect",
+        conflicts_with = "objective"
+    )]
+    pub integral: Vec<String>,
+
+    /// Terminal objective term `NAME(T)` at the end of the run; repeatable.
+    /// Selects the trajectory mode of `--inspect objective-gradient`.
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires = "inspect",
+        conflicts_with = "objective"
+    )]
+    pub terminal: Vec<String>,
+
+    /// Least-squares fit to measured data: a CSV whose first column is time and
+    /// whose other columns, named after model variables, hold the measurements.
+    /// The objective is `integral sum_k (variable_k - data_k)^2 dt`, with the
+    /// data interpolated linearly, every data time a step end of the integration
+    /// (so a narrow feature is integrated, not skipped). The objective is an
+    /// integral of the declared interpolant, not a sum of samples. Selects the
+    /// trajectory mode of `--inspect objective-gradient`.
+    #[arg(
+        long,
+        value_name = "CSV",
+        requires = "inspect",
+        conflicts_with = "objective"
+    )]
+    pub fit_data: Option<PathBuf>,
+
+    /// Memory the adjoint (`--grad-mode adjoint`, trajectory mode) may spend
+    /// storing the forward path, in bytes (default 1073741824, one GiB). A run that
+    /// needs more is refused with a typed error; loosen the tolerance, shorten the
+    /// window, or raise this budget.
+    #[arg(long, value_name = "BYTES", requires = "inspect")]
+    pub checkpoint_budget: Option<u64>,
+
     #[command(flatten)]
     pub diagnostics: DiagnosticsArgs,
 }
@@ -549,7 +603,16 @@ pub enum InspectKind {
     /// Steady-state gradient `d(objective)/dp` of a chosen variable (needs
     /// `--objective`); forward sensitivity by default, `--grad-mode adjoint` for
     /// reverse mode. Honors `--at` for the steady point and `--format json`.
+    /// With `--integral`, `--terminal`, or `--fit-data` it is instead the
+    /// gradient of a trajectory objective over the whole run (`sim` only).
     ObjectiveGradient,
+    /// Sensitivity `d(variable)/d(parameter)` over the whole run, written beside
+    /// the trajectory as result columns (`sim` only). `--wrt` selects the
+    /// parameters; `-o file.csv` writes the full trace.
+    TrajectorySensitivity,
+    /// State-space linearization `A`, `B`, `C`, `D` at `--at`: the state
+    /// Jacobian, the input Jacobian, and the output Jacobians.
+    Linearize,
 }
 
 /// How `--inspect objective-gradient` computes `d(objective)/dp`.
@@ -1121,35 +1184,16 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     // --inspect` machinery). Structure is a compile-time artifact, so it belongs
     // on `compile` too; eval/jacobian take a point via `--at`.
     if let Some(kind) = args.inspect {
-        let dae = &result.dae;
-        let at = inspect_at_spec(args.at.as_deref());
-        let solver = SimulateSolverMode::Auto;
-        if matches!(args.format, InspectFormat::Json)
-            && !matches!(kind, InspectKind::Jacobian | InspectKind::ObjectiveGradient)
-        {
-            anyhow::bail!(
-                "`--format json` is only supported with `--inspect jacobian|objective-gradient`"
-            );
-        }
-        return match kind {
-            InspectKind::Structure => sim_inspect::run_structure_dump(dae, &model, solver.into()),
-            InspectKind::Eval => sim_inspect::run_eval_at(dae, &model, at, solver.into()),
-            InspectKind::Jacobian => sim_inspect::run_jacobian(
-                dae,
-                &model,
-                at,
-                solver.into(),
-                matches!(args.format, InspectFormat::Json),
-            ),
-            InspectKind::ObjectiveGradient => sim_inspect::run_objective_gradient(
-                dae,
-                &model,
-                at,
-                args.objective.as_deref(),
-                matches!(args.grad_mode, GradMode::Adjoint),
-                matches!(args.format, InspectFormat::Json),
-            ),
-        };
+        return run_point_inspection(PointInspection {
+            kind,
+            dae: &result.dae,
+            model: &model,
+            at: inspect_at_spec(args.at.as_deref()),
+            solver: SimulateSolverMode::Auto,
+            objective: args.objective.as_deref(),
+            adjoint: matches!(args.grad_mode, GradMode::Adjoint),
+            json: matches!(args.format, InspectFormat::Json),
+        });
     }
 
     let emission_policy = compile_selectors::resolve_emission_policy(
@@ -1409,35 +1453,8 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
     let (result, model) = compile_dae_with_inferred_model(&input, args.diagnostics.verbose)?;
     if let Some(kind) = args.inspect {
-        let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
-        let dae = result.dae.as_ref();
-        let at = inspect_at_spec(args.at.as_deref());
-        if matches!(args.format, InspectFormat::Json)
-            && !matches!(kind, InspectKind::Jacobian | InspectKind::ObjectiveGradient)
-        {
-            anyhow::bail!(
-                "`--format json` is only supported with `--inspect jacobian|objective-gradient`"
-            );
-        }
-        return match kind {
-            InspectKind::Structure => sim_inspect::run_structure_dump(dae, &model, solver.into()),
-            InspectKind::Eval => sim_inspect::run_eval_at(dae, &model, at, solver.into()),
-            InspectKind::Jacobian => sim_inspect::run_jacobian(
-                dae,
-                &model,
-                at,
-                solver.into(),
-                matches!(args.format, InspectFormat::Json),
-            ),
-            InspectKind::ObjectiveGradient => sim_inspect::run_objective_gradient(
-                dae,
-                &model,
-                at,
-                args.objective.as_deref(),
-                matches!(args.grad_mode, GradMode::Adjoint),
-                matches!(args.format, InspectFormat::Json),
-            ),
-        };
+        let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
+        return run_sim_inspection(&args, kind, &result, &model, workspace_root.as_deref());
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
     let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;

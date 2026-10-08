@@ -13,8 +13,8 @@ use super::overrides::lower_for_simulation_with_overrides;
 /// Tolerance / iteration budget for the `--inspect eval` algebraic refresh, matching
 /// the rk45 backend's runtime settings so the probe sees the same algebraic
 /// solution the solver would at that point.
-const EVAL_AT_REFRESH_TOL: f64 = 1.0e-10;
-const EVAL_AT_REFRESH_MAX_ITERS: usize = 32;
+pub(super) const EVAL_AT_REFRESH_TOL: f64 = 1.0e-10;
+pub(super) const EVAL_AT_REFRESH_MAX_ITERS: usize = 32;
 
 /// Result of a [`eval_dae_at`] probe: the named per-variable report plus the
 /// state vector and state names actually evaluated.
@@ -69,7 +69,7 @@ pub fn eval_dae_at(
 /// `(state_used, state_names)`. An unknown name is an error (tagged with `label`,
 /// e.g. `--inspect eval --at` / `--inspect jacobian --at`) that lists the valid
 /// state names.
-fn resolve_probe_state(
+pub(super) fn resolve_probe_state(
     solve_model: &solve::SolveModel,
     state_overrides: &[(String, f64)],
     label: &str,

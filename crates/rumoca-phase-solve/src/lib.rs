@@ -13,6 +13,7 @@ mod model_values;
 mod model_wire;
 mod phasor_sources;
 mod proven_tearing;
+mod sensitivity_parameters;
 mod state_selection;
 
 pub mod ad;
@@ -36,6 +37,7 @@ pub use model_wire::{
     SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,
     solve_model_wire,
 };
+pub use sensitivity_parameters::{independent_tunable_parameters, select_sensitivity_parameters};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
