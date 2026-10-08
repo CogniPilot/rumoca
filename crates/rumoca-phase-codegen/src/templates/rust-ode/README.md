@@ -11,6 +11,11 @@ kernel.
 
 - Readiness 2: CI compiles and numerically executes the generated Rust module.
 - Input: checked Solve IR.
+- Algebraic variables: when every algebraic slot has an issued exact
+  assignment (`exact_algebraic_assignments`), the function assigns them
+  in-function, in checked order, before the derivative rows. Only the state
+  slots of the input are read. Coupled or implicit algebraic blocks, and
+  tensor-affine assignments, are still rejected (`residual_equations`).
 - Output: one standalone Rust source module using slice-based state, parameter,
   and output storage.
 - Scalar fallback is a generated view of compact tensor nodes, not a second IR.

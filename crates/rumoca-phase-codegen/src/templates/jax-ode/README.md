@@ -10,6 +10,11 @@ pure explicit RHS suitable for `jax.jit`, `vmap`, and JAX differentiation.
 
 - Readiness 1: CI imports, JITs, evaluates, and differentiates the generated module.
 - Input: checked Solve IR.
+- Algebraic variables: when every algebraic slot has an issued exact
+  assignment (`exact_algebraic_assignments`), the function assigns them
+  in-function, in checked order, before the derivative rows. Only the state
+  slots of the input are read. Coupled or implicit algebraic blocks, and
+  tensor-affine assignments, are still rejected (`residual_equations`).
 - Output: a Python module exporting `rhs(t, x, u, p)` with JAX array operations.
 - The function is side-effect free and preserves checked storage ordering.
 - Scalar tensor views are emitted as JAX expressions rather than precomputed
@@ -27,6 +32,8 @@ initialization, callbacks, and unsupported operations fail before output.
 - `indexed_python_targets_keep_indexing_inside_symbolic_array_dialects` covers
   indexed parameter access.
 - `explicit_rhs_targets_reject_implicit_algebraic_models` is the negative gate.
+- `fmi2_and_fmi3_consume_an_exact_isolable_algebraic_schedule` renders the exact
+  algebraic refresh for every scalar ODE target and executes the c-ode one.
 
 ## Example
 

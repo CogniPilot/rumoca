@@ -889,8 +889,15 @@ pub fn validate_solve_target_capabilities(
     // The Solve presence queries below are owned by `rumoca_ir_solve`
     // (SPEC_0041 §1) and are called qualified so this gate and the checked FMI
     // projection provably read the same facts.
+    // A Solve target that renders `solve_blocks.parameter_initialization` /
+    // `state_initialization` accepts an initialization made only of ordered
+    // assignments into parameter and state slots.
+    let parameter_only_initialization = manifest.ir == TargetTemplateIr::Solve
+        && capabilities.parameter_initialization == Some(true)
+        && rumoca_phase_codegen::explicit_initialization_renderable(solve);
     if capabilities.initialization == Some(false)
         && !supports_parameter_initialization(manifest, capabilities)
+        && !parameter_only_initialization
         && rumoca_ir_solve::solve_has_initialization(solve)
     {
         unsupported_feature(
@@ -1373,8 +1380,10 @@ fn validate_target_capabilities(
     if capabilities.static_assertions.is_some() && manifest.ir != TargetTemplateIr::Fmi {
         bail!("static_assertions capability is only valid for FMI targets");
     }
-    if capabilities.parameter_initialization.is_some() && manifest.ir != TargetTemplateIr::Fmi {
-        bail!("parameter_initialization capability is only valid for FMI targets");
+    if capabilities.parameter_initialization.is_some()
+        && !matches!(manifest.ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi)
+    {
+        bail!("parameter_initialization capability is only valid for Solve-derived targets");
     }
     if capabilities.algorithms.is_some() && manifest.ir != TargetTemplateIr::Flat {
         bail!("algorithms capability is only valid for ir = \"flat\" targets");

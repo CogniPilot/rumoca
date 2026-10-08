@@ -230,6 +230,63 @@ fn solve_render_context_value_with_dae(
     )
 }
 
+/// Default value of every compiled parameter slot (`P` layout order), from
+/// each parameter's statically evaluated binding (else start) values in the DAE
+/// template context. `None` where no value is statically known (a parameter
+/// computed by initialization, an input, a discrete or relation-memory slot),
+/// so a target can emit NaN there and let `init_params` fill computed slots.
+fn parameter_defaults(problem: &solve::SolveProblem, dae_entry: &Value) -> Vec<Option<f64>> {
+    let mut defaults = vec![None; problem.layout.p_scalars()];
+    let Ok(variables) = dae_entry.get_attr("variables").and_then(|v| v.try_iter()) else {
+        return defaults;
+    };
+    for variable in variables {
+        let Some(name) = variable
+            .get_attr("name")
+            .ok()
+            .and_then(|n| n.as_str().map(str::to_owned))
+        else {
+            continue;
+        };
+        let Some(solve::ScalarSlot::P { index, .. }) = problem.layout.binding(&name) else {
+            continue;
+        };
+        let Ok(attributes) = variable.get_attr("attributes") else {
+            continue;
+        };
+        let values = ["binding_values", "start_values"]
+            .into_iter()
+            .filter_map(|key| attributes.get_attr(key).ok())
+            .find(|values| !values.is_none() && !values.is_undefined());
+        let Some(values) = values.and_then(|v| v.try_iter().ok()) else {
+            continue;
+        };
+        for (offset, value) in values.enumerate() {
+            if let Some(slot) = defaults.get_mut(index + offset) {
+                *slot = f64::try_from(value).ok();
+            }
+        }
+    }
+    defaults
+}
+
+/// The scalar name of every compiled parameter slot (`P` layout order), from
+/// the layout's scalar bindings; `None` for a slot no scalar name binds.
+fn parameter_names(problem: &solve::SolveProblem) -> Vec<Option<String>> {
+    let mut names = vec![None; problem.layout.p_scalars()];
+    for (name, slot) in problem.layout.bindings() {
+        if problem.layout.shape(name.as_str()).is_some() {
+            continue; // an array base name; its scalars carry the element names
+        }
+        if let solve::ScalarSlot::P { index, .. } = slot
+            && let Some(entry) = names.get_mut(*index)
+        {
+            *entry = Some(name.as_str().to_string());
+        }
+    }
+    names
+}
+
 fn solve_render_context_value_with_handles(
     handle: super::solve_lazy::SolveRenderHandle,
     model_name: Option<&str>,
@@ -277,8 +334,12 @@ fn solve_render_context_value_with_handles(
         full_jacobian_rows.programs().to_vec(),
     ));
     let uses_real_extremum = super::real_extremum::used_by(solve_problem, artifacts);
+    let parameter_defaults = Value::from(parameter_defaults(solve_problem, &dae_entry));
+    let parameter_names = Value::from(parameter_names(solve_problem));
     Ok(match model_name {
         Some(name) => minijinja::context! {
+            solve_parameter_defaults => parameter_defaults.clone(),
+            solve_parameter_names => parameter_names.clone(),
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
@@ -294,6 +355,8 @@ fn solve_render_context_value_with_handles(
             uses_real_extremum => uses_real_extremum,
         },
         None => minijinja::context! {
+            solve_parameter_defaults => parameter_defaults,
+            solve_parameter_names => parameter_names,
             dae => dae_entry.clone(),
             fmi => fmi_entry.clone(),
             solve => solve_value.clone(),

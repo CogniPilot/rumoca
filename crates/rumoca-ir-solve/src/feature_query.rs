@@ -113,3 +113,39 @@ pub fn solve_has_initialization(problem: &SolveProblem) -> bool {
         || !initialization.update_rhs().is_empty()
         || !initialization.update_targets().is_empty()
 }
+
+/// Whether the problem's whole initialization is ordered explicit
+/// assignments into parameter (`P`) or continuous-state (`Y`, state range)
+/// slots: no initialization residual or projection. Such an initialization is
+/// a pure function of the parameters (a weight matrix built from scalar
+/// parameters, a state start computed from them), so a target without an
+/// initialization solver can still emit it as explicit `init_params` /
+/// `init_state` routines.
+#[must_use]
+pub fn solve_initialization_is_explicit(problem: &SolveProblem) -> bool {
+    let initialization = &problem.initialization;
+    let states = problem.solve_layout.state_scalar_count();
+    initialization.residual().is_empty()
+        && initialization.projection_unknowns().is_empty()
+        && initialization.projection_plan().is_empty()
+        && initialization.update_rhs().output_count() == initialization.update_targets().len()
+        && initialization
+            .update_targets()
+            .iter()
+            .all(|target| match target {
+                crate::ScalarSlot::P { .. } => true,
+                crate::ScalarSlot::Y { index, .. } => *index < states,
+                _ => false,
+            })
+}
+
+/// Whether the initialization is explicit and assigns only parameters.
+#[must_use]
+pub fn solve_initialization_is_parameter_only(problem: &SolveProblem) -> bool {
+    solve_initialization_is_explicit(problem)
+        && problem
+            .initialization
+            .update_targets()
+            .iter()
+            .all(|target| matches!(target, crate::ScalarSlot::P { .. }))
+}

@@ -11,6 +11,12 @@ contract visible to embedded integration code and static analysis.
 - Readiness 2: CI compiles and numerically executes the kernel while proving the
   derivative call performs no heap allocation.
 - Input: checked Solve IR with statically known scalar extents.
+- Algebraic variables: when every algebraic slot has an issued exact
+  assignment (`exact_algebraic_assignments`), the function assigns them
+  in-function (into a stack copy of `State`), in checked order, before the
+  derivative rows. Only the state slots of the input are read. Coupled or
+  implicit algebraic blocks, and tensor-affine assignments, are still
+  rejected (`residual_equations`).
 - Output: one Rust module whose state, parameter, and derivative types are
   fixed-size arrays.
 - `derivative_rhs_into` performs no heap allocation.

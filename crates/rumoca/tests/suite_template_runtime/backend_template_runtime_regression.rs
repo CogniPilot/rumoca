@@ -133,6 +133,8 @@ end ExactAlgebraic;
         assert!(assign_c.contains("if (!isfinite(m->y[1]))"));
     }
 
+    // The scalar ODE right-hand-side targets consume the same schedule: they
+    // assign every algebraic slot in-function before the derivative rows.
     for target in [
         "c-ode",
         "rust-ode",
@@ -140,17 +142,63 @@ end ExactAlgebraic;
         "casadi-ode",
         "jax-ode",
         "cuda-ode",
-        "wgsl-ode",
     ] {
-        let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
-            .expect_err("a target without an exact-assignment consumer must fail closed");
+        let files = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
+            .unwrap_or_else(|error| panic!("{target} consumes the exact schedule: {error:#}"));
         assert!(
-            error
-                .to_string()
-                .contains("unsupported-feature:residual_equations"),
-            "target {target} returned the wrong diagnostic: {error:#}"
+            files
+                .iter()
+                .any(|file| file.content.contains("Algebraic refresh")),
+            "{target} must emit the in-function algebraic refresh"
         );
     }
+    execute_c_ode_algebraic_refresh(&compiled);
+
+    // wgsl-ode renders rows as expressions over a read-only `y` buffer and has
+    // no exact-assignment consumer, so it still fails closed.
+    let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", "wgsl-ode", None)
+        .expect_err("a target without an exact-assignment consumer must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported-feature:residual_equations"),
+        "wgsl-ode returned the wrong diagnostic: {error:#}"
+    );
+}
+
+/// Compile and call the emitted c-ode RHS with a deliberately stale algebraic
+/// slot: `y = 2*x` must be recomputed in-function, so `der(x) = -y = -3` at
+/// `x = 1.5` whatever the caller left in `y[1]`.
+fn execute_c_ode_algebraic_refresh(compiled: &rumoca::CompilationResult) {
+    let files = rumoca::render_target_files(compiled, "ExactAlgebraic", "c-ode", None)
+        .expect("c-ode renders the exact algebraic model");
+    let header = files
+        .iter()
+        .find(|file| file.path == "ExactAlgebraic_ode.h")
+        .expect("c-ode emits its header")
+        .content
+        .clone();
+    let source = files
+        .iter()
+        .find(|file| file.path == "ExactAlgebraic_ode.c")
+        .expect("c-ode emits its source")
+        .content
+        .replace("#include \"ExactAlgebraic_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_EXACTALGEBRAIC_Y_LEN] = {{0}};
+    double p[RUMOCA_EXACTALGEBRAIC_P_LEN + 1] = {{0}};
+    double out[RUMOCA_EXACTALGEBRAIC_DERIVATIVE_LEN] = {{0}};
+    y[0] = 1.5;
+    y[1] = 999.0;
+    if (ExactAlgebraic_derivative_rhs(0.0, y, p, out) != 0) return 1;
+    return fabs(out[0] + 3.0) < 1e-12 ? 0 : 2;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode exact algebraic refresh");
 }
 
 #[test]

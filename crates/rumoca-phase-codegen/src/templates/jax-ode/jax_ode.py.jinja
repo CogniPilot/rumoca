@@ -38,13 +38,13 @@
 {%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}
-{%- macro scalar_op(op) %}
+{%- macro scalar_op(op, y="x", out="out") %}
 {%- if op.kind == "Const" %}
 	__r{{ op.dst }} = {{ scalar_const(op) }}
 {%- elif op.kind == "LoadTime" %}
 	__r{{ op.dst }} = t
 {%- elif op.kind == "LoadY" %}
-	__r{{ op.dst }} = x[{{ op.index }}]
+	__r{{ op.dst }} = {{ y }}[{{ op.index }}]
 {%- elif op.kind == "LoadP" %}
 	__r{{ op.dst }} = P[{{ op.index }}]
 {%- elif op.kind == "LoadIndexedP" %}
@@ -66,10 +66,10 @@
 {%- elif op.kind == "Select" %}
 	__r{{ op.dst }} = if_else(__r{{ op.cond }}, __r{{ op.if_true }}, __r{{ op.if_false }})
 {%- elif op.kind == "StoreOutput" %}
-	out[{{ op.output_index }}] = __r{{ op.src }}
+	{{ out }}[{{ op.output_index }}] = __r{{ op.src }}
 {%- elif op.kind == "StoreOutputRange" %}
 {%- for output_index in op.output_indices %}
-	out[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }}
+	{{ out }}[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }}
 {%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
@@ -84,7 +84,7 @@
 #   x : state vector           ({{ solve.solve_layout.state_scalar_count }})
 #   u : control inputs         ({{ solve.solve_layout.input_scalar_names | length }})
 #   p : model parameter vector ({{ solve.solve_layout.parameter_count }}, model-declaration order)
-#   xdot = d/dt(x)             ({{ solve_blocks.continuous.derivative_rhs.output_count }})
+#   xdot = d/dt(x)             ({{ (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).output_count }})
 
 import jax
 # float64 is required for parity with the C / CasADi kernels.
@@ -112,9 +112,11 @@ _PAD = N_P_COMPILED - N_P - N_U
 STATE_NAMES = [{% for name in solve.solve_layout.solver_maps.names %}{% if loop.index0 < n_y %}'{{ name }}'{% if loop.index0 + 1 < n_y %}, {% endif %}{% endif %}{% endfor %}]
 INPUT_NAMES = [{% for name in solve.solve_layout.input_scalar_names %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
 # Static storage is grouped by role by the checked Solve layout.
-PARAM_NAMES = [{% for role in ["parameter", "constant"] %}{% for variable in dae.variables %}{% if variable.role == role %}{% for name in variable.scalar_names %}'{{ name }}', {% endfor %}{% endif %}{% endfor %}{% endfor %}]
-DEFAULT_X = [{% for variable in dae.variables %}{% if variable.role == "state" %}{% for scalar in range(variable.scalar_count) %}{% if variable.attributes.start_values %}{{ variable.attributes.start_values[scalar] }}, {% elif variable.attributes.binding_values %}{{ variable.attributes.binding_values[scalar] }}, {% else %}None, {% endif %}{% endfor %}{% endif %}{% endfor %}]
-DEFAULT_P = [{% for role in ["parameter", "constant"] %}{% for variable in dae.variables %}{% if variable.role == role %}{% for scalar in range(variable.scalar_count) %}{% if variable.attributes.binding_values %}{{ variable.attributes.binding_values[scalar] }}, {% elif variable.attributes.start_values %}{{ variable.attributes.start_values[scalar] }}, {% else %}None, {% endif %}{% endfor %}{% endif %}{% endfor %}{% endfor %}]
+PARAM_NAMES = [{% for name in solve_parameter_names[:solve.solve_layout.parameter_count] %}'{{ name if name is not none else "" }}', {% endfor %}]
+DEFAULT_X = [{% for variable in dae.variables %}{% if variable.role == "state" %}{% for scalar in range(variable.scalar_count) %}{% if variable.attributes.start_values %}{{ variable.attributes.start_values[scalar] }}, {% elif variable.attributes.binding_values %}{{ variable.attributes.binding_values[scalar] }}, {% else %}float("nan"), {% endif %}{% endfor %}{% endif %}{% endfor %}]
+# Default value of every model parameter (compiled P order, first N_P slots).
+# NaN marks a parameter computed from others: complete it with init_params.
+DEFAULT_P = [{% for value in solve_parameter_defaults[:solve.solve_layout.parameter_count] %}{{ value if value is not none else 'float("nan")' }}, {% endfor %}]
 
 
 def _linsolve_component(matrix, rhs, n, component):
@@ -123,6 +125,40 @@ def _linsolve_component(matrix, rhs, n, component):
 	b = jnp.stack(rhs)
 	return jnp.linalg.solve(A, b)[component]
 
+
+
+def init_params(p):
+	"""Compute the parameters defined by other parameters (e.g. a weight matrix
+	built from scalar parameters) from the base parameters in p (length N_P).
+	Returns the completed parameter list. Call after changing any parameter,
+	before rhs: p = init_params(DEFAULT_P)."""
+	P = [float(v) for v in p] + [0.0] * (N_P_COMPILED - N_P)
+{%- set pinit = solve_blocks.parameter_initialization %}
+{%- if pinit and pinit.output_count > 0 %}
+{%- for program in pinit.scalar_plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op, out="P") }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+	return [float(v) for v in P[:N_P]]
+
+
+def init_state(p):
+	"""Start values of the states, with those computed from parameters (e.g.
+	trainable weights carried as states) evaluated from p (length N_P, after
+	init_params). Returns a list of N_Y values."""
+	P = [float(v) for v in p] + [0.0] * (N_P_COMPILED - N_P)
+	y = [float(v) for v in DEFAULT_X] + [float("nan")] * ({{ solve.layout.y_scalars }} - N_Y)
+{%- set sinit = solve_blocks.state_initialization %}
+{%- if sinit and sinit.output_count > 0 %}
+{%- for program in sinit.scalar_plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op, y="y", out="y") }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+	return [float(v) for v in y[:N_Y]]
 
 def rhs(t, x, u, p):
 	"""Explicit ODE right-hand side: xdot = f(t, x, u, p). jit/grad/vmap-able."""
@@ -133,10 +169,30 @@ def rhs(t, x, u, p):
 	# Compiled parameter vector the bytecode indexes: [params, inputs, pad].
 	_parts = [p, u] + ([jnp.zeros(_PAD)] if _PAD > 0 else [])
 	P = jnp.concatenate(_parts)
-	out = [None] * {{ solve_blocks.continuous.derivative_rhs.output_count }}
-{%- for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}
+{%- set alg = solve_blocks.continuous.algebraic_assignments %}
+{%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- if alg_plan and alg_plan.output_count > 0 %}
+	# Algebraic refresh: the derivative rows read algebraic slots of the full
+	# solver vector y = [states, algebraics, ...]. x carries only the states;
+	# every algebraic slot is assigned here first, in checked exact-assignment order.
+	# Placeholders are NaN, not None or 0.0: an assignment program replays its
+	# source residual's prefix, which may read its own (not yet assigned) target
+	# slot, e.g. c / target. That read never reaches the isolated value, and NaN
+	# arithmetic never raises in Python.
+	y = [x[i] for i in range(N_Y)] + [float("nan")] * ({{ solve.layout.y_scalars }} - N_Y)
+{%- for program in alg_plan.programs %}
 {%- for op in program.ops %}
-{{ scalar_op(op) }}
+{{ scalar_op(op, y="y", out="y") }}
+{%- endfor %}
+{%- endfor %}
+{%- set yname = "y" %}
+{%- else %}
+{%- set yname = "x" %}
+{%- endif %}
+	out = [None] * {{ (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).output_count }}
+{%- for program in (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).scalar_plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op, y=yname) }}
 {%- endfor %}
 {%- endfor %}
 	return jnp.stack(out)
