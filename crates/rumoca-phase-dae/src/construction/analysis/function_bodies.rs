@@ -32,6 +32,16 @@ pub(in crate::construction) fn validate_function_certificate(
     certificate: &FunctionShapeCertificate,
 ) -> Result<FunctionPlan, ToDaeError> {
     let function = &flat.functions[&certificate.key.function];
+    certify_function(function, flat, shapes, certificate)
+        .map_err(|error| error.within_function(function.name.as_str()))
+}
+
+fn certify_function(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+    shapes: &FunctionShapeAnalysis,
+    certificate: &FunctionShapeCertificate,
+) -> Result<FunctionPlan, ToDaeError> {
     validate_function_declaration(function, flat, &certificate.values)?;
     let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
     let roles = function_expression_roles(function, flat);
