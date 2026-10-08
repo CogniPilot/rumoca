@@ -630,7 +630,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         ),
         LowerError,
     > {
-        let mut capture_sources = Vec::new();
+        let mut capture_sources = MergedCaptures::default();
         let arms = pending_arms
             .into_iter()
             .map(|(condition, result)| {
@@ -642,11 +642,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .collect::<Result<Vec<_>, LowerError>>()?;
         let fallback =
             Self::merge_function_conditional_region(pending_fallback, &mut capture_sources, span)?;
-        let capture_count = capture_sources.iter().try_fold(0usize, |count, source| {
-            count.checked_add(source.width()).ok_or_else(|| {
-                LowerError::contract("function-conditional capture ABI overflows", span)
-            })
-        })?;
+        let capture_count = capture_sources.width;
         let checked = match owner {
             Some(owner) => solve::FunctionConditionalProgram::checked_owned(
                 owner,
@@ -668,7 +664,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             )
         })?;
-        Ok((Arc::new(checked), capture_sources))
+        Ok((Arc::new(checked), capture_sources.sources))
     }
 
     fn function_conditional_owner_key(
@@ -1033,26 +1029,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     #[allow(clippy::excessive_nesting)]
     fn merge_function_conditional_region(
         mut region: PendingFunctionConditionalRegion<'dae>,
-        captures: &mut Vec<FunctionConditionalCaptureSource<'dae>>,
+        captures: &mut MergedCaptures<'dae>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let mut segments = Vec::with_capacity(region.captures.len());
         let mut local_base = 0usize;
         for source in region.captures.iter().copied() {
-            let mut owner_base = 0usize;
-            let mut found = false;
-            for candidate in captures.iter().copied() {
-                if candidate == source {
-                    found = true;
-                    break;
-                }
-                owner_base = owner_base.checked_add(candidate.width()).ok_or_else(|| {
-                    LowerError::contract("function-conditional owner capture ABI overflows", span)
-                })?;
-            }
-            if !found {
-                captures.push(source);
-            }
+            let owner_base = captures.base_of(source, span)?;
             segments.push((local_base, source.width(), owner_base));
             local_base = local_base.checked_add(source.width()).ok_or_else(|| {
                 LowerError::contract("function-conditional local capture ABI overflows", span)
@@ -1069,14 +1052,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let local_end = index.checked_add(count).ok_or_else(|| {
                 LowerError::contract("function-conditional local capture range overflows", span)
             })?;
+            // Segments ascend by local base: the owner of an index is the last one
+            // starting at or before it.
             let (segment_local, segment_width, segment_owner) = segments
-                .iter()
+                .get(
+                    segments
+                        .partition_point(|(base, _, _)| *base <= *index)
+                        .wrapping_sub(1),
+                )
                 .copied()
-                .find(|(base, width, _)| {
-                    *base <= *index
-                        && base
-                            .checked_add(*width)
-                            .is_some_and(|segment_end| local_end <= segment_end)
+                .filter(|(base, width, _)| {
+                    base.checked_add(*width)
+                        .is_some_and(|segment_end| local_end <= segment_end)
                 })
                 .ok_or_else(|| {
                     LowerError::contract(

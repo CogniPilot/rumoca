@@ -1723,3 +1723,32 @@ fn scalar_operand<'dae>(
         scalar
     }
 }
+
+/// The capture sources of a conditional program, in owner slot order, with the
+/// first slot of each.
+#[derive(Default)]
+struct MergedCaptures<'dae> {
+    sources: Vec<FunctionConditionalCaptureSource<'dae>>,
+    bases: HashMap<FunctionConditionalCaptureSource<'dae>, usize>,
+    width: usize,
+}
+
+impl<'dae> MergedCaptures<'dae> {
+    /// The first owner slot of `source`, appending it when new.
+    fn base_of(
+        &mut self,
+        source: FunctionConditionalCaptureSource<'dae>,
+        span: Span,
+    ) -> Result<usize, LowerError> {
+        if let Some(&base) = self.bases.get(&source) {
+            return Ok(base);
+        }
+        let base = self.width;
+        self.width = base.checked_add(source.width()).ok_or_else(|| {
+            LowerError::contract("function-conditional owner capture ABI overflows", span)
+        })?;
+        self.bases.insert(source, base);
+        self.sources.push(source);
+        Ok(base)
+    }
+}
