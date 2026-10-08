@@ -365,11 +365,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_call_assertions = self.active_call_assertions.clone();
         compiler.call_action_compilation = self.call_action_compilation;
         compiler.suppress_function_assertions = self.suppress_function_assertions;
-        compiler.context_ids = self.context_ids.clone();
-        compiler.context_frames = self.context_frames.clone();
+        compiler.contexts = Rc::clone(&self.contexts);
         compiler.context_stack = self.context_stack.clone();
         compiler.context_id = self.context_id;
-        compiler.next_context_id = self.next_context_id;
         compiler.function_conditional_owners = self.function_conditional_owners;
         Ok(compiler)
     }

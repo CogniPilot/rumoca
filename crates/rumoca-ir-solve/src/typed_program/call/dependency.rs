@@ -136,20 +136,24 @@ pub(in crate::typed_program) fn widen(
         .collect()
 }
 
+/// Add `dependency` to a set kept ordered by input, with equal inputs in
+/// insertion order. Every set is built through this function, so the order is
+/// an invariant and an insert touches only the run of its own input.
 fn insert(target: &mut Vec<SolveCallDependency>, dependency: SolveCallDependency) {
-    if target
+    let input = dependency.input_index();
+    let start = target.partition_point(|prior| prior.input_index() < input);
+    let end = start + target[start..].partition_point(|prior| prior.input_index() == input);
+    if target[start..end]
         .iter()
-        .any(|prior| prior.input == dependency.input && prior.is_whole_input())
+        .any(SolveCallDependency::is_whole_input)
     {
         return;
     }
     if dependency.is_whole_input() {
-        target.retain(|prior| prior.input != dependency.input);
+        target.splice(start..end, [dependency]);
+    } else if !target[start..end].contains(&dependency) {
+        target.insert(end, dependency);
     }
-    if !target.contains(&dependency) {
-        target.push(dependency);
-    }
-    target.sort_by_key(SolveCallDependency::input_index);
 }
 
 fn substitute_call(
