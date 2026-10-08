@@ -49,7 +49,7 @@ impl Lifetimes {
         reusable: &[bool],
     ) -> bool {
         let range = registers[source.index()];
-        if !reusable[source.index()] || range.base != 2 || self.last_use[source.index()] != index {
+        if !reusable[source.index()] || range.base != 2 {
             return false;
         }
         if self
@@ -59,6 +59,8 @@ impl Lifetimes {
         {
             return false;
         }
+        // The live-alias guard is the proof: no other register sharing the range
+        // is read after `index`, and `source` itself is not read later.
         // Allocation/borrow construction makes whole register ranges equal or
         // disjoint. Equality here identifies that checked private allocation,
         // never a semantic owner or equality of different source values.

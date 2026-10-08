@@ -14,6 +14,15 @@ pub(super) struct CellRange {
     pub bytes: u32,
 }
 
+impl CellRange {
+    /// Whether the two ranges share a byte of one address space.
+    fn overlaps(self, other: Self) -> bool {
+        self.base == other.base
+            && self.offset < other.offset.saturating_add(other.bytes)
+            && other.offset < self.offset.saturating_add(self.bytes)
+    }
+}
+
 /// Scratch storage of one program body (an owner or a nested region).
 ///
 /// Slots and registers stay live to the end of the body and are allocated
@@ -495,14 +504,17 @@ impl FramePlan {
         count: u32,
     ) -> Option<CellRange> {
         let source = *initial.get(ordinal)?;
-        let listed_once = initial
-            .iter()
-            .filter(|register| **register == source)
-            .count()
-            == 1
-            && !captures.contains(&source);
         let range = self.registers[source.index()];
-        (listed_once
+        // Registers are compared by range: a capture or another carried value
+        // may share this storage through a borrowed result.
+        let shared = initial
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != ordinal)
+            .map(|(_, register)| register)
+            .chain(captures)
+            .any(|register| self.registers[register.index()].overlaps(range));
+        (!shared
             && range.bytes == count
             && self
                 .lifetimes
