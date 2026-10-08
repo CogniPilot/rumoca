@@ -2274,11 +2274,15 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m pip install maturin
 
+      # The wheel steps run a plain (non-login) shell inside the Nix dev shell:
+      # a login profile re-prepends the runner's rustup and Homebrew paths,
+      # which shadow the pinned Nix toolchain and Python (on Apple Silicon the
+      # rustup host toolchain has no x86_64-apple-darwin standard library).
       - name: Run Python binding Rust tests
         if: matrix.name == 'linux-x86_64-gnu'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             export PYO3_PYTHON="$(command -v python)"
             cargo test --package rumoca-bind-python --lib
@@ -2287,7 +2291,7 @@ jobs:
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             target="${{ matrix.target }}"
             # Linux runners ship a very new glibc, so a native build tags the
@@ -2329,7 +2333,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             python -m venv target/python-wheel-smoke-venv
             . target/python-wheel-smoke-venv/bin/activate
