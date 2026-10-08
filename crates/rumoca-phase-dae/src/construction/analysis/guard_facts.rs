@@ -151,7 +151,65 @@ const MAX_IMPLICATION_DEPTH: usize = 8;
 
 /// Facts that hold on one path: a fact per subject. `None` is an unreachable
 /// path, where every fact holds.
-type PathFacts = Option<BTreeMap<FactSubject, ValueFact>>;
+type PathFacts = Option<Facts>;
+
+/// The facts of one path, shared between the paths forked from it: a fork
+/// is a reference count, and a write copies the map only while another path
+/// still reads it.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub(super) struct Facts(std::sync::Arc<BTreeMap<FactSubject, ValueFact>>);
+
+impl Facts {
+    fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl From<BTreeMap<FactSubject, ValueFact>> for Facts {
+    fn from(facts: BTreeMap<FactSubject, ValueFact>) -> Self {
+        Self(std::sync::Arc::new(facts))
+    }
+}
+
+impl FromIterator<(FactSubject, ValueFact)> for Facts {
+    fn from_iter<I: IntoIterator<Item = (FactSubject, ValueFact)>>(iter: I) -> Self {
+        Self(std::sync::Arc::new(iter.into_iter().collect()))
+    }
+}
+
+impl std::ops::Deref for Facts {
+    type Target = BTreeMap<FactSubject, ValueFact>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Facts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<'a> IntoIterator for &'a Facts {
+    type Item = (&'a FactSubject, &'a ValueFact);
+    type IntoIter = std::collections::btree_map::Iter<'a, FactSubject, ValueFact>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for Facts {
+    type Item = (FactSubject, ValueFact);
+    type IntoIter = std::collections::btree_map::IntoIter<FactSubject, ValueFact>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        std::sync::Arc::try_unwrap(self.0)
+            .unwrap_or_else(|shared| (*shared).clone())
+            .into_iter()
+    }
+}
 
 fn conjoin(lhs: PathFacts, rhs: PathFacts) -> PathFacts {
     let (mut lhs, rhs) = (lhs?, rhs?);
@@ -182,7 +240,7 @@ fn disjoin(lhs: PathFacts, rhs: PathFacts) -> PathFacts {
 }
 
 fn trivial(facts: &PathFacts) -> bool {
-    facts.as_ref().is_some_and(BTreeMap::is_empty)
+    facts.as_ref().is_some_and(|facts| facts.is_empty())
 }
 
 /// What a fact owner reads beside the facts: the proven extents and values,
@@ -227,7 +285,7 @@ impl GuardFacts {
     /// No facts.
     pub(super) fn entry() -> Self {
         Self {
-            path: Some(BTreeMap::new()),
+            path: Some(Facts::new()),
             selections: BTreeMap::new(),
         }
     }
@@ -449,7 +507,7 @@ impl GuardFacts {
             Expression::Literal {
                 value: Literal::Boolean(literal),
                 ..
-            } => (*literal == value).then(BTreeMap::new),
+            } => (*literal == value).then(Facts::new),
             Expression::Unary {
                 op: OpUnary::Not,
                 rhs,
@@ -463,7 +521,7 @@ impl GuardFacts {
             } => self.junction_facts((lhs, rhs), matches!(op, OpBinary::And), value, scope),
             // `if a then b else false` is `a and b`.
             Expression::If { .. } if single_branch_and(expression).is_some() => {
-                single_branch_and(expression).map_or(Some(BTreeMap::new()), |[lhs, rhs]| {
+                single_branch_and(expression).map_or(Some(Facts::new()), |[lhs, rhs]| {
                     self.junction_facts((lhs, rhs), true, value, scope)
                 })
             }
@@ -471,7 +529,7 @@ impl GuardFacts {
             Expression::VarRef {
                 name, subscripts, ..
             } if subscripts.is_empty() => self.boolean_facts(name.var_name(), value, 0),
-            _ => Some(BTreeMap::new()),
+            _ => Some(Facts::new()),
         }
     }
 
@@ -488,13 +546,13 @@ impl GuardFacts {
         scope: FactScope<'_>,
     ) -> PathFacts {
         let Some(relation) = Relation::of(op) else {
-            return Some(BTreeMap::new());
+            return Some(Facts::new());
         };
         // `<>` is the one relation a NaN operand satisfies; every other one
         // fails for it. So only these outcomes exclude a NaN operand.
         let ordered = matches!(relation, Relation::NotEqual) != value;
         let relation = if value { relation } else { relation.negated() };
-        let mut facts = Some(BTreeMap::new());
+        let mut facts = Some(Facts::new());
         for (subject, other, relation) in [(lhs, rhs, relation), (rhs, lhs, relation.mirrored())] {
             facts = conjoin(facts, self.factor_bounds(subject, other, relation, scope));
             let Some(subject) = FactSubject::of(subject) else {
@@ -508,7 +566,10 @@ impl GuardFacts {
                 ValueFact::Integer(IntegerInterval::UNBOUNDED)
             };
             if !fact.is_unbounded() {
-                facts = conjoin(facts, Some(BTreeMap::from([(subject.clone(), fact)])));
+                facts = conjoin(
+                    facts,
+                    Some(Facts::from(BTreeMap::from([(subject.clone(), fact)]))),
+                );
             }
             if subject.is_scalar()
                 && let Some(selection) = self.selections.get(&subject.name)
@@ -542,14 +603,14 @@ impl GuardFacts {
             ..
         } = product
         else {
-            return Some(facts);
+            return Some(facts.into());
         };
         let Some(limit) = relation
             .integer_bound(self.integer_interval(other, scope))
             .upper
             .filter(|limit| *limit >= 0)
         else {
-            return Some(facts);
+            return Some(facts.into());
         };
         for (factor, cofactor) in [(lhs, rhs), (rhs, lhs)] {
             let Some(subject) = FactSubject::of(factor).filter(|subject| scope.is_integer(subject))
@@ -568,7 +629,7 @@ impl GuardFacts {
                 facts.insert(subject, ValueFact::Integer(bound));
             }
         }
-        Some(facts)
+        Some(facts.into())
     }
 
     /// The facts that hold where the Boolean `name` has `value`: those of the
@@ -576,7 +637,7 @@ impl GuardFacts {
     /// other Booleans.
     fn boolean_facts(&self, name: &VarName, value: bool, depth: usize) -> PathFacts {
         let Some(selection) = self.selections.get(name) else {
-            return Some(BTreeMap::new());
+            return Some(Facts::new());
         };
         selection
             .arms_when(|arm| arm.is_boolean(value))

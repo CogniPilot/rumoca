@@ -85,7 +85,7 @@ struct Arm {
 /// arm cannot be held.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) struct Selection {
-    arms: Vec<Arm>,
+    arms: std::sync::Arc<Vec<Arm>>,
 }
 
 impl Selection {
@@ -93,11 +93,11 @@ impl Selection {
     pub(super) fn booleans() -> Self {
         let arm = |value| Arm {
             value: ArmValue::Boolean(value),
-            facts: Some(BTreeMap::new()),
+            facts: Some(Facts::new()),
             implied: Vec::new(),
         };
         Self {
-            arms: vec![arm(true), arm(false)],
+            arms: std::sync::Arc::new(vec![arm(true), arm(false)]),
         }
     }
 
@@ -105,13 +105,16 @@ impl Selection {
         if facts.is_none() {
             return;
         }
-        match self.arms.iter_mut().find(|arm| arm.value == value) {
+        match std::sync::Arc::make_mut(&mut self.arms)
+            .iter_mut()
+            .find(|arm| arm.value == value)
+        {
             Some(existing) => {
                 existing.facts = disjoin(existing.facts.take(), facts);
                 // Either path may have stored the value: only what both prove.
                 existing.implied.retain(|entry| implied.contains(entry));
             }
-            None => self.arms.push(Arm {
+            None => std::sync::Arc::make_mut(&mut self.arms).push(Arm {
                 value,
                 facts,
                 implied,
@@ -151,13 +154,13 @@ impl Selection {
     }
 
     pub(super) fn retain(&mut self, admitted: impl Fn(ArmValue) -> bool) {
-        self.arms.retain(|arm| admitted(arm.value));
+        std::sync::Arc::make_mut(&mut self.arms).retain(|arm| admitted(arm.value));
     }
 
     /// Drop everything the arms record about the value `name`, which a write
     /// changes.
     pub(super) fn forget_name(&mut self, name: &VarName) {
-        for arm in &mut self.arms {
+        for arm in std::sync::Arc::make_mut(&mut self.arms).iter_mut() {
             forget_in(&mut arm.facts, name);
             arm.implied.retain(|(implied, _)| implied != name);
         }
@@ -169,7 +172,7 @@ impl Selection {
         let Some(other) = other else {
             return false;
         };
-        for arm in &other.arms {
+        for arm in other.arms.iter() {
             self.insert(arm.value, arm.facts.clone(), arm.implied.clone());
         }
         true
@@ -374,7 +377,9 @@ impl GuardFacts {
         if scope.is_integer(subject) || scope.is_real(subject) {
             return self.literal_selection(value, scope);
         }
-        let mut selection = Selection { arms: Vec::new() };
+        let mut selection = Selection {
+            arms: std::sync::Arc::default(),
+        };
         let when_true = self.facts(value, true, scope);
         let when_false = self.facts(value, false, scope);
         let known = |name: &VarName| self.known_boolean(name);
@@ -411,7 +416,9 @@ impl GuardFacts {
         if arms.len() < 2 {
             return None;
         }
-        let mut selection = Selection { arms: Vec::new() };
+        let mut selection = Selection {
+            arms: std::sync::Arc::default(),
+        };
         for (conditions, literal) in arms {
             let path = conditions
                 .into_iter()
