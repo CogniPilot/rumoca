@@ -68,6 +68,75 @@ impl WasmSimulationSession {
         create_interactive_session(source, model_name, &options, || Ok(initial_inputs))
     }
 
+    /// Set an input value by name. Takes effect on the next advance.
+    pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), WasmError> {
+        self.apply(SessionCommand::SetInput {
+            name: name.to_owned(),
+            value,
+        })
+        .map(drop)
+    }
+
+    /// Apply one atomic input frame encoded as `[["name", value], ...]`.
+    pub fn set_inputs(&mut self, inputs_json: &str) -> Result<(), WasmError> {
+        let inputs: Vec<(String, f64)> = serde_json::from_str(inputs_json)
+            .map_err(|e| WasmError::new(format!("Invalid input frame: {e}")))?;
+        self.apply(SessionCommand::SetInputs { inputs }).map(drop)
+    }
+
+    /// Advance the simulation to an absolute target time in seconds.
+    pub fn advance_to(&mut self, target_time: f64) -> Result<(), WasmError> {
+        self.apply(SessionCommand::AdvanceTo { time: target_time })
+            .map(drop)
+    }
+
+    /// Advance the simulation by a relative time step in seconds.
+    pub fn step(&mut self, dt: f64) -> Result<(), WasmError> {
+        self.apply(SessionCommand::Step { dt }).map(drop)
+    }
+
+    /// Get the current simulation time.
+    pub fn time(&self) -> f64 {
+        self.session.time()
+    }
+
+    /// Read a single variable value by name.
+    pub fn get(&mut self, name: &str) -> Result<Option<f64>, WasmError> {
+        match self.apply(SessionCommand::Get {
+            name: name.to_owned(),
+        })? {
+            SessionEvent::Value { value, .. } => Ok(value),
+            other => Err(unexpected_event("get", &other)),
+        }
+    }
+
+    /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
+    pub fn state_json(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::State)? {
+            SessionEvent::State { time, values } => {
+                serde_json::to_string(&serde_json::json!({ "time": time, "values": values }))
+                    .map_err(|e| WasmError::new(format!("Session state serialization error: {e}")))
+            }
+            other => Err(unexpected_event("state", &other)),
+        }
+    }
+
+    /// Get available input names as a JSON array string.
+    pub fn input_names(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::InputNames)? {
+            SessionEvent::InputNames { names } => names_json(&names),
+            other => Err(unexpected_event("input_names", &other)),
+        }
+    }
+
+    /// Get all solver variable names as a JSON array string.
+    pub fn variable_names(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::VariableNames)? {
+            SessionEvent::VariableNames { names } => names_json(&names),
+            other => Err(unexpected_event("variable_names", &other)),
+        }
+    }
+
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), WasmError> {
         self.reset_at(0.0)
