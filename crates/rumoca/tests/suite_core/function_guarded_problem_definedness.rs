@@ -156,3 +156,95 @@ fn an_if_expression_arm_selected_by_another_guard_is_refused() {
         .expect_err("the record is undefined when count is negative");
     assert!(error.contains("only some branches"), "{error}");
 }
+
+const LOOP_VALIDITY: &str = r#"
+package LoopValidity
+  constant Integer capacity = 3;
+
+  record Problem
+    Boolean accepted;
+    Integer nodeCount;
+    Real positions[capacity];
+  end Problem;
+
+  function Prepare
+    input Integer count;
+    output Problem problem;
+  algorithm
+    problem.accepted := count >= 0 and count <= capacity;
+    problem.nodeCount := count;
+    problem.positions := {1,2,3};
+  end Prepare;
+
+  function Correct
+    input Integer count;
+    input Boolean requested;
+    output Real result;
+  protected
+    Problem problem;
+    Problem proposal;
+    Boolean valid;
+  algorithm
+    result := 0;
+    if requested then
+      valid := count >= 0;
+      if valid then
+        problem := Prepare(count);
+        valid := problem.accepted;
+      end if;
+      if valid then
+        proposal := problem;
+        for node in 1:capacity loop
+          if node <= problem.nodeCount then
+            valid := valid and problem.positions[node] <= 1e6;
+            proposal.positions[node] := 2*problem.positions[node];
+          end if;
+        end for;
+      end if;
+      if valid then
+        result := proposal.positions[1] + proposal.positions[2];
+      end if;
+    end if;
+  end Correct;
+end LoopValidity;
+
+model LoopValidityProbe
+  input Integer count = 2;
+  input Boolean requested = true;
+  output Real result;
+equation
+  result = LoopValidity.Correct(count,requested);
+end LoopValidityProbe;
+"#;
+
+fn loop_validity(read_guard: &str) -> String {
+    let source = LOOP_VALIDITY.replacen(
+        "      if valid then\n        result :=",
+        &format!("      if {read_guard} then\n        result :="),
+        1,
+    );
+    assert!(
+        source.contains(read_guard),
+        "the fixture keeps its closing read"
+    );
+    source
+}
+
+/// A Boolean captured as `requested and valid` proves `valid` false when it
+/// is false on a path where `requested` holds, so the path that skipped the
+/// loop block cannot reach the later read under `valid`.
+#[test]
+fn a_validity_correlated_through_a_loop_block_defines_the_read_after_it() {
+    let compiled = compile("LoopValidityProbe", &loop_validity("valid"))
+        .unwrap_or_else(|error| panic!("the read is under the block's guard: {error}"));
+    // count = 2: positions {1, 2, 3} become {2, 4, 3}; 2 + 4.
+    assert_eq!(result_value(&compiled), 2.0 + 4.0);
+}
+
+#[test]
+fn a_read_whose_guard_does_not_imply_the_block_guard_after_a_loop_block_is_refused() {
+    let error = compile("LoopValidityProbe", &loop_validity("count >= 0"))
+        .map(|_| ())
+        .expect_err("the block is skipped when the problem is not accepted");
+    assert!(error.contains("only some branches"), "{error}");
+}

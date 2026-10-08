@@ -206,8 +206,16 @@ pub(super) fn literal_arms(value: &Expression) -> Option<Vec<LiteralArm<'_>>> {
 
 /// The Booleans that hold wherever `expression` evaluates to `value`: the
 /// local it reads, both operands of a true `and` (a Boolean if-expression with
-/// a `false` else branch is one), both operands of a false `or`.
-fn implied_booleans(expression: &Expression, value: bool, implied: &mut Vec<(VarName, bool)>) {
+/// a `false` else branch is one), both operands of a false `or`. A false `and`
+/// (true `or`) leaves one operand false (true) when the other is known on this
+/// path to hold the value that does not decide the result: `g := if a then b
+/// else false` with `a` true makes a false `g` prove `b` false.
+fn implied_booleans(
+    expression: &Expression,
+    value: bool,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
     match expression {
         Expression::VarRef {
             name, subscripts, ..
@@ -221,33 +229,79 @@ fn implied_booleans(expression: &Expression, value: bool, implied: &mut Vec<(Var
             op: OpUnary::Not,
             rhs,
             ..
-        } => implied_booleans(rhs, !value, implied),
-        Expression::Binary { op, lhs, rhs, .. }
-            if matches!(op, OpBinary::And) == value
-                && matches!(op, OpBinary::And | OpBinary::Or) =>
-        {
-            implied_booleans(lhs, value, implied);
-            implied_booleans(rhs, value, implied);
+        } => implied_booleans(rhs, !value, known, implied),
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            let conjunction = matches!(op, OpBinary::And);
+            let operands = [lhs.as_ref(), rhs.as_ref()];
+            implied_operands(operands, (conjunction, value), known, implied);
         }
         Expression::If {
             branches,
             else_branch,
             ..
-        } if value
-            && matches!(
-                else_branch.as_ref(),
-                Expression::Literal {
-                    value: Literal::Boolean(false),
-                    ..
-                }
-            ) =>
+        } if matches!(
+            else_branch.as_ref(),
+            Expression::Literal {
+                value: Literal::Boolean(false),
+                ..
+            }
+        ) =>
         {
+            // `if a then b else false` is `a and b`.
             for (condition, arm) in branches {
-                implied_booleans(condition, true, implied);
-                implied_booleans(arm, true, implied);
+                if value || branches.len() == 1 {
+                    implied_operands([condition, arm], (true, value), known, implied);
+                }
             }
         }
         _ => {}
+    }
+}
+
+/// The Booleans implied when the `and` (`conjunction`) or `or` of `operands`
+/// evaluates to `value`.
+fn implied_operands(
+    operands: [&Expression; 2],
+    (conjunction, value): (bool, bool),
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
+    if conjunction == value {
+        // Both operands have this value.
+        for operand in operands {
+            implied_booleans(operand, value, known, implied);
+        }
+        return;
+    }
+    // One operand decides the result: when the other is known to hold the
+    // value that does not, this one has the deciding value.
+    let [lhs, rhs] = operands;
+    for (operand, other) in [(lhs, rhs), (rhs, lhs)] {
+        if known_boolean(other, known) == Some(conjunction) {
+            implied_booleans(operand, value, known, implied);
+        }
+    }
+}
+
+/// The value `expression` is known to hold on this path.
+fn known_boolean(
+    expression: &Expression,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+) -> Option<bool> {
+    match expression {
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => known(name.var_name()),
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => known_boolean(rhs, known).map(|value| !value),
+        _ => None,
     }
 }
 
@@ -267,10 +321,11 @@ impl GuardFacts {
         let mut selection = Selection { arms: Vec::new() };
         let when_true = self.facts(value, true, scope);
         let when_false = self.facts(value, false, scope);
+        let known = |name: &VarName| self.known_boolean(name);
         let mut implied_true = Vec::new();
-        implied_booleans(value, true, &mut implied_true);
+        implied_booleans(value, true, &known, &mut implied_true);
         let mut implied_false = Vec::new();
-        implied_booleans(value, false, &mut implied_false);
+        implied_booleans(value, false, &known, &mut implied_false);
         if trivial(&when_true)
             && trivial(&when_false)
             && trivial(&self.path)
@@ -343,5 +398,21 @@ impl Selection {
     /// Whether no arm is left.
     pub(super) fn is_empty(&self) -> bool {
         self.arms.is_empty()
+    }
+}
+
+impl GuardFacts {
+    /// The value the Boolean `name` holds on every path reaching here, when
+    /// one literal arm is left.
+    fn known_boolean(&self, name: &VarName) -> Option<bool> {
+        match self.selections.get(name)?.arms.as_slice() {
+            [
+                Arm {
+                    value: ArmValue::Boolean(value),
+                    ..
+                },
+            ] => Some(*value),
+            _ => None,
+        }
     }
 }

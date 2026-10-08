@@ -499,3 +499,48 @@ fn a_captured_boolean_holds_its_definition_after_its_statement() {
     let held = facts.assuming(&var("g"), true, scope);
     assert_eq!(bound(&held, "r").lower, Some(5));
 }
+
+#[test]
+fn a_false_capture_proves_the_operand_left_when_the_other_is_known() {
+    let names = Names::new();
+    let scope = names.scope();
+    let conjunction = |lhs, rhs| Expression::If {
+        branches: vec![(lhs, rhs)],
+        else_branch: Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
+            span: span(),
+        }),
+        span: span(),
+    };
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("a", binary(OpBinary::Gt, var("r"), integer(4))),
+        scope,
+    );
+    facts.after(
+        &assign("b", binary(OpBinary::Gt, var("n"), integer(2))),
+        scope,
+    );
+    // `a` is known true: a false `g := a and b` proves `b` false.
+    let mut known = facts.assuming(&var("a"), true, scope);
+    known.after(&assign("g", conjunction(var("a"), var("b"))), scope);
+    let failed = known.assuming(&var("g"), false, scope);
+    assert!(failed.assuming(&var("b"), true, scope).is_unreachable());
+    assert!(!failed.assuming(&var("b"), false, scope).is_unreachable());
+    // `a` open: a false `g` proves neither operand.
+    let mut open = facts.clone();
+    open.after(&assign("g", conjunction(var("a"), var("b"))), scope);
+    let failed = open.assuming(&var("g"), false, scope);
+    assert!(!failed.assuming(&var("b"), true, scope).is_unreachable());
+    // `a` known false: a true `q := a or b` proves `b` true.
+    let mut known = facts.assuming(&var("a"), false, scope);
+    known.after(
+        &assign("q", binary(OpBinary::Or, var("a"), var("b"))),
+        scope,
+    );
+    let held = known.assuming(&var("q"), true, scope);
+    assert!(
+        held.assuming_boolean(&VarName::new("b"), false)
+            .is_unreachable()
+    );
+}
