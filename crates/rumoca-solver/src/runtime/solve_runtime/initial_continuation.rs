@@ -449,7 +449,9 @@ fn equation_y_reads(
 fn reads_any(reads: &solve::OutputYReads, values: &BTreeSet<usize>) -> bool {
     match reads {
         solve::OutputYReads::Absent => false,
-        solve::OutputYReads::Bounded(reads) => !reads.is_disjoint(values),
+        solve::OutputYReads::Bounded(reads) => reads
+            .intervals()
+            .any(|interval| values.range(interval).next().is_some()),
         solve::OutputYReads::Unbounded => !values.is_empty(),
     }
 }

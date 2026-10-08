@@ -5,6 +5,7 @@ mod broadcast;
 mod calls;
 mod capture_borrows;
 mod carried_lifetimes;
+mod cross_backend_aliasing;
 mod extrema_tensor;
 mod finite_domains;
 mod integer_quotients;

@@ -2,6 +2,14 @@
 {%- from "fmi-typed-arithmetic.jinja" import integer, declaration, copy, import_scalars, arithmetic %}
 {%- from "fmi-typed-tensors.jinja" import tensor %}
 
+{#- A binder's trip count. The template engine's `//` does not floor a negative
+    span by a negative step, so both are scaled by the step: span * step and
+    step * step are non-negative, and their quotient is the exact count - 1. -#}
+{%- macro trip_count(binder) -%}
+{% set directed = (binder.upper - binder.lower) * binder.step -%}
+{{ 0 if directed < 0 else directed // (binder.step * binder.step) + 1 }}
+{%- endmacro %}
+
 {#- Whether a value of this type is a binary64 array a caller can pass
     through unconverted (nonempty; an empty type keeps its one-element local). -#}
 {%- macro direct(ty) -%}{% if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and ty.scalar_count > 0 %}1{% endif %}{%- endmacro %}
@@ -30,7 +38,7 @@ else { {{ call(region_name ~ "_false", op.captures, op.destinations)|trim }} }
 {% for dst in op.destinations %}{{ copy("r" ~ dst, "r" ~ op.initial[loop.index0]) }}{% endfor -%}
 int fold_done=0; (void)fold_done;
 {% for binder in op.domain.binders -%}
-{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower)//binder.step + 1 -%}
+{% set count = trip_count(binder) -%}
 int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
 for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; ++i{{ loop.index0 }}) {
 if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
@@ -40,6 +48,20 @@ if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 if (!fold_done)
 {% endif -%}
 if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
+{% for binder in op.domain.binders %} } {% endfor %}
+}
+{% elif op.operation == "map" -%}
+{#- One body call per domain point in row-major order, writing its element. -#}
+{
+size_t map_point=0;
+{% for binder in op.domain.binders -%}
+{% set count = trip_count(binder) -%}
+int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
+for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
+if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
+{% endfor -%}
+if ({{ region_name }}_map((const void*[]){ {% for input in op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ r{{ op.destination }} + map_point*{{ op.body.outputs[0].scalar_count }} })) return 1;
+++map_point;
 {% for binder in op.domain.binders %} } {% endfor %}
 }
 {% else -%}
@@ -54,6 +76,8 @@ if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op
 {% if op.operation == "conditional" -%}
 {{ definition(op.if_true.body, child ~ "_true", prefix) -}}
 {{ definition(op.if_false.body, child ~ "_false", prefix) -}}
+{% elif op.operation == "map" -%}
+{{ definition(op.body.body, child ~ "_map", prefix) -}}
 {% elif op.operation == "fold" -%}
 {{ definition(op.transition.body, child ~ "_fold", prefix) -}}
 {% if op.continuation -%}

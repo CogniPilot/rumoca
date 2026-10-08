@@ -147,7 +147,7 @@ fn invalid_registers_and_context_reads_preserve_first_error_and_span() {
     compare_program(&[LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 }]);
 }
 
-fn shared_set(state: &DependencyState) -> &Arc<BTreeSet<usize>> {
+fn shared_set(state: &DependencyState) -> &Arc<crate::IndexIntervals> {
     match state {
         DependencyState::Known(indices) => indices,
         _ => panic!("full14400 fixture must own a shared set"),

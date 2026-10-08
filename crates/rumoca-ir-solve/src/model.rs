@@ -1835,12 +1835,23 @@ pub struct SolveModel {
 }
 
 impl SolveModel {
-    /// Clone this compile-time model and resolve every periodic schedule at
-    /// the FMI instance's simulation start instant.
+    /// This compile-time model with every periodic schedule resolved at the
+    /// FMI instance's simulation start instant. A model with no periodic
+    /// schedule has nothing to resolve and is borrowed, not copied.
     pub fn resolved_periodic_schedules_at(
         &self,
         start_time: f64,
-    ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+    ) -> Result<std::borrow::Cow<'_, Self>, rumoca_core::ClockLatticeErrorKind> {
+        if self.problem.clocks.periodic_event_schedules.is_empty()
+            && self
+                .problem
+                .solve_layout
+                .pre_param_bindings
+                .iter()
+                .all(|binding| binding.clock_schedule.is_none())
+        {
+            return Ok(std::borrow::Cow::Borrowed(self));
+        }
         let mut resolved = self.clone();
         for schedule in &mut resolved.problem.clocks.periodic_event_schedules {
             *schedule = schedule.resolved_at(start_time)?;
@@ -1850,7 +1861,7 @@ impl SolveModel {
                 *schedule = schedule.resolved_at(start_time)?;
             }
         }
-        Ok(resolved)
+        Ok(std::borrow::Cow::Owned(resolved))
     }
 
     pub fn state_scalar_count(&self) -> usize {

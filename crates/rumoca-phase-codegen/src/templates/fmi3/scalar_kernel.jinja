@@ -276,7 +276,7 @@
             if (r[{{ op.activation }}] != 0.0)
 {%- endif %}
             {
-{%- for binder in op.domain.binders %}{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower) // binder.step + 1 %}
+{%- for binder in op.domain.binders %}{% set directed = (binder.upper - binder.lower) * binder.step %}{% set count = 0 if directed < 0 else directed // (binder.step * binder.step) + 1 %}
             for (int64_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; ++i{{ loop.index0 }}) {
             fold_index[{{ loop.index0 }}] = {{ binder.lower }} + i{{ loop.index0 }}*({{ binder.step }});
 {%- endfor %}

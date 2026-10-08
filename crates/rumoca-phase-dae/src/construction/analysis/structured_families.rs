@@ -47,7 +47,7 @@ pub(super) fn validate_structured_families(
                 family.span,
             ));
         }
-        if !family.interiors_materialized && family.template.is_none() {
+        if !family.interiors_materialized() && family.template.is_none() {
             return Err(ToDaeError::unsupported_flat(
                 "structured equation family",
                 "a non-materialized family requires its canonical comprehension template",
@@ -77,9 +77,9 @@ pub(super) fn validate_structured_families(
             // Materialized initialization rows are ordinary initial equations,
             // validated row by row like every scalar initial equation.
             let materialized_initialization =
-                partition.initialization && family.interiors_materialized;
+                partition.initialization && family.interiors_materialized();
             if !materialized_initialization
-                && (!family.interiors_materialized
+                && (!family.interiors_materialized()
                     || !structured_discrete_element_assignments(&template.body, runtime_roles))
             {
                 structured_discrete_assignments(&template.body, runtime_roles, family.span)?;
@@ -144,7 +144,7 @@ pub(in crate::construction) fn materialized_discrete_real_family(
     let Some(template) = family.template.as_ref() else {
         return false;
     };
-    family.interiors_materialized
+    family.interiors_materialized()
         && !template.body.is_empty()
         && template.body.iter().all(|body| {
             matches!(
@@ -181,7 +181,7 @@ pub(in crate::construction) fn materialized_discrete_value_rows(
     // A component-array slice equation `split.set = fill(v, n)` is one
     // materialized row `{split[1].set, ...} = e` whose element equations
     // define each element (MLS 3.7 §10.6.1); its template is that same row.
-    if family.interiors_materialized
+    if family.interiors_materialized()
         && family.template.as_ref().is_some_and(|template| {
             !template.body.is_empty()
                 && template
@@ -198,7 +198,7 @@ pub(in crate::construction) fn materialized_discrete_value_rows(
     else {
         return false;
     };
-    if !family.interiors_materialized {
+    if !family.interiors_materialized() {
         return false;
     }
     let Some(template) = &family.template else {
@@ -339,7 +339,7 @@ fn materialized_family_rows(
     family: &flat::StructuredEquationFamily,
 ) -> Option<std::ops::Range<usize>> {
     let template = family.template.as_ref()?;
-    if !family.interiors_materialized {
+    if !family.interiors_materialized() {
         return None;
     }
     let count = match template.scalar_view {

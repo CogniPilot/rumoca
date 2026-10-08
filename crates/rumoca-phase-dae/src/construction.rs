@@ -1007,7 +1007,7 @@ fn structured_family_partition<'flat>(
             // views of one semantic owner. Consult the authoritative row
             // claim for every origin, so an aggregate owner constructed from
             // exact element coverage consumes the template view as well.
-            if family.interiors_materialized {
+            if family.interiors_materialized() {
                 let row = family.first_equation_index + ordinal;
                 let equation = &environment.flat.equations[row];
                 return match equation_partition(

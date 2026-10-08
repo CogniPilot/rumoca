@@ -481,6 +481,7 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
         return false;
     };
     let mut assigned = std::collections::BTreeSet::new();
+    let mut settled = solve::SettledIntervals::default();
     let mut rows = std::collections::BTreeSet::new();
     for (program, position) in assignments {
         let Some(&target) = program.target_indices().get(position) else {
@@ -495,11 +496,12 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
             || program
                 .assignment_y_dependencies(position)
                 .is_none_or(|dependencies| {
-                    dependencies.iter().any(|dependency| {
-                        *dependency != target
-                            && expected_targets.contains(dependency)
-                            && !assigned.contains(dependency)
-                    })
+                    dependencies.reads_unresolved(
+                        target,
+                        &expected_targets,
+                        |dependency| assigned.contains(&dependency),
+                        &mut settled,
+                    )
                 })
             || !assigned.insert(target)
         {

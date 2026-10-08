@@ -1,5 +1,6 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
 mod derived_discrete;
+mod families;
 mod gathers;
 mod lazy_windows;
 mod maps;

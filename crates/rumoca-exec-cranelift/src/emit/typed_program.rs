@@ -715,14 +715,10 @@ fn register_flow(
     program: &solve::TypedProgram,
     register_count: usize,
 ) -> Result<RegisterFlow, CompileError> {
-    let mut last_uses = vec![None; register_count];
+    let mut last_uses = program.register_last_reads().to_vec();
+    last_uses.resize(register_count, None);
     let mut definitions = vec![None; register_count];
     for (operation_index, operation) in program.operations().iter().enumerate() {
-        operation.operation().visit_input_registers(|register| {
-            if let Some(last_use) = last_uses.get_mut(register.index()) {
-                *last_use = Some(operation_index);
-            }
-        });
         let mut invalid_definition = false;
         operation.operation().visit_output_registers(|register| {
             let Some(definition) = definitions.get_mut(register.index()) else {

@@ -1129,7 +1129,7 @@ fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
             body: vec![table_index],
             scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
         }),
-        interiors_materialized: true,
+        interiors: flat::FamilyInteriors::Materialized,
     });
     let mut ctx = Context::new();
     ctx.constant_values.insert(

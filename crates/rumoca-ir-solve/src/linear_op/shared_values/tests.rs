@@ -1,3 +1,4 @@
+use super::registers::RegisterSet;
 use super::*;
 
 /// `y[target] = y[a] * y[b] + k`, the product computed at the program's own
@@ -424,4 +425,195 @@ fn the_read_set_of_a_wide_range_is_collected_linearly() {
     assert_eq!(reads.len(), count);
     assert!(reads.iter().copied().eq(0..count as Reg));
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// A scalar operation's key names its operands by field, so compaction keeps
+/// only the registers it reads; a range operation's key records the offset
+/// between its operands, so it keeps the span between them.
+#[test]
+fn compaction_keeps_operand_spans_only_where_the_key_records_them() {
+    let far = 100_000;
+    let scalar = registers::compact_registers(vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: far,
+            value: 2.0,
+        },
+        LinearOp::Binary {
+            dst: far + 1,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: far,
+        },
+        LinearOp::StoreOutput { src: far + 1 },
+    ]);
+    assert_eq!(
+        scalar[2],
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        }
+    );
+    let ranged = registers::compact_registers(vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::Const {
+            dst: far,
+            value: 2.0,
+        },
+        LinearOp::TensorBinary {
+            dst_start: far + 1,
+            op: BinaryOp::Add,
+            lhs_start: 0,
+            rhs_start: far,
+            count: 1,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: far + 1 },
+    ]);
+    assert!(matches!(
+        ranged[2],
+        LinearOp::TensorBinary { lhs_start: 0, rhs_start, .. } if rhs_start == far
+    ));
+}
+
+/// Every output of a wide operation is a term in one consecutive block that no
+/// slot or other value shares, and the same operation over the same operands
+/// is the same block, so a wide operation costs no table entry per lane.
+#[test]
+fn a_wide_operations_outputs_are_one_private_block_of_terms() {
+    let mut terms = Terms::default();
+    let slot = terms.slot(7);
+    assert_eq!(terms.slot(7), slot, "a slot is one term");
+    let wide = terms.key("wide", vec![(0, slot)], 1_000);
+    let again = terms.key("wide", vec![(0, slot)], 1_000);
+    assert_eq!(wide, again, "one operation over one operand is one value");
+    let other = terms.key("wide", vec![(0, slot + 1)], 1_000);
+    let wide_terms = (0..1_000).map(|lane| Terms::value(&wide, lane).unwrap());
+    let other_terms = (0..1_000).map(|lane| Terms::value(&other, lane).unwrap());
+    let mut all = wide_terms
+        .chain(other_terms)
+        .chain(std::iter::once(slot))
+        .collect::<Vec<_>>();
+    let count = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), count, "no two outputs share a term");
+    let later_slot = terms.slot(8);
+    assert!(
+        !all.contains(&later_slot),
+        "a slot seen after a wide operation is not one of its outputs"
+    );
+}
+
+#[test]
+fn register_state_is_dense_and_counts_the_registers_it_holds() {
+    let mut table = RegisterTable::<usize>::default();
+    assert_eq!(table.get(5), None);
+    table.insert(5, 50);
+    table.insert(5, 51);
+    table.insert(2, 20);
+    assert_eq!(
+        (table.get(5), table.get(2), table.len()),
+        (Some(51), Some(20), 2)
+    );
+    table.remove(5);
+    assert_eq!((table.get(5), table.len()), (None, 1));
+    let mut set = RegisterSet::default();
+    assert!(set.insert(9) && !set.insert(9));
+    set.remove(9);
+    assert!(!set.contains(9) && set.insert(9));
+}
+
+/// A term past the width a key was issued with belongs to the next value, so
+/// it is refused.
+#[test]
+fn a_value_term_past_the_key_width_is_refused() {
+    let mut terms = Terms::default();
+    let slot = terms.slot(0);
+    let key = terms.key("pair", vec![(0, slot)], 2);
+    assert!(Terms::value(&key, 1).is_some());
+    assert_eq!(Terms::value(&key, 2), None);
+    let wider = terms.key("pair", vec![(0, slot)], 3);
+    assert_eq!(
+        wider, key,
+        "the operation keeps the width it was issued with"
+    );
+    assert_eq!(Terms::value(&wider, 2), None);
+}
+
+/// Run `step` over a program builder whose register map holds nothing, as a
+/// violated classification would leave it, and report whether the builder
+/// declined.
+fn declines_over_empty_map(step: &Step<'_>, targets: &[usize]) -> bool {
+    let mut builder = Builder::default();
+    let mut program = ProgramBuilder {
+        builder: &mut builder,
+        base: 0,
+        map: RegisterTable::default(),
+        output: 0,
+        targets,
+    };
+    program.step(step);
+    builder.violated
+}
+
+#[test]
+fn an_inconsistent_register_map_declines_the_whole_sharing() {
+    let add = LinearOp::Binary {
+        dst: 2,
+        op: BinaryOp::Add,
+        lhs: 0,
+        rhs: 1,
+    };
+    let shape = value_shape(&add).unwrap();
+    assert!(declines_over_empty_map(&Step::Store(vec![3]), &[10]));
+    assert!(declines_over_empty_map(&Step::Copy { dst: 1, src: 0 }, &[]));
+    assert!(declines_over_empty_map(
+        &Step::Value {
+            op: &add,
+            shape,
+            dst: 2,
+            count: 1
+        },
+        &[]
+    ));
+    // A store with no target left is the same violation.
+    let mut builder = Builder::default();
+    let mut program = ProgramBuilder {
+        builder: &mut builder,
+        base: 0,
+        map: RegisterTable::default(),
+        output: 0,
+        targets: &[],
+    };
+    program.map.insert(0, 0);
+    program.step(&Step::Store(vec![0]));
+    assert!(builder.violated);
+}
+
+/// The decline target of a violated construction invariant shares nothing,
+/// keeps every program and its targets, and proves itself.
+#[test]
+fn the_unshared_sequence_keeps_every_program_and_checks() {
+    let rows = [
+        (product_plus(0, 1, 1.0), vec![10]),
+        (product_plus(0, 1, 2.0), vec![11]),
+    ];
+    let programs = programs(&rows);
+    let unshared = SharedValueSegments::unshared(&programs);
+    unshared.check(&programs).unwrap();
+    assert_eq!(unshared.shared_operations(), 0);
+    assert!(unshared.capped().is_empty());
+    let [first, second] = unshared.segments() else {
+        panic!("one segment per program");
+    };
+    assert_eq!((first.ops(), first.targets()), (&rows[0].0[..], &[10][..]));
+    assert_eq!(
+        (second.ops(), second.targets(), second.first_program()),
+        (&rows[1].0[..], &[11][..], 1)
+    );
 }

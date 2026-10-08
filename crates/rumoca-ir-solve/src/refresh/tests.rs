@@ -926,3 +926,83 @@ fn exact_stage(row_count: usize, index: usize) -> RefreshStage {
         dynamic_rows: selection(row_count, [index]),
     }
 }
+
+/// A builder that takes the program once appends a stream of assignments, and
+/// the program equals the one built by materializing each assignment on its
+/// own, so the stream costs one append per operation and no rescans.
+#[test]
+fn one_builder_appends_a_stream_of_assignments_like_independent_calls() {
+    let prefix = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: crate::TensorInputKind::Y,
+            input_start: 0,
+            count: 4,
+            seed_start: None,
+            lanes: 1,
+        },
+    ];
+    let shapes = (0..64)
+        .map(|index| match index % 3 {
+            0 => TargetAssignmentShape::Zero {
+                target_y_index: index,
+                expr_eval_len: 2,
+            },
+            1 => TargetAssignmentShape::Direct {
+                target_y_index: index,
+                expr_reg: 0,
+                target_scale: 1.0,
+                expr_eval_len: 2,
+            },
+            _ => TargetAssignmentShape::Affine {
+                target_y_index: index,
+                offset_reg: 0,
+                coefficient_reg: Some(1),
+                offset_scale: 1.0,
+                coefficient_scale: 2.0,
+                expr_eval_len: 2,
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut independent = prefix.clone();
+    let mut independent_results = Vec::new();
+    for shape in &shapes {
+        let (result, _) = materialize_target_assignment(shape, &mut independent).unwrap();
+        independent.push(LinearOp::StoreOutput { src: result });
+        independent_results.push(result);
+    }
+    let mut streamed = prefix;
+    let mut builder = ExactAssignmentProgramBuilder::new(&mut streamed).unwrap();
+    for (shape, expected) in shapes.iter().zip(&independent_results) {
+        let (result, _) = builder.materialize_guarded(shape).unwrap();
+        assert_eq!(result, *expected);
+        builder.push(LinearOp::StoreOutput { src: result }).unwrap();
+    }
+    assert_eq!(streamed, independent);
+}
+
+/// An operation appended through the builder reserves the registers it
+/// defines, so later assignments never overwrite it.
+#[test]
+fn builder_push_reserves_the_registers_of_appended_operations() {
+    let mut operations = vec![LinearOp::LoadY { dst: 0, index: 0 }];
+    let mut builder = ExactAssignmentProgramBuilder::new(&mut operations).unwrap();
+    builder
+        .push(LinearOp::TensorLoad {
+            dst_start: 1,
+            input: crate::TensorInputKind::Y,
+            input_start: 0,
+            count: 5,
+            seed_start: None,
+            lanes: 1,
+        })
+        .unwrap();
+    let (result, _) = builder
+        .materialize_guarded(&TargetAssignmentShape::Zero {
+            target_y_index: 0,
+            expr_eval_len: 2,
+        })
+        .unwrap();
+    assert_eq!(result, 6);
+}

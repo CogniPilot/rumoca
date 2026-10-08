@@ -43,6 +43,8 @@ parameter capability; components without it reject entry without mutation.
 | ME-LIFE-002 | Rejected transitions preserve lifecycle state | Exhaustive ordinary test of the same finite relation and production façade |
 | ME-LIFE-003 | Terminated is absorbing except for snapshot restore | Exhaustive ordinary test of 8 commands, 17 active operations, and 7 restore targets |
 | ME-LIFE-004 | Bounded convergent events settle; divergent fixed points return staged non-convergence | Ordinary examples and property tests over finite divergence increments |
+| ME-LIFE-005 | A one-shot simulation leases, and so initializes, its component once, in its run, and never first to validate it; a prepared build spends one warm-up initialization to compile its lazily compiled native owners, and every run after it is one more (`MeRetainedComponent::lease_count`) | Ordinary test: zero leases after a one-shot instantiation and one after its run; one after a prepared build and two after its run |
+| ME-LIFE-006 | Instantiating a component copies its Solve model at most once, for the runtime that executes it; a model with no periodic schedule is borrowed, not copied, to anchor schedules at the start instant | Ordinary test: the anchored model is the component's own allocation when nothing needs anchoring |
 | ME-ERR-001 | Stage annotation is idempotent; innermost stage wins | Exhaustive ordinary test of 6 recorded-stage choices × 5 incoming stages |
 | ME-BUF-001 | Invalid bounded inputs do not partially mutate state or host buffers | Exhaustive ordinary tests of the named invalid-input classes below |
 | ME-BRAND-001 | Foreign value references, observations, and snapshots reject before mutation | Exhaustive ordinary test of the 3 capability classes |

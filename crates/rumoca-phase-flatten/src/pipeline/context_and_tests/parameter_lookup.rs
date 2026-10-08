@@ -65,6 +65,8 @@ impl Context {
             materialize_structured_families: true,
             param_variability_families:
                 crate::param_variability::ParameterVariabilityFamilies::default(),
+            continuous_algebraic_targets:
+                crate::continuous_algebraic::ContinuousAlgebraicTargets::default(),
         }
     }
 

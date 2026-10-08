@@ -924,6 +924,8 @@ pub(crate) fn prepare_context_for_equation_flattening(
     // array-natively from the comprehension template).
     ctx.param_variability_families =
         crate::param_variability::prove_parameter_variability_families(overlay);
+    ctx.continuous_algebraic_targets =
+        crate::continuous_algebraic::ContinuousAlgebraicTargets::prove(overlay, &tree.type_table);
 
     let vcg_data = vcg::pre_collect_vcg_data(overlay, ctx)?;
     let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data)?;

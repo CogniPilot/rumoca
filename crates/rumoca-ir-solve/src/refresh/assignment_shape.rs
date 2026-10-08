@@ -195,7 +195,6 @@ pub fn derive_target_assignment_shapes(
                         scalar
                             .iter()
                             .filter(|index| targets.contains(index))
-                            .copied()
                             .collect()
                     },
                 );
@@ -310,7 +309,7 @@ pub fn output_y_reads(program: &[LinearOp], output_offset: usize) -> OutputYRead
 #[derive(Clone, Debug)]
 pub enum OutputYReads {
     Absent,
-    Bounded(std::collections::BTreeSet<usize>),
+    Bounded(crate::IndexIntervals),
     Unbounded,
 }
 
@@ -319,7 +318,7 @@ impl OutputYReads {
     pub fn contains(&self, y_index: usize) -> bool {
         match self {
             Self::Absent => false,
-            Self::Bounded(reads) => reads.contains(&y_index),
+            Self::Bounded(reads) => reads.contains(y_index),
             Self::Unbounded => true,
         }
     }

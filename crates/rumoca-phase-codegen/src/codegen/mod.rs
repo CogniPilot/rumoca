@@ -206,7 +206,7 @@ fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(
     ] {
         if let Some(family) = families
             .iter()
-            .find(|family| !family.interiors_materialized)
+            .find(|family| !family.interiors_materialized())
         {
             return Err(CodegenError::NonMaterializedStructuredFamily {
                 partition,

@@ -1053,7 +1053,7 @@ pub(super) fn require_integer_literal(
     }
     Err(ToDaeError::unsupported_flat(
         owner,
-        "the canonical compact range requires an integer literal bound",
+        "the canonical compact range requires an integer literal bound; a run-time value or a tunable parameter stays settable and is never folded, so declare the parameter final or Evaluate = true",
         expression_span(expression)?,
     ))
 }

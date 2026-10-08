@@ -752,7 +752,7 @@ mod tests {
                     }],
                     scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
                 }),
-                interiors_materialized: true,
+                interiors: flat::FamilyInteriors::Materialized,
             });
         let mut known_enums = FxHashMap::default();
         known_enums.insert("enumParam".to_string(), "TypesPkg.Logic.Unset".to_string());

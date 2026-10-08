@@ -221,7 +221,23 @@ pub fn build_simulation_with_stage_timing_and_lowered_model(
     ))
 }
 
+/// A prepared simulation for repeated runs: instantiated, with every lazily
+/// compiled native owner compiled now by one warm-up initialization, so no run
+/// pays a compile. The warm-up's own outcome is dropped, because the run that
+/// meets a failing initialization reports it.
 fn build_simulation_artifact(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
+    opts: &rumoca_solver::SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+) -> Result<PreparedSimulation, SimError> {
+    let prepared = instantiate_prepared_simulation(artifact, opts, execution_backend)?;
+    drop(check_prepared_component(&prepared));
+    Ok(prepared)
+}
+
+/// A prepared simulation that has not initialized its component: the one-shot
+/// path simulates it at once, and its run compiles what it needs.
+fn instantiate_prepared_simulation(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
@@ -238,7 +254,6 @@ fn build_simulation_artifact(
         root_location: artifact.root_location(),
         retained: RefCell::new(retained),
     };
-    drop(check_prepared_component(&prepared));
     Ok(prepared)
 }
 
@@ -247,7 +262,7 @@ pub(crate) fn simulate_artifact(
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let prepared = build_simulation_artifact(artifact, opts, execution_backend)
+    let prepared = instantiate_prepared_simulation(artifact, opts, execution_backend)
         .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))?;
     simulate_prepared(&prepared)
 }
@@ -495,7 +510,7 @@ mod native_policy_tests {
         fmi_me::MeExecutionBackend,
     };
 
-    use super::{build_simulation_artifact, simulate_artifact};
+    use super::{build_simulation_artifact, instantiate_prepared_simulation, simulate_artifact};
     use crate::SimError;
     use crate::native_execution::admitted_native_execution_backend;
 
@@ -1649,5 +1664,25 @@ mod native_policy_tests {
             1,
             "the zero-state path retained its supplied evaluator after completion"
         );
+    }
+
+    /// A one-shot simulation initializes its component once, in its run, and
+    /// never to validate it first; a prepared build spends exactly one warm-up
+    /// initialization, whatever refresh phases an initialization itself
+    /// executes, and every run after it is one more.
+    #[test]
+    fn a_one_shot_run_initializes_once_and_a_prepared_build_warms_once() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = zero_state_fixture(&opts);
+        let one_shot = instantiate_prepared_simulation(model.artifact(), &opts, None)
+            .expect("zero-state simulation instantiates");
+        assert_eq!(one_shot.retained.borrow().lease_count(), 0);
+        one_shot.run().expect("zero-state run succeeds");
+        assert_eq!(one_shot.retained.borrow().lease_count(), 1);
+        let prepared = build_simulation_artifact(model.artifact(), &opts, None)
+            .expect("zero-state simulation builds");
+        assert_eq!(prepared.retained.borrow().lease_count(), 1);
+        prepared.run().expect("a prepared run repeats");
+        assert_eq!(prepared.retained.borrow().lease_count(), 2);
     }
 }

@@ -14,21 +14,45 @@ pub fn materialize_target_assignment(
     shape: &TargetAssignmentShape,
     operations: &mut Vec<LinearOp>,
 ) -> Option<(u32, Option<u32>)> {
-    let mut builder = ExactAssignmentProgramBuilder::new(operations)?;
-    let (result, coefficient) = builder.materialize(shape)?;
-    let guarded = match coefficient {
-        Some(coefficient) => builder.poison_non_finite(result, coefficient)?,
-        None => result,
-    };
-    Some((guarded, coefficient))
+    ExactAssignmentProgramBuilder::new(operations)?.materialize_guarded(shape)
 }
 
-struct ExactAssignmentProgramBuilder<'a> {
+/// One program that assignments are appended to.
+///
+/// The first unused register is computed once, when the builder takes the
+/// program, and every later operation goes through the builder, so appending
+/// n assignments costs n appends and not n scans of the program.
+pub struct ExactAssignmentProgramBuilder<'a> {
     operations: &'a mut Vec<LinearOp>,
     next_register: u32,
 }
 
 impl<'a> ExactAssignmentProgramBuilder<'a> {
+    /// Append the selected assignment as [`materialize_target_assignment`]
+    /// does, after the operations already in the program.
+    pub fn materialize_guarded(
+        &mut self,
+        shape: &TargetAssignmentShape,
+    ) -> Option<(u32, Option<u32>)> {
+        let (result, coefficient) = self.materialize(shape)?;
+        let guarded = match coefficient {
+            Some(coefficient) => self.poison_non_finite(result, coefficient)?,
+            None => result,
+        };
+        Some((guarded, coefficient))
+    }
+
+    /// Append one operation of the source program, reserving the registers it
+    /// defines.
+    pub fn push(&mut self, operation: LinearOp) -> Option<()> {
+        if let Some(start) = operation.dst_register() {
+            let count = u32::try_from(operation.dst_register_count()).ok()?;
+            self.next_register = self.next_register.max(start.checked_add(count)?);
+        }
+        self.operations.push(operation);
+        Some(())
+    }
+
     // Finite coefficients contribute exactly +0, preserving the value's bits;
     // an infinite/NaN coefficient makes every materialized consumer decline.
     fn poison_non_finite(&mut self, value: u32, coefficient: u32) -> Option<u32> {
@@ -49,7 +73,7 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         Some(result)
     }
 
-    fn new(operations: &'a mut Vec<LinearOp>) -> Option<Self> {
+    pub fn new(operations: &'a mut Vec<LinearOp>) -> Option<Self> {
         let next_register = operations.iter().try_fold(0, |next, operation| {
             let Some(start) = operation.dst_register() else {
                 return Some(next);

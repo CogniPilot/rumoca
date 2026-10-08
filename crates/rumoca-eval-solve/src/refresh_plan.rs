@@ -10,6 +10,7 @@ mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
 mod parameter_static;
+mod ready_queue;
 mod row_analysis;
 mod schedule;
 mod source_catalog;
@@ -17,7 +18,7 @@ mod target_catalog;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -30,8 +31,8 @@ use causal_proofs::causal_step_certifies_exact_assignment;
 pub use causal_proofs::{causal_step_coefficient_proof, causal_step_is_proven};
 
 use capacity::{
-    reserve_refresh_deque_capacity, reserve_refresh_index_map_capacity,
-    reserve_refresh_index_set_capacity, reserve_refresh_vec_capacity,
+    reserve_refresh_index_map_capacity, reserve_refresh_index_set_capacity,
+    reserve_refresh_vec_capacity,
 };
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 use event_dependencies::event_consumer_dependencies;
@@ -42,6 +43,7 @@ use row_analysis::{
 #[cfg(test)]
 use parameter_static::parameter_static_refresh_program;
 use parameter_static::parameter_static_refresh_targets;
+use ready_queue::SourceBatchedQueue;
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, ContinuousStaticParameters, RefreshPlan, RefreshRowOwnerId,
     RefreshRowSelection, RefreshRows, RefreshStage,
@@ -1195,7 +1197,7 @@ fn enqueue_exact_assignment_dependencies<A: RefreshProgramAccess + ?Sized>(
         solve::ScalarProgramYDependency::new(prefix).footprint(shape.value_registers())
     });
     let reads: Box<dyn Iterator<Item = usize>> = match &footprint {
-        Some(footprint) => Box::new(footprint.indices()),
+        Some(footprint) => Box::new(footprint.iter()),
         None => Box::new(row_y_input_ranges(program).into_iter().flatten()),
     };
     for dependency in reads {
@@ -1318,12 +1320,13 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
         span,
     )?;
     plan.value_projection_plan = if plan.causal_solution_certified {
+        let seeded = exact_seed_assignments(plan.causal_rows());
         solve::AlgebraicProjectionPlan {
             blocks: plan
                 .simultaneous_plan
                 .blocks
                 .iter()
-                .filter(|block| !block_is_exactly_seeded(block, plan.causal_rows()))
+                .filter(|block| !block_is_exactly_seeded(block, &seeded))
                 .cloned()
                 .collect(),
         }
@@ -1361,9 +1364,22 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     Ok(())
 }
 
+/// `(equation, target)` of every seed row that is a certified exact
+/// assignment of its own target.
+fn exact_seed_assignments(seed_rows: RefreshRows<'_>) -> BTreeSet<(usize, usize)> {
+    seed_rows
+        .iter()
+        .filter(|seed| {
+            seed.assignment_target() == Some(seed.target_index())
+                && seed.exact_assignment_certified()
+        })
+        .map(|seed| (seed.equation_index(), seed.target_index()))
+        .collect()
+}
+
 fn block_is_exactly_seeded(
     block: &solve::AlgebraicProjectionBlock,
-    seed_rows: RefreshRows<'_>,
+    seeded: &BTreeSet<(usize, usize)>,
 ) -> bool {
     block.rows.len() == 1
         && block.y_indices.len() == 1
@@ -1371,14 +1387,7 @@ fn block_is_exactly_seeded(
             .rows
             .iter()
             .zip(&block.y_indices)
-            .all(|(&row, &target)| {
-                seed_rows.iter().any(|seed| {
-                    seed.equation_index() == row
-                        && seed.target_index() == target
-                        && seed.assignment_target() == Some(target)
-                        && seed.exact_assignment_certified()
-                })
-            })
+            .all(|(&row, &target)| seeded.contains(&(row, target)))
 }
 
 fn dependency_causal_projection_is_certified(
@@ -1523,7 +1532,9 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
             &producer_by_target,
             &mut dependencies,
         ) {
-            if dep_pos == row_pos || edges[dep_pos].contains(&row_pos) {
+            // Positions are distinct per row and each row is visited once, so
+            // no edge repeats.
+            if dep_pos == row_pos {
                 continue;
             }
             reserve_refresh_vec_capacity(
@@ -1536,22 +1547,24 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
             indegree[row_pos] += 1;
         }
     }
-    let mut ready = VecDeque::new();
-    reserve_refresh_deque_capacity(&mut ready, rows.len(), "refresh order queue", span)?;
-    ready.extend(
-        indegree
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, degree)| (*degree == 0).then_some(idx)),
-    );
+    let mut ready = SourceBatchedQueue::default();
+    for (idx, degree) in indegree.iter().enumerate() {
+        if *degree == 0 {
+            ready.push(rows[idx].source(), idx);
+        }
+    }
     let mut ordered = Vec::new();
     reserve_refresh_vec_capacity(&mut ordered, rows.len(), "ordered refresh rows", span)?;
-    while let Some(row_pos) = ready.pop_front() {
+    let mut emitted = Vec::new();
+    reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
+    emitted.resize(rows.len(), false);
+    while let Some(row_pos) = ready.pop() {
         ordered.push(rows[row_pos].clone());
+        emitted[row_pos] = true;
         for &next in &edges[row_pos] {
             indegree[next] -= 1;
             if indegree[next] == 0 {
-                ready.push_back(next);
+                ready.push(rows[next].source(), next);
             }
         }
     }
@@ -1564,17 +1577,6 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     );
     let causal_solution_certified = causal_solution_certified && ordered.len() == rows.len();
     if !causal_solution_certified {
-        let mut emitted = Vec::new();
-        reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
-        emitted.resize(rows.len(), false);
-        for row in &ordered {
-            if let Some(pos) = rows
-                .iter()
-                .position(|candidate| candidate.owner_id() == row.owner_id())
-            {
-                emitted[pos] = true;
-            }
-        }
         ordered.extend(
             rows.into_iter()
                 .enumerate()
@@ -1626,7 +1628,15 @@ fn refresh_row_dependency_positions<'ops>(
             .footprint(shape.value_registers())
     });
     match footprint {
-        Some(footprint) => footprint.indices().for_each(&mut add),
+        // Only indices some row produces matter, so each interval is met
+        // with the producers rather than walked index by index.
+        Some(footprint) => {
+            for interval in footprint.intervals() {
+                for (&index, _) in producer_by_target.range(interval) {
+                    add(index);
+                }
+            }
+        }
         None => {
             for range in dependencies.input_ranges(ops) {
                 for (&index, _) in producer_by_target.range(range.clone()) {
