@@ -8,6 +8,7 @@ mod packed;
 mod registration;
 mod return_arguments;
 mod returns;
+mod scratch_report;
 mod typed_inputs;
 mod typed_maps;
 

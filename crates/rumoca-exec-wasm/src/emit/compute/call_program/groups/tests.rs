@@ -206,6 +206,11 @@ fn stage_groups_match_unbounded_emission_and_canonical_oracle_in_actual_wasmi() 
     let bounded = emit_with_budget(&schedule, &layout, &table, BUDGET).unwrap();
     assert!(body_sizes(bounded.module_bytes()).len() > body_sizes(baseline.module_bytes()).len());
     assert_eq!(baseline.scratch_bytes(), bounded.scratch_bytes());
+    assert_eq!(baseline.scratch_report(), bounded.scratch_report());
+    assert_eq!(
+        baseline.scratch_report().total_bytes,
+        baseline.scratch_bytes()
+    );
     assert_eq!(baseline.math_imports(), bounded.math_imports());
     let mut before = Runner::new(&baseline, &layout);
     let mut after = Runner::new(&bounded, &layout);

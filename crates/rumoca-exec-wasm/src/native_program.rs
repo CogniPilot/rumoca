@@ -20,6 +20,7 @@ pub struct NativeGatherFault {
 pub struct CompiledNativeCallProgramWasm {
     pub(crate) bytes: Vec<u8>,
     pub(crate) scratch_bytes: u32,
+    pub(crate) scratch_report: crate::ScratchReport,
     pub(crate) faults: Vec<TypedCallFault>,
     pub(crate) gather_faults: Vec<NativeGatherFault>,
     pub(crate) math_imports: Vec<&'static str>,
@@ -32,6 +33,10 @@ impl CompiledNativeCallProgramWasm {
     }
     pub fn scratch_bytes(&self) -> u32 {
         self.scratch_bytes
+    }
+    /// Per-owner frame, region and call-site scratch high-water marks.
+    pub fn scratch_report(&self) -> &crate::ScratchReport {
+        &self.scratch_report
     }
     /// Status 1 denotes invalid whole-program buffers; 2 invalid scalar-to-typed input.
     /// Higher statuses retain exact call-owner or model-program provenance.

@@ -5,6 +5,8 @@ use crate::typed_call::program::CallLayout;
 
 pub(in crate::emit) struct CallProgramPlan {
     pub bytes: u32,
+    /// Components of `bytes`, reported to the host with the per-owner layouts.
+    pub components: Components,
     pub work_bytes: u32,
     /// Bytes of the host Y buffer copied into and published from the work
     /// region; the work region also holds private derived-output slots.
@@ -33,6 +35,22 @@ pub(in crate::emit) struct CallProgramPlan {
     pub(in crate::emit::compute::call_program) memos: Vec<Memo>,
 }
 
+/// Where the whole-program scratch goes, in bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub(in crate::emit) struct Components {
+    /// Shared by every call: the widest input, output and scratch of any site.
+    pub call_input: u32,
+    pub call_output: u32,
+    pub call_scratch: u32,
+    /// The widest scratch of any site laid out without sharing.
+    pub unshared_call_scratch: u32,
+    pub memos: u32,
+    pub lane_stage: u32,
+    pub p_copy: u32,
+    /// The root owner of the site with the widest scratch.
+    pub widest_owner: Option<usize>,
+}
+
 impl CallProgramPlan {
     pub(in crate::emit) fn new(
         rows: &[Vec<LinearOp>],
@@ -42,6 +60,7 @@ impl CallProgramPlan {
     ) -> Result<Self, String> {
         let mut calls = Vec::new();
         let (mut input, mut output, mut scratch) = (0, 0, 0);
+        let mut components = Components::default();
         conditional::visit_operations(rows, |op| {
             let LinearOp::PureCall { site, .. } = op else {
                 return Ok(());
@@ -49,7 +68,12 @@ impl CallProgramPlan {
             let layout = helpers.layout(site).map_err(|e| e.to_string())?;
             input = input.max(layout.input);
             output = output.max(layout.output);
+            if layout.scratch > scratch || components.widest_owner.is_none() {
+                components.widest_owner = Some(site.owner().index() as usize);
+            }
             scratch = scratch.max(layout.scratch);
+            components.unshared_call_scratch =
+                components.unshared_call_scratch.max(layout.unshared);
             if !calls.iter().any(|(existing, _)| existing == site) {
                 calls.push((site.clone(), layout));
             }
@@ -69,9 +93,15 @@ impl CallProgramPlan {
             .checked_add(scratch)
             .filter(|&n| n <= 64 * 1024 * 1024)
             .ok_or("native whole-program scratch exceeds 64 MiB")?;
+        let calls_end = bytes;
         let memos = super::memo::derive(rows, helpers, &mut bytes)?;
+        components.call_input = input;
+        components.call_output = output;
+        components.call_scratch = scratch;
+        components.memos = bytes - calls_end;
         Ok(Self {
             bytes,
+            components,
             work_bytes,
             host_y_bytes: work_bytes,
             lanes: 0,
@@ -118,6 +148,7 @@ impl CallProgramPlan {
             .checked_add(lane_bytes)
             .filter(|&n| n <= 64 * 1024 * 1024)
             .ok_or("native whole-program scratch exceeds 64 MiB")?;
+        self.components.lane_stage = lane_bytes;
         self.host_y_bytes = host_y_bytes;
         self.lanes = lanes;
         self.lane_bytes = lane_bytes;
@@ -135,6 +166,7 @@ impl CallProgramPlan {
                 .p_copy
                 .checked_add(self.p_copy_bytes)
                 .ok_or("native P copy overflows")?;
+            self.components.p_copy = self.p_copy_bytes;
             self.bytes = self
                 .typed_lanes_cell
                 .checked_add(8)
@@ -167,5 +199,28 @@ impl CallProgramPlan {
             schedule.input_lane_bytes(),
             layout.p_scalars(),
         )
+    }
+}
+
+impl CallProgramPlan {
+    /// The scratch components and the per-owner frame layouts they come from.
+    pub(in crate::emit) fn scratch_report(
+        &self,
+        owners: Vec<crate::ScratchOwner>,
+    ) -> crate::ScratchReport {
+        let c = &self.components;
+        crate::ScratchReport {
+            total_bytes: self.bytes,
+            work_y_bytes: self.work_bytes,
+            call_input_bytes: c.call_input,
+            call_output_bytes: c.call_output,
+            call_scratch_bytes: c.call_scratch,
+            memo_bytes: c.memos,
+            typed_lane_bytes: c.lane_stage,
+            p_copy_bytes: c.p_copy,
+            unshared_call_scratch_bytes: c.unshared_call_scratch,
+            widest_owner: c.widest_owner,
+            owners,
+        }
     }
 }

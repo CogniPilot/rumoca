@@ -17,6 +17,8 @@ pub(crate) struct CallLayout {
     pub input: u32,
     pub output: u32,
     pub scratch: u32,
+    /// Scratch the callee would need without sharing between sequential operations.
+    pub unshared: u32,
     pub function: u32,
 }
 
@@ -94,6 +96,7 @@ impl ProgramHelpers {
             input: plan.input_bytes,
             output: plan.output_bytes,
             scratch: plan.scratch_bytes,
+            unshared: plan.unshared_bytes,
             function: self.linked.functions[site.owner().index() as usize]
                 .ok_or(TypedCallCompileError::SiteMismatch)?,
         })
@@ -116,5 +119,26 @@ impl ProgramHelpers {
             faults.append(&mut owner_faults);
         }
         Ok((bodies, faults))
+    }
+}
+
+impl ProgramHelpers {
+    /// The frame layout of every owner a call site reaches, once per owner.
+    pub(crate) fn owner_scratch(
+        &self,
+        table: &solve::SolvePureCallTable,
+    ) -> Vec<crate::ScratchOwner> {
+        table
+            .owners()
+            .iter()
+            .zip(&self.linked.plans)
+            .filter_map(|(owner, plan)| {
+                plan.as_ref().map(|plan| crate::ScratchOwner {
+                    owner: owner.id().index() as usize,
+                    provenance: owner.provenance(),
+                    frame: plan.report(owner.body()),
+                })
+            })
+            .collect()
     }
 }
