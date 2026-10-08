@@ -27,6 +27,9 @@ pub(super) struct EnvironmentLayout<'dae> {
         dae::ValueTypeId<'dae>,
         Range<usize>,
     )>,
+    /// Expression values an enclosing scope already issued: a region reads
+    /// them as captures instead of lowering the expression again.
+    pub(super) expressions: Vec<(dae::ExprId<'dae>, dae::ValueTypeId<'dae>, Range<usize>)>,
     pub(super) fold_parameters: Vec<(
         dae::FunctionFoldId<'dae>,
         u32,
@@ -115,6 +118,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.lower_eager_demand(results.iter().map(|(_, expression)| *expression))?;
     let mut values = Vec::new();
     for (value_type, expression) in results {
         // Publishing at the target's declared type is the same rule the
@@ -190,6 +194,19 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
             )
         })
         .collect();
+    let cache = environment
+        .expressions
+        .iter()
+        .map(|(id, value_type, range)| {
+            (
+                *id,
+                LoweredValue {
+                    value_type: *value_type,
+                    leaves: loaded[range.clone()].to_vec(),
+                },
+            )
+        })
+        .collect();
     let fold_parameters = environment
         .fold_parameters
         .iter()
@@ -225,7 +242,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         binders,
         callees: context.callees.clone(),
         predicate_ranges: context.predicate_ranges.clone(),
-        cache: HashMap::new(),
+        cache,
         call_values: HashMap::new(),
         predicate_values: vec![None; context.assertion_slots.len()],
         assertion_slots: context.assertion_slots.clone(),
@@ -250,6 +267,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.lower_eager_demand(operands.first().copied())?;
     let value = if let [fallback] = operands.as_slice() {
         lowerer.expression(*fallback)?
     } else {

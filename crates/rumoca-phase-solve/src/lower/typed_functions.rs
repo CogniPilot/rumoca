@@ -2,6 +2,7 @@
 
 mod assertions;
 mod captures;
+mod eager_scope;
 mod family_owner;
 mod folds;
 pub(crate) mod formal_stages;
@@ -1055,6 +1056,39 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 provenance: at,
             });
         }
+        let mut value_types = Vec::with_capacity(definitions.len());
+        for definition in &definitions {
+            value_types.push(function_value_type(self.view, definition.target(), at)?);
+        }
+        let values = self.correlated_conditional_values(
+            &value_types,
+            &conditions,
+            &branches,
+            &fallback,
+            at,
+        )?;
+        for (definition, value) in definitions.iter().zip(values) {
+            self.function_values.insert(definition.id(), value);
+        }
+        Ok(())
+    }
+
+    /// The values of one correlated conditional tuple, lowered as one region
+    /// pair: every target shares the conditions, and so shares the values its
+    /// arms compute once.
+    ///
+    /// A correlated group of assignments and a set of sibling conditional
+    /// expressions with the same conditions (`lower_fused_conditionals`) both
+    /// arrive here, so the tuple has one owner whichever way its targets were
+    /// demanded.
+    fn correlated_conditional_values(
+        &mut self,
+        value_types: &[dae::ValueTypeId<'dae>],
+        conditions: &[dae::ExprId<'dae>],
+        branches: &[Vec<dae::ExprId<'dae>>],
+        fallback: &[dae::ExprId<'dae>],
+        at: rumoca_core::Span,
+    ) -> Result<Vec<LoweredValue<'program, 'dae>>, solve::SolveProgramConstructionError> {
         let pending = self.pending_predicates(
             conditions
                 .iter()
@@ -1062,39 +1096,24 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 .chain(branches.iter().flatten().copied())
                 .chain(fallback.iter().copied()),
         );
-        let mut output_types = Vec::new();
-        let mut value_types = Vec::with_capacity(definitions.len());
-        let mut value_ranges = Vec::with_capacity(definitions.len());
-        for definition in &definitions {
-            let value_type = function_value_type(self.view, definition.target(), at)?;
-            value_types.push(value_type);
-            let start = output_types.len();
-            output_types.extend(lower_value_type_leaves(
-                self.view,
-                value_type,
-                arithmetic_profile(),
-            )?);
-            value_ranges.push((value_type, start..output_types.len()));
+        let mut value_ranges = Vec::with_capacity(value_types.len());
+        let mut value_leaf_count = 0;
+        for value_type in value_types {
+            let leaves = lower_value_type_leaves(self.view, *value_type, arithmetic_profile())?;
+            value_ranges.push((
+                *value_type,
+                value_leaf_count..value_leaf_count + leaves.len(),
+            ));
+            value_leaf_count += leaves.len();
         }
-        let value_leaf_count = output_types.len();
-        output_types.extend(self.pending_slot_types(&pending));
         let destinations = self.assignment_conditional_chain(
-            &value_types,
-            &conditions,
-            &branches,
-            &fallback,
+            value_types,
+            conditions,
+            branches,
+            fallback,
             &pending,
             at,
         )?;
-        for (definition, (value_type, range)) in definitions.iter().zip(value_ranges) {
-            self.function_values.insert(
-                definition.id(),
-                LoweredValue {
-                    value_type,
-                    leaves: destinations[range].to_vec(),
-                },
-            );
-        }
         for (slot, predicate) in pending
             .into_iter()
             .zip(destinations[value_leaf_count..].iter().copied())
@@ -1114,7 +1133,13 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 None => *value = Some(predicate),
             }
         }
-        Ok(())
+        Ok(value_ranges
+            .into_iter()
+            .map(|(value_type, range)| LoweredValue {
+                value_type,
+                leaves: destinations[range].to_vec(),
+            })
+            .collect())
     }
 
     // SPEC_0021: Exception - exhaustive typed dispatch over expression operation variants.

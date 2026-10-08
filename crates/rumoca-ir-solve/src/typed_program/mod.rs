@@ -6,10 +6,11 @@ mod types;
 
 pub use call::dependency::SolveCallDependency;
 pub use call::{
-    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
-    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
-    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
+    SolveCallSiteCount, SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite,
+    SolvePureCallIdentity, SolvePureCallInputCoordinate, SolvePureCallOutput,
+    SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallSite,
+    SolvePureCallTable, SolvePureCallTableBuilder, SolveRecursionProfile, SolveRecursiveGroup,
+    SolveRecursiveMember,
 };
 pub use program::{
     ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,

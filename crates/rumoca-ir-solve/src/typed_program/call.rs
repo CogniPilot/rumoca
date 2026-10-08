@@ -1,5 +1,6 @@
 pub(super) mod dependency;
 mod recursion;
+mod sites;
 mod view;
 
 use rumoca_core::Span;
@@ -11,6 +12,7 @@ use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
+pub use sites::SolveCallSiteCount;
 pub(super) use view::SolvePureCallTableView;
 
 /// Complete runtime input coordinate of its issuing pure-call owner.
