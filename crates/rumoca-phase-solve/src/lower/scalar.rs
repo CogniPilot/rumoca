@@ -1417,18 +1417,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             {
                 self.selected_arm_conditional(operands, scalar, node.provenance().span())
             }
-            // MLS §3.6.5: scalar projections share the checked selected-arm owner.
-            dae::ExpressionOperation::Conditional(_)
-                if node.function_scope().is_some() && !node.value_type().is_record() =>
-            {
-                let start = self.pack_expression(expression)?;
-                functions::function_conditional_reg_offset(
-                    start,
-                    scalar,
-                    node.provenance().span(),
-                    "function-conditional scalar projection",
-                )
-            }
             dae::ExpressionOperation::Conditional(operands) => {
                 self.conditional(operands, scalar, node.provenance().span())
             }

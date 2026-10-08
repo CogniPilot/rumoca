@@ -261,7 +261,7 @@ pub fn get_version() -> String {
 /// Get the Git commit this WASM build was compiled from, with a `-dirty`
 /// marker for a modified tree; `undefined` when the build could not determine
 /// it. A pull-request build reports the synthetic merge commit it compiled;
-/// [`compiler_provenance`] also names the merged parents.
+/// `compiler_provenance` also names the merged parents.
 #[wasm_bindgen]
 pub fn get_git_commit() -> Option<String> {
     rumoca_core::build_identity().map(str::to_owned)

@@ -1051,9 +1051,11 @@ end increment;
 
 model DeclinedEvent
   Real x(start = 0, fixed = true);
+  Real z;
   discrete Real n(start = 0, fixed = true);
 equation
   der(x) = 1;
+  z = 0.5 * x + cos(time);
 algorithm
   when sample(0.1, 0.1) then
     n := increment(pre(n));
@@ -1073,6 +1075,11 @@ end DeclinedEvent;
         assert_eq!(session.get("n").expect("read sampled counter"), Some(2.0));
         let x = session.get("x").expect("read integrated state").expect("x");
         assert!((x - 0.25).abs() < 1e-8, "x = {x}");
+        let z = session
+            .get("z")
+            .expect("read refreshed assignment")
+            .expect("z");
+        assert!((z - (0.125 + 0.25_f64.cos())).abs() < 1e-8, "z = {z}");
         let receipt = session.execution_receipt();
         assert!(
             receipt
@@ -1080,6 +1087,13 @@ end DeclinedEvent;
                 .iter()
                 .any(|decline| decline.program == "event_transaction"),
             "declined compile requests must be listed: {receipt:?}"
+        );
+        assert!(
+            receipt
+                .declined
+                .iter()
+                .any(|decline| decline.program == "assignment_schedule"),
+            "the refreshed assignment must record its interpreter fallback: {receipt:?}"
         );
         assert!(
             receipt
