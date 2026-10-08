@@ -34,7 +34,7 @@ and then stores the replacement; a projection reads the original aggregate.
 Empty slices emit no indexing loop, avoiding division by a zero extent.
 No earlier validation or unsupported-operation refusal is relaxed.
 
-The fixed twenty-model canary comparison remains pending until recorded below.
+The fixed twenty-model canary comparison is recorded below.
 
 Focused-case isolation found two earlier, independent construction boundaries.
 A function that stores `zeros(0,2)` in `updated[2:1,2:3]` is refused before
@@ -114,3 +114,36 @@ the two wholly valid scenarios differ by less than 2.215e-10.
 These are focused application comparisons, not a full MSL parity claim.
 Browser loading of a complete FMU and the FMI-LS-Wasm clock profile are not
 changed or validated by this patch.
+
+
+## Fixed twenty-model canary delta
+
+Candidate `5e57cf4016f3019d49b96da795f46524b1dbbcce` was checked from a clean
+checkout against the existing clean baseline
+`2aaed750242f96d77f39e319f16b24bee82794c1`, using the identical fixed roster:
+
+```sh
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity \
+  --sim-targets-file infra/verification/msl-canary-20.json \
+  --results-dir "$HOME/scratch/bundle_web/build/fmi-validation/canary-5e57cf401" \
+  --stage-parallelism 4 --sim-parallelism 4 --no-remote-quality-baseline
+```
+
+The command passes. Every non-simulation phase has one 10-second attempt;
+simulation has the 12-second solver budget and 14-second parent watchdog,
+with no retries. [Structured delta and evidence hashes](fmi-operations-canary.json)
+retain the exact twenty model names. After excluding only timing/speedup fields,
+all native model rows, execution counts, comparator model metrics and numerical
+summaries are identical to baseline. Counts remain 17 compiled/balanced,
+15 initialized, 15 completed simulations, two solver failures, no non-finite
+results and no timeouts. Three compile-stage failures are unchanged.
+
+The comparator checks 14 models / 445 channels, with no bad channels,
+zero missing traces, and one unchanged policy exclusion (the Digital Counter
+OMC reference failure). All 14 state selections match exactly. These are
+canary observations and a zero delta, not a 566-model cohort parity number.
+
+The complete `cli_target_fmi::` suite additionally passes: 42 tests,
+zero failures or skips (198.86 s). The four codegen extremum tests pass.
+Full workspace checks and the coverage pre-landing gate have not yet been run;
+this evidence does not authorize landing without SPEC_0025's required gate.

@@ -1,0 +1,90 @@
+{
+  "revision": "5e57cf4016f3019d49b96da795f46524b1dbbcce",
+  "baseline": "2aaed750242f96d77f39e319f16b24bee82794c1",
+  "native_model_rows_equal": true,
+  "trace_model_metrics_equal": true,
+  "numerical_summary_equal": true,
+  "execution_counts_equal": true,
+  "counts": {
+    "compiled_models": 17,
+    "balanced_models": 17,
+    "ic_ok": 15,
+    "sim_ok": 15,
+    "sim_solver_fail": 2,
+    "sim_nan": 0,
+    "sim_timeout": 0,
+    "sim_balance_fail": 0,
+    "sim_target_models": [
+      "Modelica.Blocks.Examples.BooleanNetwork1",
+      "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+      "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+      "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+      "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+      "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+      "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+      "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+      "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+      "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "Modelica.Electrical.Digital.Examples.Counter",
+      "Modelica.Electrical.Digital.Examples.FullAdder",
+      "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+      "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "Modelica.Mechanics.Rotational.Examples.Friction",
+      "Modelica.Mechanics.Rotational.Examples.FirstGrounded"
+    ]
+  },
+  "models_compared": 14,
+  "missing_trace_models": 0,
+  "skipped_models": 1,
+  "agreement_bands": {
+    "high_agreement": 14,
+    "minor_agreement": 0,
+    "deviation": 0
+  },
+  "channels": 445,
+  "bad_channels": 0,
+  "state_selection": {
+    "models_compared": 14,
+    "exact_state_set_match_models": 14,
+    "state_count_match_models": 14,
+    "exact_state_set_match_percent": 100,
+    "state_count_match_percent": 100,
+    "total_rumoca_states": 10,
+    "total_omc_states": 10,
+    "total_matching_states": 10,
+    "total_rumoca_only_states": 0,
+    "total_omc_only_states": 0,
+    "max_model_state_set_difference": 0
+  },
+  "normalization": "Only keys ending _seconds or speedup_ratio; all other row and summary fields retained",
+  "differences": [],
+  "evidenceSha256": {
+    "baseline": {
+      "msl_results.json": "fdf1904b669c42731a68046133be522f568159ead211172ed719248c47a45c52",
+      "sim_trace_comparison.json": "cdcef871cd5f0639f1358102abce2d4644c4734976dfc9c27cc76668be55e530",
+      "msl_parity_timing.json": "bba9800871f585598b3b709904b9f83593d9aa22072431d1538ffc3bd8b475a8"
+    },
+    "candidate": {
+      "msl_results.json": "b62e498f48f3564ed2ac5b46d0e29c2689a289e09bdc7a5ca54d21c053cf0486",
+      "sim_trace_comparison.json": "b13f1926ff842b5ba588943d7d0551c1f31ba3f6f921fb0523eceb56c32d71ad",
+      "msl_parity_timing.json": "23e2a7a34651b2a2ab2642344ff296d059957ff8f1fdc57b52bf931d156ac729"
+    }
+  },
+  "fixedRosterSha256": "536004933ce502f7a8a4317e5dd6de2b700a6b176e84d2d6e7bbe0dcdf61eafa",
+  "resourceBudget": {
+    "cargoBuildJobs": 4,
+    "rustTestThreads": 4,
+    "rayonThreads": 4,
+    "stageParallelism": 4,
+    "simParallelism": 4,
+    "nonSimulationAttemptSeconds": 10,
+    "simulationSolverSeconds": 12,
+    "simulationParentWatchdogSeconds": 14,
+    "retries": 0
+  },
+  "scope": "Tier 1 fixed twenty-model canary delta; no full-cohort parity claim"
+}
