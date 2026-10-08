@@ -1,4 +1,5 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
+mod carried_updates;
 mod derived_discrete;
 mod families;
 mod gathers;

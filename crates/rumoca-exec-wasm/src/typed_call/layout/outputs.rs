@@ -46,21 +46,15 @@ impl FramePlan {
         // Region slots retain their issued order, including output ordinal.
         let first = branches[0].returned_outputs();
         let second = branches[1].returned_outputs();
-        for ((destination, (left, left_reusable)), (right, right_reusable)) in
-            destinations.iter().zip(first).zip(second)
-        {
-            // Arm-private ranges are placed at the same base and die with the
-            // operation, so only a range the parent already owns (below `base`)
-            // may become a register of the parent.
-            if left != right
-                || left.bytes != self.registers[destination.index()].bytes
-                || !parent_owned(left, base)
-            {
+        for (ordinal, destination) in destinations.iter().enumerate() {
+            let bytes = self.registers[destination.index()].bytes;
+            let arms = [&first, &second];
+            let Some((range, reusable)) = conditional_result(ordinal, arms, base, bytes) else {
                 continue;
-            }
-            self.registers[destination.index()] = left;
+            };
+            self.registers[destination.index()] = range;
             // Borrowing immutable storage never creates mutation permission.
-            self.register_reusable[destination.index()] = left_reusable && right_reusable;
+            self.register_reusable[destination.index()] = reusable;
         }
     }
 
@@ -100,6 +94,53 @@ fn completed_return(
     // fresh allocations. Thus no later operation, including a nested region,
     // can mutate the returned source or fault after its publication.
     result
+}
+
+/// The parent range output `ordinal` of a conditional takes, and whether it may
+/// be rewritten, from what its two arms return.
+///
+/// Arm-private ranges are placed at the same base and die with the operation,
+/// so only a range the parent already owns (below `base`) may become a register
+/// of the parent. Both arms returning the same parent range is an immutable
+/// borrow. One arm passing the parent range through while the other builds its
+/// value elsewhere puts the result in the parent range, so only the building
+/// arm copies; that rewrites the range, so the passing arm's slot must carry the
+/// capture's last-read proof (SOLVE-C71) and no other output of either arm may
+/// return the range, since it would observe the rewrite.
+fn conditional_result(
+    ordinal: usize,
+    arms: [&Vec<(super::CellRange, bool)>; 2],
+    base: u32,
+    bytes: u32,
+) -> Option<(super::CellRange, bool)> {
+    let owned =
+        |(range, _): (super::CellRange, bool)| range.bytes == bytes && parent_owned(range, base);
+    let (left, right) = (arms[0][ordinal], arms[1][ordinal]);
+    if left.0 == right.0 {
+        return owned(left).then_some((left.0, left.1 && right.1));
+    }
+    let passed = passed_through(left, right, owned)?;
+    let returned_elsewhere = arms.iter().any(|outputs| {
+        outputs
+            .iter()
+            .enumerate()
+            .any(|(other, (range, _))| other != ordinal && *range == passed.0)
+    });
+    (passed.1 && !returned_elsewhere).then_some(passed)
+}
+
+/// The parent-owned range exactly one arm returns, with the permission to
+/// rewrite it.
+fn passed_through(
+    left: (super::CellRange, bool),
+    right: (super::CellRange, bool),
+    owned: impl Fn((super::CellRange, bool)) -> bool,
+) -> Option<(super::CellRange, bool)> {
+    match (owned(left), owned(right)) {
+        (true, false) => Some(left),
+        (false, true) => Some(right),
+        _ => None,
+    }
 }
 
 fn interface(

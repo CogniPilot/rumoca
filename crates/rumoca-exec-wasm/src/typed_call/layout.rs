@@ -405,6 +405,29 @@ impl FramePlan {
         Ok(())
     }
 
+    /// The aggregate range an update at `index` rewrites in place: the
+    /// aggregate's own storage when this update is its last read, no other
+    /// register shares it, and the written value does not overlap it.
+    fn consumed_update(
+        &self,
+        index: usize,
+        aggregate: solve::SolveRegisterId,
+        value: Option<solve::SolveRegisterId>,
+        count: u32,
+    ) -> Option<CellRange> {
+        let source = self.registers[aggregate.index()];
+        let overlaps = value.is_some_and(|value| self.registers[value.index()] == source);
+        (!overlaps
+            && source.bytes == count
+            && self.lifetimes.can_consume(
+                index,
+                aggregate,
+                &self.registers,
+                &self.register_reusable,
+            ))
+        .then_some(source)
+    }
+
     fn plan_register(
         &mut self,
         program: &solve::TypedProgram,
@@ -419,17 +442,18 @@ impl FramePlan {
             {
                 Some(self.slots[slot.index()])
             }
-            solve::SolveOperation::UpdateElement { aggregate, .. }
-                if self.lifetimes.can_consume(
-                    index,
-                    *aggregate,
-                    &self.registers,
-                    &self.register_reusable,
-                ) =>
-            {
-                let source = self.registers[aggregate.index()];
-                (source.bytes == count).then_some(source)
+            solve::SolveOperation::UpdateElement { aggregate, .. } => {
+                self.consumed_update(index, *aggregate, None, count)
             }
+            // A slice or view update writes only the cells of its value, so
+            // the aggregate's own storage is updated in place once nothing
+            // reads the old aggregate afterwards (SOLVE-C71).
+            solve::SolveOperation::UpdateSlice {
+                aggregate, value, ..
+            }
+            | solve::SolveOperation::UpdateView {
+                aggregate, value, ..
+            } => self.consumed_update(index, *aggregate, Some(*value), count),
             _ => None,
         };
         let range = match alias {

@@ -8,6 +8,7 @@ mod carried_lifetimes;
 mod cross_backend_aliasing;
 mod extrema_tensor;
 mod finite_domains;
+mod in_place_aliasing;
 mod integer_quotients;
 mod integer_unaries;
 pub(crate) mod maps;
