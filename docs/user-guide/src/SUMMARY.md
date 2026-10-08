@@ -31,6 +31,7 @@
 - [Scenario Files (rumoca-scenario.toml)](./simulation/scenario-tomls.md)
 - [Solvers and Accuracy](./simulation/solvers.md)
 - [Interactive Simulation](./simulation/interactive.md)
+- [Driving a Session over stdio](./simulation/stdio-session.md)
 - [Reusable Booster Autonomous Landing](./simulation/reusable-booster-landing.md)
 - [Inspecting and Debugging Models](./simulation/inspect.md)
 

@@ -135,6 +135,11 @@ updates directly:
 rumoca sim -c examples/simulation/rumoca-scenario.neural_ode_backprop.toml
 ```
 
+## Driving a Session from Another Process
+
+`rumoca sim --serve-stdio` steps a session under external control, one JSON
+command and event per line; see [Driving a Session over stdio](./stdio-session.md).
+
 ## What a Run Produces
 
 - **Batch runs** write an HTML report with time-series plots of all

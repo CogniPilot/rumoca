@@ -18,7 +18,10 @@ mod structure_report;
 pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
 pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
 
-pub use diagnostics::SimulationDiagnosticError;
+pub use diagnostics::{
+    EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
+    EX012_SESSION_INVALID_ARGUMENT, SimulationDiagnosticError,
+};
 pub use entry::{
     lower_dae_for_gpu_preparation, lower_dae_for_native_preparation, lower_dae_for_simulation,
 };

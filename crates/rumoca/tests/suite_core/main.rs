@@ -52,6 +52,7 @@ mod call_owner_refresh_units;
 mod cli_diagnostic_rendering;
 mod cli_emit;
 mod cli_fmt_lint;
+mod cli_sim_serve_stdio;
 mod cli_sim_stop_time;
 mod cli_target_acceptance;
 mod clock_trigger_initial_tick;

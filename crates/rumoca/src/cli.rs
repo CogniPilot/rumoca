@@ -153,6 +153,14 @@ pub struct Cli {
     pub cache_dir: Option<PathBuf>,
 }
 
+impl Cli {
+    /// True for `rumoca sim --serve-stdio`, whose output pipe is a protocol channel.
+    #[must_use]
+    pub fn serves_stdio_session(&self) -> bool {
+        matches!(&self.command, Commands::Sim(args) if args.serve_stdio)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Compile a Modelica file
@@ -484,6 +492,21 @@ pub struct SimCommandArgs {
     /// Output file path for simulation report (default: `<MODEL>_results.html`)
     #[arg(short, long)]
     pub output: Option<String>,
+
+    /// Serve one simulation session over stdio instead of running a batch
+    /// simulation: read a JSON command per line on stdin (`set_input`,
+    /// `set_inputs`, `step`, `advance_to`, `get`, `state`, `reset`,
+    /// `input_names`, `variable_names`, `close`) and write a JSON event per
+    /// line on stdout. Diagnostics go to stderr; `--t-end` is the initial
+    /// horizon and the session extends it on demand.
+    #[arg(long, conflicts_with_all = ["inspect", "output", "config"])]
+    pub serve_stdio: bool,
+
+    /// Initial value of a model input for `--serve-stdio` (repeatable). Needed for
+    /// each input that has no binding equation default, because initialization
+    /// reads inputs before the controller has written any.
+    #[arg(long = "input", value_name = "NAME=VALUE", requires = "serve_stdio", value_parser = parse_initial_input)]
+    pub initial_inputs: Vec<(String, f64)>,
 
     /// Inspect the lowered model instead of simulating (see possible values
     /// below). `eval`/`jacobian` take a point via --at. Analyzes only.
@@ -1418,6 +1441,17 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
     let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
+    if args.serve_stdio {
+        let mut opts = direct_sim_options(
+            sim_window(&args, &result),
+            args.dt,
+            solver.into(),
+            args.atol,
+            args.rtol,
+        );
+        opts.initial_inputs = args.initial_inputs.clone();
+        return serve_stdio_session(result.dae.as_ref(), opts);
+    }
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
@@ -1774,6 +1808,65 @@ pub(crate) fn simulation_failure_error(
     anyhow::anyhow!("[{}] {error}", error.diagnostic_code())
 }
 
+/// Options of a direct `sim` run. Explicit --atol/--rtol override the backend
+/// default so a host's tolerance policy can be reproduced exactly from the CLI.
+fn direct_sim_options(
+    window: (f64, f64),
+    dt: Option<f64>,
+    solver_mode: SimSolverMode,
+    atol: Option<f64>,
+    rtol: Option<f64>,
+) -> SimOptions {
+    let mut opts = SimOptions {
+        t_start: window.0,
+        t_end: window.1,
+        dt,
+        solver_mode,
+        diffsol_method: DiffsolMethod::Bdf,
+        ..SimOptions::default()
+    };
+    if let Some(atol) = atol {
+        opts.atol = atol;
+    }
+    if let Some(rtol) = rtol {
+        opts.rtol = rtol;
+    }
+    opts
+}
+
+/// Parse one `--input NAME=VALUE` initial input.
+fn parse_initial_input(text: &str) -> std::result::Result<(String, f64), String> {
+    let (name, value) = text
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=VALUE, got `{text}`"))?;
+    let value = value
+        .trim()
+        .parse::<f64>()
+        .map_err(|error| format!("input `{name}` value `{value}` is not a number: {error}"))?;
+    Ok((name.trim().to_owned(), value))
+}
+
+/// `sim --serve-stdio`: drive one session from JSON-lines commands on stdin.
+///
+/// Stdout carries only protocol events; the process exits with the status of
+/// how the controller ended the session (`0` after `close`).
+fn serve_stdio_session(dae: &Dae, opts: SimOptions) -> Result<()> {
+    let mut session = rumoca_sim::SimulationSession::new(dae, opts)
+        .map_err(|error| simulation_failure_error(&error))?;
+    let exit = rumoca_sim::serve_session(
+        &mut session,
+        std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+    )?;
+    match exit {
+        rumoca_sim::SessionServeExit::Closed => Ok(()),
+        ended => {
+            eprintln!("rumoca sim --serve-stdio: session ended without close ({ended:?})");
+            std::process::exit(ended.exit_code())
+        }
+    }
+}
+
 struct SimulationRun<'a> {
     dae: &'a Dae,
     model: &'a str,
@@ -1801,22 +1894,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     // Scenario configs carry the solver as free text, so this is where a name
     // this tree cannot run is reported rather than quietly replaced.
     validate_solver_label(run.solver_label)?;
-    let mut opts = SimOptions {
-        t_start: run.window.0,
-        t_end: run.window.1,
-        dt: run.dt,
-        solver_mode: run.solver_mode,
-        diffsol_method: DiffsolMethod::Bdf,
-        ..SimOptions::default()
-    };
-    // Explicit --atol/--rtol override the backend default so a host's tolerance
-    // policy can be reproduced exactly from the CLI.
-    if let Some(atol) = run.atol {
-        opts.atol = atol;
-    }
-    if let Some(rtol) = run.rtol {
-        opts.rtol = rtol;
-    }
+    let opts = direct_sim_options(run.window, run.dt, run.solver_mode, run.atol, run.rtol);
 
     eprintln!("Simulating {} to t={}...", run.model, run.window.1);
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
