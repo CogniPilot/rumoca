@@ -153,6 +153,14 @@ pub struct Cli {
     pub cache_dir: Option<PathBuf>,
 }
 
+impl Cli {
+    /// True for `rumoca sim --serve-stdio`, whose output pipe is a protocol channel.
+    #[must_use]
+    pub fn serves_stdio_session(&self) -> bool {
+        matches!(&self.command, Commands::Sim(args) if args.serve_stdio)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Compile a Modelica file

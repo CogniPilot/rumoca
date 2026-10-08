@@ -77,8 +77,10 @@ stays usable. `code` is a stable diagnostic code:
 | Code | Meaning |
 |---|---|
 | `EX001` | The solver or the session refused the operation (for example an unknown input name, or an integration failure) |
+| `EX002` | The model could not be prepared for execution (for example an input without a default when a value is needed) |
+| `EX003` | An initial input or override was rejected |
 | `EX010` | Unsupported protocol version |
-| `EX011` | The line was not a valid command |
+| `EX011` | The line was not a valid command: not JSON, not UTF-8, an unknown command, or longer than 16 MiB (the line is skipped and the session continues) |
 | `EX012` | An argument was outside its domain (non-finite or negative time) |
 
 ### Exit status

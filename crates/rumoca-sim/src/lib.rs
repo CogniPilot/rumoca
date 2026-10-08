@@ -88,8 +88,7 @@ pub use error::{SimError, SimFailureStage};
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use session_protocol::{
-    EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
-    EX012_SESSION_INVALID_ARGUMENT, SESSION_PARENT_DISCONNECTED_EXIT_CODE,
+    SESSION_MAX_LINE_BYTES, SESSION_PARENT_DISCONNECTED_EXIT_CODE,
     SESSION_PROTOCOL_MISMATCH_EXIT_CODE, SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent,
     SessionServeExit, serve_session,
 };
@@ -103,8 +102,9 @@ pub(crate) use simulation_session_api::SimulationSessionApi;
 #[cfg(feature = "fmi")]
 pub use solve_lowering::lower_fmi_component;
 pub use solve_lowering::{
-    BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
-    ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
+    BlockReport, EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
+    EX012_SESSION_INVALID_ARGUMENT, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe,
+    JacobianReport, ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
     diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,

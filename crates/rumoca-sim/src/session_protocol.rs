@@ -11,12 +11,15 @@
 //! code: `EX001`/`EX002`/`EX003` from the solver for runtime failures, and the
 //! protocol codes below for malformed or unacceptable commands.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{SimulationDiagnosticError, SimulationSession};
+use crate::{
+    EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
+    EX012_SESSION_INVALID_ARGUMENT, SimulationDiagnosticError, SimulationSession,
+};
 
 #[cfg(test)]
 mod tests;
@@ -31,12 +34,9 @@ pub const SESSION_PARENT_DISCONNECTED_EXIT_CODE: i32 = 71;
 /// Exit status when the controlling process declares an unsupported version.
 pub const SESSION_PROTOCOL_MISMATCH_EXIT_CODE: i32 = 72;
 
-/// The controlling process declared a protocol version this build does not speak.
-pub const EX010_SESSION_PROTOCOL_VERSION: &str = "EX010";
-/// A command line was not a valid [`SessionCommand`].
-pub const EX011_SESSION_MALFORMED_COMMAND: &str = "EX011";
-/// A command carried an argument outside its domain (non-finite or negative time).
-pub const EX012_SESSION_INVALID_ARGUMENT: &str = "EX012";
+/// Longest accepted command line, newline excluded; a longer line is refused
+/// with `EX011` and skipped.
+pub const SESSION_MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One request to a [`SimulationSession`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -258,23 +258,30 @@ pub fn serve_session(
     input: impl BufRead,
     output: &mut impl Write,
 ) -> io::Result<SessionServeExit> {
+    serve_with_line_limit(session, input, output, SESSION_MAX_LINE_BYTES)
+}
+
+fn serve_with_line_limit(
+    session: &mut SimulationSession,
+    mut input: impl BufRead,
+    output: &mut impl Write,
+    max_line_bytes: usize,
+) -> io::Result<SessionServeExit> {
     let hello = SessionEvent::Hello {
         protocol_version: SESSION_PROTOCOL_VERSION,
     };
     if let Some(exit) = write_event(output, &hello)? {
         return Ok(exit);
     }
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event = match serde_json::from_str::<SessionCommand>(&line) {
-            Ok(command) => session.apply(command),
-            Err(error) => SessionEvent::error(
-                EX011_SESSION_MALFORMED_COMMAND,
-                format!("invalid session command: {error}"),
-            ),
+    let mut buffer = Vec::new();
+    while let Some(line) = next_command_line(&mut input, &mut buffer, max_line_bytes)? {
+        let event = match line {
+            Ok(line) if line.trim().is_empty() => continue,
+            Ok(line) => match serde_json::from_str::<SessionCommand>(&line) {
+                Ok(command) => session.apply(command),
+                Err(error) => malformed(format!("invalid session command: {error}")),
+            },
+            Err(reason) => malformed(reason),
         };
         if let Some(exit) = write_event(output, &event)? {
             return Ok(exit);
@@ -288,6 +295,54 @@ pub fn serve_session(
         }
     }
     Ok(SessionServeExit::ParentDisconnected)
+}
+
+fn malformed(message: String) -> SessionEvent {
+    SessionEvent::error(EX011_SESSION_MALFORMED_COMMAND, message)
+}
+
+/// Read the next command line without buffering more than `max_line_bytes`.
+///
+/// `Ok(None)` is the end of the stream. An over-long or non-UTF-8 line is
+/// consumed whole and reported as `Err(reason)`, so the stream stays aligned on
+/// line boundaries and the session continues.
+fn next_command_line(
+    input: &mut impl BufRead,
+    buffer: &mut Vec<u8>,
+    max_line_bytes: usize,
+) -> io::Result<Option<Result<String, String>>> {
+    buffer.clear();
+    let limit = u64::try_from(max_line_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bounded = Read::take(&mut *input, limit);
+    if bounded.read_until(b'\n', buffer)? == 0 {
+        return Ok(None);
+    }
+    if buffer.last() != Some(&b'\n') && buffer.len() > max_line_bytes {
+        discard_rest_of_line(input)?;
+        return Ok(Some(Err(format!(
+            "session command line exceeds {max_line_bytes} bytes"
+        ))));
+    }
+    Ok(Some(String::from_utf8(std::mem::take(buffer)).map_err(
+        |error| format!("session command line is not valid UTF-8: {error}"),
+    )))
+}
+
+fn discard_rest_of_line(input: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        let chunk = input.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if let Some(end) = chunk.iter().position(|byte| *byte == b'\n') {
+            input.consume(end + 1);
+            return Ok(());
+        }
+        let length = chunk.len();
+        input.consume(length);
+    }
 }
 
 /// Write one event line; `Some` when the reader has gone away.

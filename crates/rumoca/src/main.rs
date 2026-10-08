@@ -46,9 +46,14 @@ fn main() {
     // error that the `println!`-per-line paths surface as a panic (exit 101).
     // With the default disposition the process terminates quietly on SIGPIPE
     // like a normal Unix tool. No-op on non-Unix.
-    sigpipe::reset();
     install_cli_miette_hook();
     let cli = Cli::parse();
+    // A stdio session keeps SIG_IGN so a closed controller surfaces as a
+    // BrokenPipe write error, which the session maps to its documented
+    // disconnect exit status instead of dying on the signal.
+    if !cli.serves_stdio_session() {
+        sigpipe::reset();
+    }
     if let Err(error) = cli::run(cli) {
         print_cli_error(&error);
         std::process::exit(1);

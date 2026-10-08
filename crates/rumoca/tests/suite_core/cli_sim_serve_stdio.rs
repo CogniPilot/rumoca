@@ -203,3 +203,30 @@ fn initial_inputs_are_required_and_checked() {
         r#"{"event":"hello","protocol_version":1}"#
     );
 }
+
+#[test]
+fn a_closed_stdout_exits_with_the_disconnect_status() {
+    let Served {
+        _dir,
+        mut child,
+        mut stdin,
+        stdout,
+    } = Served::spawn();
+    drop(stdout);
+    let stdin = stdin.as_mut().unwrap();
+    // The controller keeps writing after it stopped reading.
+    writeln!(stdin, "{}", json!({"command": "state"})).unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(71));
+}
+
+#[test]
+fn undecodable_input_is_a_typed_error_and_the_session_continues() {
+    let mut served = Served::spawn();
+    let stdin = served.stdin.as_mut().unwrap();
+    stdin.write_all(b"\xff\xfe\n").unwrap();
+    let error = served.read();
+    assert_eq!(error["event"], "error");
+    assert_eq!(error["code"], "EX011");
+    assert_eq!(served.call(json!({"command": "state"}))["event"], "state");
+}

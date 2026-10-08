@@ -344,3 +344,43 @@ fn wire_forms_are_stable() {
         r#"{"event":"value","name":"y","time":1.0,"value":null}"#
     );
 }
+
+#[test]
+fn non_utf8_and_over_long_lines_are_typed_refusals_and_the_session_continues() {
+    let mut s = session(SimSolverMode::Bdf);
+    let mut input = Vec::new();
+    input.extend_from_slice(b"\xff\xfe not utf-8\n");
+    input.extend_from_slice(&[b'x'; 100]);
+    input.extend_from_slice(b"\n{\"command\":\"state\"}\n");
+    input.extend_from_slice(b"{\"command\":\"input_names\"}\n");
+    let mut out = Vec::new();
+    let exit = serve_with_line_limit(&mut s, Cursor::new(input), &mut out, 64).unwrap();
+    assert_eq!(exit, SessionServeExit::ParentDisconnected);
+    let events: Vec<SessionEvent> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 5, "{events:?}");
+    let SessionEvent::Error { code, message } = &events[1] else {
+        panic!("{:?}", events[1]);
+    };
+    assert_eq!(code, EX011_SESSION_MALFORMED_COMMAND);
+    assert!(message.contains("UTF-8"), "{message}");
+    let SessionEvent::Error { code, message } = &events[2] else {
+        panic!("{:?}", events[2]);
+    };
+    assert_eq!(code, EX011_SESSION_MALFORMED_COMMAND);
+    assert!(message.contains("exceeds 64 bytes"), "{message}");
+    assert!(matches!(events[3], SessionEvent::State { .. }));
+    assert!(matches!(events[4], SessionEvent::InputNames { .. }));
+}
+
+#[test]
+fn an_over_long_final_line_without_newline_is_refused_at_end_of_stream() {
+    let mut s = session(SimSolverMode::Bdf);
+    let mut out = Vec::new();
+    let exit = serve_with_line_limit(&mut s, Cursor::new(vec![b'y'; 200]), &mut out, 64).unwrap();
+    assert_eq!(exit, SessionServeExit::ParentDisconnected);
+    assert_eq!(String::from_utf8(out).unwrap().lines().count(), 2);
+}
