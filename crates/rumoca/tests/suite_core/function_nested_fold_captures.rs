@@ -167,8 +167,8 @@ fn guarded_windows_under_two_loops_read_both_loop_binders() {
         dt: Some(0.1),
         ..SimOptions::default()
     };
-    let simulation = simulate_dae(&compiled.dae, &options)
-        .expect("the guarded windows lower to Solve rows");
+    let simulation =
+        simulate_dae(&compiled.dae, &options).expect("the guarded windows lower to Solve rows");
     let variable = simulation
         .names
         .iter()
