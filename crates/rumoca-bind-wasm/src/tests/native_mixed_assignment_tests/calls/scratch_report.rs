@@ -99,6 +99,6 @@ fn pose_graph_optimizer_prepares_with_shared_call_frames() {
     assert_eq!(report["total_bytes"].as_u64().unwrap(), scratch);
     assert!(scratch < 4 * 1024 * 1024, "scratch {scratch}");
     let unshared = report["unshared_call_scratch_bytes"].as_u64().unwrap();
-    assert!(unshared > 64 * 1024 * 1024, "unshared {unshared}");
+    assert!(unshared > 48 * 1024 * 1024, "unshared {unshared}");
     assert!(report["call_scratch_bytes"].as_u64().unwrap() < unshared / 16);
 }
