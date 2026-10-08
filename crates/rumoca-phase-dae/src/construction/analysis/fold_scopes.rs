@@ -226,14 +226,7 @@ impl FoldScopes {
             return;
         };
         for write in first.iter().filter(|write| !write.certain) {
-            let everywhere = |writes: &Vec<SymbolicWrite>| {
-                writes.iter().any(|other| {
-                    other.target == write.target
-                        && other.axes == write.axes
-                        && other.region == whole
-                })
-            };
-            if write.region == whole && rest.iter().all(everywhere) {
+            if write.region == whole && rest.iter().all(|writes| write.is_made_by(writes, &whole)) {
                 scope.writes.push(SymbolicWrite {
                     certain: true,
                     ..write.clone()
@@ -1183,4 +1176,14 @@ fn enclosing_writes_defining(
             .iter()
             .map(|part| IndexBox(part.0.iter().chain(inner).copied().collect())),
     )
+}
+
+impl SymbolicWrite {
+    /// Whether one of `writes` writes this write's target over the same axes
+    /// at every binder value of `whole`.
+    fn is_made_by(&self, writes: &[SymbolicWrite], whole: &IndexUnion) -> bool {
+        writes.iter().any(|other| {
+            other.target == self.target && other.axes == self.axes && &other.region == whole
+        })
+    }
 }
