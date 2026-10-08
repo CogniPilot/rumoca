@@ -244,7 +244,7 @@ pub(super) fn classify(
         let integer_source = match lane {
             NativeOutputLane::Integer => Some(integer_source(rhs, row, inputs)?),
             NativeOutputLane::Real | NativeOutputLane::Boolean => {
-                single_output_value(rhs, row)?;
+                row_program(rhs, row)?;
                 None
             }
         };
@@ -372,24 +372,65 @@ fn scalar_row_owners(
     Ok(owners)
 }
 
-/// The program of `row` and the register its single store publishes.
-fn single_output_value(
+/// The program that computes discrete row `row` alone, and the register its
+/// single terminal store publishes.
+///
+/// One program may store several rows when they project one pure call
+/// (SPEC_0040 SOLVE-C82). The stateless schedule publishes each derived output
+/// through its own typed lane and stage, so a row of such a program is the
+/// program with only that row's store kept; the stores of its siblings are
+/// dropped and every other operation is unchanged, so the value is the one the
+/// shared program stores.
+pub(super) fn row_program(
     rhs: &ScalarProgramBlock,
     row: usize,
-) -> Result<(usize, Reg), NativeEvaluationRefusal> {
-    let program = rhs
-        .program_index_for_output(row)
+) -> Result<(usize, std::borrow::Cow<'_, [LinearOp]>, Reg), NativeEvaluationRefusal> {
+    let (program, ordinal) = rhs
+        .output_position(row)
         .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
     let operations = rhs
         .program(program)
         .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
-    if ScalarProgramBlock::program_output_count(operations) != 1 {
-        return Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram);
+    if ScalarProgramBlock::program_output_count(operations) == 1 {
+        return match operations.last() {
+            Some(LinearOp::StoreOutput { src }) => {
+                Ok((program, std::borrow::Cow::Borrowed(operations), *src))
+            }
+            _ => Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram),
+        };
     }
-    match operations.last() {
-        Some(LinearOp::StoreOutput { src }) => Ok((program, *src)),
-        _ => Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram),
+    let mut projected = Vec::with_capacity(operations.len());
+    let mut stored = 0usize;
+    let mut selected = None;
+    for operation in operations {
+        match *operation {
+            LinearOp::StoreOutput { src } => {
+                if stored == ordinal {
+                    selected = Some(src);
+                }
+                stored += 1;
+            }
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => {
+                if (stored..stored + count).contains(&ordinal) {
+                    let step = (ordinal - stored)
+                        .checked_mul(stride)
+                        .and_then(|offset| u32::try_from(offset).ok())
+                        .and_then(|offset| start.checked_add(offset))
+                        .ok_or(NativeEvaluationRefusal::MultiOutputDiscreteProgram)?;
+                    selected = Some(step);
+                }
+                stored += count;
+            }
+            _ => projected.push(operation.clone()),
+        }
     }
+    let src = selected.ok_or(NativeEvaluationRefusal::MultiOutputDiscreteProgram)?;
+    projected.push(LinearOp::StoreOutput { src });
+    Ok((program, std::borrow::Cow::Owned(projected), src))
 }
 
 /// The exact Integer source of `row`: the defining operation of its stored
@@ -400,10 +441,7 @@ fn integer_source(
     row: usize,
     inputs: &super::typed_inputs::TypedInputs,
 ) -> Result<NativeIntegerSource, NativeEvaluationRefusal> {
-    let (program, value) = single_output_value(rhs, row)?;
-    let operations = rhs
-        .program(program)
-        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let (_, operations, value) = row_program(rhs, row)?;
     let Some((operation, definition)) = operations
         .iter()
         .enumerate()
