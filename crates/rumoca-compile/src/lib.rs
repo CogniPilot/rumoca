@@ -152,7 +152,8 @@ pub mod codegen {
             builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
             parse_target_manifest, render_dae_target_files, safe_target_join,
             target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
-            validate_solve_target_capabilities, validate_solve_tensor_inventory,
+            validate_flat_target_capabilities, validate_solve_target_capabilities,
+            validate_solve_tensor_inventory,
         };
     }
 }

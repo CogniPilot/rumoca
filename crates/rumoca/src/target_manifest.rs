@@ -13,7 +13,7 @@ use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
     TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
-    validate_solve_target_capabilities,
+    validate_flat_target_capabilities, validate_solve_target_capabilities,
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
@@ -678,12 +678,19 @@ fn validate_target_requirements(
                 .context("Lower Solve IR for target capability validation")?;
             validate_solve_target_capabilities(&solve, manifest, capabilities)?;
         }
-        // Flat and AST templates carry no capability obligation. The Flat
-        // render context proves its own contract before any byte is produced
-        // (`rumoca::codegen::EC007`, the non-materialized structured-family
-        // refusal), and the AST is source structure with no lowering claim a
-        // capability column could describe.
-        TargetTemplateIr::Flat | TargetTemplateIr::Ast => {}
+        // A Flat template that declares a `[capabilities]` table is held to
+        // it: `events` / `algorithms` declared unsupported refuse a model whose
+        // `when` chains or algorithm sections the template would otherwise
+        // drop silently. Undeclared Flat templates keep no obligation; the
+        // render context still proves its own structured-family contract
+        // (`rumoca::codegen::EC007`). The AST is source structure with no
+        // lowering claim a capability column could describe.
+        TargetTemplateIr::Flat => {
+            if let Some(capabilities) = manifest.capabilities.as_ref() {
+                validate_flat_target_capabilities(&result.flat, manifest, capabilities)?;
+            }
+        }
+        TargetTemplateIr::Ast => {}
     }
     Ok(validated)
 }

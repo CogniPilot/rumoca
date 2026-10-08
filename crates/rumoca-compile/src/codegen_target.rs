@@ -150,6 +150,10 @@ pub struct TargetCapabilities {
     /// FMI projection proves ordered parameter-only initialization assignments.
     pub parameter_initialization: Option<bool>,
     pub events: Option<bool>,
+    /// A Flat template renders `algorithm` / `initial algorithm` sections.
+    /// Declared `false`, a model carrying either is refused instead of being
+    /// emitted without them.
+    pub algorithms: Option<bool>,
     /// FMI C projection proves assertion predicates are parameter-dependent.
     pub static_assertions: Option<bool>,
     pub runtime_events: Option<bool>,
@@ -719,6 +723,36 @@ pub fn render_dae_target_files(
         });
     }
     Ok(files)
+}
+
+/// Capability gate for Flat templates that declare a `[capabilities]` table.
+///
+/// Flat templates render the Flat model directly, so a section the template
+/// never reads is silently absent from the output: a `when` chain or an
+/// algorithm section would vanish and the emitted model would still compile,
+/// simulating different dynamics. A Flat target that declares `events` or
+/// `algorithms` unsupported converts that silent loss into a refusal.
+pub fn validate_flat_target_capabilities(
+    flat: &rumoca_ir_flat::Model,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
+    if capabilities.events == Some(false) && !flat.when_chains.is_empty() {
+        unsupported_feature(
+            manifest,
+            "events",
+            format!("{} when-equation chain(s)", flat.when_chains.len()),
+        )?;
+    }
+    let algorithm_sections = flat.algorithms.len() + flat.initial_algorithms.len();
+    if capabilities.algorithms == Some(false) && algorithm_sections != 0 {
+        unsupported_feature(
+            manifest,
+            "algorithms",
+            format!("{algorithm_sections} algorithm section(s)"),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn validate_dae_target_capabilities(
@@ -1341,6 +1375,9 @@ fn validate_target_capabilities(
     }
     if capabilities.parameter_initialization.is_some() && manifest.ir != TargetTemplateIr::Fmi {
         bail!("parameter_initialization capability is only valid for FMI targets");
+    }
+    if capabilities.algorithms.is_some() && manifest.ir != TargetTemplateIr::Flat {
+        bail!("algorithms capability is only valid for ir = \"flat\" targets");
     }
     if capabilities.structured_equation_families.is_some() && manifest.ir != TargetTemplateIr::Dae {
         bail!("structured_equation_families capability is only valid for ir = \"dae\" targets");
