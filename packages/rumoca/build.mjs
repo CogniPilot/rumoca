@@ -276,9 +276,9 @@ const main = async () => {
 
     // wasm-opt is slow, so skip it by default (fast dev/editor builds). For
     // published packages pass --optimize: wasm-pack then runs wasm-opt with the
-    // `-Oz` level configured in crates/rumoca-bind-wasm/Cargo.toml's
-    // [package.metadata.wasm-pack.profile.release], stripping debug names and
-    // dead code (~25% smaller raw).
+    // `-Oz -g` level configured in crates/rumoca-bind-wasm/Cargo.toml's
+    // [package.metadata.wasm-pack.profile.release], stripping dead code (~25%
+    // smaller raw) while keeping the `name` section so profiles show symbols.
     if (!args.optimize) {
       wasmPackArgs.push("--no-opt");
     }
