@@ -64,7 +64,8 @@ fn every_command_has_one_outcome() {
                 protocol_version: SESSION_PROTOCOL_VERSION
             }),
             SessionEvent::Hello {
-                protocol_version: SESSION_PROTOCOL_VERSION
+                protocol_version: SESSION_PROTOCOL_VERSION,
+                engine: s.execution_receipt(),
             }
         );
         assert_eq!(
@@ -226,12 +227,13 @@ fn serve_answers_each_line_and_closes() {
     assert_eq!(exit, SessionServeExit::Closed);
     assert_eq!(exit.exit_code(), 0);
     assert_eq!(events.len(), 7, "{events:?}");
-    assert_eq!(
+    assert!(matches!(
         events[0],
         SessionEvent::Hello {
-            protocol_version: SESSION_PROTOCOL_VERSION
+            protocol_version: SESSION_PROTOCOL_VERSION,
+            ..
         }
-    );
+    ));
     assert!(matches!(events[1], SessionEvent::Hello { .. }));
     assert!(matches!(events[2], SessionEvent::Ok { time } if time == 0.0));
     assert!(matches!(events[3], SessionEvent::Ok { time } if (time - 0.1).abs() < 1e-12));

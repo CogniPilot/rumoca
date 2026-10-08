@@ -206,15 +206,22 @@ impl rumoca_solver::SolveExecutionBackend for WasmExecutionBackend {
     }
 }
 
+pub(crate) fn execution_receipt(
+    opts: &rumoca_solver::SimOptions,
+    model: &rumoca_ir_solve::SolveModel,
+) -> rumoca_solver::SimExecutionReceipt {
+    profile::execution_receipt(
+        opts.execution_policy,
+        model.state_scalar_count(),
+        model.external_tables.len(),
+    )
+}
+
 pub(crate) fn admitted_native_execution_backend(
     opts: &rumoca_solver::SimOptions,
     model: &rumoca_ir_solve::SolveModel,
 ) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
-    if !profile::model_context_admitted(
-        opts.execution_policy,
-        model.state_scalar_count(),
-        model.external_tables.len(),
-    ) {
+    if !execution_receipt(opts, model).is_compiled() {
         return None;
     }
     Some(rumoca_solver::fmi_me::MeExecutionBackend::new(Rc::new(

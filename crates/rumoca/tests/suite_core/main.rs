@@ -26,6 +26,7 @@
 
 mod history_operator_checked;
 mod initial_boolean_parameter;
+mod periodic_clock_session;
 
 mod actual_stream_product_events;
 mod additive_torque;

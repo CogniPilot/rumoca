@@ -2,7 +2,7 @@
 
 use indexmap::IndexMap;
 use rumoca_solver::{
-    SimOptions,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimOptions,
     fmi_me::{
         MeExecutionBackend, MeInstanceConfig, MeIntegratorBackend, MeModelArtifact,
         MeNumericalSetup,
@@ -27,6 +27,7 @@ pub(crate) struct BackendSimulationSession {
     session: MeSimulationSession<'static, 'static>,
     input_names: Vec<String>,
     variable_names: Vec<String>,
+    execution: SimExecutionReceipt,
 }
 
 impl BackendSimulationSession {
@@ -41,9 +42,17 @@ impl BackendSimulationSession {
             opts.execution_policy,
             execution_backend,
         )?;
+        let execution = artifact
+            .execution_receipt()
+            .unwrap_or(SimExecutionReceipt::admission(
+                SimExecutionPolicy::Interpreter,
+                0,
+                0,
+                SimExecutionEngine::Interpreter,
+            ));
         let retained = MeRetainedComponent::instantiate(
             artifact.source(),
-            &instance_config(instance_name, opts)?,
+            &MeInstanceConfig::open_ended(instance_name, opts.rtol, opts.t_start)?,
             execution_backend,
         )?;
         let options = live_session_options(
@@ -63,7 +72,12 @@ impl BackendSimulationSession {
             session,
             input_names,
             variable_names,
+            execution,
         })
+    }
+
+    pub(crate) fn execution_receipt(&self) -> SimExecutionReceipt {
+        self.execution
     }
 
     pub(crate) fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {

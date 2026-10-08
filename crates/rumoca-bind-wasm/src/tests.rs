@@ -18,6 +18,8 @@ mod lsp_diagnostics_tests;
 mod native_assignment_tests;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
 mod native_mixed_assignment_tests;
+#[cfg(feature = "sim-rk45")]
+mod periodic_clock_tests;
 mod portable_source_root_tests;
 mod scenario_config_tests;
 mod session_recovery_tests;

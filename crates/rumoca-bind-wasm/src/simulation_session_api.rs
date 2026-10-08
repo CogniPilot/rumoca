@@ -1,7 +1,7 @@
 mod options;
 
 use options::InteractiveOptions;
-use rumoca_sim::{SessionCommand, SessionEvent};
+use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -118,6 +118,20 @@ impl WasmSimulationSession {
                     .map_err(|e| WasmError::new(format!("Session state serialization error: {e}")))
             }
             other => Err(unexpected_event("state", &other)),
+        }
+    }
+
+    /// The execution engine the session selected, as the JSON receipt
+    /// `{"engine": "interpreter" | "cranelift" | "wasm_program", "refusal":
+    /// null | "no_continuous_states" | "external_tables"}`. It is the engine
+    /// field of the protocol `hello` event.
+    pub fn execution_receipt_json(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::Hello {
+            protocol_version: SESSION_PROTOCOL_VERSION,
+        })? {
+            SessionEvent::Hello { engine, .. } => serde_json::to_string(&engine)
+                .map_err(|e| WasmError::new(format!("Execution receipt serialization error: {e}"))),
+            other => Err(unexpected_event("hello", &other)),
         }
     }
 

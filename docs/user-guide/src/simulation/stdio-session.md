@@ -26,11 +26,17 @@ one JSON event per line from its stdout. Each command is answered by exactly one
 event, in order. Stdout carries only protocol events; compiler and solver
 diagnostics go to stderr.
 
-On startup the child writes a `hello` event with the protocol version:
+On startup the child writes a `hello` event with the protocol version and a
+receipt of the execution engine the session selected:
 
 ```json
-{"event":"hello","protocol_version":1}
+{"event":"hello","protocol_version":1,"engine":{"engine":"cranelift","refusal":null}}
 ```
+
+`engine.engine` is `interpreter`, `cranelift`, or `wasm_program`. `refusal` is
+`null` unless compiled execution was refused for a request that allowed it, in
+which case it is `no_continuous_states` or `external_tables` and the engine is
+`interpreter`.
 
 ### Commands
 

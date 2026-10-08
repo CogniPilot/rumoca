@@ -21,15 +21,16 @@ pub use rumoca_phase_solve::{
 pub use rumoca_solver::{
     DiffsolMethod, HotpathStatsSnapshot, ProjectionFallback, ProjectionFallbackCounts,
     ProjectionFallbackReport, ProjectionSite, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult,
-    SimSolverMode, SimVariableMeta, SimulationRequestSummary, SimulationRunMetrics,
-    SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value,
-    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
-    projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
-    reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
-    runtime_progress_snapshot, shared_value_proof_failures, step_counts,
-    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
-    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
+    RuntimeTraceContext, SimBackend, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
+    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TimeoutBudget,
+    TimeoutExceeded, build_simulation_metrics_value, build_simulation_payload,
+    is_solver_timeout_panic, panic_on_expired_solver_deadline, projection_fallbacks,
+    projection_fallbacks_value, reset_projection_fallbacks, reset_step_counts, run_timeout_result,
+    run_timeout_step, run_timeout_step_result, runtime_progress_snapshot,
+    shared_value_proof_failures, step_counts, stop_time_reached_with_tol, time_advanced_with_tol,
+    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
+    trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 mod build_timing;
@@ -164,7 +165,9 @@ pub fn simulate_fmi_component(
 ) -> Result<SimResult, SimulationDiagnosticError> {
     let execution_backend =
         native_execution::admitted_native_execution_backend(opts, component.runtime_view().model());
-    let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
+    let receipt = native_execution::execution_receipt(opts, component.runtime_view().model());
+    let artifact =
+        rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend),
         SimSolverMode::RkLike => simulate_artifact_rk45(artifact, opts, execution_backend),

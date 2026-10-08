@@ -50,7 +50,10 @@ impl Served {
             stdout,
         };
         let hello = served.read();
-        assert_eq!(hello, json!({"event": "hello", "protocol_version": 1}));
+        assert_eq!(hello["event"], "hello");
+        assert_eq!(hello["protocol_version"], 1);
+        assert!(hello["engine"]["engine"].is_string(), "{hello}");
+        assert!(hello["engine"].get("refusal").is_some(), "{hello}");
         served
     }
 
@@ -198,10 +201,11 @@ fn initial_inputs_are_required_and_checked() {
     // An exhausted stdin is a parent disconnect after the hello.
     let ready = serve(&["--input", "u=0"]);
     assert_eq!(ready.status.code(), Some(71));
-    assert_eq!(
-        String::from_utf8_lossy(&ready.stdout).trim(),
-        r#"{"event":"hello","protocol_version":1}"#
-    );
+    let stdout = String::from_utf8_lossy(&ready.stdout);
+    let hello: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(hello["event"], "hello");
+    assert_eq!(hello["protocol_version"], 1);
+    assert!(hello["engine"]["engine"].is_string(), "{hello}");
 }
 
 #[test]

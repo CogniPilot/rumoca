@@ -9,4 +9,4 @@ mod profile;
 mod target_values;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) use expressions::admitted_native_execution_backend;
+pub(crate) use expressions::{admitted_native_execution_backend, execution_receipt};

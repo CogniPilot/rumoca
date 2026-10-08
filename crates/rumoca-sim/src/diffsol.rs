@@ -384,6 +384,10 @@ impl SimulationSession {
 
     pub(crate) fn ensure_end_time(&mut self, _target_time: f64) {}
 
+    pub(crate) fn execution_receipt(&self) -> rumoca_solver::SimExecutionReceipt {
+        self.inner.execution_receipt()
+    }
+
     pub(crate) fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
             return Ok(());
