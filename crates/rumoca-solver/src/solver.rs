@@ -170,11 +170,6 @@ impl SimNativeRefusal {
     }
 }
 
-/// The typed record of which engine a simulation selected and, when compiled
-/// execution was refused for an admissible request, why.
-///
-/// One decision site ([`Self::admission`]) produces it for every target, so
-/// the receipt and the backend actually constructed cannot disagree.
 /// One compile request the selected backend declined. The program it names runs
 /// in the interpreter instead; the receipt lists it so the fallback is never
 /// silent.
@@ -188,6 +183,11 @@ pub struct SimNativeDecline {
     pub count: usize,
 }
 
+/// The typed record of which engine a simulation selected and, when compiled
+/// execution was refused for an admissible request, why.
+///
+/// One decision site ([`Self::admission`]) produces it for every target, so
+/// the receipt and the backend actually constructed cannot disagree.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SimExecutionReceipt {
     pub engine: SimExecutionEngine,
