@@ -193,21 +193,51 @@ impl FoldScopes {
     }
 
     /// Keep, after a conditional, the writes each branch made on an exact path:
-    /// each runs at its own branch's binder values.
-    pub(super) fn absorb_branch_writes(&mut self, before: usize, branches: &[&Self]) {
+    /// each runs at its own branch's binder values. When the conditional is
+    /// exhaustive, a write that every branch makes to the same target over the
+    /// same axes at every binder value of this path runs at every such value
+    /// whichever branch is taken, so it is certain here even where the
+    /// selecting conditions are no binder range.
+    pub(super) fn absorb_branch_writes(
+        &mut self,
+        before: usize,
+        branches: &[&Self],
+        exhaustive: bool,
+    ) {
         let Some(scope) = self.scopes.last_mut() else {
             return;
         };
-        for branch in branches {
-            if let Some(branch_scope) = branch.scopes.last() {
-                scope.writes.extend(
-                    branch_scope
-                        .writes
-                        .iter()
-                        .skip(before)
-                        .filter(|write| write.certain)
-                        .cloned(),
-                );
+        let branch_writes = |branch: &&Self| -> Vec<SymbolicWrite> {
+            branch.scopes.last().map_or_else(Vec::new, |scope| {
+                scope.writes.iter().skip(before).cloned().collect()
+            })
+        };
+        let all = branches.iter().map(branch_writes).collect::<Vec<_>>();
+        for writes in &all {
+            scope
+                .writes
+                .extend(writes.iter().filter(|write| write.certain).cloned());
+        }
+        if !exhaustive || !scope.exact {
+            return;
+        }
+        let whole = IndexUnion::of([scope.region.clone()]);
+        let Some((first, rest)) = all.split_first() else {
+            return;
+        };
+        for write in first.iter().filter(|write| !write.certain) {
+            let everywhere = |writes: &Vec<SymbolicWrite>| {
+                writes.iter().any(|other| {
+                    other.target == write.target
+                        && other.axes == write.axes
+                        && other.region == whole
+                })
+            };
+            if write.region == whole && rest.iter().all(everywhere) {
+                scope.writes.push(SymbolicWrite {
+                    certain: true,
+                    ..write.clone()
+                });
             }
         }
     }
