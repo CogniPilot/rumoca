@@ -53,6 +53,7 @@ use crate::balance::BalanceDetail;
 use algorithm::{
     AlgorithmFunctionCall, AlgorithmStatementContext, lower_algorithm_assignment,
     lower_algorithm_function_call, lower_algorithm_tensor_loop, own_clocked_algorithm_targets,
+    own_clocked_function_outputs,
 };
 use algorithm_lowering::{AlgorithmEnvironment, ModelAlgorithmsRequest, lower_algorithms};
 use analysis::{
@@ -516,15 +517,7 @@ fn lower_model_owners<'dae>(
     lower_when_chains(
         construction,
         &mut discrete_values,
-        WhenChainsRequest::new(
-            coordinates,
-            functions,
-            &analysis.sample_lattices,
-            clocks,
-            &flat.when_chains,
-            &analysis.discrete_value_topology,
-            &analysis.clocked_when_owners,
-        ),
+        WhenChainsRequest::new(coordinates, functions, clocks, &flat.when_chains, analysis),
     )?;
     discrete_values.add_holds(construction, coordinates, &analysis.discrete_value_topology)?;
     discrete_values.finish(construction, &analysis.discrete_value_topology)

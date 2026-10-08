@@ -494,7 +494,7 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
     Ok(())
 }
 
-fn own_clocked_function_outputs<'dae>(
+pub(super) fn own_clocked_function_outputs<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     clock: dae::ClockId<'dae>,

@@ -139,8 +139,8 @@ use initial_algorithms::{
     negate, reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
-use model_algorithm_calls::analyze_event_function_calls;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
+use model_algorithm_calls::{analyze_event_function_calls, analyze_when_function_calls};
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithm_statements::{collect_algorithm_writes, names_overlap};
 use model_algorithms::analyze_model_algorithm;
@@ -216,6 +216,8 @@ pub(super) struct Analysis {
     /// Owning clock of every runtime coordinate in a clocked partition.
     pub(super) clocked_coordinate_owners: HashMap<InstanceId, ClockPlan>,
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
+    /// The checked owner of each multi-output call in a `when` body, by span.
+    pub(super) when_function_calls: HashMap<Span, ModelEventFunctionCallPlan>,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: HashMap<VarName, Expression>,
     /// `final` or `Evaluate=true` parameters with evaluable bindings (MLS §18.6).
@@ -714,6 +716,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &constants,
         &function_shapes,
     )?;
+    let when_function_calls = analyze_when_function_calls(flat, &roles, &function_shapes)?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &templates, &roles, &record_equations.continuous)?;
     let initial = analyze_initial_owners(
@@ -774,6 +777,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_when_owners: clock_domains.when_owners,
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
+        when_function_calls,
         initial_parameters: initial.algorithms.parameters,
         evaluable_parameters: evaluable,
         structural_selections,

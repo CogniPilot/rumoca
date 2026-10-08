@@ -337,6 +337,7 @@ mod variability_classes;
 mod vectorized_constant_calls;
 mod verification_surface_wiring;
 mod when_activation_settled_reads;
+mod when_multi_output_calls;
 mod when_right_limit_events;
 mod when_written_reads;
 

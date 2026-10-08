@@ -121,12 +121,11 @@ fn validate_when_equations(
                     validate_when_equations(else_branch, scope, sample_lattices, clocked)?;
                 }
             }
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
-                return Err(ToDaeError::unsupported_flat(
-                    "when function-call outputs",
-                    "multi-output event calls require a checked function-action owner",
-                    *span,
-                ));
+            // `analyze_when_function_calls` proves the receivers; the call
+            // itself is read like any other when-body value.
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                validate_clocked_temporal_expressions(function, scope.roles, clocked)?;
+                validate_read(function, scope, clocked)?;
             }
         }
     }
@@ -209,6 +208,16 @@ fn non_real_targets(
             {
                 targets.insert(target.clone());
             }
+            flat::WhenEquation::FunctionCallOutputs { outputs, .. } => {
+                targets.extend(
+                    outputs
+                        .iter()
+                        .filter(|output| {
+                            matches!(roles.get(*output), Some(PlannedRole::DiscreteValue))
+                        })
+                        .cloned(),
+                );
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
@@ -224,8 +233,7 @@ fn non_real_targets(
             flat::WhenEquation::Assign { .. }
             | flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
-            | flat::WhenEquation::Terminate { .. }
-            | flat::WhenEquation::FunctionCallOutputs { .. } => {}
+            | flat::WhenEquation::Terminate { .. } => {}
         }
     }
     targets
