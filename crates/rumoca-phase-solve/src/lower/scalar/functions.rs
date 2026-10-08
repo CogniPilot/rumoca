@@ -4027,15 +4027,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .unwrap_or_default();
         for (fold, tuple) in inherited_folds {
             if reads.folds.contains(&fold) {
-                let mut resolved = Vec::with_capacity(tuple.len());
-                for carried in tuple {
-                    resolved.push(
-                        carried
-                            .into_iter()
-                            .map(|source| self.deferred_fold_capture(source, span))
-                            .collect::<Result<Vec<_>, _>>()?,
-                    );
-                }
+                let resolved =
+                    Self::resolve_tuple(tuple, |source| self.deferred_fold_capture(source, span))?;
                 scope.folds.push((fold, resolved));
             }
         }
@@ -4063,29 +4056,37 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         for (domain, sources) in region.0 {
             let registers = sources
                 .into_iter()
-                .map(|source| {
-                    self.function_conditional_capture_range(source, span)
-                        .map(|range| range.start)
-                })
+                .map(|source| self.region_capture_start(source, span))
                 .collect::<Result<Vec<_>, _>>()?;
             scope.symbolic.push((domain, registers));
         }
         for (fold, tuple) in region.1 {
-            let mut resolved = Vec::with_capacity(tuple.len());
-            for carried in tuple {
-                resolved.push(
-                    carried
-                        .into_iter()
-                        .map(|source| {
-                            self.function_conditional_capture_range(source, span)
-                                .map(|range| range.start)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
-            }
+            let resolved =
+                Self::resolve_tuple(tuple, |source| self.region_capture_start(source, span))?;
             scope.folds.push((fold, resolved));
         }
         Ok(scope)
+    }
+
+    /// The region-local register holding one captured scalar.
+    fn region_capture_start(
+        &mut self,
+        source: FunctionConditionalCaptureSource<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        self.function_conditional_capture_range(source, span)
+            .map(|range| range.start)
+    }
+
+    /// Map every scalar source of a carried tuple through `resolve`.
+    fn resolve_tuple<S>(
+        tuple: Vec<Vec<S>>,
+        mut resolve: impl FnMut(S) -> Result<solve::Reg, LowerError>,
+    ) -> Result<Vec<Vec<solve::Reg>>, LowerError> {
+        tuple
+            .into_iter()
+            .map(|carried| carried.into_iter().map(&mut resolve).collect())
+            .collect()
     }
 
     fn fork_for_fold_update(
