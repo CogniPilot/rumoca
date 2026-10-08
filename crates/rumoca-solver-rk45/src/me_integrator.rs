@@ -281,6 +281,10 @@ impl Rk45Integrator {
 }
 
 impl MeIntegratorBackend for Rk45Integrator {
+    fn continuous_extension_order(&self) -> Option<u32> {
+        Some(CONTINUOUS_EXTENSION_ORDER)
+    }
+
     fn initialize(
         &mut self,
         point: &MeContinuousPoint,

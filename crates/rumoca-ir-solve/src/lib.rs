@@ -15,18 +15,21 @@ mod compact_pattern;
 #[cfg(test)]
 mod compute_block_tests;
 mod continuous_wire;
+mod event_writes;
 mod feature_query;
 pub mod fmi;
 mod initialization;
 mod layout;
 mod linear_op;
 mod model;
+mod parameter_classification;
 mod parameter_reads;
 mod refresh;
 mod root_search;
 mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
+mod sensitivity;
 mod shape_error;
 mod static_parameters;
 mod tangent_lanes;
@@ -49,6 +52,7 @@ pub use certificate::{
 };
 pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
 pub use compact_pattern::CompactPatternLayout;
+pub use event_writes::{EventWrites, event_writes};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events,
@@ -73,9 +77,15 @@ pub use linear_op::{
     UnaryOp, prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
-pub use parameter_reads::read_parameter_slots;
+pub use parameter_classification::{ExcludedParameter, ExclusionReason, ParameterClassification};
+pub use parameter_reads::{read_continuous_parameter_slots, read_parameter_slots};
 pub use refresh::*;
 pub use root_search::{RootSearchPlan, RootSearchRole, TimeRootSign, root_neighborhoods};
+pub use sensitivity::{
+    AdmittedRelation, CheckpointPolicy, InitialSensitivityPlan, RelationOperand, SensitivityLayout,
+    SensitivityParameter, SensitivityProblem, SensitivityRefusal, SettlePolicy, SwitchingValueNote,
+    updates_read_algebraics,
+};
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{

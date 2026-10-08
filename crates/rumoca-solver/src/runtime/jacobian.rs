@@ -518,7 +518,7 @@ pub struct ObjectiveGradientReport {
 
 /// Solve `J_y · X = -J_p` for the steady-state sensitivity `X = ∂y/∂p`, one
 /// parameter column at a time (Gauss-Jordan with partial pivoting).
-fn solve_steady_state_sensitivity(
+pub(crate) fn solve_steady_state_sensitivity(
     state_jacobian: &[Vec<f64>],
     parameter_jacobian: &[Vec<f64>],
     n: usize,

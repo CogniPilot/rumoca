@@ -30,6 +30,10 @@ pub fn simulate(
     simulate_artifact(artifact, opts, execution_backend)
 }
 
+pub(crate) fn integrator_factory() -> crate::me_backend::IntegratorFactory {
+    RK45_INTEGRATOR
+}
+
 pub use simulate as simulate_dae;
 
 pub fn simulate_with_diagnostics(

@@ -70,6 +70,8 @@ pub(crate) struct HermiteStepIntegrator {
     /// its own equations; this plugin simply keeps it across accepted steps,
     /// which is the property the lent `&dyn` form could not express.
     derivatives: Option<MeDerivativeHandle>,
+    /// The extension order the plugin declares before its first step.
+    declared_order: Option<u32>,
 }
 
 impl HermiteStepIntegrator {
@@ -79,7 +81,14 @@ impl HermiteStepIntegrator {
             quality,
             step: None,
             derivatives: None,
+            declared_order: Some(HERMITE_ORDER),
         }
+    }
+
+    /// The same plugin declaring `order` (or none) for its continuous extension.
+    pub(crate) fn with_declared_order(mut self, order: Option<u32>) -> Self {
+        self.declared_order = order;
+        self
     }
 
     fn evaluate(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeIntegrationError> {
@@ -131,6 +140,10 @@ impl HermiteStepIntegrator {
 }
 
 impl MeIntegratorBackend for HermiteStepIntegrator {
+    fn continuous_extension_order(&self) -> Option<u32> {
+        self.declared_order
+    }
+
     fn initialize(
         &mut self,
         point: &MeContinuousPoint,

@@ -259,7 +259,13 @@ pub struct SimOptions {
     /// programs. Part of the request so a run's interpreter/native selection is
     /// reproducible and inspectable rather than ambient.
     pub execution_policy: SimExecutionPolicy,
+    /// Memory the adjoint sensitivity may spend storing the forward trajectory,
+    /// in bytes; a run that needs more is refused with a typed error (SOLVE-C76).
+    pub checkpoint_budget_bytes: u64,
 }
+
+/// One gibibyte: the default memory budget of a stored forward trajectory.
+pub const DEFAULT_CHECKPOINT_BUDGET_BYTES: u64 = 1 << 30;
 
 impl Default for SimOptions {
     fn default() -> Self {
@@ -278,6 +284,7 @@ impl Default for SimOptions {
             start_overrides: Vec::new(),
             initial_inputs: Vec::new(),
             execution_policy: SimExecutionPolicy::Auto,
+            checkpoint_budget_bytes: DEFAULT_CHECKPOINT_BUDGET_BYTES,
         }
     }
 }

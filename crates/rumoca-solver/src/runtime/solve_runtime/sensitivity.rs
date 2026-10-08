@@ -161,6 +161,58 @@ impl SolveRuntime {
         self.eval_full_jacobian_v_ad_into(lin, state, &seed, out)
     }
 
+    /// One right-hand side of the augmented variational system
+    /// `[x' = F; S_j' = (∂F/∂x) S_j + ∂F/∂p_j]` at `(t, x, S)`, with `state`
+    /// laid out as `layout` (`[x | S_1 .. S_m | ..]`) and `out` written over
+    /// the same ranges.
+    ///
+    /// The algebraic projection of the primal point is settled once and serves
+    /// the derivative and every parameter column; each column only seeds the
+    /// projection's forward sensitivity and applies the derivative JVP. This is
+    /// the batch form of [`Self::eval_forward_sensitivity_column_into`].
+    pub fn eval_derivatives_and_sensitivities_into(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        state: &[f64],
+        layout: rumoca_ir_solve::SensitivityLayout,
+        param_slots: &[usize],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let AlgebraicLinearization { t, params, settle } = lin;
+        let n = layout.states;
+        let p_scalars = self.model.problem.layout.p_scalars();
+        let mut scratch = self.derivative_scratch.borrow_mut();
+        let StateDerivativeScratch { solver_y, seed_buf } = &mut *scratch;
+        self.populate_solver_y_from_state(solver_y, &state[..n])?;
+        self.eval_state_derivatives_at_solver_y(
+            t,
+            params,
+            settle.tol,
+            settle.max_iters,
+            solver_y,
+            &mut out[..n],
+        )?;
+        let mut seed = vec![0.0; self.solver_count + p_scalars];
+        for (j, slot) in param_slots.iter().enumerate() {
+            let range = layout.sensitivity(j);
+            seed[..n].copy_from_slice(&state[range.clone()]);
+            seed[self.solver_count + slot] = 1.0;
+            let column = self.eval_derivative_jacobian_v_from_settled_solver_y(
+                lin,
+                solver_y,
+                JacobianSeed {
+                    values: &seed,
+                    copy_len: seed.len(),
+                    buffer: seed_buf,
+                },
+                &mut out[range],
+            );
+            seed[self.solver_count + slot] = 0.0;
+            column?;
+        }
+        Ok(())
+    }
+
     /// Project a state-sensitivity column `∂state/∂p` to the full solver-y
     /// sensitivity `∂(solver-y)/∂p` (states *and* algebraics) at the
     /// linearization point, via the algebraic projection's forward-sensitivity.
@@ -173,6 +225,21 @@ impl SolveRuntime {
         state: &[f64],
         state_sensitivity: &[f64],
         param_slot: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.project_state_tangent_to_solver_y(lin, state, state_sensitivity, Some(param_slot), out)
+    }
+
+    /// [`Self::project_state_sensitivity_to_solver_y`] for a tangent that may
+    /// carry no parameter seed: `param_slot = None` projects a pure state
+    /// direction (the `C` rows of a linearization), `Some(slot)` adds the unit
+    /// tangent of that parameter or input.
+    pub fn project_state_tangent_to_solver_y(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        state: &[f64],
+        state_sensitivity: &[f64],
+        param_slot: Option<usize>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
@@ -194,9 +261,11 @@ impl SolveRuntime {
             .min(state_sensitivity.len())
             .min(seed_buf.len());
         seed_buf[..n].copy_from_slice(&state_sensitivity[..n]);
-        let p_index = self.solver_count + param_slot;
-        if p_index < seed_buf.len() {
-            seed_buf[p_index] = 1.0;
+        if let Some(param_slot) = param_slot {
+            let p_index = self.solver_count + param_slot;
+            if p_index < seed_buf.len() {
+                seed_buf[p_index] = 1.0;
+            }
         }
         // Seed against the full algebraic plan so every solver-y algebraic (states
         // pass through unchanged) receives its `∂(alg)/∂state·v + ∂(alg)/∂p` seed.

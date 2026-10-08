@@ -183,7 +183,7 @@ pub(crate) fn instance_config(
     MeInstanceConfig::new(instance_name, opts.rtol, opts.t_start, opts.t_end).map_err(Into::into)
 }
 
-fn default_output_dt(opts: &SimOptions) -> f64 {
+pub(crate) fn default_output_dt(opts: &SimOptions) -> f64 {
     opts.dt
         .filter(|dt| dt.is_finite() && *dt > 0.0)
         .unwrap_or_else(|| ((opts.t_end - opts.t_start).abs() / 500.0).max(1.0e-3))

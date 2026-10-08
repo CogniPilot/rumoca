@@ -108,3 +108,24 @@ impl From<rumoca_eval_solve::EvalSolveError> for SimulationDiagnosticError {
         }
     }
 }
+
+impl From<rumoca_solver::RuntimeSolveError> for SimulationDiagnosticError {
+    fn from(value: rumoca_solver::RuntimeSolveError) -> Self {
+        Self::Solver(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runtime_row_failure_is_a_solver_failure() {
+        let error =
+            SimulationDiagnosticError::from(rumoca_solver::RuntimeSolveError::UnsupportedModel {
+                reason: "a row cannot be evaluated".to_string(),
+            });
+        assert_eq!(error.diagnostic_code(), EX001_SOLVER_FAILURE);
+        assert!(error.to_string().contains("a row cannot be evaluated"));
+    }
+}

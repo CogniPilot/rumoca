@@ -9,6 +9,7 @@ mod diagnostics;
 mod entry;
 #[cfg(any(feature = "fmi", feature = "solver-diffsol", feature = "solver-rk45"))]
 mod fmi;
+mod linearization;
 mod overrides;
 mod probe;
 mod structure_report;
@@ -17,6 +18,10 @@ mod structure_report;
 // facade (see `architecture_hardening_test::test_sim_facade_cross_crate_exports_are_curated`).
 pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
 pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
+
+// The parameter-selection decision is owned by the Solve lowering phase.
+pub use rumoca_ir_solve::{ExcludedParameter, ExclusionReason, ParameterClassification};
+pub use rumoca_phase_solve::{independent_tunable_parameters, select_sensitivity_parameters};
 
 pub use diagnostics::{
     EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
@@ -27,6 +32,7 @@ pub use entry::{
 };
 #[cfg(feature = "fmi")]
 pub use fmi::lower_fmi_component;
+pub use linearization::{Linearization, linearization_for_dae};
 pub use probe::{
     EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,
     StateAndParameterJacobianProbe, SteadyStateSensitivityProbe, eval_dae_at, jacobian_for_dae,

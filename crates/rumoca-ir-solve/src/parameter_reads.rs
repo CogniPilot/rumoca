@@ -17,6 +17,15 @@ pub fn read_parameter_slots(problem: &SolveProblem) -> BTreeSet<usize> {
     reads.0
 }
 
+/// Every parameter storage index some program of the continuous system of
+/// `problem` reads: the rows that define the trajectory between events.
+#[must_use]
+pub fn read_continuous_parameter_slots(problem: &SolveProblem) -> BTreeSet<usize> {
+    let mut reads = ParameterReads(BTreeSet::new());
+    let Ok(()) = reads.visit_continuous_system(&problem.continuous);
+    reads.0
+}
+
 struct ParameterReads(BTreeSet<usize>);
 
 impl SolveVisitor for ParameterReads {
