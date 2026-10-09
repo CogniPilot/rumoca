@@ -141,6 +141,38 @@ fn assert_emit_ok(file: &Path, emit: &str) -> String {
 }
 
 #[test]
+fn default_compile_reports_model_counts_balance_and_next_commands() {
+    let (_dir, file) = fixture_file();
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .output()
+        .expect("run default compile summary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for expected in [
+        "Compilation successful!",
+        "Model: EmitFixture",
+        "States: 2",
+        "Parameters: 1",
+        "Balance: 0 (equations - unknowns)",
+        "Status: BALANCED",
+        "Use `rumoca compile <file> --emit dae-mo`",
+        "Use `rumoca compile <file> --target <TARGET>`",
+        "Use `rumoca sim <file> --inspect structure`",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing `{expected}` in:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn emit_modelica_stages_render() {
     let (_dir, file) = fixture_file();
     // Each Modelica-form stage renders non-empty source. (The `when` equation
@@ -255,8 +287,8 @@ fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
 }
 
 /// The Flat JSON dump is the self-describing sibling of the export above: it
-/// serializes the cheapened rows AND the `interiors_materialized` flag that
-/// says they are cheapened, so it makes no claim a checked view could falsify
+/// serializes the cheapened rows AND the `interiors` owner that says
+/// they are cheapened, so it makes no claim a checked view could falsify
 /// and is deliberately not refused.
 #[test]
 fn flat_json_publishes_the_materialization_flag_with_the_cheapened_rows() {
@@ -274,7 +306,7 @@ fn flat_json_publishes_the_materialization_flag_with_the_cheapened_rows() {
     assert!(
         families
             .iter()
-            .any(|family| family["interiors_materialized"] == serde_json::json!(false)),
+            .any(|family| family["interiors"] != serde_json::json!("Materialized")),
         "the dump must state that its interior rows are not materialized:\n{out}"
     );
 }

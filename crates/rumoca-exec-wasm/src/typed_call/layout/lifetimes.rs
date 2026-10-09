@@ -13,14 +13,15 @@ pub(super) struct Lifetimes {
 impl Lifetimes {
     pub(super) fn construct(program: &solve::TypedProgram, slots: &[CellRange]) -> Self {
         let mut result = Self {
-            last_use: vec![0; program.register_types().len()],
+            last_use: program
+                .register_last_reads()
+                .iter()
+                .map(|last| last.unwrap_or(0))
+                .collect(),
             defined_at: vec![usize::MAX; program.register_types().len()],
             input_reads: BTreeMap::new(),
         };
         for (index, operation) in program.operations().iter().enumerate() {
-            operation
-                .operation()
-                .visit_input_registers(|register| result.last_use[register.index()] = index);
             operation
                 .operation()
                 .visit_output_registers(|register| result.defined_at[register.index()] = index);
@@ -48,7 +49,7 @@ impl Lifetimes {
         reusable: &[bool],
     ) -> bool {
         let range = registers[source.index()];
-        if !reusable[source.index()] || range.base != 2 || self.last_use[source.index()] != index {
+        if !reusable[source.index()] || range.base != 2 {
             return false;
         }
         if self
@@ -58,6 +59,8 @@ impl Lifetimes {
         {
             return false;
         }
+        // The live-alias guard is the proof: no other register sharing the range
+        // is read after `index`, and `source` itself is not read later.
         // Allocation/borrow construction makes whole register ranges equal or
         // disjoint. Equality here identifies that checked private allocation,
         // never a semantic owner or equality of different source values.

@@ -62,6 +62,7 @@ import that path.
 | `MeSimulationSession`, `MeComponentHost`, common batch/live drivers | `rumoca-solver::fmi_me::{session,driver}` | FMI ME master-algorithm owners. |
 | `MeIntegratorBackend`, `MeAdvanceRequest`, `MeAcceptedStep`, host-private `MeRootSearchPolicy`, accepted-interval roundoff and containment helpers | `rumoca-solver::fmi_me::{integrator,root}` | FMI ME numerical and host-root contract owners; every plugin imports the same host-issued accepted-interval containment rule. |
 | `MeTraceRecorder`, `TraceObservationRole` | `rumoca-solver::fmi_me::trace` | ME trace-construction owners. |
+| `SessionCommand`, `SessionEvent`, `SimulationSession::apply`, `serve_session`, `SESSION_PROTOCOL_VERSION` | `rumoca-sim::session_protocol` | Sole definition of the externally driven session semantics; the WASM binding and `rumoca sim --serve-stdio` dispatch through `apply`, so no binding re-implements a command. |
 | Component-side Modelica event-boundary helpers | `rumoca-solver::fmi_me::kernel` | FMI component Event Mode implementation. |
 | Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Shared `pre(...)` snapshot mechanics. |
 | Component-private algebraic settle helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Used only while evaluating or initializing the FMI component; numerical plugins cannot import this policy. |

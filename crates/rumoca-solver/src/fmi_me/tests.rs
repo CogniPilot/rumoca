@@ -1434,6 +1434,7 @@ fn the_common_host_integrates_a_component_through_the_thin_plugin_contract() {
     })
     .expect("the fixture options are admissible");
 
+    assert_eq!(retained.lease_count(), 0);
     let host = retained.lease(options).expect("the sole lease is granted");
     let state_count = host.state_count();
     assert_eq!(state_count, 2);
@@ -1724,4 +1725,14 @@ fn the_indicator_step_path_never_rebuilds_or_regrows_its_storage() {
         crossed,
         "the sweep must cross the indicator so the armed-crossing path runs"
     );
+}
+
+#[test]
+fn an_open_ended_instance_has_no_defined_stop_time() {
+    let open = MeInstanceConfig::open_ended("live", 1.0e-6, 2.0).expect("checked request");
+    assert_eq!(open.start_time, 2.0);
+    assert!(open.stop_time.is_infinite() && open.stop_time > 0.0);
+    assert!(MeInstanceConfig::open_ended("live", 0.0, 0.0).is_err());
+    assert!(MeInstanceConfig::open_ended("", 1.0e-6, 0.0).is_err());
+    assert!(MeInstanceConfig::open_ended("live", 1.0e-6, f64::NAN).is_err());
 }

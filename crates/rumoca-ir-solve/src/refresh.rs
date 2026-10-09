@@ -27,11 +27,11 @@ pub use assignment_shape::{
     OutputYReads, derive_target_assignment_shape_for_output, derive_target_assignment_shapes,
     isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
 };
-use dependency::assignment_y_dependencies_for_shapes;
-pub use dependency::{ScalarProgramYDependency, YFootprint};
+use dependency::AssignmentDependencies;
+pub use dependency::ScalarProgramYDependency;
 pub use materialization::{
-    IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue, isolated_parts,
-    materialize_target_assignment,
+    ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
+    isolated_parts, materialize_target_assignment,
 };
 pub use native_assignment::{
     NativeDerivedOutput, NativeEvaluationRefusal, NativeInputLane, NativeIntegerSource,
@@ -44,8 +44,8 @@ pub use staged_execution::{
 };
 
 use crate::{
-    AlgebraicProjectionPlan, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    TargetAssignmentShape,
+    AlgebraicProjectionPlan, ComputeBlock, ComputeNode, IndexIntervals, LinearOp,
+    ScalarProgramBlock, SettledIntervals, TargetAssignmentShape,
 };
 
 /// Exact canonical scalar program inside one tensor-aware [`crate::ComputeBlock`].
@@ -259,7 +259,7 @@ pub struct ExactRefreshAssignmentProgram {
     source: RefreshScalarProgramSource,
     target_indices: Box<[usize]>,
     assignment_shapes: Box<[TargetAssignmentShape]>,
-    assignment_y_dependencies: Box<[Box<[usize]>]>,
+    assignment_y_dependencies: Box<[IndexIntervals]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -308,10 +308,8 @@ impl ExactRefreshAssignmentProgram {
     }
 
     #[must_use]
-    pub fn assignment_y_dependencies(&self, position: usize) -> Option<&[usize]> {
-        self.assignment_y_dependencies
-            .get(position)
-            .map(Box::as_ref)
+    pub fn assignment_y_dependencies(&self, position: usize) -> Option<&IndexIntervals> {
+        self.assignment_y_dependencies.get(position)
     }
 
     /// Materialize the scalar execution view at a final backend boundary.
@@ -857,9 +855,10 @@ impl ContinuousRefreshOwners {
         &self,
         id: ExactRefreshAssignmentProgramId,
     ) -> Option<&ExactRefreshAssignmentProgram> {
+        // `append_exact_assignment_program` issues each identity as the
+        // program's position in this inventory, the only place one is made.
         self.exact_assignment_programs
-            .iter()
-            .find(|program| program.id == id)
+            .get(usize::try_from(id.0).ok()?)
     }
 
     /// Every issued exact assignment schedule.
@@ -920,7 +919,7 @@ impl ContinuousRefreshOwners {
         } = self;
         exact_assignment_programs.clear();
         exact_assignment_schedules.clear();
-        let mut inventory = BTreeMap::new();
+        let mut inventory = ExactProgramInventory::default();
         for plan in [&*algebraic, &*derivative, &*root, &*event]
             .into_iter()
             .chain(clock_events.iter())
@@ -1029,7 +1028,12 @@ fn validate_refresh_sources(
     outputs: &source_outputs::SourceOutputs<'_>,
     queries: &mut SourceCertificateQueries<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
-    for row in &plan.rows {
+    // Each row is checked on its own, so rows are visited grouped by source:
+    // the query cache analyzes each source once, however the plan
+    // interleaves sources.
+    let mut rows = plan.rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.source);
+    for row in rows {
         let Some(equation) = outputs.get(row.source, row.output_offset) else {
             return refresh_error(format!(
                 "{label} refresh row refers to a missing canonical scalar-program output"
@@ -1070,10 +1074,20 @@ fn validate_refresh_assignment_certificate(
     Ok(())
 }
 
-fn construct_exact_assignment_program(
-    block: &ComputeBlock,
+/// The exact programs issued while one owner set's schedules are built, keyed
+/// by their rows, and the dependency analyses they share: rows of one source
+/// issued as separate programs reuse that source's analysis.
+#[derive(Default)]
+struct ExactProgramInventory<'a> {
+    by_rows: BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
+    dependencies: AssignmentDependencies<'a>,
+}
+
+fn construct_exact_assignment_program<'a>(
+    block: &'a ComputeBlock,
     id: ExactRefreshAssignmentProgramId,
     rows: &[&AlgebraicRefreshRow],
+    dependencies: &mut AssignmentDependencies<'a>,
 ) -> Result<ExactRefreshAssignmentProgram, ContinuousRefreshConstructionError> {
     let Some(first) = rows.first() else {
         return refresh_error("exact continuous refresh assignment group is empty".to_string());
@@ -1109,7 +1123,7 @@ fn construct_exact_assignment_program(
             reason: "exact continuous refresh assignment prefix exceeds its canonical source"
                 .to_string(),
         })?;
-    let assignment_y_dependencies = assignment_y_dependencies_for_shapes(source_program, &shapes);
+    let assignment_y_dependencies = dependencies.for_shapes(first.source, source_program, &shapes);
     let target_indices = rows
         .iter()
         .map(|row| row.target_index)
@@ -1161,15 +1175,15 @@ fn materialize_exact_assignment_program(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let overflow = || ContinuousRefreshConstructionError {
+        reason: "exact continuous refresh assignment program overflows registers".to_string(),
+    };
+    let mut program = ExactAssignmentProgramBuilder::new(&mut operations).ok_or_else(overflow)?;
     for shape in &owner.assignment_shapes {
-        let (result, _) =
-            materialize_target_assignment(shape, &mut operations).ok_or_else(|| {
-                ContinuousRefreshConstructionError {
-                    reason: "exact continuous refresh assignment program overflows registers"
-                        .to_string(),
-                }
-            })?;
-        operations.push(LinearOp::StoreOutput { src: result });
+        let (result, _) = program.materialize_guarded(shape).ok_or_else(overflow)?;
+        program
+            .push(LinearOp::StoreOutput { src: result })
+            .ok_or_else(overflow)?;
     }
     let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
         .map_err(|error| ContinuousRefreshConstructionError {
@@ -1225,13 +1239,14 @@ fn exact_rows_can_commit_together(
         let Some(shape) = row.assignment_shape.as_ref() else {
             return Ok(false);
         };
-        let reads_other = |index: usize| {
-            owners_by_target
-                .get(&index)
-                .is_some_and(|owners| owners.iter().any(|owner| *owner != row.owner_id))
-        };
+        // The footprint's intervals are met with the targets, so the cost is
+        // the targets inside them, not the footprint's width.
         let conflicts = match dependencies.footprint(shape.value_registers()) {
-            Some(footprint) => footprint.indices().any(reads_other),
+            Some(footprint) => footprint.intervals().any(|interval| {
+                owners_by_target
+                    .range(interval)
+                    .any(|(_, owners)| owners.iter().any(|owner| *owner != row.owner_id))
+            }),
             None => rows.iter().any(|other| other.owner_id != row.owner_id),
         };
         if conflicts {
@@ -1292,11 +1307,11 @@ fn refresh_source_overflow(part: &str) -> ContinuousRefreshConstructionError {
     }
 }
 
-fn append_plan_assignment_schedules(
-    block: &ComputeBlock,
+fn append_plan_assignment_schedules<'a>(
+    block: &'a ComputeBlock,
     programs: &mut Vec<ExactRefreshAssignmentProgram>,
     schedules: &mut Vec<ExactRefreshAssignmentSchedule>,
-    inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
+    inventory: &mut ExactProgramInventory<'a>,
     plan: &RefreshPlan,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     append_exact_assignment_schedule(
@@ -1427,6 +1442,7 @@ struct ExactAssignmentCoverage<'a> {
     target_inventory: std::collections::BTreeSet<usize>,
     covered: std::collections::BTreeSet<RefreshRowOwnerId>,
     available: std::collections::BTreeSet<usize>,
+    settled: SettledIntervals,
 }
 
 impl<'a> ExactAssignmentCoverage<'a> {
@@ -1448,6 +1464,7 @@ impl<'a> ExactAssignmentCoverage<'a> {
             target_inventory,
             covered: std::collections::BTreeSet::new(),
             available: std::collections::BTreeSet::new(),
+            settled: SettledIntervals::default(),
         }
     }
 
@@ -1492,13 +1509,17 @@ impl<'a> ExactAssignmentCoverage<'a> {
         };
         let mut actual = Vec::new();
         for id in schedule.program_ids() {
-            let Some(program) = self.programs.iter().find(|program| program.id() == *id) else {
+            let Some(program) = usize::try_from(id.0)
+                .ok()
+                .and_then(|position| self.programs.get(position))
+            else {
                 return false;
             };
             if !exact_assignment_program_is_causal(
                 program,
                 &self.target_inventory,
                 &mut self.available,
+                &mut self.settled,
             ) {
                 return false;
             }
@@ -1525,16 +1546,18 @@ fn exact_assignment_program_is_causal(
     program: &ExactRefreshAssignmentProgram,
     target_inventory: &std::collections::BTreeSet<usize>,
     available: &mut std::collections::BTreeSet<usize>,
+    settled: &mut SettledIntervals,
 ) -> bool {
     for (position, target) in program.target_indices().iter().copied().enumerate() {
         let Some(dependencies) = program.assignment_y_dependencies(position) else {
             return false;
         };
-        if dependencies.iter().copied().any(|dependency| {
-            dependency != target
-                && target_inventory.contains(&dependency)
-                && !available.contains(&dependency)
-        }) {
+        if dependencies.reads_unresolved(
+            target,
+            target_inventory,
+            |dependency| available.contains(&dependency),
+            settled,
+        ) {
             return false;
         }
     }
@@ -1544,11 +1567,11 @@ fn exact_assignment_program_is_causal(
         .all(|target| available.insert(*target))
 }
 
-fn append_exact_assignment_schedule(
-    block: &ComputeBlock,
+fn append_exact_assignment_schedule<'a>(
+    block: &'a ComputeBlock,
     programs: &mut Vec<ExactRefreshAssignmentProgram>,
     schedules: &mut Vec<ExactRefreshAssignmentSchedule>,
-    inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
+    inventory: &mut ExactProgramInventory<'a>,
     sequence_id: RefreshSequenceId,
     rows: RefreshRows<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
@@ -1607,15 +1630,15 @@ fn append_exact_assignment_schedule(
     Ok(())
 }
 
-fn append_exact_assignment_program(
-    block: &ComputeBlock,
+fn append_exact_assignment_program<'a>(
+    block: &'a ComputeBlock,
     programs: &mut Vec<ExactRefreshAssignmentProgram>,
-    inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
+    inventory: &mut ExactProgramInventory<'a>,
     rows: &[&AlgebraicRefreshRow],
     schedule: &mut Vec<ExactRefreshAssignmentProgramId>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     let key = rows.iter().map(|row| row.owner_id).collect::<Vec<_>>();
-    let id = if let Some(id) = inventory.get(&key).copied() {
+    let id = if let Some(id) = inventory.by_rows.get(&key).copied() {
         id
     } else {
         let id = ExactRefreshAssignmentProgramId(u32::try_from(programs.len()).map_err(|_| {
@@ -1623,8 +1646,13 @@ fn append_exact_assignment_program(
                 reason: "continuous refresh assignment program count exceeds u32".to_string(),
             }
         })?);
-        programs.push(construct_exact_assignment_program(block, id, rows)?);
-        inventory.insert(key, id);
+        programs.push(construct_exact_assignment_program(
+            block,
+            id,
+            rows,
+            &mut inventory.dependencies,
+        )?);
+        inventory.by_rows.insert(key, id);
         id
     };
     schedule.push(id);

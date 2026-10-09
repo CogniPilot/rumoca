@@ -35,7 +35,7 @@ pub(super) mod conformance;
 mod derivative;
 pub mod time_only;
 
-pub(super) use derivative::MeDerivativeController;
+pub(super) use derivative::{MeDerivativeComponent, MeDerivativeController};
 pub use derivative::{
     MeDerivativeHandle, MeDerivativeRefused, reset_trial_discard_count, trial_discard_count,
 };
@@ -914,6 +914,16 @@ pub trait MeIntegratorBackend {
     /// continuous extension reads stored stage values, it does not evaluate
     /// the component.
     fn sample(&self, time: f64, states: &mut [f64]) -> Result<(), MeIntegrationError>;
+
+    /// The highest accuracy order the plugin's native continuous extension
+    /// can declare for any step, known before the first step. A caller that
+    /// stores a trajectory through a fixed set of nodes proves once, at
+    /// construction, that the nodes reproduce that order; `None` declares
+    /// nothing, so such a contract cannot be proved. A step's own declared
+    /// order never exceeds this bound.
+    fn continuous_extension_order(&self) -> Option<u32> {
+        None
+    }
 
     /// Discard the uncompleted trial and restart the plugin's history at
     /// `point`, which the host located inside the last accepted interval.

@@ -47,10 +47,12 @@ impl<'a> CanonicalScalarProgramCatalog<'a> {
         self.programs.get(index)
     }
 
+    /// Construction appends programs in ascending `(node, program)` order, so
+    /// the catalog is sorted by source and one lookup is a binary search.
     pub(super) fn source_index(&self, source: solve::RefreshScalarProgramSource) -> Option<usize> {
         self.programs
-            .iter()
-            .position(|program| program.source == source)
+            .binary_search_by(|program| program.source.cmp(&source))
+            .ok()
     }
 
     pub(super) fn positions(&self) -> &IndexMap<usize, OutputRowPosition> {

@@ -69,9 +69,13 @@ fn model_artifact(
 ) -> Result<String, WasmError> {
     let problem = &model.problem;
     let schedule = checked_native_schedule(model)?;
-    if !schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty() {
+    let carries_calls = crate::native_program_api::any_stage_operation(schedule, |operation| {
+        matches!(operation, rumoca_ir_solve::LinearOp::PureCall { .. })
+    });
+    if !schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty() || carries_calls
+    {
         return Err(WasmError::new(
-            "typed input and output lanes belong to the native program ABI, not the separate-stage copy ABI",
+            "typed lanes and pure calls belong to the native program ABI, not the separate-stage copy ABI: its stage modules return no status and link no call table",
         ));
     }
     let y_count = problem.layout.y_scalars();

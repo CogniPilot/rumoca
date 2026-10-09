@@ -9,6 +9,7 @@ pub(super) struct Ready {
     pub imports: Vec<MathImport>,
     pub bodies: Vec<Function>,
     pub faults: Vec<TypedCallFault>,
+    pub scratch_report: crate::ScratchReport,
 }
 
 impl Ready {
@@ -67,10 +68,12 @@ impl Ready {
         {
             return Err("WASM exact tuple exceeds its checked output scratch".into());
         }
+        let scratch_report = calls.scratch_report(helpers.owner_scratch(table));
         Ok(Self {
             plan,
             arena,
             calls,
+            scratch_report,
             imports,
             bodies,
             faults,

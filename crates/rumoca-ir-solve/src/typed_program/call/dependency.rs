@@ -2,6 +2,7 @@
 
 pub(in crate::typed_program) mod affinity;
 mod coordinates;
+mod map_access;
 mod operations;
 pub(in crate::typed_program) mod value_projection;
 
@@ -85,8 +86,10 @@ pub(in crate::typed_program) fn derive(
         });
     }
     let mut registers = vec![Vec::new(); body.register_types().len()];
+    let mut integers = map_access::IntegerValues::new(body.register_types().len());
     for spanned in body.operations() {
         let operation = spanned.operation();
+        integers.track(operation);
         match operation {
             SolveOperation::Load { destination, slot } => {
                 registers[destination.index()] = slots[slot.index()].clone();
@@ -107,6 +110,23 @@ pub(in crate::typed_program) fn derive(
                     available,
                     spanned.provenance(),
                 )?;
+            }
+            SolveOperation::Map {
+                domain,
+                captures,
+                destination,
+                body: region,
+            } => {
+                let captured = captures
+                    .iter()
+                    .map(|capture| (registers[capture.index()].clone(), integers.value(*capture)))
+                    .collect::<Vec<_>>();
+                match map_access::derive(domain, &captured, region, spanned.provenance()) {
+                    Some(dependencies) => registers[destination.index()] = dependencies,
+                    None => {
+                        operations::derive(body, operation, &mut registers, spanned.provenance())?;
+                    }
+                }
             }
             operation => operations::derive(body, operation, &mut registers, spanned.provenance())?,
         }
@@ -136,20 +156,24 @@ pub(in crate::typed_program) fn widen(
         .collect()
 }
 
+/// Add `dependency` to a set kept ordered by input, with equal inputs in
+/// insertion order. Every set is built through this function, so the order is
+/// an invariant and an insert touches only the run of its own input.
 fn insert(target: &mut Vec<SolveCallDependency>, dependency: SolveCallDependency) {
-    if target
+    let input = dependency.input_index();
+    let start = target.partition_point(|prior| prior.input_index() < input);
+    let end = start + target[start..].partition_point(|prior| prior.input_index() == input);
+    if target[start..end]
         .iter()
-        .any(|prior| prior.input == dependency.input && prior.is_whole_input())
+        .any(SolveCallDependency::is_whole_input)
     {
         return;
     }
     if dependency.is_whole_input() {
-        target.retain(|prior| prior.input != dependency.input);
+        target.splice(start..end, [dependency]);
+    } else if !target[start..end].contains(&dependency) {
+        target.insert(end, dependency);
     }
-    if !target.contains(&dependency) {
-        target.push(dependency);
-    }
-    target.sort_by_key(SolveCallDependency::input_index);
 }
 
 fn substitute_call(

@@ -531,6 +531,38 @@ impl SolveRuntime {
         .eval_initial_jacobian_v(y, p, t, v, None, out)
     }
 
+    /// The initialization update rows' directional derivative along `v` (over
+    /// `[solver-y | parameter]`) at `(y, p, t)`: one entry per update target, in
+    /// target order.
+    pub fn eval_initialization_update_jacobian_v(
+        &self,
+        (y, p, t): (&[f64], &[f64], f64),
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let Some(block) = &self.model.artifacts.initialization.update_jacobian_v else {
+            return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
+                reason: "an initialization update row has no directional derivative".to_string(),
+            });
+        };
+        let seed_len = (y.len() + p.len()).max(self.implicit_jacobian_v.requirements().seed_len);
+        let mut seed = vec![0.0; seed_len];
+        let copied = v.len().min(seed_len);
+        seed[..copied].copy_from_slice(&v[..copied]);
+        solve_eval::eval_scalar_program_block_with_context(
+            block,
+            y,
+            p,
+            t,
+            RowEvalContext {
+                seed: Some(&seed),
+                ..self.row_eval_context()
+            },
+            out,
+        )
+        .map_err(Into::into)
+    }
+
     /// Whether an initialization row reads a continuous algebraic, so the
     /// projection evaluates the rows on the settled view.
     fn initial_rows_read_settled_view(&self) -> bool {
@@ -934,7 +966,7 @@ impl SolveRuntime {
     /// range; a vector-valued binding (an analytic-loop geometry read, say) is
     /// lowered to the tensor form, so testing only the scalar load would miss
     /// exactly the reads that select an assembly branch.
-    fn initialization_updates_read_algebraic_slots(&self) -> bool {
+    pub fn initialization_updates_read_algebraic_slots(&self) -> bool {
         updates_read_algebraic_slots(&self.model)
     }
 }

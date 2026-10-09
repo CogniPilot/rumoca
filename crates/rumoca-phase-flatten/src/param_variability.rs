@@ -406,6 +406,26 @@ impl Visitor for ReferenceCollector<'_> {
     }
 }
 
+/// Declarations a `der` equation of `equations` reads or defines: the
+/// derivative roots the parameter-variability proof also excludes from
+/// algebraic cheapening.
+pub(crate) fn derivative_declarations(equations: &[ast::InstanceEquation]) -> FxHashSet<DefId> {
+    let mut dependence = DependenceGraph::default();
+    for inst_eq in equations {
+        collect_dependence(&inst_eq.equation, &[], &mut dependence);
+    }
+    dependence.der_roots
+}
+
+/// The declarations a `for` family defines through indexed left-hand sides,
+/// or `None` when a body is not an indexed assignment or nested `for`.
+pub(crate) fn family_targets(
+    indices: &[ast::ForIndex],
+    equations: &[ast::Equation],
+) -> Option<FxHashSet<DefId>> {
+    candidate_family_parts(indices, equations).map(|family| family.lhs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -221,7 +221,23 @@ pub fn build_simulation_with_stage_timing_and_lowered_model(
     ))
 }
 
+/// A prepared simulation for repeated runs: instantiated, with every lazily
+/// compiled native owner compiled now by one warm-up initialization, so no run
+/// pays a compile. The warm-up's own outcome is dropped, because the run that
+/// meets a failing initialization reports it.
 fn build_simulation_artifact(
+    artifact: rumoca_solver::fmi_me::MeModelArtifact,
+    opts: &rumoca_solver::SimOptions,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+) -> Result<PreparedSimulation, SimError> {
+    let prepared = instantiate_prepared_simulation(artifact, opts, execution_backend)?;
+    drop(check_prepared_component(&prepared));
+    Ok(prepared)
+}
+
+/// A prepared simulation that has not initialized its component: the one-shot
+/// path simulates it at once, and its run compiles what it needs.
+fn instantiate_prepared_simulation(
     artifact: rumoca_solver::fmi_me::MeModelArtifact,
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
@@ -238,7 +254,6 @@ fn build_simulation_artifact(
         root_location: artifact.root_location(),
         retained: RefCell::new(retained),
     };
-    drop(check_prepared_component(&prepared));
     Ok(prepared)
 }
 
@@ -247,7 +262,7 @@ pub(crate) fn simulate_artifact(
     opts: &rumoca_solver::SimOptions,
     execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<rumoca_solver::SimResult, SimError> {
-    let prepared = build_simulation_artifact(artifact, opts, execution_backend)
+    let prepared = instantiate_prepared_simulation(artifact, opts, execution_backend)
         .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))?;
     simulate_prepared(&prepared)
 }
@@ -368,6 +383,10 @@ impl SimulationSession {
     }
 
     pub(crate) fn ensure_end_time(&mut self, _target_time: f64) {}
+
+    pub(crate) fn execution_receipt(&self) -> rumoca_solver::SimExecutionReceipt {
+        self.inner.execution_receipt()
+    }
 
     pub(crate) fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt <= 0.0 {
@@ -495,7 +514,7 @@ mod native_policy_tests {
         fmi_me::MeExecutionBackend,
     };
 
-    use super::{build_simulation_artifact, simulate_artifact};
+    use super::{build_simulation_artifact, instantiate_prepared_simulation, simulate_artifact};
     use crate::SimError;
     use crate::native_execution::admitted_native_execution_backend;
 
@@ -977,6 +996,112 @@ mod native_policy_tests {
         ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
             Ok(Rc::new(FailingCompiled))
         }
+    }
+
+    /// A backend that declines every compile request.
+    struct DecliningBackend;
+
+    const FORCED_DECLINE: &str = "forced decline";
+
+    impl SolveExecutionBackend for DecliningBackend {
+        fn compile_expression(
+            &self,
+            _block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_jacobian_expression(
+            &self,
+            _block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_assignment_schedule(
+            &self,
+            _source: &solve::ComputeBlock,
+            _owners: &solve::ContinuousRefreshOwners,
+            _schedule: &solve::ExactRefreshAssignmentSchedule,
+        ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+
+        fn compile_event_transaction(
+            &self,
+            _program: &solve::EventTransactionProgram,
+        ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+            Err(FORCED_DECLINE.to_string())
+        }
+    }
+
+    /// A program the backend declines runs in the interpreter, and the
+    /// session's receipt says so instead of leaving the fallback silent.
+    #[test]
+    fn a_declined_program_is_recorded_in_the_session_receipt() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = lower(
+            r#"
+function increment
+  input Real value;
+  output Real result;
+algorithm
+  result := value + 1;
+end increment;
+
+model DeclinedEvent
+  Real x(start = 0, fixed = true);
+  Real z;
+  discrete Real n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  z = 0.5 * x + cos(time);
+algorithm
+  when sample(0.1, 0.1) then
+    n := increment(pre(n));
+  end when;
+end DeclinedEvent;
+"#,
+            "DeclinedEvent",
+            &opts,
+        );
+        let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
+        let mut session =
+            super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
+                .expect("a declined program falls back to the interpreter");
+        session
+            .advance_to(0.25)
+            .expect("interpreter runs the model");
+        assert_eq!(session.get("n").expect("read sampled counter"), Some(2.0));
+        let x = session.get("x").expect("read integrated state").expect("x");
+        assert!((x - 0.25).abs() < 1e-8, "x = {x}");
+        let z = session
+            .get("z")
+            .expect("read refreshed assignment")
+            .expect("z");
+        assert!((z - (0.125 + 0.25_f64.cos())).abs() < 1e-8, "z = {z}");
+        let receipt = session.execution_receipt();
+        assert!(
+            receipt
+                .declined
+                .iter()
+                .any(|decline| decline.program == "event_transaction"),
+            "declined compile requests must be listed: {receipt:?}"
+        );
+        assert!(
+            receipt
+                .declined
+                .iter()
+                .any(|decline| decline.program == "assignment_schedule"),
+            "the refreshed assignment must record its interpreter fallback: {receipt:?}"
+        );
+        assert!(
+            receipt
+                .declined
+                .iter()
+                .all(|decline| decline.reason == FORCED_DECLINE && decline.count > 0),
+            "{receipt:?}"
+        );
     }
 
     /// Discriminator (a): the Auto/native BDF path really executes compiled
@@ -1649,5 +1774,25 @@ mod native_policy_tests {
             1,
             "the zero-state path retained its supplied evaluator after completion"
         );
+    }
+
+    /// A one-shot simulation initializes its component once, in its run, and
+    /// never to validate it first; a prepared build spends exactly one warm-up
+    /// initialization, whatever refresh phases an initialization itself
+    /// executes, and every run after it is one more.
+    #[test]
+    fn a_one_shot_run_initializes_once_and_a_prepared_build_warms_once() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = zero_state_fixture(&opts);
+        let one_shot = instantiate_prepared_simulation(model.artifact(), &opts, None)
+            .expect("zero-state simulation instantiates");
+        assert_eq!(one_shot.retained.borrow().lease_count(), 0);
+        one_shot.run().expect("zero-state run succeeds");
+        assert_eq!(one_shot.retained.borrow().lease_count(), 1);
+        let prepared = build_simulation_artifact(model.artifact(), &opts, None)
+            .expect("zero-state simulation builds");
+        assert_eq!(prepared.retained.borrow().lease_count(), 1);
+        prepared.run().expect("a prepared run repeats");
+        assert_eq!(prepared.retained.borrow().lease_count(), 2);
     }
 }

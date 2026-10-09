@@ -387,3 +387,36 @@ fn public_observation_refreshes_clock_alias_without_mutating_event_state() {
         );
     }
 }
+
+/// Instantiating a model with no periodic schedule borrows it for anchoring
+/// and the runtime then copies it once (ME-LIFE-006): the anchored model is
+/// the source itself, and the runtime owns one separate copy of its storage.
+#[test]
+fn instantiation_copies_a_scheduleless_model_exactly_once() {
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("fixture refresh owners construct");
+    let anchored = model
+        .resolved_periodic_schedules_at(0.0)
+        .expect("a scheduleless model anchors");
+    assert!(
+        matches!(&anchored, std::borrow::Cow::Borrowed(borrowed) if std::ptr::eq(*borrowed, &model)),
+        "anchoring a scheduleless model must not copy it"
+    );
+    drop(anchored);
+    let kernel = SolveMeKernel::instantiate(
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-single-copy", 1.0e-4, 0.0, 2.0)
+            .expect("instance configuration constructs"),
+    )
+    .expect("fixture instantiates");
+    let owned = &kernel.runtime.model;
+    assert_eq!(owned.initial_y, model.initial_y);
+    assert_eq!(owned.visible_names, model.visible_names);
+    assert!(
+        !std::ptr::eq(owned.initial_y.as_ptr(), model.initial_y.as_ptr())
+            && !std::ptr::eq(owned.visible_names.as_ptr(), model.visible_names.as_ptr()),
+        "the runtime owns its own copy of the model"
+    );
+}

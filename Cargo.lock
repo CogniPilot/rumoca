@@ -4533,6 +4533,7 @@ dependencies = [
  "js-sys",
  "rumoca-core",
  "rumoca-eval-solve",
+ "rumoca-exec-cranelift",
  "rumoca-ir-solve",
  "serde_json",
  "wasm-bindgen",

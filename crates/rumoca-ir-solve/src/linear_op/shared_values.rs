@@ -19,7 +19,9 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
-use registers::{Role, compact_registers, read_registers, renamable, visit_registers};
+use registers::{
+    RegisterSet, RegisterTable, Role, compact_registers, read_registers, renamable, visit_registers,
+};
 use symbolic::{SymbolicSlots, Term, Terms, ValueKey, ValueShape, value_shape};
 
 use super::*;
@@ -103,7 +105,29 @@ impl SharedValueSegments {
                 None => builder.push_opaque(index, program),
             }
         }
+        if builder.violated {
+            return Self::unshared(programs);
+        }
         builder.finish()
+    }
+
+    /// Every program as its own unchanged segment: the sharing a violated
+    /// construction invariant declines to, which shares nothing and so
+    /// proves itself.
+    fn unshared(programs: &[AssignmentProgram<'_>]) -> Self {
+        Self {
+            segments: programs
+                .iter()
+                .enumerate()
+                .map(|(index, program)| SharedValueSegment {
+                    ops: program.ops.to_vec(),
+                    targets: program.targets.to_vec(),
+                    first_program: index,
+                })
+                .collect(),
+            shared: 0,
+            capped: Vec::new(),
+        }
     }
 
     /// Evaluate `programs` and the segments symbolically and require every
@@ -178,6 +202,9 @@ pub fn share_program_values(program: Vec<LinearOp>) -> Vec<LinearOp> {
             .collect::<Vec<_>>();
         let mut builder = Builder::default();
         builder.append(0, &targets, &fusible);
+        if builder.violated {
+            return program;
+        }
         admit_proven(builder.finish(), &program, &targets)
     };
     match shared {
@@ -255,12 +282,14 @@ impl<'a> FusibleProgram<'a> {
         let registers = ScalarProgramRegisterFlow::derive(ops)
             .ok()?
             .register_count();
-        let mut written = HashSet::new();
+        let mut written = RegisterSet::default();
         let mut steps = Vec::with_capacity(ops.len());
         for op in ops {
             let start = op.dst_register().map_or(0, |start| start as usize);
             let count = op.dst_register().map_or(0, |_| op.dst_register_count());
-            if !(start..start + count).all(|register| written.insert(register)) {
+            if !(start..start + count).all(|register| {
+                Reg::try_from(register).is_ok_and(|register| written.insert(register))
+            }) {
                 return None;
             }
             steps.push(Step::classify(op)?);
@@ -329,6 +358,22 @@ struct Builder {
     /// Values of segments closed at the cap.
     closed: HashSet<ValueKey>,
     segment: Segment,
+    /// Whether a register or output the classification proved present was
+    /// absent: the sharing declines as a whole.
+    violated: bool,
+}
+
+/// The consecutive registers one value's outputs occupy.
+#[derive(Clone, Copy, Debug)]
+struct RegisterRun {
+    start: Reg,
+    count: usize,
+}
+
+impl RegisterRun {
+    fn registers(self) -> impl Iterator<Item = Reg> {
+        (0..self.count).map(move |offset| self.start + offset as Reg)
+    }
 }
 
 /// One open segment: its operations, targets, and value table.
@@ -339,9 +384,9 @@ struct Segment {
     first_program: usize,
     registers: usize,
     /// Value key to the registers holding its outputs.
-    values: HashMap<ValueKey, Vec<Reg>>,
+    values: HashMap<ValueKey, RegisterRun>,
     /// Term of every register the segment wrote.
-    terms: HashMap<Reg, Term>,
+    terms: RegisterTable<Term>,
     /// Slots stored so far and the register holding each.
     stored: HashMap<usize, Reg>,
 }
@@ -370,7 +415,7 @@ impl Builder {
         let mut program_builder = ProgramBuilder {
             builder: self,
             base,
-            map: HashMap::new(),
+            map: RegisterTable::default(),
             output: 0,
             targets,
         };
@@ -384,7 +429,7 @@ impl Builder {
     /// call the open segment holds: its operands are evaluated symbolically
     /// against the segment, as appending would, without changing it.
     fn holds_call_of(&mut self, program: &FusibleProgram<'_>) -> bool {
-        let mut map: HashMap<Reg, Term> = HashMap::new();
+        let mut map = RegisterTable::<Term>::default();
         program
             .steps
             .iter()
@@ -393,7 +438,7 @@ impl Builder {
 
     /// Record the terms `step` writes in `map`; `true` when it is a call the
     /// open segment holds.
-    fn probe_held_call(&mut self, step: &Step<'_>, map: &mut HashMap<Reg, Term>) -> bool {
+    fn probe_held_call(&mut self, step: &Step<'_>, map: &mut RegisterTable<Term>) -> bool {
         let (key, dst, count) = match *step {
             Step::LoadSlot { dst, index } => {
                 let term = self.slot_term(index);
@@ -410,10 +455,10 @@ impl Builder {
                 return false;
             }
             Step::Copy { dst, src } => {
-                match map.get(&src).copied() {
+                match map.get(src) {
                     Some(term) => map.insert(dst, term),
-                    None => map.remove(&dst),
-                };
+                    None => map.remove(dst),
+                }
                 return false;
             }
             Step::Store(_) => return false,
@@ -429,12 +474,12 @@ impl Builder {
                 let Some(operands) = shape
                     .operands
                     .iter()
-                    .map(|&(field, register)| Some((field, *map.get(&register)?)))
+                    .map(|&(field, register)| Some((field, map.get(register)?)))
                     .collect::<Option<Vec<_>>>()
                 else {
                     return false;
                 };
-                let key = self.terms.key(&shape.shape, operands);
+                let key = self.terms.key(&shape.shape, operands, count);
                 if matches!(op, LinearOp::PureCall { .. }) && self.segment.values.contains_key(&key)
                 {
                     return true;
@@ -443,7 +488,10 @@ impl Builder {
             }
         };
         for offset in 0..count {
-            map.insert(dst + offset as Reg, self.terms.value(&key, offset));
+            let Some(term) = Terms::value(&key, offset) else {
+                return false;
+            };
+            map.insert(dst + offset as Reg, term);
         }
         false
     }
@@ -451,8 +499,13 @@ impl Builder {
     /// The term a load of `index` reads in the open segment: the value the
     /// segment stored there, or the slot as the sequence found it.
     fn slot_term(&mut self, index: usize) -> Term {
-        match self.segment.stored.get(&index) {
-            Some(register) => self.segment.terms[register],
+        match self
+            .segment
+            .stored
+            .get(&index)
+            .and_then(|&register| self.segment.terms.get(register))
+        {
+            Some(term) => term,
             None => self.slots.slot(&mut self.terms, index),
         }
     }
@@ -478,9 +531,16 @@ impl Builder {
         let stored = segment
             .targets
             .iter()
-            .map(|target| segment.terms[&segment.stored[target]])
-            .collect::<Vec<_>>();
-        self.slots.commit(&segment.targets, &stored);
+            .map(|target| {
+                segment
+                    .stored
+                    .get(target)
+                    .and_then(|&register| segment.terms.get(register))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(stored) = stored {
+            self.slots.commit(&segment.targets, &stored);
+        }
         if at_cap {
             self.closed.extend(segment.values.into_keys());
         }
@@ -506,7 +566,7 @@ struct ProgramBuilder<'a, 'p> {
     builder: &'a mut Builder,
     base: Reg,
     /// Program register to the segment register holding its value.
-    map: HashMap<Reg, Reg>,
+    map: RegisterTable<Reg>,
     output: usize,
     targets: &'p [usize],
 }
@@ -523,15 +583,11 @@ impl ProgramBuilder<'_, '_> {
             } => self.load_slots(op, dst, first, count),
             // A copy names the value it copies; a range reading it gathers
             // the value into place.
-            &Step::Copy { dst, src } => {
-                let held = self.map[&src];
-                self.map.insert(dst, held);
-            }
-            Step::Store(registers) => {
-                for register in registers {
-                    self.store(self.map[register]);
-                }
-            }
+            &Step::Copy { dst, src } => match self.map.get(src) {
+                Some(held) => self.map.insert(dst, held),
+                None => self.violate(),
+            },
+            Step::Store(registers) => self.store_all(registers),
             &Step::Value {
                 op,
                 ref shape,
@@ -541,12 +597,35 @@ impl ProgramBuilder<'_, '_> {
         }
     }
 
+    /// Record that a register or output the classification proved present is
+    /// not: the builder declines the whole sharing rather than drop the
+    /// operation.
+    fn violate(&mut self) {
+        self.builder.violated = true;
+    }
+
     fn segment(&mut self) -> &mut Segment {
         &mut self.builder.segment
     }
 
+    /// Store the value each of `registers` holds, in output order.
+    fn store_all(&mut self, registers: &[Reg]) {
+        let Some(held) = registers
+            .iter()
+            .map(|register| self.map.get(*register))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.violate();
+        };
+        for register in held {
+            self.store(register);
+        }
+    }
+
     fn store(&mut self, register: Reg) {
-        let target = self.targets[self.output];
+        let Some(&target) = self.targets.get(self.output) else {
+            return self.violate();
+        };
         self.output += 1;
         let segment = self.segment();
         segment.ops.push(LinearOp::StoreOutput { src: register });
@@ -556,29 +635,35 @@ impl ProgramBuilder<'_, '_> {
     /// Emit `op` with its destination at this program's offset, recording the
     /// term of every register it writes.
     fn emit(&mut self, op: LinearOp, key: &ValueKey, dst: Reg, count: usize) {
-        let first = self.base + dst;
-        let registers = (0..count)
-            .map(|offset| first + offset as Reg)
-            .collect::<Vec<_>>();
-        for (offset, &register) in registers.iter().enumerate() {
-            let term = self.builder.terms.value(key, offset);
+        let Some(terms) = (0..count)
+            .map(|offset| Terms::value(key, offset))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.violate();
+        };
+        let run = RegisterRun {
+            start: self.base + dst,
+            count,
+        };
+        for ((offset, register), term) in run.registers().enumerate().zip(terms) {
             self.segment().terms.insert(register, term);
             self.map.insert(dst + offset as Reg, register);
         }
         self.segment().ops.push(op);
-        self.segment().values.insert(*key, registers);
+        self.segment().values.insert(*key, run);
     }
 
-    /// Read `dst` from `registers` computed earlier: nothing is emitted.
-    fn reuse(&mut self, dst: Reg, registers: &[Reg]) {
-        for (offset, &register) in registers.iter().enumerate() {
+    /// Read `dst` from the registers `run` computed earlier: nothing is
+    /// emitted.
+    fn reuse(&mut self, dst: Reg, run: RegisterRun) {
+        for (offset, register) in run.registers().enumerate() {
             self.map.insert(dst + offset as Reg, register);
         }
         self.builder.shared += 1;
     }
 
-    fn term(&self, register: Reg) -> Term {
-        self.builder.segment.terms[&self.map[&register]]
+    fn term(&self, register: Reg) -> Option<Term> {
+        self.builder.segment.terms.get(self.map.get(register)?)
     }
 
     fn load_slot(&mut self, dst: Reg, index: usize) {
@@ -587,9 +672,9 @@ impl ProgramBuilder<'_, '_> {
             return;
         }
         let term = self.builder.slots.slot(&mut self.builder.terms, index);
-        let key = self.builder.terms.key("Slot", vec![(0, term)]);
-        if let Some(registers) = self.builder.segment.values.get(&key).cloned() {
-            return self.reuse(dst, &registers);
+        let key = self.builder.terms.key("Slot", vec![(0, term)], 1);
+        if let Some(run) = self.builder.segment.values.get(&key).copied() {
+            return self.reuse(dst, run);
         }
         let op = LinearOp::LoadY {
             dst: self.base + dst,
@@ -599,34 +684,45 @@ impl ProgramBuilder<'_, '_> {
         self.segment().terms.insert(register, term);
         self.map.insert(dst, register);
         self.segment().ops.push(op);
-        self.segment().values.insert(key, vec![register]);
+        self.segment().values.insert(
+            key,
+            RegisterRun {
+                start: register,
+                count: 1,
+            },
+        );
     }
 
     fn load_slots(&mut self, op: &LinearOp, dst: Reg, first: usize, count: usize) {
         let terms = (0..count)
-            .map(
-                |offset| match self.builder.segment.stored.get(&(first + offset)) {
-                    Some(&register) => self.builder.segment.terms[&register],
+            .map(|offset| {
+                match self
+                    .builder
+                    .segment
+                    .stored
+                    .get(&(first + offset))
+                    .and_then(|&register| self.builder.segment.terms.get(register))
+                {
+                    Some(term) => term,
                     None => self
                         .builder
                         .slots
                         .slot(&mut self.builder.terms, first + offset),
-                },
-            )
+                }
+            })
             .collect::<Vec<_>>();
-        let key = self
-            .builder
-            .terms
-            .key("Slots", terms.iter().copied().enumerate().collect());
-        if let Some(registers) = self.builder.segment.values.get(&key).cloned() {
-            return self.reuse(dst, &registers);
+        let key =
+            self.builder
+                .terms
+                .key("Slots", terms.iter().copied().enumerate().collect(), count);
+        if let Some(run) = self.builder.segment.values.get(&key).copied() {
+            return self.reuse(dst, run);
         }
         let mut load = op.clone();
         if let LinearOp::TensorLoad { dst_start, .. } = &mut load {
             *dst_start = self.base + dst;
         }
         self.segment().ops.push(load);
-        let mut registers = Vec::with_capacity(count);
         for (offset, &term) in terms.iter().enumerate() {
             let register = self.base + dst + offset as Reg;
             if let Some(&stored) = self.builder.segment.stored.get(&(first + offset)) {
@@ -637,23 +733,29 @@ impl ProgramBuilder<'_, '_> {
             }
             self.segment().terms.insert(register, term);
             self.map.insert(dst + offset as Reg, register);
-            registers.push(register);
         }
-        self.segment().values.insert(key, registers);
+        let run = RegisterRun {
+            start: self.base + dst,
+            count,
+        };
+        self.segment().values.insert(key, run);
     }
 
     fn value(&mut self, op: &LinearOp, shape: &ValueShape, dst: Reg, count: usize) {
-        let operands = shape
+        let Some(operands) = shape
             .operands
             .iter()
-            .map(|&(field, register)| (field, self.term(register)))
-            .collect();
-        let key = self.builder.terms.key(&shape.shape, operands);
+            .map(|&(field, register)| Some((field, self.term(register)?)))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return self.violate();
+        };
+        let key = self.builder.terms.key(&shape.shape, operands, count);
         // A renamed call is value-only and its owner reads only its inputs
         // (SPEC_0043 closed-input coordinate), so identical operand terms
         // prove identical results, as for every other value.
-        if let Some(registers) = self.builder.segment.values.get(&key).cloned() {
-            return self.reuse(dst, &registers);
+        if let Some(run) = self.builder.segment.values.get(&key).copied() {
+            return self.reuse(dst, run);
         }
         if self.builder.closed.contains(&key) {
             let segment = self.builder.done.len();
@@ -662,43 +764,52 @@ impl ProgramBuilder<'_, '_> {
                 operation: op.kind_name(),
             });
         }
-        let renamed = self.renamed(op, shape);
+        let Some(renamed) = self.renamed(op, shape) else {
+            return self.violate();
+        };
         self.emit(renamed, &key, dst, count);
     }
 
     /// `op` in the segment's register file: scalar operands read the register
     /// holding their value; a range operand is first gathered at this
     /// program's offset, so every range keeps its layout.
-    fn renamed(&mut self, op: &LinearOp, shape: &ValueShape) -> LinearOp {
+    /// `None` when a register the operation reads holds no value.
+    fn renamed(&mut self, op: &LinearOp, shape: &ValueShape) -> Option<LinearOp> {
         if shape.ranged {
             for &register in &shape.reads {
-                self.gather(register);
+                self.gather(register)?;
             }
         }
         let (base, map, ranged) = (self.base, &self.map, shape.ranged);
         let mut renamed = op.clone();
+        let mut complete = true;
         visit_registers(&mut renamed, &mut |role, register| {
             *register = match role {
-                Role::Scalar if !ranged => map[&*register],
+                Role::Scalar if !ranged => map.get(*register).unwrap_or_else(|| {
+                    complete = false;
+                    *register
+                }),
                 _ => base + *register,
             };
         });
-        renamed
+        complete.then_some(renamed)
     }
 
     /// Place the value of `register` at this program's offset.
-    fn gather(&mut self, register: Reg) {
-        let (own, held) = (self.base + register, self.map[&register]);
+    fn gather(&mut self, register: Reg) -> Option<()> {
+        let own = self.base + register;
+        let held = self.map.get(register)?;
         if own == held {
-            return;
+            return Some(());
         }
-        let term = self.builder.segment.terms[&held];
+        let term = self.builder.segment.terms.get(held)?;
         self.segment().ops.push(LinearOp::Move {
             dst: own,
             src: held,
         });
         self.segment().terms.insert(own, term);
         self.map.insert(register, own);
+        Some(())
     }
 }
 
@@ -706,7 +817,7 @@ impl ProgramBuilder<'_, '_> {
 /// reads; output stores, operations writing nothing, and calls (whose
 /// numerical failures remain observable) are kept.
 fn without_dead_operations(ops: Vec<LinearOp>) -> Vec<LinearOp> {
-    let mut live: HashSet<Reg> = HashSet::new();
+    let mut live = RegisterSet::default();
     let mut keep = vec![false; ops.len()];
     for (index, op) in ops.iter().enumerate().rev() {
         let written = match op.dst_register() {
@@ -717,15 +828,17 @@ fn without_dead_operations(ops: Vec<LinearOp>) -> Vec<LinearOp> {
         };
         let needed = written.is_empty()
             || matches!(op, LinearOp::PureCall { .. })
-            || written.iter().any(|register| live.contains(register));
-        for register in &written {
+            || written.iter().any(|&register| live.contains(register));
+        for &register in &written {
             live.remove(register);
         }
         if !needed {
             continue;
         }
         keep[index] = true;
-        live.extend(read_registers(op).unwrap_or_default());
+        for register in read_registers(op).unwrap_or_default() {
+            live.insert(register);
+        }
     }
     ops.into_iter()
         .zip(keep)

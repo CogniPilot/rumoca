@@ -276,7 +276,7 @@
             if (r[{{ op.activation }}] != 0.0)
 {%- endif %}
             {
-{%- for binder in op.domain.binders %}{% set count = 0 if (binder.step > 0 and binder.lower > binder.upper) or (binder.step < 0 and binder.lower < binder.upper) else (binder.upper - binder.lower) // binder.step + 1 %}
+{%- for binder in op.domain.binders %}{% set directed = (binder.upper - binder.lower) * binder.step %}{% set count = 0 if directed < 0 else directed // (binder.step * binder.step) + 1 %}
             for (int64_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; ++i{{ loop.index0 }}) {
             fold_index[{{ loop.index0 }}] = {{ binder.lower }} + i{{ loop.index0 }}*({{ binder.step }});
 {%- endfor %}
@@ -348,6 +348,9 @@
 {%- for subscript in update.subscripts %}{% set extent = op.dimensions[loop.index0] %}
 {%- if subscript == "Whole" %}
             value_offset = value_offset*{{ extent }} + (long long)c{{ loop.index0 }};
+{%- elif subscript.Slice is defined %}{% set slice_count = subscript.Slice.dimensions|product %}
+            { long long found = -1; for (size_t s=0; s<{{ slice_count }}; ++s) { double v = r[{{ subscript.Slice.start }}+s]; if (isfinite(v) && round(v) == v && v >= 1.0 && (size_t)v - 1 == c{{ loop.index0 }}) { found = (long long)s; break; } }
+              if (found < 0) selected = 0; else value_offset = value_offset*{{ slice_count }} + found; }
 {%- elif subscript.Index.Constant is defined %}
             if (c{{ loop.index0 }} != {{ subscript.Index.Constant }}) selected = 0;
 {%- else %}

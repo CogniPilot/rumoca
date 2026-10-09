@@ -2,7 +2,7 @@
 
 use indexmap::IndexMap;
 use rumoca_solver::{
-    SimOptions,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimOptions,
     fmi_me::{
         MeExecutionBackend, MeInstanceConfig, MeIntegratorBackend, MeModelArtifact,
         MeNumericalSetup,
@@ -27,6 +27,8 @@ pub(crate) struct BackendSimulationSession {
     session: MeSimulationSession<'static, 'static>,
     input_names: Vec<String>,
     variable_names: Vec<String>,
+    execution: SimExecutionReceipt,
+    execution_backend: Option<MeExecutionBackend>,
 }
 
 impl BackendSimulationSession {
@@ -41,9 +43,18 @@ impl BackendSimulationSession {
             opts.execution_policy,
             execution_backend,
         )?;
+        let execution = artifact
+            .execution_receipt()
+            .unwrap_or(SimExecutionReceipt::admission(
+                SimExecutionPolicy::Interpreter,
+                0,
+                0,
+                SimExecutionEngine::Interpreter,
+            ));
+        let handle = execution_backend.clone();
         let retained = MeRetainedComponent::instantiate(
             artifact.source(),
-            &instance_config(instance_name, opts)?,
+            &MeInstanceConfig::open_ended(instance_name, opts.rtol, opts.t_start)?,
             execution_backend,
         )?;
         let options = live_session_options(
@@ -63,7 +74,20 @@ impl BackendSimulationSession {
             session,
             input_names,
             variable_names,
+            execution,
+            execution_backend: handle,
         })
+    }
+
+    /// The engine selection with the compile requests the backend has declined
+    /// so far; compilation is lazy, so the list can grow as the session runs.
+    pub(crate) fn execution_receipt(&self) -> SimExecutionReceipt {
+        let declined = self
+            .execution_backend
+            .as_ref()
+            .map(MeExecutionBackend::declined)
+            .unwrap_or_default();
+        self.execution.clone().with_declined(declined)
     }
 
     pub(crate) fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
@@ -169,7 +193,7 @@ pub(crate) fn instance_config(
     MeInstanceConfig::new(instance_name, opts.rtol, opts.t_start, opts.t_end).map_err(Into::into)
 }
 
-fn default_output_dt(opts: &SimOptions) -> f64 {
+pub(crate) fn default_output_dt(opts: &SimOptions) -> f64 {
     opts.dt
         .filter(|dt| dt.is_finite() && *dt > 0.0)
         .unwrap_or_else(|| ((opts.t_end - opts.t_start).abs() / 500.0).max(1.0e-3))

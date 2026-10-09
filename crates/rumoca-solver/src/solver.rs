@@ -136,6 +136,118 @@ impl SimExecutionPolicy {
     }
 }
 
+/// The execution engine a simulation selected for its Solve programs.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimExecutionEngine {
+    /// The Solve-IR interpreter.
+    Interpreter,
+    /// Cranelift-compiled native programs.
+    Cranelift,
+    /// Portable WASM programs.
+    WasmProgram,
+}
+
+/// Why compiled execution was refused for a model the policy allowed.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimNativeRefusal {
+    /// The model has no continuous states; neither host instantiates an
+    /// integrator component, so compiled code would be discarded unused.
+    NoContinuousStates,
+    /// The target's compiled profile declines external tables.
+    ExternalTables,
+}
+
+impl SimNativeRefusal {
+    /// Human-readable reason.
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::NoContinuousStates => "the model has no continuous states",
+            Self::ExternalTables => "the compiled profile declines external tables",
+        }
+    }
+}
+
+/// One compile request the selected backend declined. The program it names runs
+/// in the interpreter instead; the receipt lists it so the fallback is never
+/// silent.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SimNativeDecline {
+    /// The kind of program the backend was asked to compile.
+    pub program: String,
+    /// The backend's stated reason.
+    pub reason: String,
+    /// How many requests of that kind were declined for that reason.
+    pub count: usize,
+}
+
+/// The typed record of which engine a simulation selected and, when compiled
+/// execution was refused for an admissible request, why.
+///
+/// One decision site ([`Self::admission`]) produces it for every target, so
+/// the receipt and the backend actually constructed cannot disagree.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SimExecutionReceipt {
+    pub engine: SimExecutionEngine,
+    /// Absent when compiled execution was selected or the policy pinned the
+    /// interpreter.
+    pub refusal: Option<SimNativeRefusal>,
+    /// Programs the selected backend declined to compile, which run in the
+    /// interpreter. Compilation happens lazily as the session runs, so this
+    /// list is read at the time the receipt is requested.
+    pub declined: Vec<SimNativeDecline>,
+}
+
+impl SimExecutionReceipt {
+    /// Decide admission of `compiled` execution for a model with
+    /// `state_count` continuous states and `external_tables_declined` external
+    /// tables the target's profile cannot execute (zero when it can).
+    #[must_use]
+    pub const fn admission(
+        policy: SimExecutionPolicy,
+        state_count: usize,
+        external_tables_declined: usize,
+        compiled: SimExecutionEngine,
+    ) -> Self {
+        let refusal = if !policy.allows_native() {
+            return Self::interpreter(None);
+        } else if state_count == 0 {
+            SimNativeRefusal::NoContinuousStates
+        } else if external_tables_declined != 0 {
+            SimNativeRefusal::ExternalTables
+        } else {
+            return Self {
+                engine: compiled,
+                refusal: None,
+                declined: Vec::new(),
+            };
+        };
+        Self::interpreter(Some(refusal))
+    }
+
+    const fn interpreter(refusal: Option<SimNativeRefusal>) -> Self {
+        Self {
+            engine: SimExecutionEngine::Interpreter,
+            refusal,
+            declined: Vec::new(),
+        }
+    }
+
+    /// The receipt with the backend's declined compile requests recorded.
+    #[must_use]
+    pub fn with_declined(mut self, declined: Vec<SimNativeDecline>) -> Self {
+        self.declined = declined;
+        self
+    }
+
+    /// True when compiled execution was selected.
+    #[must_use]
+    pub const fn is_compiled(&self) -> bool {
+        !matches!(self.engine, SimExecutionEngine::Interpreter)
+    }
+}
 #[derive(Debug, Clone)]
 pub struct SimOptions {
     pub t_start: f64,
@@ -173,7 +285,13 @@ pub struct SimOptions {
     /// programs. Part of the request so a run's interpreter/native selection is
     /// reproducible and inspectable rather than ambient.
     pub execution_policy: SimExecutionPolicy,
+    /// Memory the adjoint sensitivity may spend storing the forward trajectory,
+    /// in bytes; a run that needs more is refused with a typed error (SOLVE-C76).
+    pub checkpoint_budget_bytes: u64,
 }
+
+/// One gibibyte: the default memory budget of a stored forward trajectory.
+pub const DEFAULT_CHECKPOINT_BUDGET_BYTES: u64 = 1 << 30;
 
 impl Default for SimOptions {
     fn default() -> Self {
@@ -192,6 +310,7 @@ impl Default for SimOptions {
             start_overrides: Vec::new(),
             initial_inputs: Vec::new(),
             execution_policy: SimExecutionPolicy::Auto,
+            checkpoint_budget_bytes: DEFAULT_CHECKPOINT_BUDGET_BYTES,
         }
     }
 }
@@ -264,7 +383,40 @@ pub struct SimResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffsolMethod, SimOptions, SimPacingMode, SimSolverMode};
+    use super::{
+        DiffsolMethod, SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt,
+        SimNativeRefusal, SimOptions, SimPacingMode, SimSolverMode,
+    };
+
+    #[test]
+    fn admission_names_the_engine_and_the_refusal() {
+        use SimExecutionEngine::{Cranelift, Interpreter, WasmProgram};
+        let admit = |policy, states, tables, engine| {
+            SimExecutionReceipt::admission(policy, states, tables, engine)
+        };
+        let compiled = admit(SimExecutionPolicy::Auto, 2, 0, Cranelift);
+        assert_eq!((compiled.engine, compiled.refusal), (Cranelift, None));
+        assert!(compiled.is_compiled());
+        let wasm = admit(SimExecutionPolicy::Auto, 1, 0, WasmProgram);
+        assert_eq!(wasm.engine, WasmProgram);
+        let pinned = admit(SimExecutionPolicy::Interpreter, 2, 3, Cranelift);
+        assert_eq!((pinned.engine, pinned.refusal), (Interpreter, None));
+        let stateless = admit(SimExecutionPolicy::Auto, 0, 0, Cranelift);
+        assert_eq!(
+            stateless.refusal,
+            Some(SimNativeRefusal::NoContinuousStates)
+        );
+        assert!(!stateless.is_compiled());
+        let tables = admit(SimExecutionPolicy::Auto, 1, 1, WasmProgram);
+        assert_eq!(tables.refusal, Some(SimNativeRefusal::ExternalTables));
+        assert_eq!(tables.engine, Interpreter);
+        for refusal in [
+            SimNativeRefusal::NoContinuousStates,
+            SimNativeRefusal::ExternalTables,
+        ] {
+            assert!(!refusal.describe().is_empty());
+        }
+    }
 
     /// The implicit family carries exactly one integrator, so there is nothing
     /// left for a name to select inside it. Any name-level rejection now belongs

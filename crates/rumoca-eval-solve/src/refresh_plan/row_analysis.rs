@@ -129,10 +129,33 @@ impl AssignmentCertificates {
 /// The assignment shapes and causality of one canonical program, derived once
 /// for every output row it owns.
 struct ProgramFacts {
-    /// The shapes derived for each output, indexed by output so a program that
-    /// owns many outputs is not rescanned once per row.
-    shapes: std::collections::HashMap<usize, Vec<solve::TargetAssignmentShape>>,
+    /// Ordered by output, stably, so one output's shapes are one run in
+    /// their derived order.
+    shapes: Vec<(usize, solve::TargetAssignmentShape)>,
     causal: bool,
+}
+
+impl ProgramFacts {
+    fn new(operations: &[solve::LinearOp]) -> Self {
+        let mut shapes = solve::derive_target_assignment_shapes(operations);
+        shapes.sort_by_key(|(output, _)| *output);
+        Self {
+            shapes,
+            causal: !operations.iter().any(crate::prepared::non_causal_linear_op),
+        }
+    }
+
+    /// The shapes of `output`, found by bisection rather than a scan of every
+    /// output's shapes.
+    fn output_shapes(&self, output: usize) -> &[(usize, solve::TargetAssignmentShape)] {
+        let start = self
+            .shapes
+            .partition_point(|(shape_output, _)| *shape_output < output);
+        let end = self
+            .shapes
+            .partition_point(|(shape_output, _)| *shape_output <= output);
+        &self.shapes[start..end]
+    }
 }
 
 /// Per-program facts of one refresh-plan construction, by catalog index.
@@ -146,17 +169,7 @@ impl RowAnalysisCache {
         if self.programs.len() <= index {
             self.programs.resize_with(index + 1, || None);
         }
-        self.programs[index].get_or_insert_with(|| ProgramFacts {
-            shapes: {
-                let mut by_output: std::collections::HashMap<usize, Vec<_>> =
-                    std::collections::HashMap::new();
-                for (output, shape) in solve::derive_target_assignment_shapes(operations) {
-                    by_output.entry(output).or_default().push(shape);
-                }
-                by_output
-            },
-            causal: !operations.iter().any(crate::prepared::non_causal_linear_op),
-        })
+        self.programs[index].get_or_insert_with(|| ProgramFacts::new(operations))
     }
 }
 
@@ -187,16 +200,13 @@ pub(super) fn analyze_refresh_row(
         return Ok(Some(reused));
     }
     let facts = cache.facts(program_index, program.operations);
-    let output_shapes = facts.shapes.get(&output_offset);
+    let output_shapes = facts.output_shapes(output_offset);
     let shape = output_shapes
-        .and_then(|shapes| {
-            shapes
-                .iter()
-                .find(|shape| shape.target_y_index() == target_index)
-        })
-        .cloned();
+        .iter()
+        .find(|(_, shape)| shape.target_y_index() == target_index)
+        .map(|(_, shape)| shape.clone());
     let evaluable = shape.is_some()
-        || (output_shapes.is_none_or(|shapes| shapes.is_empty())
+        || (output_shapes.is_empty()
             && !crate::prepared::row_output_depends_on_y_index(
                 program.operations,
                 output_offset,

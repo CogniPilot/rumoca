@@ -21,7 +21,8 @@ fn interactive_session_reset_at_preserves_modelica_time_and_invalid_reset_state(
             check_absolute_resets(&mut session, gain);
             let before = session.state_json().unwrap();
             for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-                assert!(session.reset_at(invalid).is_err());
+                let error = session.reset_at(invalid).unwrap_err();
+                assert!(error.message().starts_with("[EX012]"), "{error}");
                 assert_eq!(session.state_json().unwrap(), before);
             }
             session.reset().unwrap();
@@ -960,4 +961,14 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
         (last - (-1.0_f64).exp()).abs() < 0.02,
         "x(1) should be ~e^-1, got {last}"
     );
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn session_binding_names_the_command_of_an_unexpected_reply() {
+    let error = crate::simulation_session_api::unexpected_event(
+        "get",
+        &rumoca_sim::SessionEvent::Closed { time: 0.0 },
+    );
+    assert!(error.message().contains("`get`"), "{error}");
 }

@@ -296,3 +296,93 @@ end GrowingSlice;
         "the unproven extent must be refused at its slice: {rendered}"
     );
 }
+
+// The same window with its radius a model parameter handed to the function.
+fn windowed_sums(declaration: &str) -> String {
+    format!(
+        r#"
+model WindowedSums
+  function windowSums
+    input Real x[:];
+    input Integer radius;
+    output Real y[size(x,1)];
+  algorithm
+    y := zeros(size(x,1));
+    for i in 3:6 loop
+      y[i] := sum(x[i-radius:i+radius]);
+    end for;
+  end windowSums;
+  {declaration};
+  Real y[8] = windowSums({{1, 2, 4, 8, 16, 32, 64, 128}}, radius);
+end WindowedSums;
+"#
+    )
+}
+
+fn window_sums_with_radius(declaration: &str) -> Vec<f64> {
+    let compiled = Compiler::new()
+        .model("WindowedSums")
+        .compile_str(
+            &windowed_sums(declaration),
+            "function_loop_offset_slices.mo",
+        )
+        .unwrap_or_else(|error| panic!("{declaration} compiles: {error:?}"));
+    let result = rumoca_sim::simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &rumoca_sim::SimOptions {
+            t_end: 0.1,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{declaration} simulates: {error:?}"));
+    (1..=8)
+        .map(|index| final_value(&result, &format!("y[{index}]")))
+        .collect()
+}
+
+/// The reference sums of the radius-`radius` window over `1, 2, 4, ..., 128`.
+fn expected_window_sums_of(radius: usize) -> Vec<f64> {
+    let x = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0];
+    (1..=8)
+        .map(|i: usize| {
+            if (3..=6).contains(&i) {
+                x[i - 1 - radius..=i - 1 + radius].iter().sum()
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// An ordinary parameter radius is never folded (it stays settable, MLS §11.2.2),
+/// and a slice extent that depends on it cannot be a fixed-extent view: the
+/// refusal names the range bound and the way to settle it. A `final` radius
+/// folds into the window.
+#[test]
+fn a_tunable_parameter_radius_is_refused_precisely_and_a_final_one_is_folded() {
+    let error = Compiler::new()
+        .model("WindowedSums")
+        .compile_str(
+            &windowed_sums("parameter Integer radius = 1"),
+            "function_loop_offset_slices.mo",
+        )
+        .expect_err("a tunable radius does not fix the window extent");
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("range start")
+            && rendered.contains("requires an integer literal bound")
+            && rendered.contains("tunable parameter")
+            && rendered.contains("declare the parameter final or Evaluate = true"),
+        "the refusal names the bound and the remedy: {rendered}"
+    );
+    for declaration in [
+        "final parameter Integer radius = 1",
+        "parameter Integer radius = 1 annotation(Evaluate = true)",
+    ] {
+        assert_eq!(
+            window_sums_with_radius(declaration),
+            expected_window_sums_of(1),
+            "{declaration}"
+        );
+    }
+}

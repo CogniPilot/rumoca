@@ -110,6 +110,11 @@ fn output_time_match_with_ulp(left: f64, right: f64) -> bool {
 }
 
 pub fn sample_time_match_with_tol(a: f64, b: f64) -> bool {
+    // An unbounded horizon coordinate scales the tolerance to infinity and
+    // would match every finite instant; only identical coordinates coincide.
+    if !a.is_finite() || !b.is_finite() {
+        return a == b;
+    }
     (a - b).abs() <= sample_time_tolerance(a, b)
 }
 
@@ -189,7 +194,7 @@ fn next_schedule_event_time(
         || !phase.is_finite()
         || period <= 0.0
         || !current_t.is_finite()
-        || !target_t.is_finite()
+        || target_t.is_nan()
     {
         return None;
     }
@@ -667,5 +672,31 @@ mod tests {
         assert!(sample_time_match_with_tol(events[1], 0.2));
         assert!(sample_time_match_with_tol(events[2], 0.3));
         assert!(sample_time_match_with_tol(events[3], 0.4));
+    }
+
+    #[test]
+    fn an_unbounded_horizon_still_announces_the_next_exact_tick() {
+        let schedules = [periodic(0.01, 0.0)];
+
+        let next = next_periodic_event_time(&schedules, 1.0, f64::INFINITY)
+            .expect("a periodic clock has a next tick at any time");
+
+        assert_eq!(next, 1.01);
+        let late = next_periodic_event_time(&schedules, 1.0e6, f64::INFINITY)
+            .expect("a periodic clock has a next tick at any time");
+        assert!(late > 1.0e6 && late - 1.0e6 <= 0.01 + 1.0e-9);
+    }
+
+    #[test]
+    fn an_infinite_coordinate_matches_only_itself() {
+        assert!(!sample_time_match_with_tol(1.0, f64::INFINITY));
+        assert!(!sample_time_match_with_tol(f64::INFINITY, 1.0));
+        assert!(sample_time_match_with_tol(f64::INFINITY, f64::INFINITY));
+        assert!(!scheduled_time_in_horizon(
+            f64::INFINITY,
+            0.0,
+            f64::INFINITY
+        ));
+        assert!(scheduled_time_in_horizon(5.0, 0.0, f64::INFINITY));
     }
 }

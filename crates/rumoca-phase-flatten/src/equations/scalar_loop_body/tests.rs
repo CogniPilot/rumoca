@@ -27,7 +27,13 @@ fn flatten_source(source: &str, model: &str, prepared: bool) -> flat::Model {
     let ast::InstancedTree { tree, mut overlay } = instanced;
     rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
         .expect("fixture typechecks");
-    crate::flatten_ref(&tree, &overlay, model).expect("fixture flattens")
+    // The prepared projection is a view of materialized rows; a family whose
+    // template owns its body (SPEC_0043 §6c) issues placeholder rows instead.
+    let options = crate::FlattenOptions {
+        materialize_structured_families: true,
+        ..crate::FlattenOptions::default()
+    };
+    crate::flatten_ref_with_options(&tree, &overlay, model, options).expect("fixture flattens")
 }
 
 fn assert_scalar_views_equal(left: &flat::Model, right: &flat::Model) {
@@ -212,6 +218,6 @@ fn full_harris_native_frame_preserves_all_source_scalar_views() {
     assert!(
         flat.structured_equations
             .iter()
-            .all(|family| family.interiors_materialized)
+            .all(|family| family.interiors_materialized())
     );
 }

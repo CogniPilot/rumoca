@@ -1,4 +1,5 @@
 use super::*;
+use crate::SolveBinaryOperator;
 use std::collections::BTreeSet;
 
 fn output_coordinates(site: SolvePureCallSite, directional: bool) -> Vec<BTreeSet<usize>> {
@@ -504,4 +505,76 @@ fn a_replaced_local_store_does_not_retain_the_old_value_dependency() {
         input_leaves(table.owners()[0].call_site().output_dependencies()),
         &[vec![1].into_boxed_slice()]
     );
+}
+
+/// `d[i] = (g[i + 2] - g[i]) / 2` over `i in 1:4`, written as one typed map.
+fn stencil_map() -> SolvePureCallTable {
+    let input = real_shape(vec![6]);
+    let output = real_shape(vec![4]);
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1),
+            vec![input],
+            vec![SolvePureCallOutput::result(output.clone())],
+            span(0),
+            |builder, inputs, outputs| {
+                let g = builder.load(inputs[0], span(1))?;
+                let domain = rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 4,
+                        step: 1,
+                    }],
+                };
+                let d = builder.map(
+                    domain,
+                    &[g],
+                    real_shape(Vec::new()),
+                    span(2),
+                    |builder, captures, binders, output| {
+                        let g = builder.load(captures[0], span(3))?;
+                        let i = builder.load(binders[0], span(4))?;
+                        let two = SolveValue::integer(profile(), 2).unwrap();
+                        let two = builder.constant(two, span(5))?;
+                        let ahead = builder.binary(SolveBinaryOperator::Add, i, two, span(6))?;
+                        let high = builder.project_element_dynamic(g, &[ahead], span(7))?;
+                        let low = builder.project_element_dynamic(g, &[i], span(8))?;
+                        let difference =
+                            builder.binary(SolveBinaryOperator::Subtract, high, low, span(9))?;
+                        let half = builder.constant(SolveValue::real(profile(), 2.0), span(10))?;
+                        let value = builder.binary(
+                            SolveBinaryOperator::Divide,
+                            difference,
+                            half,
+                            span(11),
+                        )?;
+                        builder.store(output, value, span(12))
+                    },
+                )?;
+                builder.store(outputs[0], d, span(13))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// A map reads only the elements its body addresses, so each output depends
+/// on its two stencil points, in the value and in the directional form.
+#[test]
+fn a_stencil_map_depends_on_exactly_its_points() {
+    let table = stencil_map();
+    let site = table.owners()[0].call_site();
+    let expected = (0..4)
+        .map(|i| BTreeSet::from([i, i + 2]))
+        .collect::<Vec<_>>();
+    assert_eq!(output_coordinates(site.clone(), false), expected);
+    // Directional inputs are the value then its tangent; outputs likewise.
+    let directional = output_coordinates(site, true);
+    assert_eq!(&directional[..4], &expected[..]);
+    for (i, tangent) in directional[4..].iter().enumerate() {
+        assert_eq!(tangent, &BTreeSet::from([i, i + 2, i + 6, i + 8]));
+    }
 }

@@ -111,7 +111,7 @@ const BUILTIN_TARGET_SURFACES: &[(&str, CheckedView)] = &[
 /// One row per `compile --emit` stage, keyed by the clap value name.
 ///
 /// `flat-json` is deliberately `SelfDescribing`: it serializes cheapened
-/// interior rows, and it serializes `interiors_materialized: false` alongside
+/// interior rows, and it serializes the `interiors` owner of each family alongside
 /// them, so the artifact states its own contract instead of claiming a
 /// materialized scalar view.
 const EMIT_SURFACES: &[(&str, CheckedView)] = &[

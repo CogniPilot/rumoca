@@ -158,6 +158,7 @@ jobs:
           name: architecture-review-scan
           path: target/review/review-scan.json
           if-no-files-found: ignore
+          retention-days: 7
 
       - name: Check generated parsers are current
         shell: bash
@@ -176,6 +177,7 @@ jobs:
           name: crate-dag
           path: target/crate-dag/workspace-crate-dag.dot
           if-no-files-found: error
+          retention-days: 7
 
   # Reproducible package build via the root crane+fenix flake. Nix store paths
   # are cached privately in GitHub Actions, so pull requests need no external
@@ -259,6 +261,7 @@ jobs:
           name: kani-proof-summary
           path: target/verification/kani-summary.json
           if-no-files-found: warn
+          retention-days: 7
 
   test:
     name: Test (${{ matrix.os }})
@@ -487,6 +490,7 @@ jobs:
           name: tensor-compile-scaling-report
           path: target/tensor-scaling/report.json
           if-no-files-found: warn
+          retention-days: 7
 
   template-runtime-tests:
     name: Template Runtime (${{ matrix.backend }})
@@ -815,6 +819,7 @@ jobs:
           name: lsp-msl-benchmark-report
           path: target/lsp-msl-benchmark
           if-no-files-found: warn
+          retention-days: 7
 
   coverage-gate:
     name: Coverage Gate
@@ -1202,6 +1207,7 @@ jobs:
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_band_table.json
           if-no-files-found: error
+          retention-days: 7
 
   msl-merge:
     name: MSL Quality Gate (merge + gate)
@@ -1508,6 +1514,7 @@ jobs:
             target/msl/results/msl_compatibility_report.md
             target/msl/results/msl_compatibility_report.json
           if-no-files-found: error
+          retention-days: 7
 
   msl-pr-status-on-failure:
     name: MSL PR status (upstream failure)
@@ -1720,6 +1727,7 @@ jobs:
             target/msl/modelicatest-survey/modelica_test_catalog.md
             target/msl/modelicatest-survey/modelica_test_targets_ci.promoted.json
           if-no-files-found: warn
+          retention-days: 7
 
   modelica-models-gate:
     name: modelica_models Compatibility Gate
@@ -1831,6 +1839,7 @@ jobs:
         with:
           name: documentation
           path: target/doc/
+          retention-days: 7
 
   # ============================================================================
   # VS Code Extension
@@ -1986,6 +1995,7 @@ jobs:
         with:
           name: wasm-package
           path: packages/rumoca/dist/
+          retention-days: 7
 
       - name: Upload Pages artifact
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -2076,7 +2086,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-          - os: macos-15-intel
+          - os: macos-15
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
             lsp_asset: rumoca-lsp-macos-x86_64
@@ -2191,12 +2201,14 @@ jobs:
         with:
           name: ${{ matrix.rumoca_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
+          retention-days: 7
 
       - name: Upload LSP binary
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.lsp_asset }}
           path: ./target/${{ matrix.target }}/release/rumoca-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows-') && '.exe' || '' }}
+          retention-days: 7
 
   build-python-wheels:
     name: Build Python (${{ matrix.name }})
@@ -2217,7 +2229,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             nix_system: aarch64-linux
             name: linux-aarch64-gnu
-          - os: macos-15-intel
+          - os: macos-15
             target: x86_64-apple-darwin
             nix_system: x86_64-darwin
             name: macos-x86_64
@@ -2234,11 +2246,19 @@ jobs:
           token: ${{ github.token }}
           persist-credentials: true
 
+      - name: Ensure Rosetta for the x86_64 wheel on Apple Silicon
+        # GitHub no longer offers Intel macOS runners with a supported Nix
+        # installer, so the x86_64-darwin wheel builds on an Apple Silicon
+        # runner through Rosetta with Nix's x86_64-darwin platform enabled.
+        if: matrix.nix_system == 'x86_64-darwin'
+        run: softwareupdate --install-rosetta --agree-to-license
+
       - name: Install Nix
         if: runner.os != 'Windows'
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
+          extra-conf: ${{ matrix.nix_system == 'x86_64-darwin' && 'extra-platforms = x86_64-darwin' || '' }}
 
       - name: GitHub Actions Nix cache
         if: runner.os != 'Windows'
@@ -2266,11 +2286,15 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m pip install maturin
 
+      # The wheel steps run a plain (non-login) shell inside the Nix dev shell:
+      # a login profile re-prepends the runner's rustup and Homebrew paths,
+      # which shadow the pinned Nix toolchain and Python (on Apple Silicon the
+      # rustup host toolchain has no x86_64-apple-darwin standard library).
       - name: Run Python binding Rust tests
         if: matrix.name == 'linux-x86_64-gnu'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             export PYO3_PYTHON="$(command -v python)"
             cargo test --package rumoca-bind-python --lib
@@ -2279,7 +2303,7 @@ jobs:
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             target="${{ matrix.target }}"
             # Linux runners ship a very new glibc, so a native build tags the
@@ -2321,7 +2345,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -c '
             set -euo pipefail
             python -m venv target/python-wheel-smoke-venv
             . target/python-wheel-smoke-venv/bin/activate
@@ -2353,6 +2377,7 @@ jobs:
         with:
           name: wheels-${{ matrix.name }}
           path: dist
+          retention-days: 7
 
   build-python-sdist:
     name: Build Python sdist
@@ -2390,6 +2415,7 @@ jobs:
         with:
           name: wheels-sdist
           path: crates/rumoca-bind-python/dist
+          retention-days: 7
 
   # ============================================================================
   # Deployment (only on tags, after verification and build completion)
@@ -2579,6 +2605,7 @@ jobs:
         with:
           name: release-assets
           path: release-assets/
+          retention-days: 7
 
       - name: Publish VS Code extensions to marketplaces
         shell: bash

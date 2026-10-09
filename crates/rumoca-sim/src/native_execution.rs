@@ -395,14 +395,23 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
 ///   is built: neither host's zero-state session instantiates an integrator
 ///   component, so constructing a backend would pay compilation cost for
 ///   compiled code that is discarded unused.
+pub(crate) fn execution_receipt(
+    opts: &rumoca_solver::SimOptions,
+    model: &rumoca_ir_solve::SolveModel,
+) -> rumoca_solver::SimExecutionReceipt {
+    rumoca_solver::SimExecutionReceipt::admission(
+        opts.execution_policy,
+        model.state_scalar_count(),
+        0,
+        rumoca_solver::SimExecutionEngine::Cranelift,
+    )
+}
+
 pub(crate) fn admitted_native_execution_backend(
     opts: &rumoca_solver::SimOptions,
     model: &rumoca_ir_solve::SolveModel,
 ) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
-    if !opts.execution_policy.allows_native() {
-        return None;
-    }
-    if model.state_scalar_count() == 0 {
+    if !execution_receipt(opts, model).is_compiled() {
         return None;
     }
     Some(rumoca_solver::fmi_me::MeExecutionBackend::new(backend(

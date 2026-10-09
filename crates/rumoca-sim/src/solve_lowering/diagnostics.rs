@@ -15,6 +15,14 @@ pub(crate) const EX002_RUNTIME_PREPARATION: &str = "EX002";
 /// A requested parameter/start override was rejected.
 pub(crate) const EX003_INVALID_OVERRIDE: &str = "EX003";
 
+/// A session controller declared a protocol version this build does not speak.
+pub const EX010_SESSION_PROTOCOL_VERSION: &str = "EX010";
+/// A session command line was not a valid command (not JSON, not UTF-8, an
+/// unknown command, or longer than the line bound).
+pub const EX011_SESSION_MALFORMED_COMMAND: &str = "EX011";
+/// A session command carried an argument outside its domain.
+pub const EX012_SESSION_INVALID_ARGUMENT: &str = "EX012";
+
 #[derive(Debug)]
 pub enum SimulationDiagnosticError {
     SolveLowering(rumoca_phase_solve::LowerError),
@@ -98,5 +106,26 @@ impl From<rumoca_eval_solve::EvalSolveError> for SimulationDiagnosticError {
             message: value.to_string(),
             span: value.source_span(),
         }
+    }
+}
+
+impl From<rumoca_solver::RuntimeSolveError> for SimulationDiagnosticError {
+    fn from(value: rumoca_solver::RuntimeSolveError) -> Self {
+        Self::Solver(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runtime_row_failure_is_a_solver_failure() {
+        let error =
+            SimulationDiagnosticError::from(rumoca_solver::RuntimeSolveError::UnsupportedModel {
+                reason: "a row cannot be evaluated".to_string(),
+            });
+        assert_eq!(error.diagnostic_code(), EX001_SOLVER_FAILURE);
+        assert!(error.to_string().contains("a row cannot be evaluated"));
     }
 }

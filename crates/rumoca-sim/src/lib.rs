@@ -19,11 +19,13 @@ pub use rumoca_phase_solve::{
     lower_solve_artifacts, lower_solve_problem, solve_model_wire,
 };
 pub use rumoca_solver::{
-    DiffsolMethod, HotpathStatsSnapshot, ProjectionFallback, ProjectionFallbackCounts,
-    ProjectionFallbackReport, ProjectionSite, RuntimeProgressSnapshot, RuntimeStopSchedule,
-    RuntimeTraceContext, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode, SimResult,
-    SimSolverMode, SimVariableMeta, SimulationRequestSummary, SimulationRunMetrics,
-    SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, build_simulation_metrics_value,
+    DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,
+    ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite, RunningKind, RunningTerm,
+    RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext, SimBackend,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
+    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TerminalTerm,
+    TimeoutBudget, TimeoutExceeded, TrajectoryObjective, build_simulation_metrics_value,
     build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
     projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
     reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
@@ -39,6 +41,8 @@ mod error;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod me_backend;
 pub mod row_eval_trace;
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod session_protocol;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod simulation_session;
@@ -85,6 +89,12 @@ pub use error::{SimError, SimFailureStage};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
+pub use session_protocol::{
+    SESSION_MAX_LINE_BYTES, SESSION_PARENT_DISCONNECTED_EXIT_CODE,
+    SESSION_PROTOCOL_MISMATCH_EXIT_CODE, SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent,
+    SessionServeExit, serve_session,
+};
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulation_session::{SessionState, SimulationSession};
 #[cfg(feature = "scheduled-sim")]
 pub(crate) use simulation_session_api::SimulationSessionApi;
@@ -94,8 +104,9 @@ pub(crate) use simulation_session_api::SimulationSessionApi;
 #[cfg(feature = "fmi")]
 pub use solve_lowering::lower_fmi_component;
 pub use solve_lowering::{
-    BlockReport, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe, JacobianReport,
-    ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
+    BlockReport, EX010_SESSION_PROTOCOL_VERSION, EX011_SESSION_MALFORMED_COMMAND,
+    EX012_SESSION_INVALID_ARGUMENT, EvalAtProbe, EvalAtReport, EvalAtSlot, JacobianProbe,
+    JacobianReport, ObjectiveGradientProbe, ParameterJacobianProbe, SimulationDiagnosticError,
     SingularityDiagnosis, StateAndParameterJacobianProbe, SteadyStateSensitivityProbe,
     StructuralReport, TearingReport, UnmatchedEquationDiagnosis, UnmatchedUnknownDiagnosis,
     diagnose_structural_singularity, eval_dae_at, jacobian_for_dae,
@@ -106,12 +117,23 @@ pub use solve_lowering::{
     steady_state_adjoint_objective_gradient_for_dae, steady_state_objective_gradient_for_dae,
     steady_state_parameter_sensitivity_for_dae, structural_report_for_dae,
 };
+pub use solve_lowering::{
+    ExcludedParameter, ExclusionReason, Linearization, ParameterClassification,
+    independent_tunable_parameters, linearization_for_dae, select_sensitivity_parameters,
+};
 
 #[cfg(feature = "scenario-config")]
 pub mod scenario_config;
 
 #[cfg(feature = "solver-rk45")]
 pub mod rk45;
+#[cfg(feature = "solver-rk45")]
+mod trajectory_sensitivity;
+#[cfg(feature = "solver-rk45")]
+pub use trajectory_sensitivity::{
+    TrajectoryPlugin, TrajectorySession, trajectory_objective_gradient_for_dae,
+    trajectory_sensitivity_for_dae,
+};
 
 #[cfg(all(
     feature = "scheduled-sim",
@@ -155,7 +177,9 @@ pub fn simulate_fmi_component(
 ) -> Result<SimResult, SimulationDiagnosticError> {
     let execution_backend =
         native_execution::admitted_native_execution_backend(opts, component.runtime_view().model());
-    let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
+    let receipt = native_execution::execution_receipt(opts, component.runtime_view().model());
+    let artifact =
+        rumoca_solver::fmi_me::MeModelArtifact::new(component).with_execution_receipt(receipt);
     match opts.solver_mode {
         SimSolverMode::Auto => simulate_artifact_auto(artifact, opts, execution_backend),
         SimSolverMode::RkLike => simulate_artifact_rk45(artifact, opts, execution_backend),

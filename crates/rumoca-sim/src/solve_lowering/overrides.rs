@@ -87,6 +87,33 @@ pub(crate) fn tunable_param_overrides(
     })
 }
 
+/// Scalar names of every declared input of `model`.
+pub(crate) fn input_scalar_names(model: &dae::Dae) -> HashSet<String> {
+    model.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::Input)
+            .flat_map(|(_, variable)| {
+                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
+            })
+            .collect()
+    })
+}
+
+/// Scalar names of the declared inputs of `model` that carry no default
+/// binding, so that only a runtime value can fix them.
+pub(crate) fn inputs_without_default(model: &dae::Dae) -> Vec<String> {
+    model.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| {
+                variable.role() == dae::VariableRole::Input && variable.binding().is_none()
+            })
+            .flat_map(|(_, variable)| {
+                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
+            })
+            .collect()
+    })
+}
+
 pub(super) fn initial_input_values(
     model: &dae::Dae,
     opts: &SimOptions,
@@ -94,26 +121,18 @@ pub(super) fn initial_input_values(
     if opts.initial_inputs.is_empty() {
         return Ok(HashMap::new());
     }
-    model.inspect(|view| {
-        let input_names: HashSet<_> = view
-            .variables()
-            .filter(|(_, variable)| variable.role() == dae::VariableRole::Input)
-            .flat_map(|(_, variable)| {
-                (0..variable.scalar_count()).filter_map(move |scalar| variable.scalar_name(scalar))
-            })
-            .collect();
-        let mut values = HashMap::with_capacity(opts.initial_inputs.len());
-        for (name, value) in &opts.initial_inputs {
-            if !value.is_finite() {
-                return Err(invalid(format!("initial input `{name}` must be finite")));
-            }
-            if !input_names.contains(name) {
-                return Err(invalid(format!("`{name}` is not an input of this model")));
-            }
-            values.insert(name.clone(), *value);
+    let input_names = input_scalar_names(model);
+    let mut values = HashMap::with_capacity(opts.initial_inputs.len());
+    for (name, value) in &opts.initial_inputs {
+        if !value.is_finite() {
+            return Err(invalid(format!("initial input `{name}` must be finite")));
         }
-        Ok(values)
-    })
+        if !input_names.contains(name) {
+            return Err(invalid(format!("`{name}` is not an input of this model")));
+        }
+        values.insert(name.clone(), *value);
+    }
+    Ok(values)
 }
 
 fn record_parameter_names(

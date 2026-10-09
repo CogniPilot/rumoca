@@ -40,7 +40,7 @@ fn static_reduction_specializes_each_proven_outer_loop_index() {
     assert_eq!(reduction_lengths(&result.flat), [1, 2, 3, 4, 5]);
     let family = &result.flat.structured_equations[0];
     assert_eq!(family.domain.scalar_count().unwrap(), 5);
-    assert!(family.interiors_materialized);
+    assert!(family.interiors_materialized());
     assert!(family.template.is_none());
 }
 
@@ -95,7 +95,7 @@ fn static_reduction_materializes_dependent_state_derivative_rows() {
     assert!(result.is_balanced());
     assert_eq!(reduction_lengths(&result.flat), [1, 2, 3, 4, 5]);
     let family = &result.flat.structured_equations[0];
-    assert!(family.interiors_materialized);
+    assert!(family.interiors_materialized());
     assert!(family.template.is_none());
 }
 

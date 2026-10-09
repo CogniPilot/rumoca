@@ -108,7 +108,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
             }
             dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower => {
-                match self.integer_register(rhs) {
+                match self.integer_register(rhs).and_then(product_power_factors) {
                     Some(2) => solve::LinearOp::Binary {
                         dst,
                         op: solve::BinaryOp::Mul,

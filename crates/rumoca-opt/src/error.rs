@@ -7,6 +7,8 @@ pub enum OptError {
     Lowering(String),
     #[error("failed to build differentiable runtime: {0}")]
     Runtime(String),
+    #[error("trajectory gradient failed: {0}")]
+    Trajectory(String),
     #[error("unknown trainable parameter `{name}`; available trainables: {available}")]
     UnknownTrainable { name: String, available: String },
     #[error("no trainable parameters selected")]

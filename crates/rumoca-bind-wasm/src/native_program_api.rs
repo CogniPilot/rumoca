@@ -179,6 +179,7 @@ fn compile_program(
                     _ => "typedLanesPtr:i32",
                 }],
             "result":"status:i32", "success_status":0, "scratch_bytes":compiled.scratch_bytes(),
+            "scratch_report":crate::native_scratch_report::scratch_report_json(compiled.scratch_report()),
             "transactional_y":true,"p_readonly":true,
         }),
         serde_json::json!(compiled.math_imports()),
@@ -186,10 +187,29 @@ fn compile_program(
     ))
 }
 
-fn requires_checked_entry(schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule) -> bool {
+pub(crate) fn requires_checked_entry(
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+) -> bool {
+    !schedule.derived_outputs().is_empty()
+        || !schedule.input_lanes().is_empty()
+        || any_stage_operation(schedule, |operation| {
+            matches!(
+                operation,
+                rumoca_ir_solve::LinearOp::PureCall { .. }
+                    | rumoca_ir_solve::LinearOp::LoadIndexedRegister { .. }
+                    | rumoca_ir_solve::LinearOp::FunctionConditional { .. }
+            )
+        })
+}
+
+/// Whether any stage kernel of `schedule` holds an operation `matches`.
+pub(crate) fn any_stage_operation(
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+    matches: fn(&rumoca_ir_solve::LinearOp) -> bool,
+) -> bool {
     use rumoca_ir_solve::SolveVisitor;
-    struct Calls(bool);
-    impl SolveVisitor for Calls {
+    struct Found(bool, fn(&rumoca_ir_solve::LinearOp) -> bool);
+    impl SolveVisitor for Found {
         type Error = std::convert::Infallible;
         fn visit_linear_op(
             &mut self,
@@ -197,21 +217,15 @@ fn requires_checked_entry(schedule: &rumoca_ir_solve::NativeRefreshAssignmentSch
             _: usize,
             operation: &rumoca_ir_solve::LinearOp,
         ) -> Result<(), Self::Error> {
-            self.0 |= matches!(
-                operation,
-                rumoca_ir_solve::LinearOp::PureCall { .. }
-                    | rumoca_ir_solve::LinearOp::LoadIndexedRegister { .. }
-                    | rumoca_ir_solve::LinearOp::FunctionConditional { .. }
-            );
+            self.0 |= (self.1)(operation);
             Ok(())
         }
     }
-    let mut calls =
-        Calls(!schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty());
+    let mut found = Found(false, matches);
     for stage in schedule.stages() {
-        let Ok(()) = calls.visit_compute_block(stage.value_kernel());
+        let Ok(()) = found.visit_compute_block(stage.value_kernel());
     }
-    calls.0
+    found.0
 }
 
 /// The canonical Solve owner of one issued stage.

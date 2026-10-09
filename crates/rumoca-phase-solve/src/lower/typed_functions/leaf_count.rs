@@ -3,7 +3,7 @@
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{is_text_value, lower_primitive_type, value_type_provenance};
+use super::value_types::{is_text_value, lower_primitive_type, value_type_provenance};
 
 /// The number of interface leaves of a value type: the length of
 /// [`lower_value_type_leaves`] without building the leaves, so a consumer that

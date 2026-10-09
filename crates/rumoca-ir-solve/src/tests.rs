@@ -1238,6 +1238,16 @@ fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
     );
 }
 
+#[test]
+fn solve_model_without_periodic_schedules_is_borrowed_not_copied() {
+    let model = SolveModel::default();
+    let resolved = model.resolved_periodic_schedules_at(2.0).unwrap();
+    assert!(
+        matches!(resolved, std::borrow::Cow::Borrowed(borrowed) if std::ptr::eq(borrowed, &model)),
+        "a model with nothing to resolve must not be cloned at instantiation"
+    );
+}
+
 fn assert_same_json_shape<T: serde::Serialize>(actual: &T, expected: &T) {
     assert_eq!(
         serde_json::to_value(actual).expect("serialize actual"),
@@ -1267,8 +1277,7 @@ fn p_slice_returns_some_for_p_array_variable() {
 fn indexed_bindings_are_derived_from_shape_metadata() {
     let layout = make_layout(&[("body.frame.R.T", vec![3, 3])], &[]);
     let entries = layout
-        .indexed_bindings()
-        .get(&ComponentReferenceKey::generated("body.frame.R.T"))
+        .indexed_slots("body.frame.R.T")
         .expect("array layout should expose structured scalar slots");
 
     assert_eq!(entries.len(), 9);

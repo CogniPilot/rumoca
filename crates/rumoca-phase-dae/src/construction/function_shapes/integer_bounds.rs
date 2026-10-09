@@ -301,7 +301,11 @@ impl AffineInteger {
 
 /// The affine form of an Integer expression: proven values fold to constants
 /// and an unproven unsubscripted Integer reference becomes a term.
-fn affine_integer(expression: &Expression, values: &ShapeEnvironment) -> Option<AffineInteger> {
+fn affine_integer(
+    expression: &Expression,
+    values: &ShapeEnvironment,
+    choices: &[(&Expression, bool)],
+) -> Option<AffineInteger> {
     if let Ok(value) = evaluate_shape_integer(expression, values) {
         return Some(AffineInteger::constant(value));
     }
@@ -317,22 +321,21 @@ fn affine_integer(expression: &Expression, values: &ShapeEnvironment) -> Option<
             op: OpUnary::Plus,
             rhs,
             ..
-        } => affine_integer(rhs, values),
+        } => affine_integer(rhs, values, choices),
         Expression::Unary {
             op: OpUnary::Minus,
             rhs,
             ..
-        } => affine_integer(rhs, values)?.scaled(-1),
+        } => affine_integer(rhs, values, choices)?.scaled(-1),
         Expression::Binary { op, lhs, rhs, .. } => match op {
             OpBinary::Add | OpBinary::AddElem => {
-                affine_integer(lhs, values)?.plus(affine_integer(rhs, values)?)
+                affine_integer(lhs, values, choices)?.plus(affine_integer(rhs, values, choices)?)
             }
-            OpBinary::Sub | OpBinary::SubElem => {
-                affine_integer(lhs, values)?.plus(affine_integer(rhs, values)?.scaled(-1)?)
-            }
+            OpBinary::Sub | OpBinary::SubElem => affine_integer(lhs, values, choices)?
+                .plus(affine_integer(rhs, values, choices)?.scaled(-1)?),
             OpBinary::Mul | OpBinary::MulElem => {
-                let lhs = affine_integer(lhs, values)?;
-                let rhs = affine_integer(rhs, values)?;
+                let lhs = affine_integer(lhs, values, choices)?;
+                let rhs = affine_integer(rhs, values, choices)?;
                 match (lhs.exact(), rhs.exact()) {
                     (Some(factor), _) => rhs.scaled(factor),
                     (None, Some(factor)) => lhs.scaled(factor),
@@ -341,6 +344,18 @@ fn affine_integer(expression: &Expression, values: &ShapeEnvironment) -> Option<
             }
             _ => None,
         },
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, arm) in branches {
+                if choice_of(condition, choices)? {
+                    return affine_integer(arm, values, choices);
+                }
+            }
+            affine_integer(else_branch, values, choices)
+        }
         _ => None,
     }
 }
@@ -352,7 +367,77 @@ pub(in crate::construction) fn exact_range_distance(
     end: &Expression,
     values: &ShapeEnvironment,
 ) -> Option<i64> {
-    let start = affine_integer(start, values)?;
-    let end = affine_integer(end, values)?;
+    let mut conditions = Vec::new();
+    selection_conditions(start, &mut conditions);
+    selection_conditions(end, &mut conditions);
+    if conditions.len() > MAX_SELECTION_CONDITIONS {
+        return None;
+    }
+    // Each assignment of the selecting conditions is one subdomain on which
+    // both bounds are affine; the extent is proven when the distance is the
+    // same constant on every one of them.
+    let mut distance = None;
+    for assignment in 0..(1_u32 << conditions.len()) {
+        let choices = conditions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, condition)| (*condition, assignment >> ordinal & 1 == 1))
+            .collect::<Vec<_>>();
+        let found = selected_distance(start, end, values, &choices)?;
+        if *distance.get_or_insert(found) != found {
+            return None;
+        }
+    }
+    distance
+}
+
+fn selected_distance(
+    start: &Expression,
+    end: &Expression,
+    values: &ShapeEnvironment,
+    choices: &[(&Expression, bool)],
+) -> Option<i64> {
+    let start = affine_integer(start, values, choices)?;
+    let end = affine_integer(end, values, choices)?;
     end.plus(start.scaled(-1)?)?.exact()
+}
+
+/// The value `choices` assigns to `condition`.
+fn choice_of(condition: &Expression, choices: &[(&Expression, bool)]) -> Option<bool> {
+    choices
+        .iter()
+        .find(|(known, _)| rumoca_core::expressions_semantically_equal(known, condition))
+        .map(|(_, value)| *value)
+}
+
+/// The most distinct conditions of if-expressions a range distance is proven
+/// over (each doubles the cases).
+const MAX_SELECTION_CONDITIONS: usize = 6;
+
+/// The distinct conditions of the if-expressions in an Integer expression.
+fn selection_conditions<'a>(expression: &'a Expression, found: &mut Vec<&'a Expression>) {
+    match expression {
+        Expression::Unary { rhs, .. } => selection_conditions(rhs, found),
+        Expression::Binary { lhs, rhs, .. } => {
+            selection_conditions(lhs, found);
+            selection_conditions(rhs, found);
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (condition, arm) in branches {
+                let known = found
+                    .iter()
+                    .any(|known| rumoca_core::expressions_semantically_equal(known, condition));
+                if !known {
+                    found.push(condition);
+                }
+                selection_conditions(arm, found);
+            }
+            selection_conditions(else_branch, found);
+        }
+        _ => {}
+    }
 }

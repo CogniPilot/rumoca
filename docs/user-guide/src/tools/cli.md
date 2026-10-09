@@ -42,6 +42,8 @@ rumoca sim -c path/to/rumoca-scenario.toml
 | `--t-end <T_END>` | Batch end time. Direct runs start at the model's `experiment(StartTime)` and default to its `experiment(StopTime)`, else one time unit after the start; batch scenarios use `[sim].t_end`; interactive runs are user-terminated |
 | `--dt <DT>` | Optional fixed output interval; chosen automatically if omitted |
 | `-o, --output <OUTPUT>` | Simulation report path (default `<MODEL>_results.html`) |
+| `--input <NAME=VALUE>` | Initial value of a model input for `--serve-stdio` (repeatable) |
+| `--serve-stdio` | Serve one session over stdin/stdout as JSON lines instead of running a batch simulation; see [Driving a Session over stdio](../simulation/stdio-session.md) |
 | `--inspect <MODE>` | Analyze instead of simulating: `structure`, `eval`, `jacobian` |
 | `--at <NAME=VALUE,...@T>` | Evaluation point for `--inspect eval\|jacobian` |
 

@@ -186,17 +186,36 @@ fn visit_segment_registers(op: &mut LinearOp, visit: &mut dyn FnMut(&mut Reg)) {
     }
 }
 
+/// Whether the value key of `op` records the offsets between the registers
+/// it reads ([`super::symbolic::value_shape`]): true for every operation but a
+/// [`renamable`] one whose sources are all scalar fields, whose key names its
+/// operands by field alone.
+pub(super) fn records_operand_offsets(op: &LinearOp) -> bool {
+    if !renamable(op) {
+        return true;
+    }
+    let mut ranged = false;
+    visit_registers(&mut op.clone(), &mut |role, _| {
+        ranged |= role == Role::RangeStart;
+    });
+    ranged
+}
+
 /// `ops`, a fused segment, renumbered onto the registers it uses, in their
-/// original order. Each operation keeps every register from the lowest to
-/// the highest it reads, and every register it writes, so the offsets within
-/// one operation's operands, which its value key records, are unchanged and
-/// every range stays contiguous; the register file shrinks to those spans.
+/// original order. An operation whose key records operand offsets keeps
+/// every register from the lowest to the highest it reads, so those offsets
+/// are unchanged and every range stays contiguous; any other operation keeps
+/// only the registers it reads. Every written register is kept. The cost
+/// follows the operations' own operands, not the distance between them.
 pub(super) fn compact_registers(mut ops: Vec<LinearOp>) -> Vec<LinearOp> {
     let mut used = Vec::new();
     for op in &ops {
         let reads = read_registers(op).unwrap_or_default();
-        if let (Some(&lowest), Some(&highest)) = (reads.first(), reads.last()) {
-            used.extend(lowest..=highest);
+        match (reads.first(), reads.last()) {
+            (Some(&lowest), Some(&highest)) if records_operand_offsets(op) => {
+                used.extend(lowest..=highest);
+            }
+            _ => used.extend(reads),
         }
         if let Some(start) = op.dst_register() {
             used.extend((0..op.dst_register_count()).map(|offset| start + offset as Reg));
@@ -212,4 +231,87 @@ pub(super) fn compact_registers(mut ops: Vec<LinearOp>) -> Vec<LinearOp> {
         });
     }
     ops
+}
+
+/// A table keyed by register, held densely: a program's registers are numbered
+/// from zero, so an entry costs its value and not a hash slot, and a wide
+/// operation's outputs fill one contiguous run.
+#[derive(Clone, Debug)]
+pub(super) struct RegisterTable<T> {
+    entries: Vec<Option<T>>,
+    len: usize,
+}
+
+impl<T> Default for RegisterTable<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T: Copy> RegisterTable<T> {
+    /// The value of `register`.
+    pub(super) fn get(&self, register: Reg) -> Option<T> {
+        self.entries.get(register as usize).copied().flatten()
+    }
+
+    /// Set the value of `register`.
+    pub(super) fn insert(&mut self, register: Reg, value: T) {
+        let index = register as usize;
+        if index >= self.entries.len() {
+            self.entries.resize(index + 1, None);
+        }
+        if let Some(entry) = self.entries.get_mut(index) {
+            self.len += usize::from(entry.is_none());
+            *entry = Some(value);
+        }
+    }
+
+    /// Drop the value of `register`.
+    pub(super) fn remove(&mut self, register: Reg) {
+        if let Some(entry) = self.entries.get_mut(register as usize) {
+            self.len -= usize::from(entry.is_some());
+            *entry = None;
+        }
+    }
+
+    /// How many registers hold a value.
+    pub(super) const fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// A set of registers, held densely like [`RegisterTable`].
+#[derive(Clone, Debug, Default)]
+pub(super) struct RegisterSet {
+    members: Vec<bool>,
+}
+
+impl RegisterSet {
+    pub(super) fn contains(&self, register: Reg) -> bool {
+        self.members
+            .get(register as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Add `register`; `false` when it was already a member.
+    pub(super) fn insert(&mut self, register: Reg) -> bool {
+        let index = register as usize;
+        if index >= self.members.len() {
+            self.members.resize(index + 1, false);
+        }
+        match self.members.get_mut(index) {
+            Some(member) => !std::mem::replace(member, true),
+            None => false,
+        }
+    }
+
+    pub(super) fn remove(&mut self, register: Reg) {
+        if let Some(member) = self.members.get_mut(register as usize) {
+            *member = false;
+        }
+    }
 }

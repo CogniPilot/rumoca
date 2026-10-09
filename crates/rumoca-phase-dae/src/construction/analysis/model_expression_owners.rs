@@ -234,7 +234,7 @@ mod tests {
                 body: vec![marker(marker_value)],
                 scalar_view: ComprehensionScalarView::BinderSubstitution,
             }),
-            interiors_materialized: false,
+            interiors: flat::FamilyInteriors::ContinuousAlgebraic,
         }
     }
 

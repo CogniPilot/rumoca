@@ -68,7 +68,7 @@ impl<'a> SelectedFamilies<'a> {
             .map(move |(ordinal, source)| {
                 let enabled = match self.policy {
                     TemplatePolicy::Selected(selected) => selected[ordinal],
-                    TemplatePolicy::Mandatory => !source.interiors_materialized,
+                    TemplatePolicy::Mandatory => !source.interiors_materialized(),
                 };
                 SelectedFamily {
                     source,
@@ -114,7 +114,7 @@ fn select(
     families
         .iter()
         .map(|family| {
-            if !family.interiors_materialized {
+            if !family.interiors_materialized() {
                 return true;
             }
             let Some(template) = &family.template else {

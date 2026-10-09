@@ -38,6 +38,7 @@ mod connections_builtin;
 mod constant_extraction;
 #[cfg(test)]
 mod context_suffix_tests;
+mod continuous_algebraic;
 mod enum_literals;
 mod equations;
 mod errors;

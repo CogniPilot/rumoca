@@ -5,12 +5,26 @@ mod tests;
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, VarLayout};
 
-pub(super) fn model_context_admitted(
+pub(super) fn execution_receipt(
+    policy: rumoca_solver::SimExecutionPolicy,
+    states: usize,
+    external_tables: usize,
+) -> rumoca_solver::SimExecutionReceipt {
+    rumoca_solver::SimExecutionReceipt::admission(
+        policy,
+        states,
+        external_tables,
+        rumoca_solver::SimExecutionEngine::WasmProgram,
+    )
+}
+
+#[cfg(test)]
+fn model_context_admitted(
     policy: rumoca_solver::SimExecutionPolicy,
     states: usize,
     external_tables: usize,
 ) -> bool {
-    policy.allows_native() && states > 0 && external_tables == 0
+    execution_receipt(policy, states, external_tables).is_compiled()
 }
 
 pub(super) fn single_program(

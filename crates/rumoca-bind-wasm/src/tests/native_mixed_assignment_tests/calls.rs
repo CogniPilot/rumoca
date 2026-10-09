@@ -1,5 +1,7 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
+mod carried_updates;
 mod derived_discrete;
+mod families;
 mod gathers;
 mod lazy_windows;
 mod maps;
@@ -7,6 +9,7 @@ mod packed;
 mod registration;
 mod return_arguments;
 mod returns;
+mod scratch_report;
 mod typed_inputs;
 mod typed_maps;
 

@@ -793,8 +793,8 @@ fn compiled_function_fold_updates_a_tensor_slice_without_scalar_selects() {
                             dimensions: Box::new([2, 2]),
                             updates: Box::new([rumoca_ir_solve::FoldTensorUpdate {
                                 subscripts: Box::new([
-                                    rumoca_ir_solve::TensorSubscript::Whole,
-                                    rumoca_ir_solve::TensorSubscript::Index(
+                                    rumoca_ir_solve::TensorUpdateSubscript::Whole,
+                                    rumoca_ir_solve::TensorUpdateSubscript::Index(
                                         rumoca_ir_solve::TensorIndex::Runtime(0),
                                     ),
                                 ]),
@@ -1383,4 +1383,106 @@ fn compiled_function_conditional_calls_fold_only_from_selected_region() {
         .call(&[], &[1.0], 0.0, &mut out)
         .expect("evaluate selected compact fold");
     assert_eq!(out, [7.0]);
+}
+
+#[test]
+fn compiled_function_fold_updates_a_run_time_window_of_a_tensor() {
+    // Column `s` of the loop writes the two-element window `a[s:s + 1]`, whose
+    // packed one-based coordinates are the registers {s, s + 1}.
+    let row = vec![
+        LinearOp::Const {
+            dst: 0,
+            value: 10.0,
+        },
+        LinearOp::Const {
+            dst: 1,
+            value: 20.0,
+        },
+        LinearOp::Const {
+            dst: 2,
+            value: 30.0,
+        },
+        LinearOp::Const {
+            dst: 3,
+            value: 40.0,
+        },
+        LinearOp::FunctionFold {
+            dst_start: 4,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(
+                rumoca_ir_solve::FunctionFoldProgram::checked(
+                    rumoca_core::StructuredIndexDomain {
+                        binders: vec![rumoca_core::StructuredIndexBinder {
+                            id: 0,
+                            display_name: "start".to_string(),
+                            lower: 1,
+                            upper: 2,
+                            step: 1,
+                        }],
+                    },
+                    4,
+                    0,
+                    vec![
+                        LinearOp::LoadFoldIndex {
+                            dst: 0,
+                            dimension: 0,
+                        },
+                        LinearOp::Const { dst: 2, value: 1.0 },
+                        LinearOp::Binary {
+                            dst: 1,
+                            op: BinaryOp::Add,
+                            lhs: 0,
+                            rhs: 2,
+                        },
+                        LinearOp::Const {
+                            dst: 3,
+                            value: 100.0,
+                        },
+                        LinearOp::Const {
+                            dst: 4,
+                            value: 200.0,
+                        },
+                        LinearOp::StoreOutputFoldTensorUpdate {
+                            source_base: 0,
+                            source_stride: 1,
+                            dimensions: Box::new([4]),
+                            updates: Box::new([rumoca_ir_solve::FoldTensorUpdate {
+                                subscripts: Box::new([
+                                    rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                                        start: 0,
+                                        dimensions: Box::new([2]),
+                                    },
+                                ]),
+                                condition: None,
+                                value_start: 3,
+                                value_stride: 1,
+                            }]),
+                            nodes: Box::new([rumoca_ir_solve::FoldTensorNode::Update {
+                                base: 0,
+                                update: 0,
+                            }]),
+                            result: 1,
+                            lanes: 1,
+                        },
+                    ],
+                )
+                .expect("construct compact window update fold"),
+            ),
+        },
+        LinearOp::StoreOutput { src: 4 },
+        LinearOp::StoreOutput { src: 5 },
+        LinearOp::StoreOutput { src: 6 },
+        LinearOp::StoreOutput { src: 7 },
+    ];
+    let compiled = compile_residual_rows(&[row]).expect("compile compact window update fold");
+    let mut out = [0.0; 4];
+
+    compiled
+        .call(&[], &[], 0.0, &mut out)
+        .expect("evaluate compact window update fold");
+
+    // start 1 writes {100, 200} at a[1:2]; start 2 writes them at a[2:3].
+    assert_eq!(out, [100.0, 100.0, 200.0, 40.0]);
+    assert_eq!(compiled.jit_call_count(), 1);
 }

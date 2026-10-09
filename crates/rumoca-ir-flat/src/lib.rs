@@ -1449,17 +1449,45 @@ pub struct StructuredEquationFamily {
     #[serde(default)]
     pub template: Option<ComprehensionTemplate>,
     /// Whether the interior cells' scalar bodies are materialized in the equation
-    /// vector. `true` (the default) is the historical behavior: every cell carries
-    /// a full body. When a regular family is lowered with
-    /// `FlattenOptions::materialize_structured_families = false`, only the corner
-    /// cells (base + one neighbor per binder) carry real bodies and this is `false`,
-    /// signaling downstream phases to reconstruct interior incidence/strides from
-    /// the corners instead of reading the (placeholder) interior bodies.
-    #[serde(default = "default_true")]
-    pub interiors_materialized: bool,
+    /// vector, and when they are not, which construction owns the family's body.
+    /// A family flattened with `FlattenOptions::materialize_structured_families =
+    /// false` keeps full bodies only in its corner cells (base + one neighbor per
+    /// binder); every other cell is a placeholder that no consumer may read.
+    #[serde(default)]
+    pub interiors: FamilyInteriors,
+}
+
+/// Which owner reads a structured family's body (SPEC_0043 §6c).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FamilyInteriors {
+    /// Every cell carries its full body; the scalar rows are authoritative.
+    #[default]
+    Materialized,
+    /// A regular state-derivative family: Solve rebuilds its stencil from the
+    /// corner cells.
+    StateDerivative,
+    /// A proven parameter-variability assignment: the DAE promotes the array
+    /// array-natively from the template.
+    ParameterAssignment,
+    /// A continuous algebraic residual family: the DAE lowers it from the
+    /// template as one continuous structured owner.
+    ContinuousAlgebraic,
+}
+
+impl FamilyInteriors {
+    #[must_use]
+    pub const fn materialized(self) -> bool {
+        matches!(self, Self::Materialized)
+    }
 }
 
 impl StructuredEquationFamily {
+    /// Whether every cell carries its full body.
+    #[must_use]
+    pub const fn interiors_materialized(&self) -> bool {
+        self.interiors.materialized()
+    }
+
     /// The flat equation rows this family's materialized interior occupies.
     ///
     /// A template projected row-major (an array equation `x = e` over its
@@ -1493,12 +1521,6 @@ impl StructuredEquationFamily {
 /// Default scalar count for equations (1 for serde deserialization).
 fn default_scalar_count() -> usize {
     1
-}
-
-/// Serde default for `interiors_materialized` (historical behavior: all cells
-/// carry full bodies).
-fn default_true() -> bool {
-    true
 }
 
 impl Equation {

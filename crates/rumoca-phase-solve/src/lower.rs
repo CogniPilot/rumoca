@@ -10,6 +10,7 @@ use rumoca_phase_structural::{self as structural, BltBlock, EquationRef, Unknown
 use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
+mod algebraic_family;
 pub(crate) mod call_scoped_actions;
 pub(crate) mod clock_ownership;
 mod clocks;
@@ -530,7 +531,7 @@ fn lower_continuous<'dae>(
                     row += 1;
                 }
             }
-            dae::ContinuousOwnerView::Structured { family, .. } => {
+            dae::ContinuousOwnerView::Structured { id, family } => {
                 let count = family.scalar_rows() as usize;
                 let mut owner_rows = row..checked_ordinal_add(
                     row,
@@ -552,7 +553,18 @@ fn lower_continuous<'dae>(
                         family.provenance().span(),
                     ));
                 }
-                row = lower_continuous_family(context, &mut output, row, family)?;
+                let end = owner_rows.end;
+                row = if algebraic_family::lower_algebraic_family_call(
+                    context,
+                    &mut output,
+                    row,
+                    id,
+                    family,
+                )? {
+                    end
+                } else {
+                    lower_continuous_family(context, &mut output, row, family)?
+                };
             }
         }
         owner_index += 1;
@@ -2592,4 +2604,15 @@ fn owner_provenance(owner: dae::ContinuousOwnerView<'_>) -> dae::DaeProvenance {
 fn first_model_span(view: dae::DaeView<'_>) -> Span {
     view.responsible_span()
         .expect("nonempty checked DAE has responsible provenance")
+}
+
+/// The number of factors of a literal Integer exponent that every lowering of
+/// `x ^ n` evaluates as a product of `x` (`x*x`, `x*x*x`), so a scalar row, a
+/// typed call body, and a synthesized family owner round alike.
+const fn product_power_factors(exponent: i64) -> Option<u8> {
+    match exponent {
+        2 => Some(2),
+        3 => Some(3),
+        _ => None,
+    }
 }

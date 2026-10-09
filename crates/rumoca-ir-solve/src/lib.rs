@@ -15,18 +15,21 @@ mod compact_pattern;
 #[cfg(test)]
 mod compute_block_tests;
 mod continuous_wire;
+mod event_writes;
 mod feature_query;
 pub mod fmi;
 mod initialization;
 mod layout;
 mod linear_op;
 mod model;
+mod parameter_classification;
 mod parameter_reads;
 mod refresh;
 mod root_search;
 mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
+mod sensitivity;
 mod shape_error;
 mod static_parameters;
 mod tangent_lanes;
@@ -49,6 +52,7 @@ pub use certificate::{
 };
 pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
 pub use compact_pattern::CompactPatternLayout;
+pub use event_writes::{EventWrites, event_writes};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events,
@@ -69,13 +73,19 @@ pub use linear_op::{
     FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
     FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg,
     ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape,
-    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript, TensorUpdateSubscript,
-    UnaryOp, prune_dead_constants, resolve_indexed_slot,
+    TensorConcatenateSource, TensorIndex, TensorInputKind, TensorUpdateSubscript, UnaryOp,
+    prune_dead_constants, resolve_indexed_slot,
 };
 pub use model::*;
-pub use parameter_reads::read_parameter_slots;
+pub use parameter_classification::{ExcludedParameter, ExclusionReason, ParameterClassification};
+pub use parameter_reads::{read_continuous_parameter_slots, read_parameter_slots};
 pub use refresh::*;
 pub use root_search::{RootSearchPlan, RootSearchRole, TimeRootSign, root_neighborhoods};
+pub use sensitivity::{
+    AdmittedRelation, CheckpointPolicy, InitialSensitivityPlan, RelationOperand, SensitivityLayout,
+    SensitivityParameter, SensitivityProblem, SensitivityRefusal, SettlePolicy, SwitchingValueNote,
+    updates_read_algebraics,
+};
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use static_parameters::ContinuousStaticParameters;
 pub use tangent_lanes::{
@@ -90,7 +100,7 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 73;
+pub const SOLVE_SCHEMA_VERSION: u16 = 74;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -703,6 +713,8 @@ fn validate_function_conditional_owners(
     Ok(())
 }
 
+mod index_intervals;
+pub use index_intervals::{IndexIntervals, SettledIntervals};
 mod structural_pattern;
 pub use structural_pattern::{
     ColumnColoring, PatternDerivation, PatternProvenance, StructuralPattern,

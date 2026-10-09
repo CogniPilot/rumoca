@@ -1,6 +1,7 @@
 //! Tensor-native expression lowering.
 
 use super::*;
+use crate::lower::product_power_factors;
 
 enum BinaryTensorBuiltin {
     Cross,
@@ -8,6 +9,48 @@ enum BinaryTensorBuiltin {
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
+    /// The factor count of `x ^ n` for a Real scalar `x` and a literal Integer
+    /// `n` that lowers as a product (`product_power_factors`).
+    fn product_power(
+        &self,
+        operator: dae::BinaryOperator,
+        base: dae::ExprId<'dae>,
+        exponent: dae::ExprId<'dae>,
+    ) -> Option<u8> {
+        if !matches!(
+            operator,
+            dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+        ) {
+            return None;
+        }
+        let base = self.view.expression(base)?.value_type();
+        if !base.is_scalar() || base.scalar_type() != dae::ScalarType::Real {
+            return None;
+        }
+        match self.view.expression(exponent)?.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(exponent)) => {
+                product_power_factors(*exponent)
+            }
+            _ => None,
+        }
+    }
+
+    /// `base` multiplied by itself `factors` times in left-to-right order.
+    fn repeated_product(
+        &mut self,
+        base: solve::ProgramRegister<'program>,
+        factors: u8,
+        at: rumoca_core::Span,
+    ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
+        let mut product = base;
+        for _ in 1..factors {
+            product =
+                self.builder
+                    .binary(solve::SolveBinaryOperator::Multiply, product, base, at)?;
+        }
+        Ok(product)
+    }
+
     // SPEC_0021: Exception - exhaustive binary-operator lowering dispatch.
     #[allow(clippy::too_many_lines)]
     pub(super) fn binary(
@@ -38,6 +81,10 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .expression(rhs)
             .expect("checked rhs resolves")
             .value_type();
+        if let Some(factors) = self.product_power(operator, lhs, rhs) {
+            let register = self.repeated_product(lhs_value, factors, at)?;
+            return Ok(LoweredValue::scalar(value_type, register));
+        }
         let division = matches!(
             operator,
             dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide

@@ -1,6 +1,7 @@
 mod options;
 
 use options::InteractiveOptions;
+use rumoca_sim::{SESSION_PROTOCOL_VERSION, SessionCommand, SessionEvent};
 use wasm_bindgen::prelude::*;
 
 use crate::{
@@ -69,38 +70,29 @@ impl WasmSimulationSession {
 
     /// Set an input value by name. Takes effect on the next advance.
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), WasmError> {
-        self.session
-            .set_input(name, value)
-            .map_err(|e| WasmError::new(format!("{e}")))
+        self.apply(SessionCommand::SetInput {
+            name: name.to_owned(),
+            value,
+        })
+        .map(drop)
     }
 
     /// Apply one atomic input frame encoded as `[["name", value], ...]`.
     pub fn set_inputs(&mut self, inputs_json: &str) -> Result<(), WasmError> {
         let inputs: Vec<(String, f64)> = serde_json::from_str(inputs_json)
             .map_err(|e| WasmError::new(format!("Invalid input frame: {e}")))?;
-        let batch: Vec<_> = inputs
-            .iter()
-            .map(|(name, value)| (name.as_str(), *value))
-            .collect();
-        self.session
-            .set_inputs(&batch)
-            .map_err(|e| WasmError::new(format!("{e}")))
+        self.apply(SessionCommand::SetInputs { inputs }).map(drop)
     }
 
     /// Advance the simulation to an absolute target time in seconds.
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), WasmError> {
-        self.session.ensure_end_time(target_time);
-        self.session
-            .advance_to(target_time)
-            .map_err(|e| WasmError::new(format!("Advance error: {e}")))
+        self.apply(SessionCommand::AdvanceTo { time: target_time })
+            .map(drop)
     }
 
     /// Advance the simulation by a relative time step in seconds.
     pub fn step(&mut self, dt: f64) -> Result<(), WasmError> {
-        self.session.ensure_end_time(self.session.time() + dt);
-        self.session
-            .step(dt)
-            .map_err(|e| WasmError::new(format!("Step error: {e}")))
+        self.apply(SessionCommand::Step { dt }).map(drop)
     }
 
     /// Get the current simulation time.
@@ -109,35 +101,54 @@ impl WasmSimulationSession {
     }
 
     /// Read a single variable value by name.
-    pub fn get(&self, name: &str) -> Result<Option<f64>, WasmError> {
-        self.session
-            .get(name)
-            .map_err(|e| WasmError::new(format!("Session read error: {e}")))
+    pub fn get(&mut self, name: &str) -> Result<Option<f64>, WasmError> {
+        match self.apply(SessionCommand::Get {
+            name: name.to_owned(),
+        })? {
+            SessionEvent::Value { value, .. } => Ok(value),
+            other => Err(unexpected_event("get", &other)),
+        }
     }
 
     /// Get all current variable values as a JSON string `{"time": t, "values": {...}}`.
-    pub fn state_json(&self) -> Result<String, WasmError> {
-        let state = self
-            .session
-            .state()
-            .map_err(|e| WasmError::new(format!("Session state error: {e}")))?;
-        serde_json::to_string(&serde_json::json!({
-            "time": state.time,
-            "values": state.values,
-        }))
-        .map_err(|e| WasmError::new(format!("Session state serialization error: {e}")))
+    pub fn state_json(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::State)? {
+            SessionEvent::State { time, values } => {
+                serde_json::to_string(&serde_json::json!({ "time": time, "values": values }))
+                    .map_err(|e| WasmError::new(format!("Session state serialization error: {e}")))
+            }
+            other => Err(unexpected_event("state", &other)),
+        }
+    }
+
+    /// The execution engine the session selected, as the JSON receipt
+    /// `{"engine": "interpreter" | "cranelift" | "wasm_program", "refusal":
+    /// null | "no_continuous_states" | "external_tables"}`. It is the engine
+    /// field of the protocol `hello` event.
+    pub fn execution_receipt_json(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::Hello {
+            protocol_version: SESSION_PROTOCOL_VERSION,
+        })? {
+            SessionEvent::Hello { engine, .. } => serde_json::to_string(&engine)
+                .map_err(|e| WasmError::new(format!("Execution receipt serialization error: {e}"))),
+            other => Err(unexpected_event("hello", &other)),
+        }
     }
 
     /// Get available input names as a JSON array string.
-    pub fn input_names(&self) -> Result<String, WasmError> {
-        serde_json::to_string(self.session.input_names())
-            .map_err(|e| WasmError::new(format!("Input name serialization error: {e}")))
+    pub fn input_names(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::InputNames)? {
+            SessionEvent::InputNames { names } => names_json(&names),
+            other => Err(unexpected_event("input_names", &other)),
+        }
     }
 
     /// Get all solver variable names as a JSON array string.
-    pub fn variable_names(&self) -> Result<String, WasmError> {
-        serde_json::to_string(self.session.variable_names())
-            .map_err(|e| WasmError::new(format!("Variable name serialization error: {e}")))
+    pub fn variable_names(&mut self) -> Result<String, WasmError> {
+        match self.apply(SessionCommand::VariableNames)? {
+            SessionEvent::VariableNames { names } => names_json(&names),
+            other => Err(unexpected_event("variable_names", &other)),
+        }
     }
 
     /// Reset the simulation to initial conditions.
@@ -148,14 +159,33 @@ impl WasmSimulationSession {
     /// Restart the original Modelica initialization at an absolute time.
     /// Invalid restart coordinates leave the existing session untouched.
     pub fn reset_at(&mut self, time: f64) -> Result<(), WasmError> {
-        if !time.is_finite() || time < 0.0 {
-            return Err(WasmError::new("Reset time must be finite and nonnegative"));
-        }
-        self.session
-            .reset(time)
-            .map_err(|e| WasmError::new(format!("Reset failed: {e}")))?;
-        Ok(())
+        self.apply(SessionCommand::Reset { time: Some(time) })
+            .map(drop)
     }
+}
+
+impl WasmSimulationSession {
+    /// Send one command through the session dispatcher, surfacing an `error`
+    /// event as the binding's error.
+    fn apply(&mut self, command: SessionCommand) -> Result<SessionEvent, WasmError> {
+        match self.session.apply(command) {
+            SessionEvent::Error { code, message } => {
+                Err(WasmError::new(format!("[{code}] {message}")))
+            }
+            event => Ok(event),
+        }
+    }
+}
+
+pub(crate) fn unexpected_event(command: &str, event: &SessionEvent) -> WasmError {
+    WasmError::new(format!(
+        "Session `{command}` returned unexpected event {event:?}"
+    ))
+}
+
+fn names_json(names: &[String]) -> Result<String, WasmError> {
+    serde_json::to_string(names)
+        .map_err(|e| WasmError::new(format!("Session name serialization error: {e}")))
 }
 
 fn create_interactive_session(

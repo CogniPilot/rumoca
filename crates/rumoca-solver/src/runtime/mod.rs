@@ -35,3 +35,9 @@ pub mod solve_runtime;
 pub mod time;
 #[cfg(not(kani))]
 pub mod timeout;
+#[cfg(not(kani))]
+pub mod trajectory;
+#[cfg(not(kani))]
+mod trajectory_initial;
+#[cfg(not(kani))]
+pub mod trajectory_objective;

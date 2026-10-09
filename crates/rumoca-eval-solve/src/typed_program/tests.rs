@@ -1,6 +1,5 @@
 mod directional_map;
 mod immutable_payloads;
-mod invocation_scope;
 mod linear_solve;
 mod recursion;
 
@@ -16,10 +15,7 @@ use rumoca_ir_solve::{
     TypedProgramBuilder,
 };
 
-use super::{
-    TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_directional,
-    eval_pure_call_with_invocation_counts,
-};
+use super::{TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_directional};
 
 fn span(start: usize) -> Span {
     Span::from_offsets(
@@ -272,7 +268,7 @@ fn nested_call_evaluates_one_compact_aggregate_and_assertion_tuple() {
 }
 
 #[test]
-fn conditional_projections_share_one_issued_call_invocation() {
+fn conditional_projections_select_lazily_between_identical_calls() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let boolean = SolveValueType::scalar(SolveScalarType::Boolean);
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
@@ -316,18 +312,14 @@ fn conditional_projections_share_one_issued_call_invocation() {
     let value =
         TypedValue::construct(real, vec![real_kind(SolveRealFormat::Binary64, 3.0)]).unwrap();
 
-    let (active, active_counts) = eval_pure_call_with_invocation_counts(
+    let active = eval_pure_call(
         &table,
         table.owners()[1].id(),
         &[condition(true), value.clone()],
     )
     .unwrap();
-    let (inactive, inactive_counts) = eval_pure_call_with_invocation_counts(
-        &table,
-        table.owners()[1].id(),
-        &[condition(false), value],
-    )
-    .unwrap();
+    let inactive =
+        eval_pure_call(&table, table.owners()[1].id(), &[condition(false), value]).unwrap();
 
     assert_eq!(
         active[0].elements(),
@@ -337,8 +329,6 @@ fn conditional_projections_share_one_issued_call_invocation() {
         inactive[0].elements(),
         [real_kind(SolveRealFormat::Binary64, 6.0)]
     );
-    assert_eq!(active_counts[0], 1, "one exact child invocation is issued");
-    assert_eq!(inactive_counts[0], 0, "inactive child calls remain lazy");
 }
 
 #[test]

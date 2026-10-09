@@ -70,50 +70,99 @@ pub(super) fn exact_real(value: i64) -> Option<f64> {
     (-EXACT..=EXACT).contains(&value).then_some(value as f64)
 }
 
+/// One literal a local may hold, the facts of the path that stores it, and the
+/// Booleans that path proves: `b := x and y` holds `true` only where `x` and
+/// `y` held, so a read of `b` as true proves them too, for as long as the
+/// values they name are unchanged.
+#[derive(Clone, PartialEq, Debug)]
+struct Arm {
+    value: ArmValue,
+    facts: PathFacts,
+    implied: Vec<(VarName, bool)>,
+}
+
 /// The facts on the path of each literal a local may hold. A value with no
 /// arm cannot be held.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) struct Selection {
-    arms: Vec<(ArmValue, PathFacts)>,
+    arms: std::sync::Arc<Vec<Arm>>,
 }
 
 impl Selection {
     /// A Boolean known only to be `true` or `false`.
     pub(super) fn booleans() -> Self {
+        let arm = |value| Arm {
+            value: ArmValue::Boolean(value),
+            facts: Some(Facts::new()),
+            implied: Vec::new(),
+        };
         Self {
-            arms: vec![
-                (ArmValue::Boolean(true), Some(BTreeMap::new())),
-                (ArmValue::Boolean(false), Some(BTreeMap::new())),
-            ],
+            arms: std::sync::Arc::new(vec![arm(true), arm(false)]),
         }
     }
 
-    fn insert(&mut self, value: ArmValue, facts: PathFacts) {
+    fn insert(&mut self, value: ArmValue, facts: PathFacts, implied: Vec<(VarName, bool)>) {
         if facts.is_none() {
             return;
         }
-        match self.arms.iter_mut().find(|(arm, _)| *arm == value) {
-            Some((_, existing)) => *existing = disjoin(existing.take(), facts),
-            None => self.arms.push((value, facts)),
+        match std::sync::Arc::make_mut(&mut self.arms)
+            .iter_mut()
+            .find(|arm| arm.value == value)
+        {
+            Some(existing) => {
+                existing.facts = disjoin(existing.facts.take(), facts);
+                // Either path may have stored the value: only what both prove.
+                existing.implied.retain(|entry| implied.contains(entry));
+            }
+            None => std::sync::Arc::make_mut(&mut self.arms).push(Arm {
+                value,
+                facts,
+                implied,
+            }),
         }
+    }
+
+    /// The arms `admitted` keeps.
+    pub(super) fn arms_when(
+        &self,
+        admitted: impl Fn(ArmValue) -> bool,
+    ) -> impl Iterator<Item = (&PathFacts, &[(VarName, bool)])> {
+        self.arms
+            .iter()
+            .filter(move |arm| admitted(arm.value))
+            .map(|arm| (&arm.facts, arm.implied.as_slice()))
     }
 
     /// What holds on the path of any arm `admitted` keeps; `None` when it
     /// keeps none.
     pub(super) fn facts_when(&self, admitted: impl Fn(ArmValue) -> bool) -> PathFacts {
-        self.arms
-            .iter()
-            .filter(|(arm, _)| admitted(*arm))
-            .fold(None, |joined, (_, facts)| disjoin(joined, facts.clone()))
+        self.arms_when(admitted)
+            .fold(None, |joined, (facts, _)| disjoin(joined, facts.clone()))
+    }
+
+    /// The Booleans every arm `admitted` keeps proves.
+    pub(super) fn implied_when(&self, admitted: impl Fn(ArmValue) -> bool) -> Vec<(VarName, bool)> {
+        let mut arms = self.arms_when(admitted).map(|(_, implied)| implied);
+        let Some(first) = arms.next() else {
+            return Vec::new();
+        };
+        let mut common = first.to_vec();
+        for implied in arms {
+            common.retain(|entry| implied.contains(entry));
+        }
+        common
     }
 
     pub(super) fn retain(&mut self, admitted: impl Fn(ArmValue) -> bool) {
-        self.arms.retain(|(arm, _)| admitted(*arm));
+        std::sync::Arc::make_mut(&mut self.arms).retain(|arm| admitted(arm.value));
     }
 
-    pub(super) fn for_each_arm(&mut self, mut visit: impl FnMut(&mut PathFacts)) {
-        for (_, facts) in &mut self.arms {
-            visit(facts);
+    /// Drop everything the arms record about the value `name`, which a write
+    /// changes.
+    pub(super) fn forget_name(&mut self, name: &VarName) {
+        for arm in std::sync::Arc::make_mut(&mut self.arms).iter_mut() {
+            forget_in(&mut arm.facts, name);
+            arm.implied.retain(|(implied, _)| implied != name);
         }
     }
 
@@ -123,8 +172,8 @@ impl Selection {
         let Some(other) = other else {
             return false;
         };
-        for (value, facts) in &other.arms {
-            self.insert(*value, facts.clone());
+        for arm in other.arms.iter() {
+            self.insert(arm.value, arm.facts.clone(), arm.implied.clone());
         }
         true
     }
@@ -158,6 +207,163 @@ pub(super) fn literal_arms(value: &Expression) -> Option<Vec<LiteralArm<'_>>> {
     Some(arms)
 }
 
+/// The operands of `if a then b else false`, which is `a and b`: one branch
+/// whose else is the literal `false`. A chain of several branches is not one
+/// conjunction, so it has no such operands.
+pub(super) fn single_branch_and(expression: &Expression) -> Option<[&Expression; 2]> {
+    let [(condition, arm)] = false_else_branches(expression)? else {
+        return None;
+    };
+    Some([condition, arm])
+}
+
+/// The branches of a Boolean if-expression whose else is the literal `false`,
+/// which is true exactly where one branch is selected and holds.
+fn false_else_branches(expression: &Expression) -> Option<&[(Expression, Expression)]> {
+    let Expression::If {
+        branches,
+        else_branch,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    ArmValue::of_literal(else_branch)
+        .is_some_and(|literal| literal.is_boolean(false))
+        .then_some(branches.as_slice())
+}
+
+/// The Booleans implied when the Boolean if-expression `expression` evaluates
+/// to `value`. `if a then b else false` is `a and b`. A longer chain is a
+/// disjunction of such conjunctions: true, it proves what every branch
+/// proves; false, it proves no operand pair.
+fn implied_conditional(
+    expression: &Expression,
+    value: bool,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
+    if let Some(operands) = single_branch_and(expression) {
+        implied_operands(operands, (true, value), known, implied);
+        return;
+    }
+    let Some(branches) = false_else_branches(expression).filter(|_| value) else {
+        return;
+    };
+    let entries = chain_implied_booleans(branches, known);
+    let fresh = entries
+        .into_iter()
+        .filter(|entry| !implied.contains(entry))
+        .collect::<Vec<_>>();
+    implied.extend(fresh);
+}
+
+/// The Booleans every branch of a chain proves when the chain is true: the
+/// chain is the disjunction of its branches, each holding when its earlier
+/// conditions failed, its own held, and its value is true.
+fn chain_implied_booleans(
+    branches: &[(Expression, Expression)],
+    known: &dyn Fn(&VarName) -> Option<bool>,
+) -> Vec<(VarName, bool)> {
+    let mut common: Option<Vec<(VarName, bool)>> = None;
+    for (position, (condition, arm)) in branches.iter().enumerate() {
+        let mut implied = Vec::new();
+        for (earlier, _) in &branches[..position] {
+            implied_booleans(earlier, false, known, &mut implied);
+        }
+        implied_booleans(condition, true, known, &mut implied);
+        implied_booleans(arm, true, known, &mut implied);
+        match &mut common {
+            Some(common) => common.retain(|entry| implied.contains(entry)),
+            None => common = Some(implied),
+        }
+    }
+    common.unwrap_or_default()
+}
+
+/// The Booleans that hold wherever `expression` evaluates to `value`: the
+/// local it reads, both operands of a true `and` (a Boolean if-expression with
+/// a `false` else branch is one), both operands of a false `or`. A false `and`
+/// (true `or`) leaves one operand false (true) when the other is known on this
+/// path to hold the value that does not decide the result: `g := if a then b
+/// else false` with `a` true makes a false `g` prove `b` false.
+fn implied_booleans(
+    expression: &Expression,
+    value: bool,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
+    match expression {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => {
+            let entry = (name.var_name().clone(), value);
+            if !implied.contains(&entry) {
+                implied.push(entry);
+            }
+        }
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => implied_booleans(rhs, !value, known, implied),
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            let conjunction = matches!(op, OpBinary::And);
+            let operands = [lhs.as_ref(), rhs.as_ref()];
+            implied_operands(operands, (conjunction, value), known, implied);
+        }
+        Expression::If { .. } => implied_conditional(expression, value, known, implied),
+        _ => {}
+    }
+}
+
+/// The Booleans implied when the `and` (`conjunction`) or `or` of `operands`
+/// evaluates to `value`.
+fn implied_operands(
+    operands: [&Expression; 2],
+    (conjunction, value): (bool, bool),
+    known: &dyn Fn(&VarName) -> Option<bool>,
+    implied: &mut Vec<(VarName, bool)>,
+) {
+    if conjunction == value {
+        // Both operands have this value.
+        for operand in operands {
+            implied_booleans(operand, value, known, implied);
+        }
+        return;
+    }
+    // One operand decides the result: when the other is known to hold the
+    // value that does not, this one has the deciding value.
+    let [lhs, rhs] = operands;
+    for (operand, other) in [(lhs, rhs), (rhs, lhs)] {
+        if known_boolean(other, known) == Some(conjunction) {
+            implied_booleans(operand, value, known, implied);
+        }
+    }
+}
+
+/// The value `expression` is known to hold on this path.
+fn known_boolean(
+    expression: &Expression,
+    known: &dyn Fn(&VarName) -> Option<bool>,
+) -> Option<bool> {
+    match expression {
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Some(*value),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => known(name.var_name()),
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => known_boolean(rhs, known).map(|value| !value),
+        _ => None,
+    }
+}
+
 impl GuardFacts {
     /// The selection a write of `value` gives `subject`: the two truth values
     /// of a Boolean, or the literal arms of a numeric value. Each arm also
@@ -171,20 +377,34 @@ impl GuardFacts {
         if scope.is_integer(subject) || scope.is_real(subject) {
             return self.literal_selection(value, scope);
         }
-        let mut selection = Selection { arms: Vec::new() };
+        let mut selection = Selection {
+            arms: std::sync::Arc::default(),
+        };
         let when_true = self.facts(value, true, scope);
         let when_false = self.facts(value, false, scope);
-        if trivial(&when_true) && trivial(&when_false) && trivial(&self.path) {
+        let known = |name: &VarName| self.known_boolean(name);
+        let mut implied_true = Vec::new();
+        implied_booleans(value, true, &known, &mut implied_true);
+        let mut implied_false = Vec::new();
+        implied_booleans(value, false, &known, &mut implied_false);
+        if trivial(&when_true)
+            && trivial(&when_false)
+            && trivial(&self.path)
+            && implied_true.is_empty()
+            && implied_false.is_empty()
+        {
             return None;
         }
         // The path facts that held at the write are implied by either value.
         selection.insert(
             ArmValue::Boolean(true),
             conjoin(self.path.clone(), when_true),
+            implied_true,
         );
         selection.insert(
             ArmValue::Boolean(false),
             conjoin(self.path.clone(), when_false),
+            implied_false,
         );
         Some(selection)
     }
@@ -196,15 +416,66 @@ impl GuardFacts {
         if arms.len() < 2 {
             return None;
         }
-        let mut selection = Selection { arms: Vec::new() };
+        let mut selection = Selection {
+            arms: std::sync::Arc::default(),
+        };
         for (conditions, literal) in arms {
             let path = conditions
                 .into_iter()
                 .fold(self.clone(), |path, (condition, holds)| {
                     path.assuming(condition, holds, scope)
                 });
-            selection.insert(literal, path.path);
+            selection.insert(literal, path.path, Vec::new());
         }
         Some(selection)
+    }
+}
+
+impl Selection {
+    /// Whether both selections admit the same literal values.
+    pub(super) fn same_values(&self, other: &Self) -> bool {
+        self.arms.len() == other.arms.len()
+            && self.arms.iter().all(|arm| {
+                other
+                    .arms
+                    .iter()
+                    .any(|candidate| candidate.value == arm.value)
+            })
+    }
+}
+
+impl Selection {
+    /// Whether this selection holds both truth values and some arm proves a
+    /// Boolean among `names`.
+    pub(super) fn correlates_with(&self, names: &HashSet<String>) -> bool {
+        self.arms.len() >= 2
+            && self.arms.iter().any(|arm| {
+                matches!(arm.value, ArmValue::Boolean(_))
+                    && arm
+                        .implied
+                        .iter()
+                        .any(|(implied, _)| names.contains(implied.as_str()))
+            })
+    }
+
+    /// Whether no arm is left.
+    pub(super) fn is_empty(&self) -> bool {
+        self.arms.is_empty()
+    }
+}
+
+impl GuardFacts {
+    /// The value the Boolean `name` holds on every path reaching here, when
+    /// one literal arm is left.
+    fn known_boolean(&self, name: &VarName) -> Option<bool> {
+        match self.selections.get(name)?.arms.as_slice() {
+            [
+                Arm {
+                    value: ArmValue::Boolean(value),
+                    ..
+                },
+            ] => Some(*value),
+            _ => None,
+        }
     }
 }

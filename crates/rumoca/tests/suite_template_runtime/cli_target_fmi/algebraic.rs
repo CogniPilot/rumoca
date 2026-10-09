@@ -66,3 +66,65 @@ for interface in ['ModelExchange', 'CoSimulation']:
             assert abs(row['y'] - expected_y) < 1e-5, (interface, time, row, expected_y)
             assert abs(row['z'] - expected_z) < 1e-5, (interface, time, row, expected_z)
 "#;
+
+/// A for-family of algebraic equations is one compact call owner whose body
+/// is a typed map (SPEC_0043 §6c); the C targets render that map as one loop
+/// nest and every element stays a current exact output.
+/// The lifecycle driver of `validate_package` addresses two continuous states
+/// at value references 1 and 2 (FMI 3: one array at value reference 1), so the
+/// model declares the tensor state `x[2]` first.
+#[test]
+fn packaged_fmi_renders_compact_algebraic_families_as_loops() {
+    if !conformance_prerequisites_are_available() {
+        return;
+    }
+    assert_pinned_fmpy();
+    let standards = standard_roots();
+    let work = tempdir().expect("family FMI work directory");
+    let compiled = rumoca::Compiler::new()
+        .model("FmiAlgebraicFamily")
+        .compile_str(
+            r#"
+model FmiAlgebraicFamily
+  output Real x[2](each start=1, each fixed=true);
+  Real g[6];
+  Real d[4];
+  output Real s;
+equation
+  der(x) = -x;
+  for i in 1:6 loop
+    g[i] = x[1]*i;
+  end for;
+  for i in 1:4 loop
+    d[i] = (g[i+2] - g[i])/2.0;
+  end for;
+  s = d[1] + d[4];
+end FmiAlgebraicFamily;
+"#,
+            "FmiAlgebraicFamily.mo",
+        )
+        .expect("compile the algebraic families");
+    let driver = work.path().join("family.py");
+    fs::write(&driver, FAMILY_DRIVER).expect("write independent importer driver");
+    for (target, standard) in [("fmi2", &standards.0), ("fmi3", &standards.1)] {
+        let fmu = build_named_fmu(work.path(), &compiled, target, "FmiAlgebraicFamily");
+        validate_package(&fmu, standard);
+        checked_output(
+            Command::new("python3").arg(&driver).arg(&fmu.archive),
+            &format!("execute {target} compact algebraic families"),
+        );
+    }
+}
+
+const FAMILY_DRIVER: &str = r#"
+import math
+import sys
+from fmpy import simulate_fmu
+
+for interface in ['ModelExchange', 'CoSimulation']:
+    trace = simulate_fmu(sys.argv[1], fmi_type=interface, start_time=0.0,
+        stop_time=1.0, output_interval=0.25, output=['s'], relative_tolerance=1e-8)
+    for row in trace:
+        expected = 2.0 * math.exp(-float(row['time']))
+        assert abs(row['s'] - expected) < 1e-5, (interface, row)
+"#;

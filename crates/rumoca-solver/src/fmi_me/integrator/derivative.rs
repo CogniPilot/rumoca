@@ -380,7 +380,7 @@ impl MeDerivativeController {
         }))
     }
 
-    fn over_component(component: Box<dyn MeDerivativeComponent>) -> Self {
+    pub(in crate::fmi_me) fn over_component(component: Box<dyn MeDerivativeComponent>) -> Self {
         Self {
             shared: Rc::new(DerivativeCell {
                 component,

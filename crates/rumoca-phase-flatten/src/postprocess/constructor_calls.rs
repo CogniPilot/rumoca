@@ -279,7 +279,7 @@ mod tests {
                 body: vec![constructor_field()],
                 scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
             }),
-            interiors_materialized: false,
+            interiors: flat::FamilyInteriors::ContinuousAlgebraic,
         }
     }
 

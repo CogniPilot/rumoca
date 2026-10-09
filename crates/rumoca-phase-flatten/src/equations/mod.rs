@@ -31,10 +31,12 @@ use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 pub(crate) mod affine;
 pub(crate) mod array_family;
 mod assert_equations;
+mod cheapen;
 mod conditional_and_eval;
 mod der_divergent_branches;
 mod if_equation_alignment;
 mod parameter_selections;
+use cheapen::{CheapenPlan, build_cheapen_plan, cheapen_equation_bodies, placeholder_interiors};
 use der_divergent_branches::{branches_differ_in_der_targets, try_select_parameter_branch};
 pub(crate) use parameter_selections::parameter_branch_selection;
 use parameter_selections::refuse_non_evaluable_range;
@@ -1113,23 +1115,26 @@ fn expand_for_equation(
     //     per-cell bodies (`promote_parameter_variable`). A fail-early DAE guard
     //     rejects any cheapened algebraic family that promotion does not template-
     //     reconstruct, so cheapening to 0 here can never silently survive.
-    let cheapen_plan = if !ctx.materialize_structured_families
-        && regular.is_some()
-        && template.is_some()
-        && (is_state_derivative_body(equations)
-            || ctx.current_class_instance_id.is_some_and(|owner| {
-                crate::param_variability::is_proven_parameter_variability_assignment_body(
-                    owner,
-                    indices,
-                    equations,
-                    &ctx.param_variability_families,
-                )
-            })) {
-        build_cheapen_plan(ctx, indices, prefix, span)?
-    } else {
+    //   * CONTINUOUS ALGEBRAIC bodies with a captured template: the DAE lowers the
+    //     family from its template as one continuous owner (SPEC_0043 §6c); the
+    //     body need not be regular, since no consumer reads its cells.
+    let placeholder = placeholder_interiors(
+        ctx,
+        indices,
+        equations,
+        regular.is_some(),
+        template.as_ref(),
+    );
+    let cheapen_plan = if placeholder.materialized() {
         None
+    } else {
+        build_cheapen_plan(ctx, indices, prefix, span)?
     };
-    let interiors_materialized = cheapen_plan.is_none();
+    let interiors = if cheapen_plan.is_some() {
+        placeholder
+    } else {
+        flat::FamilyInteriors::Materialized
+    };
 
     let mut iterations = Vec::new();
     let mut result = FlattenedEquations::default();
@@ -1164,23 +1169,16 @@ fn expand_for_equation(
     if nested_family_lifted {
         return Ok(result);
     }
-    let Some(equations_per_point) = iterations
-        .first()
-        .map(|iteration| iteration.equation_count)
-        .filter(|count| *count > 0)
-        .filter(|count| {
-            iterations
-                .iter()
-                .all(|iteration| iteration.equation_count == *count)
-        })
-    else {
-        if cheapen_plan.is_some() {
+    let equations_per_point = match PointRows::of(&iterations) {
+        PointRows::None => return Ok(result),
+        PointRows::Uniform(count) => count,
+        PointRows::Mixed if cheapen_plan.is_some() => {
             return Err(FlattenError::unsupported_equation(
                 "cheapened structured equation family has a non-uniform body row count",
                 span,
             ));
         }
-        return Ok(result);
+        PointRows::Mixed => return Ok(result),
     };
     // A template is an optional compact rendering/evaluation aid; the emitted
     // scalar rows remain authoritative.  Some source bodies contain equations
@@ -1190,6 +1188,15 @@ fn expand_for_equation(
     // attach a misleading template to the family: downstream code must fall
     // back to the materialized rows rather than rendering the wrong kernel.
     let template = template.filter(|candidate| candidate.body.len() == equations_per_point);
+    if !interiors.materialized() && (template.is_none() || !result.structured_equations.is_empty())
+    {
+        // Placeholder rows are never authoritative: a family whose template
+        // cannot own its body must not reach a consumer.
+        return Err(FlattenError::unsupported_equation(
+            "cheapened structured equation family lost its comprehension template",
+            span,
+        ));
+    }
     if !result.structured_equations.is_empty() {
         // A child family that could not be lifted already owns part of this
         // row interval.  Keep its proven domain and leave uncovered rows as
@@ -1206,10 +1213,40 @@ fn expand_for_equation(
             origin: origin.clone(),
             regular,
             template,
-            interiors_materialized,
+            interiors,
         });
 
     Ok(result)
+}
+
+/// Rows a family body issues at its domain points.
+enum PointRows {
+    /// No point issues a row (a zero-size array equation, MLS 3.7 §10.3.1): the
+    /// body owns nothing, so no family exists.
+    None,
+    /// Every point issues this many rows.
+    Uniform(usize),
+    /// Points issue different counts.
+    Mixed,
+}
+
+impl PointRows {
+    fn of(iterations: &[SourceStructuredIteration]) -> Self {
+        let Some(first) = iterations.first().map(|iteration| iteration.equation_count) else {
+            return Self::None;
+        };
+        if !iterations
+            .iter()
+            .all(|iteration| iteration.equation_count == first)
+        {
+            return Self::Mixed;
+        }
+        if first == 0 {
+            Self::None
+        } else {
+            Self::Uniform(first)
+        }
+    }
 }
 
 fn classify_regular_for_body(
@@ -1404,93 +1441,6 @@ fn collect_for_iterations(
     }
 
     Ok(())
-}
-
-/// Per-binder base and optional `+step` neighbor values used to identify a regular
-/// family's corner cells during materialization. A cell is a corner when its index
-/// tuple equals the base, or differs from the base in exactly one binder, at that
-/// binder's neighbor value.
-struct CheapenPlan {
-    binders: Vec<(i64, Option<i64>)>,
-}
-
-impl CheapenPlan {
-    fn is_corner(&self, index_values: &[i64]) -> bool {
-        let mut differing = false;
-        for (&(base, neighbor), &value) in self.binders.iter().zip(index_values) {
-            if value == base {
-                continue;
-            }
-            if differing || neighbor != Some(value) {
-                return false;
-            }
-            differing = true;
-        }
-        true
-    }
-}
-
-/// True when every equation in the body is a state-derivative assignment
-/// `der(x[...]) = ...`. Only these are safe to cheapen: solve reconstructs the
-/// derivative from the corner stencil at runtime, so the interior bodies are never
-/// read. Algebraic assignments are excluded -- their per-cell values feed
-/// compile-time derived-parameter promotion.
-fn is_state_derivative_body(equations: &[ast::Equation]) -> bool {
-    !equations.is_empty()
-        && equations.iter().all(|equation| match equation {
-            ast::Equation::Simple { lhs, .. } => is_der_call(lhs),
-            _ => false,
-        })
-}
-
-/// True when `expr` is a `der(...)` call.
-fn is_der_call(expr: &ast::Expression) -> bool {
-    matches!(
-        expr,
-        ast::Expression::FunctionCall { comp, .. }
-            if comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "der"
-    )
-}
-
-/// Build the corner predicate for a regular for-family by expanding each binder's
-/// range to read its base (first) and neighbor (second) values. `None` when any
-/// binder range is empty (the family has no cells, so nothing to cheapen).
-fn build_cheapen_plan(
-    ctx: &Context,
-    indices: &[ast::ForIndex],
-    prefix: &ast::QualifiedName,
-    span: rumoca_core::Span,
-) -> Result<Option<CheapenPlan>, FlattenError> {
-    let mut binders = Vec::with_capacity(indices.len());
-    for index in indices {
-        let values = expand_range_indices(ctx, &index.range, prefix, span)?;
-        let Some(&base) = values.first() else {
-            return Ok(None);
-        };
-        binders.push((base, values.get(1).copied()));
-    }
-    Ok(Some(CheapenPlan { binders }))
-}
-
-/// Replace each `Simple` equation's right-hand side with a real `0.0` literal,
-/// keeping the left-hand side. Used for a regular family's interior cells, whose
-/// real bodies are reconstructed downstream from the corner cells. Non-`Simple`
-/// equations are left unchanged (a regular family's body is `Simple`; this only
-/// guards against unexpected shapes).
-fn cheapen_equation_bodies(
-    equations: &[ast::Equation],
-    span: rumoca_core::Span,
-) -> Vec<ast::Equation> {
-    equations
-        .iter()
-        .map(|equation| match equation {
-            ast::Equation::Simple { lhs, .. } => ast::Equation::Simple {
-                lhs: lhs.clone(),
-                rhs: zero_sized_reductions::real_literal_expr(0.0, span),
-            },
-            other => other.clone(),
-        })
-        .collect()
 }
 
 #[derive(Clone)]

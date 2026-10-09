@@ -30,6 +30,10 @@ pub fn simulate(
     simulate_artifact(artifact, opts, execution_backend)
 }
 
+pub(crate) fn integrator_factory() -> crate::me_backend::IntegratorFactory {
+    RK45_INTEGRATOR
+}
+
 pub use simulate as simulate_dae;
 
 pub fn simulate_with_diagnostics(
@@ -177,6 +181,10 @@ impl SimulationSession {
     }
 
     pub fn ensure_end_time(&mut self, _target_time: f64) {}
+
+    pub fn execution_receipt(&self) -> rumoca_solver::SimExecutionReceipt {
+        self.inner.execution_receipt()
+    }
 
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt > 0.0 {
