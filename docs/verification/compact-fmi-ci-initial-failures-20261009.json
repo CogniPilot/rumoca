@@ -39,7 +39,25 @@
       },
       "identity_evidence": "URI-sorted merge and top-level-first Resolve registration allocate an extra Probe class before Pkg descendants. Probe.r registers later. Actual h/x/y declaration IDs shift 106/105/107 to 107/106/108. Effective type allocation begins after nominal type_table.len(), shifting flat_type_id 13 to 14. Standard reuse retains the full unit; prior strict closure re-resolution pruned Probe.",
       "prepared_fix": "Write unchanged Probe into the source root before either session and use its actual path for by-name input. Assert identical six URI inventories, parsed declarations, exact source bytes, source-root backing and empty live overlays on both sessions. Retain exact warning and full DAE storage comparisons; no identity normalization.",
-      "governing_specs": ["SPEC_0001 compilation-unit identity", "SPEC_0033", "SPEC_0050"]
+      "governing_specs": ["SPEC_0001 compilation-unit identity", "SPEC_0033", "SPEC_0050"],
+      "repeat_observation": {
+        "job": "Coverage Gate",
+        "job_id": 114039594461,
+        "raw_log_sha256": "62a66586ebffd7cfbf3286acff775cf15984852e00d2184395bd864c3e9f459c",
+        "result": "rumoca library 117 passed / 1 failed at the same full-storage assertion; workspace coverage command aborted"
+      }
+    },
+    {
+      "job": "Template Runtime (render)",
+      "job_id": 114039594293,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime template_target_ci:: -- --nocapture",
+      "result": {"passed": 8, "failed": 1, "filtered_out": 79},
+      "test": "template_target_ci::shared_template_names_are_globally_unique_and_target_owned",
+      "raw_log_sha256": "3e95fbef18c4b6c3e8a0c6f639b49985cf692a3b963d1571eb12de46f6798572",
+      "first_owner": "Reviewed exact shared-template namespace inventory lacks the imported FMI 3 metadata owner",
+      "producer_reader_contract": "fmi3/target.toml declares shared_as fmi3-modelDescription.xml.jinja; fmi-ls-wasm/modelDescription.xml.jinja includes that name to share checked metadata",
+      "prepared_fix": "Add the single required metadata name/owner to the exact inventory. Keep global uniqueness, owning-manifest declaration and exact complete-inventory assertions.",
+      "governing_specs": ["SPEC_0029 target-owned syntax and shared ownership", "SPEC_0044 ME-LSW-002", "SPEC_0033", "SPEC_0050"]
     }
   ],
   "independent_completed_gates": [
@@ -51,7 +69,7 @@
     }
   ],
   "prepared_source_checks": {
-    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all four changed Rust files",
+    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all five changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
     "cargo_execution": "NOT RUN: no target-cache lease or sufficient shared-host disk headroom",
     "validator_changes": false,
