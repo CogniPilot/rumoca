@@ -309,7 +309,7 @@
         commonDevShellArgs = {
           buildInputs = commonArgs.buildInputs;
           shellHook = ''
-            export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+            export PATH="${rustToolchain}/bin:''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
           '';
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (

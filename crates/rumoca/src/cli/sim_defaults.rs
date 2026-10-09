@@ -1,5 +1,7 @@
 //! Defaults a direct `rumoca sim` or `rumoca sim bench` run takes from the model.
 
+use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
+
 /// The `(t_start, t_end)` window of a direct run. It starts at the model's
 /// `experiment(StartTime)` when finite, else 0. It ends at `--t-end` if given,
 /// else at the model's `experiment(StopTime)` when finite and after the start,
@@ -27,6 +29,32 @@ pub(super) fn sim_window(
         result.experiment_start_time,
         result.experiment_stop_time,
     )
+}
+
+/// Options of a direct `sim` run. Explicit --atol/--rtol override the backend
+/// default so a host's tolerance policy can be reproduced exactly from the CLI.
+pub(super) fn direct_sim_options(
+    window: (f64, f64),
+    dt: Option<f64>,
+    solver_mode: SimSolverMode,
+    atol: Option<f64>,
+    rtol: Option<f64>,
+) -> SimOptions {
+    let mut opts = SimOptions {
+        t_start: window.0,
+        t_end: window.1,
+        dt,
+        solver_mode,
+        diffsol_method: DiffsolMethod::Bdf,
+        ..SimOptions::default()
+    };
+    if let Some(atol) = atol {
+        opts.atol = atol;
+    }
+    if let Some(rtol) = rtol {
+        opts.rtol = rtol;
+    }
+    opts
 }
 
 #[cfg(test)]

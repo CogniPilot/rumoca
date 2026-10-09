@@ -26,7 +26,7 @@ use debug_tracing::expand_trace_filter;
 pub(crate) use debug_tracing::init_debug_tracing;
 use debug_tracing::trace_requests_viewer;
 use point_inspection::{PointInspection, run_point_inspection, run_sim_inspection};
-use sim_defaults::{direct_sim_window, sim_window};
+use sim_defaults::{direct_sim_options, direct_sim_window, sim_window};
 
 pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
 
@@ -57,7 +57,7 @@ use rumoca_compile::{
 };
 use rumoca_core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap};
 use rumoca_phase_resolve::ResolvedTree;
-use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
+use rumoca_sim::{SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 
@@ -1823,32 +1823,6 @@ pub(crate) fn simulation_failure_error(
     error: &rumoca_sim::SimulationDiagnosticError,
 ) -> anyhow::Error {
     anyhow::anyhow!("[{}] {error}", error.diagnostic_code())
-}
-
-/// Options of a direct `sim` run. Explicit --atol/--rtol override the backend
-/// default so a host's tolerance policy can be reproduced exactly from the CLI.
-fn direct_sim_options(
-    window: (f64, f64),
-    dt: Option<f64>,
-    solver_mode: SimSolverMode,
-    atol: Option<f64>,
-    rtol: Option<f64>,
-) -> SimOptions {
-    let mut opts = SimOptions {
-        t_start: window.0,
-        t_end: window.1,
-        dt,
-        solver_mode,
-        diffsol_method: DiffsolMethod::Bdf,
-        ..SimOptions::default()
-    };
-    if let Some(atol) = atol {
-        opts.atol = atol;
-    }
-    if let Some(rtol) = rtol {
-        opts.rtol = rtol;
-    }
-    opts
 }
 
 /// Parse one `--input NAME=VALUE` initial input.
