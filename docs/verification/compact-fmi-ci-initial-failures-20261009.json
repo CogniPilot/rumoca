@@ -90,6 +90,19 @@
         "guard": {"seconds": 250.920061769, "peak_rss_kib": 2837728, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192}
       },
       "next_gate": "Trace the earliest producing operation on the bound negative control. No tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; the second completed test genuinely reproduced the fault."
+    },
+    {
+      "job": "Template Runtime (fmi)",
+      "job_id": 114039594496,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime fmi3_exact_runtime_ -- --nocapture",
+      "result": {"passed": 0, "failed": 4, "filtered_out": 84},
+      "raw_log_sha256": "bcf74acadb51997921f9ff93c9afafa72f21a405a4c4ba823a7387215caa9a29",
+      "actual_fault": "cc -std=c99 -Wall -Wextra -Wpedantic -Werror rejects the extracted kernel driver: unknown RmcModelAssertionContext; observation context member access fails before all four numerical controls execute",
+      "first_owner": "Exact-kernel test driver duplicates ModelInstance/storage declarations and omits the canonical rendered model.h assertion context",
+      "prepared_fix": "Retain emitted sources/model.h with the rendered fixture and consume its exact layout, workspace and observer declarations in the driver. Keep the existing isolated test FMI ABI prelude, replacing only its vendor include; remove duplicated ModelInstance/enums/storage-count arguments. Numerical rollback, state refresh and BLT-order controls remain unchanged.",
+      "independent_success": "Earlier cli_target_fmi group: 44 passed / 0 failed / 44 filtered; no qualification of this four-test group",
+      "governing_specs": ["SPEC_0029 shared syntax owner and DRY", "SPEC_0033", "SPEC_0050"],
+      "next_gate": "Actual fmi3_exact_runtime_ four-test execution on the prepared header migration"
     }
   ],
   "independent_completed_gates": [
@@ -118,7 +131,7 @@
     }
   ],
   "prepared_source_checks": {
-    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all five changed Rust files",
+    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all six changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
     "cargo_execution": "Prepared repairs remain unqualified. The separately bound native Fourbar negative control ran on b96 and reproduced CI failure; see local_reproduction.",
     "validator_changes": false,
