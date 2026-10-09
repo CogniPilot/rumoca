@@ -52,10 +52,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
         let count =
             count.ok_or_else(|| LowerError::contract("tensor generator extent overflow", span))?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         // Each filling generator names its value in the same match that selects
         // it. Deciding twice on one operand is what forces the second decision
         // to carry a residual case that the first one already ruled out.
@@ -249,10 +246,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .and_then(|count| count.checked_mul(element_width))
             .ok_or_else(|| LowerError::contract("transpose extent overflow", span))?;
         let src_start = self.pack_expression(operand)?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::TensorTranspose {
             dst_start,
             src_start,
@@ -406,10 +400,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
         let count =
             count.ok_or_else(|| LowerError::contract("concatenation extent overflow", span))?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::TensorConcatenate {
             dst_start,
             sources: sources.into_boxed_slice(),
@@ -572,10 +563,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;
-        let dst_start = self.next_register;
-        for _ in 0..3 {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(3, span)?;
         self.ops.push(solve::LinearOp::TensorCross {
             dst_start,
             lhs_start,

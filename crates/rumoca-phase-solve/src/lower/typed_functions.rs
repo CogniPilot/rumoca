@@ -7,6 +7,7 @@ mod folds;
 pub(crate) mod formal_stages;
 mod indexed_slices;
 mod indexed_values;
+mod leaf_count;
 mod model_calls;
 mod model_coordinates;
 pub(in crate::lower) mod model_events;

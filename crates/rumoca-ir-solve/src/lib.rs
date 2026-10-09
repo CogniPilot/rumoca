@@ -420,6 +420,12 @@ impl ScalarProgramBlock {
     /// `output_indices` may be sparse, so this first maps the output slot to
     /// its stored-output ordinal and then finds the owning program.
     pub fn program_index_for_output(&self, output: usize) -> Option<usize> {
+        self.output_position(output).map(|(program, _)| program)
+    }
+
+    /// The program that produces dense output slot `output` and the position
+    /// of that output among the program's own stored outputs.
+    pub fn output_position(&self, output: usize) -> Option<(usize, usize)> {
         let mut remaining = self
             .data
             .output_indices
@@ -428,7 +434,7 @@ impl ScalarProgramBlock {
         for (idx, program) in self.data.programs.iter().enumerate() {
             let count = Self::program_output_count(program);
             if remaining < count {
-                return Some(idx);
+                return Some((idx, remaining));
             }
             remaining -= count;
         }

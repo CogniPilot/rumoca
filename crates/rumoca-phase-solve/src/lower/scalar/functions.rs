@@ -951,10 +951,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(FunctionConditionalRegisterRange { start, count });
         }
         let index_start = self.function_conditional_capture_slot(source, span)?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops
             .push(solve::LinearOp::LoadFunctionConditionalCaptureRange {
                 dst_start,
@@ -1174,10 +1171,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })
             .collect::<Result<Vec<_>, LowerError>>()?
             .into_boxed_slice();
-        let dst_start = self.next_register;
-        for _ in 0..total {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(total, span)?;
         self.ops.push(solve::LinearOp::TensorConcatenate {
             dst_start,
             sources,
@@ -2675,10 +2669,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let capture_start = self.pack_fold_registers(&capture_sources, span)?;
         let carried_count = initial_flat.len();
-        let dst_start = self.next_register;
-        for _ in 0..carried_count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(carried_count, span)?;
         let program = std::sync::Arc::new(
             solve::FunctionFoldProgram::checked(
                 domain.structured().clone(),
@@ -4638,10 +4629,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .site
             .output_scalar_count()
             .ok_or_else(|| LowerError::contract("typed pure-call output width overflows", span))?;
-        let start = self.next_register;
-        for _ in 0..output_count {
-            self.register(span)?;
-        }
+        let start = self.register_call_results(function_id, output_count, span)?;
         self.ops.push(solve::LinearOp::PureCall {
             dst_start: start,
             input_starts: input_starts.into_boxed_slice(),

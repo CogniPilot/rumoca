@@ -292,10 +292,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ..
         } = pending;
         let capture_start = self.pack_function_conditional_capture_ranges(ranges, span)?;
-        let start = self.next_register;
-        for _ in 0..program.result_count {
-            self.register(span)?;
-        }
+        let start = self.register_range(program.result_count, span)?;
         self.ops.push(solve::LinearOp::FunctionConditional {
             dst_start: start,
             capture_start,

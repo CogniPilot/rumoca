@@ -222,18 +222,13 @@ pub(super) fn derive_discrete(
     rebinding: &std::collections::BTreeMap<usize, usize>,
     layout: &VarLayout,
 ) -> Result<Family, NativeScheduleRefusal> {
-    let program = rhs
-        .program_index_for_output(output.row)
-        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
-    let source = rhs
-        .program(program)
-        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let (program, source, _) = super::derived_discrete::row_program(rhs, output.row)?;
     let span = rhs
         .program_span(program)
         .ok_or(NativeRefreshAssignmentRefusal(
             "native discrete program has no provenance",
         ))?;
-    let operations = super::rebinding::rebind_operations(source, rebinding)?;
+    let operations = super::rebinding::rebind_operations(&source, rebinding)?;
     let Some(LinearOp::StoreOutput { .. }) = operations.last() else {
         return Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram.into());
     };

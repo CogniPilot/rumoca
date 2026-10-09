@@ -2,6 +2,7 @@
 //! consumer agrees on.
 
 use super::arithmetic_profile;
+use super::leaf_count::value_type_leaf_count;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use std::ops::Range;
@@ -103,7 +104,7 @@ pub(super) fn record_field_leaf_range<'dae>(
                 provenance: value_type_provenance(view, record),
             },
         )?;
-        let width = lower_value_type_leaves(view, field_type, arithmetic)?.len();
+        let width = value_type_leaf_count(view, field_type, arithmetic)?;
         if ordinal == field {
             return Ok(start..start + width);
         }

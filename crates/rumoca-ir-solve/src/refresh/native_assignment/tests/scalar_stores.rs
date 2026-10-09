@@ -348,3 +348,37 @@ fn unused_typed_call_inputs_remain_independent_of_every_owned_target() {
         }
     }
 }
+
+/// A discrete program that stores several rows (SOLVE-C82) yields, per row, the
+/// program with only that row's store, whether the store is scalar or one
+/// element of a range.
+#[test]
+fn a_row_of_a_multi_output_discrete_program_keeps_only_its_own_store() {
+    use super::super::derived_discrete::row_program;
+
+    let span = Span::from_offsets(SourceId::from_source_name("RowProgram.mo"), 0, 1);
+    let program = vec![
+        LinearOp::Const { dst: 0, value: 5.0 },
+        LinearOp::Const { dst: 1, value: 6.0 },
+        LinearOp::Const { dst: 2, value: 7.0 },
+        LinearOp::StoreOutput { src: 0 },
+        LinearOp::StoreOutputRange {
+            start: 1,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let block =
+        ScalarProgramBlock::with_output_indices(vec![program], vec![span], vec![0, 1, 2]).unwrap();
+    for (row, register) in [(0, 0), (1, 1), (2, 2)] {
+        let (index, operations, src) = row_program(&block, row).unwrap();
+        assert_eq!(index, 0);
+        assert_eq!(src, register);
+        assert_eq!(operations.len(), 4);
+        assert_eq!(
+            operations.last(),
+            Some(&LinearOp::StoreOutput { src: register })
+        );
+        assert_eq!(ScalarProgramBlock::program_output_count(&operations), 1);
+    }
+}

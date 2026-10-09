@@ -3,6 +3,7 @@ mod clock_transfer;
 pub(super) mod conditional_guards;
 mod integer_steps;
 mod operators;
+mod shared_record_calls;
 mod temporal;
 
 use super::*;
@@ -14,6 +15,7 @@ use conditional_guards::{
     attribute_conditional_folds, guard_reads_tunable_parameter, retains_equation_guard,
 };
 use operators::*;
+use shared_record_calls::SharedRecordCalls;
 use temporal::*;
 
 pub(super) fn lower_expression<'dae>(
@@ -1385,6 +1387,7 @@ pub(super) fn lower_call_operands<'dae>(
         provenance.span(),
     )?;
     let key = &call.specialization;
+    let mut shared_calls = SharedRecordCalls::new();
     let arguments = arguments
         .iter()
         .enumerate()
@@ -1410,7 +1413,7 @@ pub(super) fn lower_call_operands<'dae>(
                     argument,
                 );
             }
-            lower_expression_scoped(construction, symbols, binders, argument, None)
+            shared_calls.lower_argument(construction, symbols, binders, argument)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let vectorization = if call.prefix.is_empty() {

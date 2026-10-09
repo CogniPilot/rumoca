@@ -151,18 +151,18 @@ fn missing_variable_and_sampled_exemption_match() {
 }
 
 #[test]
-fn register_metadata_and_overflow_remain_unchanged() {
+fn register_ranges_are_dense_and_overflow_leaves_the_file_unchanged() {
     with_compiler(|compiler, span| {
         for expected in 0..14400 {
             assert_eq!(compiler.register(span).unwrap(), expected);
         }
-        assert_eq!(compiler.integer_registers, vec![None; 14400]);
+        assert_eq!(compiler.register_range(5, span).unwrap(), 14400);
+        assert_eq!(compiler.next_register, 14405);
         compiler.next_register = solve::Reg::MAX;
-        let before = compiler.integer_registers.clone();
         let error = compiler.register(span).unwrap_err();
         assert!(error.to_string().contains("Solve register index overflow"));
         assert_eq!(error.source_span(), Some(span));
-        assert_eq!(compiler.integer_registers, before);
+        assert_eq!(compiler.next_register, solve::Reg::MAX);
     });
 }
 
@@ -173,7 +173,7 @@ fn compare_extents(slot: VariableSlot, pre: Option<usize>) {
         }
         assert!(compiler.ops.is_empty());
         assert!(compiler.tensor_load_cache.is_empty());
-        assert!(compiler.integer_registers.is_empty());
+        assert_eq!(compiler.next_register, 0);
     });
 }
 
@@ -254,4 +254,65 @@ fn saturated_byte_offsets_are_not_newly_refused() {
             );
         },
     );
+}
+
+#[test]
+fn a_range_past_the_register_budget_is_refused_before_it_is_recorded() {
+    with_compiler(|compiler, span| {
+        compiler.ledger = register_ledger::RegisterLedger::with_budget(100);
+        assert_eq!(compiler.register_range(60, span).unwrap(), 0);
+        let error = compiler.register_range(41, span).unwrap_err();
+        assert!(matches!(error, LowerError::BudgetExceeded { .. }));
+        assert_eq!(
+            error.code(),
+            crate::diagnostic_codes::EL006_SOLVE_RESOURCE_BUDGET
+        );
+        assert_eq!(error.source_span(), Some(span));
+        let message = error.to_string();
+        assert!(message.contains("the model expression"), "{message}");
+        assert!(message.contains("needs 101 registers"), "{message}");
+        assert!(message.contains("60 registers, 960 bytes"), "{message}");
+        assert_eq!(
+            compiler.next_register, 60,
+            "a refused range allocates nothing"
+        );
+        assert_eq!(compiler.register_range(40, span).unwrap(), 60);
+    });
+}
+
+#[test]
+fn a_register_range_carries_no_per_register_facts() {
+    with_compiler(|compiler, span| {
+        compiler.register_range(14400, span).unwrap();
+        assert_eq!(compiler.ledger.fact_count(), 0);
+        let literal = compiler.constant(2.0, span).unwrap();
+        assert_eq!(compiler.ledger.fact_count(), 1);
+        assert_eq!(compiler.real_register(literal), Some(2.0));
+        assert_eq!(compiler.integer_register(literal), Some(2));
+        assert_eq!(compiler.integer_register(0), None);
+    });
+}
+
+#[test]
+fn issued_operations_and_facts_are_charged_to_the_budget_before_their_memory_is_spent() {
+    with_compiler(|compiler, span| {
+        // A register file of 1000 entries is 16000 bytes. Each literal also
+        // issues an operation and a fact, so the program is refused long
+        // before its register file alone would be full.
+        compiler.ledger = register_ledger::RegisterLedger::with_budget(1000);
+        let mut issued = 0;
+        let error = loop {
+            match compiler.constant(1.0, span) {
+                Ok(_) => issued += 1,
+                Err(error) => break error,
+            }
+            assert!(issued < 1000, "the register file alone was filled");
+        };
+        assert!(matches!(error, LowerError::BudgetExceeded { .. }));
+        let message = error.to_string();
+        assert!(message.contains("register facts"), "{message}");
+        assert!(message.contains("operations"), "{message}");
+        assert!(issued < 200, "{issued}");
+        assert_eq!(compiler.next_register as usize, issued);
+    });
 }

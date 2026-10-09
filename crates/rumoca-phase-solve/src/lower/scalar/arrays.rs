@@ -57,10 +57,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
         let count =
             count.ok_or_else(|| LowerError::contract("tensor update extent overflow", span))?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::TensorUpdate {
             dst_start,
             base_start,

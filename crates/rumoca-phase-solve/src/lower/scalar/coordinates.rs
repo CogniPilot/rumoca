@@ -98,10 +98,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             },
             span,
         )?;
-        let dst_start = self.next_register;
-        for _ in 0..count {
-            self.register(span)?;
-        }
+        let dst_start = self.register_range(count, span)?;
         self.ops.push(solve::LinearOp::TensorLoad {
             dst_start,
             input,
