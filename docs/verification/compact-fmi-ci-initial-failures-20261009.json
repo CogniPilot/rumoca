@@ -24,10 +24,34 @@
       "raw_log_sha256": "bf34d45a7a07f3a33dd8b165d3a1aaf45c8319370e8d2893fcb8191a33cba967",
       "prepared_fix": "Serialize model.parameters.as_slice() at the two existing dense runtime ABI boundaries. The compact canonical owner, serialization, source runs and scalar execution remain unchanged.",
       "governing_specs": ["SPEC_0007", "SPEC_0029", "SPEC_0032", "SPEC_0036", "SPEC_0041 initialization-owner row", "SPEC_0043 section 8 initialization-run row"]
+    },
+    {
+      "job": "Test (ubuntu-24.04)",
+      "job_id": 114039594170,
+      "command": "cargo nextest run --workspace --exclude rumoca-bind-python --exclude rumoca-bind-wasm --features rumoca/msl-sim-tests",
+      "result": {"executed": 109, "total": 10316, "passed": 108, "failed": 1, "not_run": 10207},
+      "test": "compiler::tests::test_model_file_inside_loaded_source_root_reuses_source_root_documents",
+      "raw_log_sha256": "a826d1ec5e1e8e11c03311db6c75f39a0bf9da5fcf7c82ef39c81097ff949157",
+      "first_owner": "Test fixture uses different compilation-unit source inventories",
+      "original_inventory": {
+        "by_file_source_root": ["Pkg/package.mo", "Pkg/Ext.mo", "Pkg/Sub/package.mo", "Pkg/Sub/Helper.mo", "Pkg/Sub/Root.mo"],
+        "by_name_additional_workspace_document": "Probe.mo: model Probe with component r"
+      },
+      "identity_evidence": "URI-sorted merge and top-level-first Resolve registration allocate an extra Probe class before Pkg descendants. Probe.r registers later. Actual h/x/y declaration IDs shift 106/105/107 to 107/106/108. Effective type allocation begins after nominal type_table.len(), shifting flat_type_id 13 to 14. Standard reuse retains the full unit; prior strict closure re-resolution pruned Probe.",
+      "prepared_fix": "Write unchanged Probe into the source root before either session and use its actual path for by-name input. Assert identical six URI inventories, parsed declarations, exact source bytes, source-root backing and empty live overlays on both sessions. Retain exact warning and full DAE storage comparisons; no identity normalization.",
+      "governing_specs": ["SPEC_0001 compilation-unit identity", "SPEC_0033", "SPEC_0050"]
+    }
+  ],
+  "independent_completed_gates": [
+    {
+      "job": "Test (ubuntu-24.04): heavy Solve counterexamples",
+      "command": "cargo test --package rumoca --features heavy-solve-tests --test suite_heavy_solve -- --nocapture",
+      "result": {"passed": 2, "failed": 0},
+      "source": "00854f2198fbfd406fac45d6685860b4d528a1c7"
     }
   ],
   "prepared_source_checks": {
-    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all three changed Rust files",
+    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all four changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
     "cargo_execution": "NOT RUN: no target-cache lease or sufficient shared-host disk headroom",
     "validator_changes": false,
