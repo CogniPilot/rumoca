@@ -176,3 +176,41 @@ and rerunning only the comparator restores all 14 exact state-set comparisons.
 No compiler or simulation attempt was retried. Initial cache-limited evidence
 and the repaired comparison remain recorded in the run logs.
 The selected codegen clippy check (`--all-targets -- -D warnings`) passes.
+
+## CI repair after the main update
+
+Run `37863195682` at `53cb320fe` failed the Rust file-size gate in all three
+workspace test jobs and coverage: `cli.rs` had 2001 lines. The Intel macOS
+wheel also failed to find `core` for `x86_64-apple-darwin`, although Nix had
+downloaded the pinned Intel compiler and standard library. The shared shell
+hook put the runner's Cargo tools ahead of that compiler.
+
+The repair moves the unchanged direct simulation options helper into the
+existing `sim_defaults` module and puts the pinned toolchain first in the
+shared Nix shell hook. SPEC_0021's file-size rule, SPEC_0029's single-owner
+discipline, and SPEC_0033's upstream-first repair policy govern these changes.
+Merging main `bd153c978` retains its compile-summary extraction and
+`SimNativeDecline` export. The shared hook replaces main's wheel-only empty-hook
+override; `cli.rs` is now 1919 lines. No compiler or simulation semantics change.
+
+At combined code tip `2af9f68bc`, with `CARGO_BUILD_JOBS=4`,
+`RUST_TEST_THREADS=4`, and `RAYON_NUM_THREADS=4`, these focused commands pass:
+
+```sh
+cargo fmt --check
+cargo test --profile msl-fast -p rumoca --test architecture_hardening_test
+cargo test --profile msl-fast -p rumoca --lib cli::
+cargo clippy --profile msl-fast -p rumoca --lib -- -D warnings
+```
+
+The complete architecture suite passes 247 tests, including the original size
+failure; the CLI unit selection passes 49 tests. Nix parsing passes. An
+adversarial `CARGO_HOME/bin` containing fake Cargo/Rust compiler executables
+reproduces shadowing with the old hook; the corrected hook selects the pinned
+compiler while retaining Cargo-installed helper commands. The Intel Darwin
+wheel shell also evaluates with the pinned Intel toolchain first.
+
+The first debug build was interrupted by machine `earlyoom` while an external
+Python process consumed about 50 GiB; it produced no Rust correctness failure.
+The checks above use the owned warm `msl-fast` cache. Actual Intel macOS wheel
+execution, full workspace checks, and coverage remain CI validation obligations.
