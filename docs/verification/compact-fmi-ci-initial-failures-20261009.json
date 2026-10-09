@@ -58,9 +58,36 @@
       "producer_reader_contract": "fmi3/target.toml declares shared_as fmi3-modelDescription.xml.jinja; fmi-ls-wasm/modelDescription.xml.jinja includes that name to share checked metadata",
       "prepared_fix": "Add the single required metadata name/owner to the exact inventory. Keep global uniqueness, owning-manifest declaration and exact complete-inventory assertions.",
       "governing_specs": ["SPEC_0029 target-owned syntax and shared ownership", "SPEC_0044 ME-LSW-002", "SPEC_0033", "SPEC_0050"]
+    },
+    {
+      "job": "Template Runtime (wasm)",
+      "job_id": 114039594644,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime fmi_ls_wasm_ -- --nocapture",
+      "result": {"passed": 10, "failed": 1, "filtered_out": 77, "seconds": 563.97},
+      "test": "fmi_ls_wasm_runtime::fourbar1_native_multibody_trace_matches_pinned_omc",
+      "raw_log_sha256": "ddd9ded3d90531e848a41c65952b0f2318a86c4f2d24ceea2257e23a6f66dfff",
+      "actual_fault": "Native BDF simulation fails before OMC comparison: algebraic projection did not converge at event boundary; worst row=2293 target=$formal_derivative.1.b3.frame_b.R.T[1,3], value=NaN, norm=inf, row_scale=1, scaled_tolerance=1e-6",
+      "first_owner": "UNRESOLVED: final native projection diagnostic does not identify the first NaN producer or backend path; component packaging and WIT are not called by this test",
+      "source_binding": {
+        "wrapper_sha256": "c4f892fb89d2c69c85fe57f82e06b45aa886cd74bb65f0739f4347161247bda6",
+        "reference_csv_sha256": "4c8de3e68208edd1d6f175a8ab849f40d3228805b5a37a7fb3d3cd8f423272f9",
+        "locally_audited_MSL_files": 2556,
+        "locally_audited_MSL_inventory_sha256": "8f1f7f9e70a2410e857fd93e141590131fb11311a635468a7c4be30f58e455e2",
+        "inventory_method": "sorted relative *.mo path, NUL, SHA256(file), newline; equals committed Fourbar provenance"
+      },
+      "next_gate": "Unchanged exact native test with CI features/profile; trace the earliest producing operation only after a bound reproduction. No tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; no test executed."
     }
   ],
   "independent_completed_gates": [
+    {
+      "job": "modelica_models Compatibility Gate",
+      "job_id": 114051354687,
+      "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+      "corpus_revision": "a41f7c0",
+      "raw_log_sha256": "92dc14a362dce550c7a90d413a00e5112112b7c5b1db20de5ff1de2a8703e502",
+      "result": "PASS: Tests.All aggregate frontend/DAE compile from 410 documents, balanced 2915 continuous plus 61 discrete equations; SO2/SE2 assertion simulation at stop-time 0",
+      "limitations": "No full corpus simulation, positive-time trajectory or complete MSL parity credit"
+    },
     {
       "job": "Test (ubuntu-24.04): heavy Solve counterexamples",
       "command": "cargo test --package rumoca --features heavy-solve-tests --test suite_heavy_solve -- --nocapture",
