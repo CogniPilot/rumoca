@@ -167,3 +167,12 @@ with Rust/C warnings as errors, then checks a held value and tick count against
 the native runtime when two periodic events occur in each communication step.
 The focused Cargo test `fmi_ls_wasm_periodic_samples` passes (86.49 s, no skips).
 This is an experimental pinned WIT draft, not an adopted FMI layered standard.
+
+Candidate `090c7edb806397d1737b7541bd4be02169085235` also passes the fixed
+20-model canary with [the same zero numerical delta](fmi-wasm-canary.json).
+The warm OMC cache omitted state-selection XML in the new result directory;
+restoring the unchanged cached `*_init.xml` files from the owned previous run
+and rerunning only the comparator restores all 14 exact state-set comparisons.
+No compiler or simulation attempt was retried. Initial cache-limited evidence
+and the repaired comparison remain recorded in the run logs.
+The selected codegen clippy check (`--all-targets -- -D warnings`) passes.
