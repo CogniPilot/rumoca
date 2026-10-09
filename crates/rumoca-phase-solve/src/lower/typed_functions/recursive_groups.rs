@@ -241,7 +241,8 @@ fn register_group<'dae>(
             identities.issue(span)?,
             interface.inputs.clone(),
             interface
-                .results
+                .result_layout
+                .leaves
                 .iter()
                 .cloned()
                 .map(solve::SolvePureCallOutput::result)
@@ -266,8 +267,9 @@ fn register_group<'dae>(
             let body = OwnerBody {
                 function: member.function,
                 interface: &member.interface,
-                callees,
+                callees: callees.into(),
                 assertion_count: 0,
+                loop_statements: Default::default(),
                 layout,
             };
             body.lower(view, builder, inputs, outputs, call_span(view, call)?)
@@ -292,7 +294,7 @@ fn group_callee<'dae>(
 ) -> CalleeInterface<'dae> {
     CalleeInterface {
         owner,
-        result_ranges: interface.result_ranges.clone().into_boxed_slice(),
+        result_layout: interface.result_layout.clone(),
         result_leaf_count: interface.result_leaf_count(),
         assertion_slots: std::sync::Arc::from(Vec::new()),
         assertions: Box::new([]),

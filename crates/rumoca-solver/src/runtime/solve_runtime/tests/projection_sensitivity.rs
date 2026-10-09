@@ -81,7 +81,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
         "projection_implicit_jvp.mo",
     );
     mirror_scalar_implicit_jvp(&mut model);
-    model.initial_y = vec![0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0].into();
     model
 }
 
@@ -265,7 +265,7 @@ fn parameter_projection_model() -> solve::SolveModel {
     model.artifacts.continuous.implicit_jacobian_v_scalar = parameter_projection_jvp(true);
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(parameter_projection_jvp(false));
-    model.initial_y = vec![0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0].into();
     model
 }
 
@@ -367,7 +367,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         "loop_implicit_jvp.mo",
     );
     mirror_scalar_implicit_jvp(&mut model);
-    model.initial_y = vec![0.0, 0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0, 0.0].into();
     model
 }
 

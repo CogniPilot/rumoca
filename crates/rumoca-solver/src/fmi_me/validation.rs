@@ -207,7 +207,7 @@ mod tests {
             solve::LinearOp::LoadY { dst: 0, index: 1 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        model.initial_y = vec![0.0, 0.0];
+        model.initial_y = vec![0.0, 0.0].into();
 
         let error = validate_explicit_solve_model(&model)
             .expect_err("an unproduced derivative dependency must be rejected");

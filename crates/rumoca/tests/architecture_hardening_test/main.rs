@@ -1767,8 +1767,8 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
         "rumoca-ir-solve must own the backend-neutral row operation IR"
     );
     // SPEC_0045's identity ladder freezes the superseded scalar op vocabulary
-    // at 50
-    // variants — new Solve semantics land as typed operations only. The enum
+    // at 51 variants, including the typed C25 invocation-observation bridge.
+    // New Solve semantics land as typed operations only. The enum
     // is scheduled for rename to `ScalarOp` (wire-neutral; serde tags by
     // variant) and eventual deletion at the end of the migration ladder.
     // Adding a variant here requires amending the ratified structure decision.
@@ -1798,8 +1798,9 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
             .count()
     };
     assert_eq!(
-        variant_count, 50,
-        "superseded scalar op vocabulary is frozen at 50 variants; \
+        variant_count, 51,
+        "superseded scalar op vocabulary is frozen at 51 variants including \
+         its checked C25 observation bridge; \
          new semantics land as typed operations (core-structure decision §1)"
     );
     assert!(

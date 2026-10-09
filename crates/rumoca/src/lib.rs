@@ -43,6 +43,8 @@ pub mod cli;
 // argument types and dispatch, these own the per-command work.
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod cache_cmd;
+#[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
+mod component_delivery;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmt_cli;
 #[cfg(feature = "scheduled-sim")]
@@ -72,6 +74,8 @@ pub use packaging::{
     ArtifactRenderContext, ArtifactSession, render_web, render_web_files, sha1_hex, topo_sort,
 };
 #[cfg(feature = "fmu-packaging")]
-pub use packaging::{PackageSpec, ZipPackage, render_and_package};
+pub use packaging::{PackageSpec, PreparedTargetPackage, ZipPackage, render_and_package};
 #[cfg(feature = "fmu-packaging")]
-pub use target_manifest::compile_packaged_target;
+pub use target_manifest::{
+    compile_packaged_target, prepare_packaged_target, publish_wasm_component,
+};

@@ -387,7 +387,7 @@ impl Session {
     }
 
     /// Build the resolved tree, returning diagnostics on failure.
-    fn build_resolved_with_diagnostics(
+    pub(in crate::session) fn build_resolved_with_diagnostics(
         &mut self,
     ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         self.build_resolved_with_diagnostics_inner()
@@ -530,6 +530,26 @@ impl Session {
         }
     }
 
+    fn resolve_strict_compilation_target(
+        &mut self,
+        model_name: &str,
+    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        if let Ok((resolved, diagnostics)) = self.build_resolved_with_diagnostics() {
+            let closure = self.reachable_model_closure_query(
+                resolved.inner(),
+                ResolveBuildMode::Standard,
+                model_name,
+            );
+            return Ok(StrictTargetResolution {
+                resolved,
+                closure,
+                diagnostics: diagnostics.iter().cloned().collect(),
+                query_mode: ResolveBuildMode::Standard,
+            });
+        }
+        self.resolve_strict_target(model_name)
+    }
+
     pub(in crate::session) fn resolve_strict_target(
         &mut self,
         model_name: &str,
@@ -614,6 +634,7 @@ impl Session {
             resolved,
             closure,
             diagnostics: closure_diagnostics.iter().cloned().collect(),
+            query_mode: ResolveBuildMode::StrictCompileRecovery,
         })
     }
 
@@ -622,9 +643,12 @@ impl Session {
     ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         self.ensure_parse_state_for_mode(ResolveBuildMode::Standard)?;
 
-        if let Some(resolved) = self.query_state.resolved.builds.standard() {
+        if let Some(artifact) = &self.query_state.resolved.builds.standard {
             record_standard_resolved_cache_hit();
-            return Ok((resolved.clone(), CommonDiagnostics::new()));
+            return Ok((
+                artifact.resolved.clone(),
+                diagnostics_from_vec(artifact.diagnostics.clone()),
+            ));
         }
 
         let build_started = maybe_start_timer();
@@ -637,7 +661,7 @@ impl Session {
         self.query_state
             .resolved
             .builds
-            .set_standard(resolved.clone());
+            .set_standard(resolved.clone(), diagnostics.iter().cloned().collect());
         if let Some(elapsed) = maybe_elapsed_duration(build_started) {
             record_standard_resolved_build(elapsed);
         }
@@ -1026,17 +1050,14 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> std::result::Result<rumoca_ir_flat::Model, String> {
-        let target = self.resolve_strict_target(model_name).map_err(|failure| {
-            let requested = requested_missing_result_message(model_name, &failure.failures);
-            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
-        })?;
+        let target = self
+            .resolve_strict_compilation_target(model_name)
+            .map_err(|failure| {
+                let requested = requested_missing_result_message(model_name, &failure.failures);
+                format_strict_failure_summary(model_name, requested, &failure.failures, 8)
+            })?;
         let tree = target.resolved.inner();
-        match self.flat_model_query_impl(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            model_name,
-            false,
-        ) {
+        match self.flat_model_query_impl(tree, target.query_mode, model_name, false) {
             FlatModelOutcome::Success(result) => Ok(result.flat),
             FlatModelOutcome::NeedsInner { missing_inners, .. } => Err(format!(
                 "{model_name} failed in Instantiate: model needs inner declarations: {}",
@@ -1143,10 +1164,12 @@ impl Session {
         let total_started = maybe_start_timer();
 
         let build_resolved_started = maybe_start_timer();
-        let target = self.resolve_strict_target(model_name).map_err(|failure| {
-            let requested = requested_missing_result_message(model_name, &failure.failures);
-            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
-        })?;
+        let target = self
+            .resolve_strict_compilation_target(model_name)
+            .map_err(|failure| {
+                let requested = requested_missing_result_message(model_name, &failure.failures);
+                format_strict_failure_summary(model_name, requested, &failure.failures, 8)
+            })?;
         let target_resolution_ms = maybe_elapsed_duration(build_resolved_started)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
@@ -1155,8 +1178,7 @@ impl Session {
         let mut failures = Vec::new();
 
         let dae_query_started = maybe_start_timer();
-        let requested_result =
-            self.dae_phase_result_query(tree, ResolveBuildMode::StrictCompileRecovery, model_name);
+        let requested_result = self.dae_phase_result_query(tree, target.query_mode, model_name);
         let dae_phase_query_ms = maybe_elapsed_duration(dae_query_started)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
@@ -1225,7 +1247,7 @@ impl Session {
         model_name: &str,
     ) -> std::result::Result<Box<DaeCompilationResult>, Box<StrictCompileFailure>> {
         let target = self
-            .resolve_strict_target(model_name)
+            .resolve_strict_compilation_target(model_name)
             .map_err(|failure| Box::new(strict_pre_phase_failure(model_name, failure.failures)))?;
         let tree = target.resolved.inner();
         let mut failures = Vec::new();
@@ -1269,7 +1291,7 @@ impl Session {
         model_name: &str,
         use_compile_cache: bool,
     ) -> std::result::Result<(StrictCompileReport, ResolvedTree), Box<StrictCompileReport>> {
-        let target = match self.resolve_strict_target(model_name) {
+        let target = match self.resolve_strict_compilation_target(model_name) {
             Ok(target) => target,
             Err(failure) => {
                 return Err(Box::new(StrictCompileReport {
@@ -1287,7 +1309,7 @@ impl Session {
         let report = if use_compile_cache {
             let results = self.compile_models_with_cache(
                 tree,
-                ResolveBuildMode::StrictCompileRecovery,
+                target.query_mode,
                 &target.closure.compile_targets,
             );
             finalize_strict_compile_report(tree, model_name, failures, results)

@@ -12,6 +12,10 @@
 //! output lane of its declared kind. Its Solve P slot is never read by the
 //! schedule and never published.
 
+mod program_output;
+
+use program_output::integer_source;
+pub(super) use program_output::row_program;
 use std::collections::BTreeMap;
 
 use super::*;
@@ -210,8 +214,8 @@ pub(super) struct DerivedDiscrete {
 }
 
 /// Classify every discrete and event owner of `problem`; derived outputs are
-/// numbered after the `y` solver coordinates in P-slot order, and their lanes
-/// are packed 8-byte values first, then bytes.
+/// numbered after the `y` solver coordinates in canonical program/store order;
+/// their lanes remain P-slot ordered, packed 8-byte values first, then bytes.
 pub(super) fn classify(
     problem: &SolveProblem,
     inputs: &super::typed_inputs::TypedInputs,
@@ -244,7 +248,8 @@ pub(super) fn classify(
         let integer_source = match lane {
             NativeOutputLane::Integer => Some(integer_source(rhs, row, inputs)?),
             NativeOutputLane::Real | NativeOutputLane::Boolean => {
-                row_program(rhs, row)?;
+                rhs.output_position(row)
+                    .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
                 None
             }
         };
@@ -252,11 +257,27 @@ pub(super) fn classify(
     }
     rows.sort_unstable_by_key(|&(index, ..)| index);
     let y = problem.layout.y_scalars();
+    // Private work follows canonical program/store order; publication lanes
+    // independently retain P-slot order, including interleaved record kinds.
+    let mut work_indices = vec![usize::MAX; rows.len()];
+    for (ordinal, binding) in rhs.output_bindings().enumerate() {
+        let index = y
+            .checked_add(ordinal)
+            .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+        let slot = work_indices
+            .get_mut(binding.logical_index)
+            .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+        if *slot != usize::MAX {
+            return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+        }
+        *slot = index;
+    }
     let mut rebinding = BTreeMap::new();
     let mut outputs = Vec::with_capacity(rows.len());
-    for (ordinal, (p_index, row, lane, integer_source)) in rows.into_iter().enumerate() {
-        let work_index = y
-            .checked_add(ordinal)
+    for (p_index, row, lane, integer_source) in rows {
+        let work_index = *work_indices
+            .get(row)
+            .filter(|&&index| index != usize::MAX)
             .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
         if rebinding.insert(p_index, work_index).is_some() {
             return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
@@ -280,11 +301,23 @@ pub(super) fn classify(
             lane_bytes += output.lane.width();
         }
     }
+    outputs.sort_unstable_by_key(|output| output.work_index);
     Ok(DerivedDiscrete {
         outputs,
         rebinding,
         lane_bytes,
     })
+}
+
+/// The constructor orders the immutable inventory by unique private work slot.
+/// A borrowed query visits only the publication outputs a stage owns.
+pub(super) fn work_range(
+    outputs: &[NativeDerivedOutput],
+    targets: std::ops::Range<usize>,
+) -> &[NativeDerivedOutput] {
+    let start = outputs.partition_point(|output| output.work_index < targets.start);
+    let end = outputs.partition_point(|output| output.work_index < targets.end);
+    &outputs[start..end.max(start)]
 }
 
 fn refuse_event_owners(problem: &SolveProblem) -> Result<(), NativeEvaluationRefusal> {
@@ -370,131 +403,4 @@ fn scalar_row_owners(
         }
     }
     Ok(owners)
-}
-
-/// The program that computes discrete row `row` alone, and the register its
-/// single terminal store publishes.
-///
-/// One program may store several rows when they project one pure call
-/// (SPEC_0040 SOLVE-C82). The stateless schedule publishes each derived output
-/// through its own typed lane and stage, so a row of such a program is the
-/// program with only that row's store kept; the stores of its siblings are
-/// dropped and every other operation is unchanged, so the value is the one the
-/// shared program stores.
-pub(super) fn row_program(
-    rhs: &ScalarProgramBlock,
-    row: usize,
-) -> Result<(usize, std::borrow::Cow<'_, [LinearOp]>, Reg), NativeEvaluationRefusal> {
-    let (program, ordinal) = rhs
-        .output_position(row)
-        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
-    let operations = rhs
-        .program(program)
-        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
-    if ScalarProgramBlock::program_output_count(operations) == 1 {
-        return match operations.last() {
-            Some(LinearOp::StoreOutput { src }) => {
-                Ok((program, std::borrow::Cow::Borrowed(operations), *src))
-            }
-            _ => Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram),
-        };
-    }
-    let mut projected = Vec::with_capacity(operations.len());
-    let mut stored = 0usize;
-    let mut selected = None;
-    for operation in operations {
-        match *operation {
-            LinearOp::StoreOutput { src } => {
-                if stored == ordinal {
-                    selected = Some(src);
-                }
-                stored += 1;
-            }
-            LinearOp::StoreOutputRange {
-                start,
-                count,
-                stride,
-            } => {
-                if (stored..stored + count).contains(&ordinal) {
-                    let step = (ordinal - stored)
-                        .checked_mul(stride)
-                        .and_then(|offset| u32::try_from(offset).ok())
-                        .and_then(|offset| start.checked_add(offset))
-                        .ok_or(NativeEvaluationRefusal::MultiOutputDiscreteProgram)?;
-                    selected = Some(step);
-                }
-                stored += count;
-            }
-            _ => projected.push(operation.clone()),
-        }
-    }
-    let src = selected.ok_or(NativeEvaluationRefusal::MultiOutputDiscreteProgram)?;
-    projected.push(LinearOp::StoreOutput { src });
-    Ok((program, std::borrow::Cow::Owned(projected), src))
-}
-
-/// The exact Integer source of `row`: the defining operation of its stored
-/// register must be an Integer pure-call output cell, a load of a typed
-/// Integer input, or an integral literal within the exact Binary64 range.
-fn integer_source(
-    rhs: &ScalarProgramBlock,
-    row: usize,
-    inputs: &super::typed_inputs::TypedInputs,
-) -> Result<NativeIntegerSource, NativeEvaluationRefusal> {
-    let (_, operations, value) = row_program(rhs, row)?;
-    let Some((operation, definition)) = operations
-        .iter()
-        .enumerate()
-        .rev()
-        .skip(1)
-        .find(|(_, op)| defines(op, value))
-    else {
-        return Err(NativeEvaluationRefusal::IntegerComputedInReal);
-    };
-    match definition {
-        LinearOp::Const { value, .. }
-            if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_992.0 =>
-        {
-            Ok(NativeIntegerSource::Literal(*value as i64))
-        }
-        LinearOp::LoadP { index, .. } => inputs
-            .integer_lane(*index)
-            .map(|lane_offset| NativeIntegerSource::Input { lane_offset })
-            .ok_or(NativeEvaluationRefusal::IntegerComputedInReal),
-        LinearOp::PureCall {
-            dst_start, site, ..
-        } => {
-            let cell = value
-                .checked_sub(*dst_start)
-                .ok_or(NativeEvaluationRefusal::IntegerComputedInReal)?;
-            match cell_type(site, cell) {
-                Some(SolveScalarType::Integer(_)) => {
-                    Ok(NativeIntegerSource::CallCell { operation, cell })
-                }
-                _ => Err(NativeEvaluationRefusal::IntegerComputedInReal),
-            }
-        }
-        _ => Err(NativeEvaluationRefusal::IntegerComputedInReal),
-    }
-}
-
-/// The scalar type of output cell `cell` of a pure call, in scalar order.
-fn cell_type(site: &crate::SolvePureCallSite, cell: u32) -> Option<SolveScalarType> {
-    let mut first = 0u32;
-    for output in site.outputs() {
-        let count = output.value_type().scalar_count();
-        if cell < first.checked_add(count)? {
-            return Some(output.value_type().element_type());
-        }
-        first += count;
-    }
-    None
-}
-
-fn defines(operation: &LinearOp, register: Reg) -> bool {
-    operation.dst_register().is_some_and(|first| {
-        register
-            .checked_sub(first)
-            .is_some_and(|offset| (offset as usize) < operation.dst_register_count())
-    })
 }

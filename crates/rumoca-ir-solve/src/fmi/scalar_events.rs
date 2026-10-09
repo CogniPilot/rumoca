@@ -12,6 +12,9 @@
 //! clock schedules are the component's time events. Dynamic time events,
 //! delays, structured updates, and event transactions are refused here.
 
+#[cfg(test)]
+mod tests;
+
 use serde::Serialize;
 
 use crate::{
@@ -50,11 +53,11 @@ pub(super) struct ScalarEventProfile {
     guarded_clocks: Vec<Option<usize>>,
     /// The time events the component announces and stops at.
     time_events: super::time_events::TimeEvents,
-    /// Every scalar of a discrete-valued external input, as a parameter
-    /// index. A discrete-time input changes only at events (MLS §4.5), so a
+    /// Source storage runs of discrete-valued external inputs. A
+    /// discrete-time input changes only at events (MLS §4.5), so a
     /// change the importer makes between Co-Simulation steps is an event at
     /// the next step's first instant.
-    discrete_inputs: Vec<usize>,
+    discrete_input_runs: DiscreteInputRuns,
     post_commit_targets: Vec<Slot>,
     /// The parameters actions read at their event-entry value.
     condition_memories: Vec<usize>,
@@ -204,7 +207,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             model.problem.clocks.periodic_event_schedules.len(),
         )?,
         time_events: super::time_events::derive(model)?,
-        discrete_inputs: discrete_inputs(&problem.solve_layout)?,
+        discrete_input_runs: discrete_inputs(problem)?,
         post_commit_targets: slots(&discrete.post_commit_assignment_targets)?,
         condition_memories: events.condition_memory_parameter_indices.clone(),
         schedule: discrete.event_iteration_plan.schedule.clone(),
@@ -342,10 +345,27 @@ fn guarded_clocks(
     Ok(clocks)
 }
 
-/// The parameter index of every scalar of a discrete-valued external input.
-fn discrete_inputs(layout: &crate::SolveLayout) -> Result<Vec<usize>, &'static str> {
-    let mut inputs = Vec::new();
-    for run in &layout.variable_storage_runs {
+/// A checked projection of the same problem's discrete input storage runs.
+#[derive(Debug, Serialize)]
+struct DiscreteInputRuns {
+    runs: Vec<DiscreteInputRun>,
+    scalar_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DiscreteInputRun {
+    p_base: usize,
+    count: usize,
+    seen_offset: usize,
+}
+
+/// Preserve storage order and repeated mappings; each owns its seen lanes.
+fn discrete_inputs(problem: &crate::SolveProblem) -> Result<DiscreteInputRuns, &'static str> {
+    let mut inputs = DiscreteInputRuns {
+        runs: Vec::new(),
+        scalar_count: 0,
+    };
+    for run in &problem.solve_layout.variable_storage_runs {
         let discrete = matches!(
             run.value_kind,
             crate::SolveVariableValueKind::Integer
@@ -358,7 +378,22 @@ fn discrete_inputs(layout: &crate::SolveLayout) -> Result<Vec<usize>, &'static s
         let ScalarSlot::P { index, .. } = run.base else {
             return Err("a discrete input lives outside the parameters");
         };
-        inputs.extend(index..index + run.scalar_count);
+        let end = index
+            .checked_add(run.scalar_count)
+            .ok_or("a discrete input parameter range overflowed")?;
+        if end > problem.layout.p_scalars() {
+            return Err("a discrete input parameter range exceeds its storage");
+        }
+        let seen_end = inputs
+            .scalar_count
+            .checked_add(run.scalar_count)
+            .ok_or("the discrete input history size overflowed")?;
+        inputs.runs.push(DiscreteInputRun {
+            p_base: index,
+            count: run.scalar_count,
+            seen_offset: inputs.scalar_count,
+        });
+        inputs.scalar_count = seen_end;
     }
     Ok(inputs)
 }

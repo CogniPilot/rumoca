@@ -5,8 +5,8 @@ use rumoca_ir_solve as solve;
 
 use crate::RuntimeSolveError;
 
-use super::SolveRuntime;
 use super::event_update::{DiscretePreSnapshot, EventUpdateRowFilter};
+use super::{SolveRuntime, admitted_compiled_error};
 
 /// Result of one atomic transaction invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,11 +285,9 @@ impl SolveRuntime {
             .get(transaction_index)
             .and_then(Option::as_ref)
         {
-            compiled.call(&input, output).map_err(|error| {
-                RuntimeSolveError::solve_ir(format!(
-                    "compiled event transaction {transaction_index} failed: {error}"
-                ))
-            })?;
+            compiled
+                .call(&input, output)
+                .map_err(|error| admitted_compiled_error("event transaction", &[], error))?;
             return Ok(());
         }
         transaction.eval_payload(&self.model.pure_calls, &input, output)?;
@@ -327,10 +325,11 @@ impl SolveRuntime {
                 .get(assertion)
                 .is_none_or(|indices| indices.iter().any(error_level))
         };
-        Ok(output[transaction.target_scalar_count()..]
+        Ok(transaction
+            .assertion_scalar_offsets()
             .iter()
             .enumerate()
-            .position(|(assertion, predicate)| *predicate == 0.0 && blocking(assertion)))
+            .position(|(assertion, &offset)| output[offset] == 0.0 && blocking(assertion)))
     }
 
     pub(super) fn event_transaction_assertion_failed(
@@ -348,7 +347,7 @@ impl SolveRuntime {
         let output = outputs.get(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
-        Ok(output[transaction.target_scalar_count() + assertion_index] == 0.0)
+        Ok(output[transaction.assertion_scalar_offsets()[assertion_index]] == 0.0)
     }
 
     /// Commit the complete target tuple after every predicate has succeeded.
@@ -446,7 +445,7 @@ mod tests {
         let model = solve::SolveModel {
             problem,
             pure_calls,
-            parameters: vec![0.0; 4],
+            parameters: vec![0.0; 4].into(),
             ..solve::SolveModel::default()
         };
         model.validate().unwrap();
@@ -507,6 +506,7 @@ mod tests {
                     span,
                     origin: "fixture".into(),
                     clock_owner: None,
+                    assertion_projection: None,
                 }],
                 assertion_action_indices: vec![vec![0]],
                 statement_count: 1,

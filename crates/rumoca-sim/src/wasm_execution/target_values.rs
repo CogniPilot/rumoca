@@ -67,7 +67,7 @@ impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
         p: &[f64],
         time: f64,
         context: RowEvalContext<'_>,
-    ) -> Result<f64, String> {
+    ) -> Result<f64, rumoca_solver::RuntimeSolveError> {
         validate_context(context)?;
         if context.pure_calls != Some(&self.calls) {
             return Err("target-value call table changed after admission".into());
@@ -86,7 +86,7 @@ impl rumoca_solver::CompiledSolveTargetValues for WasmTargetValues {
         let mut scratch = self.scratch.borrow_mut();
         self.compiled
             .call(y, p, time, &mut scratch)
-            .map_err(|error| error.to_string())?;
+            .map_err(super::errors::execution_error)?;
         Ok(scratch[selected])
     }
 }

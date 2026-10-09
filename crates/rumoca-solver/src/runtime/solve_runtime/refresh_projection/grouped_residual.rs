@@ -65,22 +65,20 @@ impl RefreshProjectionModel<'_> {
     ) -> Result<(), RuntimeSolveError> {
         if self
             .runtime
-            .eval_split_residual_program(program, (y, p, t), out)
+            .eval_split_residual_program(program, (y, p, t), out)?
             .is_some()
         {
             return Ok(());
         }
         if let Some(compiled) = &self.runtime.compiled_implicit_rhs
-            && compiled
-                .call_program_outputs(
-                    program,
-                    y,
-                    p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .map_err(RuntimeSolveError::solve_ir)?
+            && compiled.call_program_outputs(
+                program,
+                y,
+                p,
+                t,
+                self.runtime.model.external_tables.as_slice(),
+                out,
+            )?
         {
             return Ok(());
         }

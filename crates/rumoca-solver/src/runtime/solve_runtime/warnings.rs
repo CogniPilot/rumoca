@@ -33,9 +33,11 @@ impl SolveRuntime {
         y: &[f64],
         p: &[f64],
         t: f64,
+        context: RowEvalContext<'_>,
     ) -> Result<(), RuntimeSolveError> {
         let actions = &self.model.problem.events.actions;
-        let mut log = self.warning_log.borrow_mut();
+        let mut pending = Vec::new();
+        let log = self.warning_log.borrow();
         for (row, (action, value)) in actions.iter().zip(values).enumerate() {
             if action.kind != solve::SolveEventActionKind::Warning
                 || *value <= 0.5
@@ -43,16 +45,23 @@ impl SolveRuntime {
             {
                 continue;
             }
-            let message =
-                solve_eval::eval_event_action_message(action, y, p, t, self.row_eval_context())?;
+            let message = solve_eval::eval_event_action_message(action, y, p, t, context)?;
+            pending.push((
+                row,
+                SimDiagnostic {
+                    code: WARNING_ASSERTION_CODE,
+                    time: t,
+                    message,
+                    span: action.span,
+                    origin: action.origin.clone(),
+                },
+            ));
+        }
+        drop(log);
+        let mut log = self.warning_log.borrow_mut();
+        for (row, diagnostic) in pending {
             log.reported.insert(row);
-            log.diagnostics.push(SimDiagnostic {
-                code: WARNING_ASSERTION_CODE,
-                time: t,
-                message,
-                span: action.span,
-                origin: action.origin.clone(),
-            });
+            log.diagnostics.push(diagnostic);
         }
         Ok(())
     }
@@ -114,7 +123,16 @@ impl SolveRuntime {
         let mut action_p = copy_runtime_values(p, "warning observation parameters")?;
         write_clock_activation_params(&self.model, &mut action_p, t);
         let mut values = vec![0.0; events.actions.len()];
-        self.eval_selected_outputs_with_native(
+        let observations = solve_eval::CheckedEventObservationContext::construct(
+            &self.model.pure_calls,
+            self.event_action_conditions.block(),
+            &events.actions,
+        )?;
+        let context = RowEvalContext {
+            event_observations: Some(&observations),
+            ..self.row_eval_context()
+        };
+        self.eval_selected_outputs_with_context(
             SpecializedRows {
                 block: &self.event_action_conditions,
                 cache: &self.compiled_event_action_rows,
@@ -123,8 +141,9 @@ impl SolveRuntime {
             &rows,
             RowEvalPoint { y, p: &action_p, t },
             &mut values,
+            context,
         )?;
-        self.report_violated_warnings(&values, y, &action_p, t)
+        self.report_violated_warnings(&values, y, &action_p, t, context)
     }
 
     /// Forget the diagnostics of an earlier run of this runtime. A run starts

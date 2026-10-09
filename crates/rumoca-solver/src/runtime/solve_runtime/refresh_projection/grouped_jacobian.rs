@@ -45,14 +45,12 @@ impl RefreshProjectionModel<'_> {
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
         if let Some(compiled) = self.jacobian_v.compiled(self.runtime)
-            && compiled
-                .call_program_outputs(
-                    program,
-                    inputs,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .map_err(RuntimeSolveError::solve_ir)?
+            && compiled.call_program_outputs(
+                program,
+                inputs,
+                self.runtime.model.external_tables.as_slice(),
+                out,
+            )?
         {
             return Ok(());
         }

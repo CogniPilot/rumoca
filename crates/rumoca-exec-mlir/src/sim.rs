@@ -49,9 +49,9 @@ pub fn build_ode_model_with_opts(
         compile_derivative_rhs_with_opts(&model.problem, &model.artifacts, model_name, opts)?;
     Ok(CompiledOdeModel {
         compiled,
-        parameters: model.parameters.clone(),
+        parameters: model.parameters.to_vec(),
         state_count: model.state_scalar_count(),
-        initial_y: model.initial_y.clone(),
+        initial_y: model.initial_y.to_vec(),
         visible_names: model.visible_names.clone(),
     })
 }

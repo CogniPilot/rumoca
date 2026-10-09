@@ -59,6 +59,7 @@ fn protected_semantic_prefixes(flat: &flat::Model) -> HashSet<String> {
         .top_level_connectors
         .iter()
         .chain(flat.top_level_input_components.iter())
+        .chain(flat.top_level_output_components.iter())
         .cloned()
         .collect::<HashSet<_>>();
     prefixes.extend(

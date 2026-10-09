@@ -71,6 +71,7 @@ fn transfer(table: &SolvePureCallTable, op: &Op, slots: &mut [bool], registers: 
             owner,
             arguments,
             destinations,
+            ..
         } => {
             let values = table
                 .owner(*owner)

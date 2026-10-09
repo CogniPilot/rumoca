@@ -12,6 +12,7 @@ struct EnvironmentRequirements<'dae> {
     model_coordinates: HashSet<ModelCoordinateKey<'dae>>,
     parameters: HashSet<dae::FunctionParameterId<'dae>>,
     values: HashSet<dae::FunctionDefinitionId<'dae>>,
+    expressions: HashSet<dae::ExprId<'dae>>,
     fold_parameters: HashSet<(dae::FunctionFoldId<'dae>, u32)>,
     binders: HashSet<(u32, u32)>,
 }
@@ -69,7 +70,23 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         ),
         solve::SolveProgramConstructionError,
     > {
-        let requirements = self.environment_requirements(expressions, None)?;
+        let requirements = self.environment_requirements(expressions, None, true)?;
+        Ok(self.capture_environment(&requirements))
+    }
+
+    /// A message-only call belongs to the failed-only region. Already-issued
+    /// values remain captures, while discovery cannot issue a new eager call.
+    pub(super) fn capture_environment_for_message(
+        &mut self,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>> + Clone,
+    ) -> Result<
+        (
+            Vec<solve::ProgramRegister<'program>>,
+            EnvironmentLayout<'dae>,
+        ),
+        solve::SolveProgramConstructionError,
+    > {
+        let requirements = self.environment_requirements(expressions, None, false)?;
         Ok(self.capture_environment(&requirements))
     }
 
@@ -91,7 +108,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         ),
         solve::SolveProgramConstructionError,
     > {
-        let mut requirements = self.environment_requirements(expressions, Some(scope))?;
+        let mut requirements = self.environment_requirements(expressions, Some(scope), false)?;
         requirements
             .fold_parameters
             .retain(|(candidate, _)| *candidate != fold);
@@ -139,6 +156,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 (*id, value.value_type, start..captures.len())
             })
             .collect();
+        let mut expressions = self.cache.iter().collect::<Vec<_>>();
+        expressions.sort_by_key(|(id, _)| **id);
+        let expressions = expressions
+            .into_iter()
+            .filter(|(id, _)| requirements.expressions.contains(id))
+            .map(|(id, value)| {
+                let start = captures.len();
+                captures.extend(value.leaves.iter().copied());
+                (*id, value.value_type, start..captures.len())
+            })
+            .collect();
         let mut fold_parameters = self.fold_parameters.iter().collect::<Vec<_>>();
         fold_parameters.sort_by_key(|((fold, carried), _)| {
             (fold.function().index(), fold.ordinal(), *carried)
@@ -171,10 +199,19 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 model_coordinates,
                 parameters,
                 values,
+                expressions,
                 fold_parameters,
                 binders,
             },
         )
+    }
+
+    /// Whether this scope issued a value for `expression` that a region reads
+    /// as one capture, so nothing beneath it is demanded of the region.
+    fn has_issued_value(&self, expression: dae::ExprId<'dae>) -> bool {
+        self.cache
+            .get(&expression)
+            .is_some_and(|value| !value.leaves.is_empty())
     }
 
     /// Requirement set of `expressions`, after resolving every definition they
@@ -189,18 +226,24 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         &mut self,
         expressions: impl IntoIterator<Item = dae::ExprId<'dae>> + Clone,
         scope: Option<dae::FunctionScopeView<'dae>>,
+        issue_eager_calls: bool,
     ) -> Result<EnvironmentRequirements<'dae>, solve::SolveProgramConstructionError> {
         // One workspace serves both passes of this capture: the visited set is
         // the whole expression arena, so sizing it per root would cost
         // `roots * arena` before either walk touched an operand.
         let mut traversal = dae::ExpressionTraversal::new();
+        if issue_eager_calls {
+            self.issue_demanded_calls(&mut traversal, expressions.clone())?;
+        }
         for definition in self.pending_definitions(&mut traversal, expressions.clone(), scope)? {
             self.function_definition_value(definition)?;
         }
         let mut requirements = EnvironmentRequirements::default();
         let function_values = &self.function_values;
+        let issued = |id| self.has_issued_value(id);
         let fold_parameters = &self.fold_parameters;
-        traversal.visit_pruned(self.view, expressions, |_, node| match node.operation() {
+        traversal.visit_pruned(self.view, expressions, |id, node| match node.operation() {
+            dae::ExpressionOperation::Literal(_) => false,
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
             )) => {
@@ -231,6 +274,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                 }
                 false
             }
+            // A value this scope already issued is read, not lowered again
+            // inside the region: one identity per scope.
+            _ if issued(id) => {
+                requirements.expressions.insert(id);
+                false
+            }
             _ => true,
         });
         Ok(requirements)
@@ -255,10 +304,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         let mut pending = Vec::new();
         let mut seen = HashSet::new();
         let mut rejected = None;
-        traversal.visit_pruned(self.view, expressions, |_, node| {
+        traversal.visit_pruned(self.view, expressions, |expression, node| {
             let dae::ExpressionOperation::FunctionValue { definition, .. } = node.operation()
             else {
-                return true;
+                // The region reads a value this scope issued; the definitions
+                // beneath it were resolved when it was.
+                return !self.has_issued_value(expression);
             };
             let id = definition.id();
             if self.function_values.contains_key(&id) {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{FormalDerivativePrograms, FormalResidualProgram, FormalStageProgram};
-use rumoca_eval_dae::NumericEvaluator;
+use rumoca_eval_dae::{InputInitializationPolicy, NumericEvaluator};
 use rumoca_eval_solve::dense_basis::DenseStageMatrix;
 use rumoca_eval_solve::{TypedValue, eval_pure_call, eval_pure_call_directional};
 use rumoca_ir_solve as solve;
@@ -43,7 +43,7 @@ impl TrialPoint {
                 .collect::<Result<Vec<_>, _>>()?;
             let outputs = eval_pure_call(programs.table(), program.site.owner(), &arguments)
                 .map_err(failure)?;
-            check_assertions(&outputs[program.value_outputs..])?;
+            check_assertions(program.site.outputs(), &outputs)?;
             self.values[guess.target.index() as usize] =
                 Some(real_outputs(&outputs[..program.value_outputs])?);
         }
@@ -53,11 +53,19 @@ impl TrialPoint {
     pub(super) fn new(
         formal: FormalDerivativeView<'_, '_, '_>,
         overrides: &HashMap<String, f64>,
+        input_policy: InputInitializationPolicy,
     ) -> Result<Self, StructuralError> {
-        let mut evaluator = NumericEvaluator::with_overrides(formal.source, |v, scalar| {
-            v.scalar_name(scalar)
-                .and_then(|name| overrides.get(&name).copied())
-        });
+        let mut evaluator = NumericEvaluator::with_input_policy(
+            formal.source,
+            |v, scalar| {
+                if overrides.is_empty() {
+                    return None;
+                }
+                v.scalar_name(scalar)
+                    .and_then(|name| overrides.get(&name).copied())
+            },
+            input_policy,
+        );
         let mut values = vec![None; formal.view.variables().count()];
         let mut retained_guesses = vec![false; values.len()];
         let mut stated_initial_values = vec![Vec::new(); values.len()];
@@ -163,7 +171,7 @@ impl TrialPoint {
                 .collect::<Result<Vec<_>, _>>()?;
             let outputs = eval_pure_call(programs.table(), equation.site().owner(), &arguments)
                 .map_err(failure)?;
-            check_assertions(&outputs[equation.residual_outputs()..])?;
+            check_assertions(equation.site().outputs(), &outputs)?;
             let values = real_outputs(&outputs[..equation.residual_outputs()])?;
             let count = values.len();
             residual.extend(values);
@@ -350,9 +358,14 @@ fn real_outputs(values: &[TypedValue]) -> Result<Vec<f64>, StructuralError> {
         .collect()
 }
 
-fn check_assertions(values: &[TypedValue]) -> Result<(), StructuralError> {
-    for value in values {
-        if value.elements() != [solve::SolveValueKind::Boolean(true)] {
+fn check_assertions(
+    roles: &[solve::SolvePureCallOutput],
+    values: &[TypedValue],
+) -> Result<(), StructuralError> {
+    for (role, value) in roles.iter().zip(values) {
+        if role.assertion_level() == Some(solve::SolveAssertionLevel::Error)
+            && value.elements() != [solve::SolveValueKind::Boolean(true)]
+        {
             return Err(failure("trial point violates a source call assertion"));
         }
     }

@@ -45,10 +45,10 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for WasmAssignments {
         p: &[f64],
         time: f64,
         tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<(), String> {
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
         super::profile::validate_inputs(&self.layout, y.len(), p.len(), tables.len())?;
         self.compiled
             .call(y, p, time, &mut self.scratch.borrow_mut())
-            .map_err(|error| error.to_string())
+            .map_err(super::errors::execution_error)
     }
 }

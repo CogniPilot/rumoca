@@ -252,6 +252,13 @@ struct ReservedVariable<'flat, 'dae> {
 }
 
 pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
+    construct_with_evidence(flat, source_map).map(|result| result.dae)
+}
+
+pub(crate) fn construct_with_evidence(
+    flat: &flat::Model,
+    source_map: SourceMap,
+) -> Result<crate::DaeConstructionResult, ToDaeError> {
     let prepared = analysis::prepared_flat(flat)?;
     let flat = prepared.as_ref();
     let analysis = analyze(flat)?.with_semi_linear_rules(flat);
@@ -265,7 +272,11 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
         build_checked(flat, &analysis, &variable_plan, construction)
     })
     .map_err(ToDaeError::from)?;
-    Ok(dae.with_external_tables(external_tables))
+    Ok(crate::DaeConstructionResult {
+        dae: dae.with_external_tables(external_tables),
+        balance_detail: analysis.balance,
+        structural_selections: analysis.structural_selections,
+    })
 }
 
 /// The balance evidence and the structural guard selections of one analysis.

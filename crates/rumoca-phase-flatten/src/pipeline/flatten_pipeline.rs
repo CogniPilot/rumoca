@@ -858,8 +858,14 @@ fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast
     if instance_data.is_connector_type {
         flat.top_level_connectors.insert(name.clone());
     }
-    if matches!(&instance_data.causality, rumoca_core::Causality::Input(_)) {
-        flat.top_level_input_components.insert(name.clone());
+    match &instance_data.causality {
+        rumoca_core::Causality::Input(_) => {
+            flat.top_level_input_components.insert(name.clone());
+        }
+        rumoca_core::Causality::Output(_) => {
+            flat.top_level_output_components.insert(name.clone());
+        }
+        rumoca_core::Causality::Empty => {}
     }
 }
 

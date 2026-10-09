@@ -31,7 +31,7 @@ fn algebraic_observation_refresh_bounds_recovered_coordinate_error() {
         .position(|name| name == "voltage")
         .unwrap();
     for time in [0.0, 0.5] {
-        let mut y = model.initial_y.clone();
+        let mut y = model.initial_y.to_vec();
         runtime
             .refresh_algebraic_and_output_slots_certified(
                 time,

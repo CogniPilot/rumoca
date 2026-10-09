@@ -79,6 +79,13 @@ The complete product and evidence requirements are normative in
 
 ### Stage 1 — AST (`rumoca-ir-ast`)
 
+Compile-session resolution follows the single-producer ownership row in
+[SPEC_0041 §2](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#2-session-owned-source-root-and-class-graph-catalog-spec_0029-10).
+Strict target compilation may consume the actual globally successful Standard
+resolved input; when Standard parse/global resolution fails it retains the
+isolated target-closure path. This does not equate distinct resolved or Flat
+inputs, change target lookup, or omit any later construction check.
+
 **Contents:** syntax, comments, spans.
 
 **Contract:**

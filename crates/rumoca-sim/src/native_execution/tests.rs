@@ -223,7 +223,9 @@ fn native_directional_calls_agree_with_reference_for_changed_inputs_and_seeds() 
     assert_eq!(execution.calls.get(), 4);
 }
 
-struct FailedExecution;
+struct FailedExecution {
+    calls: Cell<usize>,
+}
 
 impl PureCallExecution for FailedExecution {
     fn call(
@@ -232,8 +234,9 @@ impl PureCallExecution for FailedExecution {
         _input: &[f64],
         output: &mut [f64],
     ) -> Result<(), EvalSolveError> {
+        self.calls.set(self.calls.get() + 1);
         output.fill(123.0);
-        Err(EvalSolveError::InvalidRow {
+        Err(EvalSolveError::CompiledExecution {
             message: "injected execution failure".into(),
             span: None,
         })
@@ -259,6 +262,9 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
     )
     .unwrap();
     let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    let failed = FailedExecution {
+        calls: Cell::new(0),
+    };
     let mut output = [0.0];
     let error = prepared
         .eval_with_context(
@@ -267,12 +273,20 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
             0.0,
             RowEvalContext {
                 pure_calls: Some(&table),
-                pure_call_execution: Some(&FailedExecution),
+                pure_call_execution: Some(&failed),
                 ..Default::default()
             },
             &mut output,
         )
         .unwrap_err();
+    assert_eq!(failed.calls.get(), 1);
+    assert!(matches!(&error, EvalSolveError::CompiledExecution { .. }));
+    let runtime: rumoca_solver::RuntimeSolveError = error.clone().into();
+    assert!(matches!(
+        &runtime,
+        rumoca_solver::RuntimeSolveError::CompiledExecution { .. }
+    ));
+    assert_eq!(runtime.source_span(), Some(span()));
     assert!(error.to_string().contains("injected execution failure"));
     assert_eq!(error.source_span(), Some(span()));
     assert_eq!(output, [0.0]);
@@ -325,4 +339,31 @@ fn a_compact_map_compiles_as_one_native_kernel_without_per_row_code() {
             compiled_rows: 0,
         }
     );
+}
+
+#[test]
+fn native_status_source_faults_remain_distinct_from_backend_failure() {
+    use rumoca_exec_cranelift::{CompileError, NativeSourceFault};
+    let index = super::compiled_execution_error(CompileError::SourceOperation {
+        kind: NativeSourceFault::TensorIndex,
+        message: "issued source index fault".into(),
+    });
+    assert!(matches!(
+        index,
+        rumoca_solver::RuntimeSolveError::SourceFault { .. }
+    ));
+    let numerical = super::compiled_execution_error(CompileError::SourceOperation {
+        kind: NativeSourceFault::LinearSolve,
+        message: "issued singular trial".into(),
+    });
+    assert!(matches!(
+        numerical,
+        rumoca_solver::RuntimeSolveError::SolveIr { .. }
+    ));
+    let backend =
+        super::compiled_execution_error(CompileError::Backend("issued interface fault".into()));
+    assert!(matches!(
+        backend,
+        rumoca_solver::RuntimeSolveError::CompiledExecution { .. }
+    ));
 }

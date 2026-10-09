@@ -63,6 +63,8 @@ mod native_projection_assignments;
 mod native_specialization;
 use native_specialization::{RowEvalPoint, SpecializedRows};
 mod plans;
+mod precompiled;
+pub use precompiled::{PrecompiledSolveBackend, PrecompiledSolveBackendBuilder};
 mod refresh_batch;
 mod refresh_execution;
 mod refresh_projection;
@@ -95,6 +97,7 @@ use refresh_execution::static_refresh_parameter_indices;
 use refresh_projection::*;
 use seed_linearization::SeedProjectionCache;
 use support::{
+    admitted_compiled_error, admitted_compute_error, admitted_output_call,
     build_visible_name_index, compiled_compute_expression, compiled_compute_jacobian,
     compiled_expression, compiled_jacobian, copy_runtime_values, copy_runtime_values_into,
     fill_inactive_root_output, optional_compiled, reserve_runtime_index_map_capacity,
@@ -112,7 +115,7 @@ pub trait CompiledSolveProjectionJacobian {
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String>;
+    ) -> Result<(), crate::RuntimeSolveError>;
 }
 
 /// Backend-neutral callable for a causally ordered set of exact assignments.
@@ -126,12 +129,12 @@ pub trait CompiledSolveAssignmentSchedule {
         p: &[f64],
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<(), String>;
+    ) -> Result<(), crate::RuntimeSolveError>;
 }
 
 /// Backend-neutral callable for one checked aggregate event transaction.
 pub trait CompiledSolveEventTransaction {
-    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String>;
+    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), crate::RuntimeSolveError>;
 }
 
 /// Optional execution adapter injected by a concrete simulation backend.
@@ -144,10 +147,16 @@ pub trait CompiledSolveTargetValues {
         p: &[f64],
         time: f64,
         context: RowEvalContext<'_>,
-    ) -> Result<f64, String>;
+    ) -> Result<f64, crate::RuntimeSolveError>;
 }
 
 pub trait SolveExecutionBackend {
+    /// Admit the complete model execution context before preparation or calls.
+    /// A rejection is fatal; it must never become an interpreted fallback.
+    fn validate_model_context(&self, _model: &solve::SolveModel) -> Result<(), String> {
+        Ok(())
+    }
+
     fn compile_target_values(
         &self,
         _plan: &solve_eval::PreparedTargetValuePlan,
@@ -226,6 +235,7 @@ pub trait SolveExecutionBackend {
 
 #[derive(Clone)]
 struct CompiledDiscreteSpecialization {
+    source_span: rumoca_core::Span,
     expression: Rc<dyn CompiledSolveExpression>,
     output_count: usize,
     guard_expectations: Box<[bool]>,
@@ -240,6 +250,11 @@ struct ClockActivationCache {
 impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
         match value {
+            EvalSolveError::CompiledExecution { message, span } => Self::CompiledExecution {
+                context: "evaluator pure call",
+                message,
+                source_spans: span.into_iter().collect(),
+            },
             EvalSolveError::SingularTargetAssignment {
                 row,
                 target_y_index,
@@ -252,7 +267,8 @@ impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
                 span,
             },
             fault @ (EvalSolveError::InvalidTensorIndex { .. }
-            | EvalSolveError::TensorIndexOutOfBounds { .. }) => Self::SourceFault {
+            | EvalSolveError::TensorIndexOutOfBounds { .. }
+            | EvalSolveError::NativeSourceIndexFault { .. }) => Self::SourceFault {
                 message: fault.to_string(),
                 span: fault.source_span(),
             },
@@ -488,6 +504,14 @@ impl SolveRuntime {
         execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
         primary: Option<&SolveRuntime>,
     ) -> Result<Self, EvalSolveError> {
+        if let Some(backend) = &execution_backend {
+            backend.validate_model_context(model).map_err(|message| {
+                EvalSolveError::InvalidRow {
+                    message: format!("compiled backend model context refused: {message}"),
+                    span: None,
+                }
+            })?;
+        }
         let prepare = |pick: fn(&SolveRuntime) -> &PreparedScalarProgramBlock,
                        block: solve::ScalarProgramBlock| {
             let base = primary.map(pick);
@@ -1146,15 +1170,17 @@ impl SolveRuntime {
             .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
         let mut scratch = self.compiled_output_scratch.borrow_mut();
         scratch.resize(total_outputs, 0.0);
-        let called =
-            compiled
-                .expression
-                .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch);
+        compiled
+            .expression
+            .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+            .map_err(|error| {
+                admitted_compiled_error("discrete specialization", &[compiled.source_span], error)
+            })?;
         let guards_match = scratch[compiled.output_count..]
             .iter()
             .zip(&compiled.guard_expectations)
             .all(|(actual, expected)| (*actual != 0.0) == *expected);
-        if called.is_err() || !guards_match {
+        if !guards_match {
             return Ok(false);
         }
         out.clear();
@@ -1770,13 +1796,20 @@ impl SolveRuntime {
             return self.write_planned_root_conditions(plan, y, p, t, out);
         }
         if let Some(compiled) = &self.compiled_root_conditions {
-            compiled
-                .call(y, p, t, self.model.external_tables.as_slice(), out)
-                .map_err(RuntimeSolveError::solve_ir)?;
+            compiled.call(y, p, t, self.model.external_tables.as_slice(), out)?;
             return validate_finite_runtime_output("root condition output", out);
         }
+        let observations = solve_eval::CheckedEventObservationContext::construct(
+            &self.model.pure_calls,
+            self.root_condition_rows.block(),
+            &self.model.problem.events.actions,
+        )?;
+        let context = RowEvalContext {
+            event_observations: Some(&observations),
+            ..self.row_eval_context()
+        };
         self.root_condition_rows
-            .eval_with_context(y, p, t, self.row_eval_context(), out)
+            .eval_with_context(y, p, t, context, out)
             .map_err(Into::into)
     }
 

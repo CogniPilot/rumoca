@@ -790,7 +790,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            initial_y: vec![0.0],
+            initial_y: vec![0.0].into(),
             ..Default::default()
         }
     }

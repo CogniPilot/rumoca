@@ -1,5 +1,6 @@
 //! Runtime projection and event regression tests.
 
+mod admitted_errors;
 mod native_manifold;
 mod native_projection_residual;
 mod seed_linearization;
@@ -94,7 +95,7 @@ fn set_causal_test_projection_plan(model: &mut solve::SolveModel) {
     };
 }
 
-fn warm_start_test_model() -> solve::SolveModel {
+pub(super) fn warm_start_test_model() -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
@@ -126,7 +127,7 @@ fn warm_start_test_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0, 2.0],
+        initial_y: vec![1.0, 2.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -296,7 +297,7 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 4],
+        initial_y: vec![0.0; 4].into(),
         ..Default::default()
     };
     let implicit =
@@ -359,7 +360,7 @@ fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0, 1.0],
+        initial_y: vec![1.0, 1.0].into(),
         ..Default::default()
     };
     let implicit =
@@ -467,7 +468,7 @@ fn causal_certificate_keeps_equation_rows_distinct_from_solver_y_indices() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 2],
+        initial_y: vec![0.0; 2].into(),
         ..Default::default()
     };
     let implicit =
@@ -514,13 +515,13 @@ fn batched_assignment_refresh_preserves_row_order_dependencies() {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0, 0.0, 0.0],
+        initial_y: vec![1.0, 0.0, 0.0].into(),
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
@@ -551,13 +552,13 @@ fn certified_assignment_refresh_rejects_nonfinite_value_and_restores_input() {
             },
             ..Default::default()
         },
-        initial_y: vec![7.0],
+        initial_y: vec![7.0].into(),
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     let error = runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
@@ -614,7 +615,7 @@ fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 2],
+        initial_y: vec![0.0; 2].into(),
         ..Default::default()
     };
 
@@ -697,8 +698,8 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![3.0],
+        initial_y: vec![0.0, 0.0].into(),
+        parameters: vec![3.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
@@ -707,7 +708,7 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
         runtime.algebraic_refresh.value_projection_plan.blocks.len(),
         2
     );
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &model.parameters, 1.0e-12, 4)
@@ -815,7 +816,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
             },
             ..Default::default()
         },
-        initial_y: vec![10.0],
+        initial_y: vec![10.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -827,7 +828,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
         "positive_residual_jvp.mo",
     );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[4.0], 1.0e-12, 1)
@@ -949,7 +950,7 @@ fn mode_dependent_repivot_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
+        initial_y: vec![0.0, 0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -979,7 +980,7 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     assert!(runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
     assert_eq!(runtime.algebraic_refresh.simultaneous_plan.blocks.len(), 1);
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     for k in [0.0, 1.0, 3.0, 0.0] {
         runtime
             .refresh_algebraic_and_output_slots_certified(0.0, &mut solver_y, &[k], 1.0e-10, 4)
@@ -1042,7 +1043,7 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0, 0.0],
+        initial_y: vec![0.0, 0.0, 0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -1107,7 +1108,7 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
     set_complete_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     refresh_with_value_stages(&runtime, &mut solver_y)
         .expect("a numerical stage should retain its finite causal epsilon seed");
 
@@ -1621,7 +1622,7 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 mod chart_sharing;
 mod grouped_projection_jvp;
 mod native_projection_assignments;
-mod native_projection_jvp;
+pub(super) mod native_projection_jvp;
 mod prepared_projection_jacobian;
 mod projection_output_mapping;
 mod projection_sensitivity;

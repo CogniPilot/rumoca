@@ -58,19 +58,20 @@ impl SolveRuntime {
             .get(&program_index)
             .cloned()
         {
-            out.resize(prepared.output_count(), 0.0);
-            if compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out.as_mut_slice(),
-                )
-                .is_ok()
-            {
-                return Ok(());
-            }
+            let mut scratch = self.compiled_output_scratch.borrow_mut();
+            super::resize_runtime_values(
+                &mut scratch,
+                prepared.output_count(),
+                0.0,
+                "compiled guarded assignment outputs",
+            )?;
+            compiled
+                .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+                .map_err(|error| {
+                    super::admitted_compiled_error("guarded assignment", &[prepared.span()], error)
+                })?;
+            super::copy_runtime_values_into(out, &scratch, "guarded assignment output commit")?;
+            return Ok(());
         } else {
             self.compile_guarded_assignment(program_index);
             if self

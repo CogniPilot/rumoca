@@ -1,0 +1,316 @@
+{
+  "dae": {
+    "schema_version": 44,
+    "source_map": {
+      "files": [
+        [
+          1249943056337021614,
+          "construction-evidence-parity.mo",
+          "model Tensor input Real u[2,3]; output Real y[2,3]; equation y=u; end Tensor;"
+        ]
+      ]
+    },
+    "storage": {
+      "predefined_string_declaration": 4,
+      "value_types": [
+        {
+          "scalar": "real",
+          "dimensions": [
+            2,
+            3
+          ],
+          "record_name": null,
+          "record_fields": []
+        },
+        {
+          "scalar": "real",
+          "dimensions": [],
+          "record_name": null,
+          "record_fields": []
+        }
+      ],
+      "flat_type_ids": [
+        8,
+        null
+      ],
+      "value_type_provenance": [
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 19,
+            "end": 25
+          }
+        },
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 19,
+            "end": 25
+          }
+        }
+      ],
+      "variables": [
+        {
+          "name": "u",
+          "role": "input",
+          "variability": "continuous",
+          "value_type": 0,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 19,
+              "end": 25
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 19,
+                "end": 25
+              },
+              "parts": [
+                {
+                  "ident": "u",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 19,
+                    "end": 25
+                  },
+                  "subs": [],
+                  "def_id": 99
+                }
+              ]
+            },
+            "binding": null,
+            "start": 0,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "input",
+            "declared_causality": "input",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        },
+        {
+          "name": "y",
+          "role": "output",
+          "variability": "continuous",
+          "value_type": 0,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 39,
+              "end": 45
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 39,
+                "end": 45
+              },
+              "parts": [
+                {
+                  "ident": "y",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 39,
+                    "end": 45
+                  },
+                  "subs": [],
+                  "def_id": 100
+                }
+              ]
+            },
+            "binding": null,
+            "start": 1,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "output",
+            "declared_causality": "output",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        }
+      ],
+      "functions": [],
+      "domains": [
+        {
+          "parent": null,
+          "domain": {
+            "binders": [
+              {
+                "id": 0,
+                "display_name": "__array_i1",
+                "lower": 1,
+                "upper": 2,
+                "step": 1
+              },
+              {
+                "id": 1,
+                "display_name": "__array_i2",
+                "lower": 1,
+                "upper": 3,
+                "step": 1
+              }
+            ]
+          },
+          "provenance": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 61,
+              "end": 64
+            }
+          }
+        }
+      ],
+      "expressions": {
+        "nodes": [
+          {
+            "literal": {
+              "real": 0.0
+            }
+          },
+          {
+            "literal": {
+              "real": 0.0
+            }
+          },
+          {
+            "coordinate": {
+              "algebraic": 1
+            }
+          },
+          {
+            "coordinate": {
+              "input": 0
+            }
+          },
+          {
+            "binary": {
+              "operator": "subtract",
+              "lhs": 2,
+              "rhs": 3
+            }
+          }
+        ],
+        "provenance": [
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 19,
+              "end": 25
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 39,
+              "end": 45
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 61,
+              "end": 62
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 63,
+              "end": 64
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 61,
+              "end": 62
+            }
+          }
+        ],
+        "operands": [],
+        "subscripts": []
+      },
+      "continuous_equation_operations": [
+        {
+          "structured": {
+            "domain": 0,
+            "scalar_view": "RowMajorProjection",
+            "bodies": [
+              4
+            ],
+            "provenance": {
+              "origin": "source",
+              "span": {
+                "source": 1249943056337021614,
+                "start": 61,
+                "end": 64
+              }
+            }
+          }
+        }
+      ],
+      "initialization_equation_operations": [],
+      "initial_discrete_values": [],
+      "initial_parameter_values": [],
+      "discrete_real_equations": [],
+      "discrete_value_owners": [],
+      "model_event_transactions": [],
+      "relations": [],
+      "conditions": [],
+      "roots": [],
+      "structured_roots": [],
+      "time_events": [],
+      "event_actions": [],
+      "clocks": [],
+      "clock_ownerships": [],
+      "previous_values": [],
+      "terminals": [],
+      "delays": []
+    }
+  },
+  "balance": {
+    "state_unknowns": 0,
+    "algebraic_unknowns": 0,
+    "output_unknowns": 6,
+    "discrete_real_unknowns": 0,
+    "discrete_value_unknowns": 0,
+    "continuous_equations": 6,
+    "discrete_real_equations": 0,
+    "discrete_value_definitions": 0
+  },
+  "selections": []
+}

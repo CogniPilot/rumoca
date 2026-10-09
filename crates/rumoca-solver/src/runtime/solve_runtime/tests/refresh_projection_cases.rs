@@ -69,7 +69,7 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
             },
             ..Default::default()
         },
-        initial_y: vec![2.0, 4.0, 2.0],
+        initial_y: vec![2.0, 4.0, 2.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
@@ -119,13 +119,13 @@ fn refresh_solves_affine_coordinates_even_when_the_seed_residual_is_small() {
             },
             ..Default::default()
         },
-        initial_y: vec![2.0e-7, 1.0e-7],
+        initial_y: vec![2.0e-7, 1.0e-7].into(),
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-6, 4)
@@ -166,7 +166,7 @@ fn refresh_newton_backtracks_across_expression_domain_boundary() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
+        initial_y: vec![0.0, 0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -228,7 +228,7 @@ fn refresh_newton_backtracks_across_expression_domain_boundary() {
     );
     set_complete_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-10, 8)
@@ -264,7 +264,7 @@ fn refresh_projects_rank_deficient_bilinear_start() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 3],
+        initial_y: vec![0.0; 3].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -315,7 +315,7 @@ fn refresh_projects_rank_deficient_bilinear_start() {
     );
     set_complete_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-10, 8)
@@ -363,7 +363,7 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
             },
             ..Default::default()
         },
-        initial_y: vec![7.0],
+        initial_y: vec![7.0].into(),
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);
@@ -408,7 +408,9 @@ fn staged_projection_still_rejects_a_genuine_backward_dependency() {
     let layout = &mut model.problem.solve_layout;
     layout.solver_maps.names.push("late_input".to_owned());
     layout.algebraic_scalar_count += 1;
-    model.initial_y.push(0.0);
+    let mut values = model.initial_y.to_vec();
+    values.push(0.0);
+    model.initial_y = values.into();
     let mut residual = mode_dependent_repivot_residual_rows();
     residual[0][5] = solve::LinearOp::LoadY { dst: 5, index: 2 };
     residual.push(shifted_variable_residual_row(2, 1.0));
@@ -478,7 +480,7 @@ fn refresh_projects_complete_system_with_empty_causal_schedule() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0],
+        initial_y: vec![0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -494,7 +496,7 @@ fn refresh_projects_complete_system_with_empty_causal_schedule() {
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(runtime.algebraic_refresh.rows.is_empty());
     assert!(runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
@@ -525,7 +527,7 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
+        initial_y: vec![0.0, 0.0].into(),
         ..Default::default()
     };
     let err = match SolveRuntime::new_fixture(&model) {

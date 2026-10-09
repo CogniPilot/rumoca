@@ -304,7 +304,7 @@ mod tests {
             .clocks
             .periodic_event_schedules
             .push(periodic(period, 0.0));
-        model.parameters = vec![dynamic_deadline];
+        model.parameters = vec![dynamic_deadline].into();
         let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, 0.02);
 
         let (event_time, event) = next_runtime_event_stop(
@@ -388,7 +388,7 @@ mod tests {
         model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
         model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
         model.problem.events.has_terminal_event = true;
-        model.parameters = vec![target.next_up()];
+        model.parameters = vec![target.next_up()].into();
         let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, target);
 
         let (event_time, event) = next_runtime_event_stop(

@@ -92,9 +92,12 @@ impl PreparedManifoldProjection {
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
         if let Some(compiled) = &self.compiled_directional
-            && compiled
-                .call_program_outputs(program, inputs, context.external_tables.unwrap_or(&[]), out)
-                .map_err(RuntimeSolveError::solve_ir)?
+            && compiled.call_program_outputs(
+                program,
+                inputs,
+                context.external_tables.unwrap_or(&[]),
+                out,
+            )?
         {
             return Ok(());
         }
@@ -122,9 +125,7 @@ impl PreparedManifoldProjection {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         if let Some(compiled) = &self.compiled_residual {
-            return compiled
-                .call(y, p, t, context.external_tables.unwrap_or(&[]), out)
-                .map_err(RuntimeSolveError::solve_ir);
+            return compiled.call(y, p, t, context.external_tables.unwrap_or(&[]), out);
         }
         self.residual
             .eval_with_context(y, p, t, context, out)
@@ -141,9 +142,7 @@ impl PreparedManifoldProjection {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         if let Some(compiled) = &self.compiled_directional {
-            return compiled
-                .call(y, p, t, seed, context.external_tables.unwrap_or(&[]), out)
-                .map_err(RuntimeSolveError::solve_ir);
+            return compiled.call(y, p, t, seed, context.external_tables.unwrap_or(&[]), out);
         }
         self.directional
             .eval_with_context(

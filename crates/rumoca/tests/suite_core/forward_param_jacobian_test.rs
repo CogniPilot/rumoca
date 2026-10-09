@@ -39,7 +39,7 @@ fn parameter_jacobian_matches_finite_difference() {
 
     let state_count = solve_model.state_scalar_count();
     let state: Vec<f64> = solve_model.initial_y[..state_count].to_vec();
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters.to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 256,
@@ -124,7 +124,7 @@ fn forward_sensitivity_rhs_matches_directional_finite_difference() {
 
     let n_state = solve_model.state_scalar_count();
     let state: Vec<f64> = solve_model.initial_y[..n_state].to_vec();
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters.to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 256,

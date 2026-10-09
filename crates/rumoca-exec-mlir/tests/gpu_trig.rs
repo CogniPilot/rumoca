@@ -237,9 +237,9 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 6],
+        initial_y: vec![0.0; 6].into(),
         solver_nominals: vec![1.0; 6],
-        parameters: vec![m, j, f, g],
+        parameters: vec![m, j, f, g].into(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: names,
         visible_value_rows: ScalarProgramBlock::default(),

@@ -27,7 +27,7 @@ pub struct StructuredIndexDomain {
 ///
 /// This is the compact, materialization-free description of how one array
 /// subscript varies across a regular elementwise `for` family.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AffineForm {
     pub constant: i64,
     pub coeffs: Vec<i64>,

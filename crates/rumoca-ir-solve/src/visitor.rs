@@ -3,11 +3,15 @@
 //! These visitors centralize Solve-IR traversal without encoding evaluation,
 //! validation, or backend policy in the data crate.
 
+mod typed;
+pub use typed::{walk_pure_call_table, walk_typed_program};
+
 use crate::{
     ComputeBlock, ComputeNode, ContinuousSolveArtifacts, ContinuousSolveSystem,
     DiscreteSolveArtifacts, DiscreteSolveSystem, EventTransactionProgram,
     InitializationSolveArtifacts, InitializationSolveSystem, LinearOp, ScalarProgramBlock,
     SolveArtifacts, SolveClockPartition, SolveEventPartition, SolveModel, SolveProblem,
+    SolvePureCallTable, SolveSpannedOperation, TypedProgram,
 };
 use rumoca_core::Span;
 
@@ -155,6 +159,27 @@ pub trait SolveVisitor {
         ops: &[LinearOp],
     ) -> Result<(), Self::Error> {
         walk_linear_op_slice(self, kind, ops)
+    }
+
+    /// Explicit opt-in traversal of canonical primal and directional bodies.
+    /// The ordinary problem/model walk retains its existing scope.
+    fn visit_pure_call_table(&mut self, table: &SolvePureCallTable) -> Result<(), Self::Error> {
+        walk_pure_call_table(self, table)
+    }
+
+    fn visit_typed_program(&mut self, program: &TypedProgram) -> Result<(), Self::Error> {
+        walk_typed_program(self, program)
+    }
+
+    /// The checked register namespace belongs to this exact program, including
+    /// when the operation occurs in a nested region or assertion message.
+    fn visit_typed_operation(
+        &mut self,
+        _program: &TypedProgram,
+        _op_index: usize,
+        _op: &SolveSpannedOperation,
+    ) -> Result<(), Self::Error> {
+        Ok(())
     }
 
     fn visit_linear_op(

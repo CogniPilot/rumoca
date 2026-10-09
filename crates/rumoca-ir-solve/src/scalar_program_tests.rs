@@ -32,6 +32,9 @@ fn logical_output_bindings_preserve_mixed_program_order_on_wire_replay() {
     assert!(block.shares_program_owner(&block.clone()));
     assert!(!block.shares_program_owner(&replay));
     for owner in [&block, &replay] {
+        assert_eq!(owner.output_position(9), Some((0, 0)));
+        assert_eq!(owner.output_position(2), Some((0, 1)));
+        assert_eq!(owner.output_position(1), None);
         let bindings = owner
             .output_bindings()
             .map(|binding| {
@@ -958,4 +961,37 @@ fn a_fold_patch_counts_its_window_extent_in_its_value() {
     };
     assert_eq!(whole.value_count(&[3, 4]), Some(12));
     assert_eq!(whole.last_coordinate_register(), None);
+}
+
+#[test]
+fn overflowing_store_counts_refuse_before_constructing_output_indexes() {
+    let wire = serde_json::json!({
+        "programs": [[
+            {"Const": {"dst": 0, "value": 1.0}},
+            {"StoreOutputRange": {"start": 0, "count": usize::MAX, "stride": 0}},
+            {"StoreOutput": {"src": 0}}
+        ]],
+        "program_spans": [source_span("OverflowingStores.mo", 1, 10)],
+        "output_indices": [0]
+    });
+    let error = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutputRange {
+                start: 0,
+                count: usize::MAX,
+                stride: 0,
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![source_span("OverflowingStores.mo", 1, 10)],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::OutputIndexOverflow { .. }
+            | SolveProblemShapeContractError::ScalarProgramRegisterFlow { .. }
+    ));
+    let error = serde_json::from_value::<ScalarProgramBlock>(wire).unwrap_err();
+    assert!(error.to_string().contains("output"), "{error}");
 }

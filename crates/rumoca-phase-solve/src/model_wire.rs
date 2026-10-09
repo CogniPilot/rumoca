@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The model schema is distinct from `SOLVE_SCHEMA_VERSION`, which versions
 /// the nested canonical `SolveProblem`.
-pub const SOLVE_MODEL_SCHEMA_VERSION: u16 = 1;
+pub const SOLVE_MODEL_SCHEMA_VERSION: u16 = 2;
 
 /// Borrowed canonical construction inputs for one solver model.
 ///
@@ -23,9 +23,9 @@ pub struct SolveModelWireRef<'model> {
     schema_version: u16,
     problem: &'model solve::SolveProblem,
     pure_calls: &'model solve::SolvePureCallTable,
-    initial_y: &'model [f64],
+    initial_y: &'model solve::SolveInitialValues,
     solver_nominals: &'model [f64],
-    parameters: &'model [f64],
+    parameters: &'model solve::SolveInitialValues,
     external_tables: &'model solve::ExternalTables,
     visible_names: &'model [String],
     visible_value_rows: &'model solve::ScalarProgramBlock,
@@ -78,9 +78,9 @@ struct SolveModelWire {
     schema_version: u16,
     problem: solve::SolveProblem,
     pure_calls: solve::SolvePureCallTable,
-    initial_y: Vec<f64>,
+    initial_y: solve::SolveInitialValues,
     solver_nominals: Vec<f64>,
-    parameters: Vec<f64>,
+    parameters: solve::SolveInitialValues,
     external_tables: solve::ExternalTables,
     visible_names: Vec<String>,
     visible_value_rows: solve::ScalarProgramBlock,
@@ -144,15 +144,20 @@ fn replay_solve_model(mut wire: SolveModelWire) -> Result<solve::SolveModel, Sol
 
 struct CorrelationView<'model> {
     problem: &'model solve::SolveProblem,
-    initial_y: &'model [f64],
+    initial_y: &'model solve::SolveInitialValues,
     solver_nominals: &'model [f64],
-    parameters: &'model [f64],
+    parameters: &'model solve::SolveInitialValues,
     visible_names: &'model [String],
     visible_value_rows: &'model solve::ScalarProgramBlock,
     variable_meta: &'model [solve::SolveVariableMeta],
 }
 
 fn validate_correlations(view: CorrelationView<'_>) -> Result<(), SolveModelWireError> {
+    for values in [view.initial_y, view.parameters] {
+        values
+            .require_finite()
+            .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
+    }
     require_vector_length(
         "initial_y",
         view.problem.layout.y_scalars(),

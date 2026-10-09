@@ -6,7 +6,7 @@ use serde::ser::{SerializeMap, Serializer};
 
 #[derive(Debug, thiserror::Error)]
 #[error("FMI C profile: {0}")]
-pub struct FmiCCodegenError(&'static str);
+pub struct FmiCCodegenError(pub(super) &'static str);
 
 #[derive(Debug)]
 enum Profile {
@@ -29,6 +29,7 @@ enum Profile {
 #[derive(Debug)]
 pub struct FmiCCodegenView {
     profile: Profile,
+    deployment: super::FmiDeploymentCapabilities,
     /// The dependency order of the parameter-binding programs.
     update_order: Vec<usize>,
     /// The dependency levels of the parameter bindings.
@@ -39,18 +40,9 @@ pub struct FmiCCodegenView {
 
 impl FmiCodegenView {
     pub fn try_c(self) -> Result<FmiCCodegenView, FmiCCodegenError> {
-        validate_variables(&self.metadata)?;
-        refuse_recursive_groups(&self.model.pure_calls)?;
-        let (update_order, update_levels) =
-            super::parameter_updates::validate(&self.model.problem, &self.model.pure_calls)
-                .map_err(FmiCCodegenError)?;
-        let (profile, discrete_order) = self.profile()?;
-        Ok(FmiCCodegenView {
-            profile,
-            update_order,
-            update_levels,
-            discrete_order,
-        })
+        self.try_deployment(super::FmiDeploymentCapabilities::default())
+            .map_err(|error| FmiCCodegenError(error.0))?
+            .try_c()
     }
 
     /// The narrowest profile that executes the component's events: none,
@@ -86,21 +78,64 @@ impl FmiCodegenView {
     }
 }
 
+impl FmiCCodegenView {
+    pub(super) fn from_deployment(
+        deployment: super::FmiDeploymentView,
+    ) -> Result<Self, FmiCCodegenError> {
+        let (view, deployment) = deployment.into_parts();
+        let (update_order, update_levels) = admit_kernel(&view.model, &view.metadata)?;
+        let (profile, discrete_order) = view.profile()?;
+        Ok(Self {
+            profile,
+            deployment,
+            update_order,
+            update_levels,
+            discrete_order,
+        })
+    }
+}
+
 impl TryFrom<FmiEventFreeCodegenView> for FmiCCodegenView {
     type Error = FmiCCodegenError;
     fn try_from(value: FmiEventFreeCodegenView) -> Result<Self, Self::Error> {
-        validate_variables(&value.metadata)?;
-        refuse_recursive_groups(value.pure_calls())?;
-        let (update_order, update_levels) =
-            super::parameter_updates::validate(value.problem(), value.pure_calls())
-                .map_err(FmiCCodegenError)?;
+        let deployment = super::FmiDeploymentCapabilities::default()
+            .admit(&value.metadata)
+            .map_err(|error| FmiCCodegenError(error.0))?;
+        let (update_order, update_levels) = admit_kernel(&value.model, &value.metadata)?;
         Ok(Self {
             profile: Profile::EventFree(value),
+            deployment,
             update_order,
             update_levels,
             discrete_order: super::static_assertions::DiscreteOrder::default(),
         })
     }
+}
+
+fn admit_kernel(
+    model: &crate::SolveModel,
+    metadata: &FmiMetadata,
+) -> Result<(Vec<usize>, usize), FmiCCodegenError> {
+    validate_initial_values(model)?;
+    validate_variables(metadata)?;
+    refuse_recursive_groups(&model.pure_calls)?;
+    super::parameter_updates::validate(&model.problem, &model.pure_calls).map_err(FmiCCodegenError)
+}
+
+fn validate_initial_values(model: &crate::SolveModel) -> Result<(), FmiCCodegenError> {
+    for values in [&model.initial_y, &model.parameters] {
+        values
+            .require_finite()
+            .map_err(|_| FmiCCodegenError("non-finite initialization value"))?;
+    }
+    if model.initial_y.len() != model.problem.layout.y_scalars()
+        || model.parameters.len() != model.problem.layout.p_scalars()
+    {
+        return Err(FmiCCodegenError(
+            "initial-value owners disagree with checked storage capacity",
+        ));
+    }
+    Ok(())
 }
 
 /// The C profile emits no recursive call or depth-carrying frame, so a
@@ -168,7 +203,7 @@ impl FmiCCodegenView {
             Profile::ScalarEvents(v, _) => &v.model,
         }
     }
-    fn metadata(&self) -> &FmiMetadata {
+    pub(super) fn metadata(&self) -> &FmiMetadata {
         match &self.profile {
             Profile::EventFree(v) => &v.metadata,
             Profile::StaticAssertions(v) => &v.metadata,
@@ -210,12 +245,46 @@ impl FmiCCodegenView {
     }
 }
 
-impl Serialize for FmiCCodegenView {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+/// Named, read-only instantiation buffers of the retained checked kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FmiInstantiationBuffer {
+    Solver,
+    Parameters,
+}
+
+impl FmiInstantiationBuffer {
+    pub const ALL: [Self; 2] = [Self::Solver, Self::Parameters];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Solver => "initial_y",
+            Self::Parameters => "initial_parameters",
+        }
+    }
+}
+
+impl FmiCCodegenView {
+    pub fn instantiation_values(
+        &self,
+        buffer: FmiInstantiationBuffer,
+    ) -> &crate::SolveInitialValues {
+        match buffer {
+            FmiInstantiationBuffer::Solver => &self.model().initial_y,
+            FmiInstantiationBuffer::Parameters => &self.model().parameters,
+        }
+    }
+
+    pub fn instantiation_buffer(&self, buffer: FmiInstantiationBuffer) -> &[f64] {
+        self.instantiation_values(buffer).as_slice()
+    }
+
+    /// The single field inventory for serde and read-only template projections.
+    pub fn serialize_entries<M: SerializeMap>(&self, entries: &mut M) -> Result<(), M::Error> {
         let metadata = self.metadata();
-        let mut entries = serializer.serialize_map(Some(14))?;
-        entries.serialize_entry("initial_y", &self.model().initial_y)?;
-        entries.serialize_entry("initial_parameters", &self.model().parameters)?;
+        entries.serialize_entry("deployment", &self.deployment)?;
+        for buffer in FmiInstantiationBuffer::ALL {
+            entries.serialize_entry(buffer.name(), self.instantiation_values(buffer))?;
+        }
         entries.serialize_entry(
             "variables",
             &super::metadata::SerializedFmiVariables::borrowing(metadata.variables()),
@@ -252,6 +321,14 @@ impl Serialize for FmiCCodegenView {
         entries.serialize_entry("update_order", &self.update_order)?;
         entries.serialize_entry("discrete_equations", &self.discrete_order.equations)?;
         entries.serialize_entry("discrete_memories", &self.discrete_order.memories)?;
+        Ok(())
+    }
+}
+
+impl Serialize for FmiCCodegenView {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut entries = serializer.serialize_map(Some(15))?;
+        self.serialize_entries(&mut entries)?;
         entries.end()
     }
 }

@@ -164,7 +164,7 @@ pub(super) fn condition_memory_model(starts: &[f64]) -> solve::SolveModel {
             },
             ..Default::default()
         },
-        parameters,
+        parameters: parameters.into(),
         ..Default::default()
     }
 }
@@ -198,7 +198,7 @@ pub(super) fn single_state_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
+        initial_y: vec![1.0].into(),
         solver_nominals: vec![1.0],
         visible_names: vec!["x".to_string()],
         visible_value_rows: fixture_block(
@@ -221,7 +221,7 @@ pub(super) fn single_state_input_model() -> solve::SolveModel {
     model.problem.solve_layout.parameter_count = 0;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
+    model.parameters = vec![1.0].into();
     model
 }
 
@@ -256,7 +256,7 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
     let mut model = single_state_model();
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.parameters = vec![0.0];
+    model.parameters = vec![0.0].into();
     let mut initialization = model.problem.initialization.clone().into_input();
     initialization.update_rhs = fixture_block(
         vec![vec![
@@ -289,7 +289,7 @@ pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel
     model.problem.solve_layout.parameter_count = 2;
     model.problem.solve_layout.compiled_parameter_len = 2;
     model.problem.solve_layout.initial_event_parameter_index = Some(1);
-    model.parameters = vec![0.0, 1.0];
+    model.parameters = vec![0.0, 1.0].into();
     model.problem.discrete = solve::DiscreteSolveSystem {
         rhs: fixture_block(
             vec![vec![

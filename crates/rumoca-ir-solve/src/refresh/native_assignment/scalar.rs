@@ -212,54 +212,41 @@ fn tensor_reads(
     Ok(reads)
 }
 
-/// The value stage of one derived-discrete output: its discrete row program,
-/// every derived read rebound, publishing the stored register into the
-/// output's private work slot. A discrete row is already a value program, so
-/// no isolator is involved.
+/// One native stage evaluates one canonical discrete program and publishes all
+/// its output cells together. The operation list is never cloned per scalar.
 pub(super) fn derive_discrete(
-    output: &NativeDerivedOutput,
+    outputs: &[&NativeDerivedOutput],
     rhs: &ScalarProgramBlock,
     rebinding: &std::collections::BTreeMap<usize, usize>,
     layout: &VarLayout,
 ) -> Result<Family, NativeScheduleRefusal> {
-    let (program, source, _) = super::derived_discrete::row_program(rhs, output.row)?;
+    let (first, remaining) = outputs
+        .split_first()
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let (program, source, _, _) = super::derived_discrete::row_program(rhs, first.row)?;
     let span = rhs
         .program_span(program)
         .ok_or(NativeRefreshAssignmentRefusal(
             "native discrete program has no provenance",
         ))?;
-    let operations = super::rebinding::rebind_operations(&source, rebinding)?;
-    let Some(LinearOp::StoreOutput { .. }) = operations.last() else {
-        return Err(NativeEvaluationRefusal::MultiOutputDiscreteProgram.into());
-    };
-    let target = output.work_index;
-    let prefix = &operations[..operations.len() - 1];
-    crate::ScalarProgramRegisterFlow::derive(prefix).map_err(|_| {
-        NativeRefreshAssignmentRefusal("native discrete prefix has invalid register flow")
-    })?;
-    let reads = if prefix
-        .iter()
-        .any(|operation| matches!(operation, LinearOp::FunctionConditional { .. }))
-    {
-        super::range::checked_conditional_inputs(prefix, target..target + 1, layout)?
-    } else {
-        reads(prefix, target, layout)?
-    };
-    if prefix.iter().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::PureCall { .. } | LinearOp::LoadIndexedRegister { .. }
-        )
-    }) {
-        super::range::checked_call_inputs(prefix, target..target + 1, layout)?;
-    }
-    let value_kernel = ScalarProgramBlock::with_program_spans(vec![operations], vec![span])
-        .map_err(|_| NativeRefreshAssignmentRefusal("malformed native discrete value program"))?;
+    let start = remaining.iter().fold(first.work_index, |minimum, output| {
+        minimum.min(output.work_index)
+    });
+    let targets = discrete_targets(outputs, rhs, program, start)?;
+    let end = start
+        .checked_add(outputs.len())
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    let operations = super::rebinding::rebind_operations(source, rebinding)?;
+    let reads = super::range::checked_conditional_inputs(&operations, start..end, layout)?;
+    let value_kernel =
+        ScalarProgramBlock::with_output_indices(vec![operations], vec![span], targets).map_err(
+            |_| NativeRefreshAssignmentRefusal("malformed native discrete value program"),
+        )?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
             integer_bindings: Default::default(),
-            source: NativeStageSource::Discrete { row: output.row },
-            targets: coverage::Coverage::dense(target..target + 1),
+            source: NativeStageSource::Discrete { row: first.row },
+            targets: coverage::Coverage::dense(start..end),
             value_kernel: ComputeBlock {
                 nodes: vec![ComputeNode::ScalarPrograms(value_kernel)],
             },
@@ -267,4 +254,36 @@ pub(super) fn derive_discrete(
         reads: reads.into_iter().map(coverage::Coverage::dense).collect(),
         outputs: 0..0,
     })
+}
+
+fn discrete_targets(
+    outputs: &[&NativeDerivedOutput],
+    rhs: &ScalarProgramBlock,
+    program: usize,
+    start: usize,
+) -> Result<Vec<usize>, NativeEvaluationRefusal> {
+    let source = rhs
+        .program(program)
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    if ScalarProgramBlock::program_output_count(source) != outputs.len() {
+        return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+    }
+    let mut targets = vec![usize::MAX; outputs.len()];
+    let mut owned = std::collections::BTreeSet::new();
+    for output in outputs {
+        let (owner, ordinal) = rhs
+            .output_position(output.row)
+            .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+        let target = output.work_index - start;
+        if owner != program
+            || ordinal >= targets.len()
+            || target >= targets.len()
+            || !owned.insert(target)
+            || targets[ordinal] != usize::MAX
+        {
+            return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+        }
+        targets[ordinal] = target;
+    }
+    Ok(targets)
 }

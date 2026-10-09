@@ -67,6 +67,7 @@ mod comprehension_time_invariance;
 mod conditional_arm_selection;
 mod connection_normalization_golden;
 mod constant_dimensions;
+mod constant_fill_compaction;
 mod constant_folding;
 mod constant_values;
 mod constraint_fold_charts;

@@ -491,11 +491,10 @@ fn variable_causality(
     model: &flat::Model,
 ) -> dae::VariableCausality {
     let top_level_port = variable.component_ref.as_ref().is_some_and(|reference| {
-        reference.parts().len() == 1
-            || reference
-                .parts()
-                .first()
-                .is_some_and(|root| model.top_level_connectors.contains(&root.ident))
+        (reference.parts().len() == 1 && !variable.is_protected)
+            || reference.parts().first().is_some_and(|root| {
+                analysis::is_public_causality_root(model, &root.ident, &variable.causality)
+            })
     });
     match (&variable.causality, role, top_level_port) {
         (Causality::Input(_), RuntimeVariableRole::Input, true) => dae::VariableCausality::Input,

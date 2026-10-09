@@ -63,6 +63,7 @@ pub(super) fn push_message_action<'dae>(
         span,
         origin: action.provenance().origin().to_string(),
         clock_owner: clock.map(|clock| clocks.clock(clock)).transpose()?,
+        assertion_projection: None,
     });
     Ok(())
 }

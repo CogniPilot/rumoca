@@ -88,6 +88,13 @@ fn transfer(
     outputs: &mut Vec<bool>,
 ) -> Option<()> {
     match op {
+        Op::PureCallObservation {
+            dst_start,
+            input_starts,
+            site,
+        } => {
+            observation(table, r, *dst_start, input_starts, site)?;
+        }
         Op::Const { dst, .. } => r[*dst as usize] = true,
         Op::LoadY { dst, index } => r[*dst as usize] = *y.get(*index)?,
         Op::LoadP { dst, index } => r[*dst as usize] = *p.get(*index)?,
@@ -123,22 +130,7 @@ fn transfer(
             input_starts,
             site,
         } => {
-            let inputs = input_starts
-                .iter()
-                .zip(site.inputs())
-                .map(|(start, ty)| {
-                    r.get(*start as usize..*start as usize + ty.scalar_count() as usize)
-                        .map(|v| v.iter().all(|x| *x))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            let owner = table.owner(site.owner())?;
-            let values = super::typed_dependencies::owner_outputs(table, owner, &inputs);
-            let mut start = *dst_start as usize;
-            for (value, output) in values.iter().zip(owner.outputs()) {
-                let end = start + output.value_type().scalar_count() as usize;
-                r.get_mut(start..end)?.fill(*value);
-                start = end;
-            }
+            pure_call(table, r, *dst_start, input_starts, site)?;
         }
         Op::TensorBinary {
             dst_start,
@@ -185,6 +177,57 @@ fn transfer(
             r.get_mut(dst..dst + op.dst_register_count())?.fill(false);
         }
     }
+    Some(())
+}
+
+fn pure_call(
+    table: &SolvePureCallTable,
+    registers: &mut [bool],
+    destination: crate::Reg,
+    starts: &[crate::Reg],
+    site: &crate::SolvePureCallSite,
+) -> Option<()> {
+    let inputs = starts
+        .iter()
+        .zip(site.inputs())
+        .map(|(start, ty)| {
+            registers
+                .get(*start as usize..*start as usize + ty.scalar_count() as usize)
+                .map(|values| values.iter().all(|value| *value))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let owner = table.owner(site.owner())?;
+    let values = super::typed_dependencies::owner_outputs(table, owner, &inputs);
+    let mut start = destination as usize;
+    for (value, output) in values.iter().zip(owner.outputs()) {
+        let end = start + output.value_type().scalar_count() as usize;
+        registers.get_mut(start..end)?.fill(*value);
+        start = end;
+    }
+    Some(())
+}
+
+fn observation(
+    table: &SolvePureCallTable,
+    registers: &mut [bool],
+    destination: crate::Reg,
+    starts: &[crate::Reg],
+    site: &crate::SolveAssertionObservationSite,
+) -> Option<()> {
+    if !site.matches_table(table) || starts.len() != site.value_site().inputs().len() {
+        return None;
+    }
+    let settled = starts.iter().zip(site.value_site().inputs()).try_fold(
+        true,
+        |settled, (start, value_type)| {
+            let range = registers
+                .get(*start as usize..*start as usize + value_type.scalar_count() as usize)?;
+            Some(settled && range.iter().all(|value| *value))
+        },
+    )?;
+    registers
+        .get_mut(destination as usize..destination as usize + site.output_scalar_count())?
+        .fill(settled);
     Some(())
 }
 

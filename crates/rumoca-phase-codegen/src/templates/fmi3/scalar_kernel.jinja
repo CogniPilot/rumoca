@@ -61,7 +61,24 @@
 {%- else %}{{ output }}[{{ targets[index].P.index }}]{% endif -%}
 {%- endmacro %}
 
-{%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none) %}
+{%- macro span_index(span, ordinal) -%}
+{{ span.start }} {% if span.descending %}-{% else %}+{% endif %} ({{ ordinal }}) * {{ span.stride }}
+{%- endmacro %}
+
+{%- macro store_range(op, output, error_status=none) -%}
+    for (size_t k=0; k<{{ op.count }}; ++k) {
+        {{ output }}[{{ span_index(op.output_span, "k") }}] = r[{{ op.start }}+k*{{ op.stride }}];
+{%- if error_status is not none %}
+        if (!isfinite({{ output }}[{{ span_index(op.output_span, "k") }}])) return {{ error_status }};
+{%- endif %}
+    }
+{%- endmacro %}
+
+{%- macro scalar_failure(error_status, observation_mode) -%}
+{ {% if observation_mode == 2 %}rmc_finish_assertion_observation(&warnings, 1); {% endif %}return {{ error_status }}; }
+{%- endmacro %}
+
+{%- macro scalar_op(op, output="m->derivative", error_status="fmi3Error", targets=none, observation_mode=1) %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = rmc_now(m);
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
@@ -69,13 +86,24 @@
 {%- elif op.kind == "LoadSeed" %}    r[{{ op.dst }}] = seed[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
-{%- elif op.kind == "LinearSolveComponent" %}    { double w[{{ op.n * (op.n + 1) }}]; if (!rmc_linear_solve_component(&r[{{ op.matrix_start }}], &r[{{ op.rhs_start }}], {{ op.n }}, {{ op.component }}, w, &r[{{ op.dst }}])) return {{ error_status }}; }
+{%- elif op.kind == "LinearSolveComponent" %}    { double w[{{ op.n * (op.n + 1) }}]; if (!rmc_linear_solve_component(&r[{{ op.matrix_start }}], &r[{{ op.rhs_start }}], {{ op.n }}, {{ op.component }}, w, &r[{{ op.dst }}])) {{ scalar_failure(error_status, observation_mode) }} }
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}    r[{{ op.dst }}] = r[{{ op.cond }}] != 0.0 ? r[{{ op.if_true }}] : r[{{ op.if_false }}];
-{%- elif op.kind == "PureCall" %}    if (rumoca_scalar_pure_{{ pure_symbol(op.owner) }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}])) return {{ error_status }};
-{%- elif op.kind == "PureCallDirectional" %}    if (rumoca_scalar_pure_directional_{{ pure_symbol(op.owner) }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}])) return {{ error_status }};
+{%- elif op.kind == "PureCall" or op.kind == "PureCallDirectional" or op.kind == "PureCallObservation" %}
+    {
+    RmcModelAssertionContext context={m, {{ op.owner }}, {{ observation_mode }}, {% if op.kind == "PureCallObservation" %}&r[{{ op.dst }}]{% else %}NULL{% endif %}, {% if observation_mode == 2 %}warnings.notices{% else %}NULL{% endif %}};
+    const RmcAssertionObserver observer={&context, rmc_model_assertion};
+    int status={{ "rumoca_scalar_observe_" if op.kind == "PureCallObservation" else ("rumoca_scalar_pure_directional_" if op.kind == "PureCallDirectional" else "rumoca_scalar_pure_") }}{{ pure_symbol(op.owner) }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}], &observer);
+{% if observation_mode == 2 %}
+    warnings.notices=context.notices;
+    if (status) { rmc_finish_assertion_observation(&warnings, status); return {{ error_status }}; }
+{% else %}
+    rmc_finish_assertion_observation(&context, status);
+    if (status{% if op.kind == "PureCallObservation" and observation_mode == 0 %} && status!=2{% endif %}) return {{ error_status }};
+{% endif %}
+    }
 {%- elif op.kind == "TensorLoad" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = m->{{ op.input | lower }}[{{ op.input_start }}+k];
 {%- elif op.kind == "TensorBinary" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = {{ binary(op.operator, op.lhs_start ~ "+k*" ~ op.lhs_stride, op.rhs_start ~ "+k*" ~ op.rhs_stride) }};
 {%- elif op.kind == "MatrixMultiply" and op.lanes == 1 %}    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
@@ -181,6 +209,8 @@
 {%- set offset.value = offset.value + source_axis %}
 {%- endfor %}
 {%- elif op.kind == "StoreOutput" %}    {{ store_target(output, targets, op.output_index) }} = r[{{ op.src }}];
+{%- elif op.kind == "StoreOutputRange" and op.output_span is defined and targets is none %}
+{{ store_range(op, output) }}
 {%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    {{ store_target(output, targets, output_index) }} = r[{{ op.start + loop.index0 * op.stride }}];
 {%- endfor %}
 {%- elif op.kind == "LoadFunctionConditionalCapture" %}    r[{{ op.dst }}] = fc_captures[{{ op.index }}];
@@ -200,14 +230,14 @@
             {
                 double r[{{ arm.condition.register_count if arm.condition.register_count > 0 else 1 }}];
 {%- for region_op in arm.condition.ops %}
-{{ scalar_op(region_op, "fc_cond", error_status) }}
+{{ scalar_op(region_op, "fc_cond", error_status, observation_mode=observation_mode) }}
 {%- endfor %}
             }
             if (fc_cond[0] != 0.0) {
                 double r[{{ arm.result.register_count if arm.result.register_count > 0 else 1 }}];
                 fc_taken = 1;
 {%- for region_op in arm.result.ops %}
-{{ scalar_op(region_op, "fc_out", error_status) }}
+{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode) }}
 {%- endfor %}
             }
         }
@@ -215,7 +245,7 @@
         if (!fc_taken) {
             double r[{{ op.fallback.register_count if op.fallback.register_count > 0 else 1 }}];
 {%- for region_op in op.fallback.ops %}
-{{ scalar_op(region_op, "fc_out", error_status) }}
+{{ scalar_op(region_op, "fc_out", error_status, observation_mode=observation_mode) }}
 {%- endfor %}
         }
         for (size_t k=0; k<{{ op.result_count }}; ++k) fc_outer[{{ op.dst }}+k] = fc_out[k];
@@ -285,7 +315,7 @@
                 double fold_predicate[1];
                 double r[{{ [op.continuation.register_count, 1]|max }}]; (void)r;
 {%- for continuation_op in op.continuation.ops %}
-{{ scalar_op(continuation_op, "fold_predicate", error_status) }}
+{{ scalar_op(continuation_op, "fold_predicate", error_status, observation_mode=observation_mode) }}
 {%- endfor %}
                 fold_done = fold_predicate[0] == 0.0;
             }
@@ -295,7 +325,7 @@
             {
                 double r[{{ [op.update.register_count, 1]|max }}]; (void)r;
 {%- for update_op in op.update.ops %}
-{{ scalar_op(update_op, "fold_next", error_status) }}
+{{ scalar_op(update_op, "fold_next", error_status, observation_mode=observation_mode) }}
 {%- endfor %}
             }
             {%- if op.carried_count > 0 %}
@@ -328,7 +358,7 @@
 {%- if index.Constant is defined %}
         fold_offset = fold_offset*{{ extent }} + {{ index.Constant }};
 {%- else %}
-        { double v = r[{{ index.Runtime }}]; if (!(isfinite(v) && trunc(v) == v && v >= 1.0 && v <= {{ extent }}.0)) return {{ error_status }}; fold_offset = fold_offset*{{ extent }} + (size_t)v - 1; }
+        { double v = r[{{ index.Runtime }}]; if (!(isfinite(v) && trunc(v) == v && v >= 1.0 && v <= {{ extent }}.0)) {{ scalar_failure(error_status, observation_mode) }} fold_offset = fold_offset*{{ extent }} + (size_t)v - 1; }
 {%- endif %}
 {%- endfor %}
         r[{{ op.dst }}] = {{ {"LoadIndexedRegister": "r", "LoadIndexedFoldCarried": "fold_carried", "LoadIndexedFoldCapture": "fold_capture"}[op.kind] }}[{{ op.base }}+fold_offset*{{ op.stride }}];
@@ -395,7 +425,7 @@
 {#- Assertion message assembly (rumoca-eval-solve eval_event_action_message):
     literal segments verbatim, each String(...) conversion formatted as the
     linked runtime formats it. -#}
-{%- macro message_support(rows, prefix) %}
+{%- macro message_support(rows, prefix, captured=false) %}
 typedef struct { char* data; size_t len; size_t cap; bool failed; } RmcMessage;
 static void rmc_message_push(RmcMessage* msg, const char* text, size_t len) {
     if (msg->failed) return;
@@ -410,7 +440,7 @@ static void rmc_message_push(RmcMessage* msg, const char* text, size_t len) {
     msg->len += len;
     msg->data[msg->len] = '\0';
 }
-{%- if rows.programs|length > 0 %}
+{%- if rows.programs|length > 0 or captured %}
 /* Rust's `f64` Display for non-finite and zero values. */
 static int rmc_format_special(char* out, size_t cap, double value) {
     if (isnan(value)) return snprintf(out, cap, "NaN");
@@ -448,7 +478,13 @@ static void rmc_format_real(char* out, size_t cap, double value, long digits) {
     rmc_trim_fraction(out, '\0');
 }
 /* eval_event_message_conversion; `false` for an option the runtime refuses. */
-static bool rmc_message_convert(RmcMessage* msg, int source, double value, double minimum_length, double left_justified, double significant_digits) {
+static inline void rmc_message_padded(RmcMessage* msg, const char* text, size_t width, bool left_justified) {
+    size_t len=strlen(text);
+    if (len < width && !left_justified) for (size_t k=len; k<width; ++k) rmc_message_push(msg, " ", 1);
+    rmc_message_push(msg, text, len);
+    if (len < width && left_justified) for (size_t k=len; k<width; ++k) rmc_message_push(msg, " ", 1);
+}
+static inline bool rmc_message_convert(RmcMessage* msg, int source, double value, double minimum_length, double left_justified, double significant_digits) {
     char text[1400];
     if (!isfinite(minimum_length) || minimum_length != floor(minimum_length) || minimum_length < 0.0 || minimum_length > 1048576.0) return false;
     if (!isfinite(significant_digits) || significant_digits != floor(significant_digits) || significant_digits < 1.0 || significant_digits > 1024.0) return false;
@@ -456,12 +492,11 @@ static bool rmc_message_convert(RmcMessage* msg, int source, double value, doubl
     if (source == 0) rmc_format_real(text, sizeof text, value, (long)significant_digits);
     else if (source == 1) { if (!isfinite(value) || value != floor(value)) return false; snprintf(text, sizeof text, "%.0f", value); }
     else { if (value != 0.0 && value != 1.0) return false; snprintf(text, sizeof text, "%s", value == 1.0 ? "true" : "false"); }
-    size_t len = strlen(text), width = (size_t)minimum_length;
-    if (len < width && left_justified == 0.0) for (size_t k = len; k < width; ++k) rmc_message_push(msg, " ", 1);
-    rmc_message_push(msg, text, len);
-    if (len < width && left_justified != 0.0) for (size_t k = len; k < width; ++k) rmc_message_push(msg, " ", 1);
+    rmc_message_padded(msg, text, (size_t)minimum_length, left_justified != 0.0);
     return true;
 }
+{%- endif %}
+{%- if rows.programs|length > 0 %}
 static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
 {%- for program in rows.programs %}
     {
@@ -495,15 +530,95 @@ static {{ prefix }}Status rmc_message_rows(ModelInstance* m, double* rows) {
         }
 {%- endmacro %}
 
+{%- macro captured_conversion(conversion) -%}
+rmc_captured_convert(&msg, {{ 0 if conversion.source == "real" else (1 if conversion.source == "integer" else 2) }}, captures[{{ conversion.value }}], {% if conversion.minimum_length is not none %}*(const int64_t*)captures[{{ conversion.minimum_length }}]{% else %}0{% endif %}, {% if conversion.left_justified is not none %}*(const bool*)captures[{{ conversion.left_justified }}]{% else %}true{% endif %}, {% if conversion.significant_digits is not none %}*(const int64_t*)captures[{{ conversion.significant_digits }}]{% else %}6{% endif %})
+{%- endmacro %}
+
+{%- macro observers(observations) %}
+{% if observations|length > 0 -%}
+static inline bool rmc_captured_convert(RmcMessage* msg, int source, const void* value, int64_t minimum_length, bool left_justified, int64_t significant_digits) {
+    if (minimum_length < 0 || minimum_length > 1048576 || significant_digits < 1 || significant_digits > 1024) return false;
+    if (source==0) return rmc_message_convert(msg, 0, *(const double*)value, (double)minimum_length, (double)left_justified, (double)significant_digits);
+    char text[64];
+    if (source==1) snprintf(text, sizeof text, "%" PRId64, *(const int64_t*)value);
+    else snprintf(text, sizeof text, "%s", *(const bool*)value ? "true" : "false");
+    rmc_message_padded(msg, text, (size_t)minimum_length, left_justified);
+    return true;
+}
+{% endif -%}
+int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count) {
+    RmcModelAssertionContext* observed=context;
+    ModelInstance* m=observed->instance;
+    (void)m; (void)predicate; (void)captures; (void)count;
+{% if observations|length > 0 %}    (void)rmc_captured_convert;
+{% endif %}
+{% for observation in observations -%}
+    if (observed->owner=={{ observation.owner }} && predicate=={{ observation.predicate }}) {
+        if (count!={{ observation.capture_count }}) return 1;
+        if (observed->predicates) observed->predicates[{{ observation.predicate_index }}]=0.0;
+{% for action in observation.actions -%}
+        if (observed->mode=={{ 1 if action.kind == "error" else 2 }}) {
+{% if action.kind == "warning" -%}
+            bool repeated=m->rmc_warned[{{ action.index }}];
+            for (RmcAssertionNotice* old=observed->notices; old; old=old->next) if (old->action=={{ action.index }}) repeated=true;
+            if (!repeated) {
+{% endif -%}
+            RmcMessage msg={0};
+{% for part in action.parts -%}
+{% if part.text is defined %}            rmc_message_push(&msg, {{ c_string(part.text) }}, {{ part.text|length }});
+{% else %}            if (!{{ captured_conversion(part.conversion) }}) msg.failed=true;
+{% endif -%}
+{% endfor -%}
+{% if action.kind == "error" -%}
+            log_assertion(m, msg.failed ? "assertion failed (its message could not be formatted)" : (msg.data ? msg.data : ""));
+            m->assertion_failed=true;
+            free(msg.data);
+{% else -%}
+            if (msg.failed) { free(msg.data); return 1; }
+            RmcAssertionNotice* notice=calloc(1, sizeof *notice);
+            if (!notice) { free(msg.data); return 1; }
+            notice->action={{ action.index }}; notice->message=msg.data;
+            RmcAssertionNotice** tail=&observed->notices;
+            while (*tail) tail=&(*tail)->next;
+            *tail=notice;
+            }
+{% endif -%}
+        }
+{% endfor -%}
+        return 0;
+    }
+{% endfor -%}
+    return 1;
+}
+void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status) {
+    (void)status;
+    RmcAssertionNotice* notice=context->notices;
+    while (notice) {
+        RmcAssertionNotice* next=notice->next;
+{% set warnings = namespace(present=false) %}{% for observation in observations %}{% for action in observation.actions %}{% if action.kind == "warning" %}{% set warnings.present=true %}{% endif %}{% endfor %}{% endfor %}
+{% if warnings.present %}
+        if (!status) {
+            log_warning(context->instance, notice->message ? notice->message : "");
+            context->instance->rmc_warned[notice->action]=true;
+        }
+{% endif -%}
+        free(notice->message); free(notice); notice=next;
+    }
+    context->notices=NULL;
+}
+{% endmacro %}
+
+
 {%- macro assertions(solve, fmi, messages, rows, prefix) %}
 {%- if fmi.assertions and solve.events.actions|length > 0 %}
-{{ message_support(rows, prefix) }}
+{{ message_support(rows, prefix, fmi_assertion_observations|default([])|length > 0) }}
 {%- endif %}
+{{ observers(fmi_assertion_observations|default([])) }}
 static {{ prefix }}Status check_assertions(ModelInstance* m) {
     (void)m;
 {%- if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
     if (m->assertion_failed) return {{ prefix }}Error;
-    double actions[{{ solve.events.actions|length }}];
+    double actions[{{ solve.events.actions|length }}]; (void)actions;
 {%- for program in solve.events.action_plan.programs %}
     {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
@@ -512,7 +627,7 @@ static {{ prefix }}Status check_assertions(ModelInstance* m) {
 {%- endfor %}
     }
 {%- endfor %}
-{%- for action in solve.events.actions %}{% if action.kind != "Warning" %}
+{%- for action in solve.events.actions %}{% if action.kind != "Warning" and action.assertion_projection is none %}
     if (actions[{{ loop.index0 }}] != 0.0) {
 {{- log_message(messages[loop.index0], rows, prefix) }}
         m->assertion_failed = true;
@@ -528,16 +643,18 @@ static {{ prefix }}Status check_assertions(ModelInstance* m) {
 static {{ prefix }}Status report_warnings(ModelInstance* m) {
     (void)m;
 {%- if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %}
-    double actions[{{ solve.events.actions|length }}];
+    RmcModelAssertionContext warnings={m, 0, 2, NULL, NULL};
+    double actions[{{ solve.events.actions|length }}]; (void)actions;
 {%- for program in solve.events.action_plan.programs %}
     {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
-{{ scalar_op(op, "actions", prefix ~ "Error") }}
+{{ scalar_op(op, "actions", prefix ~ "Error", observation_mode=2) }}
 {%- endfor %}
     }
 {%- endfor %}
-{%- for action in solve.events.actions %}{% if action.kind == "Warning" %}
+    rmc_finish_assertion_observation(&warnings, 0);
+{%- for action in solve.events.actions %}{% if action.kind == "Warning" and action.assertion_projection is none %}
     if (actions[{{ loop.index0 }}] != 0.0 && !m->rmc_warned[{{ loop.index0 }}]) {
         m->rmc_warned[{{ loop.index0 }}] = true;
 {{- log_message(messages[loop.index0], rows, prefix, "log_warning") }}
@@ -566,6 +683,7 @@ static {{ prefix }}Status update_assertion_memory(ModelInstance* m) {
 
 {%- macro assertion_lifecycle(prefix, scalar_events=none) %}
 static {{ prefix }}Status settle_values(ModelInstance* m) {
+    if (m->assertion_failed) return {{ prefix }}Error;
     if (refresh_algebraics(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
 }
@@ -583,6 +701,7 @@ static {{ prefix }}Status settle_public_values(ModelInstance* m) {
 {%- endif %}
 }
 static {{ prefix }}Status settle_derivative_values(ModelInstance* m) {
+    if (m->assertion_failed) return {{ prefix }}Error;
     if (refresh_derivative_values(m) != {{ prefix }}OK) return {{ prefix }}Error;
     return m->assertions_initialized ? check_assertions(m) : {{ prefix }}OK;
 }
@@ -794,4 +913,20 @@ static {{ prefix }}Status {{ cs_integrator(fmi) }}(ModelInstance* m, double star
 {#- Instance storage of the warning sites already reported. -#}
 {%- macro warning_fields(solve, fmi) -%}
 {%- if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} bool rmc_warned[{{ solve.events.actions|length }}];{% endif -%}
+{%- endmacro %}
+
+
+{%- macro initial_values(target, owner, prefix) %}
+{% if owner.count == 0 %}
+    memset({{ target }}, 0, sizeof({{ target }}));
+{% endif %}
+{% for run in owner.runs %}
+{% if run.kind == "repeat" %}
+    { const uint64_t bits = UINT64_C({{ run.bits }});
+      for (size_t k = 0; k < {{ run.count }}; ++k) memcpy(&{{ target }}[{{ run.start }} + k], &bits, sizeof(bits)); }
+{% else %}
+    { static const uint64_t {{ prefix }}_{{ loop.index0 }}[] = { {% for bits in run.bits %}UINT64_C({{ bits }}){{ ", " if not loop.last }}{% endfor %} };
+      memcpy(&{{ target }}[{{ run.start }}], {{ prefix }}_{{ loop.index0 }}, sizeof({{ prefix }}_{{ loop.index0 }})); }
+{% endif %}
+{% endfor %}
 {%- endmacro %}

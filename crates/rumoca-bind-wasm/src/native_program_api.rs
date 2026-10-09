@@ -101,6 +101,7 @@ pub(crate) fn model_artifact(
         "input_names": problem.solve_layout.input_scalar_names(),
         "parameters": model.parameters,
         "issued_schedule": issued_schedule,
+        "call_sites": call_sites(&model.pure_calls),
     });
     let abi = response["abi"]
         .as_object_mut()
@@ -112,6 +113,24 @@ pub(crate) fn model_artifact(
     }
     serde_json::to_string(&response)
         .map_err(|error| WasmError::new(format!("native program JSON failed: {error}")))
+}
+
+/// Static call sites per (caller, callee) owner pair: a callee evaluated once
+/// per authored occurrence has one site per occurrence (SOLVE-C73), so a host
+/// reads the repetition cost of an owner without running the module.
+fn call_sites(table: &rumoca_ir_solve::SolvePureCallTable) -> serde_json::Value {
+    table
+        .call_site_counts()
+        .into_iter()
+        .map(|count| {
+            serde_json::json!({
+                "caller": count.caller.index(),
+                "callee": count.callee.index(),
+                "callee_span": [count.callee_provenance.start.0, count.callee_provenance.end.0],
+                "sites": count.sites,
+            })
+        })
+        .collect()
 }
 
 type ProgramArtifact = (

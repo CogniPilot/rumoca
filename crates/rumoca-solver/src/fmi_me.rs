@@ -442,6 +442,14 @@ pub enum MeError {
     #[error("{message}")]
     Evaluation { message: String },
 
+    /// An admitted backend or ABI operation failed, outside numerical trial recovery.
+    #[error("compiled {context} execution failed: {message}")]
+    CompiledExecution {
+        context: &'static str,
+        message: String,
+        source_spans: Box<[rumoca_core::Span]>,
+    },
+
     /// A state derivative evaluated to a non-finite value.
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
@@ -528,6 +536,15 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
     fn from(value: crate::runtime::solve_ops::RuntimeSolveError) -> Self {
         use crate::runtime::solve_ops::RuntimeSolveError as Runtime;
         match value {
+            Runtime::CompiledExecution {
+                context,
+                message,
+                source_spans,
+            } => Self::CompiledExecution {
+                context,
+                message,
+                source_spans,
+            },
             Runtime::SolveIr { message, span } | Runtime::SourceFault { message, span } => {
                 Self::Evaluation {
                     message: match span {

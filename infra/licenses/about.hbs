@@ -72,7 +72,7 @@ code is expressly permitted by MPL-2.0 section 3.3.
 
 ### Vendored specification schemas
 
-Three upstream trees are copied into this repository verbatim. Each retains its
+Four upstream trees are copied into this repository verbatim. Each retains its
 own upstream license file in place; this entry only surfaces them here.
 
 - `crates/rumoca-phase-codegen/src/templates/galec/schemas/`: eFMI Standard
@@ -91,6 +91,11 @@ own upstream license file in place; this entry only surfaces them here.
   Modelica Association Project "FMI". License retained at upstream/LICENSE.txt.
   Byte identity with the pinned upstream is enforced by the test
   `fmi_ls_wasm_vendored_contract_matches_pinned_upstream_bytes`.
+- `crates/rumoca/tests/fixtures/fmi-ls-wasm-schema/`: unchanged FMI 3.0.2 XML
+  schemas from modelica/fmi-standard tag v3.0.2. BSD-2-Clause, Copyright (C)
+  2008-2011 MODELISAR consortium, 2012-2024 Modelica Association Project "FMI".
+  The upstream LICENSE.txt is retained in that directory; per-file SHA-256
+  pins are in UPSTREAM.md. The specification text is not vendored.
 
 ### Vendored browser runtime
 

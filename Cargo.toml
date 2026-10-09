@@ -136,7 +136,7 @@ rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
-rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
+rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm", default-features = false }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }

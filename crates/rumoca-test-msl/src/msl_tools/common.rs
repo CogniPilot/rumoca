@@ -22,6 +22,11 @@ pub const OMC_THREADS_DEFAULT: usize = 1;
 pub const SIM_STOP_TIME_DEFAULT: f64 = 1.0;
 pub const OMC_BATCH_TIMEOUT_POLL: Duration = Duration::from_millis(25);
 
+/// The OMC-generated state inventory shared by comparison and cache transport.
+pub fn omc_init_xml_file_name(model_name: &str) -> String {
+    format!("{model_name}_init.xml")
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MslPackageSpec {
     package_name: &'static str,

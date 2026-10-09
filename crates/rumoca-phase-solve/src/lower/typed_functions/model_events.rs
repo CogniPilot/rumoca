@@ -6,11 +6,11 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    ExpressionLowerer, LoweredValue, PureCallRegistry, RegisteredAssertion, arithmetic_profile,
-    lower_primitive_type, lower_value_type_leaves,
+    AssertionSlot, EagerScope, ExpressionLowerer, LoweredValue, PureCallRegistry,
+    RegisteredAssertion, arithmetic_profile, lower_primitive_type, lower_value_type_leaves,
     model_calls::RegisteredExpressionAssertion,
     model_coordinates::{ModelCoordinateKey, collect_model_coordinate_types},
-    regions::{RegionContext, RegionOutput, RegionValues, lower_region_values},
+    regions::{RegionOutput, RegionValues, lower_region_values},
 };
 use crate::LowerError;
 use crate::layout::LoweredLayout;
@@ -171,9 +171,8 @@ impl<'dae> PureCallRegistry<'dae> {
                     .iter()
                     .map(|definition| (definition.value, definition.clock)),
             )?;
-        let predicate_count = assertions.len();
         let (coordinate_inputs, inputs, outputs) =
-            event_transaction_interface(view, transaction, coordinate_types, predicate_count)?;
+            event_transaction_interface(view, transaction, coordinate_types, &assertion_slots)?;
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
@@ -205,19 +204,23 @@ impl<'dae> PureCallRegistry<'dae> {
                     model_coordinates,
                     parameters: HashMap::new(),
                     function_values: HashMap::new(),
-                    conditional_groups: HashMap::new(),
+                    conditional_groups: Default::default(),
                     fold_parameters: HashMap::new(),
                     fold_values: HashMap::new(),
                     binders: HashMap::new(),
-                    callees,
-                    predicate_ranges,
+                    callees: callees.into(),
+                    predicate_ranges: predicate_ranges.into(),
                     cache: HashMap::new(),
                     call_values: HashMap::new(),
                     predicate_values: vec![None; assertion_slots.len()],
                     assertion_slots: assertion_slots.clone(),
                     next_direct_assertion: 0,
                     direct_assertion_count: 0,
+                    direct_assertions: std::sync::Arc::from([]),
+                    assertion_output_base: definitions.len(),
+                    loop_statements: Default::default(),
                     totality: HashMap::new(),
+                    eager: EagerScope::default(),
                 };
                 let mut values = vec![None; definitions.len()];
                 for clock in &transaction.clock_owners {
@@ -238,17 +241,8 @@ impl<'dae> PureCallRegistry<'dae> {
                         .only_register(provenance)?;
                     lowerer.builder.store(*output, register, provenance)?;
                 }
-                for (predicate, output) in lowerer
-                    .predicate_values
-                    .into_iter()
-                    .zip(assertion_slots.iter())
-                    .filter(|(_, slot)| slot.is_predicate())
-                    .map(|(value, _)| value)
-                    .zip(&outputs[definitions.len()..])
-                {
-                    let predicate = predicate.ok_or(
-                        solve::SolveProgramConstructionError::InvalidCallOutput { provenance },
-                    )?;
+                for (slot, output) in outputs[definitions.len()..].iter().enumerate() {
+                    let predicate = lowerer.published_slot(slot, provenance)?;
                     lowerer.builder.store(*output, predicate, provenance)?;
                 }
                 Ok(())
@@ -361,7 +355,7 @@ fn event_transaction_interface<'dae>(
     view: dae::DaeView<'dae>,
     transaction: &EligibleEventTransaction<'dae>,
     coordinate_types: &[(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)],
-    predicate_count: usize,
+    assertion_slots: &[AssertionSlot],
 ) -> Result<EventTransactionInterface, solve::SolveProgramConstructionError> {
     let coordinate_inputs = coordinate_types
         .iter()
@@ -380,10 +374,7 @@ fn event_transaction_interface<'dae>(
                 .map(solve::SolvePureCallOutput::result)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    outputs.extend(
-        std::iter::repeat_with(solve::SolvePureCallOutput::assertion_predicate)
-            .take(predicate_count),
-    );
+    outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
     Ok((coordinate_inputs, inputs, outputs))
 }
 
@@ -398,7 +389,7 @@ fn activated_assignment_group<'program, 'dae>(
         .iter()
         .map(|&index| definitions[index].value)
         .collect::<Vec<_>>();
-    let pending = lowerer.pending_predicates(expressions.iter().copied());
+    let pending = lowerer.pending_predicates(expressions.iter().copied())?;
     let (mut captures, environment) =
         lowerer.capture_environment_for(expressions.iter().copied())?;
     let fallback_ranges =
@@ -414,14 +405,7 @@ fn activated_assignment_group<'program, 'dae>(
         .iter()
         .map(|&slot| lowerer.assertion_slots[slot].clone())
         .collect::<Vec<_>>();
-    let context = RegionContext {
-        view: lowerer.view,
-        callees: lowerer.callees.clone(),
-        predicate_ranges: lowerer.predicate_ranges.clone(),
-        conditional_groups: lowerer.conditional_groups.clone(),
-        assertion_slots: lowerer.assertion_slots.clone(),
-        direct_assertion_count: lowerer.direct_assertion_count,
-    };
+    let context = lowerer.region_context();
     let true_environment = environment.clone();
     let true_context = context.clone();
     let true_pending = pending.clone();
@@ -656,6 +640,7 @@ fn event_transaction_assertion<'dae>(
         span: assertion.provenance.span(),
         origin: assertion.provenance.origin().to_string(),
         clock_owner: Some(clock),
+        assertion_projection: None,
     })
 }
 

@@ -161,6 +161,34 @@ fn lower_algorithm_plan<'dae>(
                 assertions,
             )?;
         }
+        ModelAlgorithmPlan::DeclarativeFunctionCall { receivers, plan } => {
+            let [
+                rumoca_core::Statement::FunctionCall {
+                    comp, args, span, ..
+                },
+            ] = algorithm.statements.as_slice()
+            else {
+                unreachable!("a declarative function-call plan owns one call statement")
+            };
+            multi_output_equations::lower_multi_output_source(
+                lowering.construction,
+                lowering.coordinates,
+                lowering.functions,
+                multi_output_equations::MultiOutputSource {
+                    receivers,
+                    name: comp,
+                    arguments: args,
+                    provenance: dae::DaeProvenance::source(*span)?,
+                },
+                plan,
+                owner_provenance,
+                Some(multi_output_equations::MultiOutputDiscreteOwners {
+                    discrete_values: lowering.discrete_values,
+                    topology: request.topology,
+                    owner_clock: None,
+                }),
+            )?;
+        }
         ModelAlgorithmPlan::Declarative { target } => {
             lower_declarative_model_algorithm(&mut lowering, algorithm, target)?;
         }

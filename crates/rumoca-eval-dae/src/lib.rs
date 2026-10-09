@@ -10,7 +10,10 @@ mod numeric;
 mod projection;
 
 pub use function_context::FunctionCallContext;
-pub use numeric::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
+pub use numeric::{
+    InputInitializationPolicy, NumericEvaluationError, NumericEvaluationErrorKind,
+    NumericEvaluator, NumericInitialRun, NumericInitialValues,
+};
 pub use projection::{
     LiteralBinding, ProjectionError, ScalarCoordinateProjectionCache, ZeroCoefficients,
     for_each_scalar_coordinate, for_each_scalar_coordinate_cached,

@@ -16,6 +16,75 @@ pub(in crate::construction) struct MultiOutputRecord {
     pub(in crate::construction) plan: RecordEquationPlan,
 }
 
+pub(super) fn analyze_declarative_function_call(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    shapes: &FunctionShapeAnalysis,
+) -> Result<Option<ModelAlgorithmPlan>, ToDaeError> {
+    let [
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        return Ok(None);
+    };
+    let continuous = |output: &rumoca_core::ComponentReference| {
+        matches!(
+            roles.get(&output.to_var_name()),
+            Some(PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output)
+        )
+    };
+    if outputs.iter().flatten().next().is_none() || !outputs.iter().flatten().all(continuous) {
+        return Ok(None);
+    }
+    require_span(algorithm.span, "model algorithm")?;
+    super::model_algorithm_statements::validate_function_call_callee(comp, *span)?;
+    for output in outputs.iter().flatten() {
+        let target = output.to_var_name();
+        for argument in args {
+            super::model_algorithms::reject_read_before_definition(argument, &target, false)?;
+        }
+    }
+    let receivers = outputs
+        .iter()
+        .map(|output| match output {
+            Some(output) => Expression::VarRef {
+                name: rumoca_core::component_ref_to_base_reference(output),
+                subscripts: output
+                    .parts()
+                    .iter()
+                    .flat_map(|part| part.subs.clone())
+                    .collect(),
+                span: output.span(),
+            },
+            None => Expression::Empty { span: *span },
+        })
+        .collect::<Vec<_>>();
+    let plan = validate_multi_output_equation(
+        flat,
+        roles,
+        states,
+        shapes,
+        MultiOutputEquationSource {
+            receivers: &receivers,
+            function: comp,
+            arguments: args,
+            span: *span,
+        },
+        false,
+    )?;
+    Ok(Some(ModelAlgorithmPlan::DeclarativeFunctionCall {
+        receivers,
+        plan,
+    }))
+}
+
 pub(super) fn analyze_multi_output_equations(
     flat: &flat::Model,
     equations: &[flat::Equation],

@@ -60,6 +60,9 @@ use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
 
 use crate::error::CompilerError;
 
+#[cfg(test)]
+mod tuple_calls_tests;
+
 /// Result of a successful compilation.
 #[derive(Debug)]
 pub struct CompilationResult {

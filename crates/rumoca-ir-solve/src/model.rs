@@ -10,6 +10,9 @@ mod jacobian_outputs;
 #[cfg(test)]
 mod jacobian_column_cache_tests;
 
+#[cfg(test)]
+mod storage_tests;
+
 pub use affine_elimination::AffineEliminationLayout;
 pub use event_schedule::{
     CoupledNewtonPolicy, EventIterationSchedule, EventPassStep, EventScheduleError,
@@ -470,8 +473,8 @@ pub struct JacobianStructure {
     coloring: ColumnColoring,
     output_evaluations: Box<[ProjectionJacobianOutputs]>,
     residual_output_evaluation: Option<ProjectionOutputSelection>,
-    jacobian_application: Option<ProjectionJacobianApplication>,
-    affine_elimination: Option<AffineEliminationLayout>,
+    jacobian_application: Option<Box<ProjectionJacobianApplication>>,
+    affine_elimination: Option<Box<AffineEliminationLayout>>,
     linearization_repeatable: bool,
     /// The immutable pattern's rows per column, derived only when a consumer
     /// needs the coordinate view. Clone keeps the established owned-cache
@@ -521,7 +524,10 @@ impl JacobianStructure {
     }
 
     pub const fn affine_elimination(&self) -> Option<&AffineEliminationLayout> {
-        self.affine_elimination.as_ref()
+        match &self.affine_elimination {
+            Some(layout) => Some(layout),
+            None => None,
+        }
     }
 
     pub const fn linearization_is_repeatable(&self) -> bool {
@@ -529,7 +535,10 @@ impl JacobianStructure {
     }
 
     pub const fn jacobian_application(&self) -> Option<&ProjectionJacobianApplication> {
-        self.jacobian_application.as_ref()
+        match &self.jacobian_application {
+            Some(application) => Some(application),
+            None => None,
+        }
     }
 
     /// The compact storage order of this structure's pattern.
@@ -1164,6 +1173,37 @@ pub struct SolveEventAction {
     /// its activation lane as a local semantic guard.
     #[serde(default)]
     pub clock_owner: Option<PeriodicClockId>,
+    /// Wire recipe for the checked projection of one source invocation.
+    /// A detached recipe grants no authority; the observer borrows its exact
+    /// model table, source program and ordered action inventory together.
+    #[serde(default)]
+    pub assertion_projection: Option<SolveAssertionActionProjection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct SolveAssertionActionProjection {
+    site: crate::SolvePureCallSite,
+    predicate_output: usize,
+}
+
+impl SolveAssertionActionProjection {
+    pub fn new(site: crate::SolvePureCallSite, predicate_output: usize) -> Option<Self> {
+        site.outputs().get(predicate_output)?.assertion_level()?;
+        Some(Self {
+            site,
+            predicate_output,
+        })
+    }
+
+    #[must_use]
+    pub const fn site(&self) -> &crate::SolvePureCallSite {
+        &self.site
+    }
+
+    #[must_use]
+    pub const fn predicate_output(&self) -> usize {
+        self.predicate_output
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
@@ -1824,10 +1864,10 @@ pub struct SolveModel {
     /// arithmetic profile; lowering never reconstructs this table from rows.
     pub pure_calls: SolvePureCallTable,
     pub artifacts: SolveArtifacts,
-    pub initial_y: Vec<f64>,
+    pub initial_y: crate::SolveInitialValues,
     /// Positive nominal values aligned with solver `y` slots.
     pub solver_nominals: Vec<f64>,
-    pub parameters: Vec<f64>,
+    pub parameters: crate::SolveInitialValues,
     pub external_tables: ExternalTables,
     pub visible_names: Vec<String>,
     pub visible_value_rows: ScalarProgramBlock,
@@ -1886,8 +1926,7 @@ impl SolveModel {
             .unwrap_or(1.0);
         let start_magnitude = self
             .initial_y
-            .get(index)
-            .copied()
+            .value(index)
             .filter(|value| value.is_finite())
             .map_or(0.0, f64::abs);
         nominal.max(start_magnitude)

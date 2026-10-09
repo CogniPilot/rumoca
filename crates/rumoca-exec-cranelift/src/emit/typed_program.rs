@@ -13,6 +13,12 @@ mod native;
 pub(super) use native::rumoca_host_native;
 #[cfg(test)]
 mod local_store_tests;
+#[cfg(test)]
+mod pointwise_abs_tests;
+#[cfg(test)]
+mod pointwise_power_tests;
+#[cfg(test)]
+mod reduction_maximum_tests;
 mod storage;
 mod tensor;
 #[cfg(test)]
@@ -955,6 +961,10 @@ impl ProgramLowerer<'_, '_> {
     #[allow(clippy::too_many_lines)]
     fn lower_operation(&mut self, operation: &solve::SolveOperation) -> Result<(), CompileError> {
         match operation {
+            solve::SolveOperation::CheckAssertion { .. } => Err(CompileError::Backend(
+                "source-ordered assertion stop is unsupported by the native typed-call adapter"
+                    .into(),
+            )),
             solve::SolveOperation::Constant { destination, value } => {
                 self.lower_constant(*destination, value)
             }
@@ -1132,9 +1142,16 @@ impl ProgramLowerer<'_, '_> {
                 axes,
             } => self.lower_update_view(*destination, *aggregate, *value, axes),
             solve::SolveOperation::Call {
+                assertion_forwarding,
+                ..
+            } if !assertion_forwarding.is_empty() => Err(CompileError::Backend(
+                "typed assertion forwarding is not supported by Cranelift".into(),
+            )),
+            solve::SolveOperation::Call {
                 owner,
                 arguments,
                 destinations,
+                ..
             } => self.lower_call(*owner, arguments, destinations),
         }
     }

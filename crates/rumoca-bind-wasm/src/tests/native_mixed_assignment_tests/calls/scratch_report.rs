@@ -83,8 +83,9 @@ fn prepared_artifact_reports_frame_region_and_call_high_water_marks() {
 }
 
 /// The 128 node, 256 edge pose-graph optimizer calls its Cholesky, PCG and
-/// line-search functions from nested loops and branches. Laying every call
-/// frame out disjointly needs 96.5 MB for its root owner; sequential frames
+/// line-search functions from nested loops and branches; each authored call
+/// is one site (SOLVE-C73). Laying every call frame out disjointly needs
+/// several MB for its root owner; sequential frames
 /// share storage, so the whole program fits well under the 64 MiB cap.
 #[test]
 fn pose_graph_optimizer_prepares_with_shared_call_frames() {
@@ -99,6 +100,6 @@ fn pose_graph_optimizer_prepares_with_shared_call_frames() {
     assert_eq!(report["total_bytes"].as_u64().unwrap(), scratch);
     assert!(scratch < 4 * 1024 * 1024, "scratch {scratch}");
     let unshared = report["unshared_call_scratch_bytes"].as_u64().unwrap();
-    assert!(unshared > 48 * 1024 * 1024, "unshared {unshared}");
-    assert!(report["call_scratch_bytes"].as_u64().unwrap() < unshared / 16);
+    let shared = report["call_scratch_bytes"].as_u64().unwrap();
+    assert!(shared < unshared / 2, "shared {shared} unshared {unshared}");
 }

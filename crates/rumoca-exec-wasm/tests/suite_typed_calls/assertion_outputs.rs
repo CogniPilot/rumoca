@@ -64,3 +64,49 @@ fn ordinary_false_boolean_result_still_executes_as_a_complete_tuple() {
     let actual = Runner::new(&compiled).run(&[]);
     assert_eq!(actual, (0, oracle(&table, &site, &[]).unwrap()));
 }
+
+#[test]
+fn issued_fatal_forwarding_remains_refused_by_raw_native_interface() {
+    let p = profile();
+    let outputs = vec![solve::SolvePureCallOutput::assertion_predicate()];
+    let mut builder = solve::SolvePureCallTable::builder(p);
+    let child = builder
+        .add_owner(
+            identity(31),
+            vec![],
+            outputs.clone(),
+            span(330),
+            |b, _, outputs| {
+                let condition = b.constant(solve::SolveValue::boolean(false), span(331))?;
+                let assertion = b.assertion_output(0, span(332))?;
+                b.check_assertion(assertion, condition, &[], span(333), |_, _, _| Ok(()))?;
+                b.store(outputs[0], condition, span(334))
+            },
+        )
+        .unwrap();
+    let parent = builder
+        .add_owner(identity(32), vec![], outputs, span(335), |b, _, outputs| {
+            let call = b.emit_call(child, &[], span(336))?;
+            let assertion = b.assertion_output(0, span(337))?;
+            b.forward_assertion(&call, 0, assertion, span(338))?;
+            b.store(outputs[0], call.registers()[0], span(339))
+        })
+        .unwrap();
+    let table = builder.finish();
+    let owner = table.owner(parent).unwrap();
+    assert!(owner.assertion_flow().is_some());
+    assert!(
+        matches!(rumoca_eval_solve::eval_pure_call(&table, parent, &[]),
+        Err(rumoca_eval_solve::TypedProgramEvalError::AssertionFailed { failure })
+        if failure.owner() == child && failure.source_span() == span(333))
+    );
+    assert_eq!(
+        compile_pure_call_wasm(&table, &owner.call_site()).unwrap_err(),
+        TypedCallCompileError::UnsupportedOutputKind {
+            owner: parent,
+            output: 0,
+            kind: solve::SolvePureCallOutputKind::AssertionPredicate,
+            provenance: span(335),
+        }
+    );
+}

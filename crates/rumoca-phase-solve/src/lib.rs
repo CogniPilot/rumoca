@@ -32,6 +32,7 @@ pub use lower::typed_functions::formal_stages::{
 };
 pub use model_values::{
     LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
+    lower_solve_model_with_input_policy,
 };
 pub use model_wire::{
     SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,

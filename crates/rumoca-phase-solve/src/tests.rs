@@ -19,6 +19,7 @@ mod expressions;
 mod fmi;
 mod initial_discrete_values;
 mod initialization;
+mod initialization_owner;
 mod sampling;
 mod scalar_affine;
 mod temporal;

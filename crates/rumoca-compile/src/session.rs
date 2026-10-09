@@ -14,7 +14,7 @@ use rumoca_core::{
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use rumoca_phase_dae::{ToDaeError, to_dae};
+use rumoca_phase_dae::ToDaeError;
 use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiateWarning, InstantiationOutcome,
@@ -415,8 +415,6 @@ struct DaeModelArtifact {
 
 #[derive(Debug, Clone, Default)]
 struct SemanticDiagnosticsQueryState {
-    resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ResolvedTree>>,
-    resolved_diagnostics_by_mode: IndexMap<SemanticDiagnosticsMode, Vec<CommonDiagnostic>>,
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
     save_resolution_proofs: LruMap<SemanticDiagnosticsCacheKey, StrictTargetResolution>,
     interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
@@ -426,15 +424,11 @@ struct SemanticDiagnosticsQueryState {
 
 impl SemanticDiagnosticsQueryState {
     fn invalidate_inputs(&mut self) {
-        self.resolved_by_mode.clear();
-        self.resolved_diagnostics_by_mode.clear();
         self.dependency_fingerprints_by_mode.clear();
         self.save_resolution_proofs = LruMap::default();
     }
 
     fn invalidate_inputs_for_mode(&mut self, mode: SemanticDiagnosticsMode) {
-        self.resolved_by_mode.shift_remove(&mode);
-        self.resolved_diagnostics_by_mode.shift_remove(&mode);
         self.dependency_fingerprints_by_mode.shift_remove(&mode);
         if mode == SemanticDiagnosticsMode::Save {
             self.save_resolution_proofs = LruMap::default();
@@ -650,6 +644,7 @@ pub(in crate::session) struct StrictTargetResolution {
     resolved: Arc<ResolvedTree>,
     closure: ReachableModelClosure,
     diagnostics: Vec<CommonDiagnostic>,
+    query_mode: ResolveBuildMode,
 }
 
 pub(in crate::session) struct StrictTargetResolutionFailure {
@@ -694,8 +689,14 @@ impl SemanticDiagnosticsMode {
 
 #[derive(Debug, Clone, Default)]
 struct ResolvedBuildCache {
-    standard: Option<Arc<ResolvedTree>>,
+    standard: Option<StandardResolutionArtifact>,
     strict_compile_recovery: Option<ResolutionPlanningArtifact>,
+}
+
+#[derive(Debug, Clone)]
+struct StandardResolutionArtifact {
+    resolved: Arc<ResolvedTree>,
+    diagnostics: Vec<CommonDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -706,11 +707,14 @@ struct ResolutionPlanningArtifact {
 
 impl ResolvedBuildCache {
     fn standard(&self) -> Option<&Arc<ResolvedTree>> {
-        self.standard.as_ref()
+        self.standard.as_ref().map(|artifact| &artifact.resolved)
     }
 
-    fn set_standard(&mut self, resolved: Arc<ResolvedTree>) {
-        self.standard = Some(resolved);
+    fn set_standard(&mut self, resolved: Arc<ResolvedTree>, diagnostics: Vec<CommonDiagnostic>) {
+        self.standard = Some(StandardResolutionArtifact {
+            resolved,
+            diagnostics,
+        });
     }
 
     fn clear(&mut self) {
@@ -730,7 +734,7 @@ impl ResolvedBuildCache {
     fn any_tree(&self) -> Option<&ast::ClassTree> {
         self.standard
             .as_ref()
-            .map(|resolved| resolved.inner())
+            .map(|artifact| artifact.resolved.inner())
             .or_else(|| {
                 self.strict_compile_recovery
                     .as_ref()

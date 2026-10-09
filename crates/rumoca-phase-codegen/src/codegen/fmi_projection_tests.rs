@@ -40,9 +40,11 @@ fn one_row_block() -> solve::ScalarProgramBlock {
 
 /// One two-scalar state run, so a version template has an ordinary entry to
 /// walk, plus the delay partition the caller asks for.
-fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
+pub(super) fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
     let mut model = solve::SolveModel::default();
     model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, 1);
+    model.initial_y = solve::SolveInitialValues::repeat(0.0, 2).unwrap();
+    model.parameters = solve::SolveInitialValues::repeat(0.0, 1).unwrap();
     model.problem.solve_layout.variable_storage_runs = vec![solve::SolveVariableStorageRun {
         base: solve::ScalarSlot::Y {
             index: 0,
@@ -69,7 +71,7 @@ fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
     model
 }
 
-fn state_input() -> solve::fmi::FmiVariableInput {
+pub(super) fn state_input() -> solve::fmi::FmiVariableInput {
     solve::fmi::FmiVariableInput {
         name: "x".to_string(),
         scalar_names: vec!["x[1]".to_string(), "x[2]".to_string()],
@@ -395,6 +397,7 @@ fn component_with_binding_chain(depth: usize) -> solve::fmi::FmiComponent {
     let mut model = model_with_one_state_run(false);
     let count = depth + 1;
     model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, count);
+    model.parameters = solve::SolveInitialValues::repeat(0.0, count).unwrap();
     model
         .problem
         .solve_layout

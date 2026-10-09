@@ -90,10 +90,10 @@ pub fn build_cuda_ode_model(
         driver,
         _module: module,
         func,
-        parameters: model.parameters.clone(),
+        parameters: model.parameters.to_vec(),
         state_count: model.state_scalar_count(),
         param_count: model.parameters.len(),
-        initial_y: model.initial_y.clone(),
+        initial_y: model.initial_y.to_vec(),
         visible_names: model.visible_names.clone(),
     })
 }

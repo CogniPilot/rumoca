@@ -234,6 +234,7 @@ mod max_step_duration_local {
     pub(super) fn delay_bearing_model_with_one_run() -> (SolveModel, FmiVariableInput) {
         let mut model = delay_bearing_model(1);
         model.problem.layout = VarLayout::from_parts(IndexMap::new(), 0, 2);
+        model.parameters = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
         model.problem.solve_layout.variable_storage_runs = vec![SolveVariableStorageRun {
             base: ScalarSlot::P {
                 index: 1,
@@ -256,6 +257,8 @@ mod max_step_duration_local {
     pub(super) fn delay_bearing_model_with_one_state() -> (SolveModel, FmiVariableInput) {
         let mut model = delay_bearing_model(1);
         model.problem.layout = VarLayout::from_parts(IndexMap::new(), 2, 1);
+        model.initial_y = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
+        model.parameters = crate::SolveInitialValues::repeat(0.0, 1).unwrap();
         model.problem.solve_layout.variable_storage_runs = vec![SolveVariableStorageRun {
             base: ScalarSlot::Y {
                 index: 0,

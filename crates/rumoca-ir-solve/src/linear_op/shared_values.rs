@@ -12,6 +12,7 @@
 //! the segments over one hash-consed term table and requires identical output
 //! and final slot terms.
 
+mod checking;
 mod registers;
 mod symbolic;
 #[cfg(test)]
@@ -132,7 +133,10 @@ impl SharedValueSegments {
 
     /// Evaluate `programs` and the segments symbolically and require every
     /// output, in order, and every final slot to be the identical term.
-    pub fn check(&self, programs: &[AssignmentProgram<'_>]) -> Result<(), SharedValueError> {
+    fn check_symbolically(
+        programs: &[AssignmentProgram<'_>],
+        segments: &[SharedValueSegment],
+    ) -> Result<(), SharedValueError> {
         let mut terms = Terms::default();
         let mut original = SymbolicSlots::default();
         let mut expected = Vec::new();
@@ -144,7 +148,7 @@ impl SharedValueSegments {
         }
         let mut shared = SymbolicSlots::default();
         let mut found = Vec::new();
-        for segment in &self.segments {
+        for segment in segments {
             let outputs = shared
                 .run(&mut terms, &segment.ops, &segment.targets)
                 .ok_or(SharedValueError::Unevaluable)?;
@@ -279,6 +283,12 @@ enum Step<'a> {
 
 impl<'a> FusibleProgram<'a> {
     fn classify(ops: &'a [LinearOp]) -> Option<Self> {
+        // The scalar sharing construction does not own a native range's
+        // lanes. Keep its canonical program intact rather than expanding a
+        // range into scalar stores and rediscovering it later.
+        if checking::native_range(ops) {
+            return None;
+        }
         let registers = ScalarProgramRegisterFlow::derive(ops)
             .ok()?
             .register_count();
@@ -512,9 +522,18 @@ impl Builder {
 
     fn push_opaque(&mut self, index: usize, program: &AssignmentProgram<'_>) {
         self.close(false);
-        let _ = self
-            .slots
-            .run(&mut self.terms, program.ops, program.targets);
+        if checking::native_range(program.ops) {
+            // A native identity barrier commits its original program. Later
+            // scalar sharing proves itself for arbitrary incoming slots and
+            // cannot depend on terms obtained by expanding this range.
+            self.terms = Terms::default();
+            self.slots = SymbolicSlots::default();
+            self.closed.clear();
+        } else {
+            let _ = self
+                .slots
+                .run(&mut self.terms, program.ops, program.targets);
+        }
         self.done.push(SharedValueSegment {
             ops: program.ops.to_vec(),
             targets: program.targets.to_vec(),

@@ -125,29 +125,31 @@ fn stage_body(
     Ok(function)
 }
 
-/// The Integer call cell a derived-output stage publishes into its lane.
+/// Capture every exact Integer call cell before another call reuses scratch.
 fn integer_capture(
     schedule: &solve::NativeRefreshAssignmentSchedule,
     stage: &solve::NativeRefreshAssignmentStage,
     calls: &CallProgramPlan,
-) -> Result<Option<crate::emit::IntegerCapture>, String> {
-    let solve::NativeStageSource::Discrete { row } = stage.source() else {
-        return Ok(None);
-    };
-    let output = schedule
-        .derived_outputs()
+) -> Result<Vec<crate::emit::IntegerCapture>, String> {
+    if !matches!(stage.source(), solve::NativeStageSource::Discrete { .. }) {
+        return Ok(Vec::new());
+    }
+    schedule
+        .derived_outputs_in(stage.target_span())
         .iter()
-        .find(|output| output.row() == row)
-        .ok_or("native discrete stage has no derived output")?;
-    let Some(solve::NativeIntegerSource::CallCell { operation, cell }) = output.integer_source()
-    else {
-        return Ok(None);
-    };
-    Ok(Some(crate::emit::IntegerCapture {
-        operation,
-        cell,
-        lane: super::buffers::lane_address(calls, output)?,
-    }))
+        .filter_map(|output| match output.integer_source() {
+            Some(solve::NativeIntegerSource::CallCell { operation, cell }) => {
+                Some(super::buffers::lane_address(calls, output).map(|lane| {
+                    crate::emit::IntegerCapture {
+                        operation,
+                        cell,
+                        lane,
+                    }
+                }))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 pub(super) fn invoke(

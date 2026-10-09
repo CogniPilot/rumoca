@@ -51,8 +51,9 @@ for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { if ({{ src }}[k] != 0.0 && {{ s
 {%- else -%}{{ fail("unsupported-feature:fmi.c.pure-call: unary " ~ operator) }}{% endif -%}
 {%- endmacro %}
 
-{%- macro binary(operator, a, b) -%}
-{%- if operator in ["power", "atan2", "min", "max"] -%}{{ {"power":"pow", "atan2":"atan2", "min":"rumoca_real_min", "max":"rumoca_real_max"}[operator] }}({{ a }},{{ b }})
+{%- macro binary(operator, a, b, ty) -%}
+{%- if operator in ["min", "max"] and ty.scalar.kind == "boolean" -%}({{ a }} {{ "&&" if operator == "min" else "||" }} {{ b }})
+{%- elif operator in ["power", "atan2", "min", "max"] -%}{{ {"power":"pow", "atan2":"atan2", "min":"rumoca_real_min", "max":"rumoca_real_max"}[operator] }}({{ a }},{{ b }})
 {%- elif operator in ["add", "subtract", "multiply", "divide", "and", "or"] -%}({{ a }} {{ {"add":"+", "subtract":"-", "multiply":"*", "divide":"/", "and":"&&", "or":"||"}[operator] }} {{ b }})
 {%- else -%}{{ fail("unsupported-feature:fmi.c.pure-call: binary " ~ operator) }}{% endif -%}
 {%- endmacro %}
@@ -118,7 +119,7 @@ if ({{ a }} == INT64_MIN) return 1;
 {% if ty.scalar.kind == "integer" -%}
 {{ integer_binary(op.operator, dst ~ "[k]", a, b) -}}
 {% else -%}
-{{ dst }}[k] = {{ binary(op.operator, a, b) }};
+{{ dst }}[k] = {{ binary(op.operator, a, b, ty) }};
 {% endif -%}
 {% elif op.operation == "compare" -%}
 {{ dst }}[k] = r{{ op.lhs }}[k] {{ {"equal":"==", "not_equal":"!=", "less":"<", "less_equal":"<=", "greater":">", "greater_equal":">="}[op.operator] }} r{{ op.rhs }}[k];

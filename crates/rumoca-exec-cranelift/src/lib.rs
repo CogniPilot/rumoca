@@ -21,6 +21,19 @@ use std::{cell::RefCell, rc::Rc};
 pub enum CompileError {
     Backend(String),
     Input(String),
+    SourceOperation {
+        kind: NativeSourceFault,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeSourceFault {
+    TensorIndex,
+    LinearSolve,
+    IntegerQuotient,
+    ForeignBody,
+    RecursionDepth,
 }
 
 impl std::fmt::Display for CompileError {
@@ -28,6 +41,7 @@ impl std::fmt::Display for CompileError {
         match self {
             Self::Backend(msg) => write!(f, "cranelift execution error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
+            Self::SourceOperation { message, .. } => write!(f, "invalid input: {message}"),
         }
     }
 }

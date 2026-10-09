@@ -349,9 +349,9 @@ struct BodyEmitter<'a> {
     program_span: Option<rumoca_core::Span>,
     operation_ordinal: usize,
     region_path: Vec<(usize, usize)>,
-    /// Copy one Integer call cell into its typed output lane after the call
+    /// Copy Integer call cells into their typed output lanes after the call
     /// at this operation of the stage program.
-    integer_capture: Option<IntegerCapture>,
+    integer_capture: Vec<IntegerCapture>,
     /// The native stage being emitted, whose issued exact Integer bindings
     /// (SOLVE-C69) its top-level pure calls follow.
     native_stage: Option<&'a rumoca_ir_solve::NativeRefreshAssignmentStage>,
@@ -382,7 +382,7 @@ impl<'a> BodyEmitter<'a> {
             program_span: None,
             operation_ordinal: 0,
             region_path: Vec::new(),
-            integer_capture: None,
+            integer_capture: Vec::new(),
             native_stage: None,
         }
     }
@@ -403,12 +403,8 @@ impl<'a> BodyEmitter<'a> {
         match op {
             LinearOp::Const { dst, value } => self.emit_const(dst, value)?,
             LinearOp::LoadTime { dst } => self.emit_time(dst)?,
-            LinearOp::LoadY { dst, index } => {
-                self.emit_array_load(dst, index, Y_PTR_PARAM)?;
-            }
-            LinearOp::LoadP { dst, index } => {
-                self.emit_array_load(dst, index, P_PTR_PARAM)?;
-            }
+            LinearOp::LoadY { dst, index } => self.emit_array_load(dst, index, Y_PTR_PARAM)?,
+            LinearOp::LoadP { dst, index } => self.emit_array_load(dst, index, P_PTR_PARAM)?,
             LinearOp::LoadSeed { dst, index } => {
                 self.emit_array_load(dst, index, SEED_PTR_PARAM)?;
             }
@@ -476,7 +472,9 @@ impl<'a> BodyEmitter<'a> {
                     "WASM backend does not yet support discrete random solve-IR ops".to_string(),
                 );
             }
-            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
+            LinearOp::PureCall { .. }
+            | LinearOp::PureCallDirectional { .. }
+            | LinearOp::PureCallObservation { .. } => {
                 return Err("WASM backend does not yet support typed pure-call ops".to_string());
             }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
@@ -499,6 +497,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_compact(&mut self, op: &LinearOp) -> Option<Result<(), String>> {
+        if matches!(op, LinearOp::PureCallObservation { .. }) {
+            return Some(Err(
+                "WASM backend requires a checked event-action assertion adapter".to_string(),
+            ));
+        }
         if let LinearOp::LoadIndexedRegister {
             dst,
             base,

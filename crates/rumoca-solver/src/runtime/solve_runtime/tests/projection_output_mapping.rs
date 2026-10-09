@@ -46,12 +46,12 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![1.0],
+        initial_y: vec![0.0, 0.0].into(),
+        parameters: vec![1.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &model.parameters, 1.0e-12, 4)

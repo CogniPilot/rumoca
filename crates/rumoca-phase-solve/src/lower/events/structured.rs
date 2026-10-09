@@ -235,14 +235,15 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         }
         let first_row = rows.targets.len();
         for scalar in 0..scalar_count {
-            let program =
-                match clock {
-                    Some((clock, _)) if sampled => ScalarCompiler::new(view, layout, None)
-                        .sampled_program(clock, value, scalar)?,
-                    Some((clock, _)) => ScalarCompiler::new(view, layout, None)
-                        .clocked_program(clock, value, scalar)?,
-                    None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
-                };
+            let program = match clock {
+                Some((clock, _)) if sampled => {
+                    ScalarCompiler::new(view, layout, None).sampled_program(clock, value, scalar)?
+                }
+                Some((clock, _)) => {
+                    ScalarCompiler::new(view, layout, None).clocked_program(clock, value, scalar)?
+                }
+                None => ScalarCompiler::for_discrete(view, layout, None).program(value, scalar)?,
+            };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.claim_scalar_event_owner(variable, target, span)?;
             let pre_mode = expression_pre_mode(view, value, sampled);
@@ -329,7 +330,7 @@ fn lower_call_projection_values<'dae>(
         if scalars <= 1 {
             continue;
         }
-        let program = ScalarCompiler::new(view, layout, None)
+        let program = ScalarCompiler::for_discrete(view, layout, None)
             .aggregate_program(members.iter().map(|&index| values[index].value))?;
         let mut outputs = Vec::with_capacity(scalars);
         for &index in &members {

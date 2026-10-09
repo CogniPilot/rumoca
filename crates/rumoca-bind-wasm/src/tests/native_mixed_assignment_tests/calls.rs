@@ -1,11 +1,16 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
+mod abs;
+mod call_identity;
 mod carried_updates;
 mod derived_discrete;
 mod families;
+mod fault_order;
 mod gathers;
 mod lazy_windows;
 mod maps;
+mod maximum;
 mod packed;
+mod power;
 mod registration;
 mod return_arguments;
 mod returns;

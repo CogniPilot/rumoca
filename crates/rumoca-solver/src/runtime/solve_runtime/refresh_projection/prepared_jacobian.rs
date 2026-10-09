@@ -93,9 +93,7 @@ impl RefreshProjectionModel<'_> {
                 "prepared Jacobian source coordinates differ",
             ));
         }
-        compiled
-            .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-            .map_err(RuntimeSolveError::solve_ir)?;
+        compiled.call(y, p, t, self.runtime.model.external_tables.as_slice(), out)?;
         Ok(true)
     }
 }

@@ -76,7 +76,7 @@ impl WasmExpression {
         p: &[f64],
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
         let Some(compiled) = self.selected.get(program).and_then(Option::as_ref) else {
             return Ok(None);
         };
@@ -87,7 +87,7 @@ impl WasmExpression {
         let mut value = [0.0];
         compiled
             .call(y, p, t, &mut value)
-            .map_err(|error| error.to_string())?;
+            .map_err(super::errors::execution_error)?;
         Ok(Some(value[0]))
     }
 }
@@ -101,7 +101,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, rumoca_solver::RuntimeSolveError> {
         let Some(value) = self.selected_value(program, y, p, t, tables)? else {
             return Ok(false);
         };
@@ -119,7 +119,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         p: &[f64],
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
         if coordinate.1 != 0 {
             return Ok(None);
         }
@@ -133,7 +133,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), rumoca_solver::RuntimeSolveError> {
         let compiled = self
             .full
             .as_ref()
@@ -145,7 +145,7 @@ impl rumoca_solver::CompiledSolveExpression for WasmExpression {
         let mut scratch = self.scratch.borrow_mut();
         compiled
             .call(y, p, t, &mut scratch)
-            .map_err(|error| error.to_string())?;
+            .map_err(super::errors::execution_error)?;
         out.fill(0.0);
         for (&index, &value) in self.source.output_indices().iter().zip(scratch.iter()) {
             out[index] = value;

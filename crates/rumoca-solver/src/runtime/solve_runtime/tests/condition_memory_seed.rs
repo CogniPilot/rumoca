@@ -92,7 +92,7 @@ fn seed_fixture() -> solve::SolveModel {
             ..Default::default()
         },
         //     s      pre(s)  buf(pre(s)>2)  initial()  buf(initial())
-        parameters: vec![5.0, 0.0, 0.0, 1.0, 0.0],
+        parameters: vec![5.0, 0.0, 0.0, 1.0, 0.0].into(),
         ..Default::default()
     }
 }
@@ -108,7 +108,7 @@ fn seed_fixture() -> solve::SolveModel {
 fn the_seed_reads_pre_variables_as_their_own_current_values() {
     let model = seed_fixture();
     let runtime = SolveRuntime::new_fixture(&model).expect("seed fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
 
     let seeded = runtime
         .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1.0e-9)
@@ -138,7 +138,7 @@ fn the_seed_reads_pre_variables_as_their_own_current_values() {
 fn the_seed_leaves_the_initial_activation_its_edge() {
     let model = seed_fixture();
     let runtime = SolveRuntime::new_fixture(&model).expect("seed fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     assert_eq!(p[INITIAL_FLAG], 1.0, "the fixture runs with initial() true");
 
     runtime
@@ -173,11 +173,11 @@ fn a_model_without_activation_buffers_seeds_nothing() {
             },
             ..Default::default()
         },
-        parameters: vec![7.0],
+        parameters: vec![7.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("bare fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
 
     let seeded = runtime
         .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1.0e-9)

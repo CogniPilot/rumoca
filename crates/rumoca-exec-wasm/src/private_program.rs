@@ -49,14 +49,7 @@ impl CompiledPrivateProgramWasm {
         {
             let status = self.runtime.call_private(y, p, time, scratch)?;
             if status != 0 {
-                let fault = self.faults().iter().find(|fault| fault.status == status);
-                let gather = self
-                    .gather_faults()
-                    .iter()
-                    .find(|fault| fault.status == status);
-                return Err(WasmCompileError::Backend(format!(
-                    "private source fault status {status}: {fault:?}, {gather:?}"
-                )));
+                return Err(self.artifact.status_error(status));
             }
             Ok(())
         }

@@ -322,11 +322,8 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
                 .unwrap_or_else(|| panic!("function call remains one checked owner: {row:#?}"))
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        sites[0].owner(),
-        sites[1].owner(),
-        "independent residual projections retain one exact call-frame owner"
-    );
+    assert_eq!(sites.len(), 1, "both residuals share one call invocation");
+    assert_eq!(rows.output_indices(), [0, 1]);
     let owner = package.pure_calls.owner(sites[0].owner()).unwrap();
     let (captures, if_true, if_false) = owner
         .body()
@@ -720,6 +717,12 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
     assert_eq!(solve.events.root_conditions.len(), 1);
     let mut root = [0.0];
     let parameters = vec![0.0; solve.layout.p_scalars()];
+    let observations = rumoca_eval_solve::CheckedEventObservationContext::construct(
+        &package.pure_calls,
+        &solve.events.root_conditions,
+        &solve.events.actions,
+    )
+    .unwrap();
     rumoca_eval_solve::eval_scalar_program_block_with_context(
         &solve.events.root_conditions,
         &[0.0; 3],
@@ -727,6 +730,7 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
+            event_observations: Some(&observations),
             ..Default::default()
         },
         &mut root,
@@ -744,6 +748,7 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
         2.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
+            event_observations: Some(&observations),
             ..Default::default()
         },
         &mut root,
@@ -763,6 +768,12 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
     assert_eq!(solve.events.root_conditions.len(), 1);
     assert_eq!(solve.events.actions.len(), 1);
     let mut root = [0.0];
+    let observations = rumoca_eval_solve::CheckedEventObservationContext::construct(
+        &package.pure_calls,
+        &solve.events.root_conditions,
+        &solve.events.actions,
+    )
+    .unwrap();
     rumoca_eval_solve::eval_scalar_program_block_with_context(
         &solve.events.root_conditions,
         &[0.0],
@@ -770,6 +781,7 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
+            event_observations: Some(&observations),
             ..Default::default()
         },
         &mut root,
@@ -806,18 +818,24 @@ fn one_typed_call_owns_all_assertion_root_and_action_outputs() {
     assert_eq!(
         solve.events.root_conditions.programs()[0]
             .iter()
-            .filter(|operation| matches!(operation, LinearOp::PureCall { .. }))
+            .filter(|operation| matches!(operation, LinearOp::PureCallObservation { .. }))
             .count(),
         1
     );
     assert_eq!(
         solve.events.action_conditions.programs()[0]
             .iter()
-            .filter(|operation| matches!(operation, LinearOp::PureCall { .. }))
+            .filter(|operation| matches!(operation, LinearOp::PureCallObservation { .. }))
             .count(),
         1
     );
     let mut roots = [0.0; 2];
+    let observations = rumoca_eval_solve::CheckedEventObservationContext::construct(
+        &package.pure_calls,
+        &solve.events.root_conditions,
+        &solve.events.actions,
+    )
+    .unwrap();
     rumoca_eval_solve::eval_scalar_program_block_with_context(
         &solve.events.root_conditions,
         &[0.0],
@@ -825,6 +843,7 @@ fn one_typed_call_owns_all_assertion_root_and_action_outputs() {
         0.0,
         rumoca_eval_solve::RowEvalContext {
             pure_calls: Some(&package.pure_calls),
+            event_observations: Some(&observations),
             ..Default::default()
         },
         &mut roots,

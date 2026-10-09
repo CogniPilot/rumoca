@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::time::Instant;
 
-#[cfg(feature = "scheduled-sim")]
-use indexmap::IndexMap;
+scheduled_executor_items! {
+    use indexmap::IndexMap;
+}
 use rumoca_ir_dae as dae;
 
 use crate::BuildSimulationTimings;
-#[cfg(feature = "scheduled-sim")]
-use crate::SimulationSessionApi;
+scheduled_executor_items! {
+    use crate::SimulationSessionApi;
+}
 use crate::me_backend::{
     BackendSimulationSession, batch_options, instance_config, plugin_for_host,
 };
@@ -414,9 +416,10 @@ impl SimulationSession {
         })
     }
 
-    #[cfg(feature = "scheduled-sim")]
-    pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
-        self.inner.values_for(names)
+    scheduled_executor_items! {
+        pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+            self.inner.values_for(names)
+        }
     }
 
     pub(crate) fn input_names(&self) -> &[String] {
@@ -427,9 +430,10 @@ impl SimulationSession {
         self.inner.variable_names()
     }
 
-    #[cfg(feature = "scheduled-sim")]
-    pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
-        None
+    scheduled_executor_items! {
+        pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
+            None
+        }
     }
 }
 
@@ -461,36 +465,37 @@ fn diagnostic_failure_stage(err: &SimulationDiagnosticError) -> SimFailureStage 
     }
 }
 
-#[cfg(feature = "scheduled-sim")]
-impl SimulationSessionApi for SimulationSession {
-    type Error = SimError;
+scheduled_executor_items! {
+    impl SimulationSessionApi for SimulationSession {
+        type Error = SimError;
 
-    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-        Self::reset(self, t_start)
-    }
+        fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+            Self::reset(self, t_start)
+        }
 
-    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
-        Self::set_inputs(self, inputs)
-    }
+        fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
+            Self::set_inputs(self, inputs)
+        }
 
-    fn ensure_end_time(&mut self, target_time: f64) {
-        Self::ensure_end_time(self, target_time);
-    }
+        fn ensure_end_time(&mut self, target_time: f64) {
+            Self::ensure_end_time(self, target_time);
+        }
 
-    fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
-        Self::advance_to(self, target_time)
-    }
+        fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+            Self::advance_to(self, target_time)
+        }
 
-    fn time(&self) -> f64 {
-        Self::time(self)
-    }
+        fn time(&self) -> f64 {
+            Self::time(self)
+        }
 
-    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
-        Self::get(self, name)
-    }
+        fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
+            Self::get(self, name)
+        }
 
-    fn max_schedule_advance_dt(&self) -> Option<f64> {
-        Self::max_schedule_advance_dt(self)
+        fn max_schedule_advance_dt(&self) -> Option<f64> {
+            Self::max_schedule_advance_dt(self)
+        }
     }
 }
 
@@ -634,7 +639,7 @@ mod native_policy_tests {
             t: f64,
             external_tables: &[rumoca_core::ExternalTableData],
             out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, external_tables, out);
             self.counters.expression.observe(&result);
             result
@@ -655,7 +660,7 @@ mod native_policy_tests {
             t: f64,
             seed: &[f64],
             external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<Option<f64>, String> {
+        ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
             let result = self
                 .inner
                 .call_program_output(coordinate, y, p, t, seed, external_tables);
@@ -673,7 +678,7 @@ mod native_policy_tests {
             seed: &[f64],
             external_tables: &[rumoca_core::ExternalTableData],
             out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, seed, external_tables, out);
             self.counters.jacobian.observe(&result);
             result
@@ -692,7 +697,7 @@ mod native_policy_tests {
             p: &[f64],
             t: f64,
             external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, external_tables);
             self.counters.assignment.observe(&result);
             result
@@ -705,7 +710,11 @@ mod native_policy_tests {
     }
 
     impl CompiledSolveEventTransaction for CountingEventTransaction {
-        fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String> {
+        fn call(
+            &self,
+            input: &[f64],
+            output: &mut [f64],
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(input, output);
             self.counters.event_transaction.observe(&result);
             result
@@ -927,8 +936,8 @@ mod native_policy_tests {
             _t: f64,
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
-            Err("injected native expression failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native expression failure".into())
         }
     }
 
@@ -941,8 +950,8 @@ mod native_policy_tests {
             _seed: &[f64],
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
-            Err("injected native JVP failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native JVP failure".into())
         }
     }
 
@@ -953,14 +962,18 @@ mod native_policy_tests {
             _p: &[f64],
             _t: f64,
             _external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<(), String> {
-            Err("injected native assignment failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native assignment failure".into())
         }
     }
 
     impl CompiledSolveEventTransaction for FailingCompiled {
-        fn call(&self, _input: &[f64], _output: &mut [f64]) -> Result<(), String> {
-            Err("injected native event-transaction failure".to_string())
+        fn call(
+            &self,
+            _input: &[f64],
+            _output: &mut [f64],
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native event-transaction failure".into())
         }
     }
 

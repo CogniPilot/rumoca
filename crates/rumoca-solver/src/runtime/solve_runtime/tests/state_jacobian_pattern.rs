@@ -74,7 +74,7 @@ fn chained_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 4],
+        initial_y: vec![0.0; 4].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(

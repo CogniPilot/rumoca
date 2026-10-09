@@ -118,10 +118,19 @@ fn real_value(value: f64) -> rumoca_eval_solve::TypedValue {
 }
 
 #[test]
-fn shared_nested_calls_preserve_distinct_arguments_directions_and_assertions() {
+fn shared_nested_calls_preserve_distinct_arguments_and_first_assertion_stop() {
     let table = lower_root_call(&call_dag(2));
     let root = table.owners().last().unwrap();
     for x in [-0.75_f64, -0.25, 2.0] {
+        if x <= 0.0 {
+            let failure =
+                rumoca_eval_solve::eval_pure_call(&table, root.id(), &[real_value(x)]).unwrap_err();
+            assert!(matches!(
+                failure,
+                rumoca_eval_solve::TypedProgramEvalError::AssertionFailed { .. }
+            ));
+            continue;
+        }
         let values =
             rumoca_eval_solve::eval_pure_call(&table, root.id(), &[real_value(x)]).unwrap();
         assert_eq!(
@@ -138,24 +147,13 @@ fn shared_nested_calls_preserve_distinct_arguments_directions_and_assertions() {
             );
         }
         for seed in [1.0, -0.5] {
-            let values = rumoca_eval_solve::eval_pure_call_directional(
+            let error = rumoca_eval_solve::eval_pure_call_directional(
                 &table,
                 root.id(),
                 &[real_value(x), real_value(seed)],
             )
-            .unwrap();
-            assert_eq!(
-                values[1].elements(),
-                &[solve::SolveValueKind::Real64(
-                    ((20.0 * x + 6.0) * seed).to_bits()
-                )]
-            );
-            for (predicate, argument) in values[2..].iter().zip(arguments) {
-                assert_eq!(
-                    predicate.elements(),
-                    &[solve::SolveValueKind::Boolean(argument > 0.0)]
-                );
-            }
+            .unwrap_err();
+            assert!(error.to_string().contains("unavailable directional owner"));
         }
     }
 }

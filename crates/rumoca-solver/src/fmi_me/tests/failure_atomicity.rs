@@ -51,7 +51,7 @@ fn branch_component_with_input() -> solve::SolveModel {
     let mut model = nonlinear_right_limit_seed_model();
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
+    model.parameters = vec![1.0].into();
     refresh_owned(model)
 }
 

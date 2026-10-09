@@ -28,14 +28,14 @@ impl CompiledSolveExpression for Expression {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail.get() {
             return Err("native manifold residual failed".into());
         }
         self.prepared
             .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 }
 
@@ -48,7 +48,7 @@ impl CompiledSolveJacobianExpression for Expression {
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         self.programs
             .borrow_mut()
@@ -67,7 +67,7 @@ impl CompiledSolveJacobianExpression for Expression {
                 },
                 out,
             )
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 
     fn call_program_outputs(
@@ -76,7 +76,7 @@ impl CompiledSolveJacobianExpression for Expression {
         inputs: solve_eval::JacobianEvalInputs<'_>,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         self.programs.borrow_mut().push(program);
         if self.fail.get() || self.failing_program.get() == Some(program) {

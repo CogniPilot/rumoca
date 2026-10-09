@@ -54,6 +54,9 @@ pub(crate) fn tunable_param_overrides(
     model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<HashMap<String, f64>, SimulationDiagnosticError> {
+    if opts.param_overrides.is_empty() {
+        return Ok(HashMap::new());
+    }
     model.inspect(|view| {
         let mut tunable_names = HashSet::new();
         let mut structural_names = HashSet::new();
@@ -168,12 +171,12 @@ fn verify_parameter_overrides(
                 "`{name}` has no runtime parameter slot and cannot be overridden"
             )));
         };
-        let Some(actual) = solve_model.parameters.get(index) else {
+        let Some(actual) = solve_model.parameters.value(index) else {
             return Err(invalid(format!(
                 "runtime parameter slot for `{name}` is outside the parameter vector"
             )));
         };
-        if *actual != value {
+        if actual != value {
             return Err(invalid(format!(
                 "override for `{name}` was not applied while evaluating dependent bindings"
             )));
@@ -220,12 +223,11 @@ fn apply_state_overrides(
             .iter()
             .position(|candidate| candidate == name)
             .ok_or_else(|| invalid(format!("`{name}` is not a state of this model")))?;
-        let target = solve_model.initial_y.get_mut(index).ok_or_else(|| {
+        solve_model.initial_y.set(index, *value).map_err(|_| {
             invalid(format!(
                 "state `{name}` has no initial-value slot in the checked Solve model"
             ))
         })?;
-        *target = *value;
     }
     Ok(())
 }

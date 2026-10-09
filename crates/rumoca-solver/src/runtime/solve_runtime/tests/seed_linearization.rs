@@ -16,7 +16,7 @@ impl CompiledSolveJacobianExpression for CountedJacobian {
         _: &[f64],
         _: &[rumoca_core::ExternalTableData],
         _: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("the fixture has one selected algebraic residual")
     }
 
@@ -28,7 +28,7 @@ impl CompiledSolveJacobianExpression for CountedJacobian {
         t: f64,
         seed: &[f64],
         _: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(coordinate, (1, 0));
         if seed[0] == 0.0 && seed[1] == 1.0 && seed.get(2).copied().unwrap_or(0.0) == 0.0 {
             self.matrix_calls.set(self.matrix_calls.get() + 1);
@@ -128,7 +128,7 @@ fn model() -> solve::SolveModel {
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
-    model.parameters = vec![1.0];
+    model.parameters = vec![1.0].into();
     model.problem.continuous.derivative_rhs =
         solve::ComputeBlock::from_scalar_program_block(spanned_block(
             vec![vec![

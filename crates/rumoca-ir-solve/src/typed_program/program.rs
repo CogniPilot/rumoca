@@ -1,3 +1,5 @@
+mod calls;
+pub use calls::{ProgramCall, SolveAssertionForwarding};
 mod construction_checks;
 mod construction_error;
 use construction_checks::{
@@ -7,7 +9,9 @@ use construction_checks::{
 };
 pub use construction_error::SolveProgramConstructionError;
 
+mod assertions;
 mod directional;
+pub use assertions::{ProgramAssertion, SolveAssertionMessage};
 mod linear_solve;
 mod native;
 mod read_flow;
@@ -22,7 +26,7 @@ use rumoca_core::native_body::NativeBody;
 use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Serialize};
 
-use super::call::{SolvePureCallOwnerId, SolvePureCallTableView};
+use super::call::{SolvePureCallOutput, SolvePureCallOwnerId, SolvePureCallTableView};
 use super::types::{SolveArithmeticProfile, SolveScalarType, SolveValue, SolveValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -210,6 +214,15 @@ pub enum SolveReductionOperator {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum SolveOperation {
+    /// One source-ordered assertion with failed-only message captures.
+    CheckAssertion {
+        predicate_output: usize,
+        message_outputs: Box<[usize]>,
+        condition: SolveRegisterId,
+        captures: Box<[SolveRegisterId]>,
+        destinations: Box<[SolveRegisterId]>,
+        message: SolveAssertionMessage,
+    },
     Constant {
         destination: SolveRegisterId,
         value: SolveValue,
@@ -394,6 +407,7 @@ pub enum SolveOperation {
     /// destinations are ordered value results followed by assertion
     /// predicates exactly as declared by the owner interface.
     Call {
+        assertion_forwarding: Box<[SolveAssertionForwarding]>,
         owner: SolvePureCallOwnerId,
         arguments: Box<[SolveRegisterId]>,
         destinations: Box<[SolveRegisterId]>,
@@ -447,7 +461,12 @@ impl SolveOperation {
                 visit(*if_true);
                 visit(*if_false);
             }
-            Self::Conditional {
+            Self::CheckAssertion {
+                condition,
+                captures,
+                ..
+            }
+            | Self::Conditional {
                 condition,
                 captures,
                 ..
@@ -550,7 +569,8 @@ impl SolveOperation {
             | Self::UpdateElement { destination, .. }
             | Self::UpdateSlice { destination, .. }
             | Self::UpdateView { destination, .. } => visit(*destination),
-            Self::Conditional { destinations, .. }
+            Self::CheckAssertion { destinations, .. }
+            | Self::Conditional { destinations, .. }
             | Self::Fold { destinations, .. }
             | Self::Call { destinations, .. }
             | Self::Native { destinations, .. } => {
@@ -668,27 +688,23 @@ impl TypedProgram {
             &mut TypedProgramBuilder<'program>,
         ) -> Result<(), SolveProgramConstructionError>,
     ) -> Result<Self, SolveProgramConstructionError> {
-        let mut builder = TypedProgramBuilder {
-            arithmetic,
-            slots: Vec::new(),
-            slot_initialized: Vec::new(),
-            register_types: Vec::new(),
-            operations: Vec::new(),
-            available_calls: SolvePureCallTableView::default(),
-            marker: PhantomData,
-        };
-        build(&mut builder)?;
-        Ok(Self::assemble(
-            arithmetic,
-            builder.slots,
-            builder.register_types,
-            builder.operations,
-        ))
+        Self::construct_with_calls(arithmetic, SolvePureCallTableView::default(), build)
     }
 
     pub(super) fn construct_with_calls(
         arithmetic: SolveArithmeticProfile,
         available_calls: SolvePureCallTableView<'_>,
+        build: impl for<'program> FnOnce(
+            &mut TypedProgramBuilder<'program>,
+        ) -> Result<(), SolveProgramConstructionError>,
+    ) -> Result<Self, SolveProgramConstructionError> {
+        Self::construct_with_owner(arithmetic, available_calls, &[], build)
+    }
+
+    pub(super) fn construct_with_owner(
+        arithmetic: SolveArithmeticProfile,
+        available_calls: SolvePureCallTableView<'_>,
+        assertion_outputs: &[SolvePureCallOutput],
         build: impl for<'program> FnOnce(
             &mut TypedProgramBuilder<'program>,
         ) -> Result<(), SolveProgramConstructionError>,
@@ -700,6 +716,7 @@ impl TypedProgram {
             register_types: Vec::new(),
             operations: Vec::new(),
             available_calls,
+            assertion_outputs,
             marker: PhantomData,
         };
         build(&mut builder)?;
@@ -795,6 +812,7 @@ pub struct TypedProgramBuilder<'program> {
     register_types: Vec<SolveValueType>,
     operations: Vec<SolveSpannedOperation>,
     available_calls: SolvePureCallTableView<'program>,
+    assertion_outputs: &'program [SolvePureCallOutput],
     marker: PhantomData<&'program mut &'program ()>,
 }
 
@@ -1297,8 +1315,11 @@ impl<'program> TypedProgramBuilder<'program> {
             &[ProgramSlot<'region>],
         ) -> Result<(), SolveProgramConstructionError>,
     ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
-        let body =
-            TypedProgram::construct_with_calls(self.arithmetic, self.available_calls, |builder| {
+        let body = TypedProgram::construct_with_owner(
+            self.arithmetic,
+            self.available_calls,
+            self.assertion_outputs,
+            |builder| {
                 let input_slots = declare_interface_slots(
                     builder,
                     &inputs,
@@ -1314,7 +1335,8 @@ impl<'program> TypedProgramBuilder<'program> {
                     provenance,
                 )?;
                 build(builder, &input_slots, &output_slots)
-            })?;
+            },
+        )?;
         construct_region(inputs, outputs, body, provenance)
     }
 
@@ -1752,12 +1774,23 @@ impl<'program> TypedProgramBuilder<'program> {
         Ok(destination)
     }
 
+    /// Legacy value-only facade; all call emission delegates to `emit_call`.
     pub fn call(
         &mut self,
         owner: SolvePureCallOwnerId,
         arguments: &[ProgramRegister<'program>],
         provenance: Span,
     ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
+        self.emit_call(owner, arguments, provenance)
+            .map(ProgramCall::into_registers)
+    }
+
+    pub fn emit_call(
+        &mut self,
+        owner: SolvePureCallOwnerId,
+        arguments: &[ProgramRegister<'program>],
+        provenance: Span,
+    ) -> Result<ProgramCall<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
         let interface = self
             .available_calls
@@ -1792,8 +1825,10 @@ impl<'program> TypedProgramBuilder<'program> {
             .into_iter()
             .map(|value_type| self.issue_register(value_type, provenance))
             .collect::<Result<Vec<_>, _>>()?;
+        let operation = self.operations.len();
         self.push(
             SolveOperation::Call {
+                assertion_forwarding: Box::new([]),
                 owner,
                 arguments: arguments
                     .iter()
@@ -1808,7 +1843,12 @@ impl<'program> TypedProgramBuilder<'program> {
             },
             provenance,
         );
-        Ok(destinations)
+        Ok(ProgramCall {
+            operation,
+            owner,
+            registers: destinations,
+            marker: PhantomData,
+        })
     }
 
     fn aggregate_type(

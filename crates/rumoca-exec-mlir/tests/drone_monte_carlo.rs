@@ -237,9 +237,9 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 6], // start at origin, hover
+        initial_y: vec![0.0; 6].into(), // start at origin, hover
         solver_nominals: vec![1.0; 6],
-        parameters: vec![m, j, f, g],
+        parameters: vec![m, j, f, g].into(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: names,
         visible_value_rows: ScalarProgramBlock::default(),

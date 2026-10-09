@@ -14,7 +14,7 @@
   The including template defines `ModelInstance` (with `time`, `y`, `p`),
   `Y_LEN`, and `RMC_LOG(m, message)`, and imports `scalar_op`.
 -#}
-{%- from "fmi-c-kernel.jinja" import scalar_op, c_string %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, store_range, store_target, c_string %}
 
 {%- macro c_array(name, type, values) -%}
 {%- if values|length > 0 %}
@@ -1217,10 +1217,17 @@ static inline int rmc_project_complete(ModelInstance* m, const size_t* entries, 
 static int rmc_asg_p{{ loop.index0 }}(ModelInstance* m) {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
+{%- if op.kind == "StoreOutputRange" and op.output_span is defined %}
+{{ store_range(op, "m->y", "1") }}
+{%- elif op.kind == "StoreOutputRange" %}
+{%- for output_index in op.output_indices %}
+    {{ store_target("m->y", none, output_index) }} = r[{{ op.start + loop.index0 * op.stride }}];
+    if (!isfinite(m->y[{{ output_index }}])) return 1;
+{%- endfor %}
+{%- else %}
 {{ scalar_op(op, "m->y", "-1") }}
 {%- if op.kind == "StoreOutput" %}    if (!isfinite(m->y[{{ op.output_index }}])) return 1;
-{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    if (!isfinite(m->y[{{ output_index }}])) return 1;
-{%- endfor %}
+{%- endif %}
 {%- endif %}
 {%- endfor %}
     return 0;

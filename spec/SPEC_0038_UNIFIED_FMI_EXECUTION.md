@@ -25,6 +25,7 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | All FMI forms consume one checked kernel | FMI lowering | Prevent semantic drift |
 | ME and CS are capability profiles, not backends | target discovery | Avoid duplicate lowering |
 | Native, packaged, and Wasm are deployment forms | FMI packaging | Packaging cannot change behavior |
+| Deployment admission retains one checked inventory and artifact session; externally compiled assets publish only as a complete declared product | checked capability profile and generic packaging | SPEC_0044 ME-LSW-002 |
 | The only solver-facing model interface is FMI 3 ME | simulation runtime | Remove the competing private model API |
 | In-process simulation hosts FMI 3 ME with Diffsol | simulation runtime | One lifecycle |
 | FMI CS embeds an FMI 3 ME host plus a selected integrator | CS runtime | Reuse integration semantics |
@@ -51,7 +52,9 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Settled-coordinate caches invalidate on lifecycle or parameter mutation | FMI component | Never reuse stale algebraics |
 | An empty checked manifold-projection artifact certifies that continuous-state projection returns unchanged without settling observation algebraics | FMI component | Do not execute algebraic work for a structurally absent constraint system |
 | Wasm uses the FMI layered-standard WIT profile | Wasm adapter | Avoid a private ABI |
+| Deployment admits accessor/interface capabilities on the correlated FMI component before any execution-backend refinement; C admission is a separate consuming refinement | `rumoca-ir-solve::fmi`, SPEC_0044 ME-DEP-001 | Deployment does not require C |
 | Native and Wasm hosts expose batched state/variable access | FMI host | Avoid per-scalar boundary overhead |
+| Within one fully validated typed getter request, consecutive ordinary time/Y/P reads share one completed public observation; derivative/indicator reads end that scope before executing their own observation and evaluation | Generated FMI getter, SPEC_0044 ME-BATCH-001 | One request-local observation, no cross-request cache or added runtime dirty bit |
 | `rumoca-input` writes model inputs only through typed FMI setters | input/runtime boundary | One input lifecycle |
 | Input mappings resolve to FMI value references before execution | scenario preparation | Reject unknown or mistyped inputs early |
 | Input clocks use `fmi3SetClock`; structural parameters use Configuration Mode | input/runtime boundary | Preserve FMI lifecycle |

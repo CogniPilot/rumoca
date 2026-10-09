@@ -4,15 +4,19 @@ mod call;
 mod program;
 mod types;
 
+pub(crate) use call::dependency::CheckedCallDependencyProjection;
 pub use call::dependency::SolveCallDependency;
 pub use call::{
-    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
-    SolvePureCallInputCoordinate, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
-    SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember,
+    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
+    SolveAssertionLevel, SolveCallSiteCount, SolvePureCallDirectionalOwner,
+    SolvePureCallDirectionalSite, SolvePureCallIdentity, SolvePureCallInputCoordinate,
+    SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId,
+    SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder, SolveRecursionProfile,
+    SolveRecursiveGroup, SolveRecursiveMember,
 };
 pub use program::{
-    ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,
+    ProgramAssertion, ProgramCall, ProgramRegister, ProgramSlot, ProgramTensorViewAxis,
+    SolveAssertionForwarding, SolveAssertionMessage, SolveBinaryOperator, SolveCompareOperator,
     SolveConversionOperator, SolveOperation, SolveProgramConstructionError, SolveProgramRegion,
     SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess, SolveSlotId,
     SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis, SolveUnaryOperator,

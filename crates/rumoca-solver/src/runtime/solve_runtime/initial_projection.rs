@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod admitted_tests;
+
 use crate::RuntimeSolveError;
 use crate::runtime::projection::{
     AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, ScaledNewtonSystem,
@@ -24,11 +27,25 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref()
-            && compiled
-                .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-                .is_ok()
-        {
+        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref() {
+            let map_error = |error| {
+                admitted_compute_error(
+                    "initial implicit residual",
+                    &self.runtime.model.problem.continuous.implicit_rhs,
+                    error,
+                )
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        y,
+                        p,
+                        t,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             self.runtime
                 .report_nonfinite_implicit_residual_inputs(t, y, out);
             return Ok(());
@@ -54,17 +71,29 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
             .runtime
             .compiled_implicit_projection_jacobian_v
             .as_ref()
-            && compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
         {
+            let map_error = |error| {
+                admitted_compiled_error(
+                    "initial implicit JVP",
+                    self.runtime
+                        .implicit_projection_scalar_jacobian_v
+                        .block()
+                        .program_spans(),
+                    error,
+                )
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        y,
+                        p,
+                        t,
+                        v,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             return Ok(());
         }
         self.runtime
@@ -225,17 +254,25 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             Some((settled_y, settled_p)) => (settled_y.as_slice(), settled_p.as_slice()),
             None => (y, p),
         };
-        if let Some(compiled) = self.runtime.compiled_initial_residual.as_ref()
-            && compiled
-                .call(
-                    residual_y,
-                    residual_p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
+        if let Some(compiled) = self.runtime.compiled_initial_residual.as_ref() {
+            let map_error = |error| {
+                admitted_compute_error(
+                    "initial residual",
+                    self.runtime.model.problem.initialization.residual(),
+                    error,
                 )
-                .is_ok()
-        {
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        residual_y,
+                        residual_p,
+                        t,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             return Ok(());
         }
         self.runtime
@@ -480,18 +517,31 @@ impl InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.compiled_initial_residual_jacobian_v.as_ref()
-            && compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
+        if let Some(compiled) = self.runtime.compiled_initial_residual_jacobian_v.as_ref() {
+            let map_error = |error| {
+                admitted_compute_error(
+                    "initial residual JVP",
+                    &self
+                        .runtime
+                        .model
+                        .artifacts
+                        .initialization
+                        .residual_jacobian_v,
+                    error,
                 )
-                .is_ok()
-        {
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        y,
+                        p,
+                        t,
+                        v,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             return Ok(());
         }
         self.runtime
@@ -1152,13 +1202,13 @@ mod tests {
                     ..Default::default()
                 },
             },
-            initial_y: vec![0.0],
-            parameters: vec![0.0],
+            initial_y: vec![0.0].into(),
+            parameters: vec![0.0].into(),
             ..Default::default()
         };
         let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-        let mut y = model.initial_y.clone();
-        let mut p = model.parameters.clone();
+        let mut y = model.initial_y.to_vec();
+        let mut p = model.parameters.to_vec();
 
         runtime
             .project_initial_variables(&mut y, &mut p, 0.0, 1.0e-10, 8)
@@ -1240,13 +1290,13 @@ mod tests {
                 },
                 ..Default::default()
             },
-            initial_y: vec![0.0],
-            parameters: vec![0.0],
+            initial_y: vec![0.0].into(),
+            parameters: vec![0.0].into(),
             ..Default::default()
         };
         let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-        let mut y = model.initial_y.clone();
-        let mut p = model.parameters.clone();
+        let mut y = model.initial_y.to_vec();
+        let mut p = model.parameters.to_vec();
         runtime
             .initialize_delay_history(0.0, &y, &mut p)
             .expect("delay history should seed from the declaration start");
@@ -1385,8 +1435,8 @@ mod tests {
                     ..Default::default()
                 },
             },
-            initial_y: vec![51.0],
-            parameters: vec![100.0, 100.0],
+            initial_y: vec![51.0].into(),
+            parameters: vec![100.0, 100.0].into(),
             ..Default::default()
         }
     }
@@ -1395,8 +1445,8 @@ mod tests {
     fn fixed_algebraic_row_uses_total_sensitivity_of_continuous_refresh() {
         let model = fixed_algebraic_parameter_model();
         let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-        let mut y = model.initial_y.clone();
-        let mut p = model.parameters.clone();
+        let mut y = model.initial_y.to_vec();
+        let mut p = model.parameters.to_vec();
 
         runtime
             .settle_initialization_system(&mut y, &mut p, 0.0, 1.0e-9, 12)

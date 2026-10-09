@@ -6,6 +6,7 @@
 //! environment (`CC_wasm32_wasip2` and `AR_wasm32_wasip2`).
 
 fn main() {
+    require_default_cflags();
     let sources = [
         "csrc/model.c",
         "csrc/rmc_rows.c",
@@ -17,6 +18,9 @@ fn main() {
     cc::Build::new()
         .include("csrc")
         .std("c11")
+        .flag("-msimd128")
+        .flag("-fno-fast-math")
+        .flag("-ffp-contract=off")
         .warnings(true)
         .warnings_into_errors(true)
         .files(sources)
@@ -28,4 +32,21 @@ fn main() {
     println!("cargo:rerun-if-changed=csrc/fmi3Functions.h");
     println!("cargo:rerun-if-changed=csrc/fmi3FunctionTypes.h");
     println!("cargo:rerun-if-changed=csrc/fmi3PlatformTypes.h");
+}
+
+fn require_default_cflags() {
+    // cc appends these after Build::flag, where they could change the
+    // kernel's numerical semantics or disable its SIMD instructions.
+    for name in [
+        "CFLAGS",
+        "TARGET_CFLAGS",
+        "CFLAGS_wasm32_wasip2",
+        "CFLAGS_wasm32-wasip2",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+        assert!(
+            std::env::var_os(name).is_none_or(|flags| flags.is_empty()),
+            "FMI-LS-Wasm uses fixed kernel compiler flags; unset {name}"
+        );
+    }
 }

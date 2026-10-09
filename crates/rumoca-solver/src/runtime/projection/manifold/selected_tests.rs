@@ -100,8 +100,8 @@ impl Model {
         model.problem.solve_layout.solver_maps.names =
             (0..5).map(|index| format!("x{index}")).collect();
         model.problem.layout = solve::VarLayout::from_parts(Default::default(), 5, 1);
-        model.initial_y = vec![0.0; 5];
-        model.parameters = vec![2.0];
+        model.initial_y = vec![0.0; 5].into();
+        model.parameters = vec![2.0].into();
         model.problem.continuous.manifold_residual =
             solve::ComputeBlock::from_scalar_program_block(block.clone());
         model.artifacts.continuous.manifold_jacobian_v =

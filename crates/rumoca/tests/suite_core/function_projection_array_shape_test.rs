@@ -491,3 +491,135 @@ fn overlapping_record_output_fails_before_dae_construction() {
         "unexpected diagnostic: {error}"
     );
 }
+
+#[test]
+fn continuous_tuple_algorithm_retains_one_call_and_updates_with_time() {
+    let source = MULTI_OUTPUT_EQUATION_MODEL.replace(
+        "equation\n  (vector, scalar) =",
+        "algorithm\n  (vector, scalar) :=",
+    );
+    let compiled = Compiler::new()
+        .model("ObserveMultiOutputEquation")
+        .compile_str(&source, "ContinuousTupleAlgorithm.mo")
+        .expect("a total tuple algorithm must own all continuous results");
+    compiled.dae.inspect(|view| {
+        let owners = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .filter_map(|expression| match expression.operation() {
+                rumoca_ir_dae::ExpressionOperation::Call { owner, .. } => Some(owner),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0], owners[1], "all results share one source call");
+    });
+    for time in [0.0, 2.0] {
+        let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], time)
+            .expect("continuous tuple outputs must evaluate");
+        assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+        assert_eq!(slot_value(&probe.report, "vector[1]"), time + 1.0);
+        assert_eq!(slot_value(&probe.report, "vector[2]"), time + 2.0);
+        assert_eq!(slot_value(&probe.report, "scalar"), time + 3.0);
+    }
+}
+
+#[test]
+fn continuous_tuple_algorithm_rejects_wrong_receiver_shape() {
+    let source = MULTI_OUTPUT_EQUATION_MODEL.replace(
+        "equation\n  (vector, scalar) =",
+        "algorithm\n  (vector, scalar) :=",
+    );
+    // Change the model declaration only; the callee retains its result shape.
+    let source = source.replace(
+        "model ObserveMultiOutputEquation\n  output Real vector[2];",
+        "model ObserveMultiOutputEquation\n  output Real vector[3];",
+    );
+    let error = Compiler::new()
+        .model("ObserveMultiOutputEquation")
+        .compile_str(&source, "WrongTupleAlgorithm.mo")
+        .expect_err("wrong result shape must fail at receiver analysis");
+    assert!(
+        error
+            .to_string()
+            .contains("receiver `vector` has shape [3]"),
+        "{error}"
+    );
+}
+
+#[test]
+fn continuous_tuple_algorithm_rejects_implicit_initial_value_reads() {
+    let source = MULTI_OUTPUT_EQUATION_MODEL.replace(
+        "equation\n  (vector, scalar) = splitReference(time);",
+        "algorithm\n  (vector, scalar) := splitReference(scalar);",
+    );
+    let error = Compiler::new()
+        .model("ObserveMultiOutputEquation")
+        .compile_str(&source, "ReadBeforeTupleDefinition.mo")
+        .expect_err("algorithm entry values require an explicit sequential owner");
+    assert!(error.to_string().contains("before"), "{error}");
+}
+
+#[test]
+fn authored_es15_tuple_algorithms_compile_and_evaluate_without_source_rewrites() {
+    let cases = [
+        (
+            "ES15Dynamics",
+            include_str!("../fixtures/slam_inertial/ES15Dynamics.mo"),
+            vec![
+                ("F[1,4]", 1.0),
+                ("F[4,8]", 9.81),
+                ("F[5,7]", -9.81),
+                ("F[4,10]", -1.0),
+                ("G[4,1]", -1.0),
+                ("G[10,7]", 1.0),
+            ],
+        ),
+        (
+            "ES15NominalPrediction",
+            include_str!("../fixtures/slam_inertial/ES15NominalPrediction.mo"),
+            vec![
+                ("force[3]", 9.81),
+                ("omega[1]", 0.0),
+                ("next_rotation[1,1]", 1.0),
+                ("next_position[3]", 0.0),
+                ("next_velocity[3]", 0.0),
+                ("valid", 1.0),
+            ],
+        ),
+    ];
+    for (name, source, expected) in cases {
+        let compiled = Compiler::new()
+            .model(name)
+            .compile_str(source, &format!("{name}.mo"))
+            .expect("the authored continuous tuple must construct a DAE");
+        let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+            .expect("the authored tuple outputs must evaluate");
+        assert!(
+            probe.report.error.is_none(),
+            "{name}: {:?}",
+            probe.report.error
+        );
+        for (slot, value) in expected {
+            assert_eq!(slot_value(&probe.report, slot), value, "{name}.{slot}");
+        }
+    }
+}
+
+#[test]
+fn continuous_tuple_algorithm_rejects_duplicate_receivers() {
+    let source = MULTI_OUTPUT_EQUATION_MODEL
+        .replace(
+            "equation\n  (vector, scalar) =",
+            "algorithm\n  (vector, vector) :=",
+        )
+        .replace("output Real vector[2];", "output Real vector;")
+        .replace("vector := {u + 1.0, u + 2.0};", "vector := u + 1.0;");
+    let error = Compiler::new()
+        .model("ObserveMultiOutputEquation")
+        .compile_str(&source, "RepeatedTupleReceiver.mo")
+        .expect_err("one atomic tuple cannot assign a receiver twice");
+    assert!(
+        error.to_string().contains("occurs more than once"),
+        "{error}"
+    );
+}

@@ -1,0 +1,691 @@
+{
+  "dae": {
+    "schema_version": 44,
+    "source_map": {
+      "files": [
+        [
+          1249943056337021614,
+          "construction-evidence-parity.mo",
+          "function Check input Boolean valid; input Integer i; input Real values[2]; output Real result; algorithm assert(valid,\"first fault\"); result:=values[i]; end Check; model Assertion input Boolean valid; input Integer i; input Real values[2]; output Real y; equation y=Check(valid,i,values); end Assertion;"
+        ]
+      ]
+    },
+    "storage": {
+      "predefined_string_declaration": 4,
+      "value_types": [
+        {
+          "scalar": "boolean",
+          "dimensions": [],
+          "record_name": null,
+          "record_fields": []
+        },
+        {
+          "scalar": "integer",
+          "dimensions": [],
+          "record_name": null,
+          "record_fields": []
+        },
+        {
+          "scalar": "real",
+          "dimensions": [
+            2
+          ],
+          "record_name": null,
+          "record_fields": []
+        },
+        {
+          "scalar": "real",
+          "dimensions": [],
+          "record_name": null,
+          "record_fields": []
+        },
+        {
+          "scalar": "string",
+          "dimensions": [],
+          "record_name": null,
+          "record_fields": []
+        }
+      ],
+      "flat_type_ids": [
+        9,
+        10,
+        11,
+        12,
+        null
+      ],
+      "value_type_provenance": [
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 186,
+            "end": 199
+          }
+        },
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 207,
+            "end": 216
+          }
+        },
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 224,
+            "end": 235
+          }
+        },
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 247,
+            "end": 253
+          }
+        },
+        {
+          "origin": "source",
+          "span": {
+            "source": 1249943056337021614,
+            "start": 118,
+            "end": 131
+          }
+        }
+      ],
+      "variables": [
+        {
+          "name": "valid",
+          "role": "input",
+          "variability": "discrete",
+          "value_type": 0,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 186,
+              "end": 199
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 186,
+                "end": 199
+              },
+              "parts": [
+                {
+                  "ident": "valid",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 186,
+                    "end": 199
+                  },
+                  "subs": [],
+                  "def_id": 104
+                }
+              ]
+            },
+            "binding": null,
+            "start": 0,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "input",
+            "declared_causality": "input",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        },
+        {
+          "name": "i",
+          "role": "input",
+          "variability": "discrete",
+          "value_type": 1,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 207,
+              "end": 216
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 207,
+                "end": 216
+              },
+              "parts": [
+                {
+                  "ident": "i",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 207,
+                    "end": 216
+                  },
+                  "subs": [],
+                  "def_id": 105
+                }
+              ]
+            },
+            "binding": null,
+            "start": 1,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "input",
+            "declared_causality": "input",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        },
+        {
+          "name": "values",
+          "role": "input",
+          "variability": "continuous",
+          "value_type": 2,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 224,
+              "end": 235
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 224,
+                "end": 235
+              },
+              "parts": [
+                {
+                  "ident": "values",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 224,
+                    "end": 235
+                  },
+                  "subs": [],
+                  "def_id": 106
+                }
+              ]
+            },
+            "binding": null,
+            "start": 2,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "input",
+            "declared_causality": "input",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        },
+        {
+          "name": "y",
+          "role": "output",
+          "variability": "continuous",
+          "value_type": 3,
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 247,
+              "end": 253
+            }
+          },
+          "attributes": {
+            "component_ref": {
+              "local": false,
+              "span": {
+                "source": 1249943056337021614,
+                "start": 247,
+                "end": 253
+              },
+              "parts": [
+                {
+                  "ident": "y",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 247,
+                    "end": 253
+                  },
+                  "subs": [],
+                  "def_id": 107
+                }
+              ]
+            },
+            "binding": null,
+            "start": 3,
+            "fixed": null,
+            "min": null,
+            "max": null,
+            "nominal": null,
+            "unit": null,
+            "state_select": "Default",
+            "description": null,
+            "enumeration": null,
+            "causality": "output",
+            "declared_causality": "output",
+            "is_tunable": false,
+            "is_held": false,
+            "evaluable": false,
+            "origin": "source"
+          }
+        }
+      ],
+      "functions": [
+        {
+          "name": "Check",
+          "parameters": [
+            {
+              "name": "valid",
+              "value_type": 0,
+              "declaration": {
+                "origin": "source",
+                "span": {
+                  "source": 1249943056337021614,
+                  "start": 21,
+                  "end": 34
+                }
+              }
+            },
+            {
+              "name": "i",
+              "value_type": 1,
+              "declaration": {
+                "origin": "source",
+                "span": {
+                  "source": 1249943056337021614,
+                  "start": 42,
+                  "end": 51
+                }
+              }
+            },
+            {
+              "name": "values",
+              "value_type": 2,
+              "declaration": {
+                "origin": "source",
+                "span": {
+                  "source": 1249943056337021614,
+                  "start": 59,
+                  "end": 70
+                }
+              }
+            }
+          ],
+          "outputs": [
+            {
+              "name": "result",
+              "value_type": 3,
+              "declaration": {
+                "origin": "source",
+                "span": {
+                  "source": 1249943056337021614,
+                  "start": 82,
+                  "end": 93
+                }
+              }
+            }
+          ],
+          "locals": [],
+          "statements": [
+            {
+              "assertion": {
+                "condition": 4,
+                "message": 5,
+                "level": "error",
+                "provenance": {
+                  "origin": "source",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 105,
+                    "end": 111
+                  }
+                }
+              }
+            },
+            {
+              "assignment": {
+                "target": 0,
+                "rhs": 8,
+                "provenance": {
+                  "origin": "source",
+                  "span": {
+                    "source": 1249943056337021614,
+                    "start": 134,
+                    "end": 140
+                  }
+                }
+              }
+            }
+          ],
+          "external": null,
+          "derivatives": [],
+          "inline": "Unstated",
+          "declaration": {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 9,
+              "end": 162
+            }
+          }
+        }
+      ],
+      "domains": [],
+      "expressions": {
+        "nodes": [
+          {
+            "literal": {
+              "boolean": false
+            }
+          },
+          {
+            "literal": {
+              "integer": 0
+            }
+          },
+          {
+            "literal": {
+              "real": 0.0
+            }
+          },
+          {
+            "literal": {
+              "real": 0.0
+            }
+          },
+          {
+            "coordinate": {
+              "function_parameter": {
+                "function": 0,
+                "ordinal": 0
+              }
+            }
+          },
+          {
+            "literal": {
+              "string": "first fault"
+            }
+          },
+          {
+            "coordinate": {
+              "function_parameter": {
+                "function": 0,
+                "ordinal": 2
+              }
+            }
+          },
+          {
+            "coordinate": {
+              "function_parameter": {
+                "function": 0,
+                "ordinal": 1
+              }
+            }
+          },
+          {
+            "index": {
+              "base": 6,
+              "subscript_count": 1
+            }
+          },
+          {
+            "coordinate": {
+              "algebraic": 3
+            }
+          },
+          {
+            "coordinate": {
+              "input": 0
+            }
+          },
+          {
+            "coordinate": {
+              "input": 1
+            }
+          },
+          {
+            "coordinate": {
+              "input": 2
+            }
+          },
+          {
+            "call": {
+              "owner": 13,
+              "function": 0,
+              "output": 0,
+              "operand_count": 3,
+              "derivative": null
+            }
+          },
+          {
+            "binary": {
+              "operator": "subtract",
+              "lhs": 9,
+              "rhs": 13
+            }
+          }
+        ],
+        "provenance": [
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 186,
+              "end": 199
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 207,
+              "end": 216
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 224,
+              "end": 235
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 247,
+              "end": 253
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 112,
+              "end": 117
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 118,
+              "end": 131
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 142,
+              "end": 148
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 149,
+              "end": 150
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 142,
+              "end": 148
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 264,
+              "end": 265
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 272,
+              "end": 277
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 278,
+              "end": 279
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 280,
+              "end": 286
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 266,
+              "end": 287
+            }
+          },
+          {
+            "origin": "source",
+            "span": {
+              "source": 1249943056337021614,
+              "start": 264,
+              "end": 265
+            }
+          }
+        ],
+        "operands": [
+          10,
+          11,
+          12
+        ],
+        "subscripts": [
+          {
+            "kind": {
+              "index": 7
+            },
+            "provenance": {
+              "origin": "source",
+              "span": {
+                "source": 1249943056337021614,
+                "start": 149,
+                "end": 150
+              }
+            }
+          }
+        ]
+      },
+      "continuous_equation_operations": [
+        {
+          "residual": {
+            "residual": 14,
+            "provenance": {
+              "origin": "source",
+              "span": {
+                "source": 1249943056337021614,
+                "start": 264,
+                "end": 287
+              }
+            }
+          }
+        }
+      ],
+      "initialization_equation_operations": [],
+      "initial_discrete_values": [],
+      "initial_parameter_values": [],
+      "discrete_real_equations": [],
+      "discrete_value_owners": [],
+      "model_event_transactions": [],
+      "relations": [],
+      "conditions": [],
+      "roots": [],
+      "structured_roots": [],
+      "time_events": [],
+      "event_actions": [],
+      "clocks": [],
+      "clock_ownerships": [],
+      "previous_values": [],
+      "terminals": [],
+      "delays": []
+    }
+  },
+  "balance": {
+    "state_unknowns": 0,
+    "algebraic_unknowns": 0,
+    "output_unknowns": 1,
+    "discrete_real_unknowns": 0,
+    "discrete_value_unknowns": 0,
+    "continuous_equations": 1,
+    "discrete_real_equations": 0,
+    "discrete_value_definitions": 0
+  },
+  "selections": []
+}

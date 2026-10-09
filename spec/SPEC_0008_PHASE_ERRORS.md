@@ -70,6 +70,14 @@ the use site or by the owning spec. They MUST NOT mask errors, unresolved
 references, malformed IR, shape/type mismatches, or missing compiler analysis
 results.
 
+Compiled execution distinguishes backend/interface failures, source faults and
+numerical trial failures structurally. Optional entry points decline before execution;
+admitted errors propagate through owning transactions, with output committed only on
+success and issued source context retained. Existing numerical recovery, certified
+split replay and deferred event-source-fault policies remain authoritative; backend
+failures never enter those retries. Pure-call errors retain these categories and honest
+native index context. Error text cannot determine category or provenance.
+
 ### Option vs Result in Semantic Code
 
 `Option<T>` is allowed only when absence is a valid semantic outcome or when a

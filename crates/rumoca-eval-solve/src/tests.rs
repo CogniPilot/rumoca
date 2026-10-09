@@ -268,6 +268,7 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             span: fixture_span(),
             origin: "assert".to_string(),
             clock_owner: None,
+            assertion_projection: None,
         }],
         ..Default::default()
     };
@@ -359,6 +360,7 @@ fn event_message_fixture(
             span: fixture_span(),
             origin: "assert".to_string(),
             clock_owner: None,
+            assertion_projection: None,
         }],
         ..Default::default()
     }
@@ -452,7 +454,7 @@ fn eval_row_supports_solve_ir_table_bounds_and_next_event_ops() {
 fn eval_row_hydrates_serialized_external_table_data() {
     let table_id = 424_242.0;
     let model = rumoca_ir_solve::SolveModel {
-        parameters: vec![table_id],
+        parameters: vec![table_id].into(),
         external_tables: rumoca_ir_solve::ExternalTables::new(vec![
             rumoca_core::ExternalTableData {
                 id: table_id as u64,

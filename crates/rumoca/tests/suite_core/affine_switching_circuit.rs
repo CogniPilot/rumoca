@@ -151,7 +151,7 @@ end AmplifiedRoot;
             .unwrap();
         assert_eq!(roots.len(), 1);
         assert!((roots[0] - expected).abs() < 1e-10, "cold: {roots:?}");
-        let mut guess = model.initial_y.clone();
+        let mut guess = model.initial_y.to_vec();
         runtime
             .eval_state_derivatives_with_guess(
                 time,

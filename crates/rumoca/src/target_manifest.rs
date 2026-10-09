@@ -8,8 +8,6 @@ use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::TargetFile;
-#[cfg(test)]
-use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
     TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
@@ -88,6 +86,11 @@ pub(crate) fn invalidate_target_output(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| default_target_output_dir(&manifest, &identity.artifact_stem));
     if let Some(package) = &manifest.package {
+        if !package.inputs.is_empty() {
+            // Exact build provenance is not available before semantic compilation;
+            // the completed publisher owns replacement for compiled-input products.
+            return Ok(());
+        }
         let root = render_builtin_output_path(&package.root, &identity.artifact_stem)?;
         let root = safe_target_join(&out_dir, root.trim())?;
         let archive = package
@@ -154,6 +157,107 @@ pub fn compile_packaged_target(
     target: &str,
     output: PathBuf,
 ) -> Result<()> {
+    let (bundle, manifest, identity, renderer) = resolve_packaged_context(result, model, target)?;
+    compile_manifest_package(
+        result,
+        &renderer,
+        &bundle,
+        &manifest,
+        &output,
+        &identity.artifact_stem,
+    )
+}
+
+/// Prepare immutable rendered metadata/build inputs for a target with separately
+/// compiled assets. The returned object retains the exact artifact session and
+/// publishes only after the caller supplies all declared asset roles.
+#[cfg(feature = "fmu-packaging")]
+pub fn prepare_packaged_target(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+) -> Result<crate::packaging::PreparedTargetPackage> {
+    let (bundle, manifest, identity, renderer) = resolve_packaged_context(result, model, target)?;
+    prepare_manifest_package(
+        result,
+        &bundle,
+        &manifest,
+        &identity.artifact_stem,
+        &renderer,
+    )
+}
+
+#[cfg(feature = "fmu-packaging")]
+fn prepare_manifest_package(
+    result: &CompilationResult,
+    bundle: &TargetBundle,
+    manifest: &TargetManifest,
+    model_identifier: &str,
+    renderer: &ManifestRenderer,
+) -> Result<crate::packaging::PreparedTargetPackage> {
+    validate_manifest_package_policy(manifest)?;
+    let artifact = match renderer {
+        #[cfg(feature = "fmi")]
+        ManifestRenderer::Fmi { artifact, .. } => artifact.clone(),
+        ManifestRenderer::AlgorithmCode { artifact, .. } => artifact.clone(),
+        _ => crate::packaging::ArtifactSession::new(&manifest.files)?,
+    };
+    let render = |template: &str, context: &crate::packaging::ArtifactRenderContext<'_>| {
+        let source = bundle
+            .template_source(template)
+            .unwrap_or(std::borrow::Cow::Borrowed(template));
+        renderer.render_with_artifact(result, source.as_ref(), model_identifier, context)
+    };
+    let rendered = crate::packaging::render_web_with_session(&manifest.files, render, &artifact)?;
+    let checksums = std::collections::BTreeMap::new();
+    let context = crate::packaging::ArtifactRenderContext {
+        session: &artifact,
+        checksums: &checksums,
+    };
+    let assets = manifest
+        .assets
+        .iter()
+        .map(|asset| Ok((render(&asset.dest, &context)?, bundle.asset_files(asset)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let product = crate::packaging::PreparedTargetPackage::construct(
+        rendered,
+        assets,
+        manifest.package.as_ref().expect("resolved package"),
+        |path| render(path, &context),
+        artifact.clone(),
+    )?;
+    Ok(product)
+}
+
+/// Publish the exact sealed adapter result after checking its prepared inventory
+/// and declared slot. Generic archive assembly remains structural only.
+#[cfg(feature = "fmu-packaging")]
+pub fn publish_wasm_component(
+    prepared: crate::packaging::PreparedTargetPackage,
+    component: rumoca_exec_wasm::CompiledWasmComponent<crate::packaging::ArtifactSession>,
+    output: &Path,
+) -> Result<()> {
+    if !prepared.accepts_build(component.binding()) {
+        bail!("compiled component belongs to a foreign prepared inventory or slot");
+    }
+    let slot = component.binding().slot().to_owned();
+    prepared.publish(
+        std::collections::BTreeMap::from([(slot, component.into_bytes())]),
+        output,
+    )
+}
+
+#[cfg(feature = "fmu-packaging")]
+fn resolve_packaged_context<'model>(
+    result: &CompilationResult,
+    model: &'model str,
+    target: &str,
+) -> Result<(
+    TargetBundle,
+    TargetManifest,
+    TargetModelIdentity<'model>,
+    ManifestRenderer,
+)> {
     if raw_template_target(target) {
         bail!("raw template targets do not declare packages");
     }
@@ -173,14 +277,7 @@ pub fn compile_packaged_target(
         EmissionPolicy::reviewable(),
         validated,
     )?;
-    compile_manifest_package(
-        result,
-        &renderer,
-        &bundle,
-        &manifest,
-        &output,
-        &identity.artifact_stem,
-    )
+    Ok((bundle, manifest, identity, renderer))
 }
 
 /// Apply the `--phase`/`-ir`/unknown-target guards and load a built-in or
@@ -567,18 +664,21 @@ fn compile_manifest_package(
     out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
+    validate_manifest_package_policy(manifest)?;
     let declared = manifest
         .package
         .as_ref()
         .context("internal: packaged target has no [package] declaration")?;
-    for file in &manifest.files {
-        if file.mode.is_some() {
-            bail!(
-                "[package] targets do not support per-file `mode` (file '{}'): \
-                 the package writer owns the on-disk layout",
-                file.path
-            );
-        }
+    if !declared.inputs.is_empty() {
+        #[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
+        return crate::component_delivery::deliver(
+            prepare_manifest_package(result, bundle, manifest, model_identifier, renderer)?,
+            out_dir,
+        );
+        #[cfg(not(all(not(target_arch = "wasm32"), feature = "component-build")))]
+        bail!(
+            "target requires component-build, or explicit prepare_packaged_target and sealed publication"
+        );
     }
     let package_root = renderer
         .render(result, &declared.root, model_identifier)
@@ -588,10 +688,6 @@ fn compile_manifest_package(
         .archive
         .as_ref()
         .map(|archive| {
-            if archive.format != TargetArchiveFormat::Zip || archive.root != TargetArchiveRoot::Flat
-            {
-                bail!("Only flat zip archives are currently supported");
-            }
             let rendered = renderer
                 .render(result, &archive.path, model_identifier)
                 .context("Render [package.archive] path")?;
@@ -617,6 +713,29 @@ fn compile_manifest_package(
         &package,
         &package_root,
     )?;
+    Ok(())
+}
+
+#[cfg(feature = "fmu-packaging")]
+fn validate_manifest_package_policy(manifest: &TargetManifest) -> Result<()> {
+    let declared = manifest
+        .package
+        .as_ref()
+        .context("target has no package declaration")?;
+    for file in &manifest.files {
+        if file.mode.is_some() {
+            bail!(
+                "[package] targets do not support per-file `mode` (file '{}'): \
+                 the package writer owns the on-disk layout",
+                file.path
+            );
+        }
+    }
+    if declared.archive.as_ref().is_some_and(|archive| {
+        archive.format != TargetArchiveFormat::Zip || archive.root != TargetArchiveRoot::Flat
+    }) {
+        bail!("Only flat zip archives are currently supported");
+    }
     Ok(())
 }
 
@@ -817,10 +936,13 @@ fn resolve_manifest_renderer(
             let Some(component) = validated.fmi_component else {
                 bail!("FMI target renderer requires the component its capability gate checked");
             };
-            // Admission preserves the correlated kernel and proves the complete
-            // event profile before any FMI template receives its inventory.
-            let c_profile = component
+            // Deployment coverage and C execution admission retain the same
+            // correlated kernel before any template receives its inventory.
+            let deployment = component
                 .into_codegen_view()
+                .try_deployment(manifest.fmi_deployment.clone().unwrap_or_default())
+                .context("Admit checked FMI deployment capabilities")?;
+            let c_profile = deployment
                 .try_c()
                 .context("Project checked FMI component for a storage-backed target")?;
             let renderer =
@@ -955,8 +1077,36 @@ fn print_target_completion_message(
     Ok(())
 }
 
+#[cfg(all(test, feature = "fmu-packaging"))]
+mod deployment_admission_tests {
+    use super::*;
+
+    #[test]
+    fn fmi_deployment_refuses_published_string_before_creating_a_product() {
+        let source = r#"model UnmappedString parameter String label = "sensor"; output Real y; equation y = 1; end UnmappedString;"#;
+        let result = crate::Compiler::new()
+            .model("UnmappedString")
+            .compile_str(source, "UnmappedString.mo")
+            .unwrap();
+        render_target_files(&result, "UnmappedString", "fmi3", None)
+            .expect("the shared C kernel supports literal String metadata/access");
+        let output = tempfile::tempdir().unwrap();
+        let error = compile_packaged_target(
+            &result,
+            "UnmappedString",
+            "fmi-ls-wasm",
+            output.path().to_path_buf(),
+        )
+        .expect_err("the WIT deployment has no String accessor");
+        assert!(format!("{error:#}").contains("unsupported-feature:fmi-variable-access-string"));
+        assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
+    }
+}
+
 #[cfg(all(test, feature = "scheduled-sim"))]
 mod tests {
+    use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
+
     use super::*;
     use crate::Compiler;
 
@@ -1177,6 +1327,39 @@ end FmiUndelayedDecay;
     }
 
     /// The same rejection on the packaging entry point, with nothing written.
+    #[cfg(feature = "fmu-packaging")]
+    #[test]
+    fn native_and_prepared_packages_refuse_per_file_modes_before_writes() {
+        let result = compile_undelayed_target_demo();
+        for target in ["fmi3", "fmi-ls-wasm"] {
+            let (bundle, mut manifest, identity, renderer) =
+                resolve_packaged_context(&result, "FmiUndelayedDecay", target).unwrap();
+            manifest.files[0].mode = Some("644".into());
+            let error = prepare_manifest_package(
+                &result,
+                &bundle,
+                &manifest,
+                &identity.artifact_stem,
+                &renderer,
+            )
+            .err()
+            .expect("prepared package must reject per-file modes");
+            assert!(error.to_string().contains("do not support per-file `mode`"));
+            let work = tempfile::tempdir().unwrap();
+            let error = compile_manifest_package(
+                &result,
+                &renderer,
+                &bundle,
+                &manifest,
+                work.path(),
+                &identity.artifact_stem,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("do not support per-file `mode`"));
+            assert_eq!(std::fs::read_dir(work.path()).unwrap().count(), 0);
+        }
+    }
+
     #[cfg(feature = "fmu-packaging")]
     #[test]
     fn fmi_packaging_rejects_a_delayed_model_before_writing_any_output() {

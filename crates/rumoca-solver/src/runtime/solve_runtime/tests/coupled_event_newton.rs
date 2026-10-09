@@ -140,8 +140,8 @@ fn coupled_event_model(discrete_jvp: bool) -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0],
-        parameters: vec![0.0],
+        initial_y: vec![0.0].into(),
+        parameters: vec![0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(&mut model, implicit_jvp, "coupled_event_implicit_jvp.mo");

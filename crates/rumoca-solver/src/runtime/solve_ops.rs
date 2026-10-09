@@ -14,6 +14,15 @@ pub enum RuntimeSolveError {
         span: Option<rumoca_core::Span>,
     },
 
+    /// An admitted compiled operation executed and failed. This is not a
+    /// backend-admission decline or a numerical convergence failure.
+    #[error("compiled {context} execution failed: {message}")]
+    CompiledExecution {
+        context: &'static str,
+        message: String,
+        source_spans: Box<[rumoca_core::Span]>,
+    },
+
     #[error("unsupported solve-IR runtime model: {reason}")]
     UnsupportedModel { reason: String },
 
@@ -81,6 +90,22 @@ pub enum RuntimeSolveError {
     },
 }
 
+impl From<String> for RuntimeSolveError {
+    fn from(message: String) -> Self {
+        Self::CompiledExecution {
+            context: "backend",
+            message,
+            source_spans: Box::new([]),
+        }
+    }
+}
+
+impl From<&str> for RuntimeSolveError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 fn span_suffix(span: Option<rumoca_core::Span>) -> String {
     match span {
         Some(span) => format!(" @ {span:?}"),
@@ -107,6 +132,13 @@ impl RuntimeSolveError {
             | Self::RefreshTargetSingular { span, .. }
             | Self::NonFiniteValue { span, .. }
             | Self::SourceFault { span, .. } => *span,
+            Self::CompiledExecution { source_spans, .. } => {
+                let first = source_spans.first().copied()?;
+                source_spans
+                    .iter()
+                    .all(|span| *span == first)
+                    .then_some(first)
+            }
             _ => None,
         }
     }

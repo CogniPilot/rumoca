@@ -40,9 +40,12 @@ pub(crate) fn run(args: &VerifyFuzzArgs, root: &Path) -> Result<()> {
     }
     ensure_cargo_fuzz_available(root)?;
 
+    // Cargo-fuzz searches for a parent non-fuzz manifest even from this crate.
     let mut cmd = Command::new("cargo");
     cmd.arg("fuzz")
         .arg("run")
+        .arg("--fuzz-dir")
+        .arg(&fuzz_dir)
         .arg(&args.target)
         .arg("--")
         .arg(format!("-max_total_time={}", args.max_total_secs))

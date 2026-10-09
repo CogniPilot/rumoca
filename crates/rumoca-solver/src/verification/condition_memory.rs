@@ -55,7 +55,7 @@ fn seed_once(starts: &[f64]) -> SeedRun {
     let model = condition_memory_model(starts);
     let discrete_rhs = PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())
         .expect("bounded fixture should prepare discrete rows");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
     let reported = seed(&model, &discrete_rhs, &mut params);
     SeedRun {
         layout: ConditionLayout::new(starts.len()),
@@ -165,7 +165,7 @@ fn property_seeding_is_idempotent(starts: &[f64]) {
     let model = condition_memory_model(starts);
     let discrete_rhs = PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())
         .expect("bounded fixture should prepare discrete rows");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
     seed(&model, &discrete_rhs, &mut params);
     let after_first = params.clone();
     seed(&model, &discrete_rhs, &mut params);
@@ -222,7 +222,7 @@ fn property_complete_condition_memory_seed_contract(starts: &[f64]) {
     let model = condition_memory_model(starts);
     let discrete_rhs = PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())
         .expect("bounded fixture should prepare discrete rows");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
     let reported = seed(&model, &discrete_rhs, &mut params);
     let after_first = params.clone();
     seed(&model, &discrete_rhs, &mut params);

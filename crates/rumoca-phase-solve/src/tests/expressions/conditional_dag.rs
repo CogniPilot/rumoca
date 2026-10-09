@@ -12,9 +12,10 @@ fn diamond_expression<'dae>(
     let input = expressions.at(at).function_parameter(input)?;
     let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
     let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
-    let array = expressions.at(at).array([input, zero])?;
-    // Array maximum forces scalar AD expansion, as in the long SSA chain.
-    let mut value = expressions.at(at).builtin(dae::PureBuiltin::Max, [array])?;
+    let array = expressions.at(at).array([input, one])?;
+    // Minimum still requires scalar AD; maximum now has a compact typed rule.
+    // Keep exercising the scalar SSA path independently of that maximum fix.
+    let mut value = expressions.at(at).builtin(dae::PureBuiltin::Min, [array])?;
     for _ in 0..depth {
         let guard = expressions
             .at(at)
@@ -32,7 +33,7 @@ fn diamond_expression<'dae>(
     Ok(value)
 }
 
-fn diamond_model(depth: usize) -> dae::Dae {
+fn diamond_model(depth: usize, time_input: bool) -> dae::Dae {
     let source = TestSource::new("function f input Real x; output Real y; end f; Real z; z=f(z);");
     let at = source.at(0, 60);
     dae::Dae::construct(source.map, |model| {
@@ -63,7 +64,12 @@ fn diamond_model(depth: usize) -> dae::Dae {
             let value = expressions
                 .at(at)
                 .coordinate(dae::CoordinateInput::Algebraic(variable))?;
-            let call = expressions.at(at).call(function, 0, [value])?;
+            let input = if time_input {
+                expressions.at(at).coordinate(dae::CoordinateInput::Time)?
+            } else {
+                value
+            };
+            let call = expressions.at(at).call(function, 0, [input])?;
             expressions
                 .at(at)
                 .binary(dae::BinaryOperator::Subtract, value, call)
@@ -98,7 +104,7 @@ impl SolveVisitor for OperationCensus {
 }
 
 fn lowered_diamond_size(depth: usize) -> usize {
-    let model = diamond_model(depth);
+    let model = diamond_model(depth, false);
     let package = lower_solve_package(&model).unwrap();
     let mut census = OperationCensus::default();
     census.visit_solve_problem(&package.problem).unwrap();
@@ -110,6 +116,13 @@ fn lowered_diamond_size(depth: usize) -> usize {
     else {
         panic!("one scalar residual block expected");
     };
+    assert!(
+        rows.programs()
+            .iter()
+            .flatten()
+            .all(|operation| !matches!(operation, LinearOp::PureCall { .. })),
+        "a Y-dependent Min(array) call retains scalar differentiation"
+    );
     assert_eq!(
         eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.5], &[]),
         [-f64::from(u32::try_from(depth).unwrap())]
@@ -130,4 +143,55 @@ fn shared_function_expression_diamonds_grow_with_the_dag() {
         large < 512,
         "eight diamonds must not expand a branching tree: {large}"
     );
+}
+
+#[test]
+fn a_continuous_call_with_y_independent_inputs_needs_only_its_primal_owner() {
+    let model = diamond_model(2, true);
+    let package = lower_solve_package(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = package.problem.continuous.residual.nodes.as_slice()
+    else {
+        panic!("one residual block");
+    };
+    assert!(package.pure_calls.owners()[0].directional().is_none());
+    assert_eq!(
+        rows.programs()
+            .iter()
+            .flatten()
+            .filter(|operation| matches!(operation, LinearOp::PureCall { .. }))
+            .count(),
+        1,
+        "the Min(array) owner has no directional relation, but time has zero Y tangent"
+    );
+    assert_eq!(
+        eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.5], &[]),
+        [2.5]
+    );
+    let programs = crate::lower_scalar_program_block_ad(rows.programs()).unwrap();
+    assert!(
+        programs
+            .iter()
+            .flatten()
+            .all(|operation| !matches!(operation, LinearOp::PureCallDirectional { .. }))
+    );
+    let derivatives = rumoca_ir_solve::ScalarProgramBlock::with_program_spans(
+        programs,
+        rows.program_spans().to_vec(),
+    )
+    .unwrap();
+    let mut output = [0.0];
+    rumoca_eval_solve::eval_scalar_program_block_with_context(
+        &derivatives,
+        &[0.5],
+        &[],
+        0.0,
+        rumoca_eval_solve::RowEvalContext {
+            seed: Some(&[3.0]),
+            pure_calls: Some(&package.pure_calls),
+            ..Default::default()
+        },
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(output, [3.0], "only the residual's LHS carries the Y seed");
 }

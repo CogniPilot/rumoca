@@ -38,14 +38,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let call = self.registers(form.scalar_count, span)?;
-        self.ops.push(solve::LinearOp::PureCall {
+        self.emit(solve::LinearOp::PureCall {
             dst_start: call,
             input_starts: input_starts.into_boxed_slice(),
             site,
-        });
+        })?;
         let target = self.pack_expression(form.target_expression)?;
         let residual = self.registers(form.scalar_count, span)?;
-        self.ops.push(solve::LinearOp::TensorBinary {
+        self.emit(solve::LinearOp::TensorBinary {
             dst_start: residual,
             op: solve::BinaryOp::Sub,
             lhs_start: target,
@@ -54,15 +54,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             lhs_stride: 1,
             rhs_stride: 1,
             lanes: 1,
-        });
-        self.ops.push(solve::LinearOp::StoreOutputRange {
+        })?;
+        self.emit(solve::LinearOp::StoreOutputRange {
             start: residual,
             count: form.scalar_count,
             stride: 1,
-        });
-        Ok(Some(solve::prune_dead_constants(std::mem::take(
-            &mut self.ops,
-        ))))
+        })?;
+        Ok(Some(solve::prune_dead_constants(self.finish_operations()?)))
     }
 
     /// `count` consecutive fresh registers, returning the first.

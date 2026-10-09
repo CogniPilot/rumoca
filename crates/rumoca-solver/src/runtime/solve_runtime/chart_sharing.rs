@@ -83,7 +83,7 @@ impl CompiledSolveExpression for ReplacedExpression {
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         match self.replaced.local(program) {
             Some(local) => {
                 self.replacement
@@ -102,7 +102,7 @@ impl CompiledSolveExpression for ReplacedExpression {
         p: &[f64],
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         match self.replaced.local(program) {
             Some(local) => {
                 self.replacement
@@ -121,13 +121,13 @@ impl CompiledSolveExpression for ReplacedExpression {
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.primary.call(y, p, t, external_tables, out)?;
         let mut scratch = self.scratch.borrow_mut();
         scratch.resize(self.replaced.scatter.len(), 0.0);
         self.replacement
             .call(y, p, t, external_tables, scratch.as_mut_slice())?;
-        self.replaced.overwrite(&scratch, out)
+        self.replaced.overwrite(&scratch, out).map_err(Into::into)
     }
 }
 
@@ -148,7 +148,7 @@ impl CompiledSolveJacobianExpression for ReplacedJacobian {
         inputs: solve_eval::JacobianEvalInputs<'_>,
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         match self.replaced.local(program) {
             Some(local) => {
                 self.replacement
@@ -168,13 +168,13 @@ impl CompiledSolveJacobianExpression for ReplacedJacobian {
         seed: &[f64],
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.primary.call(y, p, t, seed, external_tables, out)?;
         let mut scratch = self.scratch.borrow_mut();
         scratch.resize(self.replaced.scatter.len(), 0.0);
         self.replacement
             .call(y, p, t, seed, external_tables, scratch.as_mut_slice())?;
-        self.replaced.overwrite(&scratch, out)
+        self.replaced.overwrite(&scratch, out).map_err(Into::into)
     }
 
     fn call_program_output(
@@ -185,7 +185,7 @@ impl CompiledSolveJacobianExpression for ReplacedJacobian {
         t: f64,
         seed: &[f64],
         external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         match self.replaced.local(program) {
             Some(local) => self.replacement.call_program_output(
                 (local, offset),

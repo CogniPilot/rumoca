@@ -37,7 +37,9 @@ fn a_whole_input_batch_restarts_once_and_invalid_batches_change_nothing() {
         .solve_layout
         .input_scalar_names
         .push("v".to_string());
-    model.parameters.push(3.0);
+    let mut values = model.parameters.to_vec();
+    values.push(3.0);
+    model.parameters = values.into();
     let model = refresh_owned(model);
     let mut retained = retained_branch_component(&model);
     let plugin = FaultyPlugin::new(PluginFault::Healthy);

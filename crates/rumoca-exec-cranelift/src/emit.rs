@@ -2596,6 +2596,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 capture_start,
                 program,
             } => self.lower_function_conditional(dst_start, capture_start, &program),
+            LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
+                "assertion observation requires a checked event-action adapter".to_string(),
+            )),
             LinearOp::PureCall {
                 dst_start,
                 input_starts,
@@ -7147,6 +7150,9 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
 
 fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     match op {
+        LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
+            "assertion observation is outside the simple row contract".to_string(),
+        )),
         LinearOp::Const { dst, value } => Ok(SimpleOp::Const { dst, value }),
         LinearOp::LoadTime { dst } => Ok(SimpleOp::LoadTime { dst }),
         LinearOp::LoadY { dst, index } => Ok(SimpleOp::LoadY {
@@ -7246,6 +7252,9 @@ fn checked_strided_register(
 )]
 fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
     match op {
+        LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
+            "assertion observation requires a checked event-action adapter".to_string(),
+        )),
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
@@ -7822,6 +7831,7 @@ fn checked_range_last_reg(base: u32, count: usize, kind: &str) -> Result<u32, Co
 
 fn dst_reg(op: LinearOp) -> Option<usize> {
     match op {
+        LinearOp::PureCallObservation { .. } => None,
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
@@ -7883,6 +7893,9 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
 )]
 fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
     match op {
+        LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
+            "assertion observation requires a checked event-action adapter".to_string(),
+        )),
         LinearOp::PureCall {
             input_starts, site, ..
         } => {

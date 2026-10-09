@@ -1,0 +1,82 @@
+{
+  "snapshot_source": "4f888798039a7cfeb88fa71456e274880832b0b2",
+  "base": "0b249f0f725431613c25bb56e40fbbe0df54c4d2",
+  "scope": "Dependency-complete compact tensor compiler and checked FMI runtime progress snapshot for draft CI regression measurement.",
+  "source_changes_from_snapshot": [
+    "Relocate three test fixture groups from verification archives into owning crate test directories; retain their exact bytes and assertions.",
+    "Replace the construction-evidence fixture module path override with its ordinary Rust module layout.",
+    "Point the deployment-admission evidence citation to this compact receipt."
+  ],
+  "archive_policy": "Retain baseline repository evidence; omit new generated code, oracle downloads, traces and bulk qualification archives. Original qualification remains bound to the frozen snapshot source.",
+  "prepublication_checks": {
+    "fixture_byte_comparisons": "PASS: all ten relocated fixture and baseline files match the frozen source",
+    "source_closure": "PASS: source differs only by the three fixture-reader relocations, ten relocated data files and the evidence citation",
+    "diff_whitespace": "PASS: git diff --check origin/main...HEAD; licensed upstream schema bytes are preserved by their explicit vendored attributes",
+    "commit_trailer": "Signed-off-by; no assistant or coauthor trailer",
+    "local_cargo": "NOT RUN: shared-host disk headroom remains constrained; existing CI performs fresh integrated validation"
+  },
+  "qualified_source_evidence": [
+    {
+      "source": "399f502d71d9328fcb31efb068f1984e4c46a58d",
+      "integration_receipt": "a938d953a",
+      "scope": "All 82 runtime, error and retained pure-call delta files match the qualified source after integration; this is a source comparison, not fresh integrated execution.",
+      "results": {
+        "solver_library_tests_passed": 607,
+        "primary_evaluator_solver_simulator_clippy_libs_and_tests": "PASS",
+        "execution_library_clippy": "PASS"
+      }
+    },
+    {
+      "source": "5f28b7b65",
+      "regression_source": "ba5ea7b9d",
+      "scope": "Immutable call-argument inventory reuse preserves query-dependent projection behavior.",
+      "results": {
+        "original_runtime_regression": "FAIL: 32 argument cache lookups versus 1 expected",
+        "evaluator_library_tests_passed": 121,
+        "evaluator_all_targets_clippy": "PASS",
+        "workspace_fmt": "PASS"
+      },
+      "partial_pipeline_measurement": {
+        "measurement_source": "2511d400783ac7e91f719c7c66692c33c7b96691",
+        "receipt_commit": "805e1b21c",
+        "runs": 1,
+        "frontend_seconds": 6.899379975,
+        "raw_structural_seconds": 4.884600833,
+        "guardian_elapsed_seconds": 11.854770072,
+        "eight_census_fields_unchanged": true,
+        "scope": "Frontend and raw structural analysis only; excludes final Solve, native WASM and FMU construction"
+      }
+    },
+    {
+      "source": "995741137",
+      "facade_source": "1507b53f0",
+      "scope": "Neutral deployment accessor admission precedes unchanged consuming C execution-profile checks.",
+      "results": {
+        "solve_ir_library_tests_passed": 700,
+        "private_deployment_rustdoc_tests_passed": 1,
+        "facade_profile_refusal_tests_passed": 1,
+        "existing_template_and_profile_tests_passed": 9,
+        "ir_and_codegen_all_targets_clippy": "PASS",
+        "minimal_facade_clippy": "PASS"
+      }
+    }
+  ],
+  "draft_ci_scope": [
+    "Workspace lint, tests, rustdoc and architecture/spec gates",
+    "Full MSL and OMC trace comparison through four shards and the merged baseline ratchet",
+    "Separate ModelicaTest semantic gate",
+    "Pinned modelica_models aggregate compile and SO2/SE2 assertion smoke",
+    "Template runtime, Kani, WASM and browser/package gates"
+  ],
+  "pending_before_merge": [
+    "Fresh integrated focused qualification after the fixture relocation",
+    "Tier 1 fixed 20-model canary delta with the prescribed phase budgets",
+    "All required CI gates and approving review"
+  ],
+  "product_limitations": [
+    "Native WASM runtime assembly and compact final Solve lowering remain incomplete.",
+    "No full SLAM FMU, native WIT lifecycle or browser trajectory qualification is claimed.",
+    "No under-10-second complete compilation, ten-times-realtime runtime or cohort parity number is claimed."
+  ],
+  "baseline_promoted": false
+}

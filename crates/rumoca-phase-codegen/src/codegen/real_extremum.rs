@@ -192,11 +192,12 @@ pub(crate) fn mlir_call(minimum: bool, dst: &str, lhs: &str, rhs: &str) -> Strin
 /// artifacts apply a Real `min` or `max` at all.
 pub(super) const USES_CONTEXT_KEY: &str = "uses_real_extremum";
 
-/// Whether `problem` or `artifacts` apply a Real `min` or `max` anywhere,
-/// including nested fold, conditional and tensor programs.
+/// Whether the rendered problem, artifacts or canonical pure-call owners apply
+/// Real extrema, including typed nested regions and directional bodies.
 pub(super) fn used_by(
     problem: &rumoca_ir_solve::SolveProblem,
     artifacts: &rumoca_ir_solve::SolveArtifacts,
+    pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
 ) -> bool {
     use rumoca_ir_solve::{BinaryOp, LinearOp, LinearOpSliceKind, SolveVisitor};
 
@@ -204,6 +205,40 @@ pub(super) fn used_by(
 
     impl SolveVisitor for Uses {
         type Error = std::convert::Infallible;
+
+        fn visit_typed_operation(
+            &mut self,
+            program: &rumoca_ir_solve::TypedProgram,
+            _index: usize,
+            op: &rumoca_ir_solve::SolveSpannedOperation,
+        ) -> Result<(), Self::Error> {
+            use rumoca_ir_solve::{
+                SolveBinaryOperator, SolveOperation, SolveReductionOperator, SolveScalarType,
+            };
+            let destination = match op.operation() {
+                SolveOperation::Binary {
+                    destination,
+                    operator: SolveBinaryOperator::Min | SolveBinaryOperator::Max,
+                    ..
+                }
+                | SolveOperation::BroadcastBinary {
+                    destination,
+                    operator: SolveBinaryOperator::Min | SolveBinaryOperator::Max,
+                    ..
+                }
+                | SolveOperation::Reduce {
+                    destination,
+                    operator: SolveReductionOperator::Minimum | SolveReductionOperator::Maximum,
+                    ..
+                } => destination,
+                _ => return Ok(()),
+            };
+            self.0 |= matches!(
+                program.register_types()[destination.index()].element_type(),
+                SolveScalarType::Real { .. }
+            );
+            Ok(())
+        }
 
         fn visit_linear_op(
             &mut self,
@@ -229,57 +264,10 @@ pub(super) fn used_by(
     let mut uses = Uses(false);
     let Ok(()) = uses.visit_solve_problem(problem);
     let Ok(()) = uses.visit_solve_artifacts(artifacts);
+    if let Some(table) = pure_calls {
+        let Ok(()) = uses.visit_pure_call_table(table);
+    }
     uses.0
-}
-
-/// Typed pure-call owners are retained outside the scalar problem. Every
-/// issued owner is inspected, including its directional body and nested
-/// regions; nested calls name owners in this same table.
-pub(super) fn used_by_calls(table: &rumoca_ir_solve::SolvePureCallTable) -> bool {
-    table.owners().iter().any(|owner| {
-        typed_program_uses(owner.body())
-            || owner
-                .directional()
-                .is_some_and(|body| typed_program_uses(body.body()))
-    })
-}
-
-fn typed_program_uses(program: &rumoca_ir_solve::TypedProgram) -> bool {
-    use rumoca_ir_solve::{SolveBinaryOperator as Binary, SolveOperation as Op, SolveScalarType};
-
-    program
-        .operations()
-        .iter()
-        .any(|operation| match operation.operation() {
-            Op::Binary {
-                destination,
-                operator: Binary::Min | Binary::Max,
-                ..
-            }
-            | Op::BroadcastBinary {
-                destination,
-                operator: Binary::Min | Binary::Max,
-                ..
-            } => matches!(
-                program.register_types()[destination.index()].element_type(),
-                SolveScalarType::Real { .. }
-            ),
-            Op::Conditional {
-                if_true, if_false, ..
-            } => typed_program_uses(if_true.body()) || typed_program_uses(if_false.body()),
-            Op::Map { body, .. } => typed_program_uses(body.body()),
-            Op::Fold {
-                transition,
-                continuation,
-                ..
-            } => {
-                typed_program_uses(transition.body())
-                    || continuation
-                        .as_ref()
-                        .is_some_and(|body| typed_program_uses(body.body()))
-            }
-            _ => false,
-        })
 }
 
 /// The template function `real_extremum_prelude(language)`: the helper

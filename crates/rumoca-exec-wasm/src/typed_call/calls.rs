@@ -13,6 +13,7 @@ impl Emitter<'_> {
             owner,
             arguments,
             destinations,
+            ..
         } = operation.operation()
         else {
             unreachable!("checked call dispatch")

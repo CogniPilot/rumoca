@@ -21,7 +21,7 @@ pub trait CompiledSolveExpression {
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         Ok(false)
     }
 
@@ -35,27 +35,21 @@ pub trait CompiledSolveExpression {
         _p: &[f64],
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         Ok(None)
     }
 
-    /// Output `offset` of each program at `coordinates`, in order, into
-    /// `out`: the values [`Self::call_program_output`] yields one call at a
-    /// time. `false` declines exactly when one of those calls would.
+    /// Optional complete bulk entry point. The default declines before any
+    /// source operation executes; implementations preflight complete coverage
+    /// and publish all outputs only after successful admitted execution.
     fn call_program_outputs_at(
         &self,
-        coordinates: &[(usize, usize)],
-        (y, p, t): (&[f64], &[f64], f64),
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<bool, String> {
-        for (&coordinate, value) in coordinates.iter().zip(out.iter_mut()) {
-            match self.call_program_output(coordinate, y, p, t, external_tables)? {
-                Some(output) => *value = output,
-                None => return Ok(false),
-            }
-        }
-        Ok(true)
+        _coordinates: &[(usize, usize)],
+        _inputs: (&[f64], &[f64], f64),
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _out: &mut [f64],
+    ) -> Result<bool, crate::RuntimeSolveError> {
+        Ok(false)
     }
 
     fn call(
@@ -65,7 +59,7 @@ pub trait CompiledSolveExpression {
         t: f64,
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String>;
+    ) -> Result<(), crate::RuntimeSolveError>;
 }
 
 /// Backend-neutral callable for a checked forward-mode Solve-IR expression.
@@ -86,7 +80,7 @@ pub trait CompiledSolveJacobianExpression {
         _inputs: solve_eval::JacobianEvalInputs<'_>,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         Ok(false)
     }
 
@@ -98,7 +92,7 @@ pub trait CompiledSolveJacobianExpression {
         seed: &[f64],
         external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String>;
+    ) -> Result<(), crate::RuntimeSolveError>;
 
     /// Evaluate one output of one already compiled program. `coordinate` is
     /// `(program index, output offset)`, as issued by the prepared scalar view,
@@ -112,27 +106,20 @@ pub trait CompiledSolveJacobianExpression {
         _t: f64,
         _seed: &[f64],
         _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         Ok(None)
     }
 
-    /// Output `offset` of each program at `coordinates`, in order, into
-    /// `out`: the values [`Self::call_program_output`] yields one call at a
-    /// time. `false` declines exactly when one of those calls would.
+    /// Optional complete bulk entry point. The default declines before any
+    /// source operation executes; implementations preflight complete coverage
+    /// and publish all outputs only after successful admitted execution.
     fn call_program_outputs_at(
         &self,
-        coordinates: &[(usize, usize)],
-        inputs: solve_eval::JacobianEvalInputs<'_>,
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<bool, String> {
-        for (&coordinate, value) in coordinates.iter().zip(out.iter_mut()) {
-            let solve_eval::JacobianEvalInputs { y, p, t, seed } = inputs;
-            match self.call_program_output(coordinate, y, p, t, seed, external_tables)? {
-                Some(output) => *value = output,
-                None => return Ok(false),
-            }
-        }
-        Ok(true)
+        _coordinates: &[(usize, usize)],
+        _inputs: solve_eval::JacobianEvalInputs<'_>,
+        _external_tables: &[rumoca_core::ExternalTableData],
+        _out: &mut [f64],
+    ) -> Result<bool, crate::RuntimeSolveError> {
+        Ok(false)
     }
 }

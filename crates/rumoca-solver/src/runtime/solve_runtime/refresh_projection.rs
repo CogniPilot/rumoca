@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod admitted_tests;
+
 mod grouped_jacobian;
 mod grouped_residual;
 mod prepared_jacobian;
@@ -48,6 +51,9 @@ struct CompiledTornSweep {
     residual_outputs: Box<[Option<usize>]>,
     /// Total outputs of `residual_block`, sizing its dense output buffer.
     residual_len: usize,
+    source_spans: Box<[rumoca_core::Span]>,
+    affected_y: Box<[usize]>,
+    rollback: RefCell<Vec<f64>>,
 }
 
 pub(super) struct RefreshSlotArgs<'a> {
@@ -379,7 +385,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 point: (y, p, t),
             } => {
                 if let Some(&index) = self.block_indices.get(block_index) {
-                    self.runtime.begin_block_residual_split(index, y, p, t);
+                    self.runtime.begin_block_residual_split(index, y, p, t)?;
                 }
                 KernelAnswer::Done
             }
@@ -476,11 +482,25 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref()
-            && compiled
-                .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-                .is_ok()
-        {
+        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref() {
+            let map_error = |error| {
+                admitted_compute_error(
+                    "refresh implicit residual",
+                    &self.runtime.model.problem.continuous.implicit_rhs,
+                    error,
+                )
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        y,
+                        p,
+                        t,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             self.runtime
                 .report_nonfinite_implicit_residual_inputs(t, y, out);
             return Ok(());
@@ -503,18 +523,26 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let compiled = self.jacobian_v.compiled(self.runtime);
-        if let Some(compiled) = compiled
-            && compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
+        if let Some(compiled) = compiled {
+            let map_error = |error| {
+                admitted_compiled_error(
+                    "refresh implicit JVP",
+                    self.jacobian_v.scalar().block().program_spans(),
+                    error,
                 )
-                .is_ok()
-        {
+            };
+            admitted_output_call(&self.runtime.compiled_output_scratch, out, |output| {
+                compiled
+                    .call(
+                        y,
+                        p,
+                        t,
+                        v,
+                        self.runtime.model.external_tables.as_slice(),
+                        output,
+                    )
+                    .map_err(map_error)
+            })?;
             return Ok(());
         }
         self.jacobian_v
@@ -554,21 +582,22 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         else {
             return Ok(None);
         };
-        if let Some(value) = self.runtime.eval_split_residual_row(program_idx, (y, p, t)) {
+        if let Some(value) = self
+            .runtime
+            .eval_split_residual_row(program_idx, (y, p, t))?
+        {
             self.runtime
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
             return Ok(Some(value));
         }
         if let Some(compiled) = &self.runtime.compiled_implicit_rhs
-            && let Some(value) = compiled
-                .call_program_output(
-                    (program_idx, output_offset),
-                    y,
-                    p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                )
-                .map_err(RuntimeSolveError::solve_ir)?
+            && let Some(value) = compiled.call_program_output(
+                (program_idx, output_offset),
+                y,
+                p,
+                t,
+                self.runtime.model.external_tables.as_slice(),
+            )?
         {
             self.runtime
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
@@ -623,16 +652,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             return Ok(Some(value));
         }
         if let Some(compiled) = self.jacobian_v.compiled(self.runtime)
-            && let Some(value) = compiled
-                .call_program_output(
-                    (jvp_program_idx, output_offset),
-                    y,
-                    p,
-                    t,
-                    v,
-                    self.runtime.model.external_tables.as_slice(),
-                )
-                .map_err(RuntimeSolveError::solve_ir)?
+            && let Some(value) = compiled.call_program_output(
+                (jvp_program_idx, output_offset),
+                y,
+                p,
+                t,
+                v,
+                self.runtime.model.external_tables.as_slice(),
+            )?
         {
             return Ok(Some(value));
         }
@@ -868,12 +895,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .call(selected, y, p, t, self.runtime.row_eval_context())
                 .map(Some)
                 .map_err(|error| {
-                    RuntimeSolveError::solve_ir_with_span(
-                        error,
+                    admitted_compiled_error(
+                        "projection target",
                         self.runtime
                             .implicit_scalar_rhs
                             .block()
-                            .program_span(program_idx),
+                            .program_span(program_idx)
+                            .as_slice(),
+                        error,
                     )
                 });
         }
@@ -892,12 +921,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                     &mut output,
                 )
                 .map_err(|error| {
-                    RuntimeSolveError::solve_ir_with_span(
-                        error,
+                    admitted_compiled_error(
+                        "projection target",
                         self.runtime
                             .implicit_scalar_rhs
                             .block()
-                            .program_span(program_idx),
+                            .program_span(program_idx)
+                            .as_slice(),
+                        error,
                     )
                 })?;
             return Ok(Some(output[0]));
@@ -954,9 +985,11 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         #[cfg(debug_assertions)]
         let entry_y = y.to_vec();
         let mut raw = Vec::with_capacity(tearing.residual_rows.len());
-        let compiled_status = entry.compiled.as_ref().and_then(|compiled| {
-            self.eval_compiled_torn_sweep(compiled, tearing, y, p, t, &mut raw)
-        });
+        let compiled_status = entry
+            .compiled
+            .as_ref()
+            .map(|compiled| self.eval_compiled_torn_sweep(compiled, tearing, y, p, t, &mut raw))
+            .transpose()?;
         let status = match compiled_status {
             Some(status) => status,
             None => self
@@ -1090,11 +1123,9 @@ impl RefreshProjectionModel<'_> {
         Ok(())
     }
 
-    /// Run one compiled torn sweep, or `None` to fall back to the interpreted
-    /// batch. A failed compiled call may leave causal targets partially
-    /// written; that needs no restore, because the fallback rewrites every
-    /// causal target in order from the untouched tear values before anything
-    /// reads them.
+    /// The admitted sweep owns its mutable target transaction. Only a
+    /// successful schedule and residual call publish values; mathematical
+    /// singular-target decline keeps the ordinary torn-solve policy.
     fn eval_compiled_torn_sweep(
         &self,
         compiled: &CompiledTornSweep,
@@ -1103,27 +1134,70 @@ impl RefreshProjectionModel<'_> {
         p: &[f64],
         t: f64,
         raw: &mut Vec<Option<f64>>,
-    ) -> Option<TornSweepStatus> {
-        let tables = self.runtime.model.external_tables.as_slice();
-        compiled.schedule.call(y, p, t, tables).ok()?;
-        // Mirror the per-row decline decision in causal order: the isolator
-        // programs poison a singular step to a non-finite value, so the first
-        // non-finite target is exactly where the per-row path declines.
-        for step in &tearing.causal_steps {
-            if !y.get(step.y_index).copied().unwrap_or(f64::NAN).is_finite() {
-                return Some(TornSweepStatus::Declined);
+    ) -> Result<TornSweepStatus, RuntimeSolveError> {
+        let mut incoming = compiled.rollback.borrow_mut();
+        resize_runtime_values(
+            &mut incoming,
+            compiled.affected_y.len(),
+            0.0,
+            "compiled torn target rollback",
+        )?;
+        for (&index, value) in compiled.affected_y.iter().zip(incoming.iter_mut()) {
+            *value = y[index];
+        }
+        let result = self.call_compiled_torn_sweep(compiled, tearing, y, p, t, raw);
+        if result.is_err() {
+            for (&index, &value) in compiled.affected_y.iter().zip(incoming.iter()) {
+                y[index] = value;
             }
         }
-        let mut out = vec![0.0; compiled.residual_len];
+        result
+    }
+
+    fn call_compiled_torn_sweep(
+        &self,
+        compiled: &CompiledTornSweep,
+        tearing: &solve::BlockTearing,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        raw: &mut Vec<Option<f64>>,
+    ) -> Result<TornSweepStatus, RuntimeSolveError> {
+        let tables = self.runtime.model.external_tables.as_slice();
+        compiled.schedule.call(y, p, t, tables).map_err(|error| {
+            admitted_compiled_error("torn assignment schedule", &compiled.source_spans, error)
+        })?;
+        for step in &tearing.causal_steps {
+            if !y.get(step.y_index).copied().unwrap_or(f64::NAN).is_finite() {
+                return Ok(TornSweepStatus::Declined);
+            }
+        }
+        let mut out = self.runtime.compiled_output_scratch.borrow_mut();
+        resize_runtime_values(
+            &mut out,
+            compiled.residual_len,
+            0.0,
+            "compiled torn residual outputs",
+        )?;
         compiled
             .residual_block
             .call(y, p, t, tables, &mut out)
-            .ok()?;
+            .map_err(|error| {
+                admitted_compiled_error("torn residual", &compiled.source_spans, error)
+            })?;
+        support::reserve_runtime_vec_capacity(
+            raw,
+            compiled.residual_outputs.len().saturating_sub(raw.len()),
+            "compiled torn residual commit",
+        )?;
         raw.clear();
-        for position in compiled.residual_outputs.iter() {
-            raw.push(position.and_then(|index| out.get(index).copied()));
-        }
-        Some(TornSweepStatus::Completed)
+        raw.extend(
+            compiled
+                .residual_outputs
+                .iter()
+                .map(|position| position.and_then(|index| out.get(index).copied())),
+        );
+        Ok(TornSweepStatus::Completed)
     }
 
     /// One residual row's sweep value under the per-row policy: report the
@@ -1186,9 +1260,20 @@ impl SolveRuntime {
                 "torn_residual_block",
                 backend.compile_expression(&composite.residual_block),
             )?;
+            let source_spans = tearing
+                .causal_steps
+                .iter()
+                .filter_map(|step| self.implicit_scalar_rhs.row_output_position(step.row))
+                .filter_map(|(program, _)| self.implicit_scalar_rhs.block().program_span(program))
+                .chain(composite.residual_block.program_spans().iter().copied())
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
             Some(CompiledTornSweep {
                 schedule,
                 residual_block,
+                source_spans,
+                affected_y: composite.assignment_targets.into_boxed_slice(),
+                rollback: RefCell::new(Vec::new()),
                 residual_len: composite.residual_block.stored_output_count(),
                 residual_outputs: composite.residual_outputs.into_boxed_slice(),
             })
@@ -1328,8 +1413,13 @@ impl SolveRuntime {
                 block_index,
                 "projection-stage seed was unavailable; projecting its block from the incoming coordinate: {error}"
             );
-            if self.project_refresh_stage(block_index, plan, args).is_ok() {
-                return Ok(true);
+            match self.project_refresh_stage(block_index, plan, args) {
+                Ok(()) => return Ok(true),
+                Err(error @ RuntimeSolveError::CompiledExecution { .. }) => {
+                    args.solver_y.copy_from_slice(incoming);
+                    return Err(error);
+                }
+                Err(_) => {}
             }
         }
         fallbacks::note_fallback(

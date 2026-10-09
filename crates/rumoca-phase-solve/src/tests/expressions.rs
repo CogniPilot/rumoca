@@ -5,7 +5,9 @@
 //! row that uses it.
 
 mod conditional_dag;
+mod continuous_tuples;
 mod derivative_tensor_sharing;
+mod discrete_tuples;
 mod function_calls;
 mod unary_reuse;
 

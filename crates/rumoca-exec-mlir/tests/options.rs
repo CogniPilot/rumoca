@@ -122,9 +122,9 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
+        initial_y: vec![1.0].into(),
         solver_nominals: vec![1.0],
-        parameters: Vec::new(),
+        parameters: Default::default(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: vec!["x".to_string()],
         visible_value_rows: ScalarProgramBlock::default(),

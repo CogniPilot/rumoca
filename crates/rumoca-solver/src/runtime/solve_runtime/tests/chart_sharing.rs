@@ -41,7 +41,7 @@ impl Interpreted {
         (y, p, t): (&[f64], &[f64], f64),
         seed: Option<&[f64]>,
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         let context = RowEvalContext {
             seed,
@@ -63,7 +63,7 @@ impl CompiledSolveExpression for Interpreted {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         let mut values = vec![0.0; self.block.len()];
         self.eval((y, p, t), None, &mut values)?;
         out.clear();
@@ -78,7 +78,7 @@ impl CompiledSolveExpression for Interpreted {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.eval((y, p, t), None, out)
     }
 }
@@ -92,7 +92,7 @@ impl CompiledSolveJacobianExpression for Interpreted {
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.eval((y, p, t), Some(seed), out)
     }
 }
@@ -108,7 +108,7 @@ impl CompiledSolveProjectionJacobian for BlockJacobian {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         out.fill(self.0);
         Ok(())
     }
@@ -214,7 +214,7 @@ fn offset_model(slopes: [f64; 3], offsets: [f64; 3]) -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 3],
+        initial_y: vec![0.0; 3].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(&mut model, tangents, "chart_sharing_jvp.mo");

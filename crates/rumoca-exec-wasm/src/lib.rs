@@ -1,5 +1,10 @@
 //! WASM execution adapter for prepared Solve-IR row kernels.
 
+mod component_build;
+pub use component_build::CompiledWasmComponent;
+#[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
+pub use component_build::build_wasm_component;
+
 mod emit;
 mod exact_assignments;
 mod native_program;
@@ -31,6 +36,8 @@ use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
 pub enum WasmCompileError {
     Backend(String),
     Input(String),
+    TypedSource(TypedCallFault),
+    GatherSource(NativeGatherFault),
 }
 
 impl std::fmt::Display for WasmCompileError {
@@ -38,6 +45,8 @@ impl std::fmt::Display for WasmCompileError {
         match self {
             Self::Backend(msg) => write!(f, "wasm backend error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
+            Self::TypedSource(fault) => write!(f, "WASM source operation fault: {fault:?}"),
+            Self::GatherSource(fault) => write!(f, "WASM source gather fault: {fault:?}"),
         }
     }
 }

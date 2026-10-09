@@ -156,11 +156,20 @@ pub(super) fn derive(
         let registers =
             scalar_tuple::derive(producers.view(), start, &target_range, &dependencies)?;
         (scalar_tuple::pack(&mut values, &registers)?, 1)
+    } else if exact_target_load(producers.view(), start, &target_range) {
+        // The residual is the owned target range itself: the equation
+        // `target - (+0)` after exact folding, so every cell is assigned +0.
+        let zero = next_register(&values)?;
+        values.push(LinearOp::Const {
+            dst: zero,
+            value: 0.0,
+        });
+        (zero, 0)
     } else {
         isolated_value(producers.view(), start, count, &target_range, &dependencies)?
     };
     let value = if stride == 0 {
-        let start = next_register(prefix)?;
+        let start = next_register(&values)?;
         values.push(LinearOp::TensorFill {
             dst_start: start,
             value_start: value,

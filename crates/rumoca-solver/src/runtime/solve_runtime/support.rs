@@ -198,3 +198,71 @@ pub(super) fn visible_value_index_error(
         "{context} for visible name `{name}` reference index {index}, but only {len} values are available"
     ))
 }
+
+pub(super) fn admitted_compiled_error(
+    context: &'static str,
+    source_spans: &[rumoca_core::Span],
+    error: RuntimeSolveError,
+) -> RuntimeSolveError {
+    match error {
+        RuntimeSolveError::CompiledExecution {
+            message,
+            source_spans: issued,
+            ..
+        } => RuntimeSolveError::CompiledExecution {
+            context,
+            message,
+            source_spans: if issued.is_empty() {
+                source_spans.into()
+            } else {
+                issued
+            },
+        },
+        RuntimeSolveError::SolveIr { message, span } => RuntimeSolveError::SolveIr {
+            message,
+            span: span.or_else(|| unique_span(source_spans)),
+        },
+        RuntimeSolveError::SourceFault { message, span } => RuntimeSolveError::SourceFault {
+            message,
+            span: span.or_else(|| unique_span(source_spans)),
+        },
+        error => error,
+    }
+}
+
+fn unique_span(spans: &[rumoca_core::Span]) -> Option<rumoca_core::Span> {
+    let first = spans.first().copied()?;
+    spans.iter().all(|span| *span == first).then_some(first)
+}
+
+pub(super) fn admitted_output_call(
+    scratch: &std::cell::RefCell<Vec<f64>>,
+    out: &mut [f64],
+    call: impl FnOnce(&mut [f64]) -> Result<(), RuntimeSolveError>,
+) -> Result<(), RuntimeSolveError> {
+    let mut scratch = scratch.borrow_mut();
+    resize_runtime_values(&mut scratch, out.len(), 0.0, "compiled output transaction")?;
+    call(&mut scratch)?;
+    out.copy_from_slice(&scratch);
+    Ok(())
+}
+
+pub(super) fn admitted_compute_error(
+    context: &'static str,
+    source: &solve::ComputeBlock,
+    error: RuntimeSolveError,
+) -> RuntimeSolveError {
+    let mut source_spans = Vec::new();
+    for node in &source.nodes {
+        match node {
+            solve::ComputeNode::ScalarPrograms(block) => {
+                source_spans.extend_from_slice(block.program_spans());
+            }
+            solve::ComputeNode::MatMul { span, .. }
+            | solve::ComputeNode::LinSolve { span, .. }
+            | solve::ComputeNode::Map { span, .. }
+            | solve::ComputeNode::AffineStencil { span, .. } => source_spans.push(*span),
+        }
+    }
+    admitted_compiled_error(context, &source_spans, error)
+}

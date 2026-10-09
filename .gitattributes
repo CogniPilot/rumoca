@@ -7,3 +7,5 @@
 # Preserve upstream formatting in the pinned dependency; review its explicit
 # source patch through vendor/diffsol/RUMOCA_PATCH.md.
 vendor/diffsol/** -whitespace linguist-vendored
+# Preserve the unchanged, licensed upstream FMI schema fixture bytes.
+crates/rumoca/tests/fixtures/fmi-ls-wasm-schema/** -whitespace linguist-vendored

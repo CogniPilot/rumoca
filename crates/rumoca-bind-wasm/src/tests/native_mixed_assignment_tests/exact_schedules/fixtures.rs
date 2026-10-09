@@ -15,7 +15,7 @@ pub(super) fn cases(model: &solve::SolveModel) -> Vec<Case> {
             .enumerate()
             .map(|(index, value)| value + scale * (index as f64 + 1.0))
             .collect(),
-        p: model.parameters.clone(),
+        p: model.parameters.to_vec(),
         time,
     };
     let cases = vec![varied(0.0, 0.0), varied(0.25, 0.5), varied(-0.75, 3.0)];

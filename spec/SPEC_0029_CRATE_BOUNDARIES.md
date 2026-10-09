@@ -285,7 +285,9 @@ Generic documented artifact commands may hash rendered bytes, validate a
 declared schema, and assemble the declared graph without understanding eFMI or
 another target format. Generic on-disk package assembly is owned by the
 `fmu-packaging` feature and MUST NOT depend on scheduled simulation, transports,
-input devices, viewers, or process control.
+input devices, viewers, or process control. Its immutable build inventory,
+slot request and sealed adapter-result ownership are cataloged in SPEC_0041 §4;
+a type-only adapter dependency enables no tool factory.
 
 Target assets follow the same ownership rule. Builtin target discovery embeds
 arbitrary assets declared beneath a target directory; external targets resolve

@@ -1,6 +1,8 @@
+mod assertions;
 mod linear_solve;
 mod native;
 mod number;
+mod observation;
 mod payload;
 mod tensor;
 #[cfg(test)]
@@ -15,10 +17,13 @@ use rumoca_ir_solve::{
     SolveValueType, TypedProgram,
 };
 
+pub use assertions::TypedAssertionFailure;
+use assertions::{AssertionStop, InvocationCompletion, ObservedAssertion};
 use number::{
     eval_binary_element, eval_binary_typed, eval_compare_typed, eval_convert_typed,
     eval_unary_typed,
 };
+pub use observation::{AssertionInvocationEvaluation, AssertionReport, eval_assertion_invocation};
 use payload::Payload;
 
 #[cfg(test)]
@@ -141,6 +146,9 @@ impl std::error::Error for TypedValueConstructionError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypedProgramEvalError {
+    AssertionFailed {
+        failure: TypedAssertionFailure,
+    },
     UnknownOwner {
         owner: SolvePureCallOwnerId,
     },
@@ -181,6 +189,7 @@ impl TypedProgramEvalError {
     pub const fn source_span(&self) -> Option<Span> {
         match self {
             Self::UnknownOwner { .. } => None,
+            Self::AssertionFailed { failure } => Some(failure.source_span()),
             Self::InvalidArgument { provenance, .. }
             | Self::InvalidCheckedProgram { provenance, .. }
             | Self::IntegerArithmetic { provenance, .. }
@@ -195,6 +204,7 @@ impl TypedProgramEvalError {
 impl std::fmt::Display for TypedProgramEvalError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AssertionFailed { .. } => formatter.write_str("source function assertion failed"),
             Self::LinearSolve { reason, .. } => {
                 write!(formatter, "tensor linear solve failed: {reason}")
             }
@@ -240,7 +250,7 @@ pub fn eval_pure_call(
         .owner(owner)
         .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
     let chain = RecursionChain::ROOT.enter(table, owner.id(), owner.provenance())?;
-    eval_owner(table, owner, arguments, chain)
+    eval_owner(table, owner, arguments, chain)?.into_complete()
 }
 
 /// Evaluate the construction-issued compact directional relation of one
@@ -255,7 +265,7 @@ pub fn eval_pure_call_directional(
         .owner(owner)
         .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
     let chain = RecursionChain::ROOT.enter(table, owner.id(), owner.provenance())?;
-    eval_directional_owner(table, owner, arguments, chain)
+    eval_directional_owner(table, owner, arguments, chain)?.into_complete()
 }
 
 /// The owner of one evaluated frame and its position in a SOLVE-C62
@@ -311,31 +321,31 @@ enum EvaluationMode {
     Directional,
 }
 
-fn eval_owner(
-    table: &SolvePureCallTable,
-    owner: &SolvePureCallOwner,
+fn eval_owner<'model>(
+    table: &'model SolvePureCallTable,
+    owner: &'model SolvePureCallOwner,
     arguments: &[TypedValue],
     chain: RecursionChain,
-) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     eval_owner_in_scope(table, owner, arguments, EvaluationMode::Primal, chain)
 }
 
-fn eval_directional_owner(
-    table: &SolvePureCallTable,
-    owner: &SolvePureCallOwner,
+fn eval_directional_owner<'model>(
+    table: &'model SolvePureCallTable,
+    owner: &'model SolvePureCallOwner,
     arguments: &[TypedValue],
     chain: RecursionChain,
-) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     eval_owner_in_scope(table, owner, arguments, EvaluationMode::Directional, chain)
 }
 
-fn eval_owner_in_scope(
-    table: &SolvePureCallTable,
-    owner: &SolvePureCallOwner,
+fn eval_owner_in_scope<'model>(
+    table: &'model SolvePureCallTable,
+    owner: &'model SolvePureCallOwner,
     arguments: &[TypedValue],
     mode: EvaluationMode,
     chain: RecursionChain,
-) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     let (inputs, outputs, body) = match mode {
         EvaluationMode::Primal => (owner.inputs(), owner.outputs(), owner.body()),
         EvaluationMode::Directional => {
@@ -355,13 +365,23 @@ fn eval_owner_in_scope(
     };
     validate_arguments(inputs, arguments, owner.provenance())?;
     let mut storage = FrameStorage::default();
-    let mut frame = EvalFrame::new(table, body, &mut storage, mode, chain);
+    let mut frame = EvalFrame::new(table, body, &mut storage, mode, chain, owner.id());
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
-    frame.run()?;
+    frame.run();
+    frame.retain_invocation(owner, arguments);
+    if let Some(error) = frame.fault.take() {
+        return Ok(InvocationCompletion::Fault {
+            error,
+            observations: frame.observations,
+        });
+    }
+    if let Some(stop) = frame.stopped.take() {
+        return Ok(InvocationCompletion::Stopped(stop));
+    }
     let output_start = arguments.len();
-    outputs
+    let values = outputs
         .iter()
         .enumerate()
         .map(|(output, _)| {
@@ -375,7 +395,11 @@ fn eval_owner_in_scope(
                     provenance: owner.provenance(),
                 })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(InvocationCompletion::Complete {
+        values,
+        observations: frame.observations,
+    })
 }
 
 fn validate_arguments(
@@ -397,14 +421,15 @@ fn validate_arguments(
     }
 }
 
-fn eval_region(
-    table: &SolvePureCallTable,
-    region: &SolveProgramRegion,
+fn eval_region<'model>(
+    table: &'model SolvePureCallTable,
+    region: &'model SolveProgramRegion,
     arguments: Vec<TypedValue>,
     storage: &mut FrameStorage,
     mode: EvaluationMode,
     chain: RecursionChain,
-) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    owner: SolvePureCallOwnerId,
+) -> Result<InvocationCompletion<'model, Vec<TypedValue>>, TypedProgramEvalError> {
     if region.inputs().len() != arguments.len()
         || region
             .inputs()
@@ -417,13 +442,22 @@ fn eval_region(
             provenance: region.provenance(),
         });
     }
-    let mut frame = EvalFrame::new(table, region.body(), storage, mode, chain);
+    let mut frame = EvalFrame::new(table, region.body(), storage, mode, chain, owner);
     let output_start = arguments.len();
     for (slot, value) in frame.storage.slots.iter_mut().zip(arguments) {
         *slot = Some(value);
     }
-    frame.run()?;
-    region
+    frame.run();
+    if let Some(error) = frame.fault.take() {
+        return Ok(InvocationCompletion::Fault {
+            error,
+            observations: frame.observations,
+        });
+    }
+    if let Some(stop) = frame.stopped.take() {
+        return Ok(InvocationCompletion::Stopped(stop));
+    }
+    let values = region
         .outputs()
         .iter()
         .enumerate()
@@ -438,7 +472,11 @@ fn eval_region(
                     provenance: region.provenance(),
                 })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(InvocationCompletion::Complete {
+        values,
+        observations: frame.observations,
+    })
 }
 
 /// Register and slot storage one frame runs in. A loop evaluates its body once
@@ -461,6 +499,10 @@ impl FrameStorage {
 }
 
 struct EvalFrame<'model, 'scope> {
+    owner: SolvePureCallOwnerId,
+    stopped: Option<AssertionStop<'model>>,
+    fault: Option<TypedProgramEvalError>,
+    observations: Vec<ObservedAssertion<'model>>,
     table: &'model SolvePureCallTable,
     program: &'model TypedProgram,
     mode: EvaluationMode,
@@ -477,9 +519,14 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         storage: &'scope mut FrameStorage,
         mode: EvaluationMode,
         chain: RecursionChain,
+        owner: SolvePureCallOwnerId,
     ) -> Self {
         storage.reset(program);
         Self {
+            owner,
+            stopped: None,
+            fault: None,
+            observations: Vec::new(),
             table,
             program,
             mode,
@@ -489,12 +536,16 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         }
     }
 
-    fn run(&mut self) -> Result<(), TypedProgramEvalError> {
+    fn run(&mut self) {
         for (index, operation) in self.program.operations().iter().enumerate() {
             self.operation = index;
-            self.eval_operation(operation.operation(), operation.provenance())?;
+            if let Err(error) = self.eval_operation(operation.operation(), operation.provenance()) {
+                self.fault = Some(error);
+            }
+            if self.stopped.is_some() || self.fault.is_some() {
+                break;
+            }
         }
-        Ok(())
     }
 
     // SPEC_0021: exhaustive dispatch over the closed typed operation vocabulary.
@@ -502,10 +553,25 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     #[allow(clippy::too_many_lines)]
     fn eval_operation(
         &mut self,
-        operation: &SolveOperation,
+        operation: &'model SolveOperation,
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         match operation {
+            SolveOperation::CheckAssertion {
+                predicate_output,
+                message_outputs,
+                condition,
+                captures,
+                destinations,
+                message,
+            } => self.eval_assertion(
+                (*predicate_output, message_outputs),
+                *condition,
+                captures,
+                destinations,
+                message,
+                provenance,
+            ),
             SolveOperation::Constant { destination, value } => {
                 self.write(*destination, TypedValue::scalar(value), provenance)
             }
@@ -733,6 +799,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 owner,
                 arguments,
                 destinations,
+                ..
             } => self.eval_call(*owner, arguments, destinations, provenance),
             SolveOperation::Native {
                 body,
@@ -761,7 +828,10 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         initial: &[SolveRegisterId],
         captures: &[SolveRegisterId],
         destinations: &[SolveRegisterId],
-        (transition, continuation): (&SolveProgramRegion, Option<&SolveProgramRegion>),
+        (transition, continuation): (
+            &'model SolveProgramRegion,
+            Option<&'model SolveProgramRegion>,
+        ),
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         let mut carried = initial
@@ -779,27 +849,39 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         for tuple in tuples {
             // MLS §11.2.3: a bounded `while` stops before the first pass whose
             // condition is false, with the tuple that pass would have read.
-            if let Some(continuation) = continuation
-                && !self.fold_continues(continuation, &carried, &captures, provenance)?
-            {
-                break;
+            let continues = match continuation {
+                Some(continuation) => {
+                    self.fold_continues(continuation, &carried, &captures, &tuple, provenance)?
+                }
+                None => Some(true),
+            };
+            match continues {
+                None => return Ok(()),
+                Some(false) => break,
+                Some(true) => {}
             }
             let mut arguments = carried;
             arguments.extend(captures.iter().cloned());
             arguments.extend(
                 tuple
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|value| self.fold_binder(value, provenance))
                     .collect::<Result<Vec<_>, _>>()?,
             );
-            carried = eval_region(
+            let completed = eval_region(
                 self.table,
                 transition,
                 arguments,
                 &mut storage,
                 self.mode,
                 self.chain,
+                self.owner,
             )?;
+            let Some(updated) = self.accept_completion_at(completed, Some(&tuple)) else {
+                return Ok(());
+            };
+            carried = updated;
         }
         if carried.len() != destinations.len() {
             return invalid("transfer compact fold outputs", provenance);
@@ -814,24 +896,29 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     /// region evaluated on the carried tuple and captures.
     fn fold_continues(
         &mut self,
-        continuation: &SolveProgramRegion,
+        continuation: &'model SolveProgramRegion,
         carried: &[TypedValue],
         captures: &[TypedValue],
+        point: &[i64],
         provenance: Span,
-    ) -> Result<bool, TypedProgramEvalError> {
+    ) -> Result<Option<bool>, TypedProgramEvalError> {
         let mut arguments = carried.to_vec();
         arguments.extend(captures.iter().cloned());
-        let predicate = eval_region(
+        let completed = eval_region(
             self.table,
             continuation,
             arguments,
             &mut FrameStorage::default(),
             self.mode,
             self.chain,
+            self.owner,
         )?;
+        let Some(predicate) = self.accept_completion_at(completed, Some(point)) else {
+            return Ok(None);
+        };
         match predicate.as_slice() {
-            [value] if value.elements() == [SolveValueKind::Boolean(false)] => Ok(false),
-            [value] if value.elements() == [SolveValueKind::Boolean(true)] => Ok(true),
+            [value] if value.elements() == [SolveValueKind::Boolean(false)] => Ok(Some(false)),
+            [value] if value.elements() == [SolveValueKind::Boolean(true)] => Ok(Some(true)),
             _ => invalid("evaluate compact fold continuation", provenance),
         }
     }
@@ -841,7 +928,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         domain: &StructuredIndexDomain,
         captures: &[SolveRegisterId],
         destination: SolveRegisterId,
-        body: &SolveProgramRegion,
+        body: &'model SolveProgramRegion,
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         let captures = captures
@@ -858,18 +945,23 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             let mut arguments = captures.clone();
             arguments.extend(
                 tuple
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .map(|value| self.fold_binder(value, provenance))
                     .collect::<Result<Vec<_>, _>>()?,
             );
-            let outputs = eval_region(
+            let completed = eval_region(
                 self.table,
                 body,
                 arguments,
                 &mut storage,
                 self.mode,
                 self.chain,
+                self.owner,
             )?;
+            let Some(outputs) = self.accept_completion_at(completed, Some(&tuple)) else {
+                return Ok(());
+            };
             let [output] = outputs.as_slice() else {
                 return invalid("collect compact map output", provenance);
             };
@@ -896,8 +988,8 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         condition: SolveRegisterId,
         captures: &[SolveRegisterId],
         destinations: &[SolveRegisterId],
-        if_true: &SolveProgramRegion,
-        if_false: &SolveProgramRegion,
+        if_true: &'model SolveProgramRegion,
+        if_false: &'model SolveProgramRegion,
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         let selected = if scalar_boolean(self.read(condition, provenance)?, provenance)? {
@@ -909,14 +1001,18 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .iter()
             .map(|capture| self.read_owned(*capture, provenance))
             .collect::<Result<Vec<_>, _>>()?;
-        let outputs = eval_region(
+        let completed = eval_region(
             self.table,
             selected,
             captures,
             &mut FrameStorage::default(),
             self.mode,
             self.chain,
+            self.owner,
         )?;
+        let Some(outputs) = self.accept_completion(completed) else {
+            return Ok(());
+        };
         if outputs.len() != destinations.len() {
             return invalid("transfer structured region outputs", provenance);
         }
@@ -1189,11 +1285,14 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .owner(owner)
             .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
         let chain = self.chain.enter(self.table, owner, provenance)?;
-        let outputs = match self.mode {
+        let completed = match self.mode {
             EvaluationMode::Primal => eval_owner(self.table, called, &arguments, chain)?,
             EvaluationMode::Directional => {
                 eval_directional_owner(self.table, called, &arguments, chain)?
             }
+        };
+        let Some(outputs) = self.accept_completion(completed) else {
+            return Ok(());
         };
         self.transfer_call_outputs(outputs, destinations, provenance)
     }

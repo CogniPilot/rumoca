@@ -1,5 +1,5 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import copy %}
+{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary, domain_check %}
 {%- macro bounds(index, extent) -%}
 if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% endmacro %}
@@ -49,6 +49,26 @@ for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) for (
 for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) { double sum=0.0; for (size_t k=0; k<{{ inner }}; ++k) sum+=r{{ op.lhs }}[i*{{ inner }}+k]*r{{ op.rhs }}[k*{{ columns }}+j]; {{ dst }}[i*{{ columns }}+j]=sum; }
 {% elif op.operation == "cross" -%}
 {% for i in range(3) %}{{ dst }}[{{ i }}]=r{{ op.lhs }}[{{ (i+1)%3 }}]*r{{ op.rhs }}[{{ (i+2)%3 }}]-r{{ op.lhs }}[{{ (i+2)%3 }}]*r{{ op.rhs }}[{{ (i+1)%3 }}];{% endfor %}
+{% elif op.operation == "reduce" -%}
+{% set count = program.register_types[op.operand].scalar_count -%}
+{% set operator = {"sum":"add", "product":"multiply", "minimum":"min", "maximum":"max", "all":"and"}[op.operator] -%}
+{#- Checked tensors are nonempty; preserve the canonical first-element seed
+    and source order rather than introducing an extra identity operation. -#}
+{% if count == 0 -%}
+{{ fail("unsupported-feature:fmi.c.pure-call: empty typed tensor reduction") }}
+{% else -%}
+{{ dst }}[0]=r{{ op.operand }}[0];
+for (size_t k=1; k<{{ count }}; ++k) {
+{% set a = dst ~ "[0]" -%}
+{% set b = "r" ~ op.operand ~ "[k]" -%}
+{% if ty.scalar.kind == "integer" -%}
+{{ integer_binary(operator, a, a, b) -}}
+{{ domain_check(dst, ty) -}}
+{% else -%}
+{{ dst }}[0]={{ binary(operator, a, b, ty) }};
+{% endif -%}
+}
+{% endif -%}
 {% elif op.operation in ["project_element", "project_element_dynamic", "update_element"] -%}
 {% set shape = program.register_types[op.aggregate].dimensions -%}
 { size_t index=0;

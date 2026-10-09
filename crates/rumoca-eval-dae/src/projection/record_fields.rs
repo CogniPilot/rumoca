@@ -118,12 +118,12 @@ impl<'dae> Projection<'_, 'dae> {
                 arguments,
                 ..
             } => self.function_call_record_field(
+                expression,
                 function,
                 output,
                 arguments,
                 field,
                 scalar_index,
-                node.provenance().span(),
             ),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.record_field(definition.rhs(), field, scalar_index)

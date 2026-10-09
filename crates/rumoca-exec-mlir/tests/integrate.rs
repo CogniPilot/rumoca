@@ -140,9 +140,9 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
+        initial_y: vec![1.0].into(),
         solver_nominals: vec![1.0],
-        parameters: Vec::new(),
+        parameters: Default::default(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: vec!["x".to_string()],
         visible_value_rows: ScalarProgramBlock::default(),
@@ -183,7 +183,7 @@ fn mlir_euler_decay_matches_analytical() {
     let t_end = 1.0f64;
     let steps = (t_end / dt).round() as usize;
 
-    let mut y = compiled.initial_y.clone();
+    let mut y = compiled.initial_y.to_vec();
     let mut t = 0.0f64;
 
     for _ in 0..steps {
