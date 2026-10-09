@@ -49,11 +49,35 @@ impl From<TrajectoryError> for SimulationDiagnosticError {
     }
 }
 
-/// The RK45 plugin every trajectory system is advanced with.
+/// The numerical plugin a trajectory system is advanced with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrajectoryPlugin {
+    /// The explicit Dormand-Prince plugin, the default.
+    #[default]
+    Rk45,
+    /// The implicit BDF plugin, which declares no continuous-extension order, so
+    /// the adjoint checkpoint contract cannot be proved for it.
+    #[cfg(feature = "solver-diffsol")]
+    Bdf,
+}
+
+impl TrajectoryPlugin {
+    fn build(
+        self,
+        setup: rumoca_solver::fmi_me::MeNumericalSetup,
+    ) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend> {
+        match self {
+            Self::Rk45 => (crate::rk45::integrator_factory().build)(setup),
+            #[cfg(feature = "solver-diffsol")]
+            Self::Bdf => rumoca_solver_diffsol::model_exchange_integrator(setup),
+        }
+    }
+}
+
 fn build_plugin(
     setup: rumoca_solver::fmi_me::MeNumericalSetup,
 ) -> Box<dyn rumoca_solver::fmi_me::MeIntegratorBackend> {
-    (crate::rk45::integrator_factory().build)(setup)
+    TrajectoryPlugin::Rk45.build(setup)
 }
 
 /// A model lowered once and prepared for trajectory sensitivities.
@@ -173,10 +197,22 @@ impl TrajectorySession {
         objective: &TrajectoryObjective,
         adjoint: bool,
     ) -> Result<ObjectiveGradient, SimulationDiagnosticError> {
+        self.gradient_with(objective, adjoint, TrajectoryPlugin::Rk45)
+    }
+
+    /// The same gradient advanced by `plugin`. A plugin that declares no
+    /// continuous-extension order is refused by the adjoint before any step.
+    pub fn gradient_with(
+        &self,
+        objective: &TrajectoryObjective,
+        adjoint: bool,
+        plugin: TrajectoryPlugin,
+    ) -> Result<ObjectiveGradient, SimulationDiagnosticError> {
+        let build = |setup| plugin.build(setup);
         let gradient = if adjoint {
-            adjoint_objective_gradient(&self.problem, &build_plugin, objective)
+            adjoint_objective_gradient(&self.problem, &build, objective)
         } else {
-            forward_objective_gradient(&self.problem, &build_plugin, objective)
+            forward_objective_gradient(&self.problem, &build, objective)
         }?;
         Ok(gradient)
     }

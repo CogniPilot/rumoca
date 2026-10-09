@@ -30,13 +30,16 @@ On startup the child writes a `hello` event with the protocol version and a
 receipt of the execution engine the session selected:
 
 ```json
-{"event":"hello","protocol_version":1,"engine":{"engine":"cranelift","refusal":null}}
+{"event":"hello","protocol_version":1,"engine":{"engine":"cranelift","refusal":null,"declined":[]}}
 ```
 
 `engine.engine` is `interpreter`, `cranelift`, or `wasm_program`. `refusal` is
 `null` unless compiled execution was refused for a request that allowed it, in
 which case it is `no_continuous_states` or `external_tables` and the engine is
-`interpreter`.
+`interpreter`. `declined` lists each kind of program the selected backend
+refused to compile, with its reason and a count; those programs run in the
+interpreter. Compilation is lazy, so `declined` reflects the session at the time
+the receipt is read.
 
 ### Commands
 

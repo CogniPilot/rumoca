@@ -22,16 +22,16 @@ pub use rumoca_solver::{
     DataSeries, DiffsolMethod, HotpathStatsSnapshot, ObjectiveGradient, ProjectionFallback,
     ProjectionFallbackCounts, ProjectionFallbackReport, ProjectionSite, RunningKind, RunningTerm,
     RuntimeProgressSnapshot, RuntimeStopSchedule, RuntimeTraceContext, SimBackend,
-    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeRefusal, SimOptions,
-    SimPacingMode, SimResult, SimSolverMode, SimVariableMeta, SimulationRequestSummary,
-    SimulationRunMetrics, SolverDeadlineGuard, TerminalTerm, TimeoutBudget, TimeoutExceeded,
-    TrajectoryObjective, build_simulation_metrics_value, build_simulation_payload,
-    is_solver_timeout_panic, panic_on_expired_solver_deadline, projection_fallbacks,
-    projection_fallbacks_value, reset_projection_fallbacks, reset_step_counts, run_timeout_result,
-    run_timeout_step, run_timeout_step_result, runtime_progress_snapshot,
-    shared_value_proof_failures, step_counts, stop_time_reached_with_tol, time_advanced_with_tol,
-    time_match_with_tol, trace_runtime_done, trace_runtime_progress, trace_runtime_start,
-    trace_runtime_step_fail, trace_runtime_timeout,
+    SimExecutionEngine, SimExecutionPolicy, SimExecutionReceipt, SimNativeDecline,
+    SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimVariableMeta,
+    SimulationRequestSummary, SimulationRunMetrics, SolverDeadlineGuard, TerminalTerm,
+    TimeoutBudget, TimeoutExceeded, TrajectoryObjective, build_simulation_metrics_value,
+    build_simulation_payload, is_solver_timeout_panic, panic_on_expired_solver_deadline,
+    projection_fallbacks, projection_fallbacks_value, reset_projection_fallbacks,
+    reset_step_counts, run_timeout_result, run_timeout_step, run_timeout_step_result,
+    runtime_progress_snapshot, shared_value_proof_failures, step_counts,
+    stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol, trace_runtime_done,
+    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
 mod build_timing;
@@ -131,7 +131,8 @@ pub mod rk45;
 mod trajectory_sensitivity;
 #[cfg(feature = "solver-rk45")]
 pub use trajectory_sensitivity::{
-    TrajectorySession, trajectory_objective_gradient_for_dae, trajectory_sensitivity_for_dae,
+    TrajectoryPlugin, TrajectorySession, trajectory_objective_gradient_for_dae,
+    trajectory_sensitivity_for_dae,
 };
 
 #[cfg(all(
