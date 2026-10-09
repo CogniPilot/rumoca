@@ -89,7 +89,17 @@
         "fault": "Same row 2293/formal derivative target/NaN/norm inf as CI; no resource stop",
         "guard": {"seconds": 250.920061769, "peak_rss_kib": 2837728, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192}
       },
-      "next_gate": "Trace the earliest producing operation on the bound negative control. No tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; the second completed test genuinely reproduced the fault."
+      "first_nonfinite_prefix_replay": {
+        "scope": "Independent scalar replay of the exact emitted prefix at the diagnostic run's printed finite inputs; no compiler/runtime repair or trajectory qualification",
+        "model_wire_sha256": "14052766e67fa0086049bb598a33770b8b3364a7a3cf562ee9e1ede02fae5046",
+        "trace_sha256": "dc219611e0b14cab56622bc6ab66b5f5a45cd03b18970e42f776f18a3addfe38",
+        "residual_row": 2293, "program_index": 705, "output_offset": 0, "target_y_index": 2089,
+        "target_name": "$formal_derivative.1.b3.frame_b.R.T[1,3]",
+        "first_nonfinite": {"operation_index": 42, "operator": "Div", "destination": 50, "numerator": 0, "denominator": 0},
+        "finite_input_fact": "b3.frame_a.R.T is diag(0,1,1); b3.frame_b.R.T is identity. Existing trace hook's j5 row label is rejected because it confuses residual-row and Y indices.",
+        "remaining_owner": "UNRESOLVED: prior rotation refresh/initialization supplied the singular input; locating 0/0 does not justify changing Div semantics"
+      },
+      "next_gate": "Trace the responsible rotation refresh/initialization on the bound negative control. No arithmetic, tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; the second completed test genuinely reproduced the fault."
     },
     {
       "job": "Template Runtime (fmi)",
