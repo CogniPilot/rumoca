@@ -425,7 +425,6 @@ typedef unsigned int fmi3ValueReference;
 typedef enum {{ fmi3OK = 0, fmi3Discard = 2, fmi3Error = 3 }} fmi3Status;
 typedef void (*fmi3LogMessageCallback)(void*, fmi3Status, fmi3String, fmi3String);
 enum {{ fmi3False = 0, fmi3True = 1 }};
-#define RMC_API
 {model_h}
 {assign_c}
 {kernel}

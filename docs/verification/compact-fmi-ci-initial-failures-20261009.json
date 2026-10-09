@@ -102,7 +102,14 @@
       "prepared_fix": "Retain emitted sources/model.h with the rendered fixture and consume its exact layout, workspace and observer declarations in the driver. Keep the existing isolated test FMI ABI prelude, replacing only its vendor include; remove duplicated ModelInstance/enums/storage-count arguments. Numerical rollback, state refresh and BLT-order controls remain unchanged.",
       "independent_success": "Earlier cli_target_fmi group: 44 passed / 0 failed / 44 filtered; no qualification of this four-test group",
       "governing_specs": ["SPEC_0029 shared syntax owner and DRY", "SPEC_0033", "SPEC_0050"],
-      "next_gate": "Actual fmi3_exact_runtime_ four-test execution on the prepared header migration"
+      "local_header_migration_negative_control": {
+        "source": "caf623 ROOT reproduction tree containing the reviewed e1eda header migration",
+        "raw_log_sha256": "443e6bb16d58baf16823a6fb06e5fdd5ab82616ea3cfa473e15d56b30e828e59",
+        "result": {"passed": 0, "failed": 4, "filtered_out": 84, "test_seconds": 0.43, "guardian_seconds": 159.57, "exit_code": 101},
+        "fault": "The canonical header restores RmcModelAssertionContext, but cc -Werror now rejects the driver's redundant RMC_API definition before numerical execution",
+        "prepared_fix": "Remove only the redundant driver RMC_API definition; retain the canonical header as its sole owner"
+      },
+      "next_gate": "Actual fmi3_exact_runtime_ four-test execution after the sole-owner macro correction"
     }
   ],
   "independent_completed_gates": [
@@ -136,7 +143,25 @@
     "job_id": 114057237856,
     "result": "FAIL: all four shard jobs completed successfully, but the merged baseline ratchet rejects eleven certified model regressions",
     "raw_log_sha256": "a12f1312e9fd61214c713b7ed17979dc25f276de5f3217de7d41137ef1a4a16d",
-    "cohort": {"selected": 566, "compiled": 445, "sim_ok": 345, "compared": 294, "strict_high": 294, "near": 0, "deviation": 0, "comparison_skipped": 50, "missing_trace": 1, "not_attempted": 143},
+    "cohort": {"selected": 566, "compiled": 445, "compiled_without_sim_ok": 100, "sim_ok": 345, "compared": 294, "strict_high": 294, "near": 0, "deviation": 0, "comparison_skipped": 50, "missing_trace": 1, "not_attempted": 143},
+    "merged_artifact_binding": {
+      "artifact_id": 11649915353,
+      "artifact_bytes": 454758,
+      "archive_sha256": "aa366ba9b7db77e1b978a5f127897514cfbe6376ce3713e07fc577bea0720092",
+      "msl_results_sha256": "8a4e66f1bbbf060ddb512743e0e07b77ad98d92c437863cfca497f4fea45ab91",
+      "sim_trace_comparison_sha256": "0b721fc747db26669e5db59fd7bbc67a011a8466ab87059063772583891dbe4f",
+      "quality_current_sha256": "3584e787dbafd81a832b442575847d4353c59eb3c67e1cc08dcc8f875902d8d7",
+      "executed_git_commit": "d3699839b981ae8c7df4e454d1f679f12e37cccf",
+      "executed_tree": "0513d07ccf0d0b3b14626acb3cf99a9a83138814",
+      "binding": "GitHub synthetic merge of 00854f219 into unchanged main 0b249f0f; source head and merge tree equality audited"
+    },
+    "completed_simulation_accounting": {
+      "verified_strict_high": 294,
+      "existing_policy_exceptions_by_reason": {"comparator_limitation": 15, "model_issue": 7, "reference_failure": 28},
+      "unclassified_missing_trace": 1,
+      "missing_trace_model": "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample",
+      "missing_trace_reason": "OMC attempt status error is not successful; stale trace artifacts are ineligible"
+    },
     "failed_ratchets": [
       {"metric": "strict_high", "current": 294, "baseline": 302, "allowed_drop": 1, "floor": 301},
       {"metric": "classified", "current": 344, "baseline": 355, "allowed_drop": 1, "floor": 354},
