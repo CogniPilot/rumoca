@@ -75,7 +75,17 @@
         "locally_audited_MSL_inventory_sha256": "8f1f7f9e70a2410e857fd93e141590131fb11311a635468a7c4be30f58e455e2",
         "inventory_method": "sorted relative *.mo path, NUL, SHA256(file), newline; equals committed Fourbar provenance"
       },
-      "next_gate": "Unchanged exact native test with CI features/profile; trace the earliest producing operation only after a bound reproduction. No tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; no test executed."
+      "local_reproduction": {
+        "source": "b96d98ee8cc97c6fbc51e517525deb40d413bfbe",
+        "features": "--no-default-features --features template-runtime-tests,fmu-packaging",
+        "profile": "test/dev, CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0",
+        "local_difference": "4 build jobs/test/Rayon threads under the existing guard policy, rather than CI's 2 build/Rayon jobs and cargo --jobs 1",
+        "raw_log_sha256": "65e2fdc8a615983f516fd0ad731e4ddeda96979ed3315feb6d50841b9be8dc88",
+        "result": {"passed": 0, "failed": 1, "filtered_out": 87, "test_seconds": 12.28, "exit_code": 101},
+        "fault": "Same row 2293/formal derivative target/NaN/norm inf as CI; no resource stop",
+        "guard": {"seconds": 250.920061769, "peak_rss_kib": 2837728, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192}
+      },
+      "next_gate": "Trace the earliest producing operation on the bound negative control. No tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; the second completed test genuinely reproduced the fault."
     }
   ],
   "independent_completed_gates": [
@@ -98,7 +108,7 @@
   "prepared_source_checks": {
     "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all five changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
-    "cargo_execution": "NOT RUN: no target-cache lease or sufficient shared-host disk headroom",
+    "cargo_execution": "Prepared repairs remain unqualified. The separately bound native Fourbar negative control ran on b96 and reproduced CI failure; see local_reproduction.",
     "validator_changes": false,
     "baseline_changes": false,
     "new_lint_suppressions": false
