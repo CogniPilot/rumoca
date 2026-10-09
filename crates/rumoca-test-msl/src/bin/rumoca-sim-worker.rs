@@ -545,7 +545,7 @@ type WorkerRunOk = (
     f64,
     Option<TraceCertificationProfile>,
 );
-type WorkerRunErr = (SimError, BuildSimulationTimings, f64, WorkerErrorPhase);
+type WorkerRunErr = Box<(SimError, BuildSimulationTimings, f64, WorkerErrorPhase)>;
 
 #[derive(Debug, Clone, Copy)]
 enum WorkerErrorPhase {
@@ -702,34 +702,34 @@ fn run_simulation_pipeline(
     );
     let sim_build_seconds = build_started.elapsed().as_secs_f64();
     let (prepared, timings) = prepared.map_err(|err| {
-        (
+        Box::new((
             err,
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Build,
-        )
+        ))
     })?;
     build_timings = timings;
     if let Some(error) = solve_ir_error {
-        return Err((
+        return Err(Box::new((
             SimError::SolveIr(error),
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Build,
-        ));
+        )));
     }
 
     let ic_started = Instant::now();
     watchdog.enter("sim_initialization", sim_timeout_seconds);
     check_prepared_initialization(&prepared).map_err(|err| {
-        (
+        Box::new((
             err,
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Initialization {
                 ic_seconds: ic_started.elapsed().as_secs_f64(),
             },
-        )
+        ))
     })?;
     let ic_seconds = ic_started.elapsed().as_secs_f64();
 
@@ -750,12 +750,12 @@ fn run_simulation_pipeline(
             )
         })
         .map_err(|err| {
-            (
+            Box::new((
                 err,
                 build_timings,
                 sim_build_seconds,
                 WorkerErrorPhase::Simulation { sim_run_seconds },
-            )
+            ))
         })
 }
 
@@ -884,13 +884,10 @@ fn classify_run_outcome(args: &Args, outcome: WorkerRunOutcome, elapsed: f64) ->
             }
             worker_result
         }
-        Ok(Err((err, build_timings, sim_build_seconds, sim_run_seconds))) => classify_worker_error(
-            err,
-            elapsed,
-            build_timings,
-            sim_build_seconds,
-            sim_run_seconds,
-        ),
+        Ok(Err(error)) => {
+            let (err, build_timings, sim_build_seconds, phase) = *error;
+            classify_worker_error(err, elapsed, build_timings, sim_build_seconds, phase)
+        }
         Err(panic_info) => sim_worker_result(
             "sim_solver_fail",
             Some(format!("panic: {}", panic_message(panic_info))),
