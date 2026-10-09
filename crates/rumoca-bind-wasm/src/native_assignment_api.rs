@@ -118,7 +118,7 @@ fn model_artifact(
             "y_count": y_count, "p_count": p_count, "seed_count": seed_count },
         "var_layout": problem.layout,
         "input_names": problem.solve_layout.input_scalar_names(),
-        "parameters": model.parameters,
+        "parameters": model.parameters.as_slice(),
         "stages": stages,
     });
     serde_json::to_string(&response)

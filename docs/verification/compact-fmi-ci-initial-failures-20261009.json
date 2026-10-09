@@ -1,0 +1,42 @@
+{
+  "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+  "pr": "https://github.com/CogniPilot/rumoca/pull/421",
+  "ci_run": "https://github.com/CogniPilot/rumoca/actions/runs/37995273885",
+  "failures": [
+    {
+      "job": "Lint",
+      "job_id": 114039593705,
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "result": "FAIL: clippy::result_large_err at rumoca-sim-worker.rs:678 and :829",
+      "first_owner": "Private WorkerRunErr aggregation of SimError, BuildSimulationTimings, elapsed time and WorkerErrorPhase",
+      "diagnostic": "Err variant is at least 128 bytes after preserving compiled execution context and source spans",
+      "raw_log_sha256": "bca3518e1f6c3f1dd332106ac179b96a70be84380e124c59ad596717108cd4f0",
+      "prepared_fix": "Box the private aggregate at its existing error producers and unpack it only at the existing classifier. Retain typed errors, stages and timings; success does not allocate. Public error representations and classification remain unchanged.",
+      "governing_specs": ["SPEC_0021", "SPEC_0029", "SPEC_0033", "SPEC_0050"]
+    },
+    {
+      "job": "Playground contract",
+      "job_id": 114039594144,
+      "command": "cargo test -p rumoca-bind-wasm --all-features --verbose",
+      "result": {"passed": 108, "failed": 40, "ignored": 0},
+      "first_owner": "Native program and native assignment JSON artifact producers serialize SolveInitialValues instead of the published dense parameter buffer",
+      "first_fault": "Option unwrap in artifact parameters.as_array(), or a typed input lane start read, before Wasmi value execution",
+      "raw_log_sha256": "bf34d45a7a07f3a33dd8b165d3a1aaf45c8319370e8d2893fcb8191a33cba967",
+      "prepared_fix": "Serialize model.parameters.as_slice() at the two existing dense runtime ABI boundaries. The compact canonical owner, serialization, source runs and scalar execution remain unchanged.",
+      "governing_specs": ["SPEC_0007", "SPEC_0029", "SPEC_0032", "SPEC_0036", "SPEC_0041 initialization-owner row", "SPEC_0043 section 8 initialization-run row"]
+    }
+  ],
+  "prepared_source_checks": {
+    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all three changed Rust files",
+    "diff_whitespace": "PASS: git diff --check",
+    "cargo_execution": "NOT RUN: no target-cache lease or sufficient shared-host disk headroom",
+    "validator_changes": false,
+    "baseline_changes": false,
+    "new_lint_suppressions": false
+  },
+  "remaining": [
+    "Collect the rest of the original CI run before updating the draft tip",
+    "Fresh worker all-feature Clippy and binding all-feature execution checks on the fixes",
+    "Full compiler/MSL/ModelicaTest/external corpus gates and fixed20 Tier 1 delta"
+  ]
+}

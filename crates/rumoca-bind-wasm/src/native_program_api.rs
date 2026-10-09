@@ -99,7 +99,7 @@ pub(crate) fn model_artifact(
         "derived_outputs": derived_outputs(problem, schedule),
         "input_lanes": input_lanes(problem, schedule),
         "input_names": problem.solve_layout.input_scalar_names(),
-        "parameters": model.parameters,
+        "parameters": model.parameters.as_slice(),
         "issued_schedule": issued_schedule,
         "call_sites": call_sites(&model.pure_calls),
     });
