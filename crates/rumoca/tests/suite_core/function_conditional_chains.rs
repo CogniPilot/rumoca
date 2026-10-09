@@ -4,10 +4,11 @@
 //! pending emission per link kept on the heap, so its length is not bounded by
 //! the native stack.
 //!
-//! The function input is a model input, so the call has no derivative relation
-//! and Solve lowering expands its body in place.
+//! The array-maximum reduction has no directional body, so scalar
+//! differentiation expands the call and exercises conditional capture emission.
 
 use rumoca::Compiler;
+use rumoca_ir_solve::{LinearOp, LinearOpSliceKind, SolveVisitor};
 use rumoca_sim::{SimOptions, eval_dae_at};
 
 /// Links in each chain.
@@ -15,20 +16,30 @@ const LINKS: usize = 3000;
 
 /// Stack of the lowering thread. A capture resolved by a nested call spends a
 /// few hundred bytes per link, so a chain of `LINKS` overflows it; the
-/// explicit pending-emission stack spends none.
+/// explicit pending-emission stack spends none. Source compilation and runtime
+/// inspection have their own fixed stack frames and run on the test thread.
 const LOWERING_STACK_BYTES: usize = 256 * 1024;
 
-fn chain_value(body: &str) -> f64 {
-    let body = body.to_string();
-    std::thread::Builder::new()
-        .stack_size(LOWERING_STACK_BYTES)
-        .spawn(move || lower_chain(&body))
-        .expect("the lowering thread starts")
-        .join()
-        .expect("the chain lowers within the bounded stack")
+#[derive(Default)]
+struct ConditionalCensus(usize);
+
+impl SolveVisitor for ConditionalCensus {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        if matches!(op, LinearOp::FunctionConditional { .. }) {
+            self.0 += 1;
+        }
+        Ok(())
+    }
 }
 
-fn lower_chain(body: &str) -> f64 {
+fn chain_value(body: &str) -> f64 {
     let source = format!(
         r#"
 function Chain
@@ -37,7 +48,7 @@ function Chain
 protected
   Real x;
 algorithm
-  x := s;
+  x := max({{s, 0.0}});
 {body}
   y := x;
 end Chain;
@@ -53,6 +64,31 @@ end Probe;
         .model("Probe")
         .compile_str(&source, "Probe.mo")
         .unwrap_or_else(|error| panic!("the chain compiles: {error}"));
+    let lowered = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("conditional-chain-lowering".into())
+            .stack_size(LOWERING_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                rumoca_phase_solve::lower_solve_model(
+                    &compiled.dae,
+                    &std::collections::HashMap::new(),
+                    |_| {},
+                )
+                .expect("the chain lowers through the checked phase owner")
+            })
+            .expect("the lowering thread starts")
+            .join()
+            .expect("the chain lowers within the bounded stack")
+    });
+    let mut census = ConditionalCensus::default();
+    census
+        .visit_solve_model(lowered.model())
+        .expect("infallible census");
+    assert!(
+        census.0 >= LINKS,
+        "the chain must exercise scalar conditional emission"
+    );
+    drop(lowered);
     let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
         .unwrap_or_else(|error| panic!("the chain lowers to Solve: {error}"));
     assert!(probe.report.error.is_none(), "{:?}", probe.report.error);

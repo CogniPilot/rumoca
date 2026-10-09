@@ -105,8 +105,6 @@ pub(crate) fn gate_steps(packages: &[String], coverage: bool) -> Vec<GateStep> {
             "clippy",
             &[
                 "clippy",
-                "-j",
-                "8",
                 "--workspace",
                 "--all-targets",
                 "--exclude",
@@ -123,7 +121,7 @@ pub(crate) fn gate_steps(packages: &[String], coverage: bool) -> Vec<GateStep> {
     // trusted-reference differential in `rumoca-reference`. The same excludes
     // and features apply; only `commit_messages` is skipped, since it reads
     // git history that an archived snapshot lacks.
-    let mut workspace = vec!["test", "-j", "8", "--workspace"];
+    let mut workspace = vec!["test", "--workspace"];
     workspace.extend_from_slice(crate::test_cmd::WORKSPACE_TEST_EXCLUDES);
     workspace.extend_from_slice(crate::test_cmd::WORKSPACE_TEST_FEATURES);
     workspace.extend_from_slice(&SKIP_SNAPSHOT_ONLY_TESTS);
@@ -133,8 +131,7 @@ pub(crate) fn gate_steps(packages: &[String], coverage: bool) -> Vec<GateStep> {
         crate::test_cmd::MSL_HARNESS_UNIT_TEST_ARGS,
     ));
     if !packages.is_empty() {
-        let mut doc =
-            GateStep::cargo("doc", &["doc", "-j", "8"]).with_packages(packages, &["--no-deps"]);
+        let mut doc = GateStep::cargo("doc", &["doc"]).with_packages(packages, &["--no-deps"]);
         doc.env.push(("RUSTDOCFLAGS", "-D warnings"));
         steps.push(doc);
     }
@@ -142,8 +139,6 @@ pub(crate) fn gate_steps(packages: &[String], coverage: bool) -> Vec<GateStep> {
         "template-runtime",
         &[
             "test",
-            "-j",
-            "8",
             "-p",
             "rumoca",
             "--features",

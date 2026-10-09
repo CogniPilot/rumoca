@@ -930,3 +930,25 @@ fn a_requested_parameter_on_a_relation_switching_value_is_reported() {
     let on_surface = session.with_parameter_values(&[1.0]).expect("moved");
     assert!(on_surface.switching_value_notes().is_empty());
 }
+
+#[test]
+fn the_adjoint_refuses_a_bdf_plugin_that_declares_no_extension_order() {
+    use rumoca_sim::{TrajectoryPlugin, TrajectorySession};
+    let result = compile(FIRST_ORDER, "FirstOrder");
+    let session = TrajectorySession::new(&result.dae, &options(1.0, 0.25), &[]).expect("session");
+    let objective = squared_x_objective(1.0);
+    // The Dormand-Prince plugin declares order four and the adjoint runs.
+    session
+        .gradient_with(&objective, true, TrajectoryPlugin::Rk45)
+        .expect("rk45 declares its extension order");
+    // BDF declares none: the checkpoint contract cannot be proved, so the
+    // adjoint is refused before any step with the typed refusal.
+    let error = session
+        .gradient_with(&objective, true, TrajectoryPlugin::Bdf)
+        .expect_err("BDF declares no continuous-extension order");
+    let text = error.to_string();
+    assert!(
+        text.contains("plugin declares no continuous-extension order"),
+        "{text}"
+    );
+}

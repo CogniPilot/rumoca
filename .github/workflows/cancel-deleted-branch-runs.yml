@@ -1,0 +1,34 @@
+# Workflow runs queued for a branch outlive the branch when it is deleted
+# (a merged or superseded PR), and the per-branch concurrency group only
+# cancels them when a newer push arrives, which never happens for a deleted
+# branch. This cancels every queued or running CI run of a deleted branch so
+# the shared runner budget goes to live work.
+name: Cancel runs of deleted branches
+
+on:
+  delete:
+
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    name: Cancel queued runs
+    if: github.event.ref_type == 'branch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel CI runs of the deleted branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.ref }}
+        run: |
+          set -euo pipefail
+          for status in queued in_progress waiting pending; do
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?branch=${BRANCH}&status=${status}&per_page=100" \
+              --jq '.workflow_runs[].id' |
+            while read -r run_id; do
+              echo "cancelling run ${run_id} (${status}) of ${BRANCH}"
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null || true
+            done
+          done

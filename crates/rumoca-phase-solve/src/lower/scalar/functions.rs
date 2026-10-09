@@ -198,7 +198,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             );
         }
         let suspended = self.switch_context(context);
-        let result = self.expression(definition.rhs(), scalar);
+        let node = self.node(definition.rhs());
+        let result = if matches!(node.operation(), dae::ExpressionOperation::Conditional(_))
+            && !node.value_type().is_record()
+        {
+            self.pack_function_definition(definition, span)
+                .and_then(|start| {
+                    function_conditional_reg_offset(
+                        start,
+                        scalar,
+                        span,
+                        "function-definition scalar projection",
+                    )
+                })
+        } else {
+            self.expression(definition.rhs(), scalar)
+        };
         self.restore_context(suspended);
         let register = result?;
         self.function_definition_scalar_cache.insert(key, register);

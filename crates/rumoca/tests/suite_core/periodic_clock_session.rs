@@ -184,7 +184,13 @@ fn batch_and_session_agree_on_the_schedule_and_the_integral() {
 fn the_session_reports_the_engine_it_selected() {
     // Auto on a model with a continuous state selects compiled execution.
     let stateful = session(RESET, "ClockReset", options(1.0));
+    let mut stateful = stateful;
+    stateful.advance_to(0.5).unwrap();
     let receipt = stateful.execution_receipt();
+    assert!(
+        stateful.execution_receipt().declined.is_empty(),
+        "the compiled engine declined nothing on this model"
+    );
     assert_ne!(receipt.engine, SimExecutionEngine::Interpreter);
     assert_eq!(receipt.refusal, None);
 
@@ -221,6 +227,6 @@ fn the_hello_event_carries_the_engine_receipt_on_the_wire() {
     let wire = serde_json::to_value(&event).unwrap();
     assert_eq!(
         wire["engine"],
-        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states"})
+        serde_json::json!({"engine": "interpreter", "refusal": "no_continuous_states", "declined": []})
     );
 }

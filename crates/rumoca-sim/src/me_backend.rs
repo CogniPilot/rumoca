@@ -28,6 +28,7 @@ pub(crate) struct BackendSimulationSession {
     input_names: Vec<String>,
     variable_names: Vec<String>,
     execution: SimExecutionReceipt,
+    execution_backend: Option<MeExecutionBackend>,
 }
 
 impl BackendSimulationSession {
@@ -50,6 +51,7 @@ impl BackendSimulationSession {
                 0,
                 SimExecutionEngine::Interpreter,
             ));
+        let handle = execution_backend.clone();
         let retained = MeRetainedComponent::instantiate(
             artifact.source(),
             &MeInstanceConfig::open_ended(instance_name, opts.rtol, opts.t_start)?,
@@ -73,11 +75,19 @@ impl BackendSimulationSession {
             input_names,
             variable_names,
             execution,
+            execution_backend: handle,
         })
     }
 
+    /// The engine selection with the compile requests the backend has declined
+    /// so far; compilation is lazy, so the list can grow as the session runs.
     pub(crate) fn execution_receipt(&self) -> SimExecutionReceipt {
-        self.execution
+        let declined = self
+            .execution_backend
+            .as_ref()
+            .map(MeExecutionBackend::declined)
+            .unwrap_or_default();
+        self.execution.clone().with_declined(declined)
     }
 
     pub(crate) fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {

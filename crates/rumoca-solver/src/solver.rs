@@ -170,17 +170,34 @@ impl SimNativeRefusal {
     }
 }
 
+/// One compile request the selected backend declined. The program it names runs
+/// in the interpreter instead; the receipt lists it so the fallback is never
+/// silent.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SimNativeDecline {
+    /// The kind of program the backend was asked to compile.
+    pub program: String,
+    /// The backend's stated reason.
+    pub reason: String,
+    /// How many requests of that kind were declined for that reason.
+    pub count: usize,
+}
+
 /// The typed record of which engine a simulation selected and, when compiled
 /// execution was refused for an admissible request, why.
 ///
 /// One decision site ([`Self::admission`]) produces it for every target, so
 /// the receipt and the backend actually constructed cannot disagree.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SimExecutionReceipt {
     pub engine: SimExecutionEngine,
     /// Absent when compiled execution was selected or the policy pinned the
     /// interpreter.
     pub refusal: Option<SimNativeRefusal>,
+    /// Programs the selected backend declined to compile, which run in the
+    /// interpreter. Compilation happens lazily as the session runs, so this
+    /// list is read at the time the receipt is requested.
+    pub declined: Vec<SimNativeDecline>,
 }
 
 impl SimExecutionReceipt {
@@ -204,6 +221,7 @@ impl SimExecutionReceipt {
             return Self {
                 engine: compiled,
                 refusal: None,
+                declined: Vec::new(),
             };
         };
         Self::interpreter(Some(refusal))
@@ -213,12 +231,20 @@ impl SimExecutionReceipt {
         Self {
             engine: SimExecutionEngine::Interpreter,
             refusal,
+            declined: Vec::new(),
         }
+    }
+
+    /// The receipt with the backend's declined compile requests recorded.
+    #[must_use]
+    pub fn with_declined(mut self, declined: Vec<SimNativeDecline>) -> Self {
+        self.declined = declined;
+        self
     }
 
     /// True when compiled execution was selected.
     #[must_use]
-    pub const fn is_compiled(self) -> bool {
+    pub const fn is_compiled(&self) -> bool {
         !matches!(self.engine, SimExecutionEngine::Interpreter)
     }
 }
