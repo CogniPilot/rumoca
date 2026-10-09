@@ -103,13 +103,24 @@
       "independent_success": "Earlier cli_target_fmi group: 44 passed / 0 failed / 44 filtered; no qualification of this four-test group",
       "governing_specs": ["SPEC_0029 shared syntax owner and DRY", "SPEC_0033", "SPEC_0050"],
       "local_header_migration_negative_control": {
-        "source": "caf623 ROOT reproduction tree containing the reviewed e1eda header migration",
+        "source": "caf623e8b36e8360dcd1392023783b2eea55cdae ROOT reproduction tree containing the reviewed e1eda header migration",
         "raw_log_sha256": "443e6bb16d58baf16823a6fb06e5fdd5ab82616ea3cfa473e15d56b30e828e59",
         "result": {"passed": 0, "failed": 4, "filtered_out": 84, "test_seconds": 0.43, "guardian_seconds": 159.57, "exit_code": 101},
         "fault": "The canonical header restores RmcModelAssertionContext, but cc -Werror now rejects the driver's redundant RMC_API definition before numerical execution",
         "prepared_fix": "Remove only the redundant driver RMC_API definition; retain the canonical header as its sole owner"
       },
-      "next_gate": "Actual fmi3_exact_runtime_ four-test execution after the sole-owner macro correction"
+      "local_canonical_header_qualification": {
+        "source_base": "caf623e8b36e8360dcd1392023783b2eea55cdae",
+        "source_delta": "Remove the single redundant RMC_API definition, exactly as 3c50e921e",
+        "test_source_sha256": "ff9403348e3e03ab3a491bde514ea6ce7cb72e1a0807e0fc25606a8c4544262b",
+        "raw_log_sha256": "97da3d84ccd970863060076d724a3a5a651ce21c710e83322dde22d40c245b7e",
+        "result": {"passed": 4, "failed": 0, "filtered_out": 84, "test_seconds": 0.51, "exit_code": 0},
+        "guard": {"seconds": 157.672199533, "peak_rss_kib": 2862088, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192},
+        "features": "--no-default-features --features template-runtime-tests,fmu-packaging",
+        "local_difference": "Four build jobs/test/Rayon threads under unchanged local guards; CI uses two build/Rayon jobs and cargo --jobs 1",
+        "scope": "All four exact-kernel numerical controls execute on the corrected canonical header. Other repair groups, full template suite and the complete PR tip remain unqualified."
+      },
+      "next_gate": "Fresh existing full template and PR CI gates on the updated draft tip"
     }
   ],
   "independent_completed_gates": [
@@ -188,7 +199,7 @@
   "prepared_source_checks": {
     "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all six changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
-    "cargo_execution": "Prepared repairs remain unqualified. The separately bound native Fourbar negative control ran on b96 and reproduced CI failure; see local_reproduction.",
+    "cargo_execution": "Four exact FMI kernel controls pass on the separately bound canonical-header repair. Other prepared repairs remain unqualified. The separately bound native Fourbar negative control ran on b96 and reproduced CI failure; see local_reproduction.",
     "validator_changes": false,
     "baseline_changes": false,
     "new_lint_suppressions": false
