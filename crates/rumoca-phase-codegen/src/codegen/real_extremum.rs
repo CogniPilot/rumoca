@@ -232,6 +232,56 @@ pub(super) fn used_by(
     uses.0
 }
 
+/// Typed pure-call owners are retained outside the scalar problem. Every
+/// issued owner is inspected, including its directional body and nested
+/// regions; nested calls name owners in this same table.
+pub(super) fn used_by_calls(table: &rumoca_ir_solve::SolvePureCallTable) -> bool {
+    table.owners().iter().any(|owner| {
+        typed_program_uses(owner.body())
+            || owner
+                .directional()
+                .is_some_and(|body| typed_program_uses(body.body()))
+    })
+}
+
+fn typed_program_uses(program: &rumoca_ir_solve::TypedProgram) -> bool {
+    use rumoca_ir_solve::{SolveBinaryOperator as Binary, SolveOperation as Op, SolveScalarType};
+
+    program
+        .operations()
+        .iter()
+        .any(|operation| match operation.operation() {
+            Op::Binary {
+                destination,
+                operator: Binary::Min | Binary::Max,
+                ..
+            }
+            | Op::BroadcastBinary {
+                destination,
+                operator: Binary::Min | Binary::Max,
+                ..
+            } => matches!(
+                program.register_types()[destination.index()].element_type(),
+                SolveScalarType::Real { .. }
+            ),
+            Op::Conditional {
+                if_true, if_false, ..
+            } => typed_program_uses(if_true.body()) || typed_program_uses(if_false.body()),
+            Op::Map { body, .. } => typed_program_uses(body.body()),
+            Op::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                typed_program_uses(transition.body())
+                    || continuation
+                        .as_ref()
+                        .is_some_and(|body| typed_program_uses(body.body()))
+            }
+            _ => false,
+        })
+}
+
 /// The template function `real_extremum_prelude(language)`: the helper
 /// definitions, or nothing when the Solve render context proves the product
 /// applies no Real `min` or `max`, so a translation unit never defines an

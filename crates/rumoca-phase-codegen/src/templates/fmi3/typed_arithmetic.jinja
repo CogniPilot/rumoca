@@ -67,6 +67,17 @@ if (({{ b }}<0 && {{ a }}>INT64_MAX+{{ b }}) || ({{ b }}>0 && {{ a }}<INT64_MIN+
 {% elif operator == "multiply" -%}
 if ({{ a }}>0 ? ({{ b }}>0 ? {{ a }}>INT64_MAX/{{ b }} : {{ b }}<INT64_MIN/{{ a }}) : ({{ a }}<0 ? ({{ b }}>0 ? {{ a }}<INT64_MIN/{{ b }} : ({{ b }}<0 && {{ a }}<INT64_MAX/{{ b }})) : 0)) return 1;
 {{ dst }} = {{ a }}*{{ b }};
+{% elif operator in ["integer_quotient", "integer_modulo", "integer_remainder"] -%}
+if ({{ b }} == 0) return 1;
+{% if operator == "integer_quotient" -%}
+if ({{ a }} == INT64_MIN && {{ b }} == -1) return 1;
+{{ dst }} = {{ a }}/{{ b }};
+{% else -%}
+{{ dst }} = {{ b }} == -1 ? 0 : {{ a }}%{{ b }};
+{% if operator == "integer_modulo" -%}
+if ({{ dst }} != 0 && (({{ dst }} < 0) != ({{ b }} < 0))) {{ dst }} += {{ b }};
+{% endif -%}
+{% endif -%}
 {% elif operator in ["min", "max"] -%}
 {{ dst }} = {{ a }} {{ "<" if operator == "min" else ">" }} {{ b }} ? {{ a }} : {{ b }};
 {% else %}{{ fail("unsupported-feature:fmi.c.pure-call: integer binary " ~ operator) }}{% endif -%}

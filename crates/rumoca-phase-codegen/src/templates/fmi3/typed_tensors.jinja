@@ -67,6 +67,23 @@ index=index*{{ shape[loop.index0] }}+(size_t)(r{{ index }}[0]-1);
 {{ dst }}[0]=r{{ op.aggregate }}[index];
 {% endif -%}
 }
+{% elif op.operation in ["project_slice", "update_slice"] -%}
+{% set shape = program.register_types[op.aggregate].dimensions -%}
+{% set slice = program.register_types[op.value] if op.operation == "update_slice" else ty -%}
+{% if op.operation == "update_slice" %}{{ copy(dst, "r" ~ op.aggregate) }}{% endif -%}
+{% if slice.scalar_count > 0 -%}
+for (size_t k=0; k<{{ slice.scalar_count }}; ++k) { size_t rest=k; size_t offset=0; (void)rest;
+{% for i in range(slice.dimensions|length)|reverse -%}
+{% set stride = shape[i+1:]|product -%}
+offset+=({{ op.origin[i] }}+rest%{{ slice.dimensions[i] }})*{{ stride }}; rest/={{ slice.dimensions[i] }};
+{% endfor -%}
+{% if op.operation == "update_slice" -%}
+{{ dst }}[offset]=r{{ op.value }}[k];
+{% else -%}
+{{ dst }}[k]=r{{ op.aggregate }}[offset];
+{% endif -%}
+}
+{% endif -%}
 {% elif op.operation in ["project_view", "update_view"] -%}
 {% set shape = program.register_types[op.aggregate].dimensions -%}
 {% set count = program.register_types[op.value].scalar_count if op.operation == "update_view" else ty.scalar_count -%}

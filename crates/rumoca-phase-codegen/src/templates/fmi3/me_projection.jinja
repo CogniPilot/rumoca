@@ -1826,6 +1826,7 @@ RMC_COLD static int rmc_tan_updates(ModelInstance* m, double* seed, double* out,
    view: the update tangents and the refresh's seed projection alternate until
    the update tangents stop changing. -1 error */
 RMC_COLD static int rmc_init_tangent(ModelInstance* m, double* seed) {
+    (void)seed;
     RMC_MARK; int result = -1; bool failed = false;
     double* out = rmc_dalloc(m, RMC_TAN_OUTPUTS + 1); double* values = rmc_dalloc(m, {{ tan.nupdates }} + 1);
     if (!out || !values) { RMC_RELEASE; return rmc_exhausted(m); }

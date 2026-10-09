@@ -387,6 +387,60 @@ fn fmi_ls_wasm_component_validates_and_executes_pinned_lifecycle() {
     );
 }
 
+/// SPEC_0007: the adapter forwards do-step to the shared checked FMI kernel.
+/// MLS 3.6 section 3.7.3 sample events stay inside that kernel, including more
+/// than one tick per communication step; no public FMI Clock API is needed.
+#[test]
+fn fmi_ls_wasm_periodic_samples_match_native_across_communication_steps() {
+    if !wasm_prerequisites("FMI-LS-Wasm periodic sample check") {
+        return;
+    }
+    let model = "SampledOutput";
+    let result = rumoca::Compiler::new()
+        .model(model)
+        .compile_str(
+            r#"
+model SampledOutput
+  Real x(start = 0, fixed = true);
+  output Real held(start = -1, fixed = true);
+  output Real count(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when sample(0.05, 0.1) then
+    held = x;
+    count = pre(count) + 1;
+  end when;
+end SampledOutput;
+"#,
+            "SampledOutput.mo",
+        )
+        .expect("compile sampled output fixture");
+    let (_work, rows) = assert_tracks_native(
+        &result,
+        Track {
+            model,
+            channels: &[("x", "x"), ("held", "held"), ("count", "count")],
+            inputs: &[],
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: 0.2,
+            solver_mode: SimSolverMode::RkLike,
+            scale: 10.0,
+            rate: 1.0,
+        },
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row[3],
+            (2 * index) as f64,
+            "each step must execute two ticks"
+        );
+        if index > 0 {
+            assert!((row[2] - (row[0] - 0.05)).abs() < 1.0e-8);
+        }
+    }
+}
+
 #[test]
 fn fmi_ls_wasm_bouncing_ball_matches_native_state_event_trace() {
     if !wasm_prerequisites("FMI-LS-Wasm bouncing-ball check") {

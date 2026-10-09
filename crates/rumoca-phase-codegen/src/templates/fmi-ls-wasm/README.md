@@ -5,7 +5,8 @@
 Use this experimental target to package a Rumoca Co-Simulation component for a
 WebAssembly Component Model host implementing the pinned FMI-LS-Wasm WIT draft.
 It is intended for sandboxed simulation services and portable component hosts,
-not browser `wasm-bindgen` applications.
+including browser hosts that transpile the component ABI; it is not a
+`wasm-bindgen` module.
 
 ## Contract
 
@@ -33,7 +34,10 @@ crate, and `src/lib.rs` is a thin adapter that forwards each WIT call
 holding the `fmi3Instance` pointer per resource.
 
 Because it renders the same kernel, this target advertises the same capability
-profile as `fmi3`. A model outside that profile (general events, clocks, runtime
+profile as `fmi3`. Periodic Modelica `sample` clocks are internal time events
+located and executed inside `do-step`, just as in the native Co-Simulation
+kernel. They do not expose FMI Clock variables or require WIT Clock accessors.
+A model outside that profile (general events, runtime
 event history, external calls or tables, random operators, or an algebraic
 system the shared projection cannot admit) is refused at export with the same
 `unsupported-feature` diagnostic as `fmi3`.
@@ -43,7 +47,8 @@ system the shared projection cannot admit) is refused at export with the same
 The implemented profile is FMI 3 Co-Simulation with settled parameter
 initialization, algebraic projection, static parameter-dependent assertions, and
 scalar state events located inside `do-step`. Model Exchange, Scheduled
-Execution, early return, intermediate update, state serialization, clocks, and
+Execution, early return, intermediate update, state serialization, public FMI
+Clock accessors, and
 the derivative APIs are not advertised; those WIT calls reject without mutation.
 Non-Float64 typed accessors reject in this draft mapping. Models needing
 capabilities outside the shared C profile are refused at export as described
@@ -62,7 +67,7 @@ advisory does not appear.
 - The FMI-LS runtime suite checks vendored WIT byte identity, WIT parsing,
   warning-clean `wasm32-wasip2` compilation of the C kernel and the Rust adapter,
   component validation, and Wasmtime traces of a decay model, MSL `Fourbar1`, and
-  a bouncing ball against the native linked runtime.
+  a bouncing ball and periodic sampled outputs against the native linked runtime.
 - Focused gate: `cargo xtask verify template-runtimes --backend wasm`.
 
 ## Example

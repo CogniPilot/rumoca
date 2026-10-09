@@ -309,7 +309,7 @@
         commonDevShellArgs = {
           buildInputs = commonArgs.buildInputs;
           shellHook = ''
-            export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+            export PATH="${rustToolchain}/bin:''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
           '';
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
@@ -451,18 +451,14 @@
         # toolchain.  In particular, it must not inherit optional template
         # runtimes such as JAX, whose platform support is narrower than the
         # wheel matrix (currently excluding x86_64-darwin).
-        devShells.ci-python-wheel = (mkDevShell [
+        devShells.ci-python-wheel = mkDevShell [
           pkgs.maturin
           pkgs.python312
           # `zig` lets `maturin build --zig` cross-link the Linux wheels
           # against an older glibc, so they carry a real manylinux platform
           # tag that PyPI accepts instead of a bare `linux_*` tag.
           pkgs.zig
-        ]).overrideAttrs (_: {
-          # Keep the selected Nix toolchain ahead of host rustup shims when
-          # building x86_64 wheels through Rosetta on Apple Silicon.
-          shellHook = "";
-        });
+        ];
         # WASM packaging needs the workspace build inputs plus the JavaScript
         # and optimization tools. Keep the interactive shell's Rumoca, OMC,
         # Julia, Python, and documentation closures out of this CI boundary.

@@ -1,0 +1,71 @@
+{
+  "revision": "090c7edb806397d1737b7541bd4be02169085235",
+  "baseline": "2aaed750242f96d77f39e319f16b24bee82794c1",
+  "native_model_rows_equal": true,
+  "trace_model_metrics_equal": true,
+  "numerical_summary_equal": true,
+  "execution_counts_equal": true,
+  "counts": {
+    "compiled_models": 17,
+    "balanced_models": 17,
+    "ic_ok": 15,
+    "sim_ok": 15,
+    "sim_solver_fail": 2,
+    "sim_nan": 0,
+    "sim_timeout": 0,
+    "sim_balance_fail": 0,
+    "sim_target_models": [
+      "Modelica.Blocks.Examples.BooleanNetwork1",
+      "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+      "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+      "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+      "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+      "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+      "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+      "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+      "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+      "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "Modelica.Electrical.Digital.Examples.Counter",
+      "Modelica.Electrical.Digital.Examples.FullAdder",
+      "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+      "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "Modelica.Mechanics.Rotational.Examples.Friction",
+      "Modelica.Mechanics.Rotational.Examples.FirstGrounded"
+    ]
+  },
+  "models_compared": 14,
+  "missing_trace_models": 0,
+  "skipped_models": 1,
+  "agreement_bands": {
+    "high_agreement": 14,
+    "minor_agreement": 0,
+    "deviation": 0
+  },
+  "channels": 445,
+  "bad_channels": 0,
+  "state_selection": {
+    "models_compared": 14,
+    "exact_state_set_match_models": 14,
+    "state_count_match_models": 14,
+    "exact_state_set_match_percent": 100,
+    "state_count_match_percent": 100,
+    "total_rumoca_states": 10,
+    "total_omc_states": 10,
+    "total_matching_states": 10,
+    "total_rumoca_only_states": 0,
+    "total_omc_only_states": 0,
+    "max_model_state_set_difference": 0
+  },
+  "normalization": "Only keys ending _seconds or speedup_ratio; all other row and summary fields retained",
+  "differences": [],
+  "evidenceHashes": {
+    "msl_results.json": "56298e2f10ea88032a620bc7ec52bf09490cc85743d6aef295cbbac2f496c6dd",
+    "sim_trace_comparison.json": "595e5a92dc45a20a17396b0c80e77296ef621f0d27c09c3375b33ae55094a184",
+    "msl_parity_timing.json": "c2fc348be4b6a1ca788fde57de682bc8a2dcd59732b0f5d4b9f0a66c56d07a99"
+  },
+  "referenceCacheRepair": "The OMC cache reused results without copying *_init.xml state metadata into the new results directory. Restored these unchanged XML files from the owned previous run and reran only the trace comparator, with no compiler or solver retry. The initial missing-state-metadata comparison is retained in scratch logs."
+}
