@@ -130,6 +130,36 @@
       "source": "00854f2198fbfd406fac45d6685860b4d528a1c7"
     }
   ],
+  "full_msl_counterexamples": {
+    "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+    "job": "MSL Quality Gate (merge + gate)",
+    "job_id": 114057237856,
+    "result": "FAIL: all four shard jobs completed successfully, but the merged baseline ratchet rejects eleven certified model regressions",
+    "raw_log_sha256": "a12f1312e9fd61214c713b7ed17979dc25f276de5f3217de7d41137ef1a4a16d",
+    "cohort": {"selected": 566, "compiled": 445, "sim_ok": 345, "compared": 294, "strict_high": 294, "near": 0, "deviation": 0, "comparison_skipped": 50, "missing_trace": 1, "not_attempted": 143},
+    "failed_ratchets": [
+      {"metric": "strict_high", "current": 294, "baseline": 302, "allowed_drop": 1, "floor": 301},
+      {"metric": "classified", "current": 344, "baseline": 355, "allowed_drop": 1, "floor": 354},
+      {"metric": "no_severe", "current": 344, "baseline": 355, "allowed_drop": 1, "floor": 354},
+      {"metric": "trace_model_accounting", "current": 344, "baseline": 355, "allowed_drop": 2, "floor": 353}
+    ],
+    "reported_not_gated": {"initialization_current": 362, "initialization_baseline": 370, "simulation_current": 345, "simulation_baseline": 356},
+    "certified_model_regressions": [
+      {"model": "Modelica.Blocks.Examples.FilterWithRiseTime", "status": "sim_solver_fail", "diagnostic": "EL005: typed pure-call directional owner has not been constructed", "earliest_owner": "UNRESOLVED: typed directional pure-call construction or admission"},
+      {"model": "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM", "status": "sim_solver_fail", "diagnostic": "EL005: typed pure-call directional owner has not been constructed", "earliest_owner": "UNRESOLVED: typed directional pure-call construction or admission"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank", "status": "sim_solver_fail", "pure_call_owner": 44, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1", "status": "sim_solver_fail", "pure_call_owner": 67, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2", "status": "sim_solver_fail", "pure_call_owner": 62, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1", "status": "sim_solver_fail", "pure_call_owner": 72, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2", "status": "sim_solver_fail", "pure_call_owner": 100, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.Tanks.EmptyTanks", "status": "sim_solver_fail", "pure_call_owner": 43, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.Tanks.ThreeTanks", "status": "sim_solver_fail", "pure_call_owner": 64, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2", "status": "sim_solver_fail", "diagnostic": "timeout after 45.000s", "shard": 1, "shard_job_id": 114051354722, "reported_attempt_seconds": 51.99, "earliest_owner": "UNRESOLVED: actual simulation exceeded the unchanged budget; the log does not identify its hottest operation", "classification_gap": "Typed common-master MeSessionError::Timeout survives as SimError::ModelExchangeSession, while worker classify_solver_error matches only SimError::Timeout. Correcting that consumer cannot qualify this performance failure."},
+      {"model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1", "status": "sim_solver_fail", "diagnostic": "EX002: event-boundary projection row 2293, target $formal_derivative.1.b3.frame_b.R.T[1,3], value NaN, norm inf", "earliest_owner": "UNRESOLVED: same genuine native negative control as the template wasm job and bound local reproduction"}
+    ],
+    "trace_label_limitation": "The existing NaN hook labels a residual row with solver_name(row), which indexes Y rather than row targets. Its j5 label is not evidence of the first producing variable; use the checked row-output mapping.",
+    "next_gate": "Repair the first responsible producers and rerun the unchanged complete cohort and comparator. No shard-success parity credit, baseline promotion, exclusions, tolerance changes or validator weakening."
+  },
   "prepared_source_checks": {
     "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all six changed Rust files",
     "diff_whitespace": "PASS: git diff --check",
