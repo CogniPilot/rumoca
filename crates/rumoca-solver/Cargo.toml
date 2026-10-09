@@ -29,6 +29,8 @@ instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rumoca-exec-wasm = { workspace = true }
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring
 # the feature here and nowhere else keeps it out of every production build of
 # this crate.

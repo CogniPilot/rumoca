@@ -6,8 +6,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue,
-    ModelCoordinateKey,
+    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, EagerScope, ExpressionLowerer,
+    LoweredValue, ModelCoordinateKey,
 };
 
 #[derive(Clone)]
@@ -27,6 +27,9 @@ pub(super) struct EnvironmentLayout<'dae> {
         dae::ValueTypeId<'dae>,
         Range<usize>,
     )>,
+    /// Expression values an enclosing scope already issued: a region reads
+    /// them as captures instead of lowering the expression again.
+    pub(super) expressions: Vec<(dae::ExprId<'dae>, dae::ValueTypeId<'dae>, Range<usize>)>,
     pub(super) fold_parameters: Vec<(
         dae::FunctionFoldId<'dae>,
         u32,
@@ -39,12 +42,16 @@ pub(super) struct EnvironmentLayout<'dae> {
 #[derive(Clone)]
 pub(super) struct RegionContext<'dae> {
     pub(super) view: dae::DaeView<'dae>,
-    pub(super) callees: HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
-    pub(super) predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
+    pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
+    pub(super) predicate_ranges: std::sync::Arc<HashMap<dae::ExprId<'dae>, Range<usize>>>,
     pub(super) conditional_groups:
-        HashMap<dae::FunctionDefinitionId<'dae>, ConditionalDefinitionGroup<'dae>>,
+        std::sync::Arc<HashMap<dae::FunctionDefinitionId<'dae>, ConditionalDefinitionGroup<'dae>>>,
     pub(super) assertion_slots: std::sync::Arc<[AssertionSlot]>,
     pub(super) direct_assertion_count: usize,
+    pub(super) direct_assertions: std::sync::Arc<[super::RegisteredAssertion<'dae>]>,
+    pub(super) assertion_output_base: usize,
+    pub(super) loop_statements:
+        std::sync::Arc<HashMap<dae::FunctionFoldId<'dae>, super::assertions::LoopStatements<'dae>>>,
 }
 
 /// One value a region publishes, paired with the type the target it lands on
@@ -115,6 +122,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.plan_eager_demand(results.iter().map(|(_, expression)| *expression));
     let mut values = Vec::new();
     for (value_type, expression) in results {
         // Publishing at the target's declared type is the same rule the
@@ -128,7 +136,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
         values.extend(value.leaves);
     }
     for slot in pending_predicates {
-        let predicate = lowerer.published_slot(*slot, provenance)?;
+        let predicate = lowerer.inactive_slot(*slot, provenance)?;
         values.push(predicate);
     }
     if values.len() != outputs.len() {
@@ -154,41 +162,22 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
     let parameters = environment
         .parameters
         .iter()
-        .map(|(id, value_type, range)| {
-            (
-                *id,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let model_coordinates = environment
         .model_coordinates
         .iter()
-        .map(|(key, value_type, range)| {
-            (
-                *key,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(key, value_type, range)| (*key, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let function_values = environment
         .values
         .iter()
-        .map(|(id, value_type, range)| {
-            (
-                *id,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
+        .collect();
+    let cache = environment
+        .expressions
+        .iter()
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let fold_parameters = environment
         .fold_parameters
@@ -196,10 +185,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         .map(|(fold, carried, value_type, range)| {
             (
                 (*fold, *carried),
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
+                loaded_value(&loaded, *value_type, range.clone()),
             )
         })
         .collect();
@@ -225,14 +211,29 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         binders,
         callees: context.callees.clone(),
         predicate_ranges: context.predicate_ranges.clone(),
-        cache: HashMap::new(),
+        cache,
         call_values: HashMap::new(),
         predicate_values: vec![None; context.assertion_slots.len()],
         assertion_slots: context.assertion_slots.clone(),
         next_direct_assertion: 0,
         direct_assertion_count: context.direct_assertion_count,
+        direct_assertions: context.direct_assertions.clone(),
+        assertion_output_base: context.assertion_output_base,
+        loop_statements: context.loop_statements.clone(),
         totality: HashMap::new(),
+        eager: EagerScope::default(),
     })
+}
+
+fn loaded_value<'program, 'dae>(
+    loaded: &[solve::ProgramRegister<'program>],
+    value_type: dae::ValueTypeId<'dae>,
+    range: std::ops::Range<usize>,
+) -> LoweredValue<'program, 'dae> {
+    LoweredValue {
+        value_type,
+        leaves: loaded[range].to_vec(),
+    }
 }
 
 pub(super) fn lower_region_conditional<'program, 'dae>(
@@ -250,6 +251,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.plan_eager_demand(operands.first().copied());
     let value = if let [fallback] = operands.as_slice() {
         lowerer.expression(*fallback)?
     } else {
@@ -258,7 +260,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
     let value = lowerer.coerce_value(value, value_type, provenance)?;
     let mut values = value.leaves;
     for slot in pending {
-        let predicate = lowerer.published_slot(slot, provenance)?;
+        let predicate = lowerer.inactive_slot(slot, provenance)?;
         values.push(predicate);
     }
     if values.len() != outputs.len() {
@@ -323,4 +325,21 @@ pub(super) fn lower_region_assignment_chain<'program, 'dae>(
         lowerer.builder.store(*output, value, provenance)?;
     }
     Ok(())
+}
+
+impl<'dae> ExpressionLowerer<'_, '_, 'dae> {
+    /// A region shares the immutable metadata issued for its enclosing owner.
+    pub(super) fn region_context(&self) -> RegionContext<'dae> {
+        RegionContext {
+            view: self.view,
+            callees: self.callees.clone(),
+            predicate_ranges: self.predicate_ranges.clone(),
+            conditional_groups: self.conditional_groups.clone(),
+            assertion_slots: self.assertion_slots.clone(),
+            direct_assertion_count: self.direct_assertion_count,
+            direct_assertions: self.direct_assertions.clone(),
+            assertion_output_base: self.assertion_output_base,
+            loop_statements: self.loop_statements.clone(),
+        }
+    }
 }

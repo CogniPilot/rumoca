@@ -318,6 +318,29 @@ fn value_kind_matches_type(kind: SolveValueKind, scalar: SolveScalarType) -> boo
 }
 
 impl SolveValue {
+    /// Exact typed inactive storage, never a failed assertion's message capture.
+    #[must_use]
+    pub fn inactive_assertion_message(scalar: SolveScalarType) -> Self {
+        let kind = match scalar {
+            SolveScalarType::Real {
+                format: SolveRealFormat::Binary32,
+                ..
+            } => SolveValueKind::Real32(0.0f32.to_bits()),
+            SolveScalarType::Real {
+                format: SolveRealFormat::Binary64,
+                ..
+            } => SolveValueKind::Real64(0.0f64.to_bits()),
+            SolveScalarType::Integer(domain) => {
+                SolveValueKind::Integer(0i64.clamp(domain.minimum(), domain.maximum()))
+            }
+            SolveScalarType::Boolean => SolveValueKind::Boolean(false),
+        };
+        Self {
+            value_type: SolveValueType::scalar(scalar),
+            kind,
+        }
+    }
+
     #[must_use]
     pub fn real(profile: SolveArithmeticProfile, value: f64) -> Self {
         let kind = match profile.real_format {
@@ -413,6 +436,32 @@ impl std::error::Error for SolveTypeConstructionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inactive_assertion_cells_preserve_exact_domains_and_wire_types() {
+        for (minimum, maximum, expected) in [(2, 7, 2), (-9, -3, -3), (-2, 4, 0)] {
+            let scalar =
+                SolveScalarType::Integer(SolveIntegerDomain::construct(minimum, maximum).unwrap());
+            let value = SolveValue::inactive_assertion_message(scalar);
+            assert_eq!(value.value_type(), &SolveValueType::scalar(scalar));
+            assert_eq!(value.kind(), SolveValueKind::Integer(expected));
+            let replay: SolveValue =
+                serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap();
+            assert_eq!(replay, value);
+        }
+        assert_eq!(
+            SolveValue::inactive_assertion_message(SolveScalarType::Boolean),
+            SolveValue::boolean(false)
+        );
+        for format in [SolveRealFormat::Binary32, SolveRealFormat::Binary64] {
+            let profile = SolveArithmeticProfile::construct(format, SolveIntegerDomain::FULL);
+            let scalar = SolveScalarType::real(profile);
+            assert_eq!(
+                SolveValue::inactive_assertion_message(scalar),
+                SolveValue::real(profile, 0.0)
+            );
+        }
+    }
 
     #[test]
     fn wire_rejects_empty_integer_domain() {

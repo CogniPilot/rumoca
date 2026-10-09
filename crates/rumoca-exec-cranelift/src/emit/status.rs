@@ -1,6 +1,7 @@
 //! Explicit failure propagation across private native kernel calls.
 
 use super::CompileError;
+use crate::NativeSourceFault;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use cranelift_frontend::FunctionBuilder;
 
@@ -17,24 +18,29 @@ const RECURSION_DEPTH_EXCEEDED: i64 = 6;
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
         0 => Ok(()),
-        1 => Err(CompileError::Input(
-            "native tensor index is out of bounds".into(),
-        )),
-        2 => Err(CompileError::Input(
-            "native tensor linear solve is singular or non-finite".into(),
-        )),
-        3 => Err(CompileError::Input(
-            "native Integer quotient has a zero divisor or no representable result".into(),
-        )),
+        1 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::TensorIndex,
+            message: "native tensor index is out of bounds".into(),
+        }),
+        2 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::LinearSolve,
+            message: "native tensor linear solve is singular or non-finite".into(),
+        }),
+        3 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::IntegerQuotient,
+            message: "native Integer quotient has a zero divisor or no representable result".into(),
+        }),
         NATIVE_BODY_FAILURE => Err(CompileError::Backend(
             "native body host call received operands outside its interface".into(),
         )),
-        NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::Input(
-            "a native foreign body reported an error for its operands".into(),
-        )),
-        6 => Err(CompileError::Input(
-            "recursive call exceeds the execution profile's depth limit".into(),
-        )),
+        NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::ForeignBody,
+            message: "a native foreign body reported an error for its operands".into(),
+        }),
+        6 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::RecursionDepth,
+            message: "recursive call exceeds the execution profile's depth limit".into(),
+        }),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"
         ))),

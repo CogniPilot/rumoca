@@ -9,12 +9,17 @@
 //! unchanged carries the primary's analysis and only a replaced row is
 //! analyzed again.
 
+mod output_dependencies;
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
 use rumoca_ir_solve as solve;
 
 use super::source_catalog::{CanonicalScalarProgram, CanonicalScalarProgramCatalog};
 use crate::EvalSolveError;
+use output_dependencies::OutputDependencies;
 
 /// The analysis of one refresh row: its assignment shape and certificates.
 pub(super) struct RowAnalysis {
@@ -128,46 +133,80 @@ impl AssignmentCertificates {
 
 /// The assignment shapes and causality of one canonical program, derived once
 /// for every output row it owns.
-struct ProgramFacts {
-    /// Ordered by output, stably, so one output's shapes are one run in
-    /// their derived order.
-    shapes: Vec<(usize, solve::TargetAssignmentShape)>,
+struct ProgramFacts<'source> {
+    shapes: solve::CanonicalAssignmentQueries<'source>,
     causal: bool,
+    output_dependencies: OutputDependencies<'source>,
 }
 
-impl ProgramFacts {
-    fn new(operations: &[solve::LinearOp]) -> Self {
-        let mut shapes = solve::derive_target_assignment_shapes(operations);
-        shapes.sort_by_key(|(output, _)| *output);
+impl<'source> ProgramFacts<'source> {
+    fn new(operations: &'source [solve::LinearOp]) -> Self {
         Self {
-            shapes,
+            shapes: solve::CanonicalAssignmentQueries::new(operations),
             causal: !operations.iter().any(crate::prepared::non_causal_linear_op),
+            output_dependencies: OutputDependencies::new(operations),
         }
-    }
-
-    /// The shapes of `output`, found by bisection rather than a scan of every
-    /// output's shapes.
-    fn output_shapes(&self, output: usize) -> &[(usize, solve::TargetAssignmentShape)] {
-        let start = self
-            .shapes
-            .partition_point(|(shape_output, _)| *shape_output < output);
-        let end = self
-            .shapes
-            .partition_point(|(shape_output, _)| *shape_output <= output);
-        &self.shapes[start..end]
     }
 }
 
 /// Per-program facts of one refresh-plan construction, by catalog index.
 #[derive(Default)]
-pub(super) struct RowAnalysisCache {
-    programs: Vec<Option<ProgramFacts>>,
+pub(super) struct RowAnalysisCache<'source> {
+    programs: Vec<Option<ProgramFacts<'source>>>,
+    last_candidates: Vec<Option<usize>>,
+    #[cfg(test)]
+    fact_builds: usize,
 }
 
-impl RowAnalysisCache {
-    fn facts(&mut self, index: usize, operations: &[solve::LinearOp]) -> &ProgramFacts {
+impl<'source> RowAnalysisCache<'source> {
+    pub(super) fn with_last_candidates(
+        program_count: usize,
+        candidates: impl IntoIterator<Item = (usize, usize)>,
+        span: Option<rumoca_core::Span>,
+    ) -> Result<Self, EvalSolveError> {
+        let mut last_candidates = Vec::new();
+        super::reserve_refresh_vec_capacity(
+            &mut last_candidates,
+            program_count,
+            "refresh analysis last candidates",
+            span,
+        )?;
+        last_candidates.resize(program_count, None);
+        for (program, equation) in candidates {
+            let last = last_candidates
+                .get_mut(program)
+                .ok_or_else(|| crate::invalid_row("refresh analysis candidate has no program"))?;
+            *last = Some(equation);
+        }
+        Ok(Self {
+            programs: Vec::new(),
+            last_candidates,
+            #[cfg(test)]
+            fact_builds: 0,
+        })
+    }
+
+    /// Query completion, including refusal or reuse, releases only a source
+    /// whose immutable candidate inventory proves there is no later query.
+    pub(super) fn finish_candidate(&mut self, program: usize, equation: usize) {
+        if self.last_candidates.get(program) == Some(&Some(equation))
+            && let Some(facts) = self.programs.get_mut(program)
+        {
+            *facts = None;
+        }
+    }
+
+    fn facts(
+        &mut self,
+        index: usize,
+        operations: &'source [solve::LinearOp],
+    ) -> &mut ProgramFacts<'source> {
         if self.programs.len() <= index {
             self.programs.resize_with(index + 1, || None);
+        }
+        #[cfg(test)]
+        {
+            self.fact_builds += usize::from(self.programs[index].is_none());
         }
         self.programs[index].get_or_insert_with(|| ProgramFacts::new(operations))
     }
@@ -183,11 +222,11 @@ impl RowAnalysisCache {
 /// one is evaluable only when no shape claims the output and the output does
 /// not read the target. The exact certificate requires a causal program and a
 /// shape; the direct one also requires the shape to be direct.
-pub(super) fn analyze_refresh_row(
-    program: &CanonicalScalarProgram<'_>,
+pub(super) fn analyze_refresh_row<'source>(
+    program: &CanonicalScalarProgram<'source>,
     (program_index, equation_index, output_offset, target_index): (usize, usize, usize, usize),
     prior: Option<&PriorRowAnalysis<'_>>,
-    cache: &mut RowAnalysisCache,
+    cache: &mut RowAnalysisCache<'source>,
 ) -> Result<Option<RowAnalysis>, EvalSolveError> {
     if let Some(reused) = prior.and_then(|prior| {
         prior.reuse(
@@ -200,18 +239,12 @@ pub(super) fn analyze_refresh_row(
         return Ok(Some(reused));
     }
     let facts = cache.facts(program_index, program.operations);
-    let output_shapes = facts.output_shapes(output_offset);
-    let shape = output_shapes
-        .iter()
-        .find(|(_, shape)| shape.target_y_index() == target_index)
-        .map(|(_, shape)| shape.clone());
+    let shape = facts.shapes.derive(output_offset, target_index);
     let evaluable = shape.is_some()
-        || (output_shapes.is_empty()
-            && !crate::prepared::row_output_depends_on_y_index(
-                program.operations,
-                output_offset,
-                target_index,
-            ));
+        || (!facts
+            .output_dependencies
+            .depends_on(output_offset, target_index)
+            && !facts.shapes.has_any(output_offset));
     if !evaluable {
         return Ok(None);
     }

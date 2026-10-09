@@ -4,6 +4,7 @@
 //! references. It validates and attaches each `StoreOutput` to its checked
 //! output slot, but deliberately contains no target-language text.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use minijinja::Value;
@@ -14,7 +15,7 @@ use crate::errors::CodegenError;
 
 #[derive(Debug)]
 struct ProgramMetadata {
-    output_targets: Vec<Option<Box<[usize]>>>,
+    output_targets: Vec<Option<Range<usize>>>,
     output_count: usize,
     temporary_count: usize,
 }
@@ -173,9 +174,22 @@ impl Object for PlanOpValue {
     }
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        if key.as_str()? == "output_span" {
+            let span = self
+                .block
+                .program_output_span(self.program_index, self.op_index)?;
+            return Some(minijinja::context! {
+                start => span.start(),
+                stride => span.stride(),
+                descending => span.descending(),
+                count => span.count(),
+            });
+        }
         op_field(
             self.op(),
-            self.metadata[self.program_index].output_targets[self.op_index].as_deref(),
+            self.metadata[self.program_index].output_targets[self.op_index]
+                .as_ref()
+                .map(|range| &self.block.output_indices()[range.clone()]),
             key.as_str()?,
         )
     }
@@ -245,7 +259,7 @@ fn take_output_target(
     output_indices: &[usize],
     output_ordinal: &mut usize,
     output_count: &mut usize,
-) -> Result<Option<Box<[usize]>>, CodegenError> {
+) -> Result<Option<Range<usize>>, CodegenError> {
     let count = match op {
         solve::LinearOp::StoreOutput { .. } => 1,
         solve::LinearOp::StoreOutputRange { count, .. } => *count,
@@ -257,16 +271,13 @@ fn take_output_target(
     let end = output_ordinal
         .checked_add(count)
         .ok_or_else(|| CodegenError::template("scalar program plan output ordinal overflow"))?;
-    let targets = output_indices
-        .get(*output_ordinal..end)
-        .ok_or_else(|| {
-            CodegenError::template(format!(
-                "scalar program plan is missing output mappings #{}..{}",
-                *output_ordinal, end
-            ))
-        })?
-        .to_vec()
-        .into_boxed_slice();
+    output_indices.get(*output_ordinal..end).ok_or_else(|| {
+        CodegenError::template(format!(
+            "scalar program plan is missing output mappings #{}..{}",
+            *output_ordinal, end
+        ))
+    })?;
+    let targets = *output_ordinal..end;
     *output_ordinal = end;
     *output_count = output_count
         .checked_add(count)
@@ -274,7 +285,7 @@ fn take_output_target(
     Ok(Some(targets))
 }
 
-fn no_output_target() -> Result<Option<Box<[usize]>>, CodegenError> {
+fn no_output_target() -> Result<Option<Range<usize>>, CodegenError> {
     Ok(Option::None)
 }
 
@@ -306,6 +317,14 @@ pub(super) fn op_field(
     }
     load_field(op, key)
         .or_else(|| match op {
+            solve::LinearOp::PureCallObservation {
+                input_starts, site, ..
+            } => match key {
+                "input_starts" => Some(Value::from_serialize(input_starts)),
+                "owner" => Some(Value::from(site.value_site().owner().index())),
+                "predicate_outputs" => Some(Value::from_serialize(site.predicate_outputs())),
+                _ => None,
+            },
             solve::LinearOp::PureCall {
                 input_starts, site, ..
             } => match key {
@@ -926,9 +945,14 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         }
         LinearOp::Select { .. } => &["kind", "dst", "cond", "if_true", "if_false"],
         LinearOp::StoreOutput { .. } => &["kind", "src", "output_index"],
-        LinearOp::StoreOutputRange { .. } => {
-            &["kind", "start", "count", "stride", "output_indices"]
-        }
+        LinearOp::StoreOutputRange { .. } => &[
+            "kind",
+            "start",
+            "count",
+            "stride",
+            "output_indices",
+            "output_span",
+        ],
         LinearOp::TableBounds { .. } => &["kind", "dst", "table_id", "max"],
         LinearOp::TableLookup { .. } | LinearOp::TableLookupSlope { .. } => {
             &["kind", "dst", "table_id", "column", "input"]
@@ -991,6 +1015,9 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "fallback_register_count",
             "fallback",
         ],
+        LinearOp::PureCallObservation { .. } => {
+            &["kind", "dst", "input_starts", "owner", "predicate_outputs"]
+        }
         LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
             &["kind", "dst", "input_starts", "owner"]
         }

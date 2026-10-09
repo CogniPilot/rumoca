@@ -3,7 +3,7 @@
 use rumoca_core::AffineForm;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(super) struct Coordinates {
     output_rank: usize,
     free_dimensions: Box<[u32]>,
@@ -11,6 +11,49 @@ pub(super) struct Coordinates {
 }
 
 impl Coordinates {
+    pub(super) fn is_identity(&self, dimensions: &[u32]) -> bool {
+        self.free_dimensions.is_empty() && *self == Self::identity(dimensions.len())
+    }
+
+    /// Proves every existing scalar mapping check over its complete box.
+    pub(super) fn complete_domain(
+        &self,
+        output_dimensions: &[u32],
+        input_dimensions: &[u32],
+    ) -> Option<()> {
+        if output_dimensions.len() != self.output_rank
+            || input_dimensions.len() != self.subscripts.len()
+        {
+            return None;
+        }
+        let free_count = self
+            .free_dimensions
+            .iter()
+            .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))?;
+        if free_count == 0 {
+            return Some(());
+        }
+        let dimensions: Vec<_> = output_dimensions
+            .iter()
+            .chain(&self.free_dimensions)
+            .copied()
+            .collect();
+        for (form, &extent) in self.subscripts.iter().zip(input_dimensions) {
+            if form.coeffs.len() != dimensions.len() {
+                return None;
+            }
+            let (minimum, maximum) = checked_prefix_bounds(form, &dimensions)?;
+            if minimum < 0 || maximum >= i64::from(extent) {
+                return None;
+            }
+        }
+        // flatten_subscripts uses checked row-major arithmetic in this order.
+        input_dimensions
+            .iter()
+            .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))?;
+        Some(())
+    }
+
     pub(super) fn identity(rank: usize) -> Self {
         Self::access(
             rank,
@@ -122,6 +165,18 @@ impl Coordinates {
     }
 }
 
+fn checked_prefix_bounds(form: &AffineForm, dimensions: &[u32]) -> Option<(i64, i64)> {
+    let mut minimum = form.constant;
+    let mut maximum = form.constant;
+    for (&coefficient, &extent) in form.coeffs.iter().zip(dimensions) {
+        let last = i64::from(extent.checked_sub(1)?);
+        let product = coefficient.checked_mul(last)?;
+        minimum = minimum.checked_add(product.min(0))?;
+        maximum = maximum.checked_add(product.max(0))?;
+    }
+    Some((minimum, maximum))
+}
+
 fn coordinates(dimensions: &[u32], mut element: usize) -> Option<Vec<i64>> {
     let mut point = vec![0; dimensions.len()];
     for (coordinate, &extent) in point.iter_mut().zip(dimensions).rev() {
@@ -159,4 +214,85 @@ fn flatten_subscripts(
             }
             flat.checked_mul(extent as usize)?.checked_add(coordinate)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_identity_domain_is_compact_and_matches_scalar_mapping() {
+        let coordinates = Coordinates::identity(1);
+        assert_eq!(
+            coordinates.complete_domain(&[4_194_304], &[4_194_304]),
+            Some(())
+        );
+        assert!(coordinates.is_identity(&[4_194_304]));
+        for element in [0, 2_097_152, 4_194_303] {
+            assert_eq!(
+                coordinates.input_elements(&[4_194_304], element, &[4_194_304]),
+                Some(vec![element])
+            );
+        }
+    }
+
+    #[test]
+    fn certificate_checks_hidden_last_coordinate_and_each_overflow_prefix() {
+        let shifted = Coordinates::access(
+            1,
+            &[],
+            vec![AffineForm {
+                constant: 1,
+                coeffs: vec![1],
+            }],
+        );
+        assert_eq!(shifted.input_elements(&[4], 0, &[4]), Some(vec![1]));
+        assert_eq!(shifted.input_elements(&[4], 3, &[4]), None);
+        assert_eq!(shifted.complete_domain(&[4], &[4]), None);
+        let multiply = Coordinates::access(
+            1,
+            &[],
+            vec![AffineForm {
+                constant: 0,
+                coeffs: vec![i64::MAX],
+            }],
+        );
+        assert_eq!(multiply.complete_domain(&[3], &[u32::MAX]), None);
+        let prefix = Coordinates::access(
+            2,
+            &[],
+            vec![AffineForm {
+                constant: i64::MAX,
+                coeffs: vec![1, -1],
+            }],
+        );
+        assert_eq!(prefix.complete_domain(&[2, 2], &[u32::MAX]), None);
+    }
+
+    #[test]
+    fn complete_free_box_retains_existing_scalar_order_and_empty_free_policy() {
+        let coordinates = Coordinates::access(
+            1,
+            &[3],
+            vec![AffineForm {
+                constant: 0,
+                coeffs: vec![3, 1],
+            }],
+        );
+        assert_eq!(coordinates.complete_domain(&[2], &[6]), Some(()));
+        assert_eq!(
+            coordinates.input_elements(&[2], 1, &[6]),
+            Some(vec![3, 4, 5])
+        );
+        let empty = Coordinates::access(
+            1,
+            &[0],
+            vec![AffineForm {
+                constant: -99,
+                coeffs: vec![],
+            }],
+        );
+        assert_eq!(empty.complete_domain(&[2], &[6]), Some(()));
+        assert_eq!(empty.input_elements(&[2], 1, &[6]), Some(vec![]));
+    }
 }

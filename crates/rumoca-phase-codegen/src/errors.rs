@@ -152,10 +152,11 @@ fn compute_line_span(source: &str, line: usize) -> SourceSpan {
 
 impl From<minijinja::Error> for CodegenError {
     fn from(err: minijinja::Error) -> Self {
+        let (message, origin) = template_error_context(&err);
         // Try to extract template source context for rich diagnostics
-        if let Some(line) = err.line() {
-            let tmpl_name = err.name().unwrap_or("<inline>");
-            if let Some(source) = err.template_source() {
+        if let Some(line) = origin.line() {
+            let tmpl_name = origin.name().unwrap_or("<inline>");
+            if let Some(source) = origin.template_source() {
                 let span = compute_line_span(source, line);
                 return CodegenError::TemplateRenderError {
                     // The alternate MiniJinja formatter appends the complete
@@ -163,14 +164,32 @@ impl From<minijinja::Error> for CodegenError {
                     // tens of megabytes and belongs neither in diagnostics nor
                     // worker protocol rows; source and span are retained
                     // separately below.
-                    message: err.to_string(),
+                    message,
                     src: NamedSource::new(tmpl_name, source.to_string()),
                     span,
                 };
             }
         }
-        CodegenError::template(err.to_string())
+        CodegenError::template(message)
     }
+}
+
+/// Preserve included-template causes without formatting their render contexts.
+fn template_error_context(err: &minijinja::Error) -> (String, &minijinja::Error) {
+    let mut message = err.to_string();
+    let mut origin = err;
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        if let Some(template) = cause.downcast_ref::<minijinja::Error>()
+            && template.template_source().is_some()
+        {
+            origin = template;
+        }
+        source = cause.source();
+    }
+    (message, origin)
 }
 
 impl From<rumoca_eval_solve::ScalarizeError> for CodegenError {
@@ -270,6 +289,50 @@ mod tests {
         assert!(
             code == Some("rumoca::codegen::EC001".to_string())
                 || code == Some("rumoca::codegen::EC002".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_include_reports_leaf_without_render_context() {
+        let mut env = minijinja::Environment::new();
+        env.set_debug(true);
+        env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+        env.add_template("outer", "{% include 'middle' %}").unwrap();
+        env.add_template("middle", "{% include 'leaf' %}").unwrap();
+        env.add_template("leaf", "first\nsecond\n{{ missing.value }}\n")
+            .unwrap();
+        let error = env
+            .get_template("outer")
+            .unwrap()
+            .render(minijinja::context! {
+                unrelated => vec!["PRIVATE_RENDER_CONTEXT_MARKER"; 512]
+            })
+            .unwrap_err();
+        let CodegenError::TemplateRenderError { message, src, span } = error.into() else {
+            panic!("included template has a source-backed rendering error");
+        };
+        assert!(message.contains("undefined value"), "{message}");
+        assert!(message.contains("leaf:3"), "{message}");
+        assert_eq!(src.name(), "leaf");
+        assert_eq!(span.offset(), "first\nsecond\n".len());
+        assert!(message.len() < 1024);
+        assert!(!message.contains("PRIVATE_RENDER_CONTEXT_MARKER"));
+        assert!(!message.contains("Referenced variables:"));
+    }
+
+    #[test]
+    fn source_free_template_error_retains_external_cause() {
+        let error = minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            "compiler operation refused",
+        )
+        .with_source(std::io::Error::other("checked index is out of bounds"));
+        let CodegenError::TemplateError { message } = error.into() else {
+            panic!("source-free error has no invented source span");
+        };
+        assert_eq!(
+            message,
+            "invalid operation: compiler operation refused: checked index is out of bounds"
         );
     }
 }

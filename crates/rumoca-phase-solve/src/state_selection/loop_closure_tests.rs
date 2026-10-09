@@ -92,19 +92,33 @@ fn a_redundant_loop_closure_reduces_to_the_basis_the_reducer_selects() {
         prepared.manifold_requires_reduction(),
         "the reducer classifies the closure redundant"
     );
-    let through_reducer = reduce_or_retain(&model, prepared, &overrides).unwrap();
-    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &overrides)
-        .unwrap()
-        .expect("the closure decides reduction without the reducer");
+    let through_reducer = reduce_or_retain(
+        &model,
+        prepared,
+        &overrides,
+        InputInitializationPolicy::default(),
+    )
+    .unwrap();
+    let decided = reduce_loop_closure(
+        &SourceStructuralAnalysis::of(&model),
+        &overrides,
+        InputInitializationPolicy::default(),
+    )
+    .unwrap()
+    .expect("the closure decides reduction without the reducer");
     assert_eq!(
         decided.integrated_names().unwrap(),
         through_reducer.integrated_names().unwrap()
     );
     let direct = pendulum(false);
     assert!(
-        reduce_loop_closure(&SourceStructuralAnalysis::of(&direct), &overrides)
-            .unwrap()
-            .is_none()
+        reduce_loop_closure(
+            &SourceStructuralAnalysis::of(&direct),
+            &overrides,
+            InputInitializationPolicy::default()
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -115,9 +129,13 @@ fn a_loop_closure_selection_names_each_generated_state_by_its_source() {
     // the source scalar (and formal order) its projection equation equates it
     // to, and those names are the selection's integrated basis.
     let model = pendulum(true);
-    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &HashMap::new())
-        .unwrap()
-        .expect("the closure decides reduction without the reducer");
+    let decided = reduce_loop_closure(
+        &SourceStructuralAnalysis::of(&model),
+        &HashMap::new(),
+        InputInitializationPolicy::default(),
+    )
+    .unwrap()
+    .expect("the closure decides reduction without the reducer");
     let mut basis = decided.integrated_names().unwrap();
     basis.sort();
     assert_eq!(basis.len(), 2, "a closed pendulum integrates two scalars");

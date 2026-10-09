@@ -84,7 +84,7 @@ fn every_row_of_a_tuple_call_reads_one_call_at_any_width() {
 fn the_shared_call_equals_every_row_call_bit_for_bit() {
     let model = model(3000);
     let runtime = SolveRuntime::new(&model).expect("the runtime builds");
-    let mut y = model.initial_y.clone();
+    let mut y = model.initial_y.to_vec();
     runtime
         .refresh_algebraic_and_output_slots_certified(0.0, &mut y, &model.parameters, 1e-10, 20)
         .expect("the refresh runs");

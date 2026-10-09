@@ -144,6 +144,12 @@ pub fn for_each_scalar_coordinate<'dae>(
 /// parameter-scalar summary, then substitute the actual call arguments.
 #[derive(Default)]
 pub struct ScalarCoordinateProjectionCache<'dae> {
+    plain_actuals: HashMap<u32, query::PlainActual<'dae>>,
+    plain_call_arguments: HashMap<u32, Box<[query::PlainActual<'dae>]>>,
+    #[cfg(test)]
+    plain_argument_classifications: std::cell::Cell<u64>,
+    #[cfg(test)]
+    plain_argument_cache_lookups: std::cell::Cell<u64>,
     function_results: HashMap<FunctionSummaryKey, FunctionSummaryEntry>,
     completed_folds: HashMap<fold_graph::FoldNode<'dae>, Arc<[FunctionParameterDependency]>>,
     parameter_fragments: parameter_fragments::reuse::Cache,
@@ -531,13 +537,7 @@ impl<'dae> Projection<'_, 'dae> {
                 output,
                 arguments,
                 ..
-            } => self.function_call(
-                function,
-                output,
-                arguments,
-                scalar_index,
-                node.provenance().span(),
-            ),
+            } => self.function_call(expression, function, output, arguments, scalar_index),
             dae::ExpressionOperation::StringConversion { value, format, .. } => {
                 self.string_conversion_dependencies(value, format)
             }
@@ -918,40 +918,48 @@ impl<'dae> Projection<'_, 'dae> {
 
     fn function_call(
         &mut self,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         output: u32,
         arguments: dae::ExpressionOperands<'dae>,
         scalar_index: usize,
-        span: Span,
     ) -> Result<(), ProjectionError> {
         if self.function_frames.len() >= 256 {
-            return Err(ProjectionError::FunctionRecursion { span });
+            return Err(ProjectionError::FunctionRecursion {
+                span: self.node(call).provenance().span(),
+            });
         }
-        let arguments = arguments.iter().collect::<Vec<_>>();
         if self.is_native_table_call(function) {
             // A native table interpolation (MLS §12.9) is a solver primitive:
             // its result depends on its argument incidence, and the opaque
             // external body is never entered.
-            for argument in &arguments {
-                self.expression(*argument, 0)?;
+            for argument in arguments.iter() {
+                self.expression(argument, 0)?;
             }
             return Ok(());
         }
         if self.has_native_body(function) || self.is_active_function(function) {
+            let arguments = arguments.iter().collect::<Vec<_>>();
             return self.native_body_arguments(&arguments);
         }
-        if self.query_free_arguments(&arguments) {
+        if self.query_free_arguments(call, arguments) {
             // A pure call reads only its arguments, so a call whose actuals
             // hold no queried coordinate contributes none.
             return Ok(());
         }
+        let arguments = arguments.iter().collect::<Vec<_>>();
         let dependency = FunctionResultDependency {
             function: function.index(),
             output,
             field: None,
             scalar: scalar_index,
         };
-        self.project_function_result(dependency, function, arguments, span)
+        self.project_function_result(
+            dependency,
+            function,
+            arguments,
+            self.node(call).provenance().span(),
+        )
     }
 
     /// Whether `function` is already being projected on this walk, so the call
@@ -996,32 +1004,40 @@ impl<'dae> Projection<'_, 'dae> {
 
     fn function_call_record_field(
         &mut self,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         output: u32,
         arguments: dae::ExpressionOperands<'dae>,
         field: &FieldPath,
         scalar: usize,
-        span: Span,
     ) -> Result<(), ProjectionError> {
         if self.function_frames.len() >= 256 {
-            return Err(ProjectionError::FunctionRecursion { span });
+            return Err(ProjectionError::FunctionRecursion {
+                span: self.node(call).provenance().span(),
+            });
         }
-        let arguments = arguments.iter().collect::<Vec<_>>();
         if self.is_active_function(function) {
+            let arguments = arguments.iter().collect::<Vec<_>>();
             return self.native_body_arguments(&arguments);
         }
-        if self.query_free_arguments(&arguments) {
+        if self.query_free_arguments(call, arguments) {
             // A pure call reads only its arguments, so a call whose actuals
             // hold no queried coordinate contributes none.
             return Ok(());
         }
+        let arguments = arguments.iter().collect::<Vec<_>>();
         let dependency = FunctionResultDependency {
             function: function.index(),
             output,
             field: Some(field.clone()),
             scalar,
         };
-        self.project_function_result(dependency, function, arguments, span)
+        self.project_function_result(
+            dependency,
+            function,
+            arguments,
+            self.node(call).provenance().span(),
+        )
     }
 
     /// Project one function result scalar at a call site.

@@ -7,10 +7,18 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = []
+component-build = ["dep:tempfile", "dep:serde_json", "dep:wit-component", "dep:wit-parser"]
+
 [dependencies]
+tempfile = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 wasm-encoder = "0.241"
+wit-component = { version = "0.241", optional = true }
+wit-parser = { version = "0.241", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -22,6 +30,7 @@ rumoca-exec-cranelift = { workspace = true }
 serde_json = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 wasmparser = "0.241"
+wit-component = { version = "0.241", features = ["dummy-module"] }
 
 [lints]
 workspace = true

@@ -269,7 +269,7 @@ impl BodyEmitter<'_> {
     }
 
     /// One issued pure call of a stage program, followed by its Integer lane
-    /// capture when this call produces the stage's published Integer.
+    /// captures when this call produces the stage's published Integers.
     fn emit_program_call(
         &mut self,
         op: LinearOp,
@@ -277,10 +277,13 @@ impl BodyEmitter<'_> {
         index: usize,
     ) -> Result<(), String> {
         self.emit_native_pure_call(op, Some(prefix))?;
-        match self.integer_capture {
-            Some(capture) if capture.operation == index => self.capture_integer_cell(capture),
-            _ => Ok(()),
+        for ordinal in 0..self.integer_capture.len() {
+            let capture = self.integer_capture[ordinal];
+            if capture.operation == index {
+                self.capture_integer_cell(capture)?;
+            }
         }
+        Ok(())
     }
 
     fn emit_mapped_range(

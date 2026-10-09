@@ -1,3 +1,6 @@
+mod host_initialization;
+mod native_initialization;
+
 use rumoca_core::{
     ClockLattice, ClockRational, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
     VarName,

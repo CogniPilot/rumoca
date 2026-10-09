@@ -101,22 +101,83 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
         let (lhs_index, rhs_index) = (index(lhs_count), index(rhs_count));
         let left = self.exact_literal(lhs, lhs_index);
         let right = self.exact_literal(rhs, rhs_index);
-        match operator {
-            dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => {
-                if right == Some(1.0) {
-                    Some((lhs, lhs_index))
-                } else if left == Some(1.0) {
-                    Some((rhs, rhs_index))
-                } else {
-                    None
-                }
+        Some(match identity_side(operator, left, right)? {
+            IdentitySide::Lhs => (lhs, lhs_index),
+            IdentitySide::Rhs => (rhs, rhs_index),
+        })
+    }
+
+    /// The operand that is the whole value of an elementwise binary whose
+    /// other operand is a constant-filled aggregate (or a literal scalar)
+    /// holding one exact identity value in every lane. The identity is a
+    /// property of the fill value, so one decision covers the entire
+    /// aggregate and the operand packs as one range.
+    pub(super) fn identity_operand_aggregate(
+        &self,
+        operator: dae::BinaryOperator,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+    ) -> Option<dae::ExprId<'dae>> {
+        let result = scalar_count(self.view, lhs).max(scalar_count(self.view, rhs));
+        let elementwise = matches!(
+            operator,
+            dae::BinaryOperator::ElementwiseMultiply
+                | dae::BinaryOperator::ElementwiseDivide
+                | dae::BinaryOperator::ElementwiseSubtract
+                | dae::BinaryOperator::Subtract
+        ) || matches!(
+            operator,
+            dae::BinaryOperator::Multiply | dae::BinaryOperator::Divide
+        ) && (scalar_count(self.view, lhs) == 1
+            || scalar_count(self.view, rhs) == 1);
+        if !elementwise {
+            return None;
+        }
+        let operand = match identity_side(
+            operator,
+            self.uniform_literal(lhs),
+            self.uniform_literal(rhs),
+        )? {
+            IdentitySide::Lhs => lhs,
+            IdentitySide::Rhs => rhs,
+        };
+        (scalar_count(self.view, operand) == result).then_some(operand)
+    }
+
+    /// The one value every lane of a constant-filled aggregate holds:
+    /// `zeros`, `ones`, `fill(literal, ...)`, and their signed or named
+    /// constant forms. Lane-independent by construction, unlike
+    /// `exact_literal`, which answers for a single lane.
+    pub(super) fn uniform_literal(&self, expression: dae::ExprId<'dae>) -> Option<f64> {
+        let node = self.node(expression);
+        if node.variability() != dae::ExpressionVariability::Constant
+            || node.binder_domain().is_some()
+        {
+            return None;
+        }
+        match node.operation() {
+            dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill,
+                ..
+            } => self.exact_literal(expression, 0),
+            dae::ExpressionOperation::Literal(_) => self.exact_literal(expression, 0),
+            dae::ExpressionOperation::Array(elements) => {
+                // A constant array of identically filled rows is one fill;
+                // the check visits the rows, never the cells.
+                let mut values = elements.iter().map(|element| self.uniform_literal(element));
+                let first = values.next()??;
+                values
+                    .all(|value| value.is_some_and(|value| value.to_bits() == first.to_bits()))
+                    .then_some(first)
             }
-            dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide => {
-                (right == Some(1.0)).then_some((lhs, lhs_index))
-            }
-            dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => right
-                .is_some_and(|value| value.to_bits() == 0)
-                .then_some((lhs, lhs_index)),
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Plus,
+                operand,
+            } => self.uniform_literal(operand),
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Negate,
+                operand,
+            } => self.uniform_literal(operand).map(|value| -value),
             _ => None,
         }
     }
@@ -212,5 +273,39 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
             }
             _ => None,
         }
+    }
+}
+
+/// Which operand an exact algebraic identity returns as the whole value.
+#[derive(Clone, Copy)]
+enum IdentitySide {
+    Lhs,
+    Rhs,
+}
+
+/// The exact identities `x * 1`, `1 * x`, `x / 1`, and `x - (+0)`, decided
+/// from the literal values of the two operands.
+fn identity_side(
+    operator: dae::BinaryOperator,
+    left: Option<f64>,
+    right: Option<f64>,
+) -> Option<IdentitySide> {
+    match operator {
+        dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => {
+            if right == Some(1.0) {
+                Some(IdentitySide::Lhs)
+            } else if left == Some(1.0) {
+                Some(IdentitySide::Rhs)
+            } else {
+                None
+            }
+        }
+        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide => {
+            (right == Some(1.0)).then_some(IdentitySide::Lhs)
+        }
+        dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => right
+            .is_some_and(|value| value.to_bits() == 0)
+            .then_some(IdentitySide::Lhs),
+        _ => None,
     }
 }

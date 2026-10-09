@@ -67,7 +67,7 @@ impl CompiledSolveJacobianExpression for Compiler {
         _seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("prepared projection must not replay the whole Jacobian")
     }
 }
@@ -80,7 +80,7 @@ impl CompiledSolveProjectionJacobian for PreparedNative {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("prepared projection failed".into());

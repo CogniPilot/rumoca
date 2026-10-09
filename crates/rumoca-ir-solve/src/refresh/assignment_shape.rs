@@ -187,24 +187,7 @@ pub fn derive_target_assignment_shapes(
                     .or_insert_with(|| dependency_candidates::derive(producers.view(), output))
                     .as_ref()
             });
-        let candidates = match walked {
-            Some(walked) => {
-                let mut candidates = dependencies.register_dependencies(output).map_or_else(
-                    || targets.clone(),
-                    |scalar| {
-                        scalar
-                            .iter()
-                            .filter(|index| targets.contains(index))
-                            .collect()
-                    },
-                );
-                if !walked.linear {
-                    candidates.extend(walked.targets.iter().copied());
-                }
-                candidates
-            }
-            None => targets.clone(),
-        };
+        let candidates = assignment_candidates(output, dependencies, targets, walked);
         let output_shapes = OutputShapes::new(producers.view(), output, dependencies);
         for &target in &candidates {
             let Some(shape) = output_shapes.for_target(target) else {
@@ -216,6 +199,49 @@ pub fn derive_target_assignment_shapes(
         }
     }
     shapes
+}
+
+fn assignment_candidates(
+    output: u32,
+    dependencies: &ScalarProgramYDependency<'_>,
+    targets: &BTreeSet<usize>,
+    walked: Option<&dependency_candidates::Candidates>,
+) -> BTreeSet<usize> {
+    let Some(walked) = walked else {
+        return targets.clone();
+    };
+    let mut candidates = dependencies.register_dependencies(output).map_or_else(
+        || targets.clone(),
+        |scalar| {
+            scalar
+                .iter()
+                .filter(|index| targets.contains(index))
+                .collect()
+        },
+    );
+    if !walked.linear {
+        candidates.extend(walked.targets.iter().copied());
+    }
+    candidates
+}
+
+fn has_assignment_shape(
+    prefix: ProgramPrefix<'_>,
+    output: u32,
+    dependencies: &ScalarProgramYDependency<'_>,
+) -> bool {
+    if !producer_may_certify(prefix, output) {
+        return false;
+    }
+    let shapes = OutputShapes::new(prefix, output, dependencies);
+    if !shapes.fixed.is_empty() {
+        return true;
+    }
+    let walked = dependency_candidates::derive(prefix, output);
+    let targets = y_load_indices(prefix.operations());
+    assignment_candidates(output, dependencies, &targets, walked.as_ref())
+        .into_iter()
+        .any(|target| shapes.for_target(target).is_some())
 }
 
 /// One store position's prefix analyses, shared by the outputs it stores.
@@ -298,7 +324,7 @@ pub fn output_y_reads(program: &[LinearOp], output_offset: usize) -> OutputYRead
         return OutputYReads::Absent;
     };
     match ScalarProgramYDependency::new(prefix).register_dependencies(output) {
-        Some(reads) => OutputYReads::Bounded(reads.clone()),
+        Some(reads) => OutputYReads::Bounded(reads.into_owned()),
         None => OutputYReads::Unbounded,
     }
 }

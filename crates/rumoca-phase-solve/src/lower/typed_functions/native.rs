@@ -19,8 +19,9 @@ pub(super) fn register_native_call<'dae>(
 ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
     let parameter_types = function.parameter_types().iter().collect::<Vec<_>>();
     let (inputs, parameter_ranges) = leaf_layout(view, &parameter_types, arithmetic)?;
-    let result_types = function.result_types().iter().collect::<Vec<_>>();
-    let (results, result_ranges) = leaf_layout(view, &result_types, arithmetic)?;
+    let result_layout =
+        std::sync::Arc::new(FunctionResultsLayout::lower(view, function, arithmetic)?);
+    let results = result_layout.leaves.clone();
     let result_leaf_count = results.len();
     let outputs = results
         .into_iter()
@@ -50,19 +51,23 @@ pub(super) fn register_native_call<'dae>(
                 model_coordinates: HashMap::new(),
                 parameters,
                 function_values: HashMap::new(),
-                conditional_groups: HashMap::new(),
+                conditional_groups: Default::default(),
                 fold_parameters: HashMap::new(),
                 fold_values: HashMap::new(),
                 binders: HashMap::new(),
-                callees: HashMap::new(),
-                predicate_ranges: HashMap::new(),
+                callees: Default::default(),
+                predicate_ranges: Default::default(),
                 cache: HashMap::new(),
                 call_values: HashMap::new(),
                 predicate_values: Vec::new(),
                 assertion_slots: std::sync::Arc::from(Vec::new()),
                 next_direct_assertion: 0,
                 direct_assertion_count: 0,
+                direct_assertions: std::sync::Arc::from([]),
+                assertion_output_base: result_layout.leaves.len(),
+                loop_statements: Default::default(),
                 totality: HashMap::new(),
+                eager: EagerScope::default(),
             };
             let operands = binding
                 .inputs()
@@ -72,7 +77,8 @@ pub(super) fn register_native_call<'dae>(
                 .builder
                 .native(binding.body(), &operands, provenance)?;
             for (value, result) in values.into_iter().zip(binding.results()) {
-                let leaf = result_ranges
+                let leaf = result_layout
+                    .ranges
                     .get(*result as usize)
                     .filter(|range| range.len() == 1)
                     .map(|range| range.start)
@@ -90,7 +96,7 @@ pub(super) fn register_native_call<'dae>(
     Ok(RegisteredCall {
         callee: CalleeInterface {
             owner,
-            result_ranges: result_ranges.into_boxed_slice(),
+            result_layout,
             result_leaf_count,
             assertion_slots: std::sync::Arc::from(Vec::new()),
             assertions: Box::new([]),

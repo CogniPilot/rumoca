@@ -231,7 +231,7 @@ impl EventTransactionProgram {
         &self.producer_owners
     }
 
-    /// Ordered actions aligned with the assertion-predicate result suffix.
+    /// Ordered actions aligned with predicate roles in the assertion suffix.
     #[must_use]
     pub const fn assertions(&self) -> &[SolveEventAction] {
         &self.assertions
@@ -370,18 +370,35 @@ fn validate_event_transaction_call(
     {
         return Err(invalid("typed call outputs do not match atomic targets"));
     }
-    if site.outputs()[targets.len()..].iter().any(|output| {
-        output.kind() != SolvePureCallOutputKind::AssertionPredicate
-            || output.value_type() != &SolveValueType::scalar(SolveScalarType::Boolean)
-    }) {
-        return Err(invalid(
-            "transaction suffix is not a checked assertion-predicate tuple",
-        ));
+    let suffix = &site.outputs()[targets.len()..];
+    if suffix
+        .iter()
+        .any(|output| output.kind() == SolvePureCallOutputKind::Result)
+    {
+        return Err(invalid("transaction suffix contains an ordinary result"));
     }
-    if site.outputs().len() - targets.len() != assertions.len() {
+    let predicates = suffix
+        .iter()
+        .filter(|output| output.kind() == SolvePureCallOutputKind::AssertionPredicate)
+        .collect::<Vec<_>>();
+    if predicates.len() != assertions.len() {
         return Err(invalid(
             "assertion actions do not cover the checked predicate suffix",
         ));
+    }
+    for (predicate, action) in predicates.into_iter().zip(assertions) {
+        let level = match action.kind {
+            SolveEventActionKind::Assert => SolveAssertionLevel::Error,
+            SolveEventActionKind::Warning => SolveAssertionLevel::Warning,
+            _ => return Err(invalid("transaction assertion action kind is invalid")),
+        };
+        if predicate.value_type() != &SolveValueType::scalar(SolveScalarType::Boolean)
+            || predicate.assertion_level() != Some(level)
+        {
+            return Err(invalid(
+                "transaction predicate type or severity disagrees with its action",
+            ));
+        }
     }
     Ok(())
 }

@@ -54,7 +54,7 @@ impl CompiledExactAssignmentWasm {
         {
             let status = self.runtime.call_assignments(y, p, time, scratch)?;
             if status != 0 {
-                return Err(self.status_error(status));
+                return Err(self.artifact.status_error(status));
             }
             Ok(())
         }
@@ -65,22 +65,6 @@ impl CompiledExactAssignmentWasm {
                 "compiled WASM schedules execute only on wasm32".into(),
             ))
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn status_error(&self, status: u32) -> WasmCompileError {
-        // Map by exact issued fault status, not operation names or source text.
-        if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
-            return WasmCompileError::Backend(format!("exact assignment source fault: {fault:?}"));
-        }
-        if let Some(fault) = self
-            .gather_faults()
-            .iter()
-            .find(|fault| fault.status == status)
-        {
-            return WasmCompileError::Backend(format!("exact assignment source fault: {fault:?}"));
-        }
-        WasmCompileError::Backend(format!("exact assignment entry failure status {status}"))
     }
 }
 

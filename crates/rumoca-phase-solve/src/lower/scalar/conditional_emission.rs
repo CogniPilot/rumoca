@@ -291,13 +291,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             outcome,
             ..
         } = pending;
-        let capture_start = self.pack_function_conditional_capture_ranges(ranges, span)?;
+        let capture_start = self.pack_register_ranges(ranges, span)?;
         let start = self.register_range(program.result_count, span)?;
-        self.ops.push(solve::LinearOp::FunctionConditional {
+        self.emit(solve::LinearOp::FunctionConditional {
             dst_start: start,
             capture_start,
             program,
-        });
+        })?;
         match outcome {
             ConditionalOutcome::Value {
                 expression,

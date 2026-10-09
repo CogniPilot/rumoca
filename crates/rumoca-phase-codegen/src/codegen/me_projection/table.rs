@@ -96,17 +96,35 @@ impl<K: Ord> FunctionFamily<K> {
 /// own checked block because their aggregates are wider than two lanes.
 #[derive(Default)]
 pub(super) struct LaneFamily {
-    programs: Vec<(solve::TangentLaneProgram, Span)>,
+    ids: BTreeMap<(usize, u64, usize, usize), usize>,
+    programs: Vec<(Arc<solve::TangentLaneProgram>, Span)>,
 }
 
 impl LaneFamily {
-    pub(super) fn push(&mut self, program: solve::TangentLaneProgram, span: Span) -> usize {
+    /// Reuse only the same issued lane owner and complete diagnostic span.
+    /// Retaining the owner keeps its address live for every stored key.
+    pub(super) fn intern(&mut self, program: Arc<solve::TangentLaneProgram>, span: Span) -> usize {
+        let key = (
+            Arc::as_ptr(&program) as usize,
+            span.source.0,
+            span.start.0,
+            span.end.0,
+        );
+        if let Some(&id) = self.ids.get(&key) {
+            return id;
+        }
+        let id = self.programs.len();
+        self.ids.insert(key, id);
         self.programs.push((program, span));
-        self.programs.len() - 1
+        id
     }
 
     pub(super) fn into_plan(self) -> Result<Value, CodegenError> {
-        let (programs, spans): (Vec<_>, Vec<_>) = self.programs.into_iter().unzip();
+        let (programs, spans): (Vec<_>, Vec<_>) = self
+            .programs
+            .into_iter()
+            .map(|(program, span)| (program.as_ref().clone(), span))
+            .unzip();
         let block = solve::ScalarProgramBlock::with_tangent_lane_programs(&programs, spans)
             .map_err(|error| CodegenError::template(error.to_string()))?;
         Ok(Value::from_object(ScalarProgramPlan::new(Arc::new(block))?))
@@ -126,6 +144,8 @@ pub(super) struct ProgramTable {
     /// Multi-lane forward Jacobian programs, one per colored application
     /// program ([`solve::ColoredTangentPlan`]).
     pub(super) lanes: LaneFamily,
+    /// One checked widening per source program and lane count across blocks.
+    pub(super) lane_catalog: solve::TangentLaneCatalog,
     /// Invariant parts of block residual splits keyed by (chart, block,
     /// program): each stores its live-out registers as its outputs.
     pub(super) inv: FunctionFamily<(usize, usize, usize)>,

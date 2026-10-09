@@ -20,6 +20,18 @@ use crate::architecture_hardening_support::workspace_root;
 /// each may name one. Paths are relative to the workspace root.
 const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
     (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_abs.rs",
+        "typed absolute-value JVP against analytic values and independent differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_maximum.rs",
+        "typed maximum JVP against analytic values and independent differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_power.rs",
+        "typed power JVP against analytic values and independent differences",
+    ),
+    (
         "crates/rumoca/tests/suite_core/jacobian_admission_battery.rs",
         "admission battery: every admitted AD pair against central differences",
     ),

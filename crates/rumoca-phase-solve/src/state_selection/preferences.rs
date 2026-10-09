@@ -19,6 +19,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use rumoca_core::StateSelect;
+use rumoca_eval_dae::InputInitializationPolicy;
 use rumoca_ir_dae as dae;
 use rumoca_phase_structural::{
     FormalDerivativeSystem, PreparedDae, StructuralError, construct_formal_derivatives,
@@ -34,6 +35,7 @@ pub(super) fn prefer_or_retain<'source>(
     model: &'source dae::Dae,
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     let Some(request) = PreferenceRequest::of(model, &prepared) else {
         return Ok(PreparedSelection::retained(prepared));
@@ -47,7 +49,7 @@ pub(super) fn prefer_or_retain<'source>(
     }
     let mut alternate_selections = AlternateSelections::default();
     let candidate = match formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates, _) = select(formal, overrides)?;
+        let (selection, alternates, _) = select(formal, overrides, input_policy)?;
         alternate_selections = alternates;
         Ok(selection)
     }) {
@@ -87,8 +89,12 @@ pub(super) fn executes_preferred_basis(
             return Ok(None);
         }
         formal.inspect(|formal| {
-            select(formal, &HashMap::new())
-                .map(|(_, _, primary)| Some(basis_names(formal.source, &primary)))
+            select(
+                formal,
+                &HashMap::new(),
+                InputInitializationPolicy::default(),
+            )
+            .map(|(_, _, primary)| Some(basis_names(formal.source, &primary)))
         })
     });
     match selected {

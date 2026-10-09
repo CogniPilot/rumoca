@@ -199,9 +199,7 @@ end FinalStepAlgebraic;
 "#,
     );
     execute_emitted_fmi3_kernel(
-        (&rendered.model_c, &rendered.assign_c),
-        2,
-        1,
+        &rendered,
         r#"
     model.y[0] = 1.0; model.y[1] = 2.0;
     model.state = MODEL_STEP; model.type = INTERFACE_CS;
@@ -234,9 +232,7 @@ end FiniteTimeBlowUp;
 "#,
     );
     execute_emitted_fmi3_kernel(
-        (&rendered.model_c, &rendered.assign_c),
-        2,
-        1,
+        &rendered,
         r#"
     model.y[0] = 1.0; model.y[1] = 1.0;
     model.state = MODEL_STEP; model.type = INTERFACE_CS;
@@ -297,7 +293,7 @@ end NonfiniteFinalAlgebraic;
     if (fabs(last_time - 0.1) > 1.0e-12) return 12;
 "#
     );
-    execute_emitted_fmi3_kernel((&rendered.model_c, &rendered.assign_c), 2, 1, &body);
+    execute_emitted_fmi3_kernel(&rendered, &body);
 }
 
 #[test]
@@ -317,9 +313,7 @@ end ChainedSingletons;
 "#,
     );
     execute_emitted_fmi3_kernel(
-        (&rendered.model_c, &rendered.assign_c),
-        3,
-        1,
+        &rendered,
         r#"
     model.y[0] = 4.0; model.y[1] = 6.0; model.y[2] = 7.0;
     if (evaluate_derivatives(&model) != fmi3OK) return 1;
@@ -332,6 +326,7 @@ end ChainedSingletons;
 
 struct RenderedFmi3 {
     model_c: String,
+    model_h: String,
     assign_c: String,
     model_description: String,
 }
@@ -369,6 +364,7 @@ fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
     };
     RenderedFmi3 {
         model_c: content("sources/model.c"),
+        model_h: content("sources/model.h"),
         assign_c: content("sources/rmc_assign.c").replace("#include \"model.h\"", ""),
         model_description: files
             .iter()
@@ -379,12 +375,12 @@ fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
     }
 }
 
-fn execute_emitted_fmi3_kernel(
-    (model_c, assign_c): (&str, &str),
-    y_len: usize,
-    state_len: usize,
-    body: &str,
-) {
+fn execute_emitted_fmi3_kernel(rendered: &RenderedFmi3, body: &str) {
+    let model_c = &rendered.model_c;
+    let assign_c = &rendered.assign_c;
+    // Keep the emitted layout and observer declarations; this isolated driver
+    // supplies the FMI ABI types instead of linking the vendor entry points.
+    let model_h = rendered.model_h.replace("#include \"fmi3Functions.h\"", "");
     let kernel_start = model_c
         .find("#include \"model.h\"")
         .map(|offset| offset + "#include \"model.h\"".len())
@@ -417,8 +413,9 @@ fn execute_emitted_fmi3_kernel(
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#define FMI_EXPORT
+#define FMI3_Export
 typedef void* fmi3Instance;
+typedef void* fmi3InstanceEnvironment;
 typedef double fmi3Float64;
 typedef int32_t fmi3Int32;
 typedef int64_t fmi3Int64;
@@ -428,13 +425,7 @@ typedef unsigned int fmi3ValueReference;
 typedef enum {{ fmi3OK = 0, fmi3Discard = 2, fmi3Error = 3 }} fmi3Status;
 typedef void (*fmi3LogMessageCallback)(void*, fmi3Status, fmi3String, fmi3String);
 enum {{ fmi3False = 0, fmi3True = 1 }};
-enum ModelState {{ MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED }};
-enum InterfaceType {{ INTERFACE_ME, INTERFACE_CS }};
-#define Y_LEN {y_len}
-#define P_LEN 1
-#define STATE_LEN {state_len}
-#define RMC_API
-typedef struct {{ bool assertions_initialized; bool assertion_failed; bool parameters_dirty; void* environment; fmi3LogMessageCallback logger; double time; double tolerance; double rmc_cs_substep; double y[Y_LEN]; double p[P_LEN]; double derivative[STATE_LEN]; enum ModelState state; enum InterfaceType type; }} ModelInstance;
+{model_h}
 {assign_c}
 {kernel}
 {value_helpers}

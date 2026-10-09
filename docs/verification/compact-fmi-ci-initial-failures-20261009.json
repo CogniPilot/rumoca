@@ -1,0 +1,222 @@
+{
+  "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+  "pr": "https://github.com/CogniPilot/rumoca/pull/421",
+  "ci_run": "https://github.com/CogniPilot/rumoca/actions/runs/37995273885",
+  "failures": [
+    {
+      "job": "Lint",
+      "job_id": 114039593705,
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+      "result": "FAIL: clippy::result_large_err at rumoca-sim-worker.rs:678 and :829",
+      "first_owner": "Private WorkerRunErr aggregation of SimError, BuildSimulationTimings, elapsed time and WorkerErrorPhase",
+      "diagnostic": "Err variant is at least 128 bytes after preserving compiled execution context and source spans",
+      "raw_log_sha256": "bca3518e1f6c3f1dd332106ac179b96a70be84380e124c59ad596717108cd4f0",
+      "prepared_fix": "Box the private aggregate at its existing error producers and unpack it only at the existing classifier. Retain typed errors, stages and timings; success does not allocate. Public error representations and classification remain unchanged.",
+      "governing_specs": ["SPEC_0021", "SPEC_0029", "SPEC_0033", "SPEC_0050"]
+    },
+    {
+      "job": "Playground contract",
+      "job_id": 114039594144,
+      "command": "cargo test -p rumoca-bind-wasm --all-features --verbose",
+      "result": {"passed": 108, "failed": 40, "ignored": 0},
+      "first_owner": "Native program and native assignment JSON artifact producers serialize SolveInitialValues instead of the published dense parameter buffer",
+      "first_fault": "Option unwrap in artifact parameters.as_array(), or a typed input lane start read, before Wasmi value execution",
+      "raw_log_sha256": "bf34d45a7a07f3a33dd8b165d3a1aaf45c8319370e8d2893fcb8191a33cba967",
+      "prepared_fix": "Serialize model.parameters.as_slice() at the two existing dense runtime ABI boundaries. The compact canonical owner, serialization, source runs and scalar execution remain unchanged.",
+      "governing_specs": ["SPEC_0007", "SPEC_0029", "SPEC_0032", "SPEC_0036", "SPEC_0041 initialization-owner row", "SPEC_0043 section 8 initialization-run row"]
+    },
+    {
+      "job": "Test (ubuntu-24.04)",
+      "job_id": 114039594170,
+      "command": "cargo nextest run --workspace --exclude rumoca-bind-python --exclude rumoca-bind-wasm --features rumoca/msl-sim-tests",
+      "result": {"executed": 109, "total": 10316, "passed": 108, "failed": 1, "not_run": 10207},
+      "test": "compiler::tests::test_model_file_inside_loaded_source_root_reuses_source_root_documents",
+      "raw_log_sha256": "a826d1ec5e1e8e11c03311db6c75f39a0bf9da5fcf7c82ef39c81097ff949157",
+      "first_owner": "Test fixture uses different compilation-unit source inventories",
+      "original_inventory": {
+        "by_file_source_root": ["Pkg/package.mo", "Pkg/Ext.mo", "Pkg/Sub/package.mo", "Pkg/Sub/Helper.mo", "Pkg/Sub/Root.mo"],
+        "by_name_additional_workspace_document": "Probe.mo: model Probe with component r"
+      },
+      "identity_evidence": "URI-sorted merge and top-level-first Resolve registration allocate an extra Probe class before Pkg descendants. Probe.r registers later. Actual h/x/y declaration IDs shift 106/105/107 to 107/106/108. Effective type allocation begins after nominal type_table.len(), shifting flat_type_id 13 to 14. Standard reuse retains the full unit; prior strict closure re-resolution pruned Probe.",
+      "prepared_fix": "Write unchanged Probe into the source root before either session and use its actual path for by-name input. Assert identical six URI inventories, parsed declarations, exact source bytes, source-root backing and empty live overlays on both sessions. Retain exact warning and full DAE storage comparisons; no identity normalization.",
+      "governing_specs": ["SPEC_0001 compilation-unit identity", "SPEC_0033", "SPEC_0050"],
+      "repeat_observation": {
+        "job": "Coverage Gate",
+        "job_id": 114039594461,
+        "raw_log_sha256": "62a66586ebffd7cfbf3286acff775cf15984852e00d2184395bd864c3e9f459c",
+        "result": "rumoca library 117 passed / 1 failed at the same full-storage assertion; workspace coverage command aborted"
+      },
+      "platform_repeat_observations": [
+        {"job": "Test (macos-15)", "job_id": 114039594072, "raw_log_sha256": "832727416929fcabb8d7ecc81a360971d738a7f36a784a2384403fd38ff7a67e", "executed": 107, "passed": 106, "failed": 1, "not_run": 10197},
+        {"job": "Test (windows-2025)", "job_id": 114039594092, "raw_log_sha256": "a3f49d3dd1a485a1a23ddb01391e4c3c34d1c48821682f2cf5c1dba272ad5a6b", "executed": 144, "passed": 143, "failed": 1, "not_run": 10158}
+      ]
+    },
+    {
+      "job": "Template Runtime (render)",
+      "job_id": 114039594293,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime template_target_ci:: -- --nocapture",
+      "result": {"passed": 8, "failed": 1, "filtered_out": 79},
+      "test": "template_target_ci::shared_template_names_are_globally_unique_and_target_owned",
+      "raw_log_sha256": "3e95fbef18c4b6c3e8a0c6f639b49985cf692a3b963d1571eb12de46f6798572",
+      "first_owner": "Reviewed exact shared-template namespace inventory lacks the imported FMI 3 metadata owner",
+      "producer_reader_contract": "fmi3/target.toml declares shared_as fmi3-modelDescription.xml.jinja; fmi-ls-wasm/modelDescription.xml.jinja includes that name to share checked metadata",
+      "prepared_fix": "Add the single required metadata name/owner to the exact inventory. Keep global uniqueness, owning-manifest declaration and exact complete-inventory assertions.",
+      "governing_specs": ["SPEC_0029 target-owned syntax and shared ownership", "SPEC_0044 ME-LSW-002", "SPEC_0033", "SPEC_0050"]
+    },
+    {
+      "job": "Template Runtime (wasm)",
+      "job_id": 114039594644,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime fmi_ls_wasm_ -- --nocapture",
+      "result": {"passed": 10, "failed": 1, "filtered_out": 77, "seconds": 563.97},
+      "test": "fmi_ls_wasm_runtime::fourbar1_native_multibody_trace_matches_pinned_omc",
+      "raw_log_sha256": "ddd9ded3d90531e848a41c65952b0f2318a86c4f2d24ceea2257e23a6f66dfff",
+      "actual_fault": "Native BDF simulation fails before OMC comparison: algebraic projection did not converge at event boundary; worst row=2293 target=$formal_derivative.1.b3.frame_b.R.T[1,3], value=NaN, norm=inf, row_scale=1, scaled_tolerance=1e-6",
+      "first_owner": "UNRESOLVED: final native projection diagnostic does not identify the first NaN producer or backend path; component packaging and WIT are not called by this test",
+      "source_binding": {
+        "wrapper_sha256": "c4f892fb89d2c69c85fe57f82e06b45aa886cd74bb65f0739f4347161247bda6",
+        "reference_csv_sha256": "4c8de3e68208edd1d6f175a8ab849f40d3228805b5a37a7fb3d3cd8f423272f9",
+        "locally_audited_MSL_files": 2556,
+        "locally_audited_MSL_inventory_sha256": "8f1f7f9e70a2410e857fd93e141590131fb11311a635468a7c4be30f58e455e2",
+        "inventory_method": "sorted relative *.mo path, NUL, SHA256(file), newline; equals committed Fourbar provenance"
+      },
+      "local_reproduction": {
+        "source": "b96d98ee8cc97c6fbc51e517525deb40d413bfbe",
+        "features": "--no-default-features --features template-runtime-tests,fmu-packaging",
+        "profile": "test/dev, CARGO_INCREMENTAL=0, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0",
+        "local_difference": "4 build jobs/test/Rayon threads under the existing guard policy, rather than CI's 2 build/Rayon jobs and cargo --jobs 1",
+        "raw_log_sha256": "65e2fdc8a615983f516fd0ad731e4ddeda96979ed3315feb6d50841b9be8dc88",
+        "result": {"passed": 0, "failed": 1, "filtered_out": 87, "test_seconds": 12.28, "exit_code": 101},
+        "fault": "Same row 2293/formal derivative target/NaN/norm inf as CI; no resource stop",
+        "guard": {"seconds": 250.920061769, "peak_rss_kib": 2837728, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192}
+      },
+      "first_nonfinite_prefix_replay": {
+        "scope": "Independent scalar replay of the exact emitted prefix at the diagnostic run's printed finite inputs; no compiler/runtime repair or trajectory qualification",
+        "model_wire_sha256": "14052766e67fa0086049bb598a33770b8b3364a7a3cf562ee9e1ede02fae5046",
+        "trace_sha256": "dc219611e0b14cab56622bc6ab66b5f5a45cd03b18970e42f776f18a3addfe38",
+        "residual_row": 2293, "program_index": 705, "output_offset": 0, "target_y_index": 2089,
+        "target_name": "$formal_derivative.1.b3.frame_b.R.T[1,3]",
+        "first_nonfinite": {"operation_index": 42, "operator": "Div", "destination": 50, "numerator": 0, "denominator": 0},
+        "finite_input_fact": "b3.frame_a.R.T is diag(0,1,1); b3.frame_b.R.T is identity. Existing trace hook's j5 row label is rejected because it confuses residual-row and Y indices.",
+        "remaining_owner": "UNRESOLVED: prior rotation refresh/initialization supplied the singular input; locating 0/0 does not justify changing Div semantics"
+      },
+      "next_gate": "Trace the responsible rotation refresh/initialization on the bound negative control. No arithmetic, tolerance, reference, source-model or validator adjustment. First local guarded attempt stopped during dependency compilation at the scratch free-space floor; the second completed test genuinely reproduced the fault."
+    },
+    {
+      "job": "Template Runtime (fmi)",
+      "job_id": 114039594496,
+      "command": "cargo test --verbose --jobs 1 -p rumoca --no-default-features --features template-runtime-tests,fmu-packaging --test suite_template_runtime fmi3_exact_runtime_ -- --nocapture",
+      "result": {"passed": 0, "failed": 4, "filtered_out": 84},
+      "raw_log_sha256": "bcf74acadb51997921f9ff93c9afafa72f21a405a4c4ba823a7387215caa9a29",
+      "actual_fault": "cc -std=c99 -Wall -Wextra -Wpedantic -Werror rejects the extracted kernel driver: unknown RmcModelAssertionContext; observation context member access fails before all four numerical controls execute",
+      "first_owner": "Exact-kernel test driver duplicates ModelInstance/storage declarations and omits the canonical rendered model.h assertion context",
+      "prepared_fix": "Retain emitted sources/model.h with the rendered fixture and consume its exact layout, workspace and observer declarations in the driver. Keep the existing isolated test FMI ABI prelude, replacing only its vendor include; remove duplicated ModelInstance/enums/storage-count arguments. Numerical rollback, state refresh and BLT-order controls remain unchanged.",
+      "independent_success": "Earlier cli_target_fmi group: 44 passed / 0 failed / 44 filtered; no qualification of this four-test group",
+      "governing_specs": ["SPEC_0029 shared syntax owner and DRY", "SPEC_0033", "SPEC_0050"],
+      "local_header_migration_negative_control": {
+        "source": "caf623e8b36e8360dcd1392023783b2eea55cdae ROOT reproduction tree containing the reviewed e1eda header migration",
+        "raw_log_sha256": "443e6bb16d58baf16823a6fb06e5fdd5ab82616ea3cfa473e15d56b30e828e59",
+        "result": {"passed": 0, "failed": 4, "filtered_out": 84, "test_seconds": 0.43, "guardian_seconds": 159.57, "exit_code": 101},
+        "fault": "The canonical header restores RmcModelAssertionContext, but cc -Werror now rejects the driver's redundant RMC_API definition before numerical execution",
+        "prepared_fix": "Remove only the redundant driver RMC_API definition; retain the canonical header as its sole owner"
+      },
+      "local_canonical_header_qualification": {
+        "source_base": "caf623e8b36e8360dcd1392023783b2eea55cdae",
+        "source_delta": "Remove the single redundant RMC_API definition, exactly as 3c50e921e",
+        "test_source_sha256": "ff9403348e3e03ab3a491bde514ea6ce7cb72e1a0807e0fc25606a8c4544262b",
+        "raw_log_sha256": "97da3d84ccd970863060076d724a3a5a651ce21c710e83322dde22d40c245b7e",
+        "result": {"passed": 4, "failed": 0, "filtered_out": 84, "test_seconds": 0.51, "exit_code": 0},
+        "guard": {"seconds": 157.672199533, "peak_rss_kib": 2862088, "seconds_limit": 600, "rss_limit_mib": 4096, "available_floor_mib": 16384, "scratch_free_floor_mib": 8192},
+        "features": "--no-default-features --features template-runtime-tests,fmu-packaging",
+        "local_difference": "Four build jobs/test/Rayon threads under unchanged local guards; CI uses two build/Rayon jobs and cargo --jobs 1",
+        "scope": "All four exact-kernel numerical controls execute on the corrected canonical header. Other repair groups, full template suite and the complete PR tip remain unqualified."
+      },
+      "next_gate": "Fresh existing full template and PR CI gates on the updated draft tip"
+    }
+  ],
+  "independent_completed_gates": [
+    {
+      "job": "ModelicaTest Semantic Gate",
+      "job_id": 114051354784,
+      "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+      "raw_log_sha256": "908351cf7680d5dc92b4e042042ee50869cb924f40a1dd0f5db03e9da475a7ff",
+      "result": "PASS: committed single MuxDemux compile/simulation selection, OMC comparator 1/1 with zero bad/deviation channels; separate encapsulated_scope_rejection_matches_omc test passes (1382 filtered out)",
+      "limitations": "One of 3424 discovered ModelicaTest candidates; no complete ModelicaTest or Tier 2 parity credit"
+    },
+    {
+      "job": "modelica_models Compatibility Gate",
+      "job_id": 114051354687,
+      "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+      "corpus_revision": "a41f7c0",
+      "raw_log_sha256": "92dc14a362dce550c7a90d413a00e5112112b7c5b1db20de5ff1de2a8703e502",
+      "result": "PASS: Tests.All aggregate frontend/DAE compile from 410 documents, balanced 2915 continuous plus 61 discrete equations; SO2/SE2 assertion simulation at stop-time 0",
+      "limitations": "No full corpus simulation, positive-time trajectory or complete MSL parity credit"
+    },
+    {
+      "job": "Test (ubuntu-24.04): heavy Solve counterexamples",
+      "command": "cargo test --package rumoca --features heavy-solve-tests --test suite_heavy_solve -- --nocapture",
+      "result": {"passed": 2, "failed": 0},
+      "source": "00854f2198fbfd406fac45d6685860b4d528a1c7"
+    }
+  ],
+  "full_msl_counterexamples": {
+    "source": "00854f2198fbfd406fac45d6685860b4d528a1c7",
+    "job": "MSL Quality Gate (merge + gate)",
+    "job_id": 114057237856,
+    "result": "FAIL: all four shard jobs completed successfully, but the merged baseline ratchet rejects eleven certified model regressions",
+    "raw_log_sha256": "a12f1312e9fd61214c713b7ed17979dc25f276de5f3217de7d41137ef1a4a16d",
+    "cohort": {"selected": 566, "compiled": 445, "compiled_without_sim_ok": 100, "sim_ok": 345, "compared": 294, "strict_high": 294, "near": 0, "deviation": 0, "comparison_skipped": 50, "missing_trace": 1, "not_attempted": 143},
+    "merged_artifact_binding": {
+      "artifact_id": 11649915353,
+      "artifact_bytes": 454758,
+      "archive_sha256": "aa366ba9b7db77e1b978a5f127897514cfbe6376ce3713e07fc577bea0720092",
+      "msl_results_sha256": "8a4e66f1bbbf060ddb512743e0e07b77ad98d92c437863cfca497f4fea45ab91",
+      "sim_trace_comparison_sha256": "0b721fc747db26669e5db59fd7bbc67a011a8466ab87059063772583891dbe4f",
+      "quality_current_sha256": "3584e787dbafd81a832b442575847d4353c59eb3c67e1cc08dcc8f875902d8d7",
+      "executed_git_commit": "d3699839b981ae8c7df4e454d1f679f12e37cccf",
+      "executed_tree": "0513d07ccf0d0b3b14626acb3cf99a9a83138814",
+      "binding": "GitHub synthetic merge of 00854f219 into unchanged main 0b249f0f; source head and merge tree equality audited"
+    },
+    "completed_simulation_accounting": {
+      "verified_strict_high": 294,
+      "existing_policy_exceptions_by_reason": {"comparator_limitation": 15, "model_issue": 7, "reference_failure": 28},
+      "unclassified_missing_trace": 1,
+      "missing_trace_model": "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample",
+      "missing_trace_reason": "OMC attempt status error is not successful; stale trace artifacts are ineligible"
+    },
+    "failed_ratchets": [
+      {"metric": "strict_high", "current": 294, "baseline": 302, "allowed_drop": 1, "floor": 301},
+      {"metric": "classified", "current": 344, "baseline": 355, "allowed_drop": 1, "floor": 354},
+      {"metric": "no_severe", "current": 344, "baseline": 355, "allowed_drop": 1, "floor": 354},
+      {"metric": "trace_model_accounting", "current": 344, "baseline": 355, "allowed_drop": 2, "floor": 353}
+    ],
+    "reported_not_gated": {"initialization_current": 362, "initialization_baseline": 370, "simulation_current": 345, "simulation_baseline": 356},
+    "certified_model_regressions": [
+      {"model": "Modelica.Blocks.Examples.FilterWithRiseTime", "status": "sim_solver_fail", "diagnostic": "EL005: typed pure-call directional owner has not been constructed", "earliest_owner": "UNRESOLVED: typed directional pure-call construction or admission"},
+      {"model": "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM", "status": "sim_solver_fail", "diagnostic": "EL005: typed pure-call directional owner has not been constructed", "earliest_owner": "UNRESOLVED: typed directional pure-call construction or admission"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank", "status": "sim_solver_fail", "pure_call_owner": 44, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1", "status": "sim_solver_fail", "pure_call_owner": 67, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2", "status": "sim_solver_fail", "pure_call_owner": 62, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1", "status": "sim_solver_fail", "pure_call_owner": 72, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2", "status": "sim_solver_fail", "pure_call_owner": 100, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.Tanks.EmptyTanks", "status": "sim_solver_fail", "pure_call_owner": 43, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Fluid.Examples.Tanks.ThreeTanks", "status": "sim_solver_fail", "pure_call_owner": 64, "diagnostic": "EL005: checked event-action assertion observation references pure-call owner with a missing or mismatched interface"},
+      {"model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2", "status": "sim_solver_fail", "diagnostic": "timeout after 45.000s", "shard": 1, "shard_job_id": 114051354722, "reported_attempt_seconds": 51.99, "earliest_owner": "UNRESOLVED: actual simulation exceeded the unchanged budget; the log does not identify its hottest operation", "classification_gap": "Typed common-master MeSessionError::Timeout survives as SimError::ModelExchangeSession, while worker classify_solver_error matches only SimError::Timeout. Prepared typed match adds common-master timeouts to sim_timeout alongside legacy timeouts, with staged timeout and identical-text non-timeout controls; execution pending. This consumer repair cannot qualify the performance failure."},
+      {"model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1", "status": "sim_solver_fail", "diagnostic": "EX002: event-boundary projection row 2293, target $formal_derivative.1.b3.frame_b.R.T[1,3], value NaN, norm inf", "earliest_owner": "UNRESOLVED: same genuine native negative control as the template wasm job and bound local reproduction"}
+    ],
+    "trace_label_limitation": "The existing NaN hook labels a residual row with solver_name(row), which indexes Y rather than row targets. Its j5 label is not evidence of the first producing variable; use the checked row-output mapping.",
+    "next_gate": "Repair the first responsible producers and rerun the unchanged complete cohort and comparator. No shard-success parity credit, baseline promotion, exclusions, tolerance changes or validator weakening."
+  },
+  "prepared_source_checks": {
+    "pinned_rustfmt": "PASS: rustfmt nightly-2026-02-27 --check --edition 2024 on all six changed Rust files",
+    "diff_whitespace": "PASS: git diff --check",
+    "cargo_execution": "Four exact FMI kernel controls pass on the separately bound canonical-header repair. Other prepared repairs remain unqualified. The separately bound native Fourbar negative control ran on b96 and reproduced CI failure; see local_reproduction.",
+    "validator_changes": false,
+    "baseline_changes": false,
+    "new_lint_suppressions": false
+  },
+  "remaining": [
+    "Collect the rest of the original CI run before updating the draft tip",
+    "Fresh worker all-feature Clippy and binding all-feature execution checks on the fixes",
+    "Full compiler/MSL/ModelicaTest/external corpus gates and fixed20 Tier 1 delta"
+  ]
+}

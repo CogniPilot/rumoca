@@ -898,6 +898,11 @@ fn execute_general_op(
                 set_reg_value(regs, dst_start as usize + offset, value);
             }
         }
+        LinearOp::PureCallObservation { .. } => {
+            return Err(CompileError::Backend(
+                "assertion observation requires a checked event-action adapter".into(),
+            ));
+        }
         LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
             return Err(CompileError::Backend(
                 "typed pure-call interpreter requires the model call table".into(),

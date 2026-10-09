@@ -28,7 +28,7 @@ pub use typed_inputs::NativeInputLane;
 pub enum NativeStageSource {
     /// A node of the continuous implicit residual block.
     Continuous { node: usize },
-    /// A stateless derived-discrete row (see [`NativeDerivedOutput`]).
+    /// A canonical discrete program, identified by its first derived-output row.
     Discrete { row: usize },
 }
 
@@ -88,9 +88,14 @@ impl NativeRefreshAssignmentSchedule {
     pub fn stages(&self) -> &[NativeRefreshAssignmentStage] {
         &self.stages
     }
-    /// Derived-discrete outputs in P-slot order, each with its typed lane.
+    /// Derived-discrete outputs in canonical work-slot order, each with its typed lane.
     pub fn derived_outputs(&self) -> &[NativeDerivedOutput] {
         &self.derived_outputs
+    }
+    /// Borrow the publication outputs owned by a private work-slot range.
+    /// Lane offsets, rather than inventory order, define host publication.
+    pub fn derived_outputs_in(&self, targets: Range<usize>) -> &[NativeDerivedOutput] {
+        derived_discrete::work_range(&self.derived_outputs, targets)
     }
     /// Typed Integer and Boolean input lanes in P-slot order (SOLVE-C69).
     pub fn input_lanes(&self) -> &[NativeInputLane] {
@@ -179,15 +184,26 @@ pub(super) fn derive_for_problem(
         &derived.rebinding,
         problem.layout.p_scalars(),
     )?;
-    let mut discrete = Vec::with_capacity(derived.outputs.len());
+    let mut by_program = std::collections::BTreeMap::<usize, Vec<&NativeDerivedOutput>>::new();
     for output in &derived.outputs {
-        discrete.push(scalar::derive_discrete(
-            output,
-            &problem.discrete.rhs,
-            &derived.rebinding,
-            &work_layout,
-        )?);
+        let (program, _) = problem
+            .discrete
+            .rhs
+            .output_position(output.row)
+            .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+        by_program.entry(program).or_default().push(output);
     }
+    let discrete = by_program
+        .values()
+        .map(|outputs| {
+            scalar::derive_discrete(
+                outputs,
+                &problem.discrete.rhs,
+                &derived.rebinding,
+                &work_layout,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let families = derive_with(
         &source,
         &problem.continuous.implicit_row_targets,

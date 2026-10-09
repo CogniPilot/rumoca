@@ -139,6 +139,7 @@ impl PendingOwner {
             dependencies: &self.dependencies,
             projections: None,
             affinity: None,
+            assertion_flow: None,
         }
     }
 }
@@ -228,6 +229,7 @@ pub(super) fn construct_group(
     {
         owners.push(SolvePureCallOwner {
             input_coordinate,
+            assertion_flow: None,
             dependencies: Arc::from(pending.dependencies),
             projections: None,
             affinity: None,
@@ -314,6 +316,10 @@ fn least_dependencies(
 pub(super) fn visit_calls(program: &TypedProgram, visit: &mut impl FnMut(SolvePureCallOwnerId)) {
     for operation in program.operations() {
         match operation.operation() {
+            SolveOperation::CheckAssertion {
+                message: crate::SolveAssertionMessage::Captures { program },
+                ..
+            } => visit_calls(program.body(), visit),
             SolveOperation::Call { owner, .. } => visit(*owner),
             SolveOperation::Conditional {
                 if_true, if_false, ..
@@ -355,6 +361,10 @@ fn program_cells(program: &TypedProgram) -> u64 {
         .operations()
         .iter()
         .map(|operation| match operation.operation() {
+            SolveOperation::CheckAssertion {
+                message: crate::SolveAssertionMessage::Captures { program },
+                ..
+            } => program_cells(program.body()),
             SolveOperation::Conditional {
                 if_true, if_false, ..
             } => program_cells(if_true.body()) + program_cells(if_false.body()),

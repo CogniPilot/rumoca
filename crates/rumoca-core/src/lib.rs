@@ -36,6 +36,7 @@ use std::path::PathBuf;
 
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
+pub mod artifact_build;
 mod clock_lattice;
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 

@@ -60,6 +60,9 @@ use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
 
 use crate::error::CompilerError;
 
+#[cfg(test)]
+mod tuple_calls_tests;
+
 /// Result of a successful compilation.
 #[derive(Debug)]
 pub struct CompilationResult {
@@ -1308,13 +1311,20 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("lib");
         let model_file = write_source_root_library(&root);
-        let root_str = root.to_string_lossy().to_string();
         let model_name = "Pkg.Sub.Root";
+        let by_name_source = format!("model Probe\n  {model_name} r;\nend Probe;\n");
+        let probe_file = root.join("Probe.mo");
+        fs::write(&probe_file, &by_name_source).expect("write probe");
+        let probe_name = probe_file.to_string_lossy().to_string();
+        let root_str = root.to_string_lossy().to_string();
         let compiler = Compiler::new().model(model_name).source_root(&root_str);
 
         let file_source = fs::read_to_string(&model_file).expect("read model");
         let file_name = model_file.to_string_lossy().to_string();
         let mut by_file = loaded_session(&compiler, &file_source, &file_name);
+        let mut by_name = loaded_session(&compiler, &by_name_source, &probe_name);
+        assert_eq!(by_file.document_uris(), by_name.document_uris());
+        assert_eq!(by_file.document_uris().len(), 6);
 
         // Every library file stays the source root's parsed document with no
         // live text overlay: none was re-read and re-parsed as a workspace
@@ -1322,8 +1332,10 @@ mod tests {
         for file in [
             "Pkg/package.mo",
             "Pkg/Ext.mo",
+            "Pkg/Sub/package.mo",
             "Pkg/Sub/Helper.mo",
             "Pkg/Sub/Root.mo",
+            "Probe.mo",
         ] {
             // Documents are keyed by the path the source-root walk produced
             // under the root as given: native separators, no canonicalization
@@ -1334,27 +1346,41 @@ mod tests {
                 .fold(root.clone(), |path, component| path.join(component))
                 .to_string_lossy()
                 .to_string();
-            assert!(
-                by_file.is_source_root_backed_document(&uri),
-                "{uri} must remain a source-root document"
+            assert_eq!(
+                by_file
+                    .get_document(&uri)
+                    .expect("library document")
+                    .parsed(),
+                by_name
+                    .get_document(&uri)
+                    .expect("library document")
+                    .parsed()
             );
-            let document = by_file.get_document(&uri).expect("library document");
-            assert!(
-                document.content.is_empty(),
-                "{uri} must not be re-parsed as a workspace document"
-            );
+            for session in [&by_file, &by_name] {
+                assert!(
+                    session.is_source_root_backed_document(&uri),
+                    "{uri} must remain a source-root document"
+                );
+                let document = session.get_document(&uri).expect("library document");
+                assert!(
+                    document.content.is_empty(),
+                    "{uri} must not be re-parsed as a workspace document"
+                );
+                assert_eq!(
+                    session.document_source_text(&uri).expect("source").as_ref(),
+                    fs::read_to_string(&uri).expect("read source")
+                );
+            }
         }
 
-        let by_name_source = format!("model Probe\n  {model_name} r;\nend Probe;\n");
-        let mut by_name = loaded_session(&compiler, &by_name_source, "Probe.mo");
         assert_eq!(
             rendered_warnings(&mut by_file, model_name),
             rendered_warnings(&mut by_name, model_name),
             "a model file inside a loaded source root reports the by-name diagnostics"
         );
 
-        // The by-name compile also carries the probe document in its source
-        // map; the compiled model itself must be identical.
+        // SPEC_0001: declaration ids belong to a compilation unit. Both paths
+        // use the same source inventory, so the complete storage must match.
         let dae_storage = |json: String| {
             let value: serde_json::Value = serde_json::from_str(&json).expect("DAE JSON");
             value["storage"].clone()
@@ -1365,7 +1391,7 @@ mod tests {
             .to_json()
             .expect("json");
         let from_name = compiler
-            .compile_str(&by_name_source, "Probe.mo")
+            .compile_str(&by_name_source, &probe_name)
             .expect("compile by name")
             .to_json()
             .expect("json");

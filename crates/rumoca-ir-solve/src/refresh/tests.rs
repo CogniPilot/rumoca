@@ -1,3 +1,5 @@
+mod range_assignment;
+
 use super::*;
 
 mod staged_execution;
@@ -144,7 +146,7 @@ fn matrix_multiply_dependency_tracks_the_selected_output_element() {
     }
 }
 
-fn row(target: usize) -> AlgebraicRefreshRow {
+pub(super) fn row(target: usize) -> AlgebraicRefreshRow {
     AlgebraicRefreshRow {
         owner_id: RefreshRowOwnerId::checked(target).unwrap(),
         source: RefreshScalarProgramSource::checked(0, target).unwrap(),
@@ -662,6 +664,7 @@ fn refresh_owner_rejects_a_source_output_for_another_equation() {
 
 #[test]
 fn exact_assignment_program_is_constructed_once_and_not_serialized() {
+    let source = source_block();
     let refresh_row = row(0);
     let plan = RefreshPlan {
         rows: vec![refresh_row],
@@ -669,7 +672,7 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
         ..RefreshPlan::default()
     };
     let owners = ContinuousRefreshOwners::checked_for_source(
-        &source_block(),
+        &source,
         plan,
         RefreshPlan::default(),
         RefreshPlan::default(),
@@ -693,7 +696,9 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
         &[RefreshRowOwnerId::checked(0).unwrap()]
     );
     assert_eq!(program.assignment_shapes().len(), 1);
-    let final_program = program.final_scalar_program(&source_block()).unwrap();
+    let final_program = program.final_scalar_program(&source).unwrap();
+    assert!(program.final_scalar_program(&source.clone()).is_ok());
+    assert!(program.final_scalar_program(&source_block()).is_err());
     assert_eq!(final_program.programs().len(), 1);
     assert_eq!(final_program.output_count(), 1);
 
@@ -713,8 +718,9 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
 
 #[test]
 fn independent_outputs_from_one_source_keep_one_checked_program_owner() {
+    let source = two_output_source(false);
     let owners = ContinuousRefreshOwners::checked_for_source(
-        &two_output_source(false),
+        &source,
         two_row_dynamic_plan(),
         RefreshPlan::default(),
         RefreshPlan::default(),
@@ -732,7 +738,7 @@ fn independent_outputs_from_one_source_keep_one_checked_program_owner() {
     assert_eq!(program.assignment_shapes().len(), 2);
     assert_eq!(
         program
-            .final_scalar_program(&two_output_source(false))
+            .final_scalar_program(&source)
             .unwrap()
             .output_count(),
         2

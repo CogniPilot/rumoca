@@ -64,6 +64,10 @@ impl RecordingBackend {
 }
 
 impl SolveExecutionBackend for RecordingBackend {
+    fn validate_model_context(&self, model: &solve::SolveModel) -> Result<(), String> {
+        self.inner.validate_model_context(model)
+    }
+
     fn compile_target_values(
         &self,
         plan: &solve_eval::PreparedTargetValuePlan,

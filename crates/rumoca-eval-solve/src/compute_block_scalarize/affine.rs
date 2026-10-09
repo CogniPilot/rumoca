@@ -280,6 +280,7 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::GuardedFunctionFold { .. } => "GuardedFunctionFold",
         LinearOp::FunctionConditional { .. } => "FunctionConditional",
         LinearOp::PureCall { .. } => "PureCall",
+        LinearOp::PureCallObservation { .. } => "PureCallObservation",
         LinearOp::PureCallDirectional { .. } => "PureCallDirectional",
     }
 }

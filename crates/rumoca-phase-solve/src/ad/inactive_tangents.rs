@@ -125,7 +125,11 @@ impl AdBuilder<'_> {
         site: &rumoca_ir_solve::SolvePureCallSite,
     ) -> Result<bool, LowerError> {
         for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
-            if !self.range_tangent_is_zero(start, value_type.scalar_count() as usize)? {
+            if matches!(
+                value_type.element_type(),
+                rumoca_ir_solve::SolveScalarType::Real { .. }
+            ) && !self.range_tangent_is_zero(start, value_type.scalar_count() as usize)?
+            {
                 return Ok(false);
             }
         }

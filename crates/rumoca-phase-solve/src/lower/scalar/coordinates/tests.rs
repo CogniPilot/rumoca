@@ -1,6 +1,7 @@
 //! Exact reference-loop controls for the private coordinate extent certificate.
 use super::*;
 use crate::layout::{StorageClass, VariableSlot};
+mod metadata_budget;
 mod packing;
 
 fn with_compiler(test: impl FnOnce(&mut ScalarCompiler<'_, '_>, Span)) {
@@ -313,6 +314,9 @@ fn issued_operations_and_facts_are_charged_to_the_budget_before_their_memory_is_
         assert!(message.contains("register facts"), "{message}");
         assert!(message.contains("operations"), "{message}");
         assert!(issued < 200, "{issued}");
-        assert_eq!(compiler.next_register as usize, issued);
+        // A register can be admitted before its operation or fact is refused;
+        // the failed program is never issued, and neither metadata owner grows
+        // past its limit.
+        assert!(compiler.next_register as usize <= issued + 1);
     });
 }

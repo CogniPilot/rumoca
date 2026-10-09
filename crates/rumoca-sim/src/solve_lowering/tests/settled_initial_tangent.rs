@@ -65,8 +65,8 @@ fn settled_columns(source: &str, name: &str) -> Vec<Vec<f64>> {
         "{name}: a row is solved through the algebraic refresh"
     );
     let runtime = SolveRuntime::new(&model).expect("prepare the runtime");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     runtime
         .settle_initialization_system(&mut y, &mut p, 0.0, SETTLE.tol, SETTLE.max_iters)
         .unwrap_or_else(|error| panic!("{name}: settle the initialization: {error:?}"));

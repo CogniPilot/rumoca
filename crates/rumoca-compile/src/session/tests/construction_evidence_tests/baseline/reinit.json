@@ -1,0 +1,21 @@
+{
+  "error": {
+    "severity": "Error",
+    "code": "ED004",
+    "message": "reinit() can only be applied to state variables: x is not a state",
+    "labels": [
+      {
+        "span": {
+          "source": 1249943056337021614,
+          "start": 66,
+          "end": 67
+        },
+        "message": "reinit applied to non-state variable here",
+        "primary": true
+      }
+    ],
+    "notes": [
+      "MLS §8.3.6 requires the first reinit argument to have a constructor-proven StateId"
+    ]
+  }
+}

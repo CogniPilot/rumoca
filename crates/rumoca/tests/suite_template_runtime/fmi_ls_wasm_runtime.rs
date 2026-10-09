@@ -37,9 +37,14 @@ fn msl_root() -> Option<PathBuf> {
 fn wasm_prerequisites(check: &str) -> bool {
     let wasm_tools = Command::new("wasm-tools").arg("--version").output().is_ok();
     let cc = std::env::var_os("CC_wasm32_wasip2").is_some();
+    let xml = Command::new("xmllint").arg("--version").output().is_ok();
     super::template_runtime_policy::prerequisites_are_available(
         check,
-        &[("wasm-tools", wasm_tools), ("CC_wasm32_wasip2", cc)],
+        &[
+            ("wasm-tools", wasm_tools),
+            ("CC_wasm32_wasip2", cc),
+            ("xmllint", xml),
+        ],
     )
 }
 
@@ -90,30 +95,23 @@ fn only_wasm(directory: &Path) -> PathBuf {
     files[0].clone()
 }
 
-/// The dashed instantiation token the C kernel checks, read from the generated
-/// kernel source (the identity is per-target, so it must come from this crate).
-fn instantiation_token(crate_root: &Path) -> String {
-    let model_c =
-        fs::read_to_string(crate_root.join("csrc/model.c")).expect("read generated kernel source");
-    model_c
-        .split_once("strcmp(token,\"")
-        .and_then(|(_, suffix)| suffix.split_once('"'))
-        .map(|(token, _)| token.to_string())
-        .expect("generated kernel embeds the checked instantiation token")
+/// Metadata comes from the same prepared session and extracted final archive.
+fn instantiation_token(package_root: &Path) -> String {
+    let xml = fs::read_to_string(package_root.join("modelDescription.xml")).unwrap();
+    attribute(&xml, "instantiationToken")
 }
 
-/// Map each FMI variable name to its FMI 3 value reference by rendering the
-/// `fmi3` model description. The numbering is target-agnostic, so it addresses
-/// the same quantities in the `fmi-ls-wasm` component.
-fn value_reference_map(result: &rumoca::CompilationResult, model: &str) -> HashMap<String, u32> {
-    let files = rumoca::render_target_files(result, model, "fmi3", None)
-        .expect("fmi3 model description renders");
-    let xml = files
-        .iter()
-        .find(|file| file.path == "modelDescription.xml")
-        .expect("fmi3 emits a model description");
+fn attribute(xml: &str, name: &str) -> String {
+    xml.split_once(&format!("{name}=\""))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(value, _)| value.to_owned())
+        .expect("required XML attribute")
+}
+
+fn value_reference_map(package_root: &Path) -> HashMap<String, u32> {
+    let xml = fs::read_to_string(package_root.join("modelDescription.xml")).unwrap();
     let mut map = HashMap::new();
-    for chunk in xml.content.split(" name=\"").skip(1) {
+    for chunk in xml.split(" name=\"").skip(1) {
         let Some((name, rest)) = chunk.split_once('"') else {
             continue;
         };
@@ -127,29 +125,108 @@ fn value_reference_map(result: &rumoca::CompilationResult, model: &str) -> HashM
     map
 }
 
-fn build_component(work: &Path, crate_root: &Path) -> PathBuf {
-    checked_output(
-        Command::new("wasm-tools")
-            .args(["component", "wit"])
-            .arg(crate_root.join("wit")),
-        "parse pinned FMI-LS WIT package",
+fn prepare_build_publish(
+    work: &Path,
+    result: &rumoca::CompilationResult,
+    model: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let prepared = rumoca::prepare_packaged_target(result, model, "fmi-ls-wasm")
+        .expect("prepare checked component metadata and build inputs");
+    let crate_root = work.join("generated").join(model);
+    prepared
+        .write_build_inputs(&crate_root)
+        .expect("write build inputs without an FMU archive");
+    let xml = fs::read_to_string(crate_root.join("modelDescription.xml")).unwrap();
+    let identifier = attribute(&xml, "modelIdentifier");
+    assert_eq!(
+        attribute(&xml, "instantiationToken"),
+        prepared.artifact().identities["fmu"]
     );
-    let component_target = work.join("component-target");
-    checked_output(
-        Command::new("cargo")
-            .args(["build", "--release", "--target", "wasm32-wasip2"])
-            .arg("--manifest-path")
-            .arg(crate_root.join("Cargo.toml"))
-            .env("RUSTFLAGS", "-Dwarnings")
-            .env("CARGO_TARGET_DIR", &component_target),
-        "build generated wasm32-wasip2 component",
+    fs::write(
+        crate_root.join("src/lib.rs"),
+        b"compile_error!(\"foreign mutable staging source\");",
+    )
+    .unwrap();
+    let built = rumoca_exec_wasm::build_wasm_component(
+        &prepared.build_request("component").unwrap(),
+        work,
+        &work.join("component-target"),
+    )
+    .expect("warning-clean exact-inventory component build and validation");
+    let output = work.join("artifact");
+    let foreign = rumoca::prepare_packaged_target(result, model, "fmi-ls-wasm").unwrap();
+    let error = rumoca::publish_wasm_component(foreign, built, &output).unwrap_err();
+    assert!(error.to_string().contains("foreign prepared inventory"));
+    assert!(
+        !output.exists(),
+        "foreign result must not publish any product"
     );
-    let component = only_wasm(&component_target.join("wasm32-wasip2/release"));
+    let built = rumoca_exec_wasm::build_wasm_component(
+        &prepared.build_request("component").unwrap(),
+        work,
+        &work.join("component-target"),
+    )
+    .expect("rebuild the original immutable inventory after foreign publication refusal");
+    rumoca::publish_wasm_component(prepared, built, &output)
+        .expect("publish the exact sealed prepared build result");
+    let archive = output.join(format!("{model}.fmu"));
+    let package_root = work.join("extracted");
+    zip::ZipArchive::new(fs::File::open(&archive).unwrap())
+        .unwrap()
+        .extract(&package_root)
+        .expect("extract the completed FMU archive");
+    assert_eq!(
+        fs::read(package_root.join("modelDescription.xml")).unwrap(),
+        xml.as_bytes()
+    );
+    validate_deployment_metadata(&package_root);
+    let component = package_root
+        .join("binaries/wasm32-wasip2")
+        .join(format!("{identifier}.wasm"));
     checked_output(
         Command::new("wasm-tools").arg("validate").arg(&component),
-        "validate generated WebAssembly component",
+        "validate extracted component",
     );
-    component
+    (crate_root, package_root, component)
+}
+
+fn validate_deployment_metadata(root: &Path) {
+    let schemas = workspace_root().join("crates/rumoca/tests/fixtures/fmi-ls-wasm-schema");
+    for (xml, schema) in [
+        ("modelDescription.xml", "fmi3ModelDescription.xsd"),
+        (
+            "extra/org.modelica.fmi-ls-wasm/manifest.xml",
+            "fmi3LayeredStandardManifest.xsd",
+        ),
+    ] {
+        checked_output(
+            Command::new("xmllint")
+                .arg("--noout")
+                .arg("--schema")
+                .arg(schemas.join(schema))
+                .arg(root.join(xml)),
+            "validate official FMI deployment schema",
+        );
+    }
+    let xml = fs::read_to_string(root.join("modelDescription.xml")).unwrap();
+    assert!(xml.contains("<CoSimulation "));
+    for absent in [
+        "<ModelExchange",
+        "<ScheduledExecution",
+        "canGetAndSetFMUState=\"true\"",
+        "canSerializeFMUState=\"true\"",
+        "providesDirectionalDerivatives=\"true\"",
+        "hasEventMode=\"true\"",
+    ] {
+        assert!(
+            !xml.contains(absent),
+            "unsupported deployment metadata: {absent}"
+        );
+    }
+    assert!(
+        !root.join("Cargo.toml").exists(),
+        "build inputs are outside the compiled FMU"
+    );
 }
 
 fn host_dir(work: &Path, crate_root: &Path) -> PathBuf {
@@ -163,13 +240,16 @@ fn host_dir(work: &Path, crate_root: &Path) -> PathBuf {
 }
 
 fn run_host(host: &Path, work: &Path, args: &[&str]) -> String {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(|root| PathBuf::from(root).join("rumoca-fmi-ls-host"))
+        .unwrap_or_else(|| work.join("host-target"));
     let output = checked_output(
         Command::new("cargo")
             .args(["run", "--locked", "--manifest-path"])
             .arg(host.join("Cargo.toml"))
             .args(["--"])
             .args(args)
-            .env("CARGO_TARGET_DIR", work.join("host-target")),
+            .env("CARGO_TARGET_DIR", target),
         "execute generated FMI-LS component through Wasmtime",
     );
     String::from_utf8(output.stdout).expect("host prints UTF-8")
@@ -279,13 +359,9 @@ fn assert_tracks_native(
     let native = simulate_dae_with_diagnostics(&result.dae, &opts).expect("native simulation");
 
     let work = tempdir().expect("create FMI-LS-Wasm test directory");
-    let generated = work.path().join("generated");
-    rumoca::compile_packaged_target(result, model, "fmi-ls-wasm", generated.clone())
-        .expect("render complete FMI-LS-Wasm component crate");
-    let crate_root = generated.join(model);
-    let component = build_component(work.path(), &crate_root);
-    let token = instantiation_token(&crate_root);
-    let references = value_reference_map(result, model);
+    let (crate_root, package_root, component) = prepare_build_publish(work.path(), result, model);
+    let token = instantiation_token(&package_root);
+    let references = value_reference_map(&package_root);
 
     let host = host_dir(work.path(), &crate_root);
     let mut trace_args: Vec<String> = vec![
@@ -325,6 +401,227 @@ fn assert_tracks_native(
 }
 
 const DECAY_MODEL: &str = "FmiLsDecay";
+
+fn run_native_assertion_order(
+    work: &Path,
+    crate_root: &Path,
+    token: &str,
+    references: &HashMap<String, u32>,
+    expected_message: &str,
+) {
+    let binary = work.join("native-assertion-order");
+    let mut sources = fs::read_dir(crate_root.join("csrc"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .collect::<Vec<_>>();
+    sources.sort();
+    checked_output(
+        Command::new("cc")
+            .args([
+                "-std=c11",
+                "-O2",
+                "-ffp-contract=off",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wvla",
+            ])
+            .arg("-I")
+            .arg(crate_root.join("csrc"))
+            .args(sources)
+            .arg(workspace_root().join("crates/rumoca/tests/fixtures/fmi-assertion-order-host.c"))
+            .arg("-lm")
+            .arg("-o")
+            .arg(&binary),
+        "build original source FMI C control",
+    );
+    let output = checked_output(
+        Command::new(binary)
+            .arg(token)
+            .args([
+                references["valid"].to_string(),
+                references["index"].to_string(),
+                references["y"].to_string(),
+            ])
+            .arg(expected_message),
+        "execute original source FMI C control",
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("OK native first authored fault")
+    );
+}
+
+#[test]
+fn fmi_ls_wasm_preserves_authored_first_fault_before_later_bounds_failure() {
+    if !wasm_prerequisites("FMI-LS-Wasm source first-fault check") {
+        return;
+    }
+    run_assertion_order_component(
+        include_str!("../fixtures/AssertionFaultOrder.mo"),
+        "AssertionFaultOrder",
+        "first authored assertion",
+    );
+}
+
+#[test]
+fn fmi_ls_wasm_preserves_nested_loop_first_fault_and_capture() {
+    if !wasm_prerequisites("FMI-LS-Wasm nested loop first-fault check") {
+        return;
+    }
+    run_assertion_order_component(
+        include_str!("../fixtures/NestedLoopAssertionFault.mo"),
+        "NestedLoopAssertionFault",
+        "nested first 1",
+    );
+}
+
+fn run_assertion_order_component(source: &str, model: &str, expected_message: &str) {
+    let result = rumoca::Compiler::new()
+        .model(model)
+        .compile_str(source, model)
+        .expect("compile unchanged authored counterexample");
+    let work = tempdir().expect("first-fault component work");
+    let (crate_root, package_root, component) = prepare_build_publish(work.path(), &result, model);
+    let host = host_dir(work.path(), &crate_root);
+    let references = value_reference_map(&package_root);
+    run_native_assertion_order(
+        work.path(),
+        &crate_root,
+        &instantiation_token(&package_root),
+        &references,
+        expected_message,
+    );
+    let output = run_host(
+        &host,
+        work.path(),
+        &[
+            "assertion-order",
+            &component.to_string_lossy(),
+            &instantiation_token(&package_root),
+            &references["valid"].to_string(),
+            &references["index"].to_string(),
+            &references["y"].to_string(),
+            expected_message,
+        ],
+    );
+    assert!(output.contains("OK first authored fault"), "{output}");
+}
+
+#[test]
+fn fmi_ls_wasm_standard_logger_retains_instance_lifetime() {
+    if !wasm_prerequisites("FMI-LS-Wasm standard logger check") {
+        return;
+    }
+    let model = "FmiLsLogging";
+    let result = rumoca::Compiler::new()
+        .model(model)
+        .compile_str(
+            r#"
+model FmiLsLogging
+  function check
+    input Boolean valid;
+    output Real y;
+  algorithm
+    assert(valid, "authored callback diagnostic");
+    y := 1;
+  end check;
+  input Boolean valid(start=true) = true;
+  Real y;
+equation
+  y = check(valid);
+end FmiLsLogging;
+"#,
+            "FmiLsLogging.mo",
+        )
+        .expect("compile callback fixture");
+    let work = tempdir().expect("callback component work");
+    let (crate_root, package_root, component) = prepare_build_publish(work.path(), &result, model);
+    let host = host_dir(work.path(), &crate_root);
+    let refs = value_reference_map(&package_root);
+    let output = run_host(
+        &host,
+        work.path(),
+        &[
+            "logging",
+            &component.to_string_lossy(),
+            &instantiation_token(&package_root),
+            &refs["valid"].to_string(),
+        ],
+    );
+    assert!(output.contains("OK authored diagnostic"), "{output}");
+}
+
+#[test]
+fn fmi_ls_wasm_typed_arrays_use_shared_fmi3_accessors() {
+    if !wasm_prerequisites("FMI-LS-Wasm typed-array check") {
+        return;
+    }
+    let model = "FmiLsTypedArrays";
+    let result = rumoca::Compiler::new()
+        .model(model)
+        .compile_str(
+            r#"
+model FmiLsTypedArrays
+  function twice
+    input Integer u;
+    output Integer y;
+  algorithm
+    y := 2*u;
+  end twice;
+  type Mode = enumeration(Off, On, Standby);
+  input Integer integers[2](start={1, 2}) = {1, 2};
+  input Boolean booleans[2](start={true, false}) = {true, false};
+  input Mode mode = Mode.Off;
+  Real x(start=0, fixed=true);
+equation
+  der(x) = (if booleans[1] and mode == Mode.On then twice(integers[1]) else twice(integers[2]))/2;
+end FmiLsTypedArrays;
+"#,
+            "FmiLsTypedArrays.mo",
+        )
+        .expect("compile typed-array fixture");
+    let work = tempdir().expect("typed-array component work");
+    let (crate_root, package_root, component) = prepare_build_publish(work.path(), &result, model);
+    let host = host_dir(work.path(), &crate_root);
+    let refs = value_reference_map(&package_root);
+    let metadata = rumoca::render_target_files(&result, model, "fmi3", None)
+        .expect("render checked FMI metadata");
+    let xml = &metadata
+        .iter()
+        .find(|file| file.path == "modelDescription.xml")
+        .expect("FMI metadata file")
+        .content;
+    for (kind, name) in [
+        ("Int32", "integers"),
+        ("Boolean", "booleans"),
+        ("Enumeration", "mode"),
+        ("Float64", "x"),
+    ] {
+        assert!(
+            xml.contains(&format!("<{kind} name=\"{name}\"")),
+            "wrong FMI type for {name}"
+        );
+    }
+    let args = ["integers", "booleans", "mode", "x"].map(|name| refs[name].to_string());
+    let output = run_host(
+        &host,
+        work.path(),
+        &[
+            "typed",
+            &component.to_string_lossy(),
+            &instantiation_token(&package_root),
+            &args[0],
+            &args[1],
+            &args[2],
+            &args[3],
+        ],
+    );
+    assert!(output.contains("OK typed arrays"), "{output}");
+}
+
 const DECAY_SOURCE: &str = r#"
 model FmiLsDecay
   input Real u(start = 0.0);
@@ -371,10 +668,9 @@ fn fmi_ls_wasm_component_validates_and_executes_pinned_lifecycle() {
     }
 
     // Lifecycle negative controls: rejected optional calls are transactional.
-    let generated = work.path().join("generated");
-    let crate_root = generated.join(DECAY_MODEL);
-    let component = only_wasm(&work.path().join("component-target/wasm32-wasip2/release"));
-    let token = instantiation_token(&crate_root);
+    let package_root = work.path().join("extracted");
+    let component = only_wasm(&package_root.join("binaries/wasm32-wasip2"));
+    let token = instantiation_token(&package_root);
     let host = work.path().join("host");
     let lifecycle = run_host(
         &host,
@@ -490,42 +786,131 @@ end BouncingBall;
     }
 }
 
-#[test]
-fn fmi_ls_wasm_fourbar1_matches_native_multibody_trace() {
-    if !wasm_prerequisites("FMI-LS-Wasm Fourbar1 check") {
-        return;
-    }
+fn fourbar1() -> Option<rumoca::CompilationResult> {
     let Some(msl) = msl_root() else {
         // Fails in the strict CI lane; skips only an ordinary local run.
         super::template_runtime_policy::prerequisites_are_available(
-            "FMI-LS-Wasm Fourbar1 check",
+            "Fourbar1 MSL 4.1.0 check",
             &[("MSL 4.1.0 checkout", false)],
         );
-        return;
+        return None;
     };
-    let result = rumoca::Compiler::new()
+    Some(rumoca::Compiler::new()
         .model("Fourbar1Wrap")
         .source_root(msl.to_string_lossy().as_ref())
         .compile_str(
             "model Fourbar1Wrap\n  extends Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1;\nend Fourbar1Wrap;\n",
             "Fourbar1Wrap.mo",
         )
-        .expect("compile MSL Fourbar1");
+        .expect("compile MSL Fourbar1"))
+}
 
-    assert_tracks_native(
-        &result,
-        Track {
-            model: "Fourbar1Wrap",
-            channels: &[("j1_phi", "j1.phi"), ("j1_w", "j1.w")],
-            inputs: &[],
-            t_start: 0.0,
-            t_end: 0.1,
-            dt: 0.005,
-            solver_mode: SimSolverMode::Bdf,
-            scale: 20.0,
-            rate: 10.0,
-        },
+#[test]
+fn fourbar1_native_multibody_trace_matches_pinned_omc() {
+    let Some(result) = fourbar1() else { return };
+    let options = SimOptions {
+        t_start: 0.0,
+        t_end: 0.1,
+        dt: Some(0.005),
+        solver_mode: SimSolverMode::Bdf,
+        ..SimOptions::default()
+    };
+    let native = simulate_dae_with_diagnostics(&result.dae, &options)
+        .expect("unchanged native Fourbar BDF trajectory");
+    assert_eq!(native.times.len(), 21);
+    assert_eq!(native.times.first(), Some(&0.0));
+    assert_eq!(native.times.last(), Some(&0.1));
+    let reference = parse_trace(include_str!(
+        "../fixtures/fmi-ls-wasm-fourbar/omc-reference.csv"
+    ));
+    // The raw OMC result retains its identical duplicate final sample.
+    assert_eq!(reference.len(), 22);
+    println!(
+        "Fourbar native rtol={} atol={} points=21 final=0.1; OMC points=22 duplicate-final=1 tolerance=1e-8",
+        options.rtol, options.atol
     );
+    for (column, name) in [(1, "j1.phi"), (2, "j1.w")] {
+        let series = native_series(&native, name);
+        assert_eq!(series.len(), native.times.len());
+        let (mut max_absolute, mut max_scaled, mut max_tolerance_ratio) = (0.0f64, 0.0f64, 0.0f64);
+        for row in &reference {
+            let actual = native_at(&native.times, series, row[0]);
+            let expected = row[column];
+            let tolerance = 10.0 * ((options.rtol + 1e-8) * expected.abs().max(1.0) + options.atol);
+            let error = (actual - expected).abs();
+            max_absolute = max_absolute.max(error);
+            max_scaled = max_scaled.max(error / expected.abs().max(1.0));
+            max_tolerance_ratio = max_tolerance_ratio.max(error / tolerance);
+            assert!(actual.is_finite() && expected.is_finite());
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "Fourbar {name} at {}: native {actual} versus OMC {expected}, tolerance {tolerance}",
+                row[0]
+            );
+        }
+        println!(
+            "Fourbar {name}: max_absolute={max_absolute:e} max_scaled={max_scaled:e} max_tolerance_ratio={max_tolerance_ratio:e}"
+        );
+    }
+    for (index, time) in native.times.iter().enumerate() {
+        println!(
+            "FOURBAR_NATIVE,{time:.17},{:.17},{:.17}",
+            native_series(&native, "j1.phi")[index],
+            native_series(&native, "j1.w")[index]
+        );
+    }
+}
+
+#[test]
+fn fmi_ls_wasm_fourbar1_refuses_unsupported_published_strings() {
+    let Some(result) = fourbar1() else { return };
+    let component = rumoca_sim::lower_fmi_component(&result.dae)
+        .expect("canonical complete public Fourbar inventory");
+    let strings = component.variables().iter().filter(|variable| {
+        variable.value_kind() == rumoca_ir_solve::SolveVariableValueKind::String
+    });
+    let actual = strings
+        .map(|variable| {
+            assert_eq!(
+                variable.variability(),
+                rumoca_ir_solve::fmi::FmiVariability::Tunable
+            );
+            let count = variable
+                .storage()
+                .expect("String storage owner")
+                .scalar_count();
+            assert_eq!(
+                variable.text_start().expect("declared String values").len(),
+                count
+            );
+            (variable.name().to_string(), count)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let expected = include_str!("../fixtures/fmi-ls-wasm-fourbar/published-strings.csv")
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let (name, count) = line.split_once(',').expect("expected name and extent");
+            (
+                name.to_string(),
+                count.parse::<usize>().expect("expected scalar extent"),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(actual.len(), 27);
+    assert_eq!(actual, expected);
+    let preparation = rumoca::prepare_packaged_target(&result, "Fourbar1Wrap", "fmi-ls-wasm")
+        .err()
+        .expect("the complete public inventory requires unsupported String access");
+    assert!(format!("{preparation:#}").contains("unsupported-feature:fmi-variable-access-string"));
+    let work = tempdir().expect("owned refusal product parent");
+    let output = work.path().join("product");
+    let export =
+        rumoca::compile_packaged_target(&result, "Fourbar1Wrap", "fmi-ls-wasm", output.clone())
+            .expect_err("public export must refuse before creating a product");
+    assert!(format!("{export:#}").contains("unsupported-feature:fmi-variable-access-string"));
+    assert!(!output.exists());
+    assert_eq!(fs::read_dir(work.path()).unwrap().count(), 0);
 }
 
 #[test]

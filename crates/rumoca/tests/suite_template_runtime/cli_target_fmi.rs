@@ -9,6 +9,7 @@ mod affine_promotion;
 mod algebraic;
 mod array_bounds;
 mod assertions;
+mod batched_getters;
 mod c_profile_events;
 mod chart_switching;
 mod co_simulation_step;

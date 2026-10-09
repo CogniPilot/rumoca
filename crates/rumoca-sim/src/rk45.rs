@@ -3,8 +3,9 @@ use std::time::Instant;
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
 
-#[cfg(feature = "scheduled-sim")]
-use crate::SimulationSessionApi;
+scheduled_executor_items! {
+    use crate::SimulationSessionApi;
+}
 use crate::me_backend::BackendSimulationSession;
 use crate::simulation_session::SessionState;
 use crate::solve_lowering::{
@@ -235,32 +236,33 @@ fn require_rk_mode(requested: rumoca_solver::SimSolverMode) -> Result<(), SimErr
     }
 }
 
-#[cfg(feature = "scheduled-sim")]
-impl SimulationSessionApi for SimulationSession {
-    type Error = SimError;
+scheduled_executor_items! {
+    impl SimulationSessionApi for SimulationSession {
+        type Error = SimError;
 
-    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-        Self::reset(self, t_start)
-    }
+        fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+            Self::reset(self, t_start)
+        }
 
-    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
-        Self::set_inputs(self, inputs)
-    }
+        fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
+            Self::set_inputs(self, inputs)
+        }
 
-    fn ensure_end_time(&mut self, target_time: f64) {
-        Self::ensure_end_time(self, target_time);
-    }
+        fn ensure_end_time(&mut self, target_time: f64) {
+            Self::ensure_end_time(self, target_time);
+        }
 
-    fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
-        Self::advance_to(self, target_time)
-    }
+        fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+            Self::advance_to(self, target_time)
+        }
 
-    fn time(&self) -> f64 {
-        Self::time(self)
-    }
+        fn time(&self) -> f64 {
+            Self::time(self)
+        }
 
-    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
-        Self::get(self, name)
+        fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
+            Self::get(self, name)
+        }
     }
 }
 

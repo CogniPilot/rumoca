@@ -11,6 +11,8 @@
 //! lowering and indexed-load AD helpers into sibling modules behind this facade.
 
 #[cfg(test)]
+mod discrete_call_tangent_tests;
+#[cfg(test)]
 mod inactive_tangent_tests;
 mod inactive_tangents;
 #[cfg(test)]
@@ -819,6 +821,9 @@ impl<'a> AdBuilder<'a> {
     #[allow(clippy::too_many_lines)]
     fn lower_op(&mut self, op: LinearOp) -> Result<(), LowerError> {
         match op {
+            LinearOp::PureCallObservation { .. } => Err(unsupported(
+                "assertion observation is outside the scalar AD contract",
+            )),
             LinearOp::Const { dst, value } => self.lower_const(dst, value),
             LinearOp::LoadTime { dst } => self.lower_load_time(dst),
             LinearOp::LoadY { dst, index } => self.lower_load_y(dst, index),

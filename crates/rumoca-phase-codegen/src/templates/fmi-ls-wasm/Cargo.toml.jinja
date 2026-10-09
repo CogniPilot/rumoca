@@ -10,6 +10,7 @@ build = "build.rs"
 [workspace]
 
 [lib]
+name = "rumoca_{{ artifact.identities.fmu | replace("-", "_") }}"
 crate-type = ["cdylib"]
 
 [dependencies]

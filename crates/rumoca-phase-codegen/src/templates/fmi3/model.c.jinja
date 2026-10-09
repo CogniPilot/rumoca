@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, initial_values, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
 {%- set cs_integrate = cs_integrator(fmi) %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events %}
@@ -7,10 +7,10 @@
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
-{{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
-{{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
+{{- initial_values("m->y", fmi.initial_y, "initial_y") }}
+{{- initial_values("m->p", fmi.initial_parameters, "initial_p") }}
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} memset(m->rmc_warned, 0, sizeof(m->rmc_warned));{% endif %}{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
-    memcpy(m->y, initial_y, sizeof(m->y)); memcpy(m->p, initial_p, sizeof(m->p)); m->time = 0.0;
+    m->time = 0.0;
 }
 {% if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
@@ -150,9 +150,13 @@ static bool rmc_request(const ModelInstance* m, const fmi3ValueReference vr[], s
     }
     return total == nvalues;
 }
-/* The settled numeric storage one reference reads; NULL on a failed refresh. */
-static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref) {
-    if (settle_public_values(m) != fmi3OK) return NULL;
+/* ME-BATCH-001: one completed public observation supplies consecutive ordinary
+   copies within this validated request. Other columns end that local scope. */
+static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref, bool* ordinary_settled) {
+    bool ordinary = ref->column == RMC_COLUMN_TIME || ref->column == RMC_COLUMN_Y || ref->column == RMC_COLUMN_P;
+    if (!ordinary) *ordinary_settled = false;
+    if (!*ordinary_settled && settle_public_values(m) != fmi3OK) return NULL;
+    *ordinary_settled = ordinary;
     switch (ref->column) {
     case RMC_COLUMN_TIME: return &m->time;
     case RMC_COLUMN_Y: return m->y;
@@ -166,10 +170,10 @@ static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReferenc
 }
 #define RMC_GET_NUMERIC(Name, Type, KIND, CONVERT) \
 FMI_EXPORT fmi3Status fmi3Get##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, Type values[], size_t nvalues) { \
-    ModelInstance* m = i; size_t cursor = 0; \
+    ModelInstance* m = i; size_t cursor = 0; bool ordinary_settled = false; \
     if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, KIND, false)) return fmi3Error; \
     for (size_t k = 0; k < nvr; ++k) { \
-        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref, &ordinary_settled); \
         if (!source) return fmi3Error; \
         for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; values[cursor++] = CONVERT; } \
     } \

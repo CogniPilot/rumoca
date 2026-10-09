@@ -1,3 +1,5 @@
+mod identity;
+
 use indexmap::IndexMap;
 use rumoca_core::{ComponentReference, Span, Subscript, VarName};
 use serde::ser::SerializeStruct;

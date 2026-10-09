@@ -556,7 +556,7 @@ impl SolveMeKernel {
         )?);
         let state_count = runtime.state_count;
         let states = runtime.model.initial_y[..state_count].to_vec();
-        let params = runtime.model.parameters.clone();
+        let params = runtime.model.parameters.to_vec();
         let stop_schedule =
             SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
         let output_meta = convert_variable_meta(&runtime.model.variable_meta);
@@ -575,14 +575,14 @@ impl SolveMeKernel {
             active_chart: 0,
             active_reference: None,
             pending_basis_change: None,
-            solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
+            solver_y_guess: RefCell::new(runtime.model.initial_y.to_vec()),
             committed_seed: RefCell::default(),
             indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),
             indicator_deadline_scratch: RefCell::new(scratch.indicator_deadline_scratch),
             indicator_value_scratch: scratch.indicator_value_scratch,
             indicator_domain_scratch: scratch.indicator_domain_scratch,
             delay_params_scratch: RefCell::new(params.clone()),
-            delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.clone()),
+            delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.to_vec()),
             runtime,
             indicator_plan,
             root_location,

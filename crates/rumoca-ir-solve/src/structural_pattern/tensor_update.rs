@@ -1,6 +1,7 @@
 use super::*;
 
-enum FixedSubscript {
+#[derive(Clone)]
+pub(super) enum FixedSubscript {
     Whole,
     Index(u32),
 }
@@ -34,20 +35,98 @@ impl DependencyWalk<'_> {
             let (value_count, selector) =
                 self.tensor_update_patch(dimensions, subscripts, lanes)?;
             let patch = self.range(value_start, value_count)?.union(selector);
-            for offset in 0..count.saturating_mul(lanes) {
+            let width = count.saturating_mul(lanes);
+            if disjoint_register_ranges(dst_start, width, base_start, width)
+                && let Some(base) = self.registers.view(base_start, width)
+            {
+                self.registers.overlay(dst_start, width, base, patch);
+                return Ok(());
+            }
+            for offset in 0..width {
                 let dependencies = self.get(base_start + offset as Reg)?.union(patch.clone());
                 self.set(dst_start + offset as Reg, dependencies);
             }
             return Ok(());
         };
+        let projection = FixedUpdateProjection {
+            dimensions: dimensions.into(),
+            fixed: fixed.into(),
+            lanes,
+        };
+        if self
+            .fixed_update_family(dst_start, base_start, value_start, &projection)
+            .is_some()
+        {
+            return Ok(());
+        }
         for offset in 0..count.saturating_mul(lanes) {
-            let source = fixed_update_element(offset / lanes, dimensions, &fixed)
+            let source = fixed_update_element(offset / lanes, dimensions, &projection.fixed)
                 .map_or(base_start + offset as Reg, |value| {
                     value_start + (value * lanes + offset % lanes) as Reg
                 });
             self.copy(dst_start + offset as Reg, source)?;
         }
         Ok(())
+    }
+
+    fn fixed_update_family(
+        &mut self,
+        dst_start: Reg,
+        base_start: Reg,
+        value_start: Reg,
+        projection: &FixedUpdateProjection,
+    ) -> Option<()> {
+        let count = checked_tensor_extent(&projection.dimensions)?.checked_mul(projection.lanes)?;
+        if count == 0 {
+            return Some(());
+        }
+        if projection.dimensions.len() != projection.fixed.len() {
+            return None;
+        }
+        let uses_patch =
+            projection
+                .dimensions
+                .iter()
+                .zip(&projection.fixed)
+                .all(|(&extent, subscript)| match subscript {
+                    FixedSubscript::Whole => true,
+                    FixedSubscript::Index(index) => *index < extent,
+                });
+        let uses_base = !uses_patch
+            || projection
+                .fixed
+                .iter()
+                .any(|subscript| matches!(subscript, FixedSubscript::Index(_)));
+        let base = if uses_base {
+            if !disjoint_register_ranges(dst_start, count, base_start, count) {
+                return None;
+            }
+            Some(self.registers.view(base_start, count)?)
+        } else {
+            None
+        };
+        let patch = if uses_patch {
+            let width = projection
+                .dimensions
+                .iter()
+                .zip(&projection.fixed)
+                .try_fold(
+                    projection.lanes,
+                    |width, (&extent, subscript)| match subscript {
+                        FixedSubscript::Whole => width.checked_mul(extent as usize),
+                        FixedSubscript::Index(_) => Some(width),
+                    },
+                )?;
+            if !disjoint_register_ranges(dst_start, count, value_start, width) {
+                return None;
+            }
+            Some(self.registers.view(value_start, width)?)
+        } else {
+            None
+        };
+        self.registers
+            .patch(dst_start, count, projection.clone(), base, patch);
+        Some(())
     }
 
     /// Width of the patch value range and the dependencies of the runtime
@@ -77,6 +156,26 @@ impl DependencyWalk<'_> {
             }
         }
         Ok((value_count, selector))
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct FixedUpdateProjection {
+    dimensions: Box<[u32]>,
+    fixed: Box<[FixedSubscript]>,
+    lanes: usize,
+}
+
+impl FixedUpdateProjection {
+    pub(super) fn patch_offset(&self, offset: usize) -> Option<usize> {
+        fixed_update_element(offset / self.lanes, &self.dimensions, &self.fixed)
+            .map(|element| element * self.lanes + offset % self.lanes)
+    }
+
+    pub(super) fn whole(&self) -> bool {
+        self.fixed
+            .iter()
+            .all(|subscript| matches!(subscript, FixedSubscript::Whole))
     }
 }
 

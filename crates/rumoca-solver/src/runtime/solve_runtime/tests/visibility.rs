@@ -138,7 +138,7 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
             },
             ..Default::default()
         },
-        parameters: vec![2.5, 9.0],
+        parameters: vec![2.5, 9.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
@@ -211,8 +211,8 @@ fn root_condition_plan_preserves_grouped_output_ownership() {
             },
             ..Default::default()
         },
-        parameters: vec![3.0],
-        initial_y: vec![4.0],
+        parameters: vec![3.0].into(),
+        initial_y: vec![4.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
@@ -271,11 +271,11 @@ fn initial_event_commits_delay_left_limit_before_the_synthetic_right_limit() {
             },
             ..Default::default()
         },
-        parameters: vec![1.0, 0.0],
+        parameters: vec![1.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("delay runtime should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     runtime
         .initialize_delay_history(0.0, &[], &mut p)
         .expect("delay history should initialize");
@@ -335,11 +335,11 @@ fn initial_event_advances_pre_memory_before_the_synthetic_right_limit() {
         },
         // p[0] is the converged current value, p[1] is its lowered pre slot,
         // and p[2] records what the post-event projection observed.
-        parameters: vec![2.0, 1.0, 0.0],
+        parameters: vec![2.0, 1.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     let outcome = runtime
@@ -429,7 +429,7 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0, 0.0, 0.0],
+        parameters: vec![0.0, 0.0, 0.0].into(),
         visible_names: vec!["counter".to_string()],
         visible_value_rows: spanned_block(
             vec![direct_param_visible_value_row(0)],
@@ -438,7 +438,7 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("clock fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     let outcome = runtime
@@ -571,8 +571,8 @@ fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![2.0],
+        initial_y: vec![0.0, 0.0].into(),
+        parameters: vec![2.0].into(),
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
@@ -585,7 +585,7 @@ fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
             .is_empty()
     );
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[2.0], 1.0e-12, 4)
         .expect("first static refresh should populate the cache");
@@ -634,7 +634,7 @@ fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::Sol
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 2.0],
+        initial_y: vec![0.0, 2.0].into(),
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);

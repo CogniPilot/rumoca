@@ -34,6 +34,23 @@ pub use rumoca_solver::{
     trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
 };
 
+macro_rules! scheduled_executor_items {
+    ($($item:item)*) => {
+        $(
+            #[cfg(all(
+                feature = "scheduled-sim",
+                feature = "scenario-config",
+                feature = "input-keyboard",
+                feature = "transport-udp",
+                feature = "transport-zenoh",
+                feature = "viewer-web",
+                feature = "process-control"
+            ))]
+            $item
+        )*
+    };
+}
+
 mod build_timing;
 pub mod bulk;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
@@ -46,8 +63,9 @@ mod session_protocol;
 pub mod sim_trace_compare;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod simulation_session;
-#[cfg(feature = "scheduled-sim")]
-mod simulation_session_api;
+scheduled_executor_items! {
+    mod simulation_session_api;
+}
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
@@ -96,8 +114,9 @@ pub use session_protocol::{
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use simulation_session::{SessionState, SimulationSession};
-#[cfg(feature = "scheduled-sim")]
-pub(crate) use simulation_session_api::SimulationSessionApi;
+scheduled_executor_items! {
+    pub(crate) use simulation_session_api::SimulationSessionApi;
+}
 // The inspection/debug facade (probes + their named report types) is surfaced
 // through `solve_lowering` so the root stays a curated same-crate facade; the
 // report types are re-exported from there rather than as root cross-crate uses.
@@ -135,16 +154,9 @@ pub use trajectory_sensitivity::{
     trajectory_sensitivity_for_dae,
 };
 
-#[cfg(all(
-    feature = "scheduled-sim",
-    feature = "scenario-config",
-    feature = "input-keyboard",
-    feature = "transport-udp",
-    feature = "transport-zenoh",
-    feature = "viewer-web",
-    feature = "process-control"
-))]
-pub mod scheduled_sim;
+scheduled_executor_items! {
+    pub mod scheduled_sim;
+}
 
 #[cfg(feature = "report")]
 pub mod report;

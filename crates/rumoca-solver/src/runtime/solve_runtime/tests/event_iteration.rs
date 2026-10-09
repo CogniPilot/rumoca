@@ -22,7 +22,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 2],
+        parameters: vec![0.0; 2].into(),
         ..Default::default()
     };
     model.problem.discrete.structured_rhs = solve::ComputeBlock {
@@ -158,7 +158,7 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 3],
+        parameters: vec![0.0; 3].into(),
         ..Default::default()
     };
     model
@@ -246,8 +246,8 @@ fn event_relation_cascade_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 1.0],
-        parameters: vec![0.0, 0.0, 0.0],
+        initial_y: vec![0.0, 1.0].into(),
+        parameters: vec![0.0, 0.0, 0.0].into(),
         ..Default::default()
     }
 }
@@ -256,8 +256,8 @@ fn event_relation_cascade_model() -> solve::SolveModel {
 fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
     let model = event_relation_cascade_model();
     let runtime = SolveRuntime::new_fixture(&model).expect("root cascade runtime should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -288,10 +288,10 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
 #[test]
 fn event_relation_override_releases_when_projected_input_reverses_sign() {
     let mut model = event_relation_cascade_model();
-    model.initial_y[1] = -1.0;
+    model.initial_y.set(1, -1.0).unwrap();
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
     let mut overrides = vec![(0, 1.0), (1, 1.0)];
@@ -365,8 +365,8 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
-        parameters: vec![0.0; 5],
+        initial_y: vec![1.0].into(),
+        parameters: vec![0.0; 5].into(),
         ..Default::default()
     };
     model
@@ -374,8 +374,8 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
         .validate_shape_contract()
         .expect("the typed event-iteration fixture is complete");
     let runtime = SolveRuntime::new_fixture(&model).expect("the event fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -635,10 +635,10 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
+        initial_y: vec![1.0].into(),
         // The continuous pre lane is deliberately stale. Pass zero must seed
         // it from event_pre_y before projection mutates live y.
-        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0],
+        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0].into(),
         ..Default::default()
     };
     model
@@ -646,8 +646,8 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
         .validate_shape_contract()
         .expect("the mixed-pre fixture satisfies the Solve contract");
     let runtime = SolveRuntime::new_fixture(&model).expect("the mixed-pre fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -787,7 +787,7 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 5],
+        parameters: vec![0.0; 5].into(),
         ..Default::default()
     };
     model
@@ -796,7 +796,7 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
         .expect("clock-first-pass fixture satisfies the Solve contract");
     let runtime =
         SolveRuntime::new_fixture(&model).expect("clock-first-pass fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -916,7 +916,7 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 4],
+        parameters: vec![0.0; 4].into(),
         ..Default::default()
     };
     model
@@ -925,7 +925,7 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
         .expect("clock/relation ordering fixture satisfies the Solve contract");
     let runtime =
         SolveRuntime::new_fixture(&model).expect("clock/relation ordering fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -985,12 +985,12 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
             },
             ..Default::default()
         },
-        initial_y: vec![-1.0],
-        parameters: vec![0.0, 0.0],
+        initial_y: vec![-1.0].into(),
+        parameters: vec![0.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("typed root target is a valid runtime");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
 
     runtime
         .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
@@ -1084,8 +1084,8 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, -1.0],
-        parameters: vec![-1.0, 0.0],
+        initial_y: vec![0.0, -1.0].into(),
+        parameters: vec![-1.0, 0.0].into(),
         ..Default::default()
     }
 }
@@ -1095,7 +1095,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
     let model = algebraic_relation_partition_model();
     let runtime =
         SolveRuntime::new_fixture(&model).expect("typed relation partition should prepare");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
 
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
@@ -1111,9 +1111,9 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
         "parameter-only relation memory stays fixed while the algebraic root joins the coupled closure"
     );
 
-    let mut overridden = model.parameters.clone();
+    let mut overridden = model.parameters.to_vec();
     let mut overrides = vec![(1, 0.0)];
-    let mut zero_y = model.initial_y.clone();
+    let mut zero_y = model.initial_y.to_vec();
     zero_y[1] = 0.0;
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
@@ -1123,7 +1123,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
             &mut overrides,
         )
         .expect("an exact-zero root retains its selected side");
-    assert_eq!(overridden, model.parameters);
+    assert_eq!(overridden, model.parameters.to_vec());
     assert_eq!(overrides, vec![(1, 0.0)]);
 
     runtime

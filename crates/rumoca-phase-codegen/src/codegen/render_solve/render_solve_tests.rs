@@ -28,7 +28,7 @@ fn native_family_with_base_ops(base_ops: Vec<solve::LinearOp>) -> RenderNativeAf
     }
 }
 
-fn fixture_span(name: &'static str) -> rumoca_core::Span {
+pub(super) fn fixture_span(name: &'static str) -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 5, 13)
 }
 
@@ -118,7 +118,7 @@ fn one_by_one_linsolve_with_compare(span: rumoca_core::Span) -> solve::ComputeNo
     }
 }
 
-fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
+pub(super) fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::Const { dst: 0, value },
         solve::LinearOp::StoreOutput { src: 0 },

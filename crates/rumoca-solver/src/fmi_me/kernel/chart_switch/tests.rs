@@ -235,7 +235,7 @@ fn two_chart_model(solvable_alternate: bool) -> solve::SolveModel {
             continuous: artifacts,
             ..Default::default()
         },
-        initial_y: vec![0.5, 0.5, 1.5],
+        initial_y: vec![0.5, 0.5, 1.5].into(),
         solver_nominals: vec![1.0, 1.0, 10.0],
         visible_names: vec!["x".to_string(), "q".to_string(), "a".to_string()],
         ..Default::default()

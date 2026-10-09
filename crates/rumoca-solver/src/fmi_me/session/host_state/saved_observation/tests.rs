@@ -6,7 +6,7 @@ fn host_with_input() -> MeHostState {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.input_scalar_names = vec!["u".into()];
-    model.parameters = vec![1.0];
+    model.parameters = vec![1.0].into();
     model.visible_names = vec!["u".into()];
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("saved-observation.mo"),

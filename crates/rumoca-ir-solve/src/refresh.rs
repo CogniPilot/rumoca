@@ -8,8 +8,11 @@ mod assignment_shape;
 mod dependency;
 mod materialization;
 mod native_assignment;
+mod output_stores;
 mod projection;
+mod range_assignment;
 mod shared_schedule;
+mod singleton_coverage;
 mod source_outputs;
 mod staged_execution;
 
@@ -19,6 +22,7 @@ use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub use assignment_shape::cached::CanonicalAssignmentQueries;
 use assignment_shape::cached::SourceCertificateQueries;
 #[cfg(test)]
 use assignment_shape::canonical_assignment_shape_for_output;
@@ -28,7 +32,7 @@ pub use assignment_shape::{
     isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
 };
 use dependency::AssignmentDependencies;
-pub use dependency::ScalarProgramYDependency;
+pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
     isolated_parts, materialize_target_assignment,
@@ -38,7 +42,10 @@ pub use native_assignment::{
     NativeOutputLane, NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule,
     NativeRefreshAssignmentStage, NativeScheduleRefusal, NativeStageSource,
 };
+pub use output_stores::ScalarProgramOutputStores;
+use range_assignment::ExactAssignmentStore;
 pub use shared_schedule::SharedAssignmentSchedule;
+use singleton_coverage::exact_singleton_row_owners;
 pub use staged_execution::{
     RefreshStageSchedule, StagedRefreshRefusal, StagedRefreshStep, projection_seed_rescue_targets,
 };
@@ -258,7 +265,9 @@ pub struct ExactRefreshAssignmentProgram {
     row_owners: Box<[RefreshRowOwnerId]>,
     source: RefreshScalarProgramSource,
     target_indices: Box<[usize]>,
+    source_owner: ScalarProgramBlock,
     assignment_shapes: Box<[TargetAssignmentShape]>,
+    assignment_stores: Box<[ExactAssignmentStore]>,
     assignment_y_dependencies: Box<[IndexIntervals]>,
 }
 
@@ -314,7 +323,7 @@ impl ExactRefreshAssignmentProgram {
 
     /// Materialize the scalar execution view at a final backend boundary.
     ///
-    /// The checked owner stores only canonical source identity and isolator
+    /// The checked owner retains its shared canonical source and isolator
     /// shapes. It never retains an expanded assignment operation graph.
     pub fn final_scalar_program(
         &self,
@@ -1138,6 +1147,12 @@ fn construct_exact_assignment_program<'a>(
             .into_boxed_slice(),
         source: first.source,
         target_indices,
+        source_owner: scalar_source_owner(block, first.source)?
+            .ok_or_else(|| ContinuousRefreshConstructionError {
+                reason: "exact continuous refresh source owner is missing".to_string(),
+            })?
+            .clone(),
+        assignment_stores: range_assignment::construct(source_program, rows, &shapes),
         assignment_shapes: shapes.into_boxed_slice(),
         assignment_y_dependencies,
     })
@@ -1147,6 +1162,12 @@ fn materialize_exact_assignment_program(
     block: &ComputeBlock,
     owner: &ExactRefreshAssignmentProgram,
 ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
+    let source_owner = scalar_source_owner(block, owner.source)?;
+    if source_owner.is_none_or(|source| !source.shares_program_owner(&owner.source_owner)) {
+        return refresh_error(
+            "exact continuous refresh source no longer has its issued owner".to_string(),
+        );
+    }
     let (source_program, span) = scalar_source_program(block, owner.source)?.ok_or_else(|| {
         ContinuousRefreshConstructionError {
             reason: "exact continuous refresh source program is missing".to_string(),
@@ -1179,11 +1200,24 @@ fn materialize_exact_assignment_program(
         reason: "exact continuous refresh assignment program overflows registers".to_string(),
     };
     let mut program = ExactAssignmentProgramBuilder::new(&mut operations).ok_or_else(overflow)?;
-    for shape in &owner.assignment_shapes {
-        let (result, _) = program.materialize_guarded(shape).ok_or_else(overflow)?;
-        program
-            .push(LinearOp::StoreOutput { src: result })
-            .ok_or_else(overflow)?;
+    for store in &owner.assignment_stores {
+        match *store {
+            ExactAssignmentStore::Scalar(index) => {
+                let (src, _) = program
+                    .materialize_guarded(&owner.assignment_shapes[index])
+                    .ok_or_else(overflow)?;
+                program
+                    .push(LinearOp::StoreOutput { src })
+                    .ok_or_else(overflow)?;
+            }
+            ExactAssignmentStore::Range {
+                start,
+                stride,
+                targets,
+            } => program
+                .push_range_output(start, targets.count(), stride)
+                .ok_or_else(overflow)?,
+        }
     }
     let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
         .map_err(|error| ContinuousRefreshConstructionError {
@@ -1200,10 +1234,9 @@ fn scalar_source_program(
     block: &ComputeBlock,
     source: RefreshScalarProgramSource,
 ) -> Result<Option<(&[LinearOp], rumoca_core::Span)>, ContinuousRefreshConstructionError> {
-    let node = usize::try_from(source.node).map_err(|_| refresh_source_overflow("node"))?;
     let program =
         usize::try_from(source.program).map_err(|_| refresh_source_overflow("program"))?;
-    let Some(ComputeNode::ScalarPrograms(programs)) = block.nodes.get(node) else {
+    let Some(programs) = scalar_source_owner(block, source)? else {
         return Ok(None);
     };
     let Some(operations) = programs.programs().get(program) else {
@@ -1213,6 +1246,17 @@ fn scalar_source_program(
         return refresh_error("continuous refresh source program has no provenance".to_string());
     };
     Ok(Some((operations, span)))
+}
+
+fn scalar_source_owner(
+    block: &ComputeBlock,
+    source: RefreshScalarProgramSource,
+) -> Result<Option<&ScalarProgramBlock>, ContinuousRefreshConstructionError> {
+    let node = usize::try_from(source.node).map_err(|_| refresh_source_overflow("node"))?;
+    Ok(match block.nodes.get(node) {
+        Some(ComputeNode::ScalarPrograms(programs)) => Some(programs),
+        _ => None,
+    })
 }
 
 fn exact_rows_can_commit_together(
@@ -1241,7 +1285,7 @@ fn exact_rows_can_commit_together(
         };
         // The footprint's intervals are met with the targets, so the cost is
         // the targets inside them, not the footprint's width.
-        let conflicts = match dependencies.footprint(shape.value_registers()) {
+        let conflicts = match dependencies.footprint_ranges(shape.value_register_ranges()) {
             Some(footprint) => footprint.intervals().any(|interval| {
                 owners_by_target
                     .range(interval)
@@ -1413,26 +1457,6 @@ fn exact_assignment_stage_coverage(
         }
     }
     Some(coverage.covered)
-}
-
-fn exact_singleton_row_owners(
-    plan: &RefreshPlan,
-) -> Option<std::collections::BTreeSet<RefreshRowOwnerId>> {
-    let mut owners = std::collections::BTreeSet::new();
-    for block in &plan.simultaneous_plan.blocks {
-        let ([equation], [target]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
-            return None;
-        };
-        let mut matches = plan
-            .rows
-            .iter()
-            .filter(|row| row.equation_index == *equation && row.target_index == *target);
-        let row = matches.next()?;
-        if matches.next().is_some() || !owners.insert(row.owner_id) {
-            return None;
-        }
-    }
-    (owners.len() == plan.rows.len()).then_some(owners)
 }
 
 struct ExactAssignmentCoverage<'a> {

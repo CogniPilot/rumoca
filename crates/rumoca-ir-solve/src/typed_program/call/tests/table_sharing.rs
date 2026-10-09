@@ -28,6 +28,11 @@ fn original_eq(left: &SolvePureCallTable, right: &SolvePureCallTable) -> bool {
 fn immutable_table_clone_shares_only_exact_complete_lineage() {
     let original = table(SolveBinaryOperator::Add);
     let cloned = original.clone();
+    assert!(original.shares_table_owner(&cloned));
+    assert!(!original.shares_table_owner(&table(SolveBinaryOperator::Add)));
+    let replay: SolvePureCallTable =
+        serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+    assert!(!original.shares_table_owner(&replay));
     assert!(Arc::ptr_eq(
         &original.immutable_lineage,
         &cloned.immutable_lineage

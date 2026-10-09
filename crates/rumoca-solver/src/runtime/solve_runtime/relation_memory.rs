@@ -557,8 +557,10 @@ impl SolveRuntime {
         for ((_, index), side) in candidates.iter().zip(sides) {
             input.p[*index] = *side;
         }
-        if project_algebraics(input.y, input.p).is_err() {
-            return Ok(false);
+        match project_algebraics(input.y, input.p) {
+            Err(error @ RuntimeSolveError::CompiledExecution { .. }) => return Err(error),
+            Err(_) => return Ok(false),
+            Ok(_) => {}
         }
         let roots = self.eval_root_conditions_from_solver_y(input.t, input.y, input.p)?;
         let domains = &self.model.problem.events.root_zero_domains;
@@ -966,6 +968,15 @@ impl SolveRuntime {
             );
         }
         let mut values = vec![0.0; events.actions.len()];
+        let observations = solve_eval::CheckedEventObservationContext::construct(
+            &self.model.pure_calls,
+            self.event_action_conditions.block(),
+            &events.actions,
+        )?;
+        let context = RowEvalContext {
+            event_observations: Some(&observations),
+            ..self.row_eval_context()
+        };
         let mut active_rows = self.event_action_active_row_indices.borrow_mut();
         active_rows.clear();
         for (row, action) in events.actions.iter().enumerate() {
@@ -982,7 +993,7 @@ impl SolveRuntime {
                 active_rows.push(row);
             }
         }
-        self.eval_selected_outputs_with_native(
+        self.eval_selected_outputs_with_context(
             SpecializedRows {
                 block: &self.event_action_conditions,
                 cache: &self.compiled_event_action_rows,
@@ -991,18 +1002,25 @@ impl SolveRuntime {
             &active_rows,
             RowEvalPoint { y, p: &action_p, t },
             &mut values,
+            context,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
-        self.report_violated_warnings(&values, y, &action_p, t)?;
-        self.report_model_messages(&values, y, &action_p, t)?;
-        match solve_eval::event_action_request_from_values(
+        let request = solve_eval::event_action_request_from_values(
             events,
             y,
             &action_p,
             t,
-            self.row_eval_context(),
-            values,
-        )? {
+            context,
+            values.clone(),
+        )?;
+        if !matches!(
+            request,
+            solve_eval::EventActionRequest::AssertionFailed { .. }
+        ) {
+            self.report_violated_warnings(&values, y, &action_p, t, context)?;
+            self.report_model_messages(&values, y, &action_p, t)?;
+        }
+        match request {
             solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
             solve_eval::EventActionRequest::AssertionFailed { message } => {
                 Ok(EventActionOutcome::AssertionFailed { time: t, message })
@@ -1220,17 +1238,14 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.compiled_derivative_rhs.as_ref()
-            && compiled
-                .call(
-                    solver_y,
-                    params,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
-        {
+        if let Some(compiled) = self.compiled_derivative_rhs.as_ref() {
+            compiled.call(
+                solver_y,
+                params,
+                t,
+                self.model.external_tables.as_slice(),
+                out,
+            )?;
             return self.validate_finite_derivatives(out);
         }
         self.derivative_rhs

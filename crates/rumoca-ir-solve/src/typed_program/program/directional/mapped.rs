@@ -220,6 +220,10 @@ fn replay_iteration<'program>(
         slots,
         registers: vec![None; region.body().register_types().len()],
         available,
+        assertions: DirectionalAssertions {
+            outputs: &[],
+            locations: &[],
+        },
     };
     directional.derive_all()?;
     let primal = builder.load(result.primal, provenance)?;

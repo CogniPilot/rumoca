@@ -397,6 +397,9 @@ impl<'a> Emitter<'a> {
         use solve::SolveOperation as O;
         let op = spanned.operation();
         match op {
+            O::CheckAssertion { .. } => {
+                Err(self.unsupported(index, "CheckAssertion", spanned.provenance()))
+            }
             O::Map { .. } => self.map_operation(index, spanned),
             O::Conditional { .. } | O::Fold { .. } => self.control_operation(index, spanned),
             O::Unary { .. } | O::Binary { .. } | O::Compare { .. } | O::Convert { .. } => {
@@ -410,6 +413,12 @@ impl<'a> Emitter<'a> {
             | O::UpdateSlice { .. } => self.view_operation(index, spanned),
             O::Scale { .. } | O::Identity { .. } => self.tensor_operation(index, spanned),
             O::MatrixMultiply { .. } => self.matrix_operation(index, spanned),
+            O::Call {
+                assertion_forwarding,
+                ..
+            } if !assertion_forwarding.is_empty() => {
+                Err(self.unsupported(index, "CallAssertionForwarding", spanned.provenance()))
+            }
             O::Call { .. } => self.call_operation(index, spanned),
             O::Cross { .. }
             | O::Reduce { .. }

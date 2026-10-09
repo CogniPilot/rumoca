@@ -26,12 +26,12 @@ impl CompiledSolveExpression for Expression {
         t: f64,
         tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         assert!(tables.is_empty(), "the fixture contains no table calls");
         self.calls.set(self.calls.get() + 1);
         self.prepared
             .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 }
 

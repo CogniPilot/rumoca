@@ -1012,6 +1012,7 @@ fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePure
                 span: fixture_span(),
                 origin: "source".to_string(),
                 clock_owner: None,
+                assertion_projection: None,
             }],
             assertion_action_indices: vec![vec![0]],
             statement_count: 2,
@@ -1056,12 +1057,12 @@ fn event_transaction_wire_rejects_a_forged_target_type() {
 #[test]
 fn event_transaction_wire_rejects_a_result_in_its_assertion_suffix() {
     let mut wire = serde_json::to_value(event_transaction_fixture()).unwrap();
-    wire["site"]["outputs"][1]["kind"] = serde_json::json!("result");
+    wire["site"]["outputs"][1]["role"] = serde_json::json!({"kind": "result"});
     let error = serde_json::from_value::<EventTransactionProgram>(wire).unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("transaction suffix is not a checked assertion-predicate tuple"),
+            .contains("transaction suffix contains an ordinary result"),
         "wire replay rejects a non-predicate suffix: {error}"
     );
 }
@@ -2232,7 +2233,7 @@ fn solve_problem_shape_contract_rejects_zero_step_tensor_domain() {
 #[test]
 fn solve_model_variable_scale_combines_nominal_and_start_magnitude() {
     let model = SolveModel {
-        initial_y: vec![1.0e6, 1.0e-12, f64::NAN],
+        initial_y: vec![1.0e6, 1.0e-12, f64::NAN].into(),
         solver_nominals: vec![2.0, 1.0e-9, -1.0],
         ..SolveModel::default()
     };

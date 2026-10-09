@@ -93,6 +93,37 @@ fn mutual_recursion_forms_one_checked_group_that_replays() {
 }
 
 #[test]
+fn deployment_admission_does_not_require_c_execution_admission() {
+    use crate::fmi::{FmiComponent, FmiDeploymentCapabilities};
+
+    let model = crate::SolveModel {
+        pure_calls: mutual_table(),
+        ..crate::SolveModel::default()
+    };
+    let component = FmiComponent::construct(model, Vec::new())
+        .expect("canonical recursive owners form a checked FMI component");
+    let kernel = std::ptr::from_ref(component.problem());
+    let deployment = component
+        .into_codegen_view()
+        .try_deployment(FmiDeploymentCapabilities::default())
+        .expect("deployment accessor admission is independent of C recursive-frame support");
+    assert_eq!(std::ptr::from_ref(deployment.component().problem()), kernel);
+    assert_eq!(
+        deployment
+            .runtime_view()
+            .model()
+            .pure_calls
+            .recursive_groups()
+            .len(),
+        1
+    );
+    let error = deployment
+        .try_c()
+        .expect_err("C still refuses recursive calls");
+    assert!(error.to_string().contains("recursive function calls"));
+}
+
+#[test]
 fn wire_with_a_forged_group_bound_is_refused() {
     let table = mutual_table();
     let mut json: serde_json::Value = serde_json::to_value(&table).unwrap();

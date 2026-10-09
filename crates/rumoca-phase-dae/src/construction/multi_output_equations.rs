@@ -9,11 +9,11 @@ pub(super) struct MultiOutputDiscreteOwners<'scope, 'dae> {
 }
 
 /// The receiving tuple and the called function of one multi-result equation.
-struct MultiOutputSource<'flat> {
-    receivers: &'flat [Expression],
-    name: &'flat rumoca_core::Reference,
-    arguments: &'flat [Expression],
-    provenance: dae::DaeProvenance,
+pub(super) struct MultiOutputSource<'flat> {
+    pub(super) receivers: &'flat [Expression],
+    pub(super) name: &'flat rumoca_core::Reference,
+    pub(super) arguments: &'flat [Expression],
+    pub(super) provenance: dae::DaeProvenance,
 }
 
 /// The receiving tuple and call of `(a, b, ...) = f(...)`; any other residual
@@ -116,7 +116,26 @@ pub(super) fn lower_multi_output_equation<'dae>(
     owner: dae::DaeProvenance,
     discrete: Option<MultiOutputDiscreteOwners<'_, 'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let source = multi_output_source(equation)?;
+    lower_multi_output_source(
+        construction,
+        coordinates,
+        functions,
+        multi_output_source(equation)?,
+        plan,
+        owner,
+        discrete,
+    )
+}
+
+pub(super) fn lower_multi_output_source<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    source: MultiOutputSource<'_>,
+    plan: &MultiOutputEquationPlan,
+    owner: dae::DaeProvenance,
+    discrete: Option<MultiOutputDiscreteOwners<'_, 'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
     let symbols = LoweringSymbols {
         coordinates,
         functions,
@@ -127,7 +146,7 @@ pub(super) fn lower_multi_output_equation<'dae>(
     };
     let receivers = plan_receivers(plan, &source);
     let generated =
-        dae::DaeProvenance::generated(dae::DaeGeneration::RecordEquationProjection, equation.span)?;
+        dae::DaeProvenance::generated(dae::DaeGeneration::RecordEquationProjection, owner.span())?;
     let values = receiver_values(construction, symbols, &source, &receivers, generated)?;
     let initialization = discrete.is_none();
     let selected = receivers
@@ -170,9 +189,7 @@ pub(super) fn lower_multi_output_equation<'dae>(
 /// The value every receiver reads, in receiver order: its result ordinal's
 /// call result, projected onto its field.
 ///
-/// The continuous receivers read one shared call. Every discrete receiver
-/// belongs to its own owner and reads its result from its own call of the same
-/// pure function, which the analysis proved yields the same value.
+/// Every receiver retains its projection of the same source call occurrence.
 fn receiver_values<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
@@ -190,32 +207,19 @@ fn receiver_values<'dae>(
             source.provenance,
         )
     };
-    let discrete = |receiver: &Receiver<'_>| {
-        matches!(
-            symbols.coordinates[receiver.target],
-            Coordinate::DiscreteReal(_) | Coordinate::DiscreteValue(_)
-        )
-    };
-    let mut continuous = receivers
+    let mut ordinals = receivers
         .iter()
-        .filter(|receiver| !discrete(receiver))
         .map(|receiver| receiver.ordinal)
         .collect::<Vec<_>>();
-    continuous.dedup();
+    ordinals.dedup();
     let shared =
-        call(construction)?.results(construction, continuous.iter().copied(), source.provenance)?;
+        call(construction)?.results(construction, ordinals.iter().copied(), source.provenance)?;
     let mut values = Vec::with_capacity(receivers.len());
     for receiver in receivers {
-        let result = if discrete(receiver) {
-            let own =
-                call(construction)?.results(construction, [receiver.ordinal], source.provenance)?;
-            own.into_iter().next()
-        } else {
-            continuous
-                .iter()
-                .position(|ordinal| *ordinal == receiver.ordinal)
-                .and_then(|position| shared.get(position).copied())
-        };
+        let result = ordinals
+            .iter()
+            .position(|ordinal| *ordinal == receiver.ordinal)
+            .and_then(|position| shared.get(position).copied());
         let result = result.ok_or(dae::DaeConstructionError::InvalidExpressionForm {
             span: source.provenance.span(),
         })?;

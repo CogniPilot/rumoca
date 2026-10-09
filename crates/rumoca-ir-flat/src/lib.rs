@@ -200,6 +200,11 @@ pub struct Model {
     /// unlike sub-component inputs from type interfaces (MLS §4.4.2.2).
     #[serde(default)]
     pub top_level_input_components: IndexSet<String>,
+    /// Public top-level components declared with `output` causality.
+    /// Their record fields inherit the public interface prefix under
+    /// MLS §4.4.2.2, independently of their runtime role (SPEC_0040 DAE-C24).
+    #[serde(default)]
+    pub top_level_output_components: IndexSet<String>,
     /// Conservative scalar budget for VCG break-edge equations (MLS §9.4).
     /// Break edges are lowered to their declared `equalityConstraint` equations
     /// during connection generation. Balance accounting retains this metadata

@@ -173,7 +173,8 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
     assert!(error.to_string().contains("pure_calls"), "{error}");
 
     let mut wrong_vector = wire.clone();
-    wrong_vector["initial_y"] = serde_json::json!([1.0, 1.0]);
+    wrong_vector["initial_y"] =
+        serde_json::to_value(rumoca_ir_solve::SolveInitialValues::from(vec![1.0, 1.0])).unwrap();
     let error =
         replay_wire(&wrong_vector).expect_err("runtime vector extent is construction-owned");
     assert!(error.to_string().contains("initial_y"), "{error}");
@@ -206,7 +207,9 @@ fn solve_model_wire_view_fails_closed_before_serialization() {
         lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
 
     let mut wrong_vector = model.clone();
-    wrong_vector.initial_y.pop();
+    let mut values = wrong_vector.initial_y.to_vec();
+    values.pop();
+    wrong_vector.initial_y = values.into();
     let error = rumoca_phase_solve::solve_model_wire(&wrong_vector)
         .expect_err("wire construction must reject an uncorrelated runtime vector");
     assert!(error.to_string().contains("initial_y"), "{error}");

@@ -441,7 +441,8 @@ fn record_lane_calls(
     if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
         return Ok(());
     }
-    let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {
+    let Ok(plan) = solve::ColoredTangentPlan::derive_sharing(application, &mut table.lane_catalog)
+    else {
         return Ok(());
     };
     let n = application.rows().len();
@@ -449,11 +450,11 @@ fn record_lane_calls(
     let mut calls = Vec::new();
     for call in plan.calls() {
         let lanes = call.colors.len();
-        let program = plan.programs()[call.program].as_ref().clone();
+        let program = std::sync::Arc::clone(&plan.programs()[call.program]);
         check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         let seeds = lane_seed_positions(program.ops(), &call.colors, application);
-        let function = table.lanes.push(program, span);
+        let function = table.lanes.intern(program, span);
         let seed_count = seeds.len();
         let seeds = table.push(seeds);
         let mut placements = Vec::with_capacity(3 * call.placements.len());
@@ -671,7 +672,10 @@ fn tangent_lanes(
         check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         record.lane_max_outputs = record.lane_max_outputs.max(lanes * outputs);
-        functions.insert(index, (table.lanes.push(program.clone(), span), outputs));
+        let function = table
+            .lanes
+            .intern(std::sync::Arc::new(program.clone()), span);
+        functions.insert(index, (function, outputs));
     }
     record.lane_max = record.lane_max.max(lanes);
     Ok(functions)

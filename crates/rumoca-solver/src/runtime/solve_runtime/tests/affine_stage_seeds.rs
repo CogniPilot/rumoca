@@ -48,7 +48,7 @@ fn affine_stage_seeds_do_not_divide_by_a_vanishing_scalar_pivot() {
         "the affine solve is independent of a seed that can divide by zero"
     );
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     for k in [0.0, 1.0, 3.0, 0.0] {
         runtime
             .refresh_algebraic_and_output_slots_certified(1.0, &mut solver_y, &[k], 1e-10, 4)

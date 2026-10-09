@@ -19,7 +19,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         _seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("a selected projection must not execute unrelated programs")
     }
 
@@ -31,7 +31,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         _t: f64,
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.single_calls.set(self.single_calls.get() + 1);
         Ok(Some(
@@ -45,7 +45,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         inputs: solve_eval::JacobianEvalInputs<'_>,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.grouped_calls.set(self.grouped_calls.get() + 1);
         if self.fail {
@@ -157,7 +157,7 @@ impl CompiledSolveExpression for GroupedResidual {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("selected residuals must not execute unrelated programs")
     }
 
@@ -168,7 +168,7 @@ impl CompiledSolveExpression for GroupedResidual {
         p: &[f64],
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.single_calls.set(self.single_calls.get() + 1);
         Ok(Some(
@@ -184,7 +184,7 @@ impl CompiledSolveExpression for GroupedResidual {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.grouped_calls.set(self.grouped_calls.get() + 1);
         if self.fail {

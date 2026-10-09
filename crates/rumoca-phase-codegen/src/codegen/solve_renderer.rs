@@ -95,19 +95,18 @@ impl SolveTemplateRenderer {
         require_builtin_fmi_template_domain(component.problem())?;
         let me_refresh = super::me_projection::me_refresh_value(&component)?;
         let pure_calls = super::pure_call_families::PureCallFamilies::new(component.pure_calls())?;
+        let assertion_observations =
+            super::fmi_c_assertions::observations(component.problem(), component.pure_calls())?;
         let assertion_messages = super::fmi_c_assertions::messages(component.problem())?;
         let assertion_message_rows = assertion_messages.rows_value()?;
         let assertion_messages = Value::from_serialize(&assertion_messages.parts);
-        let uses_real_extremum =
-            super::real_extremum::used_by(component.problem(), component.artifacts())
-                || super::real_extremum::used_by_calls(component.pure_calls());
         let handle = super::solve_lazy::SolveRenderHandle::fmi(component);
-        let fmi = handle.fmi_value();
+        let fmi = handle.fmi_value()?;
         require_dense_value_references(&fmi)?;
         let text_starts = super::fmi_c_assertions::text_starts(&fmi)?;
         let context = solve_render_context_value_with_handles(handle, None, Value::default())?;
         Ok(Self {
-            context: minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
+            context: minijinja::context! { typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_observations => assertion_observations, fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
         })
     }
 
@@ -239,7 +238,7 @@ fn solve_render_context_value_with_handles(
     // fields serialize on demand and op lists materialize one op at a time, so a
     // ~150k-op model costs O(one program) here instead of ~5 GB of eager `Value`
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
-    let fmi_entry = handle.fmi_value();
+    let fmi_entry = handle.fmi_value()?;
     let solve_problem = handle.problem();
     let artifacts = handle.artifacts();
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
@@ -264,19 +263,15 @@ fn solve_render_context_value_with_handles(
             artifacts.continuous.implicit_jacobian_v.clone(),
         )?)
     } else {
-        Value::from_object(render_solve::SolveRowsValue::new(
-            artifacts
-                .continuous
-                .implicit_jacobian_v_scalar
-                .programs()
-                .to_vec(),
+        Value::from_object(render_solve::SolveRowsValue::from_block(
+            &artifacts.continuous.implicit_jacobian_v_scalar,
         ))
     };
-    let full_jacobian_rows = artifacts.continuous.full_jacobian_v.clone();
-    let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
-        full_jacobian_rows.programs().to_vec(),
+    let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::from_block(
+        &artifacts.continuous.full_jacobian_v,
     ));
-    let uses_real_extremum = super::real_extremum::used_by(solve_problem, artifacts);
+    let uses_real_extremum =
+        super::real_extremum::used_by(solve_problem, artifacts, handle.pure_calls());
     Ok(match model_name {
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),

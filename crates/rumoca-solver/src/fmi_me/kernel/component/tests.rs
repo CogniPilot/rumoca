@@ -136,7 +136,7 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
+        initial_y: vec![0.0, 0.0].into(),
         solver_nominals: vec![1.0, 1.0],
         visible_names: vec!["x".to_string(), "a".to_string()],
         ..Default::default()
@@ -358,7 +358,7 @@ fn observation_clock_alias_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        parameters: vec![1.0, 1.0],
+        parameters: vec![1.0, 1.0].into(),
         ..Default::default()
     }
 }

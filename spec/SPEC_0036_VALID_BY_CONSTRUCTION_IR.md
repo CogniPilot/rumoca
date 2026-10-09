@@ -70,6 +70,39 @@ dependency graph. `Preserve` is constructible only with a proof that the target
 cannot reach continuous dynamics; missing, cyclic, ambiguous, or unsupported
 evidence constructs `Restart` instead.
 
+### Source-Ordered Function Assertion Cutover
+
+The canonical typed evaluator and compiled shared C kernel implement this
+cutover. `docs/verification/fmi-ls-first-fault.md` records the unchanged
+source controls and adapter limits. ALG-015 remains the source-language
+requirement throughout.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| An assertion check executes at its authored statement, before later statements or loop iterations | Typed function lowering | Failed assertions stop algorithms |
+| The existing issued predicate-output role owns severity; existing assertion/message metadata remains authoritative | Solve pure-call construction | No parallel assertion registry |
+| A branded check capability names an issued assertion output in its exact construction context | TypedProgramBuilder | Numeric ordinals cannot forge assertions |
+| A warning records its predicate and continues; a failed error returns a private stopped outcome immediately | Canonical typed evaluator | Preserve severity and first fault |
+| Message captures evaluate only for a violated assertion, at that statement | Typed function lowering | Messages cannot introduce inactive faults |
+| A stopped outcome contains only initialized predicate/message observations and its exact source invocation | Canonical typed evaluator | No invented value or tangent results |
+| Child-to-lifted assertion forwarding is issued with the call, including lazy regions and compact loops | Typed function construction | Preserve nested origin without rediscovery |
+| C25 observation consumes a checked projection of that same invocation without demanding missing results | Solve root/action construction | Preserve root location and action reporting |
+| Ordinary value calls expose failure; a stopped outcome never becomes a successful complete tuple | Evaluation boundary | No partial success |
+| Observation authority binds the immutable call table, exact source programs and ordered actions together | Solve construction | Replaced or foreign programs cannot reuse proof |
+| Wire replay reconstructs every capability, forwarding relation and observation projection; old readers/versions fail closed | Solve serialization | No legacy assertion semantics |
+| Unimplemented execution adapters explicitly refuse checked assertion-stop programs | Native/codegen adapters | Interpreter repair cannot widen native admission |
+
+The cutover must update SOLVE-C25/C51/C52 and the current Solve schema together
+with the coherent source, typed interpreter and C25 consumer implementation.
+Schema 76 adds source-positioned checks and checked predicate-only observation
+projections to the severity and message associations carried by schema 75.
+Nested normal diagnostic outputs contain only canonical inactive cells; the
+private invocation observer retains actual failed predicates and captures.
+Observation execution depends conservatively on the complete actual-input
+footprint, including later failure paths. An opcode-only
+change, a public allow flag, a digest substitute for invocation membership,
+or an observation returning fabricated result leaves is prohibited.
+
 ### Solve Algorithm Block Construction
 
 `SolveAlgorithmBlock::construct` alone constructs the GALEC-derived root under

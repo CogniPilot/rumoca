@@ -298,8 +298,9 @@ pub enum VariableCausality {
 /// of where the declaration sits in the instance hierarchy.
 ///
 /// [`VariableCausality`] is the exported causality, which is `Input` or
-/// `Output` only for a top-level declaration; a nested `output` is exported
-/// `Local` and keeps its prefix here.
+/// `Output` only for a public top-level interface, including inherited record
+/// fields; an internal component's `output` is exported `Local` and keeps its
+/// prefix here (SPEC_0040 DAE-C24).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclaredCausality {

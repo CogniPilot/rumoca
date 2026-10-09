@@ -2,6 +2,8 @@
 
 #[cfg(target_arch = "wasm32")]
 mod assignments;
+#[cfg(any(target_arch = "wasm32", test))]
+mod errors;
 #[cfg(target_arch = "wasm32")]
 mod expressions;
 mod profile;

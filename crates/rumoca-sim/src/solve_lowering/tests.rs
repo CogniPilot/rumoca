@@ -10,6 +10,7 @@ mod array_trajectories;
 mod block_residual_split;
 mod coincident_strict;
 mod function_returns;
+mod host_initialization;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;

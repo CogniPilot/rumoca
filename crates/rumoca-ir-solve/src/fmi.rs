@@ -34,6 +34,7 @@
 
 mod c_codegen;
 mod co_simulation;
+mod deployment;
 mod event_free;
 mod indicator_plan;
 mod max_step_duration;
@@ -46,9 +47,12 @@ mod static_assertions;
 mod tests;
 mod time_events;
 
-pub use c_codegen::{FmiCCodegenError, FmiCCodegenView};
+pub use c_codegen::{FmiCCodegenError, FmiCCodegenView, FmiInstantiationBuffer};
 pub use co_simulation::{
     CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,
+};
+pub use deployment::{
+    FmiDeploymentCapabilities, FmiDeploymentError, FmiDeploymentView, FmiInterfaceProfile,
 };
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
 pub use indicator_plan::{
@@ -542,7 +546,8 @@ impl FmiComponent {
     }
 }
 
-/// Borrowed executable view minted only by [`FmiComponent::runtime_view`].
+/// Borrowed executable view minted only by [`FmiComponent::runtime_view`] or
+/// [`FmiDeploymentView::runtime_view`].
 ///
 /// This is the runtime counterpart of [`FmiCodegenView`]: it keeps the
 /// correlation proof but does not consume the component. Deliberately not

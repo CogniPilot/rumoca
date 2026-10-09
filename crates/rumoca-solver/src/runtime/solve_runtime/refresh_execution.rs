@@ -648,9 +648,7 @@ impl SolveRuntime {
         let Some(compiled) = self.compiled_assignment_schedule(backend.as_ref(), sequence) else {
             return Ok(false);
         };
-        compiled
-            .call(solver_y, params, t, self.model.external_tables.as_slice())
-            .map_err(RuntimeSolveError::solve_ir)?;
+        compiled.call(solver_y, params, t, self.model.external_tables.as_slice())?;
         Ok(true)
     }
 

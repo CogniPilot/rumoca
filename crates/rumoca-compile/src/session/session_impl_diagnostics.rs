@@ -237,26 +237,6 @@ impl Session {
         mode: SemanticDiagnosticsMode,
         model_name: &str,
     ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
-        if mode == SemanticDiagnosticsMode::Standard
-            && let Some(resolved) = self
-                .query_state
-                .flat
-                .semantic_diagnostics
-                .resolved_by_mode
-                .get(&mode)
-        {
-            let diagnostics = diagnostics_from_vec(
-                self.query_state
-                    .flat
-                    .semantic_diagnostics
-                    .resolved_diagnostics_by_mode
-                    .get(&mode)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            return Ok((resolved.clone(), diagnostics));
-        }
-
         if mode == SemanticDiagnosticsMode::Save {
             if let Some(target) = self.cached_save_resolution_proof(model_name) {
                 return Ok((target.resolved, diagnostics_from_vec(target.diagnostics)));
@@ -270,24 +250,7 @@ impl Session {
             return Ok((resolved, diagnostics));
         }
 
-        let build_started = maybe_start_timer();
-        let resolved_result = self.resolve_documents_for_mode(mode.resolve_build_mode());
-        let _ = maybe_elapsed_duration(build_started);
-        let (plan, diagnostics, _) = resolved_result?;
-        let ResolutionPlanningTree::Complete(resolved) = plan else {
-            return Err(diagnostics);
-        };
-        self.query_state
-            .flat
-            .semantic_diagnostics
-            .resolved_by_mode
-            .insert(mode, resolved.clone());
-        self.query_state
-            .flat
-            .semantic_diagnostics
-            .resolved_diagnostics_by_mode
-            .insert(mode, diagnostics.iter().cloned().collect());
-        Ok((resolved, diagnostics))
+        self.build_resolved_with_diagnostics()
     }
 
     /// Warning-severity resolve diagnostics scoped to the model's source

@@ -16,11 +16,48 @@
 {%- macro ctype(ty) -%}{% if ty.scalar.kind == "real" %}double{% elif ty.scalar.kind == "integer" %}int64_t{% else %}bool{% endif %}{%- endmacro %}
 
 {%- macro call(name, inputs, outputs) -%}
-if ({{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
+{ int status={{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ {% for output in outputs %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
 {% endmacro %}
 
-{%- macro operation(op, program, region_name, prefix="rumoca_pure_") -%}
-{% if op.operation in ["constant", "unary", "binary", "broadcast_binary", "compare", "convert"] -%}
+{%- macro observation_wrapper(owner) -%}
+{% set predicates = owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list -%}
+{% if predicates|length > 0 -%}
+RMC_API int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
+(void)in;
+{% for ty in owner.inputs -%}
+{% if not direct(ty) -%}
+{{ declaration("a" ~ loop.index0, ty) }}
+{{ import_scalars("a" ~ loop.index0, "in[" ~ loop.index0 ~ "]", ty) -}}
+{% endif -%}
+{% endfor -%}
+{% for predicate in predicates %}bool b{{ loop.index0 }}[1]={true}; out[{{ loop.index0 }}]=1.0;{% endfor %}
+{% set output = namespace(predicate=0, args="") -%}
+{% for value in owner.outputs -%}
+{% if value.role.kind == "assertion_predicate" %}{% set output.args = output.args ~ "b" ~ output.predicate ~ "," %}{% set output.predicate = output.predicate + 1 %}
+{% else %}{% set output.args = output.args ~ "NULL," %}{% endif -%}
+{% endfor -%}
+int status=rumoca_pure_{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ output.args }} }, observer);
+if (!status) { {% for predicate in predicates %}out[{{ loop.index0 }}]=(double)b{{ loop.index0 }}[0];{% endfor %} }
+return status;
+}
+{% endif -%}
+{% endmacro %}
+
+{%- macro operation(op, program, region_name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}) -%}
+{% if op.operation == "check_assertion" -%}
+if (!r{{ op.condition }}[0]) {
+{% if op.message.kind == "captures" -%}
+{{ call(region_name ~ "_message", op.captures, op.destinations) -}}
+{% endif -%}
+if (!observer || !observer->observe || observer->observe(observer->context, {{ source_predicate_outputs[op.predicate_output ~ ""] }}, (const void*[]){ {% for destination in op.destinations %}r{{ destination }},{% else %}NULL{% endfor %} }, {{ op.destinations|length }})) return 1;
+{% if assertion_outputs[op.predicate_output].role.level == "error" %}return 2;
+{% endif -%}
+} else {
+{% for destination in op.destinations -%}
+{{ arithmetic({"operation": "constant", "destination": destination, "value": inactive_assertion_message(program.register_types[destination].scalar)}, program) -}}
+{% endfor -%}
+}
+{% elif op.operation in ["constant", "unary", "binary", "broadcast_binary", "compare", "convert"] -%}
 {{ arithmetic(op, program) -}}
 {% elif op.operation == "load" -%}
 {{ copy("r" ~ op.destination, "s" ~ op.slot) -}}
@@ -32,7 +69,17 @@ if ({{ name }}((const void*[]){ {% for input in inputs %}r{{ input }},{% else %}
 if (r{{ op.condition }}[0]) { {{ call(region_name ~ "_true", op.captures, op.destinations)|trim }} }
 else { {{ call(region_name ~ "_false", op.captures, op.destinations)|trim }} }
 {% elif op.operation == "call" -%}
+{% if op.assertion_forwarding|length > 0 -%}
+{
+const RmcAssertionForwarding bindings[]={ {% for binding in op.assertion_forwarding %}{ {{ binding.child_predicate }}, {{ binding.parent_predicate }} },{% endfor %} };
+RmcAssertionForwardContext forwarding={observer, bindings, {{ op.assertion_forwarding|length }}};
+const RmcAssertionObserver forwarded={&forwarding, rmc_forward_assertion};
+const RmcAssertionObserver* observer=&forwarded;
 {{ call(prefix ~ op.owner, op.arguments, op.destinations) -}}
+}
+{% else -%}
+{{ call(prefix ~ op.owner, op.arguments, op.destinations) -}}
+{% endif -%}
 {% elif op.operation == "fold" -%}
 {
 {% for dst in op.destinations %}{{ copy("r" ~ dst, "r" ~ op.initial[loop.index0]) }}{% endfor -%}
@@ -44,10 +91,10 @@ for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }} && !fold_done; 
 if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
 {% if op.continuation -%}
-{ bool fold_continue[1]; if ({{ region_name }}_continue((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ fold_continue })) return 1; fold_done = !fold_continue[0]; }
+{ bool fold_continue[1]; int status={{ region_name }}_continue((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% else %}NULL{% endfor %} }, (void*[]){ fold_continue }, observer); if (status) return status; fold_done = !fold_continue[0]; }
 if (!fold_done)
 {% endif -%}
-if ({{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} })) return 1;
+{ int status={{ region_name }}_fold((const void*[]){ {% for input in op.destinations + op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ {% for output in op.destinations %}r{{ output }},{% else %}NULL{% endfor %} }, observer); if (status) return status; }
 {% for binder in op.domain.binders %} } {% endfor %}
 }
 {% elif op.operation == "map" -%}
@@ -60,7 +107,7 @@ int64_t b{{ loop.index0 }}[1]={ {{ integer(binder.lower) }} };
 for (size_t i{{ loop.index0 }}=0; i{{ loop.index0 }}<{{ count }}; ++i{{ loop.index0 }}) {
 if (i{{ loop.index0 }}) b{{ loop.index0 }}[0]+={{ integer(binder.step) }};
 {% endfor -%}
-if ({{ region_name }}_map((const void*[]){ {% for input in op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ r{{ op.destination }} + map_point*{{ op.body.outputs[0].scalar_count }} })) return 1;
+{ int status={{ region_name }}_map((const void*[]){ {% for input in op.captures %}r{{ input }},{% endfor %}{% for binder in op.domain.binders %}b{{ loop.index0 }},{% endfor %} }, (void*[]){ r{{ op.destination }} + map_point*{{ op.body.outputs[0].scalar_count }} }, observer); if (status) return status; }
 ++map_point;
 {% for binder in op.domain.binders %} } {% endfor %}
 }
@@ -69,31 +116,33 @@ if ({{ region_name }}_map((const void*[]){ {% for input in op.captures %}r{{ inp
 {% endif -%}
 {% endmacro %}
 
-{%- macro definition(program, name, prefix="rumoca_pure_") -%}
+{%- macro definition(program, name, prefix="rumoca_pure_", assertion_outputs=[], source_predicate_outputs={}) -%}
 {% for issued in program.operations -%}
 {% set op = issued.operation -%}
 {% set child = name ~ "_region_" ~ loop.index0 -%}
-{% if op.operation == "conditional" -%}
-{{ definition(op.if_true.body, child ~ "_true", prefix) -}}
-{{ definition(op.if_false.body, child ~ "_false", prefix) -}}
+{% if op.operation == "check_assertion" and op.message.kind == "captures" -%}
+{{ definition(op.message.program.body, child ~ "_message", prefix, assertion_outputs, source_predicate_outputs) -}}
+{% elif op.operation == "conditional" -%}
+{{ definition(op.if_true.body, child ~ "_true", prefix, assertion_outputs, source_predicate_outputs) -}}
+{{ definition(op.if_false.body, child ~ "_false", prefix, assertion_outputs, source_predicate_outputs) -}}
 {% elif op.operation == "map" -%}
-{{ definition(op.body.body, child ~ "_map", prefix) -}}
+{{ definition(op.body.body, child ~ "_map", prefix, assertion_outputs, source_predicate_outputs) -}}
 {% elif op.operation == "fold" -%}
-{{ definition(op.transition.body, child ~ "_fold", prefix) -}}
+{{ definition(op.transition.body, child ~ "_fold", prefix, assertion_outputs, source_predicate_outputs) -}}
 {% if op.continuation -%}
-{{ definition(op.continuation.body, child ~ "_continue", prefix) -}}
+{{ definition(op.continuation.body, child ~ "_continue", prefix, assertion_outputs, source_predicate_outputs) -}}
 {% endif -%}
 {% endif -%}
 {% endfor -%}
-static int {{ name }}(const void* const in[], void* const out[]) {
-(void)in; (void)out;
+static int {{ name }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer) {
+(void)in; (void)out; (void)observer; (void)rumoca_real64;
 {% set input = namespace(index=0, pointers=[]) -%}
 {% for slot in program.slots -%}
 {% set stored = namespace(value=false) -%}
 {% for issued in program.operations %}{% if issued.operation.operation == "store" and issued.operation.slot == slot.id %}{% set stored.value = true %}{% endif %}{% endfor -%}
 {% if slot.storage == "input" and not stored.value and slot.value_type.scalar_count > 0 -%}
 {#- An input slot the body never writes reads the caller's array. -#}
-const {{ ctype(slot.value_type) }}* s{{ slot.id }} = in[{{ input.index }}];
+const {{ ctype(slot.value_type) }}* s{{ slot.id }} = in[{{ input.index }}]; (void)s{{ slot.id }};
 {% set input.index = input.index + 1 -%}
 {% set input.pointers = input.pointers + [slot.id] -%}
 {% else -%}
@@ -118,11 +167,11 @@ memcpy(s{{ slot.id }}, in[{{ input.index }}], sizeof(s{{ slot.id }}));
 {% endfor -%}
 {% for ty in program.register_types %}{% if loop.index0 not in alias.ids %}{{ declaration("r" ~ loop.index0, ty) }}{% endif %}{% endfor %}
 {% for issued in program.operations %}{% set op = issued.operation %}{% if op.operation == "load" and op.destination in alias.ids %}const {{ ctype(program.register_types[op.destination]) }}* r{{ op.destination }} = s{{ op.slot }}; (void)r{{ op.destination }};
-{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix) }}{% endif %}{% endfor -%}
+{% else %}{{ operation(op, program, name ~ "_region_" ~ loop.index0, prefix, assertion_outputs, source_predicate_outputs) }}{% endif %}{% endfor -%}
 {% set output = namespace(index=0) -%}
 {% for slot in program.slots -%}
 {% if slot.storage == "output" -%}
-memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
+if (out[{{ output.index }}]) memcpy(out[{{ output.index }}], s{{ slot.id }}, sizeof(s{{ slot.id }}));
 {% set output.index = output.index + 1 -%}
 {% endif -%}
 {% endfor -%}
@@ -133,7 +182,7 @@ return 0;
 {#- Binary64 inputs and outputs pass the caller's arrays straight through;
     other types convert through local arrays. -#}
 {%- macro wrapper(owner, kind="") -%}
-RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out) {
+RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer) {
 (void)in; (void)out;
 {% for ty in owner.inputs -%}
 {% if not direct(ty) -%}
@@ -147,7 +196,7 @@ RMC_API int rumoca_scalar_pure_{{ kind }}{{ owner.id }}(const double* const in[]
 {% else %}{{ declaration("b" ~ loop.index0, output.value_type) }}{% set offset.args = offset.args ~ "b" ~ loop.index0 ~ "," %}{% set offset.conversions = offset.conversions ~ "for (size_t k=0; k<" ~ output.value_type.scalar_count ~ "; ++k) out[" ~ offset.value ~ "+k]=(double)b" ~ loop.index0 ~ "[k];\n" %}{% endif -%}
 {% set offset.value = offset.value + output.value_type.scalar_count -%}
 {% endfor %}
-if (rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} })) return 1;
+{ int status=rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inputs %}{% if direct(ty) %}in[{{ loop.index0 }}]{% else %}a{{ loop.index0 }}{% endif %},{% else %}NULL{% endfor %} }, (void*[]){ {{ offset.args if offset.args else "NULL" }} }, observer); if (status) return status; }
 {{ offset.conversions }}return 0;
 }
 {% endmacro %}
@@ -159,22 +208,39 @@ if (rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inp
 {% if table.owners|length > 0 -%}
 static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }
 {% endif -%}
-{% for owner in table.owners %}static int rumoca_pure_{{ owner.id }}(const void* const in[], void* const out[]);{% endfor %}
+{% for owner in table.owners %}static int rumoca_pure_{{ owner.id }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
 {% for owner in table.owners -%}
-{{ definition(owner.body, "rumoca_pure_" ~ owner.id) -}}
+{{ definition(owner.body, "rumoca_pure_" ~ owner.id, assertion_outputs=owner.outputs, source_predicate_outputs=owner.source_predicate_outputs) -}}
 {{ wrapper(owner) -}}
+{{ observation_wrapper(owner) -}}
 {% endfor -%}
-{% for owner in directional %}static int rumoca_pure_directional_{{ owner.id }}(const void* const in[], void* const out[]);{% endfor %}
+{% for owner in directional %}static int rumoca_pure_directional_{{ owner.id }}(const void* const in[], void* const out[], const RmcAssertionObserver* observer);{% endfor %}
 {% for owner in directional -%}
-{{ definition(owner.body, "rumoca_pure_directional_" ~ owner.id, "rumoca_pure_directional_") -}}
+{{ definition(owner.body, "rumoca_pure_directional_" ~ owner.id, "rumoca_pure_directional_", owner.outputs, owner.source_predicate_outputs) -}}
 {{ wrapper(owner, "directional_") -}}
 {% endfor -%}
 {% endmacro %}
 
 {#- The wrapper declarations every program translation unit includes. -#}
 {%- macro function_prototypes(table, directional=[]) -%}
-{% for owner in table.owners %}RMC_API int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out);
+typedef struct { void* context; int (*observe)(void*, size_t, const void* const[], size_t); } RmcAssertionObserver;
+typedef struct { size_t child; size_t parent; } RmcAssertionForwarding;
+typedef struct { const RmcAssertionObserver* parent; const RmcAssertionForwarding* bindings; size_t count; } RmcAssertionForwardContext;
+static inline int rmc_forward_assertion(void* context, size_t predicate, const void* const captures[], size_t count) {
+    const RmcAssertionForwardContext* forwarding=context;
+    if (!forwarding->parent || !forwarding->parent->observe) return 1;
+    for (size_t k=0; k<forwarding->count; ++k) if (forwarding->bindings[k].child==predicate)
+        return forwarding->parent->observe(forwarding->parent->context, forwarding->bindings[k].parent, captures, count);
+    return 1;
+}
+typedef struct RmcAssertionNotice { size_t action; char* message; struct RmcAssertionNotice* next; } RmcAssertionNotice;
+typedef struct { ModelInstance* instance; size_t owner; int mode; double* predicates; RmcAssertionNotice* notices; } RmcModelAssertionContext;
+int rmc_model_assertion(void* context, size_t predicate, const void* const captures[], size_t count);
+void rmc_finish_assertion_observation(RmcModelAssertionContext* context, int status);
+{% for owner in table.owners %}RMC_API int rumoca_scalar_pure_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% if owner.outputs|selectattr("role.kind", "equalto", "assertion_predicate")|list|length > 0 %}RMC_API int rumoca_scalar_observe_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
+{% endif %}
 {% endfor -%}
-{% for owner in directional %}RMC_API int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out);
+{% for owner in directional %}RMC_API int rumoca_scalar_pure_directional_{{ owner.id }}(const double* const in[], double* out, const RmcAssertionObserver* observer);
 {% endfor -%}
 {% endmacro %}

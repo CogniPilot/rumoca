@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn apply_integrator_history_effects(
     discrete: &mut solve::DiscreteSolveSystem,
     sensitive: &BTreeSet<HistoryDependencySlot>,
@@ -265,17 +268,51 @@ pub(super) fn collect_linear_op_dependencies(
     ops: &[solve::LinearOp],
     dependencies: &mut BTreeSet<HistoryDependencySlot>,
 ) -> Option<()> {
+    let mut reads = Vec::new();
+    collect_dependency_reads(ops, &mut reads)?;
+    for read in reads {
+        match read {
+            DependencyRead::Scalar(slot) => {
+                dependencies.insert(slot);
+            }
+            DependencyRead::Tensor(input, range) => match input {
+                solve::TensorInputKind::Y => {
+                    dependencies.extend(range.map(HistoryDependencySlot::Y));
+                }
+                solve::TensorInputKind::P => {
+                    dependencies.extend(range.map(HistoryDependencySlot::P));
+                }
+            },
+        }
+    }
+    Some(())
+}
+
+enum DependencyRead {
+    Scalar(HistoryDependencySlot),
+    Tensor(solve::TensorInputKind, std::ops::Range<usize>),
+}
+
+/// Keep tensor reads compact until every operation has a supported proof.
+/// A refused proof must not first materialize its large, unusable scalar set.
+fn collect_dependency_reads(
+    ops: &[solve::LinearOp],
+    reads: &mut Vec<DependencyRead>,
+) -> Option<()> {
     for op in ops {
         match op {
             solve::LinearOp::LoadY { index, .. } => {
-                dependencies.insert(HistoryDependencySlot::Y(*index));
+                reads.push(DependencyRead::Scalar(HistoryDependencySlot::Y(*index)));
             }
             solve::LinearOp::LoadP { index, .. } => {
-                dependencies.insert(HistoryDependencySlot::P(*index));
+                reads.push(DependencyRead::Scalar(HistoryDependencySlot::P(*index)));
             }
             solve::LinearOp::LoadIndexedP { base, count, .. } => {
                 let end = base.checked_add(*count)?;
-                dependencies.extend((*base..end).map(HistoryDependencySlot::P));
+                reads.push(DependencyRead::Tensor(
+                    solve::TensorInputKind::P,
+                    *base..end,
+                ));
             }
             solve::LinearOp::TensorLoad {
                 input,
@@ -284,28 +321,21 @@ pub(super) fn collect_linear_op_dependencies(
                 ..
             } => {
                 let end = input_start.checked_add(*count)?;
-                match input {
-                    solve::TensorInputKind::Y => {
-                        dependencies.extend((*input_start..end).map(HistoryDependencySlot::Y));
-                    }
-                    solve::TensorInputKind::P => {
-                        dependencies.extend((*input_start..end).map(HistoryDependencySlot::P));
-                    }
-                }
+                reads.push(DependencyRead::Tensor(*input, *input_start..end));
             }
             solve::LinearOp::FunctionFold { program, .. }
             | solve::LinearOp::GuardedFunctionFold { program, .. }
             | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
                 for region in program.regions() {
-                    collect_linear_op_dependencies(region, dependencies)?;
+                    collect_dependency_reads(region, reads)?;
                 }
             }
             solve::LinearOp::FunctionConditional { program, .. } => {
                 for arm in &program.arms {
-                    collect_linear_op_dependencies(&arm.condition, dependencies)?;
-                    collect_linear_op_dependencies(&arm.result, dependencies)?;
+                    collect_dependency_reads(&arm.condition, reads)?;
+                    collect_dependency_reads(&arm.result, reads)?;
                 }
-                collect_linear_op_dependencies(&program.fallback, dependencies)?;
+                collect_dependency_reads(&program.fallback, reads)?;
             }
             // Register-to-register work reads nothing outside the program, so it
             // introduces no new dependency. `LoadTime` reads the independent
@@ -334,6 +364,7 @@ pub(super) fn collect_linear_op_dependencies(
             // Everything else reads storage this analysis does not model:
             // seeds (derived artifacts), fold/capture state, tables, random
             // state, and pure calls. Fail closed rather than under-report.
+            solve::LinearOp::PureCallObservation { .. } => return None,
             _ => return None,
         }
     }

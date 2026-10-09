@@ -10,7 +10,7 @@
 {%- from "fmi-c-kernel.jinja" import scalar_op %}
 
 {%- macro event_fields(fmi) -%}
-{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_inputs|length, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
+{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_input_runs.scalar_count, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
 {%- endmacro %}
 
 {#- The evaluation time of a read at the component's time: after an event with
@@ -84,6 +84,37 @@ static {{ prefix }}Status {{ name }}(ModelInstance* m, bool* changed) {
 {%- endfor %}
 {%- endmacro %}
 
+{%- macro discrete_input_history(inputs) %}
+/* The discrete inputs as the last event saw them. */
+#define RMC_DISCRETE_INPUTS {{ inputs.scalar_count }}
+#define RMC_DISCRETE_INPUT_RUNS {{ inputs.runs|length }}
+typedef struct { size_t p_base, count, seen_offset; } RmcDiscreteInputRun;
+static const RmcDiscreteInputRun rmc_discrete_input_run[{{ [inputs.runs|length, 1]|max }}] = {
+{%- for run in inputs.runs %}
+    { {{ run.p_base }}, {{ run.count }}, {{ run.seen_offset }} },
+{%- else %}
+    { 0, 0, 0 },
+{%- endfor %}
+};
+static void rmc_discrete_inputs_seen(ModelInstance* m) {
+    for (size_t r = 0; r != RMC_DISCRETE_INPUT_RUNS; ++r) {
+        const RmcDiscreteInputRun* run = &rmc_discrete_input_run[r];
+        for (size_t k = 0; k != run->count; ++k) m->rmc_input_seen[run->seen_offset + k] = m->p[run->p_base + k];
+    }
+    (void)m;
+}
+/* A discrete-time input changes only at events (MLS §4.5): one the importer
+   set since the last event is an event at the next instant. */
+static bool rmc_discrete_inputs_changed(const ModelInstance* m) {
+    for (size_t r = 0; r != RMC_DISCRETE_INPUT_RUNS; ++r) {
+        const RmcDiscreteInputRun* run = &rmc_discrete_input_run[r];
+        for (size_t k = 0; k != run->count; ++k) if (memcmp(&m->rmc_input_seen[run->seen_offset + k], &m->p[run->p_base + k], sizeof(double)) != 0) return true;
+    }
+    (void)m;
+    return false;
+}
+{%- endmacro %}
+
 {%- macro scalar_events(solve, fmi, prefix) %}
 {%- set ev = fmi.scalar_events %}
 {%- set nroots = ev.roots|length %}
@@ -107,7 +138,7 @@ static {{ prefix }}Status rmc_eval_roots(ModelInstance* m, double* roots) {
     {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
-{{ scalar_op(op, "roots", prefix ~ "Error") }}
+{{ scalar_op(op, "roots", prefix ~ "Error", observation_mode=0) }}
 {%- endfor %}
     }
 {%- endfor %}
@@ -710,20 +741,7 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
     return {{ prefix }}Error;
 }
 
-/* The discrete inputs as the last event saw them. */
-#define RMC_DISCRETE_INPUTS {{ ev.discrete_inputs|length }}
-static const size_t rmc_discrete_input[{{ [ev.discrete_inputs|length, 1]|max }}] = { {% for index in ev.discrete_inputs %}{{ index }},{% else %}0{% endfor %} };
-static void rmc_discrete_inputs_seen(ModelInstance* m) {
-    for (size_t k = 0; k != RMC_DISCRETE_INPUTS; ++k) m->rmc_input_seen[k] = m->p[rmc_discrete_input[k]];
-    (void)m;
-}
-/* A discrete-time input changes only at events (MLS §4.5): one the importer
-   set since the last event is an event at the next instant. */
-static bool rmc_discrete_inputs_changed(const ModelInstance* m) {
-    for (size_t k = 0; k != RMC_DISCRETE_INPUTS; ++k) if (memcmp(&m->rmc_input_seen[k], &m->p[rmc_discrete_input[k]], sizeof(double)) != 0) return true;
-    (void)m;
-    return false;
-}
+{{ discrete_input_history(ev.discrete_input_runs) }}
 
 /* One event at `m->time`: every clock that ticks there reads active for the
    whole iteration, and none reads active once it has settled. */

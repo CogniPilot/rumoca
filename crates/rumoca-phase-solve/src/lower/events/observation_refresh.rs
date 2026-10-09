@@ -12,6 +12,7 @@
 //! bytecode, names, or model provenance to rediscover this ownership.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use rumoca_ir_solve as solve;
 
@@ -23,7 +24,8 @@ struct ObservationRow {
     row: usize,
     span: rumoca_core::Span,
     target: HistoryDependencySlot,
-    reads: BTreeSet<HistoryDependencySlot>,
+    reads_y: Arc<solve::IndexIntervals>,
+    reads_p: Arc<solve::IndexIntervals>,
     safe: bool,
     seed: bool,
 }
@@ -33,11 +35,8 @@ pub(super) fn derive_observation_refresh(
     clock_activation_parameters: &[usize],
     observed_rows: &[usize],
 ) -> Result<(), LowerError> {
-    let activation_parameters = clock_activation_parameters
-        .iter()
-        .copied()
-        .map(HistoryDependencySlot::P)
-        .collect::<BTreeSet<_>>();
+    let activation_parameters =
+        solve::IndexIntervals::of(clock_activation_parameters.iter().copied());
     let mut rows = observation_rows(discrete, &activation_parameters)?;
     let observed = observed_rows.iter().copied().collect::<BTreeSet<_>>();
     let mut seeded = 0usize;
@@ -58,13 +57,10 @@ pub(super) fn derive_observation_refresh(
         ));
     }
     let selected = select_refresh_closure(&rows);
-    discrete.observation_refresh_reads_y = rows.iter().zip(&selected).any(|(row, selected)| {
-        *selected
-            && row
-                .reads
-                .iter()
-                .any(|dependency| matches!(dependency, HistoryDependencySlot::Y(_)))
-    });
+    discrete.observation_refresh_reads_y = rows
+        .iter()
+        .zip(&selected)
+        .any(|(row, selected)| *selected && !row.reads_y.is_empty());
     for (row, selected) in rows.iter().zip(selected) {
         discrete.observation_refresh[row.row] = selected;
     }
@@ -73,7 +69,7 @@ pub(super) fn derive_observation_refresh(
 
 fn observation_rows(
     discrete: &solve::DiscreteSolveSystem,
-    activation_parameters: &BTreeSet<HistoryDependencySlot>,
+    activation_parameters: &solve::IndexIntervals,
 ) -> Result<Vec<ObservationRow>, LowerError> {
     let mut rows = Vec::with_capacity(discrete.update_targets.len());
     let mut stored_output = 0usize;
@@ -83,23 +79,21 @@ fn observation_rows(
             .program_span(program_index)
             .expect("checked scalar program has provenance");
         let y_dependencies =
-            solve::StructuralPattern::derive_output_y_dependencies(program, Some(span)).map_err(
-                |error| {
+            solve::StructuralPattern::derive_output_y_dependency_ranges(program, Some(span))
+                .map_err(|error| {
                     LowerError::contract(
                         format!("cannot prove observation-refresh Y dependencies: {error}"),
                         span,
                     )
-                },
-            )?;
+                })?;
         let p_dependencies =
-            solve::StructuralPattern::derive_output_p_dependencies(program, Some(span)).map_err(
-                |error| {
+            solve::StructuralPattern::derive_output_p_dependency_ranges(program, Some(span))
+                .map_err(|error| {
                     LowerError::contract(
                         format!("cannot prove observation-refresh P dependencies: {error}"),
                         span,
                     )
-                },
-            )?;
+                })?;
         if y_dependencies.len() != p_dependencies.len() {
             return Err(LowerError::contract(
                 "observation-refresh dependency projections disagree on output count",
@@ -134,23 +128,17 @@ fn observation_rows(
                         span,
                     )
                 })?;
-            let reads = y_dependencies
-                .into_iter()
-                .map(HistoryDependencySlot::Y)
-                .chain(p_dependencies.iter().copied().map(HistoryDependencySlot::P))
-                .collect::<BTreeSet<_>>();
             let safe = discrete.clock_owners.get(row) == Some(&None)
                 && discrete.pre_modes.get(row) == Some(&solve::DiscreteEventPreMode::FollowCurrent);
             let seed = !p_dependencies
-                .into_iter()
-                .map(HistoryDependencySlot::P)
-                .collect::<BTreeSet<_>>()
-                .is_disjoint(activation_parameters);
+                .intersection(activation_parameters)
+                .is_empty();
             rows.push(ObservationRow {
                 row,
                 span,
                 target,
-                reads,
+                reads_y: y_dependencies,
+                reads_p: p_dependencies,
                 safe,
                 seed,
             });
@@ -177,18 +165,24 @@ fn select_refresh_closure(rows: &[ObservationRow]) -> Vec<bool> {
         .iter()
         .map(|row| row.safe && row.seed)
         .collect::<Vec<_>>();
+    let mut active_y = solve::IndexIntervals::default();
+    let mut active_p = solve::IndexIntervals::default();
+    for (row, selected) in rows.iter().zip(&selected) {
+        if *selected {
+            insert_target(row.target, &mut active_y, &mut active_p);
+        }
+    }
     loop {
         let mut changed = false;
         for (index, row) in rows.iter().enumerate() {
             if selected[index] || !row.safe {
                 continue;
             }
-            let connected = rows
-                .iter()
-                .zip(&selected)
-                .any(|(active, selected)| *selected && row.reads.contains(&active.target));
+            let connected = !row.reads_y.intersection(&active_y).is_empty()
+                || !row.reads_p.intersection(&active_p).is_empty();
             if connected {
                 selected[index] = true;
+                insert_target(row.target, &mut active_y, &mut active_p);
                 changed = true;
             }
         }
@@ -198,47 +192,16 @@ fn select_refresh_closure(rows: &[ObservationRow]) -> Vec<bool> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn closure_selects_safe_consumers_but_not_upstream_or_history_rows() {
-        let rows = vec![
-            ObservationRow {
-                row: 0,
-                span: rumoca_core::Span::DUMMY,
-                target: HistoryDependencySlot::P(9),
-                reads: BTreeSet::from([HistoryDependencySlot::P(200)]),
-                safe: true,
-                seed: false,
-            },
-            ObservationRow {
-                row: 1,
-                span: rumoca_core::Span::DUMMY,
-                target: HistoryDependencySlot::P(10),
-                reads: BTreeSet::from([HistoryDependencySlot::P(9), HistoryDependencySlot::P(100)]),
-                safe: true,
-                seed: true,
-            },
-            ObservationRow {
-                row: 2,
-                span: rumoca_core::Span::DUMMY,
-                target: HistoryDependencySlot::P(11),
-                reads: BTreeSet::from([HistoryDependencySlot::P(10)]),
-                safe: true,
-                seed: false,
-            },
-            ObservationRow {
-                row: 3,
-                span: rumoca_core::Span::DUMMY,
-                target: HistoryDependencySlot::P(12),
-                reads: BTreeSet::from([HistoryDependencySlot::P(11)]),
-                safe: false,
-                seed: false,
-            },
-        ];
-
-        assert_eq!(select_refresh_closure(&rows), [false, true, true, false]);
+fn insert_target(
+    target: HistoryDependencySlot,
+    active_y: &mut solve::IndexIntervals,
+    active_p: &mut solve::IndexIntervals,
+) {
+    match target {
+        HistoryDependencySlot::Y(index) => active_y.insert(index),
+        HistoryDependencySlot::P(index) => active_p.insert(index),
     }
 }
+
+#[cfg(test)]
+mod tests;

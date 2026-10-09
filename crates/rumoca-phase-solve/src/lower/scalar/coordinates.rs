@@ -99,14 +99,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             span,
         )?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorLoad {
+        self.emit(solve::LinearOp::TensorLoad {
             dst_start,
             input,
             input_start,
             count,
             seed_start: None,
             lanes: 1,
-        });
+        })?;
         self.tensor_load_cache.insert(key, (dst_start, count));
         Ok(Some(dst_start))
     }
@@ -277,7 +277,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         if matches!(coordinate, dae::CoordinateView::Time) {
             let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::LoadTime { dst });
+            self.emit(solve::LinearOp::LoadTime { dst })?;
             return Ok(dst);
         }
         if let dae::CoordinateView::ClockInterval(clock) = coordinate {
@@ -341,10 +341,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let dst = self.register(span)?;
         match slot {
             solve::ScalarSlot::Y { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadY { dst, index });
+                self.emit(solve::LinearOp::LoadY { dst, index })?;
             }
             solve::ScalarSlot::P { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadP { dst, index });
+                self.emit(solve::LinearOp::LoadP { dst, index })?;
             }
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
                 unreachable!("variable layouts contain only Y/P slots")

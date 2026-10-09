@@ -47,6 +47,21 @@ impl CompiledNativeCallProgramWasm {
     pub fn gather_faults(&self) -> &[NativeGatherFault] {
         &self.gather_faults
     }
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn status_error(&self, status: u32) -> WasmCompileError {
+        if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
+            return WasmCompileError::TypedSource(fault.clone());
+        }
+        if let Some(fault) = self
+            .gather_faults()
+            .iter()
+            .find(|fault| fault.status == status)
+        {
+            return WasmCompileError::GatherSource(fault.clone());
+        }
+        WasmCompileError::Backend(format!("native entry failure status {status}"))
+    }
+
     pub fn math_imports(&self) -> &[&'static str] {
         &self.math_imports
     }

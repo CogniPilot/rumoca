@@ -25,6 +25,8 @@ mod initial_parameters;
 mod initial_pins;
 mod initial_projection;
 mod initialization;
+#[cfg(test)]
+mod program_compaction_tests;
 mod scalar;
 pub(crate) mod typed_functions;
 use scalar::{
@@ -872,29 +874,27 @@ fn pure_aggregate_call_projection<'dae>(
     pure_call_projection_root(view, rhs)
 }
 
-/// The call occurrence `expression` projects through fields and indices, when
-/// it is a projection of a pure call.
+/// The issued pure call occurrence behind a direct result or a field/index
+/// projection. Tuple result nodes retain their common construction-issued owner.
 pub(super) fn pure_call_projection_root<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
 ) -> Option<dae::ExprId<'dae>> {
     let mut projection = expression;
-    let mut projected = false;
     loop {
         match view.expression(projection)?.operation() {
             dae::ExpressionOperation::Field { base, .. }
             | dae::ExpressionOperation::Index { base, .. } => {
-                projected = true;
                 projection = base;
             }
-            dae::ExpressionOperation::Call { function, .. }
-                if projected
-                    && view
-                        .function(function)?
-                        .external()
-                        .is_none_or(|external| external.purity().is_pure()) =>
+            dae::ExpressionOperation::Call {
+                function, owner, ..
+            } if view
+                .function(function)?
+                .external()
+                .is_none_or(|external| external.purity().is_pure()) =>
             {
-                return Some(projection);
+                return Some(owner);
             }
             _ => return None,
         }
@@ -2118,7 +2118,11 @@ impl ScalarRows {
     }
 
     pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
-        compact_identical_program_prefixes(&mut self.programs, &mut self.spans);
+        compact_identical_program_prefixes(
+            &mut self.programs,
+            &mut self.spans,
+            scalar::MetadataBudget::default(),
+        );
         Ok(solve::ComputeBlock::from_scalar_program_block(
             self.into_scalar_block()?,
         ))
@@ -2132,6 +2136,7 @@ impl ScalarRows {
 fn compact_identical_program_prefixes(
     programs: &mut Vec<Vec<solve::LinearOp>>,
     spans: &mut Vec<Span>,
+    budget: scalar::MetadataBudget,
 ) {
     let mut compact_programs: Vec<Vec<solve::LinearOp>> = Vec::with_capacity(programs.len());
     let mut compact_spans = Vec::with_capacity(spans.len());
@@ -2149,7 +2154,12 @@ fn compact_identical_program_prefixes(
             .zip(compact_spans.last())
             .and_then(|(previous, previous_span)| {
                 trailing_output_start(previous).map(|previous_body_len| {
-                    *previous_span == span && previous[..previous_body_len] == program[..body_len]
+                    *previous_span == span
+                        && previous[..previous_body_len] == program[..body_len]
+                        && previous
+                            .len()
+                            .checked_add(program.len() - body_len)
+                            .is_some_and(|count| budget.permits_operations(count))
                 })
             })
             .unwrap_or(false);

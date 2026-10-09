@@ -21,6 +21,7 @@ use rumoca_sim::{
     check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+use rumoca_solver::fmi_me::session::MeSessionError;
 use rumoca_test_msl::resource_budget::{
     SOLVE_IR_SIZE_LIMIT_MB_DEFAULT, SolveIrBudgetMeasureError, SolveIrSizeBudget,
 };
@@ -397,7 +398,8 @@ fn classify_solver_error(
     // `kind()` peels the stage annotation the solver backend attaches, so an
     // annotated timeout is still classified as a timeout.
     match err.kind() {
-        SimError::Timeout { seconds } => sim_worker_result(
+        SimError::Timeout { seconds }
+        | SimError::ModelExchangeSession(MeSessionError::Timeout { seconds }) => sim_worker_result(
             "sim_timeout",
             Some(format!("timeout after {:.3}s", seconds)),
             elapsed,
@@ -545,7 +547,7 @@ type WorkerRunOk = (
     f64,
     Option<TraceCertificationProfile>,
 );
-type WorkerRunErr = (SimError, BuildSimulationTimings, f64, WorkerErrorPhase);
+type WorkerRunErr = Box<(SimError, BuildSimulationTimings, f64, WorkerErrorPhase)>;
 
 #[derive(Debug, Clone, Copy)]
 enum WorkerErrorPhase {
@@ -702,34 +704,34 @@ fn run_simulation_pipeline(
     );
     let sim_build_seconds = build_started.elapsed().as_secs_f64();
     let (prepared, timings) = prepared.map_err(|err| {
-        (
+        Box::new((
             err,
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Build,
-        )
+        ))
     })?;
     build_timings = timings;
     if let Some(error) = solve_ir_error {
-        return Err((
+        return Err(Box::new((
             SimError::SolveIr(error),
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Build,
-        ));
+        )));
     }
 
     let ic_started = Instant::now();
     watchdog.enter("sim_initialization", sim_timeout_seconds);
     check_prepared_initialization(&prepared).map_err(|err| {
-        (
+        Box::new((
             err,
             build_timings,
             sim_build_seconds,
             WorkerErrorPhase::Initialization {
                 ic_seconds: ic_started.elapsed().as_secs_f64(),
             },
-        )
+        ))
     })?;
     let ic_seconds = ic_started.elapsed().as_secs_f64();
 
@@ -750,12 +752,12 @@ fn run_simulation_pipeline(
             )
         })
         .map_err(|err| {
-            (
+            Box::new((
                 err,
                 build_timings,
                 sim_build_seconds,
                 WorkerErrorPhase::Simulation { sim_run_seconds },
-            )
+            ))
         })
 }
 
@@ -884,13 +886,10 @@ fn classify_run_outcome(args: &Args, outcome: WorkerRunOutcome, elapsed: f64) ->
             }
             worker_result
         }
-        Ok(Err((err, build_timings, sim_build_seconds, sim_run_seconds))) => classify_worker_error(
-            err,
-            elapsed,
-            build_timings,
-            sim_build_seconds,
-            sim_run_seconds,
-        ),
+        Ok(Err(error)) => {
+            let (err, build_timings, sim_build_seconds, phase) = *error;
+            classify_worker_error(err, elapsed, build_timings, sim_build_seconds, phase)
+        }
         Err(panic_info) => sim_worker_result(
             "sim_solver_fail",
             Some(format!("panic: {}", panic_message(panic_info))),
@@ -1018,6 +1017,36 @@ mod tests {
             trace_json: None,
             solve_ir_json: None,
             solve_ir_size_limit_mb: crate::SOLVE_IR_SIZE_LIMIT_MB_DEFAULT,
+        }
+    }
+
+    #[test]
+    fn classify_solver_timeout_preserves_typed_session_and_legacy_categories() {
+        let cases = [
+            (SimError::Timeout { seconds: 45.0 }, "sim_timeout"),
+            (
+                MeSessionError::Timeout { seconds: 45.0 }.into(),
+                "sim_timeout",
+            ),
+            (
+                SimError::from(MeSessionError::Timeout { seconds: 45.0 })
+                    .at_stage(rumoca_sim::SimFailureStage::Integration),
+                "sim_timeout",
+            ),
+            (
+                SimError::from(MeSessionError::Contract {
+                    reason: "timeout after 45.000s".to_string(),
+                }),
+                "sim_solver_fail",
+            ),
+        ];
+        for (error, status) in cases {
+            let result = classify_solver_error(error, 51.99, 6.99, 45.0);
+            assert_eq!(result.status, status);
+            assert_eq!(result.error.as_deref(), Some("timeout after 45.000s"));
+            assert_eq!(result.sim_seconds, 51.99);
+            assert_eq!(result.sim_build_seconds, 6.99);
+            assert_eq!(result.sim_run_seconds, 45.0);
         }
     }
 

@@ -41,7 +41,7 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
     let seed_len = runtime.solver_count + p_scalars;
 
     let state = vec![0.5_f64, -0.2];
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters.to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 64,
@@ -150,7 +150,7 @@ fn reverse_vjp_rejects_models_with_algebraics() {
         runtime.state_count
     );
 
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters.to_vec();
     let lin = AlgebraicLinearization {
         t: 0.0,
         params: &params,
@@ -197,7 +197,7 @@ fn reverse_vjp_max_subgradient_matches_forward() {
     let p_scalars = solve_model.problem.layout.p_scalars();
     let seed_len = runtime.solver_count + p_scalars;
     let state = vec![2.0_f64];
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters.to_vec();
     let lin = AlgebraicLinearization {
         t: 0.0,
         params: &params,

@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, initial_values, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
 {%- set cs_integrate = cs_integrator(fmi) %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events %}
@@ -7,11 +7,10 @@
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
-{{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
-{{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
+{{- initial_values("m->y", fmi.initial_y, "initial_y") }}
+{{- initial_values("m->p", fmi.initial_parameters, "initial_p") }}
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} memset(m->rmc_warned, 0, sizeof(m->rmc_warned));{% endif %}{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
-    memcpy(m->y, initial_y, sizeof(m->y));
-    memcpy(m->p, initial_p, sizeof(m->p));
+
     m->time = 0.0;
 }
 

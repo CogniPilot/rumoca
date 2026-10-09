@@ -103,6 +103,10 @@ fn check_outputs(owner: &solve::SolvePureCallOwner) -> Result<(), TypedCallCompi
 fn collect_calls(program: &solve::TypedProgram, pending: &mut Vec<solve::SolvePureCallOwnerId>) {
     for operation in program.operations() {
         match operation.operation() {
+            solve::SolveOperation::CheckAssertion {
+                message: solve::SolveAssertionMessage::Captures { program },
+                ..
+            } => collect_calls(program.body(), pending),
             solve::SolveOperation::Call { owner, .. } => pending.push(*owner),
             solve::SolveOperation::Conditional {
                 if_true, if_false, ..

@@ -13,6 +13,13 @@
 use super::*;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    pub(super) fn call_arguments_are_total(&self, arguments: &[dae::ExprId<'dae>]) -> bool {
+        let mut visited = HashSet::new();
+        arguments
+            .iter()
+            .all(|&argument| self.is_total(argument, &mut visited))
+    }
+
     /// Whether a conditional can be lowered to an eager selection: every
     /// operand after the first condition is total, where a node the first
     /// condition already computes counts as evaluated, since that condition
@@ -285,17 +292,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let capture_start = self.next_register;
         for source in captures {
             let destination = self.register(span)?;
-            self.ops.push(solve::LinearOp::Move {
+            self.emit(solve::LinearOp::Move {
                 dst: destination,
                 src: source,
-            });
+            })?;
         }
         let result = self.register(span)?;
-        self.ops.push(solve::LinearOp::FunctionConditional {
+        self.emit(solve::LinearOp::FunctionConditional {
             dst_start: result,
             capture_start,
             program: Arc::new(program),
-        });
+        })?;
         Ok(result)
     }
 
@@ -305,8 +312,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// A compiler for one region of a selected-arm program: the enclosing
@@ -325,12 +332,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut local = Vec::with_capacity(registers.len());
             for _ in registers {
                 let destination = compiler.register(span)?;
-                compiler
-                    .ops
-                    .push(solve::LinearOp::LoadFunctionConditionalCapture {
-                        dst: destination,
-                        index,
-                    });
+                compiler.emit(solve::LinearOp::LoadFunctionConditionalCapture {
+                    dst: destination,
+                    index,
+                })?;
                 local.push(destination);
                 index += 1;
             }
@@ -364,6 +369,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
         compiler.call_action_compilation = self.call_action_compilation;
+        compiler.call_use = self.call_use;
         compiler.suppress_function_assertions = self.suppress_function_assertions;
         compiler.contexts = Rc::clone(&self.contexts);
         compiler.context_stack = self.context_stack.clone();

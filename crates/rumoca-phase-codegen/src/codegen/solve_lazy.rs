@@ -11,13 +11,15 @@
 //! iterate the typed ops directly with zero materialization.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
 use crate::errors::CodegenError;
+
+mod fmi;
 
 // ── Kernel handles ───────────────────────────────────────────────────────────
 
@@ -34,7 +36,12 @@ pub(super) enum SolveRenderHandle {
         problem: Arc<solve::SolveProblem>,
         artifacts: Arc<solve::SolveArtifacts>,
     },
-    Fmi(Arc<solve::fmi::FmiCCodegenView>),
+    Fmi(Arc<FmiRenderOwner>),
+}
+
+pub(super) struct FmiRenderOwner {
+    component: Arc<solve::fmi::FmiCCodegenView>,
+    value: OnceLock<Result<Value, CodegenError>>,
 }
 
 impl SolveRenderHandle {
@@ -46,20 +53,30 @@ impl SolveRenderHandle {
     }
 
     pub(super) fn fmi(component: solve::fmi::FmiCCodegenView) -> Self {
-        Self::Fmi(Arc::new(component))
+        Self::Fmi(Arc::new(FmiRenderOwner {
+            component: Arc::new(component),
+            value: OnceLock::new(),
+        }))
     }
 
     pub(super) fn problem(&self) -> &solve::SolveProblem {
         match self {
             Self::Standalone { problem, .. } => problem,
-            Self::Fmi(component) => component.problem(),
+            Self::Fmi(owner) => owner.component.problem(),
         }
     }
 
     pub(super) fn artifacts(&self) -> &solve::SolveArtifacts {
         match self {
             Self::Standalone { artifacts, .. } => artifacts,
-            Self::Fmi(component) => component.artifacts(),
+            Self::Fmi(owner) => owner.component.artifacts(),
+        }
+    }
+
+    pub(super) fn pure_calls(&self) -> Option<&solve::SolvePureCallTable> {
+        match self {
+            Self::Standalone { .. } => None,
+            Self::Fmi(owner) => Some(owner.component.pure_calls()),
         }
     }
 
@@ -70,11 +87,14 @@ impl SolveRenderHandle {
     /// handed a component outside its checked event profile. Component
     /// construction already guarantees the inventory shape; the renderer
     /// constructor checks its remaining capability domain before this handle
-    /// exists, so there is no case to reject here.
-    pub(super) fn fmi_value(&self) -> Value {
+    /// exists. Projection errors propagate to both renderer entry points.
+    pub(super) fn fmi_value(&self) -> Result<Value, CodegenError> {
         match self {
-            Self::Standalone { .. } => Value::default(),
-            Self::Fmi(component) => Value::from_serialize(component.as_ref()),
+            Self::Standalone { .. } => Ok(Value::default()),
+            Self::Fmi(owner) => owner
+                .value
+                .get_or_init(|| fmi::value(Arc::clone(&owner.component)))
+                .clone(),
         }
     }
 }
@@ -507,7 +527,9 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
         {
             return false;
         }
-        rows.extend(program.row_owners().iter().copied());
+        if position == 0 {
+            rows.extend(program.row_owners().iter().copied());
+        }
     }
     assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
 }

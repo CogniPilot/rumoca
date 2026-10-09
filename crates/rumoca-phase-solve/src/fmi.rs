@@ -182,9 +182,9 @@ fn lower_variable<'dae>(
     })
 }
 
-/// The per-scalar literal start of a `String` declaration: its `start`
-/// attribute, else its binding, when that is a string literal or an array of
-/// string literals (a scalar literal broadcasts over an array declaration).
+/// The per-scalar literal initialization of a `String` declaration. Inputs
+/// select their binding before their start; other roles retain start-first
+/// selection. A scalar literal broadcasts over an array declaration.
 /// Any other expression leaves the text start absent, and a consumer that
 /// needs one refuses the declaration rather than inventing a value.
 fn text_start<'dae>(
@@ -194,7 +194,11 @@ fn text_start<'dae>(
     if variable.value_type().scalar_type() != dae::ScalarType::String {
         return None;
     }
-    let expression = variable.start().or_else(|| variable.binding())?;
+    let expression = if variable.role() == dae::VariableRole::Input {
+        variable.binding().or_else(|| variable.start())
+    } else {
+        variable.start().or_else(|| variable.binding())
+    }?;
     let mut values = Vec::new();
     collect_string_literals(view, expression, &mut values)?;
     let count = variable.scalar_count();

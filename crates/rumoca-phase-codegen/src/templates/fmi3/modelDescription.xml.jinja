@@ -5,8 +5,10 @@
   modelName="{{ model_name | xml_escape }}"
   generationTool="Rumoca"
   instantiationToken="{{ artifact.identities.fmu }}">
-  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %} canGetAndSetFMUState="true"/>
-  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="true"/>
+{% if fmi.deployment.interfaces == "model-exchange-and-co-simulation" %}
+  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %}{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
+{% endif %}
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
   <UnitDefinitions>
     <Unit name="s">
       <BaseUnit s="1"/>

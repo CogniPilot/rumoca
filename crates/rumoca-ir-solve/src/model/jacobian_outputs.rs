@@ -94,7 +94,7 @@ impl ContinuousStructuralArtifacts {
         {
             return Err("projection specialization belongs to a different source or block");
         }
-        structure.jacobian_application = Some(application);
+        structure.jacobian_application = Some(Box::new(application));
         Ok(())
     }
 
@@ -157,11 +157,16 @@ impl ContinuousStructuralArtifacts {
                 primal_outputs.shared_selection(&residual_rows, block.rows.len());
             structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
-            structure.jacobian_application = application_source.as_ref().and_then(|source| {
-                ProjectionJacobianApplication::derive(index, structure, block, source, &y_outputs)
-            });
+            structure.jacobian_application = application_source
+                .as_ref()
+                .and_then(|source| {
+                    ProjectionJacobianApplication::derive(
+                        index, structure, block, source, &y_outputs,
+                    )
+                })
+                .map(Box::new);
             structure.affine_elimination =
-                AffineEliminationLayout::derive(block, &structure.pattern);
+                AffineEliminationLayout::derive(block, &structure.pattern).map(Box::new);
         }
         self
     }

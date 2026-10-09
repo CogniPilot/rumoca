@@ -21,14 +21,17 @@ use std::{
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, Reg,
     ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventMessagePart,
-    SolveEventPartition, SolveProblemShapeContractError, SolvePureCallDirectionalSite,
-    SolvePureCallSite, SolvePureCallTable, SolveScalarType, SolveStringConversionFormat,
-    SolveStringConversionSource, SolveValueKind, SolveValueType, StridedOperand, UnaryOp,
-    resolve_indexed_slot,
+    SolveEventPartition, SolvePureCallDirectionalSite, SolvePureCallSite, SolvePureCallTable,
+    SolveScalarType, SolveStringConversionFormat, SolveStringConversionSource, SolveValueKind,
+    SolveValueType, StridedOperand, UnaryOp, resolve_indexed_slot,
 };
 
 mod block_residual_split;
 mod compute_block_scalarize;
+mod errors;
+mod event_observations;
+pub use errors::EvalSolveError;
+pub use event_observations::CheckedEventObservationContext;
 pub mod dense_basis;
 pub mod linear_solve;
 pub mod nan_trace;
@@ -87,7 +90,8 @@ pub use tangent_lanes::{
     TangentPoint, TornTangentEvaluator, TornTangentJacobian, causal_coefficient_is_finite,
 };
 pub use typed_program::{
-    TypedProgramEvalError, TypedValue, TypedValueConstructionError, eval_pure_call,
+    AssertionInvocationEvaluation, AssertionReport, TypedAssertionFailure, TypedProgramEvalError,
+    TypedValue, TypedValueConstructionError, eval_assertion_invocation, eval_pure_call,
     eval_pure_call_directional,
 };
 pub use update_rows::{
@@ -139,321 +143,6 @@ struct BlockEvalStats {
 }
 
 type BlockEvalStatsMap = BTreeMap<(&'static str, usize), BlockEvalStats>;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EvalSolveError {
-    ExternalTable {
-        operation: &'static str,
-        table_id: f64,
-        column: Option<f64>,
-        reason: String,
-    },
-    MissingInput {
-        vector: &'static str,
-        index: usize,
-        len: usize,
-        span: Option<rumoca_core::Span>,
-    },
-    /// A one-based tensor axis did not contain an exact finite signed Integer.
-    InvalidTensorIndex {
-        axis: usize,
-        value: f64,
-        span: Option<rumoca_core::Span>,
-    },
-    /// A valid Integer lies outside this source tensor axis's checked extent.
-    TensorIndexOutOfBounds {
-        axis: usize,
-        index: i64,
-        extent: u32,
-        span: Option<rumoca_core::Span>,
-    },
-    RegisterOutOfBounds {
-        access: &'static str,
-        register: Reg,
-        len: usize,
-        span: Option<rumoca_core::Span>,
-    },
-    UninitializedRegister {
-        register: Reg,
-        span: Option<rumoca_core::Span>,
-    },
-    OutputTooSmall {
-        required: usize,
-        len: usize,
-        span: Option<rumoca_core::Span>,
-    },
-    UpdateRowTargetMismatch {
-        rows: usize,
-        targets: usize,
-    },
-    UpdateDidNotConverge {
-        t: f64,
-        max_iters: usize,
-    },
-    SingularTargetAssignment {
-        row: usize,
-        target_y_index: usize,
-        coefficient: f64,
-        span: Option<rumoca_core::Span>,
-    },
-    EventActionConditionMismatch {
-        rows: usize,
-        actions: usize,
-    },
-    MissingRuntimeState {
-        operation: &'static str,
-    },
-    RandomStateProjectionOutOfBounds {
-        index: usize,
-        len: usize,
-    },
-    InvalidLinearOp {
-        helper: &'static str,
-        op: &'static str,
-    },
-    LinearSolve {
-        size: usize,
-        component: Option<usize>,
-        reason: &'static str,
-        span: Option<rumoca_core::Span>,
-    },
-    InvalidRow {
-        message: String,
-        span: Option<rumoca_core::Span>,
-    },
-    Scalarization {
-        message: String,
-        span: Option<rumoca_core::Span>,
-    },
-    ShapeContract {
-        message: String,
-        span: Option<rumoca_core::Span>,
-    },
-}
-
-impl EvalSolveError {
-    pub fn source_span(&self) -> Option<rumoca_core::Span> {
-        match self {
-            Self::MissingInput { span, .. } => *span,
-            Self::RegisterOutOfBounds { span, .. } => *span,
-            Self::InvalidTensorIndex { span, .. } | Self::TensorIndexOutOfBounds { span, .. } => {
-                *span
-            }
-            Self::UninitializedRegister { span, .. } => *span,
-            Self::OutputTooSmall { span, .. } => *span,
-            Self::SingularTargetAssignment { span, .. } => *span,
-            Self::LinearSolve { span, .. } => *span,
-            Self::InvalidRow { span, .. } => *span,
-            Self::Scalarization { span, .. } => *span,
-            Self::ShapeContract { span, .. } => *span,
-            _ => None,
-        }
-    }
-
-    pub(crate) fn with_source_span(self, span: Option<rumoca_core::Span>) -> Self {
-        match self {
-            Self::MissingInput {
-                vector,
-                index,
-                len,
-                span: None,
-            } => Self::MissingInput {
-                vector,
-                index,
-                len,
-                span,
-            },
-            Self::InvalidTensorIndex {
-                axis,
-                value,
-                span: None,
-            } => Self::InvalidTensorIndex { axis, value, span },
-            Self::TensorIndexOutOfBounds {
-                axis,
-                index,
-                extent,
-                span: None,
-            } => Self::TensorIndexOutOfBounds {
-                axis,
-                index,
-                extent,
-                span,
-            },
-            Self::RegisterOutOfBounds {
-                access,
-                register,
-                len,
-                span: None,
-            } => Self::RegisterOutOfBounds {
-                access,
-                register,
-                len,
-                span,
-            },
-            Self::UninitializedRegister {
-                register,
-                span: None,
-            } => Self::UninitializedRegister { register, span },
-            Self::OutputTooSmall {
-                required,
-                len,
-                span: None,
-            } => Self::OutputTooSmall {
-                required,
-                len,
-                span,
-            },
-            Self::SingularTargetAssignment {
-                row,
-                target_y_index,
-                coefficient,
-                span: None,
-            } => Self::SingularTargetAssignment {
-                row,
-                target_y_index,
-                coefficient,
-                span,
-            },
-            Self::LinearSolve {
-                size,
-                component,
-                reason,
-                span: None,
-            } => Self::LinearSolve {
-                size,
-                component,
-                reason,
-                span,
-            },
-            Self::InvalidRow {
-                message,
-                span: None,
-            } => Self::InvalidRow { message, span },
-            error => error,
-        }
-    }
-}
-
-impl std::fmt::Display for EvalSolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExternalTable {
-                operation,
-                table_id,
-                column,
-                reason,
-            } => {
-                if let Some(column) = column {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id} column {column}: {reason}"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id}: {reason}"
-                    )
-                }
-            }
-            Self::MissingInput {
-                vector, index, len, ..
-            } => write!(
-                f,
-                "missing {vector}[{index}] while evaluating Solve-IR row; vector length is {len}"
-            ),
-            Self::InvalidTensorIndex { .. } | Self::TensorIndexOutOfBounds { .. } => {
-                tensor_index::fmt_index_fault(self, f)
-            }
-            Self::RegisterOutOfBounds {
-                access,
-                register,
-                len,
-                ..
-            } => write!(
-                f,
-                "cannot {access} Solve-IR register r{register}; register file length is {len}"
-            ),
-            Self::UninitializedRegister { register, .. } => {
-                write!(f, "cannot read uninitialized Solve-IR register r{register}")
-            }
-            Self::OutputTooSmall { required, len, .. } => write!(
-                f,
-                "output buffer too small while evaluating Solve-IR row block: {len} < {required}"
-            ),
-            Self::UpdateRowTargetMismatch { rows, targets } => write!(
-                f,
-                "update RHS row count {rows} does not match target count {targets}"
-            ),
-            Self::UpdateDidNotConverge { t, max_iters } => write!(
-                f,
-                "update equations did not converge at t={t} after {max_iters} iterations"
-            ),
-            Self::SingularTargetAssignment {
-                row,
-                target_y_index,
-                coefficient,
-                ..
-            } => write!(
-                f,
-                "cannot isolate target y[{target_y_index}] from Solve-IR row {row}: singular coefficient {coefficient}"
-            ),
-            Self::EventActionConditionMismatch { rows, actions } => write!(
-                f,
-                "event action condition row count {rows} does not match event action count {actions}"
-            ),
-            Self::MissingRuntimeState { operation } => write!(
-                f,
-                "missing simulation runtime state while evaluating Solve-IR {operation}"
-            ),
-            Self::RandomStateProjectionOutOfBounds { index, len } => write!(
-                f,
-                "random state projection index {index} is out of bounds for state length {len}"
-            ),
-            Self::InvalidLinearOp { helper, op } => {
-                write!(f, "Solve-IR {helper} helper cannot evaluate {op} op")
-            }
-            Self::LinearSolve {
-                size,
-                component,
-                reason,
-                ..
-            } => match component {
-                Some(component) => write!(
-                    f,
-                    "Solve-IR linear solve of size {size} cannot evaluate component {component}: {reason}"
-                ),
-                None => write!(f, "Solve-IR linear solve of size {size} failed: {reason}"),
-            },
-            Self::InvalidRow { message, .. } => write!(f, "invalid Solve-IR row: {message}"),
-            Self::Scalarization { message, .. } => {
-                write!(f, "Solve-IR scalarization failed: {message}")
-            }
-            Self::ShapeContract { message, .. } => {
-                write!(f, "Solve-IR shape contract failed: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for EvalSolveError {}
-
-impl From<ScalarizeError> for EvalSolveError {
-    fn from(value: ScalarizeError) -> Self {
-        Self::Scalarization {
-            message: value.to_string(),
-            span: value.source_span(),
-        }
-    }
-}
-
-impl From<SolveProblemShapeContractError> for EvalSolveError {
-    fn from(value: SolveProblemShapeContractError) -> Self {
-        Self::ShapeContract {
-            message: value.to_string(),
-            span: value.source_span(),
-        }
-    }
-}
 
 pub fn reset_solve_row_eval_trace() {
     let enabled = solve_row_eval_trace_requested();
@@ -630,6 +319,7 @@ pub struct RowEvalContext<'a> {
     pub pure_calls: Option<&'a SolvePureCallTable>,
     pub pure_call_execution: Option<&'a dyn PureCallExecution>,
     pub runtime_state: Option<&'a SimulationRuntimeState>,
+    pub event_observations: Option<&'a CheckedEventObservationContext<'a>>,
 }
 
 /// Immutable numerical point and direction for one Jacobian evaluation.
@@ -1201,6 +891,20 @@ pub fn eval_event_action_request(
     }
     let mut values =
         eval_solve_f64_values(events.actions.len(), 0.0, "event action condition values")?;
+    let observations = context
+        .pure_calls
+        .map(|table| {
+            CheckedEventObservationContext::construct(
+                table,
+                &events.action_conditions,
+                &events.actions,
+            )
+        })
+        .transpose()?;
+    let context = RowEvalContext {
+        event_observations: observations.as_ref(),
+        ..context
+    };
     eval_scalar_program_block_with_context(
         &events.action_conditions,
         y,
@@ -1227,9 +931,8 @@ pub fn event_action_request_from_values(
         }
         match action.kind {
             SolveEventActionKind::Assert => {
-                return Ok(EventActionRequest::AssertionFailed {
-                    message: eval_event_action_message(action, y, p, t, context)?,
-                });
+                let message = eval_event_action_message(action, y, p, t, context)?;
+                return Ok(EventActionRequest::AssertionFailed { message });
             }
             SolveEventActionKind::Terminate => {
                 return Ok(EventActionRequest::Terminate {
@@ -1253,6 +956,12 @@ pub fn eval_event_action_message(
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<String, EvalSolveError> {
+    if action.assertion_projection.is_some() {
+        return context
+            .event_observations
+            .and_then(|observed| observed.message_for_action(action))
+            .ok_or_else(|| invalid_row("failed action has no exact invocation observation"));
+    }
     let mut message = String::new();
     let eval = MessageEvalContext {
         y,
@@ -1341,12 +1050,21 @@ fn eval_event_message_conversion(
             }
         }
     };
+    pad_event_message_conversion(converted, minimum_length, left_justified, eval.span)
+}
+
+pub(crate) fn pad_event_message_conversion(
+    converted: String,
+    minimum_length: i64,
+    left_justified: bool,
+    span: rumoca_core::Span,
+) -> Result<String, EvalSolveError> {
     let width = usize::try_from(minimum_length)
-        .map_err(|_| invalid_message_option("minimumLength must be nonnegative", eval.span))?;
+        .map_err(|_| invalid_message_option("minimumLength must be nonnegative", span))?;
     if width > MAX_EVENT_MESSAGE_BYTES {
         return Err(invalid_message_option(
             format!("minimumLength exceeds the {MAX_EVENT_MESSAGE_BYTES}-byte message limit"),
-            eval.span,
+            span,
         ));
     }
     if converted.len() >= width {
@@ -1356,7 +1074,7 @@ fn eval_event_message_conversion(
     let mut padded = String::new();
     padded
         .try_reserve_exact(width)
-        .map_err(|_| invalid_message_option("event message allocation failed", eval.span))?;
+        .map_err(|_| invalid_message_option("event message allocation failed", span))?;
     if left_justified {
         padded.push_str(&converted);
         padded.extend(std::iter::repeat_n(' ', padding_len));
@@ -2416,15 +2134,15 @@ struct CheckedRowEvaluator<'scratch, 'row, 'ctx, 'out> {
 
 impl CheckedRowEvaluator<'_, '_, '_, '_> {
     fn eval(mut self) -> Result<(), EvalSolveError> {
-        for op in self.input.row {
-            self.eval_op(op.clone())?;
+        for (operation, op) in self.input.row.iter().enumerate() {
+            self.eval_op(operation, op.clone())?;
         }
         Ok(())
     }
 
     // SPEC_0021: Exception - exhaustive checked execution dispatch over every LinearOp variant.
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
-    fn eval_op(&mut self, op: LinearOp) -> Result<(), EvalSolveError> {
+    fn eval_op(&mut self, operation: usize, op: LinearOp) -> Result<(), EvalSolveError> {
         match op {
             LinearOp::Const { dst, value } => {
                 self.set(dst, value)?;
@@ -2903,6 +2621,13 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                     self.set(dst_start + offset as Reg, value)?;
                 }
             }
+            LinearOp::PureCallObservation { dst_start, .. } => {
+                let values =
+                    eval_observation_payload(self.input, operation, |register| self.get(register))?;
+                for (offset, value) in values.into_iter().enumerate() {
+                    self.set(dst_start + offset as Reg, value)?;
+                }
+            }
             LinearOp::PureCall {
                 dst_start,
                 input_starts,
@@ -3157,7 +2882,7 @@ fn eval_row_prepared_fast(
 ) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     let regs = &mut scratch.regs;
-    for op in input.row {
+    for (operation, op) in input.row.iter().enumerate() {
         if let LinearOp::StoreOutputFoldTensorUpdate {
             source_base,
             source_stride,
@@ -3562,6 +3287,13 @@ fn eval_row_prepared_fast(
                     &regs[*capture_start as usize..*capture_start as usize + program.capture_count];
                 let values = eval_function_conditional(input, program, captures)?;
                 regs[*dst_start as usize..*dst_start as usize + program.result_count]
+                    .copy_from_slice(&values);
+            }
+            LinearOp::PureCallObservation { dst_start, .. } => {
+                let values = eval_observation_payload(input, operation, |register| {
+                    Ok(regs[register as usize])
+                })?;
+                regs[*dst_start as usize..*dst_start as usize + values.len()]
                     .copy_from_slice(&values);
             }
             LinearOp::PureCall {
@@ -4415,12 +4147,28 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::GuardedFunctionFold { .. } => "GuardedFunctionFold",
         LinearOp::FunctionConditional { .. } => "FunctionConditional",
         LinearOp::PureCall { .. } => "PureCall",
+        LinearOp::PureCallObservation { .. } => "PureCallObservation",
         LinearOp::PureCallDirectional { .. } => "PureCallDirectional",
         LinearOp::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
         LinearOp::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
         LinearOp::StoreOutputRange { .. } => "StoreOutputRange",
         LinearOp::StoreOutput { .. } => "StoreOutput",
     }
+}
+
+fn eval_observation_payload(
+    input: PreparedRowEval<'_, '_>,
+    operation: usize,
+    read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
+) -> Result<Vec<f64>, EvalSolveError> {
+    let context = input.context.event_observations.ok_or_else(|| {
+        invalid_row("assertion observation requires its checked event-action adapter")
+    })?;
+    let table = input
+        .context
+        .pure_calls
+        .ok_or_else(|| invalid_row("observation has no pure-call table"))?;
+    context.evaluate(table, input.row, operation, read)
 }
 
 fn eval_pure_call_payload(

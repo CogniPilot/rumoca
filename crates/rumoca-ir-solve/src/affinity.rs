@@ -1,6 +1,9 @@
 //! Constructor-owned degree bounds relative to a projection's unknowns.
 
+#[cfg(test)]
+mod grouped_tests;
 mod registers;
+mod selected;
 mod tensors;
 #[cfg(test)]
 mod tests;
@@ -12,6 +15,7 @@ use crate::{
     TensorInputKind, UnaryOp,
 };
 use registers::Registers;
+use selected::{SourceOutput, block_is_affine};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Degree {
@@ -53,13 +57,7 @@ pub(crate) fn projection_affinities(
         .zip(&plan.simultaneous_plan.blocks)
         .map(|(&index, block)| {
             let targets = block.y_indices.iter().copied().collect::<BTreeSet<_>>();
-            let affine = block.rows.iter().all(|row| {
-                let Some((program, offset)) = programs.get(row) else {
-                    return false;
-                };
-                program_degree(program, &targets, *offset)
-                    .is_some_and(|degree| degree != Degree::Nonlinear)
-            });
+            let affine = block_is_affine(&programs, &block.rows, &targets);
             (index, affine)
         })
         .fold(BTreeMap::new(), |mut proofs, (index, affine)| {
@@ -71,7 +69,7 @@ pub(crate) fn projection_affinities(
         })
 }
 
-fn scalar_output_programs(source: &ComputeBlock) -> Option<BTreeMap<usize, (&[LinearOp], usize)>> {
+fn scalar_output_programs(source: &ComputeBlock) -> Option<BTreeMap<usize, SourceOutput<'_>>> {
     let mut programs = BTreeMap::new();
     let mut cursor = 0;
     for (node_index, node) in source.nodes.iter().enumerate() {
@@ -84,10 +82,20 @@ fn scalar_output_programs(source: &ComputeBlock) -> Option<BTreeMap<usize, (&[Li
         cursor = block
             .advance_compute_block_output_cursor("projection affinity", node_index, cursor)
             .ok()?;
-        let selected = block.programs().iter().flat_map(|program| {
-            (0..ScalarProgramBlock::program_output_count(program))
-                .map(|offset| (program.as_slice(), offset))
-        });
+        let selected = block
+            .programs()
+            .iter()
+            .enumerate()
+            .flat_map(|(program_index, program)| {
+                (0..ScalarProgramBlock::program_output_count(program)).map(move |offset| {
+                    SourceOutput {
+                        node: node_index,
+                        program: program_index,
+                        operations: program,
+                        offset,
+                    }
+                })
+            });
         for (row, selected) in outputs.into_iter().zip(selected) {
             if programs.insert(row, selected).is_some() {
                 return None;
@@ -97,33 +105,51 @@ fn scalar_output_programs(source: &ComputeBlock) -> Option<BTreeMap<usize, (&[Li
     Some(programs)
 }
 
+#[cfg(test)]
 fn program_degree(
     program: &[LinearOp],
     targets: &BTreeSet<usize>,
     output_offset: usize,
 ) -> Option<Degree> {
+    let mut degree = None;
+    visit_program_degrees(
+        program,
+        targets,
+        &BTreeSet::from([output_offset]),
+        |value| {
+            degree = Some(value);
+            true
+        },
+    )?;
+    degree
+}
+
+fn visit_program_degrees(
+    program: &[LinearOp],
+    targets: &BTreeSet<usize>,
+    output_offsets: &BTreeSet<usize>,
+    visit: impl FnMut(Degree) -> bool,
+) -> Option<()> {
+    #[cfg(test)]
+    grouped_tests::record_walk();
     let mut registers = Registers::default();
-    let mut output_start = 0;
+    let mut selected = selected::SelectedStores::new(output_offsets, visit);
     for operation in program {
+        if selected.is_complete() {
+            return Some(());
+        }
+        #[cfg(test)]
+        grouped_tests::record_operation();
         match operation {
             LinearOp::StoreOutput { src } => {
-                if output_start == output_offset {
-                    return registers.read(*src, 1);
-                }
-                output_start += 1;
+                selected.read(&registers, *src, 1, 1)?;
             }
             LinearOp::StoreOutputRange {
                 start,
                 count,
                 stride,
             } => {
-                let offset = output_offset.checked_sub(output_start)?;
-                if offset < *count {
-                    let register =
-                        start.checked_add(u32::try_from(offset.checked_mul(*stride)?).ok()?)?;
-                    return registers.read(register, 1);
-                }
-                output_start = output_start.checked_add(*count)?;
+                selected.read(&registers, *start, *count, *stride)?;
             }
             LinearOp::PureCall {
                 dst_start,
@@ -161,7 +187,7 @@ fn program_degree(
             }
         }
     }
-    None
+    selected.is_complete().then_some(())
 }
 
 fn call_inputs(

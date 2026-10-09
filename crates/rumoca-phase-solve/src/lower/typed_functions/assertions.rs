@@ -1,6 +1,10 @@
 //! Function-assertion discovery over checked DAE statement owners.
 
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    sync::Arc,
+};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -11,25 +15,48 @@ pub(super) struct FunctionAssertion<'dae> {
     pub(super) message: dae::ExprId<'dae>,
     pub(crate) level: dae::AssertionLevel,
     pub(super) provenance: dae::DaeProvenance,
-    /// Whether the assertion lies inside a `for` statement, where its
-    /// message values differ per iteration.
-    pub(super) in_loop: bool,
+}
+
+/// Source-owned iteration statements and their assertion interval. Discovery
+/// issues this association while it visits the DAE statement, before lowering.
+#[derive(Clone)]
+pub(super) struct LoopStatements<'dae> {
+    pub(super) statements: dae::FunctionStatements<'dae>,
+    pub(super) assertions: Range<usize>,
+}
+
+pub(super) struct FunctionAssertionInventory<'dae> {
+    pub(super) assertions: Vec<FunctionAssertion<'dae>>,
+    pub(super) loops: Arc<HashMap<dae::FunctionFoldId<'dae>, LoopStatements<'dae>>>,
+}
+
+impl<'dae> FunctionAssertionInventory<'dae> {
+    pub(super) fn discover(
+        view: dae::DaeView<'dae>,
+        function: dae::FunctionView<'dae>,
+    ) -> Result<Self, solve::SolveProgramConstructionError> {
+        let mut assertions = Vec::new();
+        let mut loops = HashMap::new();
+        collect_assertion_conditions(view, function.statements(), &mut assertions, &mut loops)?;
+        Ok(Self {
+            assertions,
+            loops: Arc::new(loops),
+        })
+    }
 }
 
 pub(super) fn assertion_conditions<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionView<'dae>,
 ) -> Result<Vec<FunctionAssertion<'dae>>, solve::SolveProgramConstructionError> {
-    let mut assertions = Vec::new();
-    collect_assertion_conditions(view, function.statements(), false, &mut assertions)?;
-    Ok(assertions)
+    Ok(FunctionAssertionInventory::discover(view, function)?.assertions)
 }
 
 fn collect_assertion_conditions<'dae>(
     view: dae::DaeView<'dae>,
     statements: dae::FunctionStatements<'dae>,
-    in_loop: bool,
     assertions: &mut Vec<FunctionAssertion<'dae>>,
+    loops: &mut HashMap<dae::FunctionFoldId<'dae>, LoopStatements<'dae>>,
 ) -> Result<(), solve::SolveProgramConstructionError> {
     for statement in statements {
         match statement {
@@ -45,14 +72,26 @@ fn collect_assertion_conditions<'dae>(
                 message,
                 level,
                 provenance,
-                in_loop,
             }),
             dae::FunctionStatementView::For {
                 fold, statements, ..
             } => {
                 view.function_fold(fold)
                     .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-                collect_assertion_conditions(view, statements, true, assertions)?;
+                let start = assertions.len();
+                collect_assertion_conditions(view, statements.clone(), assertions, loops)?;
+                if loops
+                    .insert(
+                        fold,
+                        LoopStatements {
+                            statements,
+                            assertions: start..assertions.len(),
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(solve::SolveProgramConstructionError::WireMismatch);
+                }
             }
         }
     }
@@ -62,17 +101,14 @@ fn collect_assertion_conditions<'dae>(
 /// Every value an assertion message converts to text that the declaring
 /// function's frame evaluates as one owner output, in message order.
 ///
-/// A loop assertion's values differ per iteration, and a value that calls a
-/// function would invoke that callee only to render text; neither is an owner
-/// output, so rendering refuses such a message at its own span.
+/// Failed-only regions evaluate these values in the declaring frame, including
+/// loop-local binders and message-only calls.
 pub(super) fn message_values<'dae>(
     view: dae::DaeView<'dae>,
     assertion: &FunctionAssertion<'dae>,
 ) -> Vec<dae::ExprId<'dae>> {
     let mut values = Vec::new();
-    if !assertion.in_loop {
-        collect_message_values(view, assertion.message, &mut values);
-    }
+    collect_message_values(view, assertion.message, &mut values);
     values
 }
 
@@ -103,31 +139,11 @@ fn collect_message_values<'dae>(
                 dae::StringConversionFormatView::Format { .. } => Vec::new(),
             };
             for value in std::iter::once(value).chain(options.into_iter().flatten()) {
-                if frame_evaluable(view, value) {
-                    values.push(value);
-                }
+                values.push(value);
             }
         }
         _ => {}
     }
-}
-
-/// A non-literal message value the declaring frame evaluates without a call.
-fn frame_evaluable<'dae>(view: dae::DaeView<'dae>, value: dae::ExprId<'dae>) -> bool {
-    let literal = view
-        .expression(value)
-        .is_some_and(|node| matches!(node.operation(), dae::ExpressionOperation::Literal(_)));
-    let mut evaluable = !literal;
-    dae::for_each_expression(view, value, |_, node| {
-        if matches!(
-            node.operation(),
-            dae::ExpressionOperation::Call { .. }
-                | dae::ExpressionOperation::FunctionFoldParameter { .. }
-        ) {
-            evaluable = false;
-        }
-    });
-    evaluable
 }
 
 /// Every call owner the typed body lowering reads.
@@ -142,6 +158,11 @@ pub(super) fn nested_calls<'dae>(
 ) -> Vec<dae::ExprId<'dae>> {
     let mut roots = function.result_values().rhs_iter().collect::<Vec<_>>();
     roots.extend(assertions.iter().map(|assertion| assertion.condition));
+    roots.extend(
+        assertions
+            .iter()
+            .flat_map(|assertion| message_values(view, assertion)),
+    );
     collect_statement_roots(function.statements(), &mut roots);
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
@@ -155,6 +176,14 @@ pub(super) fn nested_calls<'dae>(
         });
     }
     calls
+}
+
+pub(super) fn statement_roots<'dae>(
+    statements: dae::FunctionStatements<'dae>,
+) -> Vec<dae::ExprId<'dae>> {
+    let mut roots = Vec::new();
+    collect_statement_roots(statements, &mut roots);
+    roots
 }
 
 fn collect_statement_roots<'dae>(
@@ -179,23 +208,6 @@ fn collect_statement_roots<'dae>(
             }
         }
     }
-}
-
-pub(super) fn assertion_is_map_independent<'dae>(
-    view: dae::DaeView<'dae>,
-    condition: dae::ExprId<'dae>,
-) -> bool {
-    let mut independent = true;
-    dae::for_each_expression(view, condition, |_, node| {
-        if matches!(
-            node.operation(),
-            dae::ExpressionOperation::FunctionValue { .. }
-                | dae::ExpressionOperation::FunctionFoldParameter { .. }
-        ) {
-            independent = false;
-        }
-    });
-    independent
 }
 
 fn collect_conditional_roots<'dae>(

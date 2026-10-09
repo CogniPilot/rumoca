@@ -19,7 +19,7 @@ impl CompiledSolveExpression for SelectedResidual {
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("selected residuals must not execute unrelated programs");
     }
 
@@ -30,7 +30,7 @@ impl CompiledSolveExpression for SelectedResidual {
         _p: &[f64],
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(coordinate, self.coordinate);
         self.calls.set(self.calls.get() + 1);
         if self.fail {

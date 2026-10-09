@@ -150,12 +150,12 @@ pub(super) use model_algorithms::{
     when_chain_targets,
 };
 use model_expression_owners::ModelExpressionOwnerVisitor;
-pub(super) use model_roles::is_external_input;
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
+pub(super) use model_roles::{is_external_input, is_public_causality_root};
 pub(in crate::construction) use multi_output_equations::MultiOutputEquationPlan;
-use multi_output_equations::analyze_multi_output_equations;
+use multi_output_equations::{analyze_declarative_function_call, analyze_multi_output_equations};
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
@@ -1215,6 +1215,11 @@ fn analyze_model_algorithms(
     flat.algorithms
         .iter()
         .map(|algorithm| {
+            if let Some(plan) =
+                analyze_declarative_function_call(flat, algorithm, roles, states, function_shapes)?
+            {
+                return Ok(plan);
+            }
             validate_model_algorithm(
                 algorithm,
                 flat,

@@ -6,6 +6,7 @@ mod class_body_tests;
 mod class_interface_tests;
 mod class_member_query_tests;
 mod compile_diagnostics_tests;
+mod construction_evidence_tests;
 mod dae_model_query_tests;
 mod declaration_index_tests;
 mod empty_reduction_tests;
@@ -26,6 +27,7 @@ mod typed_model_query_tests;
 mod workspace_symbol_snapshot_tests;
 
 mod semantic_cache_tests;
+mod shared_standard_resolution_tests;
 
 use super::*;
 use rumoca_core::Span;

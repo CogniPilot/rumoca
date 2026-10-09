@@ -24,7 +24,7 @@ impl CompiledSolveAssignmentSchedule for FailingAssignment {
         _p: &[f64],
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.0.set(self.0.get() + 1);
         y[1] = 123.0;
         Err("native assignment failed after a partial write".into())
@@ -45,14 +45,14 @@ impl CompiledSolveExpression for AssignmentExpression {
         t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("native projection assignment failed".into());
         }
         self.block
             .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 }
 
@@ -70,7 +70,7 @@ impl CompiledSolveTargetValues for PrivateTargetValues {
         p: &[f64],
         time: f64,
         context: RowEvalContext<'_>,
-    ) -> Result<f64, String> {
+    ) -> Result<f64, crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("admitted private target-value fault".into());
@@ -162,7 +162,7 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
     });
     runtime.execution_backend = Some(backend.clone());
     for _ in 0..2 {
-        let mut y = model.initial_y.clone();
+        let mut y = model.initial_y.to_vec();
         let error = runtime
             .refresh_algebraic_and_output_slots(0.0, &mut y, &[], 1e-10, 4)
             .expect_err("admitted native assignment errors must reach the caller");
@@ -172,7 +172,8 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
                 .contains("native assignment failed after a partial write")
         );
         assert_eq!(
-            y, model.initial_y,
+            y,
+            model.initial_y.to_vec(),
             "a failed refresh must restore the complete snapshot"
         );
     }

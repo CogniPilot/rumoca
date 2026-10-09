@@ -525,15 +525,7 @@ fn validate_algorithm_statements(
                 outputs,
                 span,
             } => {
-                require_span(*span, "algorithm function-call assignment")?;
-                if comp.parts().is_empty() || comp.parts().iter().any(|part| !part.subs.is_empty())
-                {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "function-call assignment requires one resolved, unsubscripted function",
-                        *span,
-                    ));
-                }
+                validate_function_call_callee(comp, *span)?;
                 if (outputs.is_empty() || outputs.iter().all(Option::is_none))
                     && terminal_print_message(flat, comp, args).is_none()
                 {
@@ -590,6 +582,21 @@ fn is_direct_record_call_assignment(
                 ..
             }
         )
+}
+
+pub(super) fn validate_function_call_callee(
+    comp: &rumoca_core::Reference,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    require_span(span, "algorithm function-call assignment")?;
+    if comp.parts().is_empty() || comp.parts().iter().any(|part| !part.subs.is_empty()) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "function-call assignment requires one resolved, unsubscripted function",
+            span,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_function_call_output(

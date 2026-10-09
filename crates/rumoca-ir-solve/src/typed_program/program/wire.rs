@@ -28,8 +28,22 @@ pub(super) struct SolveSpannedOperationWire {
 }
 
 #[derive(Clone, Deserialize)]
+struct AssertionForwardingWire {
+    child_predicate: usize,
+    parent_predicate: usize,
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum SolveOperationWire {
+    CheckAssertion {
+        predicate_output: usize,
+        message_outputs: Box<[usize]>,
+        condition: SolveRegisterId,
+        captures: Box<[SolveRegisterId]>,
+        destinations: Box<[SolveRegisterId]>,
+        message: SolveAssertionMessageWire,
+    },
     Constant {
         destination: SolveRegisterId,
         value: SolveValue,
@@ -188,6 +202,7 @@ enum SolveOperationWire {
         axes: Box<[SolveTensorViewAxis]>,
     },
     Call {
+        assertion_forwarding: Box<[AssertionForwardingWire]>,
         owner: SolvePureCallOwnerId,
         arguments: Box<[SolveRegisterId]>,
         destinations: Box<[SolveRegisterId]>,
@@ -212,6 +227,15 @@ struct SolveProgramRegionWire {
     provenance: Span,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SolveAssertionMessageWire {
+    NoCaptures,
+    Captures {
+        program: Box<SolveProgramRegionWire>,
+    },
+}
+
 impl<'de> Deserialize<'de> for TypedProgram {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -226,8 +250,19 @@ pub(in crate::typed_program) fn replay_program(
     wire: &TypedProgramWire,
     available_calls: SolvePureCallTableView<'_>,
 ) -> Result<TypedProgram, SolveProgramConstructionError> {
-    let program =
-        TypedProgram::construct_with_calls(wire.arithmetic, available_calls, |builder| {
+    replay_owner_program(wire, available_calls, &[])
+}
+
+pub(in crate::typed_program) fn replay_owner_program(
+    wire: &TypedProgramWire,
+    available_calls: SolvePureCallTableView<'_>,
+    assertion_outputs: &[SolvePureCallOutput],
+) -> Result<TypedProgram, SolveProgramConstructionError> {
+    let program = TypedProgram::construct_with_owner(
+        wire.arithmetic,
+        available_calls,
+        assertion_outputs,
+        |builder| {
             let slots = replay_slots(builder, &wire.slots)?;
             let mut registers = Vec::with_capacity(wire.register_types.len());
             for operation in &wire.operations {
@@ -239,7 +274,8 @@ pub(in crate::typed_program) fn replay_program(
                 return Err(SolveProgramConstructionError::WireMismatch);
             }
             Ok(())
-        })?;
+        },
+    )?;
     if program.slots != expected_slots(&wire.slots)
         || program.register_types.as_ref() != wire.register_types
         || program.operations.len() != wire.operations.len()
@@ -282,6 +318,44 @@ fn replay_operation<'program>(
 ) -> Result<Vec<ProgramRegister<'program>>, SolveProgramConstructionError> {
     let at = spanned.provenance;
     let result = match &spanned.operation {
+        SolveOperationWire::CheckAssertion {
+            predicate_output,
+            message_outputs,
+            condition,
+            captures,
+            destinations,
+            message,
+        } => {
+            let assertion = builder.assertion_output(*predicate_output, at)?;
+            if builder.message_outputs(*predicate_output).as_slice() != message_outputs.as_ref() {
+                return Err(SolveProgramConstructionError::WireMismatch);
+            }
+            let captures = captures
+                .iter()
+                .map(|capture| register_at(registers, *capture))
+                .collect::<Result<Vec<_>, _>>()?;
+            let message = match message {
+                SolveAssertionMessageWire::NoCaptures => SolveAssertionMessage::NoCaptures,
+                SolveAssertionMessageWire::Captures { program } => {
+                    SolveAssertionMessage::Captures {
+                        program: Box::new(replay_region(
+                            program,
+                            builder.available_calls,
+                            builder.assertion_outputs,
+                        )?),
+                    }
+                }
+            };
+            let actual = builder.check_assertion_from_region(
+                assertion,
+                register_at(registers, *condition)?,
+                &captures,
+                message,
+                at,
+            )?;
+            require_destinations(&actual, destinations, registers, wire)?;
+            return Ok(actual);
+        }
         SolveOperationWire::Constant { destination, value } => produced(
             *destination,
             builder.constant(value.clone(), at)?,
@@ -377,8 +451,10 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let if_true = replay_region(if_true, builder.available_calls)?;
-            let if_false = replay_region(if_false, builder.available_calls)?;
+            let if_true =
+                replay_region(if_true, builder.available_calls, builder.assertion_outputs)?;
+            let if_false =
+                replay_region(if_false, builder.available_calls, builder.assertion_outputs)?;
             let actual = builder.conditional_from_regions(
                 register_at(registers, *condition)?,
                 &captures,
@@ -399,7 +475,7 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let body = replay_region(body, builder.available_calls)?;
+            let body = replay_region(body, builder.available_calls, builder.assertion_outputs)?;
             produced(
                 *destination,
                 builder.map_from_region(domain.clone(), &captures, body, at)?,
@@ -423,10 +499,20 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|capture| register_at(registers, *capture))
                 .collect::<Result<Vec<_>, _>>()?;
-            let transition = replay_region(transition, builder.available_calls)?;
+            let transition = replay_region(
+                transition,
+                builder.available_calls,
+                builder.assertion_outputs,
+            )?;
             let continuation = continuation
                 .as_ref()
-                .map(|predicate| replay_region(predicate, builder.available_calls))
+                .map(|predicate| {
+                    replay_region(
+                        predicate,
+                        builder.available_calls,
+                        builder.assertion_outputs,
+                    )
+                })
                 .transpose()?;
             let actual = builder.fold_from_region(
                 domain.clone(),
@@ -738,6 +824,7 @@ fn replay_operation<'program>(
             )?
         }
         SolveOperationWire::Call {
+            assertion_forwarding,
             owner,
             arguments,
             destinations,
@@ -746,7 +833,13 @@ fn replay_operation<'program>(
                 .iter()
                 .map(|argument| register_at(registers, *argument))
                 .collect::<Result<Vec<_>, _>>()?;
-            let actual = builder.call(*owner, &arguments, at)?;
+            let call = builder.emit_call(*owner, &arguments, at)?;
+            require_destinations(call.registers(), destinations, registers, wire)?;
+            for forwarding in assertion_forwarding {
+                let parent = builder.assertion_output(forwarding.parent_predicate, at)?;
+                builder.forward_assertion(&call, forwarding.child_predicate, parent, at)?;
+            }
+            let actual = call.into_registers();
             require_destinations(&actual, destinations, registers, wire)?;
             return Ok(actual);
         }
@@ -805,8 +898,9 @@ fn require_destinations(
 fn replay_region(
     wire: &SolveProgramRegionWire,
     available_calls: SolvePureCallTableView<'_>,
+    assertion_outputs: &[SolvePureCallOutput],
 ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
-    let body = replay_program(&wire.body, available_calls)?;
+    let body = replay_owner_program(&wire.body, available_calls, assertion_outputs)?;
     construct_region(
         wire.inputs.to_vec(),
         wire.outputs.to_vec(),

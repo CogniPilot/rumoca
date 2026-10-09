@@ -10,6 +10,7 @@ mod comprehensions;
 mod equal_value_types;
 mod fixtures;
 mod linear_solve;
+mod shared_context;
 mod shared_nested_calls;
 
 use fixtures::{integer_to_real_sibling_folds, lower_root_call, structured_range};
@@ -516,6 +517,15 @@ fn nested_call_returns_result_and_assertion_predicate_atomically() {
                     model.functions(|functions| {
                         functions.assertion(&mut body, condition, message, at)
                     })?;
+                    model.functions(|functions| {
+                        functions.assertion_with_level(
+                            &mut body,
+                            condition,
+                            message,
+                            dae::AssertionLevel::Warning,
+                            at,
+                        )
+                    })?;
                     model.functions(|functions| functions.assign(&mut body, output, result, at))?;
                     model.functions(|functions| functions.define(body, at))
                 },
@@ -560,8 +570,18 @@ fn nested_call_returns_result_and_assertion_predicate_atomically() {
     assert_eq!(table.owners().len(), 2);
     let inner = &table.owners()[0];
     let outer = &table.owners()[1];
-    assert_eq!(inner.outputs().len(), 2);
-    assert_eq!(outer.outputs().len(), 2);
+    assert_eq!(inner.outputs().len(), 3);
+    assert_eq!(outer.outputs().len(), 3);
+    for owner in [inner, outer] {
+        assert_eq!(
+            owner.outputs()[1].assertion_level(),
+            Some(solve::SolveAssertionLevel::Error)
+        );
+        assert_eq!(
+            owner.outputs()[2].assertion_level(),
+            Some(solve::SolveAssertionLevel::Warning)
+        );
+    }
     assert_eq!(
         outer
             .body()
@@ -582,6 +602,7 @@ fn nested_call_returns_result_and_assertion_predicate_atomically() {
         [solve::SolveValueKind::Real64(7.0_f64.to_bits())]
     );
     assert_eq!(result[1].elements(), [solve::SolveValueKind::Boolean(true)]);
+    assert_eq!(result[2].elements(), [solve::SolveValueKind::Boolean(true)]);
 }
 
 #[test]
@@ -1008,27 +1029,62 @@ fn function_fold_stays_one_compact_typed_owner() {
     let [owner] = table.owners() else {
         panic!("one exact fold owner expected")
     };
-    assert_eq!(
-        owner
-            .body()
-            .operations()
-            .iter()
-            .filter(|operation| matches!(operation.operation(), solve::SolveOperation::Fold { .. }))
-            .count(),
-        1
-    );
-    assert_eq!(
-        owner
-            .body()
-            .operations()
-            .iter()
-            .filter(|operation| matches!(operation.operation(), solve::SolveOperation::Map { .. }))
-            .count(),
-        1
-    );
+    let transition = assert_one_fold_without_maps(owner.body());
+    assert_check_precedes_addition(transition);
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
     assert_eq!(output[0].elements(), [solve::SolveValueKind::Integer(6)]);
     assert_eq!(output[1].elements(), [solve::SolveValueKind::Boolean(true)]);
+}
+
+fn assert_one_fold_without_maps(body: &solve::TypedProgram) -> &solve::TypedProgram {
+    let transitions: Vec<_> = body
+        .operations()
+        .iter()
+        .filter_map(|operation| {
+            if let solve::SolveOperation::Fold { transition, .. } = operation.operation() {
+                Some(transition.body())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(transitions.len(), 1);
+    assert!(
+        !body.operations().iter().any(|operation| {
+            matches!(operation.operation(), solve::SolveOperation::Map { .. })
+        })
+    );
+    transitions[0]
+}
+
+fn assert_check_precedes_addition(transition: &solve::TypedProgram) {
+    let check = transition
+        .operations()
+        .iter()
+        .position(|operation| {
+            matches!(
+                operation.operation(),
+                solve::SolveOperation::CheckAssertion { .. }
+            )
+        })
+        .unwrap();
+    let update = transition
+        .operations()
+        .iter()
+        .position(|operation| {
+            matches!(
+                operation.operation(),
+                solve::SolveOperation::Binary {
+                    operator: solve::SolveBinaryOperator::Add,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(
+        check < update,
+        "the authored check must precede the sum update"
+    );
 }
 
 #[test]
@@ -1123,13 +1179,15 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "valid-by-construction assertion-loop fixture enumerates map reduction ownership"
+    reason = "valid-by-construction assertion-only loop fixture retains its exact iteration capture and stopped outcome"
 )]
-fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
+fn assertion_only_loop_stops_with_first_failing_iteration_capture() {
     let mut sources = SourceMap::new();
     let source = sources.add("typed_assertion_loop.mo", "for i in 1:3 assert i <= limit");
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 12)).unwrap();
     let model = dae::Dae::construct(sources, |model| {
+        let string = rumoca_core::DefId(501);
+        model.register_predefined_string(string)?;
         let integer = model
             .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
         let (function, ()) = model.function(
@@ -1175,9 +1233,15 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
                         .binary(dae::BinaryOperator::LessEqual, binder, limit)
                 })?;
                 let message = model.expressions(|expressions| {
-                    expressions
-                        .at(at)
-                        .literal(dae::DaeLiteral::String("bounded".to_owned()))
+                    expressions.at(at).string_conversion(
+                        string,
+                        binder,
+                        dae::StringConversionFormatInput::Options {
+                            minimum_length: None,
+                            left_justified: None,
+                            significant_digits: None,
+                        },
+                    )
                 })?;
                 model.functions(|functions| {
                     functions.assertion_loop(&mut loop_body, condition, message, at)
@@ -1196,15 +1260,37 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
     let [owner] = table.owners() else {
         panic!("one exact assertion-loop owner expected")
     };
+    let transition = owner
+        .body()
+        .operations()
+        .iter()
+        .find_map(|operation| {
+            if let solve::SolveOperation::Fold {
+                transition,
+                destinations,
+                ..
+            } = operation.operation()
+            {
+                assert_eq!(
+                    destinations.len(),
+                    2,
+                    "only the real predicate and capture are carried"
+                );
+                Some(transition.body())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(transition.operations().iter().any(|operation| matches!(
+        operation.operation(),
+        solve::SolveOperation::CheckAssertion {
+            predicate_output: 1,
+            ..
+        }
+    )));
     assert!(
-        owner
-            .body()
-            .operations()
-            .iter()
-            .all(|operation| !matches!(operation.operation(), solve::SolveOperation::Fold { .. }))
-    );
-    assert!(
-        owner
+        !owner
             .body()
             .operations()
             .iter()
@@ -1218,15 +1304,24 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
         .unwrap()
     };
     let accepted = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[argument(3)]).unwrap();
-    let rejected = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[argument(2)]).unwrap();
+    let rejected =
+        rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[argument(2)]).unwrap_err();
+    assert_eq!(accepted[0].elements(), [solve::SolveValueKind::Integer(7)]);
     assert_eq!(
         accepted[1].elements(),
         [solve::SolveValueKind::Boolean(true)]
     );
-    assert_eq!(
-        rejected[1].elements(),
-        [solve::SolveValueKind::Boolean(false)]
-    );
+    let rumoca_eval_solve::TypedProgramEvalError::AssertionFailed { failure } = rejected else {
+        panic!("a stopped assertion must expose no ordinary tuple")
+    };
+    assert_eq!(failure.owner(), owner.id());
+    assert_eq!(failure.predicate_output(), 1);
+    assert_eq!(failure.source_span(), at.span());
+    let [(slot, capture)] = failure.message_captures() else {
+        panic!("one initialized iteration capture expected")
+    };
+    assert_eq!(*slot, 2);
+    assert_eq!(capture.elements(), [solve::SolveValueKind::Integer(3)]);
 }
 
 #[test]

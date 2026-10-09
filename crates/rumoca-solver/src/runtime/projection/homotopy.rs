@@ -95,6 +95,9 @@ where
     if let Err(source) = solve_at_lambda(y, p) {
         y.copy_from_slice(&original_y);
         p.copy_from_slice(&original_p);
+        if matches!(&source, RuntimeSolveError::CompiledExecution { .. }) {
+            return Err(source);
+        }
         return Err(continuation_error(0.0, INITIAL_CONTINUATION_STEP, source));
     }
 
@@ -118,6 +121,11 @@ where
                 );
             }
             Err(source) => {
+                if matches!(&source, RuntimeSolveError::CompiledExecution { .. }) {
+                    y.copy_from_slice(&original_y);
+                    p.copy_from_slice(&original_p);
+                    return Err(source);
+                }
                 y.copy_from_slice(&checkpoint);
                 p.copy_from_slice(&checkpoint_p);
                 step *= 0.5;
@@ -460,5 +468,82 @@ mod tests {
             )
             .is_ok()
         );
+    }
+    #[test]
+    fn admitted_backend_fault_aborts_continuation_without_losing_first_error() {
+        let model = StepLimitedModel::new();
+        let plan = solve::InitializationProjectionPlan {
+            iterates_discretes: false,
+            blocks: vec![solve::InitializationProjectionBlock {
+                rows: vec![0],
+                unknowns: vec![solve::scalar_slot_y(0)],
+                scales: vec![solve::InitializationUnknownScale::Solver],
+            }],
+        };
+        let mut y = [-0.0_f64];
+        // The initial discrete fixed point compares values: a NaN here would
+        // fail convergence before continuation reaches the injected fault.
+        let mut p = [1.0, -0.0_f64];
+        let y_before = y.map(f64::to_bits);
+        let p_before = p.map(f64::to_bits);
+        let positive_model = StepLimitedModel::new();
+        let mut positive_y = y;
+        let mut positive_p = p;
+        let mut positive_calls = 0;
+        project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &positive_model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: Some(0),
+                tol: 1e-10,
+                max_iters: 32,
+            },
+            &mut positive_y,
+            &mut positive_p,
+            |_, _| {
+                positive_calls += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(positive_calls > 1);
+        assert_eq!(positive_p[0], 1.0);
+        let mut calls = 0;
+        let error = project_initial_variables_with_homotopy(
+            super::super::InitialHomotopySystem {
+                model: &model,
+                t: 0.0,
+                plan: &plan,
+                homotopy_parameter_index: Some(0),
+                tol: 1e-10,
+                max_iters: 32,
+            },
+            &mut y,
+            &mut p,
+            |y, p| {
+                calls += 1;
+                if p[0] > 0.0 {
+                    y[0] = 777.0;
+                    p[1] = 888.0;
+                    return Err("first continuation backend fault".into());
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(calls > 0, "injected callback must be reached: {error:?}");
+        assert!(
+            matches!(&error, RuntimeSolveError::CompiledExecution { .. }),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("first continuation backend fault")
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(y.map(f64::to_bits), y_before);
+        assert_eq!(p.map(f64::to_bits), p_before);
     }
 }

@@ -117,10 +117,27 @@ fn fmi_codegen_retains_one_nonconstructible_correlated_aggregate() {
         fs::read_to_string(root.join("crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs"))
             .expect("read Solve lazy renderer");
     assert!(lazy.contains("pub(super) enum SolveRenderHandle"));
-    assert!(lazy.contains("Fmi(Arc<solve::fmi::FmiCCodegenView>)"));
-    assert!(lazy.contains("Self::Fmi(component) => component.problem()"));
-    assert!(lazy.contains("Self::Fmi(component) => component.artifacts()"));
-    assert!(lazy.contains("Self::Fmi(component) => Value::from_serialize(component.as_ref())"));
+    assert!(lazy.contains("Fmi(Arc<FmiRenderOwner>)"));
+    assert!(lazy.contains("component: Arc<solve::fmi::FmiCCodegenView>"));
+    assert!(lazy.contains("value: OnceLock<Result<Value, CodegenError>>"));
+    for field in [
+        "pub component:",
+        "pub(super) component:",
+        "pub value:",
+        "pub(super) value:",
+    ] {
+        assert!(
+            !lazy.contains(field),
+            "FMI render owner fields must remain private"
+        );
+    }
+    let handle_constructor = function_signature(&lazy, "fmi");
+    assert!(handle_constructor.contains("component: solve::fmi::FmiCCodegenView"));
+    assert!(!handle_constructor.contains("SolveArtifacts"));
+    assert!(!handle_constructor.contains("Value"));
+    assert!(lazy.contains("Self::Fmi(owner) => owner.component.problem()"));
+    assert!(lazy.contains("Self::Fmi(owner) => owner.component.artifacts()"));
+    assert!(lazy.contains(".get_or_init(|| fmi::value(Arc::clone(&owner.component)))"));
 
     let renderer =
         fs::read_to_string(root.join("crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs"))
@@ -135,5 +152,5 @@ fn fmi_codegen_retains_one_nonconstructible_correlated_aggregate() {
         !context_constructor.contains("fmi_entry"),
         "serialized FMI metadata must be derived from the retained handle, not supplied separately"
     );
-    assert!(renderer.contains("let fmi_entry = handle.fmi_value();"));
+    assert!(renderer.contains("let fmi_entry = handle.fmi_value()?;"));
 }

@@ -21,11 +21,42 @@ use crate::LowerError;
 /// Run-time bytes one register occupies: one primal and one tangent `f64`.
 pub(super) const REGISTER_BYTES: u64 = 16;
 
-/// Bytes one program may hold across its register file, its operation list and
-/// its register facts. Each is charged as it grows, so a program unrolled into
-/// scalars is refused before the memory of its operations and facts is spent,
-/// not after the register file alone reaches the limit.
-pub(super) const PROGRAM_BYTE_BUDGET: u64 = 256 << 20;
+/// Bytes of run-time register file one program may need (16 bytes per register).
+/// This protects the memory a backend allocates to execute the program, which
+/// is what the 4 GiB WASM linear memory must also hold the model storage beside.
+pub(super) const REGISTER_FILE_BYTE_BUDGET: u64 = 256 << 20;
+
+/// Bytes of lowering metadata (operation list and register facts) one program
+/// may hold. This protects the compiler's own memory while it builds the
+/// program, charged as each operation and fact is issued so a program unrolled
+/// into scalars is refused before that memory is spent.
+pub(super) const METADATA_BYTE_BUDGET: u64 = 256 << 20;
+
+/// The same metadata cost authority for scalar construction and optional fusion.
+pub(in crate::lower) struct MetadataBudget(u64);
+
+impl Default for MetadataBudget {
+    fn default() -> Self {
+        Self(METADATA_BYTE_BUDGET)
+    }
+}
+
+impl MetadataBudget {
+    fn bytes(operations: usize, facts: usize) -> u64 {
+        (operations as u64)
+            .saturating_mul(OPERATION_BYTES)
+            .saturating_add((facts as u64).saturating_mul(FACT_BYTES))
+    }
+
+    pub(in crate::lower) fn permits_operations(&self, count: usize) -> bool {
+        Self::bytes(count, 0) <= self.0
+    }
+
+    #[cfg(test)]
+    pub(in crate::lower) fn with_bytes(bytes: u64) -> Self {
+        Self(bytes)
+    }
+}
 
 /// Bytes of one operation in the operation list.
 const OPERATION_BYTES: u64 = std::mem::size_of::<solve::LinearOp>() as u64;
@@ -83,35 +114,41 @@ struct OwnerUse {
 }
 
 pub(super) struct RegisterLedger {
-    budget: u64,
+    file_budget: u64,
+    metadata_budget: MetadataBudget,
     facts: FxHashMap<solve::Reg, RegisterFact>,
     owners: Vec<OwnerUse>,
     owner_slots: FxHashMap<OwnerKey, usize>,
     last_owner: Option<(OwnerKey, usize)>,
+    last_span: Option<Span>,
     registers: u64,
+    operations: usize,
     peak_facts: usize,
     peak_ops: usize,
 }
 
 impl RegisterLedger {
     pub(super) fn new() -> Self {
-        Self::with_byte_budget(PROGRAM_BYTE_BUDGET)
+        Self::with_byte_budgets(REGISTER_FILE_BYTE_BUDGET, METADATA_BYTE_BUDGET)
     }
 
     /// A ledger whose register file alone may hold `registers`.
     #[cfg(test)]
     pub(super) fn with_budget(registers: u64) -> Self {
-        Self::with_byte_budget(registers * REGISTER_BYTES)
+        Self::with_byte_budgets(registers * REGISTER_BYTES, registers * REGISTER_BYTES)
     }
 
-    fn with_byte_budget(budget: u64) -> Self {
+    pub(super) fn with_byte_budgets(file_budget: u64, metadata_budget: u64) -> Self {
         Self {
-            budget,
+            file_budget,
+            metadata_budget: MetadataBudget(metadata_budget),
             facts: FxHashMap::default(),
             owners: Vec::new(),
             owner_slots: FxHashMap::default(),
             last_owner: None,
+            last_span: None,
             registers: 0,
+            operations: 0,
             peak_facts: 0,
             peak_ops: 0,
         }
@@ -122,7 +159,7 @@ impl RegisterLedger {
     pub(super) fn admit(
         &mut self,
         owner: OwnerKey,
-        name: impl FnOnce() -> String,
+        mut name: impl FnMut() -> String,
         allocation: Allocation,
         span: Span,
     ) -> Result<(), LowerError> {
@@ -131,31 +168,19 @@ impl RegisterLedger {
             end: total,
             operations: ops,
         } = allocation;
-        let facts = self.facts.len() as u64;
-        let needed = total
-            .saturating_mul(REGISTER_BYTES)
-            .saturating_add((ops as u64).saturating_mul(OPERATION_BYTES))
-            .saturating_add(facts.saturating_mul(FACT_BYTES));
-        if needed > self.budget {
-            let culprit = self.owner_name(owner).unwrap_or_else(name);
-            return Err(LowerError::budget_exceeded(
-                format!(
-                    "register budget exceeded in {culprit}: the program needs {total} registers \
-                     ({REGISTER_BYTES} bytes each), {ops} operations ({OPERATION_BYTES} bytes each) \
-                     and {facts} register facts ({FACT_BYTES} bytes each), {} bytes, and may hold {} bytes; \
-                     owners by registers: {}",
-                    needed,
-                    self.budget,
-                    self.owner_table(REFUSAL_OWNERS),
-                ),
-                span,
-            ));
-        }
+        self.check_usage(
+            total,
+            ops,
+            self.facts.len(),
+            || self.owner_name(owner).unwrap_or_else(&mut name),
+            span,
+        )?;
         let slot = match self.last_owner {
             Some((key, slot)) if key == owner => slot,
             _ => self.owner_slot(owner, name),
         };
         self.last_owner = Some((owner, slot));
+        self.last_span = Some(span);
         self.owners[slot].registers += count;
         #[cfg(feature = "tracing")]
         if count >= LARGE_RANGE {
@@ -170,6 +195,67 @@ impl RegisterLedger {
         self.registers = self.registers.max(total);
         self.peak_ops = self.peak_ops.max(ops);
         Ok(())
+    }
+
+    fn check_usage(
+        &self,
+        total: u64,
+        ops: usize,
+        facts: usize,
+        culprit: impl FnOnce() -> String,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let file = total.saturating_mul(REGISTER_BYTES);
+        let metadata = MetadataBudget::bytes(ops, facts);
+        if file > self.file_budget || metadata > self.metadata_budget.0 {
+            let culprit = culprit();
+            return Err(LowerError::budget_exceeded(
+                format!(
+                    "register budget exceeded in {culprit}: the program needs {total} registers \
+                     ({REGISTER_BYTES} bytes each), {ops} operations ({OPERATION_BYTES} bytes each) \
+                     and {facts} register facts ({FACT_BYTES} bytes each): {file} bytes of register file \
+                     against {} and {metadata} bytes of metadata against {}; \
+                     owners by registers: {}",
+                    self.file_budget,
+                    self.metadata_budget.0,
+                    self.owner_table(REFUSAL_OWNERS),
+                ),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn admit_metadata(&self, operations: usize, facts: usize) -> Result<(), LowerError> {
+        let Some((_, slot)) = self.last_owner else {
+            // A no-register program cannot carry register facts or operations.
+            assert_eq!((operations, facts), (0, 0));
+            return Ok(());
+        };
+        self.check_usage(
+            self.registers,
+            operations,
+            facts,
+            || self.owners[slot].name.clone(),
+            self.last_span.expect("allocated owner has a span"),
+        )
+    }
+
+    /// Charge the prospective operation before growing the compiler's buffer.
+    pub(super) fn admit_operation(&mut self, count: usize) -> Result<(), LowerError> {
+        self.admit_metadata(count, self.facts.len())?;
+        self.operations = count;
+        self.peak_ops = self.peak_ops.max(count);
+        Ok(())
+    }
+
+    /// Finalization consumes the same tracked construction counts, not an IR scan.
+    pub(super) fn finish(&self, operations: usize) -> Result<(), LowerError> {
+        assert_eq!(
+            operations, self.operations,
+            "operations bypassed checked emission"
+        );
+        self.admit_metadata(operations, self.facts.len())
     }
 
     #[cfg(test)]
@@ -233,25 +319,44 @@ impl RegisterLedger {
         self.facts.get(&register)?.negated
     }
 
-    pub(super) fn set_integer(&mut self, register: solve::Reg, value: Option<i64>) {
-        self.update(register, |fact| fact.integer = value);
+    pub(super) fn set_integer(
+        &mut self,
+        register: solve::Reg,
+        value: Option<i64>,
+    ) -> Result<(), LowerError> {
+        self.update(register, |fact| fact.integer = value)
     }
 
-    pub(super) fn set_real(&mut self, register: solve::Reg, value: f64) {
-        self.update(register, |fact| fact.real = Some(value));
+    pub(super) fn set_real(&mut self, register: solve::Reg, value: f64) -> Result<(), LowerError> {
+        self.update(register, |fact| fact.real = Some(value))
     }
 
-    pub(super) fn set_negated(&mut self, register: solve::Reg, operand: solve::Reg) {
-        self.update(register, |fact| fact.negated = Some(operand));
+    pub(super) fn set_negated(
+        &mut self,
+        register: solve::Reg,
+        operand: solve::Reg,
+    ) -> Result<(), LowerError> {
+        self.update(register, |fact| fact.negated = Some(operand))
     }
 
-    fn update(&mut self, register: solve::Reg, apply: impl FnOnce(&mut RegisterFact)) {
-        let fact = self.facts.entry(register).or_default();
-        apply(fact);
+    fn update(
+        &mut self,
+        register: solve::Reg,
+        apply: impl FnOnce(&mut RegisterFact),
+    ) -> Result<(), LowerError> {
+        let previous = self.facts.get(&register).copied();
+        let mut fact = previous.unwrap_or_default();
+        apply(&mut fact);
+        let count =
+            self.facts.len() - usize::from(previous.is_some()) + usize::from(!fact.is_empty());
+        self.admit_metadata(self.operations, count)?;
         if fact.is_empty() {
             self.facts.remove(&register);
+        } else {
+            self.facts.insert(register, fact);
         }
         self.peak_facts = self.peak_facts.max(self.facts.len());
+        Ok(())
     }
 }
 

@@ -114,7 +114,7 @@ impl TrajectorySession {
             }
         })?);
         let (y0, params) =
-            settle_prepared_vectors(&runtime, opts.t_start, solve_model.parameters.clone())?;
+            settle_prepared_vectors(&runtime, opts.t_start, solve_model.parameters.to_vec())?;
         let config = TrajectoryConfig {
             t_start: opts.t_start,
             t_end: opts.t_end,

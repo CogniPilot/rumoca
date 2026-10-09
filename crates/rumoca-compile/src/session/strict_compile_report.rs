@@ -21,7 +21,7 @@ pub struct StrictCompileReport {
     pub source_map: Option<SourceMap>,
 }
 
-/// Successful strict compilation paired with its exact resolved target closure.
+/// Successful strict compilation paired with its exact accepted resolved input.
 #[derive(Debug)]
 pub struct StrictCompilation {
     result: CompilationResult,
@@ -38,7 +38,10 @@ impl StrictCompilation {
         &self.result
     }
 
-    /// Borrow the resolved target closure used to produce the result.
+    /// Borrow the resolved input used to produce the result.
+    ///
+    /// This is the globally successful Standard input when available, otherwise
+    /// the isolated strict target closure.
     pub fn resolved(&self) -> &ResolvedTree {
         &self.resolved
     }

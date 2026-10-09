@@ -31,6 +31,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         .transpose()?
         .map(std::sync::Arc::<[solve::LinearOp]>::from);
         for (output_offset, assertion) in registered.callee.assertions.iter().enumerate() {
+            let root_output_offset = registered.callee.assertions[..output_offset]
+                .iter()
+                .filter(|assertion| self.event_root_owned(assertion.level))
+                .count();
             let message_owner = AssertionMessageOwner::Specialized {
                 call,
                 function,
@@ -45,7 +49,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .map(|program| CollectedCallAssertionRoot::Shared {
                         owner: registered.callee.owner,
                         program: std::sync::Arc::clone(program),
-                        output_offset,
+                        output_offset: root_output_offset,
                     }),
                 CollectedCallAssertionProgram::Shared {
                     owner: registered.callee.owner,
@@ -55,16 +59,76 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 message,
                 assertion.level,
                 assertion.provenance,
-                Some(CallAssertionProjection {
-                    owner: registered.callee.owner,
-                    output_offset,
-                }),
+                Some((
+                    CallAssertionProjection {
+                        owner: registered.callee.owner,
+                        output_offset,
+                    },
+                    solve::SolveAssertionActionProjection::new(
+                        registered.site.clone(),
+                        assertion.predicate_output,
+                    )
+                    .ok_or_else(|| {
+                        LowerError::contract("call assertion lost its issued predicate", call_span)
+                    })?,
+                )),
             )?;
         }
         Ok(())
     }
 
     fn typed_pure_call_assertion_program(
+        &self,
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionId<'dae>,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        span: Span,
+        root: bool,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let active =
+            self.active_typed_call_assertion_program(call, function, registered, span, root)?;
+        if self.activation_path.is_empty() && self.active_clock.is_none() {
+            return Ok(active);
+        }
+        let output_count = registered
+            .callee
+            .assertions
+            .iter()
+            .filter(|assertion| !root || self.event_root_owned(assertion.level))
+            .count();
+        let mut compiler = self.fork_for_call_action();
+        let activation = compiler.activation(span)?;
+        let condition = vec![
+            solve::LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let mut fallback = vec![solve::LinearOp::Const {
+            dst: 0,
+            value: if root { -1.0 } else { 0.0 },
+        }];
+        fallback.extend((0..output_count).map(|_| solve::LinearOp::StoreOutput { src: 0 }));
+        let program = solve::FunctionConditionalProgram::checked(
+            1,
+            vec![1; output_count],
+            [(condition, active)],
+            fallback,
+        )
+        .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        let start = compiler.register_range(output_count, span)?;
+        compiler.emit(solve::LinearOp::FunctionConditional {
+            dst_start: start,
+            capture_start: activation,
+            program: std::sync::Arc::new(program),
+        })?;
+        compiler.emit(solve::LinearOp::StoreOutputRange {
+            start,
+            count: output_count,
+            stride: 1,
+        })?;
+        compiler.finish_operations()
+    }
+
+    fn active_typed_call_assertion_program(
         &self,
         call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
@@ -83,26 +147,41 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         };
         let mut compiler = self.fork_for_call_action();
         compiler.call_action_compilation = true;
-        let (start, replayed) = compiler
-            .emit_typed_pure_call(call, function, arguments, span)?
-            .ok_or_else(|| {
-                LowerError::contract("typed pure-call assertion lost its issued invocation", span)
-            })?;
-        if replayed.callee.owner != registered.callee.owner || replayed.site != registered.site {
+        let definition = self.view.function(function).ok_or_else(|| {
+            LowerError::contract("assertion observation function does not resolve", span)
+        })?;
+        let arguments = arguments.iter().collect::<Vec<_>>();
+        if arguments.len() != definition.parameter_types().len() {
             return Err(LowerError::contract(
-                "typed pure-call assertion changed its issued owner",
+                "assertion observation argument count changed",
                 span,
             ));
         }
-        let activation = compiler.activation(span)?;
+        let mut input_starts = Vec::new();
+        for (argument, value_type) in arguments
+            .into_iter()
+            .zip(definition.parameter_types().iter())
+        {
+            compiler.pack_typed_call_input_leaves(argument, value_type, span, &mut input_starts)?;
+        }
+        let observation = solve::SolveAssertionObservationSite::new(registered.site.clone())
+            .ok_or_else(|| LowerError::contract("assertion observation has no predicates", span))?;
+        let start = compiler.register_range(observation.output_scalar_count(), span)?;
+        let predicates = observation.predicate_outputs().to_vec();
+        compiler.emit(solve::LinearOp::PureCallObservation {
+            dst_start: start,
+            input_starts: input_starts.into_boxed_slice(),
+            site: observation,
+        })?;
         for assertion in registered.callee.assertions.iter() {
-            let predicate_offset = replayed.site.outputs()[..assertion.predicate_output]
+            if root && !self.event_root_owned(assertion.level) {
+                continue;
+            }
+            let predicate_offset = predicates
                 .iter()
-                .try_fold(0usize, |count, output| {
-                    count.checked_add(output.value_type().scalar_count() as usize)
-                })
+                .position(|&output| output == assertion.predicate_output)
                 .ok_or_else(|| {
-                    LowerError::contract("typed pure-call predicate offset overflows", span)
+                    LowerError::contract("assertion observation lost its issued predicate", span)
                 })?;
             let predicate = u32::try_from(predicate_offset)
                 .ok()
@@ -113,17 +192,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let result = if root {
                 let safe = compiler.constant(-1.0, span)?;
                 let failed = compiler.constant(1.0, span)?;
-                let active_indicator = compiler.select(predicate, safe, failed, span)?;
-                compiler.select(activation, active_indicator, safe, span)?
+                compiler.select(predicate, safe, failed, span)?
             } else {
-                let failed = compiler.unary(dae::UnaryOperator::Not, predicate, span)?;
-                compiler.binary(dae::BinaryOperator::And, activation, failed, span)?
+                compiler.unary(dae::UnaryOperator::Not, predicate, span)?
             };
-            compiler
-                .ops
-                .push(solve::LinearOp::StoreOutput { src: result });
+            compiler.emit(solve::LinearOp::StoreOutput { src: result })?;
         }
-        Ok(compiler.ops)
+        compiler.finish_operations()
     }
 
     pub(in crate::lower) fn deferred_call_action_program<'recipe>(
@@ -180,11 +255,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
             };
             let failed = compiler.unary(dae::UnaryOperator::Not, safe, span)?;
-            compiler
-                .ops
-                .push(solve::LinearOp::StoreOutput { src: failed });
+            compiler.emit(solve::LinearOp::StoreOutput { src: failed })?;
         }
-        Ok(compiler.ops)
+        compiler.finish_operations()
     }
 
     pub(super) fn schedule_function_assertions(
@@ -331,8 +404,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         message: solve::SolveEventMessage,
         level: dae::AssertionLevel,
         provenance: dae::DaeProvenance,
-        projection: Option<CallAssertionProjection>,
+        projection: Option<(
+            CallAssertionProjection,
+            solve::SolveAssertionActionProjection,
+        )>,
     ) -> Result<(), LowerError> {
+        let (projection, assertion_projection) = match projection {
+            Some((projection, assertion_projection)) => {
+                (Some(projection), Some(assertion_projection))
+            }
+            None => (None, None),
+        };
         self.layout
             .call_scoped_actions
             .borrow_mut()
@@ -345,6 +427,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span: provenance.span(),
                     origin: provenance.origin().to_string(),
                     clock_owner: None,
+                    assertion_projection,
                 },
                 clock_index: self.active_clock.map(|clock| clock.index() as usize),
                 projection,
@@ -364,10 +447,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let failed = compiler.constant(1.0, span)?;
         let active_indicator = compiler.select(condition, safe, failed, span)?;
         let root = compiler.select(activation, active_indicator, safe, span)?;
-        compiler
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: root });
-        Ok(compiler.ops)
+        compiler.emit(solve::LinearOp::StoreOutput { src: root })?;
+        compiler.finish_operations()
     }
 
     fn assertion_action_program(
@@ -380,10 +461,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let condition = compiler.expression(condition, 0)?;
         let failed = compiler.unary(dae::UnaryOperator::Not, condition, span)?;
         let active_failure = compiler.binary(dae::BinaryOperator::And, activation, failed, span)?;
-        compiler.ops.push(solve::LinearOp::StoreOutput {
+        compiler.emit(solve::LinearOp::StoreOutput {
             src: active_failure,
-        });
-        Ok(compiler.ops)
+        })?;
+        compiler.finish_operations()
     }
 
     fn call_assertion_action(
@@ -548,10 +629,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let safe = compiler.constant(-1.0, span)?;
         let failed = compiler.constant(1.0, span)?;
         let root = compiler.select(condition, safe, failed, span)?;
-        compiler
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: root });
-        Ok(compiler.ops)
+        compiler.emit(solve::LinearOp::StoreOutput { src: root })?;
+        compiler.finish_operations()
     }
 
     fn fold_assertion_action_program(
@@ -563,10 +642,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut compiler = self.fork_for_call_action();
         let condition = compiler.function_fold_assertion_result(fold, condition, span)?;
         let failed = compiler.unary(dae::UnaryOperator::Not, condition, span)?;
-        compiler
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: failed });
-        Ok(compiler.ops)
+        compiler.emit(solve::LinearOp::StoreOutput { src: failed })?;
+        compiler.finish_operations()
     }
 
     pub(super) fn activation(&mut self, span: Span) -> Result<solve::Reg, LowerError> {
@@ -873,10 +950,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let register = compiler.specialized_message_register(start, &replayed, assertion, value)?;
-        compiler
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: register });
-        Ok(compiler.ops)
+        compiler.emit(solve::LinearOp::StoreOutput { src: register })?;
+        compiler.finish_operations()
     }
 
     fn specialized_message_register(
@@ -888,16 +963,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let node = self.node(value);
         let span = node.provenance().span();
-        if let dae::ExpressionOperation::Literal(literal) = node.operation() {
-            return self.specialized_message_literal(literal, span);
-        }
         let output = assertion
             .message_values
             .iter()
             .find_map(|&(candidate, output)| (candidate == value).then_some(output))
             .ok_or_else(|| {
                 LowerError::unsupported(
-                    "a call-specialized assertion message converts only values its declaring function evaluates without a call outside a loop, or literals",
+                    "a call-specialized assertion message has no issued capture for this value",
                     span,
                 )
             })?;
@@ -915,24 +987,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?;
         Ok(offset)
-    }
-
-    fn specialized_message_literal(
-        &mut self,
-        literal: &dae::DaeLiteral,
-        span: Span,
-    ) -> Result<solve::Reg, LowerError> {
-        match literal {
-            dae::DaeLiteral::Real(value) => self.constant(*value, span),
-            dae::DaeLiteral::Integer(value) => self.constant(*value as f64, span),
-            dae::DaeLiteral::Boolean(value) => self.constant(f64::from(u8::from(*value)), span),
-            dae::DaeLiteral::Enumeration(_) | dae::DaeLiteral::String(_) => {
-                Err(LowerError::unsupported(
-                    "a call-specialized assertion message converts only Real, Integer, and Boolean literals",
-                    span,
-                ))
-            }
-        }
     }
 }
 

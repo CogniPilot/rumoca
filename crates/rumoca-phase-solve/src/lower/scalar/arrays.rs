@@ -58,14 +58,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let count =
             count.ok_or_else(|| LowerError::contract("tensor update extent overflow", span))?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorUpdate {
+        self.emit(solve::LinearOp::TensorUpdate {
             dst_start,
             base_start,
             value_start,
             dimensions: dimensions.into_boxed_slice(),
             subscripts: compact.into_boxed_slice(),
             lanes: 1,
-        });
+        })?;
         self.tensor_update_cache.insert(key, (dst_start, count));
         Ok(dst_start)
     }
@@ -229,35 +229,35 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         if let Some(carried_base) = self.fold_carried_tensor_base(base) {
             let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::LoadIndexedFoldCarried {
+            self.emit(solve::LinearOp::LoadIndexedFoldCarried {
                 dst,
                 base: carried_base,
                 stride: 1,
                 dimensions: base_dimensions.into_boxed_slice(),
                 indices: indices.into_boxed_slice(),
-            });
+            })?;
             return Ok(dst);
         }
         if let Some(capture_base) = self.fold_capture_tensor_base(base, span)? {
             let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::LoadIndexedFoldCapture {
+            self.emit(solve::LinearOp::LoadIndexedFoldCapture {
                 dst,
                 base: capture_base,
                 stride: 1,
                 dimensions: base_dimensions.into_boxed_slice(),
                 indices: indices.into_boxed_slice(),
-            });
+            })?;
             return Ok(dst);
         }
         let base = self.pack_expression(base)?;
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::LoadIndexedRegister {
+        self.emit(solve::LinearOp::LoadIndexedRegister {
             dst,
             base,
             stride: 1,
             dimensions: base_dimensions.into_boxed_slice(),
             indices: indices.into_boxed_slice(),
-        });
+        })?;
         Ok(dst)
     }
 
@@ -311,7 +311,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
-    fn fold_capture_tensor_base(
+    pub(super) fn fold_capture_tensor_base(
         &mut self,
         expression: dae::ExprId<'dae>,
         span: Span,
@@ -319,22 +319,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let Some(deferred) = self.deferred_fold_captures.as_ref() else {
             return Ok(None);
         };
-        if let Some(&base) = deferred.packed_capture_ranges.get(&expression) {
-            return Ok(Some(base));
-        }
         let Some(&(source, count)) = deferred.packed_expressions.get(&expression) else {
             return Ok(None);
         };
-        let capture_base = deferred.sources.len();
-        let mut sources = Vec::with_capacity(count);
-        for offset in 0..count {
-            let offset = u32::try_from(offset).map_err(|_| {
-                LowerError::contract("fold tensor capture offset exceeds u32", span)
-            })?;
-            sources.push(source.checked_add(offset).ok_or_else(|| {
-                LowerError::contract("fold tensor capture register overflows", span)
-            })?);
+        if let Some(&base) = deferred.packed_capture_ranges.get(&(source, count)) {
+            return Ok(Some(base));
         }
+        let capture_base = deferred.sources.len();
+        let sources = if count == 0 {
+            Vec::new()
+        } else {
+            let last = u32::try_from(count - 1)
+                .ok()
+                .and_then(|offset| source.checked_add(offset))
+                .ok_or_else(|| {
+                    LowerError::contract("fold tensor capture register overflows", span)
+                })?;
+            (source..=last).collect::<Vec<_>>()
+        };
         let deferred = self
             .deferred_fold_captures
             .as_mut()
@@ -342,7 +344,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         deferred.sources.extend(sources);
         deferred
             .packed_capture_ranges
-            .insert(expression, capture_base);
+            .insert((source, count), capture_base);
         Ok(Some(capture_base))
     }
 

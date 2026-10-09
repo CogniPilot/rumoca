@@ -59,16 +59,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         match builtin {
             dae::PureBuiltin::Zeros => {
                 let value_start = self.constant(0.0, span)?;
-                self.push_tensor_fill(dst_start, value_start, count);
+                self.push_tensor_fill(dst_start, value_start, count)?;
             }
             dae::PureBuiltin::Ones => {
                 let value_start = self.constant(1.0, span)?;
-                self.push_tensor_fill(dst_start, value_start, count);
+                self.push_tensor_fill(dst_start, value_start, count)?;
             }
             dae::PureBuiltin::Fill => {
                 let value_start =
                     self.expression(arguments.get(0).expect("checked fill value argument"), 0)?;
-                self.push_tensor_fill(dst_start, value_start, count);
+                self.push_tensor_fill(dst_start, value_start, count)?;
             }
             dae::PureBuiltin::Identity => {
                 let [rows, columns] = dimensions else {
@@ -80,11 +80,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 if rows != columns {
                     return Err(LowerError::contract("identity result must be square", span));
                 }
-                self.ops.push(solve::LinearOp::TensorIdentity {
+                self.emit(solve::LinearOp::TensorIdentity {
                     dst_start,
                     size: *rows as usize,
                     lanes: 1,
-                });
+                })?;
             }
             _ => unreachable!("only tensor generators use compact generator lowering"),
         }
@@ -93,13 +93,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     /// Issue the compact fill that every filling tensor generator shares.
-    fn push_tensor_fill(&mut self, dst_start: solve::Reg, value_start: solve::Reg, count: usize) {
-        self.ops.push(solve::LinearOp::TensorFill {
+    fn push_tensor_fill(
+        &mut self,
+        dst_start: solve::Reg,
+        value_start: solve::Reg,
+        count: usize,
+    ) -> Result<(), LowerError> {
+        self.emit(solve::LinearOp::TensorFill {
             dst_start,
             value_start,
             count,
             lanes: 1,
-        });
+        })
     }
 
     pub(super) fn builtin(
@@ -247,14 +252,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("transpose extent overflow", span))?;
         let src_start = self.pack_expression(operand)?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorTranspose {
+        self.emit(solve::LinearOp::TensorTranspose {
             dst_start,
             src_start,
             rows,
             columns,
             element_width,
             lanes: 1,
-        });
+        })?;
         self.tensor_transpose_cache.insert(key, (dst_start, count));
         Ok(dst_start)
     }
@@ -401,13 +406,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let count =
             count.ok_or_else(|| LowerError::contract("concatenation extent overflow", span))?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorConcatenate {
+        self.emit(solve::LinearOp::TensorConcatenate {
             dst_start,
             sources: sources.into_boxed_slice(),
             dimensions: dimensions.into_boxed_slice(),
             axis,
             lanes: 1,
-        });
+        })?;
         self.tensor_concatenate_cache
             .insert(key, (dst_start, count));
         Ok(dst_start)
@@ -428,12 +433,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             scalar,
         )?;
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::Binary {
+        self.emit(solve::LinearOp::Binary {
             dst,
             op: solve::BinaryOp::Atan2,
             lhs,
             rhs,
-        });
+        })?;
         Ok(dst)
     }
 
@@ -564,12 +569,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;
         let dst_start = self.register_range(3, span)?;
-        self.ops.push(solve::LinearOp::TensorCross {
+        self.emit(solve::LinearOp::TensorCross {
             dst_start,
             lhs_start,
             rhs_start,
             lanes: 1,
-        });
+        })?;
         Ok(dst_start)
     }
 
@@ -637,12 +642,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("checked reduction supplies an identity or a nonempty operand");
         for value in values {
             let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::Binary {
+            self.emit(solve::LinearOp::Binary {
                 dst,
                 op: operator,
                 lhs: result,
                 rhs: value,
-            });
+            })?;
             result = dst;
         }
         Ok(result)

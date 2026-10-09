@@ -77,6 +77,40 @@ fn derive(rows: &[(Vec<LinearOp>, Vec<usize>)]) -> SharedValueSegments {
 }
 
 #[test]
+fn a_native_identity_barrier_retains_the_complete_checked_call_interface() {
+    let table = value_call(3);
+    let mut ops = call_then_copy(table.owners()[0].call_site(), 0, None);
+    ops.pop();
+    ops.push(LinearOp::StoreOutputRange {
+        start: 6,
+        count: 6,
+        stride: 1,
+    });
+    let targets = (20..26).collect::<Vec<_>>();
+    let sources = [AssignmentProgram {
+        ops: &ops,
+        targets: &targets,
+    }];
+    let shared = SharedValueSegments::derive(&sources);
+    shared.check(&sources).unwrap();
+    assert_eq!(shared.segments()[0].ops(), ops);
+    let mut changed = ops.clone();
+    if let LinearOp::PureCall { site, .. } = &mut changed[1] {
+        let mut wire = serde_json::to_value(&*site).unwrap();
+        wire["owner"] = serde_json::json!(site.owner().index() + 1);
+        *site = serde_json::from_value(wire).unwrap();
+    }
+    assert!(
+        shared
+            .check(&[AssignmentProgram {
+                ops: &changed,
+                targets: &targets
+            }])
+            .is_err()
+    );
+}
+
+#[test]
 fn a_call_on_identical_inputs_is_computed_once_and_kept_when_unread() {
     let table = value_call(3);
     let site = || table.owners()[0].call_site();

@@ -43,6 +43,7 @@ default = [
     "process-control",
     "native-allocator",
     "fmu-packaging",
+    "component-build",
 ]
 scheduled-sim = ["rumoca-sim/scheduled-sim"]
 scenario-config = ["rumoca-sim/scenario-config"]
@@ -54,7 +55,8 @@ viewer-web = ["rumoca-sim/viewer-web"]
 process-control = ["rumoca-sim/process-control"]
 native-allocator = ["dep:rumoca-allocator"]
 fmi = ["rumoca-sim/fmi"]
-fmu-packaging = ["dep:zip", "fmi"]
+fmu-packaging = ["dep:zip", "dep:rumoca-exec-wasm", "fmi"]
+component-build = ["fmu-packaging", "rumoca-exec-wasm/component-build"]
 examples-smoke-tests = []
 msl-sim-tests = []
 # Opt-in RDD2 metric gates inside `suite_gates` (`tests/rdd2_perf_guard.rs`,
@@ -80,6 +82,7 @@ tracing = ["dep:tracing-subscriber", "rumoca-compile/tracing", "rumoca-sim/traci
 # config, scheduling, transports, input devices, viewer web UI, and reports.
 # Library consumers select only the axes they need.
 rumoca-compile = { workspace = true }
+rumoca-exec-wasm = { workspace = true, default-features = false, optional = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-ir-galec = { workspace = true }
@@ -123,6 +126,7 @@ path = "examples/simulation_session_demo.rs"
 [[example]]
 name = "quadrotor_sil"
 path = "examples/quadrotor_sil.rs"
+required-features = ["scheduled-sim"]
 
 # The repo-wide architecture gate. Kept a target of its own because people
 # rerun it by name (`cargo test -p rumoca --test architecture_hardening_test`)
@@ -177,6 +181,7 @@ name = "suite_galec_fmu"
 path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
+rumoca-exec-wasm = { workspace = true, features = ["component-build"] }
 rumoca-eval-dae = { workspace = true }
 crossterm = { workspace = true }
 tungstenite = { workspace = true }

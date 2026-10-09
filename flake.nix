@@ -488,6 +488,7 @@
           in
           (templateRuntimeShell [
             pkgs.wasm-tools
+            pkgs.libxml2
             wasiCc
           ]).overrideAttrs
             (old: {

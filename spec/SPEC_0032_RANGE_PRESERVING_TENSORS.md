@@ -223,3 +223,8 @@ from these owners; it must not materialize scalar rows and then rediscover a
 pattern. Pattern soundness, coloring, storage-policy separation, and complex
 block expansion are specified by
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Structural register dependencies retain source-issued destination families and immutable operand versions; tensor loads, broadcasts, and elementwise unions do not allocate one dependency cell per tensor lane or absent register. Scalar and range queries derive from this inventory through the existing exhaustive dependency rules. | `rumoca-ir-solve::structural_pattern`, consumed by `refresh::dependency` | Metadata cost follows operation and range structure; overwrites preserve earlier reads, and a missing source is still refused even if no requested result depends on it. |
+| A projection block's selected-output degree queries share one ordered walk for each canonical node/program and its complete exact target set. Queries read degrees at the original stores, retain conservative refusal of each required prefix, and construct no dense inventory of unselected outputs or register snapshots. Different target sets remain independent proofs. | `rumoca-ir-solve::affinity` | A tensor owner's residual rows must not each replay its whole degree-analysis prefix; this construction-time query sharing authorizes no runtime invocation reuse. |

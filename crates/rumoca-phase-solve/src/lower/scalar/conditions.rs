@@ -11,8 +11,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         condition: dae::ConditionId<'dae>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.condition(condition)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// Compile a condition that lives inside `clock`'s partition.
@@ -26,8 +26,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         self.active_clock = Some(clock);
         let output = self.condition(condition)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     pub(in crate::lower) fn edge_condition_program(
@@ -40,8 +40,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let edge = self.trigger_edge(trigger, trigger_memory, span)?;
         let guard = self.condition(guard)?;
         let output = self.binary(dae::BinaryOperator::And, edge, guard, span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// A warning-level action (MLS §8.3.7): `edge(trigger) and guard and not
@@ -59,8 +59,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let guard = self.condition(guard)?;
         let active = self.binary(dae::BinaryOperator::And, edge, guard, span)?;
         let output = self.violated(active, holds, span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// A warning-level action owned by a clock: active on its ticks.
@@ -84,8 +84,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let activation = self.load_slot(solve::scalar_slot_p(activation), span)?;
         let active = self.binary(dae::BinaryOperator::And, activation, guard, span)?;
         let output = self.violated(active, holds, span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     fn violated(
@@ -117,8 +117,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })?;
         let activation = self.load_slot(solve::scalar_slot_p(activation), span)?;
         let output = self.binary(dae::BinaryOperator::And, activation, guard, span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// Compile roots owned by one exact source occurrence as one program.
@@ -135,9 +135,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .expect("checked relation identity resolves");
             let output =
                 self.root_expression(relation.expression(), relation.provenance().span())?;
-            self.ops.push(solve::LinearOp::StoreOutput { src: output });
+            self.emit(solve::LinearOp::StoreOutput { src: output })?;
         }
-        Ok(self.ops)
+        self.finish_operations()
     }
 
     pub(in crate::lower) fn root_expression_program(
@@ -146,8 +146,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.root_expression(expression, span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     fn root_expression(
@@ -194,7 +194,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let branch_count = self.guarded_dynamic_branch_count(targets)?;
         if branch_count == 0 {
             self.store_guarded_assignment_fallbacks(targets)?;
-            return Ok(self.ops);
+            return self.finish_operations();
         }
         let target_widths = targets
             .iter()
@@ -225,17 +225,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })?;
         let result_count = program.result_count;
         let dst_start = self.register_range(result_count, span)?;
-        self.ops.push(solve::LinearOp::FunctionConditional {
+        self.emit(solve::LinearOp::FunctionConditional {
             dst_start,
             capture_start: 0,
             program: std::sync::Arc::new(program),
-        });
-        self.ops.push(solve::LinearOp::StoreOutputRange {
+        })?;
+        self.emit(solve::LinearOp::StoreOutputRange {
             start: dst_start,
             count: result_count,
             stride: 1,
-        });
-        Ok(self.ops)
+        })?;
+        self.finish_operations()
     }
 
     fn guarded_dynamic_branch_count(
@@ -300,6 +300,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         path: &[(ActivationCondition<'dae>, bool)],
     ) -> ScalarCompiler<'layout, 'dae> {
         let mut compiler = Self::new(self.view, self.layout, None);
+        compiler.call_use = self.call_use;
         compiler.active_clock = clock;
         compiler.activation_path = path
             .iter()
@@ -322,10 +323,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let mut compiler = self.guarded_region_compiler(self.active_clock, prior);
         let condition = compiler.materialize_activation_condition(owner, span)?;
-        compiler
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: condition });
-        Ok(compiler.ops)
+        compiler.emit(solve::LinearOp::StoreOutput { src: condition })?;
+        compiler.finish_operations()
     }
 
     fn guarded_assignment_result_region(
@@ -341,7 +340,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             compiler.sampled_source = target.sampled;
             compiler.store_guarded_assignment_value(branch.2, target.width, target.span)?;
         }
-        Ok(compiler.ops)
+        compiler.finish_operations()
     }
 
     fn guarded_assignment_fallback_region(
@@ -352,7 +351,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let mut compiler = self.guarded_region_compiler(clock, path);
         compiler.store_guarded_assignment_fallbacks(targets)?;
-        Ok(compiler.ops)
+        compiler.finish_operations()
     }
 
     fn store_guarded_assignment_fallbacks(
@@ -364,11 +363,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.store_guarded_assignment_value(value, target.width, target.span)?;
             } else {
                 let start = self.load_guarded_target_range(target)?;
-                self.ops.push(solve::LinearOp::StoreOutputRange {
+                self.emit(solve::LinearOp::StoreOutputRange {
                     start,
                     count: target.width,
                     stride: 1,
-                });
+                })?;
             }
         }
         Ok(())
@@ -420,11 +419,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let start = self.pack_expression(value)?;
-        self.ops.push(solve::LinearOp::StoreOutputRange {
+        self.emit(solve::LinearOp::StoreOutputRange {
             start,
             count: width,
             stride: 1,
-        });
+        })?;
         Ok(())
     }
 
@@ -449,14 +448,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
         };
         let dst_start = self.register_range(target.width, target.span)?;
-        self.ops.push(solve::LinearOp::TensorLoad {
+        self.emit(solve::LinearOp::TensorLoad {
             dst_start,
             input,
             input_start,
             count: target.width,
             seed_start: None,
             lanes: 1,
-        });
+        })?;
         Ok(dst_start)
     }
 

@@ -9,6 +9,7 @@ mod preferences;
 use std::collections::HashMap;
 
 use rumoca_core::StateSelect;
+use rumoca_eval_dae::InputInitializationPolicy;
 use rumoca_eval_solve::dense_basis::ColumnChoice;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -74,12 +75,20 @@ pub(crate) fn prepare<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
+    prepare_with_input_policy(model, overrides, InputInitializationPolicy::default())
+}
+
+pub(crate) fn prepare_with_input_policy<'source>(
+    model: &'source dae::Dae,
+    overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
+) -> Result<PreparedSelection<'source>, StructuralError> {
     let folded = fold_evaluable_parameters(model)?;
     let inlined = inline_annotated_calls(folded.as_ref().unwrap_or(model))?.or(folded);
     let quotient = quotient_aliases(inlined.as_ref().unwrap_or(model))?.or(inlined);
     let selection = match fold_constant_values(quotient.as_ref().unwrap_or(model))?.or(quotient) {
-        None => prepare_source(model, overrides)?,
-        Some(transformed) => prepare_quotient(transformed, overrides)?,
+        None => prepare_source(model, overrides, input_policy)?,
+        Some(transformed) => prepare_quotient(transformed, overrides, input_policy)?,
     };
     require_always_states(model, &selection)?;
     own_selection_loop_guards(selection)
@@ -148,6 +157,7 @@ fn own_selection_loop_guards(
 fn prepare_quotient(
     quotient: dae::Dae,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<PreparedSelection<'static>, StructuralError> {
     let PreparedSelection {
         primary,
@@ -155,7 +165,7 @@ fn prepare_quotient(
         exchanges,
         formal_aliases,
         withheld_preferences,
-    } = prepare_source(&quotient, overrides)?;
+    } = prepare_source(&quotient, overrides, input_policy)?;
     let primary = match primary {
         PreparedDae::Borrowed {
             pins, structural, ..
@@ -196,15 +206,16 @@ fn prepare_quotient(
 fn prepare_source<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     // One structural analysis of the source serves the early loop-closure
     // decision and the reducer's first round (SPEC_0053 §1).
     let source = SourceStructuralAnalysis::of(model);
-    if let Some(reduced) = reduce_loop_closure(&source, overrides)? {
+    if let Some(reduced) = reduce_loop_closure(&source, overrides, input_policy)? {
         return Ok(reduced);
     }
     match prepare_for_solve_from_source(source) {
-        Ok(prepared) => reduce_or_retain(model, prepared, overrides),
+        Ok(prepared) => reduce_or_retain(model, prepared, overrides, input_policy),
         // The ordinary reducer cannot desingularize every constrained system: a
         // buried orientation lock (a quaternion body under a loop joint) leaves
         // an unmatched acceleration residual it reports as structurally
@@ -217,9 +228,9 @@ fn prepare_source<'source>(
         // again with those states declared algebraic before the formal path.
         Err(error) if matches!(error, StructuralError::Singular { .. }) => {
             if let Some(demoted) = demote_inert_states(model)? {
-                return prepare_quotient(demoted, overrides);
+                return prepare_quotient(demoted, overrides, input_policy);
             }
-            recover_singular_via_formal(model, overrides)?.ok_or(error)
+            recover_singular_via_formal(model, overrides, input_policy)?.ok_or(error)
         }
         Err(error) => Err(error),
     }
@@ -251,9 +262,10 @@ fn reduce_or_retain<'source>(
     model: &'source dae::Dae,
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     if prepared.inspect(|system| system.manifold.is_empty()) {
-        return prefer_or_retain(model, prepared, overrides);
+        return prefer_or_retain(model, prepared, overrides, input_policy);
     }
     let Some(formal) = formal_below_retained_dimension(model, &prepared)? else {
         return Ok(PreparedSelection::retained(prepared));
@@ -261,7 +273,7 @@ fn reduce_or_retain<'source>(
     // Construct the reduced candidate first so an infeasible request (an
     // over-constrained `StateSelect.always`, a singular stage Jacobian) still
     // surfaces its exact typed failure rather than being masked by retention.
-    let reduced = ReducedCandidate::construct(&formal, overrides)?;
+    let reduced = ReducedCandidate::construct(&formal, overrides, input_policy)?;
     let basis = reduced.basis()?;
     // Retain the source basis when every manifold constraint is a conserved
     // first integral, reduce when any constraint is a redundant loop closure.
@@ -289,6 +301,7 @@ fn reduce_or_retain<'source>(
 fn reduce_loop_closure(
     source: &SourceStructuralAnalysis<'_>,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<Option<PreparedSelection<'static>>, StructuralError> {
     let model = source.model();
     if !source.holds_redundant_loop_closure() || demote_inert_states(model)?.is_some() {
@@ -306,7 +319,7 @@ fn reduce_loop_closure(
     if formal.inspect(|formal| formal.formal_dimension()) >= states {
         return Ok(None);
     }
-    ReducedCandidate::construct(&formal, overrides)?
+    ReducedCandidate::construct(&formal, overrides, input_policy)?
         .finish(&formal)
         .map(Some)
 }
@@ -323,10 +336,11 @@ impl<'formal, 'source> ReducedCandidate<'formal, 'source> {
     fn construct(
         formal: &'formal FormalDerivativeSystem<'source>,
         overrides: &HashMap<String, f64>,
+        input_policy: InputInitializationPolicy,
     ) -> Result<Self, StructuralError> {
         let mut alternates = AlternateSelections::default();
         let candidate = formal.construct_state_candidate_with_charts(|formal| {
-            let (selection, issued, _) = select(formal, overrides)?;
+            let (selection, issued, _) = select(formal, overrides, input_policy)?;
             alternates = issued;
             Ok(selection)
         })?;
@@ -378,8 +392,12 @@ pub(crate) fn executes_reduced_selection(
             return Ok(true);
         }
         let basis = formal.inspect(|formal| {
-            select(formal, &HashMap::new())
-                .map(|(_, _, primary)| basis_names(formal.source, &primary))
+            select(
+                formal,
+                &HashMap::new(),
+                InputInitializationPolicy::default(),
+            )
+            .map(|(_, _, primary)| basis_names(formal.source, &primary))
         })?;
         return Ok(prepared
             .as_dae()
@@ -419,11 +437,12 @@ fn formal_below_retained_dimension<'model>(
 fn recover_singular_via_formal(
     model: &dae::Dae,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<Option<PreparedSelection<'static>>, StructuralError> {
     let Ok(formal) = construct_formal_derivatives(model) else {
         return Ok(None);
     };
-    let Ok(reduced) = ReducedCandidate::construct(&formal, overrides) else {
+    let Ok(reduced) = ReducedCandidate::construct(&formal, overrides, input_policy) else {
         return Ok(None);
     };
     let Ok(alternates) = prepare_alternate_charts(&formal, &reduced.alternates) else {
@@ -665,10 +684,11 @@ fn check_forced_state_count(
 fn select<'formal>(
     formal: FormalDerivativeView<'_, '_, 'formal>,
     overrides: &HashMap<String, f64>,
+    input_policy: InputInitializationPolicy,
 ) -> Result<SelectionWithAlternates<'formal>, StructuralError> {
     check_forced_state_count(formal)?;
     let programs = lower_state_selection_stages(formal).map_err(failure)?;
-    let mut point = TrialPoint::new(formal, overrides)?;
+    let mut point = TrialPoint::new(formal, overrides, input_policy)?;
     point.seed_definitions(&programs)?;
     let mut result = Vec::new();
     // Every selected independent coordinate in `result`, named by source ordinal,

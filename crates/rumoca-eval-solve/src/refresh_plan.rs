@@ -6,17 +6,22 @@
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
 mod capacity;
+#[cfg(test)]
+mod causal_dependency_tests;
 mod causal_proofs;
 mod dependency_domain;
 mod event_dependencies;
 mod parameter_static;
 mod ready_queue;
 mod row_analysis;
+mod row_candidates;
 mod schedule;
 mod source_catalog;
 mod target_catalog;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use causal_dependency_tests::record_input_range_walk;
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -39,6 +44,7 @@ use event_dependencies::event_consumer_dependencies;
 use row_analysis::{
     AssignmentCertificates, PriorRowAnalysis, RowAnalysisCache, analyze_refresh_row,
 };
+use row_candidates::refresh_row_candidates;
 
 #[cfg(test)]
 use parameter_static::parameter_static_refresh_program;
@@ -183,7 +189,6 @@ fn build_canonical_algebraic_refresh_plan(
 ) -> Result<RefreshPlan, EvalSolveError> {
     validate_canonical_implicit_output_inventory(problem, catalog)?;
     let state_count = problem.solve_layout.state_scalar_count();
-    let solver_count = problem.solve_layout.solver_scalar_count();
     let span = catalog.first_span();
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
@@ -199,46 +204,38 @@ fn build_canonical_algebraic_refresh_plan(
         "canonical refresh target owners",
         span,
     )?;
-    let mut cache = RowAnalysisCache::default();
-    for (equation_index, target) in problem.continuous.implicit_row_targets.iter().enumerate() {
-        let Some(solve::ScalarSlot::Y {
-            index: target_index,
-            ..
-        }) = target
-        else {
-            continue;
-        };
-        if *target_index < state_count || *target_index >= solver_count {
-            continue;
-        }
-        let Some(position) = catalog.positions().get(&equation_index).copied() else {
-            // Tensor nodes remain owned by the compact ComputeBlock and its
-            // BLT projection stage. They never become scalar assignments here.
-            continue;
-        };
-        let Some(program) = catalog.program(position.program_index) else {
-            continue;
-        };
-        let Some(analysis) = analyze_refresh_row(
+    let mut cache = RowAnalysisCache::with_last_candidates(
+        catalog.len(),
+        refresh_row_candidates(problem, catalog)
+            .map(|candidate| (candidate.position.program_index, candidate.equation)),
+        span,
+    )?;
+    for candidate in refresh_row_candidates(problem, catalog) {
+        let equation_index = candidate.equation;
+        let target_index = candidate.target;
+        let position = candidate.position;
+        let program = candidate.program;
+        let analysis = analyze_refresh_row(
             program,
             (
                 position.program_index,
                 equation_index,
                 position.output_offset,
-                *target_index,
+                target_index,
             ),
             prior,
             &mut cache,
-        )?
-        else {
+        );
+        cache.finish_candidate(position.program_index, equation_index);
+        let Some(analysis) = analysis? else {
             continue;
         };
-        if !claimed_targets.insert(*target_index) {
+        if !claimed_targets.insert(target_index) {
             continue;
         }
         rows.push(construct_refresh_row(
             solve::AlgebraicRefreshRowDraft {
-                owner_id: RefreshRowOwnerId::checked(*target_index).ok_or_else(|| {
+                owner_id: RefreshRowOwnerId::checked(target_index).ok_or_else(|| {
                     EvalSolveError::InvalidRow {
                         message: "continuous refresh row owner index exceeds u32".to_string(),
                         span: Some(program.span),
@@ -247,8 +244,8 @@ fn build_canonical_algebraic_refresh_plan(
                 source: program.source,
                 equation_index,
                 output_offset: position.output_offset,
-                target_index: *target_index,
-                assignment_target: Some(*target_index),
+                target_index,
+                assignment_target: Some(target_index),
                 assignment_shape: analysis.shape,
                 direct_assignment_certified: analysis.direct,
                 exact_assignment_certified: analysis.exact,
@@ -256,6 +253,8 @@ fn build_canonical_algebraic_refresh_plan(
             Some(program.span),
         )?);
     }
+    drop(cache);
+    drop(claimed_targets);
     let causal_solution_certified =
         complete_causal_projection_is_certified(problem, catalog, &rows);
     let mut plan = order_refresh_rows(rows, catalog, state_count, causal_solution_certified)?;
@@ -1623,9 +1622,7 @@ fn refresh_row_dependency_positions<'ops>(
     // its expression prefix; the rows of one program share that prefix's
     // dependency table, so a wide program is analyzed once, not once a row.
     let footprint = row.assignment_shape().and_then(|shape| {
-        dependencies
-            .prefix(ops, shape.expr_eval_len())?
-            .footprint(shape.value_registers())
+        dependencies.footprint(ops, shape.expr_eval_len(), shape.value_registers())
     });
     match footprint {
         // Only indices some row produces matter, so each interval is met
@@ -1649,11 +1646,11 @@ fn refresh_row_dependency_positions<'ops>(
 }
 
 /// Per-program analyses shared by the rows that refresh from one program:
-/// the register dependency table of each expression prefix and the program's
-/// solver-Y input ranges. Programs are keyed by their operation slice.
+/// one complete register dependency table or one exact fallback prefix, and
+/// the program's solver-Y input ranges. Programs are keyed by their operation slice.
 #[derive(Default)]
 struct RowDependencyCache<'ops> {
-    prefixes: BTreeMap<(usize, usize), Option<solve::ScalarProgramYDependency<'ops>>>,
+    prefixes: BTreeMap<(usize, usize), solve::ScalarProgramYDependencyQueries<'ops>>,
     inputs: BTreeMap<(usize, usize), Vec<std::ops::Range<usize>>>,
 }
 
@@ -1662,21 +1659,30 @@ impl<'ops> RowDependencyCache<'ops> {
         (ops.as_ptr() as usize, ops.len())
     }
 
-    fn prefix(
+    fn footprint(
         &mut self,
         ops: &'ops [solve::LinearOp],
         len: usize,
-    ) -> Option<&solve::ScalarProgramYDependency<'ops>> {
+        registers: impl IntoIterator<Item = solve::Reg>,
+    ) -> Option<solve::IndexIntervals> {
         self.prefixes
-            .entry((Self::key(ops).0, len))
-            .or_insert_with(|| ops.get(..len).map(solve::ScalarProgramYDependency::new))
-            .as_ref()
+            .entry(Self::key(ops))
+            .or_insert_with(|| solve::ScalarProgramYDependencyQueries::new(ops))
+            .footprint(len, registers)
     }
 
     fn input_ranges(&mut self, ops: &[solve::LinearOp]) -> &[std::ops::Range<usize>] {
         self.inputs
             .entry(Self::key(ops))
             .or_insert_with(|| row_y_input_ranges(ops))
+    }
+
+    fn solver_inputs_are_in_bounds(&mut self, ops: &[solve::LinearOp], count: usize) -> bool {
+        self.input_ranges(ops).iter().all(|range| {
+            #[cfg(test)]
+            causal_dependency_tests::record_bounds_candidate();
+            range.is_empty() || range.end <= count
+        })
     }
 }
 
@@ -1705,6 +1711,7 @@ fn complete_causal_projection_is_certified<A: RefreshProgramAccess + ?Sized>(
         return false;
     }
     let implicit_row_targets = &problem.continuous.implicit_row_targets;
+    let mut dependencies = RowDependencyCache::default();
     if let Some(row) = rows.iter().find(|row| {
         implicit_row_targets
             .get(row.equation_index())
@@ -1717,10 +1724,7 @@ fn complete_causal_projection_is_certified<A: RefreshProgramAccess + ?Sized>(
             // from this same source program, output offset, and target.
             || !row.exact_assignment_certified()
             || block.source_program(row.source()).is_none_or(|program| {
-                row_y_input_ranges(program)
-                    .into_iter()
-                    .flatten()
-                    .any(|index| index >= solver_count)
+                !dependencies.solver_inputs_are_in_bounds(program, solver_count)
             })
     }) {
         tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "invalid row", equation = row.equation_index(), source_node = row.source().node(), source_program = row.source().program(), target = row.target_index(), "causal certificate rejected");

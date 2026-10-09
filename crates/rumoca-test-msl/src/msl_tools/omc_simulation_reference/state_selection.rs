@@ -121,7 +121,9 @@ fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
 }
 
 fn load_omc_state_names(paths: &MslPaths, model_name: &str) -> Option<BTreeSet<String>> {
-    let init_xml = paths.sim_work_dir.join(format!("{model_name}_init.xml"));
+    let init_xml = paths
+        .sim_work_dir
+        .join(crate::msl_tools::common::omc_init_xml_file_name(model_name));
     let xml = std::fs::read_to_string(init_xml).ok()?;
     Some(extract_omc_state_names_from_init_xml(&xml))
 }

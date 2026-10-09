@@ -12,12 +12,15 @@
 //! symbol.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use minijinja::Value;
 use rumoca_ir_solve as solve;
 use serde_json::Value as Json;
 
 use crate::errors::CodegenError;
+
+mod json_view;
 
 /// The C view of one owner (primal or directional), exactly the fields the
 /// typed-function templates read.
@@ -27,6 +30,7 @@ struct OwnerView<'a> {
     inputs: &'a [solve::SolveValueType],
     outputs: &'a [solve::SolvePureCallOutput],
     body: &'a solve::TypedProgram,
+    source_predicate_outputs: BTreeMap<usize, usize>,
 }
 
 /// Serialized primal and directional views of one owner.
@@ -41,9 +45,9 @@ pub(super) struct PureCallFamilies {
     /// Per owner id, the owner id of its family representative.
     symbols: Vec<u32>,
     /// Representative primal owners, in owner order.
-    owners: Vec<Json>,
+    owners: Arc<[Json]>,
     /// Representative directional owners, in owner order.
-    directional: Vec<Json>,
+    directional: Arc<[Json]>,
 }
 
 impl PureCallFamilies {
@@ -68,14 +72,14 @@ impl PureCallFamilies {
         }
         Ok(Self {
             symbols,
-            owners,
-            directional,
+            owners: owners.into(),
+            directional: directional.into(),
         })
     }
 
     /// `{ owners: [...] }`, the table shape `functions(table, ...)` reads.
     pub(super) fn owners_value(&self) -> Value {
-        Value::from_serialize(serde_json::json!({ "owners": self.owners }))
+        minijinja::context! { owners => json_view::array_value(Arc::clone(&self.owners)) }
     }
 
     /// Forward-mode owners of the emitted families that have one, in owner
@@ -84,7 +88,7 @@ impl PureCallFamilies {
     /// typed evaluator's directional mode does; nested calls inside them
     /// dispatch to directional owners as well.
     pub(super) fn directional_value(&self) -> Value {
-        Value::from_serialize(&self.directional)
+        json_view::array_value(Arc::clone(&self.directional))
     }
 
     /// Owner id -> emitted symbol id, indexed by `op.owner`.
@@ -117,6 +121,7 @@ fn owner_json(
         inputs: owner.inputs(),
         outputs: owner.outputs(),
         body: owner.body(),
+        source_predicate_outputs: source_predicate_outputs(owner, owner.outputs(), false)?,
     })?;
     let directional = owner
         .directional()
@@ -126,6 +131,11 @@ fn owner_json(
                 inputs: directional.inputs(),
                 outputs: directional.outputs(),
                 body: directional.body(),
+                source_predicate_outputs: source_predicate_outputs(
+                    owner,
+                    directional.outputs(),
+                    true,
+                )?,
             })
         })
         .transpose()?;
@@ -135,8 +145,43 @@ fn owner_json(
     })
 }
 
+fn source_predicate_outputs(
+    owner: &solve::SolvePureCallOwner,
+    outputs: &[solve::SolvePureCallOutput],
+    directional: bool,
+) -> Result<BTreeMap<usize, usize>, CodegenError> {
+    outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| output.assertion_level().is_some())
+        .map(|(output, _)| {
+            let source = if directional {
+                owner
+                    .directional_primal_output_index(output)
+                    .ok_or_else(|| {
+                        CodegenError::template("directional assertion has no checked source output")
+                    })?
+            } else {
+                output
+            };
+            Ok((output, source))
+        })
+        .collect()
+}
+
 fn to_json(view: &OwnerView<'_>) -> Result<Json, CodegenError> {
     serde_json::to_value(view).map_err(|error| CodegenError::template(error.to_string()))
+}
+
+/// Template scalar literal from the canonical inactive diagnostic-cell owner.
+pub(super) fn inactive_assertion_message(scalar: Value) -> Result<Value, minijinja::Error> {
+    let invalid = |error| minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, error);
+    let scalar = serde_json::to_value(scalar).map_err(|error| invalid(error.to_string()))?;
+    let scalar = serde_json::from_value::<solve::SolveScalarType>(scalar)
+        .map_err(|error| invalid(error.to_string()))?;
+    Ok(Value::from_serialize(
+        solve::SolveValue::inactive_assertion_message(scalar),
+    ))
 }
 
 /// Family representative of every owner. An owner calls only owners issued

@@ -142,7 +142,7 @@ impl TargetAssignmentShape {
     }
 
     /// Source registers determining the isolated value, excluding its old target.
-    pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
+    pub fn value_register_ranges(&self) -> impl Iterator<Item = (Reg, usize)> + '_ {
         let (fixed, terms): ([Option<Reg>; 2], &[(Reg, f64)]) = match self {
             Self::Zero { .. } => ([None, None], &[]),
             Self::Direct { expr_reg, .. } => ([Some(*expr_reg), None], &[]),
@@ -162,15 +162,23 @@ impl TargetAssignmentShape {
         fixed
             .into_iter()
             .flatten()
-            .chain(terms.iter().map(|(register, _)| *register))
+            .map(|register| (register, 1))
+            .chain(terms.iter().map(|(register, _)| (*register, 1)))
             .chain(
                 match self {
                     Self::TensorAffine { projection, .. } => Some(projection),
                     _ => None,
                 }
                 .into_iter()
-                .flat_map(|projection| projection.value_registers()),
+                .flat_map(|projection| projection.value_register_ranges()),
             )
+    }
+
+    /// Derived scalar view of the exact source-owned value ranges.
+    pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
+        self.value_register_ranges().flat_map(|(start, count)| {
+            (0..count).filter_map(move |offset| start.checked_add(u32::try_from(offset).ok()?))
+        })
     }
 
     #[must_use]
@@ -1240,6 +1248,14 @@ pub enum LinearOp {
         input_starts: Box<[Reg]>,
         site: SolvePureCallSite,
     },
+    /// Observe one exact source invocation for C25 roots/actions. Only its
+    /// ordered assertion predicates are results of this operation; a fatal
+    /// stop never publishes the value owner's missing ordinary result tuple.
+    PureCallObservation {
+        dst_start: Reg,
+        input_starts: Box<[Reg]>,
+        site: crate::SolveAssertionObservationSite,
+    },
     /// Invoke the checked compact directional relation of one issued typed
     /// pure-call owner. Inputs and outputs use its aggregate primal/tangent
     /// ABI; no function body or tensor coordinate is embedded here.
@@ -1366,6 +1382,7 @@ impl LinearOp {
             Self::GuardedFunctionFold { .. } => "GuardedFunctionFold",
             Self::FunctionConditional { .. } => "FunctionConditional",
             Self::PureCall { .. } => "PureCall",
+            Self::PureCallObservation { .. } => "PureCallObservation",
             Self::PureCallDirectional { .. } => "PureCallDirectional",
             Self::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
             Self::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
@@ -1412,6 +1429,7 @@ impl LinearOp {
             | Self::GuardedFunctionFold { dst_start, .. }
             | Self::FunctionConditional { dst_start, .. }
             | Self::PureCall { dst_start, .. }
+            | Self::PureCallObservation { dst_start, .. }
             | Self::PureCallDirectional { dst_start, .. }
             | Self::MatrixMultiply { dst_start, .. }
             | Self::TensorBinary { dst_start, .. }
@@ -1442,6 +1460,7 @@ impl LinearOp {
             }
             Self::FunctionConditional { program, .. } => program.result_count,
             Self::PureCall { site, .. } => site.output_scalar_count().unwrap_or(usize::MAX),
+            Self::PureCallObservation { site, .. } => site.output_scalar_count(),
             Self::PureCallDirectional { site, .. } => {
                 site.output_scalar_count().unwrap_or(usize::MAX)
             }
@@ -1947,6 +1966,10 @@ fn validate_op_sources<'a>(
         LinearOp::FunctionConditional { capture_start, ref program, .. } =>
             conditional_program(cx, capture_start, program, validation),
         LinearOp::PureCall { ref input_starts, ref site, .. } => pure_call(cx, input_starts, site),
+        LinearOp::PureCallObservation { ref input_starts, ref site, .. } => typed_call_sources(
+            cx, input_starts, site.value_site().inputs(), Some(site.output_scalar_count()),
+            "assertion observation interface has invalid input or output width",
+        ),
         LinearOp::PureCallDirectional { ref input_starts, ref site, .. } =>
             directional_call(cx, input_starts, site),
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } =>

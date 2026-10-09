@@ -1,4 +1,12 @@
+mod assertion_forwarding;
+mod assertion_observation;
+mod assertion_regions;
+mod assertions;
+mod directional_abs;
+mod directional_assertions;
 mod directional_map;
+mod directional_maximum;
+mod directional_power;
 mod immutable_payloads;
 mod linear_solve;
 mod recursion;
