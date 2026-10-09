@@ -21,6 +21,7 @@ use rumoca_sim::{
     check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+use rumoca_solver::fmi_me::session::MeSessionError;
 use rumoca_test_msl::resource_budget::{
     SOLVE_IR_SIZE_LIMIT_MB_DEFAULT, SolveIrBudgetMeasureError, SolveIrSizeBudget,
 };
@@ -397,7 +398,8 @@ fn classify_solver_error(
     // `kind()` peels the stage annotation the solver backend attaches, so an
     // annotated timeout is still classified as a timeout.
     match err.kind() {
-        SimError::Timeout { seconds } => sim_worker_result(
+        SimError::Timeout { seconds }
+        | SimError::ModelExchangeSession(MeSessionError::Timeout { seconds }) => sim_worker_result(
             "sim_timeout",
             Some(format!("timeout after {:.3}s", seconds)),
             elapsed,
@@ -1015,6 +1017,36 @@ mod tests {
             trace_json: None,
             solve_ir_json: None,
             solve_ir_size_limit_mb: crate::SOLVE_IR_SIZE_LIMIT_MB_DEFAULT,
+        }
+    }
+
+    #[test]
+    fn classify_solver_timeout_preserves_typed_session_and_legacy_categories() {
+        let cases = [
+            (SimError::Timeout { seconds: 45.0 }, "sim_timeout"),
+            (
+                MeSessionError::Timeout { seconds: 45.0 }.into(),
+                "sim_timeout",
+            ),
+            (
+                SimError::from(MeSessionError::Timeout { seconds: 45.0 })
+                    .at_stage(rumoca_sim::SimFailureStage::Integration),
+                "sim_timeout",
+            ),
+            (
+                SimError::from(MeSessionError::Contract {
+                    reason: "timeout after 45.000s".to_string(),
+                }),
+                "sim_solver_fail",
+            ),
+        ];
+        for (error, status) in cases {
+            let result = classify_solver_error(error, 51.99, 6.99, 45.0);
+            assert_eq!(result.status, status);
+            assert_eq!(result.error.as_deref(), Some("timeout after 45.000s"));
+            assert_eq!(result.sim_seconds, 51.99);
+            assert_eq!(result.sim_build_seconds, 6.99);
+            assert_eq!(result.sim_run_seconds, 45.0);
         }
     }
 
