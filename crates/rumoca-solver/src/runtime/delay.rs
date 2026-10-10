@@ -582,8 +582,67 @@ fn delayed_value(
     if next.time <= lower.time {
         return next.value;
     }
+    if let Some(value) = smooth_interpolation(points, upper, next, query_time) {
+        return value;
+    }
     let fraction = ((query_time - lower.time) / (next.time - lower.time)).clamp(0.0, 1.0);
     lower.value + fraction * (next.value - lower.value)
+}
+
+/// Cubic (or, near the ends of a smooth run, quadratic) Lagrange
+/// interpolation of a continuous history at `query_time`, which lies between
+/// `points[upper - 1]` and `next`.
+///
+/// Linear interpolation between accepted steps is only second-order accurate,
+/// so a delay of a smooth signal drifted from its source by the square of the
+/// step size (a quadratic history read back with a 5e-5 error at rtol 1e-6).
+/// The stencil takes the bracketing points and at most one neighbour on each
+/// side, and only across strictly increasing times: an equal-time pair records
+/// a jump, which the stencil never crosses. `None` leaves the linear form.
+fn smooth_interpolation(
+    points: &[DelayPoint],
+    upper: usize,
+    next: DelayPoint,
+    query_time: f64,
+) -> Option<f64> {
+    let lower = upper.checked_sub(1)?;
+    let mut stencil = Vec::with_capacity(4);
+    if let Some(before) = lower.checked_sub(1).map(|index| points[index])
+        && before.time < points[lower].time
+    {
+        stencil.push(before);
+    }
+    stencil.push(points[lower]);
+    stencil.push(next);
+    // `next` is an accepted point only when it lies inside the history; the
+    // trial point past the last accepted step has no right neighbour.
+    if let Some(after) = points.get(upper + 1).copied()
+        && upper < points.len()
+        && after.time > next.time
+    {
+        stencil.push(after);
+    }
+    if stencil.len() < 3 || stencil.iter().any(|point| !point.value.is_finite()) {
+        return None;
+    }
+    // Interpolate offsets from the bracketing lower point, so a constant run
+    // reads back bit-exactly (the weights sum to one only up to rounding).
+    let base = points[lower].value;
+    let offset = stencil
+        .iter()
+        .enumerate()
+        .map(|(i, point)| {
+            let weight = stencil
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, other)| (query_time - other.time) / (point.time - other.time))
+                .product::<f64>();
+            weight * (point.value - base)
+        })
+        .sum::<f64>();
+    let value = base + offset;
+    value.is_finite().then_some(value)
 }
 
 fn append_accepted_point(
@@ -825,6 +884,37 @@ mod tests {
         };
 
         assert!((delayed_value(&channel, 1.25, 0.5, 3.0, false) - 1.5).abs() <= 1.0e-12);
+    }
+
+    /// A smooth history is read back with the Lagrange stencil, exactly for a
+    /// quadratic; an equal-time jump pair keeps the stencil on its own side.
+    #[test]
+    fn smooth_history_reads_back_a_quadratic_exactly_without_crossing_jumps() {
+        let quadratic = |t: f64| 1.0 - 1.5 * t + 0.5 * t * t;
+        let point = |time: f64| DelayPoint {
+            time,
+            value: quadratic(time),
+        };
+        let mut channel = DelayChannelHistory {
+            points: vec![point(0.0), point(0.3), point(0.7), point(1.0)],
+            delay_time: 0.5,
+            delay_max: 1.0,
+            ..DelayChannelHistory::default()
+        };
+        let value = delayed_value(&channel, 1.0, 0.5, quadratic(1.5), false);
+        assert!((value - quadratic(0.5)).abs() <= 1.0e-14, "{value}");
+
+        // A jump at t = 0.7 (left and right values): the query on its left
+        // side interpolates only the points before it.
+        channel.points.insert(
+            3,
+            DelayPoint {
+                time: 0.7,
+                value: 10.0,
+            },
+        );
+        let value = delayed_value(&channel, 1.0, 0.5, quadratic(1.5), false);
+        assert!((value - quadratic(0.5)).abs() <= 1.0e-14, "{value}");
     }
 
     #[test]
