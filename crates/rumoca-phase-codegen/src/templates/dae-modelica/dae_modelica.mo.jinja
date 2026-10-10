@@ -201,7 +201,7 @@ end {{ function.name }};
   {%- set parts = [] -%}
   {#- `each` on an array variable unless the value is itself an array (MLS 7.2.5). -#}
   {%- set is_array = dae.value_types[variable.value_type_id].value_type.dimensions | length > 0 -%}
-  {%- macro mod(key, value) -%}{{ ("each " if is_array and value[:1] != "{" else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
+  {%- macro mod(key, value) -%}{{ ("each " if is_array and value[:1] not in ["{", "["] else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
   {%- if a.start is not none -%}{%- set parts = parts + [mod("start", expr(a.start))] -%}{%- endif -%}
   {%- if a.minimum is not none -%}{%- set parts = parts + [mod("min", expr(a.minimum))] -%}{%- endif -%}
   {%- if a.maximum is not none -%}{%- set parts = parts + [mod("max", expr(a.maximum))] -%}{%- endif -%}

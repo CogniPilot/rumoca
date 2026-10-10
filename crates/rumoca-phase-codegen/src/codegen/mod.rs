@@ -20,6 +20,7 @@ mod dae_backend;
 mod dae_diagnostics;
 mod discrete_render_view;
 mod expr_config;
+mod flat_family_loops;
 mod fmi_c_assertions;
 #[cfg(test)]
 mod fmi_projection_tests;
@@ -173,7 +174,17 @@ fn render_with_input_context(
             render_solve_context(tmpl, problem, artifacts, name)?
         }
         (CodegenInput::Flat(flat_model), name) => {
-            require_materialized_flat_equation_view(flat_model)?;
+            // Only a template that reads the model can read a placeholder row
+            // (a file-path template reads just the name), and one that reads
+            // the loop-aware rows prints each unmaterialized `for` family as a
+            // loop instead of its rows.
+            let reads = tmpl.undeclared_variables(false);
+            if reads.contains("flat") || reads.contains("ir") {
+                require_materialized_flat_equation_view(
+                    flat_model,
+                    reads.contains(flat_family_loops::CONTEXT_KEY),
+                )?;
+            }
             render_flat_context(tmpl, flat_model, name)?
         }
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
@@ -199,7 +210,10 @@ fn render_with_input_context(
     Ok(rendered)
 }
 
-fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(), CodegenError> {
+fn require_materialized_flat_equation_view(
+    flat_model: &flat::Model,
+    prints_loops: bool,
+) -> Result<(), CodegenError> {
     for (partition, families) in [
         (
             "regular equations",
@@ -210,10 +224,10 @@ fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(
             flat_model.initial_structured_equations.as_slice(),
         ),
     ] {
-        if let Some(family) = families
-            .iter()
-            .find(|family| !family.interiors_materialized())
-        {
+        if let Some(family) = families.iter().find(|family| {
+            let printed_as_loop = prints_loops && flat_family_loops::printable(family);
+            !family.interiors_materialized() && !printed_as_loop
+        }) {
             return Err(CodegenError::NonMaterializedStructuredFamily {
                 partition,
                 origin: family.origin.to_string(),
@@ -438,19 +452,48 @@ fn render_flat_context(
     model_name: Option<&str>,
 ) -> RenderResult {
     let flat_value = Value::from_serialize(flat_model);
+    let type_names = Value::from_serialize(qualified_enumeration_type_names(flat_model));
+    let equation_rows = Value::from_serialize(flat_family_loops::context_value(flat_model));
     match model_name {
         Some(name) => tmpl.render(minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
+            flat_type_names => type_names,
+            flat_equation_rows => equation_rows,
             model_name => name,
         }),
         None => tmpl.render(minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
+            flat_type_names => type_names,
+            flat_equation_rows => equation_rows,
         }),
     }
+}
+
+/// The fully qualified enumeration type of every enumeration-typed variable
+/// (MLS §4.9.5), keyed by variable name.
+///
+/// `variable_type_names` holds the declared short name (`Init`), which a
+/// re-parsed flat model cannot resolve outside its declaring package; the
+/// canonical declaration's qualified name (`Modelica.Blocks.Types.Init`) can.
+fn qualified_enumeration_type_names(
+    flat_model: &flat::Model,
+) -> std::collections::BTreeMap<String, String> {
+    flat_model
+        .variables
+        .iter()
+        .filter_map(|(name, variable)| {
+            let canonical = flat_model
+                .effective_types
+                .get(&variable.type_id)?
+                .canonical_type();
+            let declaration = flat_model.enumeration_declarations.get(&canonical)?;
+            Some((name.as_str().to_string(), declaration.name.clone()))
+        })
+        .collect()
 }
 
 fn render_ast_context(

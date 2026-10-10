@@ -142,6 +142,23 @@ pub(crate) fn is_mul_elem_op(op: &Value) -> bool {
 }
 
 pub(crate) fn get_binop_string(op: &Value, cfg: &ExprConfig) -> RenderResult {
+    // Modelica output keeps the source operator: an elementwise `.*` between
+    // two vectors is not the scalar product `*` (MLS §10.6.5), and `<>` is
+    // Modelica's inequality.
+    if cfg.modelica_builtins {
+        for (variant, text) in [
+            ("AddElem", ".+"),
+            ("SubElem", ".-"),
+            ("MulElem", ".*"),
+            ("DivElem", "./"),
+            ("ExpElem", ".^"),
+            ("Neq", "<>"),
+        ] {
+            if is_variant(op, variant) {
+                return Ok(text.to_string());
+            }
+        }
+    }
     if is_variant(op, "Add") || is_variant(op, "AddElem") {
         return Ok("+".to_string());
     }
