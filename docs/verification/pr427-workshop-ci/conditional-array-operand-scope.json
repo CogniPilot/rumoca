@@ -1,0 +1,31 @@
+{
+  "before_source": "ef18f3fd33f9d35a8511f37fecd0457c2be97980",
+  "after_source": "a9624274474ef6a4489dd43558857e30c851f7a4",
+  "before": {
+    "exit_code": 101,
+    "passed": 0,
+    "failed": 2,
+    "ignored": 0,
+    "filtered": 221
+  },
+  "after_focused": {
+    "exit_code": 0,
+    "passed": 14,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 209
+  },
+  "after_all_dae": {
+    "exit_code": 0,
+    "passed": 223,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0
+  },
+  "log_sha256": {
+    "before.log": "cac67d5fade2c3f27857c083f02644ea15d6134d1f139d68baba43ad4eb74b57",
+    "after.log": "15d430e742b1e1924c042fd7b3b98a260e311e068c49cc81d14226c5f8d50055",
+    "all-dae.log": "157a0877c6f840e26ac5a12989415152a991aedaa368285a968ffe0ef6f47982"
+  },
+  "msl_model_after_verification": "pending; no model closure or parity claim"
+}

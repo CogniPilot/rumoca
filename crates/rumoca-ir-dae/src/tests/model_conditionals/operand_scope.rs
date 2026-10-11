@@ -42,9 +42,8 @@ fn conditional_array(extent: i64, range: bool) -> Dae {
     Dae::construct(source.map, |dae| {
         let guard = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
         let owner = dae.begin_model_conditional(guard, at)?;
-        let first = dae.model_conditional_arm(&owner, true, |dae| {
-            array_value(dae, at, extent, range)
-        })?;
+        let first =
+            dae.model_conditional_arm(&owner, true, |dae| array_value(dae, at, extent, range))?;
         assert!(matches!(
             dae.expressions(|e| e.at(at).unary(UnaryOperator::Plus, first)),
             Err(DaeConstructionError::InvalidModelActivationScope { .. })
