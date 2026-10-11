@@ -104,9 +104,22 @@ fn periodic_real_off_tick_disjunction_stays_refused() {
 
 #[test]
 fn periodic_real_mixed_tick_activation_stays_refused() {
-    rejected_periodic_real(
-        "model Refused discrete Real y(start=0); equation when {sample(0,0.1),sample(0,0.2)} then y=pre(y)+1; end when; end Refused;",
-        "clock-domain",
+    // MLS vector when syntax is valid; the current checked DAE profile refuses
+    // one condition carrying distinct clock owners before target projection.
+    let source = "model Refused discrete Real y(start=0); equation when {sample(0,0.1),sample(0,0.2)} then y=pre(y)+1; end when; end Refused;";
+    let error = rumoca::Compiler::new()
+        .model("Refused")
+        .compile_str(source, "Refused.mo")
+        .expect_err("mixed clock owners remain outside the checked source profile");
+    assert!(
+        error.failures.iter().any(|failure| {
+            failure.error_code.as_deref() == Some("ED020")
+                && failure
+                    .error
+                    .contains("duplicate condition clock owner key")
+                && failure.primary_label.is_some()
+        }),
+        "expected the checked mixed-clock refusal, got {error}"
     );
 }
 
