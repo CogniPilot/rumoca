@@ -41,3 +41,22 @@ branches, SPEC_0022 ALG-019, SPEC_0007/SPEC_0040 checked compact function-fold
 execution, SPEC_0032 §4 tensor-native compact execution, and SPEC_0033 before
 proof. No model exception, scalar expansion, ignored test, or broad error
 oracle is introduced.
+
+## Separate known-index before probe
+
+A second original constructor/native control keeps the runtime index register
+known to the native emitter. `lower_indexed_register` currently maps the
+invalid constant-offset result to NaN. The probe first checks valid index 1
+and an inactive true-arm guard around known-invalid index 2, then requires
+the selected canonical/native fault on both a direct access and the same
+protected program with the arm selected. The original live-index guard probe
+is unchanged; this additional probe isolates constant-offset fault retention.
+Expected before: direct native selected access erroneously succeeds with NaN.
+Actual: **UNRUN**, no production repair.
+
+Exact additional selector, expected **1**:
+
+```sh
+cargo test --locked --offline -p rumoca-exec-cranelift --lib \
+  emit::fold_tests::known_runtime_access::known_runtime_index_preserves_selected_fault_and_inactive_protection
+```

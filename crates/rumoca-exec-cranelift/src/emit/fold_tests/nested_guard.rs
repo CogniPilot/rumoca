@@ -1,6 +1,6 @@
 use super::*;
 
-fn domain(id: u32, name: &str) -> rumoca_core::StructuredIndexDomain {
+pub(super) fn domain(id: u32, name: &str) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
             id,
@@ -73,7 +73,7 @@ fn guarded_row(nested_when_true: bool) -> Vec<LinearOp> {
 // The normal test call runs an interpreter precheck, which can refuse an active
 // access before reaching native code. Invoke the issued native kernel directly
 // after the same input/output admission, keeping the independent reference above.
-fn call_native(
+pub(super) fn call_native(
     compiled: &CompiledResidualRows,
     condition: f64,
     out: &mut [f64],
