@@ -7,6 +7,7 @@ mod conditional_emission;
 mod conditions;
 mod constants;
 mod coordinates;
+mod current_definitions;
 mod family_calls;
 mod functions;
 mod integer_quotient;
@@ -152,6 +153,12 @@ enum ScalarContextFrame<'dae> {
     NoEvent {
         parent: u64,
     },
+    CurrentDefinitions {
+        parent: u64,
+    },
+    EntryDefinitions {
+        parent: u64,
+    },
     RelationObservation {
         parent: u64,
     },
@@ -190,7 +197,9 @@ enum ScalarContextFrame<'dae> {
 impl ScalarContextFrame<'_> {
     const fn parent(&self) -> u64 {
         match self {
-            Self::NoEvent { parent }
+            Self::CurrentDefinitions { parent }
+            | Self::EntryDefinitions { parent }
+            | Self::NoEvent { parent }
             | Self::RelationObservation { parent }
             | Self::Activation { parent, .. }
             | Self::Function { parent, .. }
@@ -263,6 +272,7 @@ pub(in crate::lower) struct DeferredCallAssertion<'dae> {
     activation_path: Vec<ActivationGuard<'dae>>,
     active_clock: dae::ClockId<'dae>,
     sampled_source: bool,
+    current_definitions: Option<current_definitions::DefinitionOwner<'dae>>,
     active_parameters: Vec<u32>,
     active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
 }
@@ -295,6 +305,7 @@ impl<'dae> DeferredCallAssertion<'dae> {
                     .map(|guard| (guard.condition, guard.expected)))
             && self.active_clock == other.active_clock
             && self.sampled_source == other.sampled_source
+            && self.current_definitions == other.current_definitions
     }
 }
 
@@ -422,6 +433,7 @@ struct FunctionConditionalOwnerKey<'dae> {
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
+    project_current_definitions: bool,
     active_parameters: Vec<u32>,
 }
 
@@ -488,6 +500,9 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     fold_guard_base: usize,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
+    same_tick_definitions: Option<current_definitions::DefinitionOwner<'dae>>,
+    project_current_definitions: bool,
+    active_current_definitions: Vec<u32>,
     derivative_definitions: Option<&'layout ContinuousRowIndex<'dae>>,
     affine_derivative_systems: Option<&'layout AffineDerivativeSystems<'dae>>,
     active_derivatives: Vec<(u32, usize)>,
@@ -569,6 +584,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             fold_guard_base: 0,
             active_clock: None,
             sampled_source: false,
+            same_tick_definitions: None,
+            project_current_definitions: false,
+            active_current_definitions: Vec::new(),
             derivative_definitions: None,
             affine_derivative_systems: None,
             active_derivatives: Vec::new(),

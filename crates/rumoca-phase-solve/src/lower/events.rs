@@ -283,7 +283,7 @@ struct DiscreteRows<'dae> {
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
-    same_tick_definitions: rumoca_phase_structural::SameTickDefinitions<'dae>,
+    same_tick_definitions: std::rc::Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
     /// Every guarded equation target, retained until B.1b and B.1c have both
     /// contributed their owners. SOLVE-C58 order spans source value kinds.
     guarded_equation_targets: Vec<GuardedTarget<'dae>>,
@@ -397,8 +397,8 @@ impl<'dae> DiscreteRows<'dae> {
     fn new(view: dae::DaeView<'dae>) -> Result<Self, LowerError> {
         let plan = causal_discrete_plan(view)?;
         Ok(Self {
-            same_tick_definitions: rumoca_phase_structural::SameTickDefinitions::derive(
-                view, &plan,
+            same_tick_definitions: std::rc::Rc::new(
+                rumoca_phase_structural::SameTickDefinitions::derive(view, &plan),
             ),
             event_iteration_owners: vec![None; view.variable_count()],
             ..Self::default()
@@ -1507,6 +1507,7 @@ fn lower_guarded_targets<'dae>(
         let conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
         let program = ScalarCompiler::new(view, layout, None)
             .with_function_conditional_owners(&conditional_owners)
+            .with_same_tick_definitions(std::rc::Rc::clone(&rows.same_tick_definitions))
             .guarded_assignment_group_program(
                 clock.map(|(clock, _)| clock).or(event_clock),
                 group,

@@ -365,6 +365,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.fold_guard_base = compiler.activation_path.len();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();

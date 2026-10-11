@@ -315,6 +315,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> ScalarCompiler<'layout, 'dae> {
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.active_clock = clock;
+        compiler.same_tick_definitions = self.same_tick_definitions.clone();
+        compiler.function_conditional_owners = self.function_conditional_owners;
         compiler.activation_path = path
             .iter()
             .copied()
@@ -350,6 +352,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         path: &[(ActivationCondition<'dae>, bool)],
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let mut compiler = self.guarded_region_compiler(clock, path);
+        compiler.project_current_definitions = compiler.same_tick_definitions.is_some();
+        compiler.enter_context(ScalarContextFrame::CurrentDefinitions {
+            parent: compiler.context_id,
+        });
         for target in targets {
             let branch = compiler.dynamic_guarded_branches(target)[ordinal];
             compiler.sampled_source = target.sampled;
@@ -398,6 +404,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         match condition {
             ActivationCondition::Expression(expression) => self.expression(expression, 0),
+            owner @ ActivationCondition::GuardedAssignment { .. }
+                if self.project_current_definitions =>
+            {
+                self.with_entry_definition_reads(owner, span)
+            }
             ActivationCondition::GuardedAssignment {
                 clock,
                 periodic,
@@ -427,6 +438,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         width: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if !self.project_current_definitions && self.same_tick_definitions.is_some() {
+            self.project_current_definitions = true;
+            self.enter_context(ScalarContextFrame::CurrentDefinitions {
+                parent: self.context_id,
+            });
+            let result = self.store_guarded_assignment_value(value, width, span);
+            self.leave_context();
+            self.project_current_definitions = false;
+            return result;
+        }
         if self.node(value).value_type().scalar_count() != Some(width) {
             return Err(LowerError::contract(
                 "guarded-assignment value width differs from its target range",

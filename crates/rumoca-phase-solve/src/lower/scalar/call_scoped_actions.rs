@@ -186,6 +186,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .collect();
             compiler.active_clock = Some(recipe.active_clock);
             compiler.sampled_source = recipe.sampled_source;
+            compiler.same_tick_definitions = recipe.current_definitions.clone();
+            compiler.project_current_definitions = recipe.current_definitions.is_some();
             compiler.active_parameters = recipe.active_parameters.clone();
             compiler.active_call_assertions = recipe.active_call_assertions.clone();
             compiler.context_id = 0;
@@ -464,6 +466,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .active_clock
                 .expect("deferred call assertions are clock-owned"),
             sampled_source: self.sampled_source,
+            current_definitions: self
+                .project_current_definitions
+                .then(|| self.same_tick_definitions.clone())
+                .flatten(),
             active_parameters: self.active_parameters.clone(),
             active_call_assertions: self.active_call_assertions.clone(),
         }
@@ -704,6 +710,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.function_arguments = self.function_arguments.clone();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();

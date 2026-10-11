@@ -31,6 +31,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         coordinate: dae::CoordinateView<'dae>,
         span: Span,
     ) -> Result<Option<solve::Reg>, LowerError> {
+        if let Some(value) = self.pack_current_definition(coordinate, span)? {
+            return Ok(Some(value));
+        }
         if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
             return Ok(None);
         }
@@ -347,6 +350,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .and_then(|substitutions| substitutions.binding(parameter.index()))
         {
             return self.substituted_parameter_value(parameter.index(), binding, scalar, span);
+        }
+        if let Some(value) = self.current_definition(coordinate) {
+            return self.current_definition_value(value, scalar, span);
         }
         let slot = if self.sampled_source
             && let Some(variable) = coordinate_variable(coordinate)
