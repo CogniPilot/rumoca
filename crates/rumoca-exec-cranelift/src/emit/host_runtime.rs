@@ -20,11 +20,22 @@ const JIT_VERIFIER: &str = if cfg!(debug_assertions) {
 
 /// The single JIT configuration for every module this crate emits.
 pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
-    JITBuilder::with_flags(
+    let mut builder = JITBuilder::with_flags(
         &[("opt_level", "speed"), ("enable_verifier", JIT_VERIFIER)],
         cranelift_module::default_libcall_names(),
     )
-    .map_err(to_backend_err)
+    .map_err(to_backend_err)?;
+    // Link the libcall directly: static PIE executables need not export libc symbols.
+    builder.symbol("memcmp", memcmp as *const u8);
+    Ok(builder)
+}
+
+unsafe extern "C" {
+    fn memcmp(
+        lhs: *const std::ffi::c_void,
+        rhs: *const std::ffi::c_void,
+        size: usize,
+    ) -> std::ffi::c_int;
 }
 
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {
