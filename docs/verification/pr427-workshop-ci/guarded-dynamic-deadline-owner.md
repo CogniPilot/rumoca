@@ -35,7 +35,17 @@ development HTML version, is the semantic reference used for this distinction.
 The existing `activation_relation_roots` warning still governs unconditional
 `when` deadlines; this patch does not replace that optimized owner.
 
-All new controls are **unrun**. The four public tests use independent piecewise
+At `60b948dbb9d670ddafc5cbb468cecbe7021e3ad9`, the counted live/closed
+query and clock-boundary gates each passed one test. The public runtime gate
+failed compilation with E0599: the fixture called a nonexistent
+`SimulationSession::initialize` method. All four runtime tests and the following
+original scenario gate are **unrun**, with no runtime-semantic conclusion.
+The test-only correction uses the initializing `SimulationSession::new` entry
+and preserves models, options, curve oracles and engine receipts; it is unrun.
+[Exact attempt bindings](guarded-deadline-60b948-compile-receipt.json) retain the
+recipe, logs, count decisions and guard receipt.
+
+The four public tests use independent piecewise
 integrals over eleven samples on both the interpreter and observed Cranelift
 path. They cover `>`/`>=`, `<`/`<=`, a discrete reset moving the threshold from
 0.45 to 0.85, inactive undefined square-root arithmetic, and refusal when that

@@ -25,8 +25,8 @@ fn check_curve(source: &str, expected: impl Fn(f64) -> f64) {
     });
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         let opts = options(policy);
-        let mut session = SimulationSession::new(&compiled.dae, opts.clone()).unwrap();
-        session.initialize().expect("guarded deadline initializes");
+        let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+            .expect("guarded deadline initializes");
         for ordinal in 0..=10 {
             let time = ordinal as f64 / 10.0;
             if ordinal != 0 {
