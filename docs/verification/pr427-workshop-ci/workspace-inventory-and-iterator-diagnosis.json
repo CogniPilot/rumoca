@@ -1,0 +1,467 @@
+{
+  "workspace_inventory": {
+    "source": "6d62feb2a61e8854c1856e3566470835291151f2",
+    "tests_run": 10288,
+    "passed": 10188,
+    "failed": 100,
+    "skipped": 0,
+    "groups": {
+      "rumoca::suite_core": 13,
+      "rumoca::suite_galec_fmu": 70,
+      "rumoca-bind-wasm-galec": 6,
+      "rumoca-compile": 1,
+      "rumoca-contracts::registry_invariants": 1,
+      "rumoca-contracts::sim_contracts": 4,
+      "rumoca-exec-wasm::exact_assignments": 1,
+      "rumoca-sim": 1,
+      "rumoca-tool-lsp": 3
+    },
+    "failures": [
+      {
+        "suite": "rumoca::suite_core",
+        "test": "algebraic_family_compaction::compact_algebraic_family_scores_are_bit_identical_to_source_order"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "fmi_event_c_warnings::generated_state_event_c_compiles_without_warnings_when_optimized"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_continuation_round_trip::a_continued_fold_under_outer_loops_reads_the_outer_binders"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_continuation_round_trip::a_guarded_fold_in_a_callee_under_an_outer_loop_lowers_inline"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_proven_branch_test::a_triangular_constructor_domain_is_rejected_at_its_index"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_region_binder_captures::a_candidate_below_the_floor_is_not_scored"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_region_binder_captures::a_candidate_above_the_floor_scores_its_circle_minimum"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "function_runtime_slice_updates::a_window_written_from_selected_rows_and_read_back_in_the_same_iteration"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "index_reduction_event_guards::an_event_guarded_conditional_differentiates_its_selected_branch"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "index_reduction_parameter_branch::tensor_parameter_branches_preserve_values_and_shaped_zero_derivatives"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "piecewise_index_reduction::piecewise_state_definition_is_differentiated_per_branch"
+      },
+      {
+        "suite": "rumoca::suite_core",
+        "test": "runtime_index_derivative::an_invalid_runtime_derivative_index_cannot_complete"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::a_chain_rooted_in_another_value_diverts_and_keeps_that_value"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::a_defaulted_function_output_is_not_zeroed_in_the_emitted_c"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::a_mid_branch_whole_array_overwrite_roots_the_writes_after_it"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::a_squared_call_result_is_bound_and_multiplied_rather_than_raised"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::element_writes_after_a_nested_conditional_keep_its_join"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::emitted_c_compiles_links_and_reproduces_the_discrete_dynamics"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::every_element_write_of_a_function_branch_survives_projection"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::export_self_describes_as_not_an_efmi_production_code_container"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::from_quat_shaped_conversion_computes_yaw_pitch_and_roll"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::partially_overlapping_branch_write_sets_keep_untouched_elements"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::real_min_max_use_order_sensitive_relational_nan_semantics"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_embedded_c_galec::the_body_reader_selects_the_definition_not_a_neighbour"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::compile_target_galec_emits_schema_valid_efmu_container"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::container_checksums_recompute_from_written_bytes"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::container_ids_unique_and_generation_metadata_strict"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::content_name_carries_dotted_source_model_name"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::corrupted_algorithm_code_manifest_is_rejected_by_the_xsd"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::efmu_builds_differ_only_in_uuids_and_timestamps"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::efmu_zip_matches_directory_form"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec::rerunning_same_command_replaces_previous_container"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::compile_target_galec_production_emits_schema_valid_two_representation_efmu"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::container_checksum_web_recomputes_from_written_bytes"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::container_ids_unique_and_generation_metadata_strict"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::corrupted_production_code_manifest_is_rejected_by_the_xsd"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::efmu_builds_differ_only_in_uuids_timestamps_and_derived_checksums"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::efmu_zip_matches_directory_form"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::export_claims_the_production_code_rung_and_names_the_conformance_surface"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::failed_compile_invalidates_previous_container_and_archive"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::galec_production_directory_copy_is_usable_as_a_directory_target"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::logical_data_cross_references_resolve_and_cover_the_algorithm_code"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::production_code_compiles_links_and_reproduces_the_discrete_dynamics"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::rerunning_same_command_replaces_previous_container"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "cli_target_galec_production::two_dependent_parameters_each_holding_a_conditional_get_distinct_temporaries"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_branch_element_drop::each_branch_emits_every_element_write"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_branch_element_drop::every_shepperd_branch_emits_four_components"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_branch_element_drop::no_conditional_function_drops_indexed_writes"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_call_boundary::a_folded_parameter_is_recorded_in_the_package"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_call_boundary::a_frozen_dependent_parameter_call_folds_to_its_value"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_call_boundary::an_evaluate_record_parameter_freezes_its_members_for_the_fold"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_call_boundary::an_integer_array_argument_converts_elementwise_for_a_real_formal"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_call_boundary::an_integer_scalar_argument_converts_for_a_real_formal"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::a_callee_with_one_call_site_is_substituted_by_the_cost_model"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::a_tensor_returning_callee_keeps_its_call_at_every_inline_setting"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::an_efmi_container_refuses_a_policy_that_would_reshape_its_reference"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::an_inline_false_annotation_refuses_every_policy"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::an_inline_true_annotation_is_honored_from_annotated_upward"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::every_inline_setting_computes_bit_identical_values"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::inlining_discloses_itself_and_keeps_the_artifact_eligible"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::substituting_every_legal_call_loses_no_anchor_on_a_line_of_arithmetic"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_emission_policy::the_fully_structured_emission_is_one_artifact_under_every_spelling"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_enumeration_status::enumeration_literal_in_when_equation_resolves_to_its_ordinal"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_enumeration_status::enumeration_mode_logic_in_a_when_equation_reaches_embedded_c"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_enumeration_status::enumeration_variable_projects_to_an_integer"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_array_function_preserves_each_selected_element"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_commensurate_clocks_match_rumoca_tick_for_tick"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_counter_matches_rumoca_evaluation_exactly"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_declared_ranges_saturate_at_method_boundaries"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_declared_ranges_saturate_integers_arrays_and_one_sided_bounds"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_emits_no_region_alias_for_a_wrapper_whose_read_back_was_dropped"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_entry_boundary_saturates_state_written_between_ticks"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_guarded_dynamic_element_write_stores_every_coordinate_exactly"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_iir_matches_rumoca_evaluation_within_tolerance"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_mixed_array_selection_promotes_every_branch"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_nan_comparison_signals_match_the_galec_oracle"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_places_a_result_only_where_no_operand_can_reach_the_destination"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_shares_one_tuple_call_whose_arguments_are_written_in_the_same_tick"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_startup_boundary_never_reads_state_startup_did_not_write"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_unbounded_declared_ranges_emit_no_clamp"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_equivalence::embedded_c_unrepresentable_declared_ranges_fail_closed"
+      },
+      {
+        "suite": "rumoca::suite_galec_fmu",
+        "test": "galec_integer_sign::integer_sign_and_abs_project_to_integer_values"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::edited_alg_text_renders_c_without_modelica_source"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::embedded_c_target_renders_c_with_not_a_container_header"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::galec_lsp_hover_and_definition_are_json"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::galec_target_returns_alg_only"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::model_spanning_multiple_files_projects"
+      },
+      {
+        "suite": "rumoca-bind-wasm-galec",
+        "test": "tests::production_target_renders_c_with_production_conformance_header"
+      },
+      {
+        "suite": "rumoca-compile",
+        "test": "session::tests::empty_reduction_tests::empty_reduction_retains_rectangular_and_descending_domains"
+      },
+      {
+        "suite": "rumoca-contracts::registry_invariants",
+        "test": "spec_0022_summaries_match_the_catalog"
+      },
+      {
+        "suite": "rumoca-contracts::sim_contracts",
+        "test": "sim_010_cross_clock_coincident_pre_read_is_not_a_cycle_and_simulates"
+      },
+      {
+        "suite": "rumoca-contracts::sim_contracts",
+        "test": "sim_010_cross_clock_coincident_same_tick_cycle_is_rejected_at_construction"
+      },
+      {
+        "suite": "rumoca-contracts::sim_contracts",
+        "test": "sim_010_mixed_b1b_b1c_chain_exchanges_values_on_the_same_tick"
+      },
+      {
+        "suite": "rumoca-contracts::sim_contracts",
+        "test": "sim_010_mixed_b1b_b1c_same_tick_cycle_is_rejected_at_construction"
+      },
+      {
+        "suite": "rumoca-exec-wasm::exact_assignments",
+        "test": "suite_exact_assignments::late_source_fault_keeps_prior_tuple_commits_then_recovers_without_input_mutation"
+      },
+      {
+        "suite": "rumoca-sim",
+        "test": "solve_lowering::tests::function_returns::dynamic::dynamic_active_return_predicates_keep_invalid_gather_faults"
+      },
+      {
+        "suite": "rumoca-tool-lsp",
+        "test": "server::tests::simulation_surface_tests::render_target_command_renders_manifest_declared_embedded_c_galec_sources"
+      },
+      {
+        "suite": "rumoca-tool-lsp",
+        "test": "server::tests::simulation_surface_tests::render_target_command_renders_manifest_declared_galec_algorithm_source"
+      },
+      {
+        "suite": "rumoca-tool-lsp",
+        "test": "server::tests::workshop_codegen_tests::actual_codegen_scenarios_render_complete_editor_artifacts"
+      }
+    ],
+    "source_manifest_sha256": "d1a4a2b1da26ab3d74a328ac2dc57db403076a8f472262d0cb84de0b3f9c6924",
+    "tracked_source_unchanged": true,
+    "log_sha256": "579b6b1c596d3cb3f3a5878152a308fba9903dc0e389f750b0d912b4f7ec4617",
+    "guardian": {
+      "elapsedMs": 572971.464282,
+      "peakResidentPlusSwapKiB": 6219912,
+      "exitCode": 100,
+      "signal": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 8192
+    }
+  },
+  "algebraic_diagnostic": {
+    "source": "7cffa647d",
+    "log_sha256": "e1c4d96ae640b78659e0578341bc0071d989c81394950367a00979f9f626b52a",
+    "source_manifest_sha256": "00de0a34258af4d83c7bfe0e5a3dad3032f586c6390d34101c4194147183953c",
+    "tracked_source_unchanged": true,
+    "guardian": {
+      "elapsedMs": 230200.15403,
+      "peakResidentPlusSwapKiB": 3009276,
+      "exitCode": 0,
+      "signal": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096
+    },
+    "interpreter_and_auto_score_3_6": -0.06477973808744025,
+    "reference_first_iterator_outer": -0.06477973808744027,
+    "reference_last_iterator_outer": -0.06477973808744025,
+    "all_recorded_gray_dx_gxx_match_independent_arithmetic": true,
+    "canonical_residual_nonzero_entries": 0
+  },
+  "omc": {
+    "kernel_source_sha256": "9290ba0ebea2070e7ff1961543a6316e79721f058d464804d1ca5eae87e400a4",
+    "script_sha256": "63317ed16668d319303f1de16327c1fa21d504b4792bdaee0d426f280ec9e58f",
+    "log_sha256": "7d22bf5a2297f0d92ba7fee9416722bfe27f02b2f2fcf0c3891fa10e5668d194",
+    "guardian": {
+      "elapsedMs": 1278.699027,
+      "peakResidentPlusSwapKiB": 272244,
+      "exitCode": 0,
+      "signal": null,
+      "secondsLimit": 60,
+      "rssLimitMiB": 2048
+    },
+    "score_3_6_at_zero": -0.06477973808744027
+  },
+  "scope": "Before inventory and diagnostic evidence; does not establish repaired combined workspace or CI success."
+}
