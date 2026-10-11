@@ -695,11 +695,15 @@ fn unowned_sample_counter_program() -> Vec<solve::LinearOp> {
             lhs: 3,
             rhs: 5,
         },
+        // Match the checked when producer's inactive fallback: hold the
+        // current target, not pre(counter). The pulse buffer settles inside
+        // this event pass after the increment has already been published.
+        solve::LinearOp::LoadP { dst: 8, index: 0 },
         solve::LinearOp::Select {
             dst: 7,
             cond: 6,
             if_true: 2,
-            if_false: 0,
+            if_false: 8,
         },
         solve::LinearOp::StoreOutput { src: 7 },
     ]
