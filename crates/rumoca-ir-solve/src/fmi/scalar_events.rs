@@ -140,23 +140,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             _ => Err("a discrete row writes outside the parameters"),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if discrete.row_roles.iter().any(|role| {
-        !matches!(
-            role,
-            DiscreteRowRole::Equation
-                | DiscreteRowRole::ConditionMemory
-                | DiscreteRowRole::PulseConditionMemory
-        )
-    }) {
-        return Err("the C profile executes only discrete equations and condition memories");
-    }
-    if discrete
-        .pre_modes
-        .iter()
-        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
-    {
-        return Err("the C profile executes only discrete rows whose pre follows the current pass");
-    }
+    validate_scalar_discrete_rows(discrete)?;
     let layout = &problem.solve_layout;
     let pre_bindings = layout
         .pre_param_bindings
@@ -220,6 +204,29 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         root_neighborhoods: crate::root_neighborhoods(&events.root_conditions)
             .map_err(|_| "a root condition's coordinate reads cannot be derived")?,
     })
+}
+
+fn validate_scalar_discrete_rows(
+    discrete: &crate::DiscreteSolveSystem,
+) -> Result<(), &'static str> {
+    if discrete.row_roles.iter().any(|role| {
+        !matches!(
+            role,
+            DiscreteRowRole::Equation
+                | DiscreteRowRole::ConditionMemory
+                | DiscreteRowRole::PulseConditionMemory
+        )
+    }) {
+        return Err("the C profile executes only discrete equations and condition memories");
+    }
+    if discrete
+        .pre_modes
+        .iter()
+        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
+    {
+        return Err("the C profile executes only discrete rows whose pre follows the current pass");
+    }
+    Ok(())
 }
 
 fn pulse_producers(
