@@ -108,11 +108,31 @@ fn issue_405_original_input_schedule_switches_at_each_write() {
 fn issue_411_original_main_dae_integer_mod_retains_wide_literal() {
     let compiled = compile(INTEGER, "IntegerPrecision");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        for (input, expected) in [(0.0, 5.0), (1.0, 6.0), (7.0, 5.0)] {
+            let mut opts = options(policy);
+            opts.initial_inputs = vec![("n".into(), input)];
+            let result = simulate_dae(&compiled.dae, &opts).unwrap_or_else(|error| {
+                panic!("Integer arithmetic {policy:?}, n={input}: {error:?}")
+            });
+            assert_eq!(last(&result, "y"), expected, "{policy:?}, n={input}");
+        }
+    }
+}
+
+#[test]
+fn issue_411_main_dae_integer_div_retains_wide_literal() {
+    let source = INTEGER.replace("mod(", "div(");
+    let compiled = compile(&source, "IntegerPrecision");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         let mut opts = options(policy);
         opts.initial_inputs = vec![("n".into(), 0.0)];
         let result = simulate_dae(&compiled.dae, &opts)
-            .unwrap_or_else(|error| panic!("Integer arithmetic {policy:?}: {error:?}"));
-        assert_eq!(last(&result, "y"), 5.0, "{policy:?}");
+            .unwrap_or_else(|error| panic!("Integer division {policy:?}: {error:?}"));
+        assert_eq!(
+            last(&result, "y"),
+            (9_007_199_254_740_993_i64 / 7) as f64,
+            "{policy:?}"
+        );
     }
 }
 
