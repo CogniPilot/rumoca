@@ -1,3 +1,4 @@
+mod aggregate_logarithms;
 mod directional_map;
 mod immutable_payloads;
 mod index_bounds;
