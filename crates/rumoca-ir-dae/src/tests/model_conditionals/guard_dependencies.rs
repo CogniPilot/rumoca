@@ -1,7 +1,7 @@
 //! Guard dependencies belong to the same issued relation as its operands.
 use super::*;
 
-fn arm_relation<'dae>(
+pub(super) fn arm_relation<'dae>(
     dae: &mut DaeConstruction<'dae>,
     guard: ExprId<'dae>,
     at: DaeProvenance,
