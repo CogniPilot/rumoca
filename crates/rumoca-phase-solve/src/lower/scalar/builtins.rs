@@ -419,14 +419,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let lhs = self.expression(
-            arguments.get(0).expect("checked atan2 first argument"),
-            scalar,
-        )?;
-        let rhs = self.expression(
-            arguments.get(1).expect("checked atan2 second argument"),
-            scalar,
-        )?;
+        let [lhs, rhs] = arguments.binary().ok_or_else(|| {
+            LowerError::contract("atan2 operands are not a checked binary pair", span)
+        })?;
+        let lhs = self.expression(lhs, scalar)?;
+        let rhs = self.expression(rhs, scalar)?;
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Binary {
             dst,
@@ -444,14 +441,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let lhs = self.expression(
-            arguments.get(0).expect("checked quotient first argument"),
-            scalar,
-        )?;
-        let rhs = self.expression(
-            arguments.get(1).expect("checked quotient second argument"),
-            scalar,
-        )?;
+        let [lhs, rhs] = arguments.binary().ok_or_else(|| {
+            LowerError::contract("quotient operands are not a checked binary pair", span)
+        })?;
+        let lhs = self.expression(lhs, scalar)?;
+        let rhs = self.expression(rhs, scalar)?;
         let ratio = self.binary(dae::BinaryOperator::Divide, lhs, rhs, span)?;
         let quotient = self.quotient_step(builtin, ratio, span)?;
         self.quotient_result(builtin, lhs, rhs, quotient, span)
@@ -489,14 +483,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         memory: crate::layout::QuotientMemory<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let lhs = self.expression(
-            arguments.get(0).expect("checked quotient first argument"),
-            scalar,
-        )?;
-        let rhs = self.expression(
-            arguments.get(1).expect("checked quotient second argument"),
-            scalar,
-        )?;
+        let [lhs, rhs] = arguments.binary().ok_or_else(|| {
+            LowerError::contract("quotient operands are not a checked binary pair", span)
+        })?;
+        let lhs = self.expression(lhs, scalar)?;
+        let rhs = self.expression(rhs, scalar)?;
         let quotient = self.quotient_memory_read(memory, span)?;
         self.quotient_result(builtin, lhs, rhs, quotient, span)
     }

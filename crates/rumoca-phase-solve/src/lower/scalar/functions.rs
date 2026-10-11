@@ -1883,7 +1883,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let (conditions, fallback) = self.record_conditions(operands)?;
+        let (conditions, fallback) = self.record_conditions(operands, span)?;
         self.push_inactive_conditions(&conditions);
         let mut selected = self.record_field(fallback, field, scalar, span)?;
         self.pop_activations(conditions.len());
@@ -1903,23 +1903,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn record_conditions(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
+        span: Span,
     ) -> Result<(Vec<RecordCondition<'dae>>, dae::ExprId<'dae>), LowerError> {
-        let fallback_index = operands.len() - 1;
-        let mut conditions = Vec::with_capacity(fallback_index / 2);
-        let mut fallback = operands
-            .get(fallback_index)
-            .expect("checked conditional has a fallback");
-        for ordinal in (0..fallback_index).step_by(2) {
-            let condition = operands
-                .get(ordinal)
-                .expect("checked conditional condition ordinal");
+        let operands = operands.conditional().ok_or_else(|| {
+            LowerError::contract(
+                "record conditional operands have no checked branch shape",
+                span,
+            )
+        })?;
+        let mut conditions = Vec::with_capacity(operands.branch_count());
+        let mut fallback = operands.fallback();
+        for (condition, value) in operands.branches() {
             let register = self.expression(condition, 0)?;
             if self.integer_register(register) == Some(0) {
                 continue;
             }
-            let value = operands
-                .get(ordinal + 1)
-                .expect("checked conditional value ordinal");
             if self.integer_register(register).is_some() {
                 fallback = value;
                 break;

@@ -508,29 +508,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let fallback_index = operands.len() - 1;
-        let mut conditions = Vec::with_capacity(fallback_index / 2);
-        let mut fallback = operands
-            .get(fallback_index)
-            .expect("checked conditional has a fallback");
-        for index in (0..fallback_index).step_by(2) {
-            let condition = operands.get(index).expect("checked condition ordinal");
+        let operands = operands.conditional().ok_or_else(|| {
+            LowerError::contract("conditional operands have no checked branch shape", span)
+        })?;
+        let mut conditions = Vec::with_capacity(operands.branch_count());
+        let mut fallback = operands.fallback();
+        for (condition, value) in operands.branches() {
             let condition_value = self.expression(condition, 0)?;
             match self.integer_register(condition_value) {
                 Some(0) => {}
                 Some(_) => {
-                    fallback = operands
-                        .get(index + 1)
-                        .expect("checked conditional value ordinal");
+                    fallback = value;
                     break;
                 }
-                None => conditions.push((
-                    condition,
-                    condition_value,
-                    operands
-                        .get(index + 1)
-                        .expect("checked conditional value ordinal"),
-                )),
+                None => conditions.push((condition, condition_value, value)),
             }
         }
         for (condition, condition_value, _) in &conditions {

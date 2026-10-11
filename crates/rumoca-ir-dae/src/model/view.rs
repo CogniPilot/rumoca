@@ -1,6 +1,8 @@
 mod arena_walks;
+mod expression_operands;
 mod model_conditionals;
 mod quotient_owners;
+pub use expression_operands::ConditionalExpressionOperands;
 pub use model_conditionals::ModelConditionalView;
 #[cfg(test)]
 mod scalar_owner_tests;

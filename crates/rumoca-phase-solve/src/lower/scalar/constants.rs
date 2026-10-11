@@ -358,27 +358,19 @@ impl<'dae> ScalarSelector<'dae> {
         span: Span,
         active: &mut Vec<dae::ExprId<'dae>>,
     ) -> Result<dae::ExprId<'dae>, LowerError> {
-        if operands.len() < 3 || operands.len().is_multiple_of(2) {
-            return Err(LowerError::contract(
+        let operands = operands.conditional().ok_or_else(|| {
+            LowerError::contract(
                 "conditional operands are not condition/value pairs plus a fallback",
                 span,
-            ));
-        }
-        let fallback = operands.len() - 1;
-        for index in (0..fallback).step_by(2) {
-            let condition = operands
-                .get(index)
-                .expect("checked conditional branch has a condition");
+            )
+        })?;
+        for (condition, value) in operands.branches() {
             let condition_scalar = scalar_operand(self.view, condition, scalar);
             if self.constant_real_inner(condition, condition_scalar, reach, active)? != 0.0 {
-                return Ok(operands
-                    .get(index + 1)
-                    .expect("checked conditional branch has a value"));
+                return Ok(value);
             }
         }
-        Ok(operands
-            .get(fallback)
-            .expect("checked conditional has a fallback"))
+        Ok(operands.fallback())
     }
 
     /// Resolve the conditional selections the model fixes at translation time.
