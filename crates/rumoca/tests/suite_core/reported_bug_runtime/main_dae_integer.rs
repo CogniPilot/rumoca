@@ -206,7 +206,7 @@ fn structured_real_quotient_keeps_each_domain_point_boundary_and_trace() {
     // MLS §3.7.2/§8.5: crossings at t=5/8 and 6/8 belong to distinct
     // points of the one compact two-element family (SPEC_0032 §§1–3).
     let compiled = compile(
-        "model StructuredRealQuotient output Real y[2]; equation for i in 1:2 loop y[i]=mod(8*time+i,7); end for; end StructuredRealQuotient;",
+        "model StructuredRealQuotient output Real y[2]; Real x[2](each start=0, each fixed=true); equation for i in 1:2 loop y[i]=mod(8*time+i,7); end for; der(x)=y; end StructuredRealQuotient;",
         "StructuredRealQuotient",
     );
     compiled.dae.inspect(|view| {
@@ -224,7 +224,7 @@ fn structured_real_quotient_keeps_each_domain_point_boundary_and_trace() {
             }
             let state = session.state().unwrap();
             assert_eq!(state.time, time);
-            for (axis, name) in [(1.0, "y[1]"), (2.0, "y[2]")] {
+            for (axis, name, integral_name) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
                 let expected = (8.0 * time + axis) % 7.0;
                 let actual = state.values[name];
                 assert!(
@@ -232,6 +232,16 @@ fn structured_real_quotient_keeps_each_domain_point_boundary_and_trace() {
                         && (actual - expected).abs()
                             <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
                     "{policy:?} {name}({time})={actual}, expected={expected}"
+                );
+                let crossing = (7.0 - axis) / 8.0;
+                let expected_integral =
+                    4.0 * time * time + axis * time - 7.0 * (time - crossing).max(0.0);
+                let actual_integral = state.values[integral_name];
+                assert!(
+                    actual_integral.is_finite()
+                        && (actual_integral - expected_integral).abs()
+                            <= 20.0 * (opts.atol + opts.rtol * expected_integral.abs()),
+                    "{policy:?} {integral_name}({time})={actual_integral}, expected={expected_integral}"
                 );
             }
         }

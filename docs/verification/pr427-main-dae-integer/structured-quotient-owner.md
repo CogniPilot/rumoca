@@ -70,7 +70,7 @@ cache/RSS/time/scratch policy. All are **UNRUN** on this candidate:
 | `-p rumoca-ir-dae --lib structured_quotient_ -- --nocapture` | 4 | Real/discrete Integer; div/mod/rem; empty/2/1000 extents; constant batch size; JSON+bincode; tampered markers/domains; function/model scope separation |
 | `-p rumoca-phase-structural --lib structured_quotient_ -- --nocapture` | 1 | Actual whole-DAE reconstruction twice, exact boundary/domain retained, current wire roundtrip |
 | `-p rumoca --features fmu-packaging --test suite_core main_dae_integer_quotients_keep_issued_outer_and_owned_comprehension_binders -- --nocapture` | 1 | Unchanged actual outer/owned source under Interpreter/Auto, n=0/1 |
-| `-p rumoca --features fmu-packaging --test suite_core structured_real_quotient_keeps_each_domain_point_boundary_and_trace -- --nocapture` | 1 | Actual two-point Real family, both boundary crossings and all 11 requested trace samples under Interpreter/Auto |
+| `-p rumoca --features fmu-packaging --test suite_core structured_real_quotient_keeps_each_domain_point_boundary_and_trace -- --nocapture` | 1 | Actual two-point Real family, quotient values and independently integrated state values across both crossings at all 11 requested trace samples under Interpreter/Auto |
 
 The existing full IR-DAE and structural unit suites remain required compatibility
 gates for scalar/function quotient owners and ordinary structured roots. New
@@ -83,3 +83,14 @@ fixture issuance, executor run, or shared-cache mutation was performed by this
 lane. Added public surface is one checked staged-replay method plus one variant
 of the existing owner view; no new crate, independent evaluator, source identity
 fallback, or unchecked witness.
+
+Source review follow-up: the Real fixture now adds `x[2]` with zero fixed starts
+and `der(x)=y`, preserving the original compact quotient family and root-count
+checks. Its independent integral oracle is
+`x_i(t)=4*t*t+i*t-7*max(t-(7-i)/8,0)` over `0<=t<=1`.
+Both quotient and integrated-state values must be finite and match that oracle
+at all 11 requested times with the existing options/tolerance. This source-only
+follow-up remains unrun; sampled algebraic values alone are not an event-timing
+receipt. The catalog now makes the parameter-divisor restriction model-specific
+and retains exact function-body ownership, event freedom for variable operands,
+and the checked refusal of statically invalid divisors. Spec statuses are unchanged.
