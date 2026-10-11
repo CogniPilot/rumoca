@@ -121,24 +121,19 @@ fn check_count(transcript: &str, label: &str) -> usize {
         .unwrap_or_else(|| panic!("missing OMC {label} count: {transcript}"))
 }
 
-fn retain_requested_omc_evidence(
+fn retain_omc_evidence(
     example: &Example,
     target: &str,
     temporary: &Path,
     output: &std::process::Output,
 ) {
-    let Some(requested) = std::env::var_os("RUMOCA_WORKSHOP_EVIDENCE_DIR") else {
-        return;
-    };
-    let root = Path::new(&requested);
-    assert!(
-        root.is_absolute(),
-        "workshop evidence root must be absolute"
-    );
-    fs::create_dir_all(root).expect("create requested workshop evidence root");
-    let directory = root.join(format!("{}-{target}", example.name));
-    // A fresh cell is required: old successful products cannot represent this run.
-    fs::create_dir(&directory).expect("create fresh workshop evidence cell");
+    // TempDir creates one exclusively owned cell through the standard TMPDIR
+    // channel; retaining it cannot overwrite another invocation's evidence.
+    let directory = tempfile::Builder::new()
+        .prefix(&format!("rumoca-workshop-{}-{target}-", example.name))
+        .tempdir()
+        .expect("create fresh workshop evidence cell")
+        .keep();
     for name in ["model.mo", "check.mos"] {
         fs::copy(temporary.join(name), directory.join(name)).expect("retain exact OMC source");
     }
@@ -182,7 +177,7 @@ fn run_omc(example: &Example, source: &str, target: &str) -> OmcResult {
         .current_dir(directory.path())
         .output()
         .expect("execute required OMC");
-    retain_requested_omc_evidence(example, target, directory.path(), &output);
+    retain_omc_evidence(example, target, directory.path(), &output);
     let transcript = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
