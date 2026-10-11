@@ -11,8 +11,8 @@ merged fix.
 | same 87c | `prepared_projection_jacobian::` after (10 selected) | 10 passed, 0 failed/ignored; includes the four above |
 | d65 | original Euler38 2 GiB memory gate (1 selected) | 0 passed, 1 failed; actual allocation abort |
 | d65 | independent original Euler38 state gate | Timeout, exit 124; no samples or completed Rust summary |
-| 87c | rebound original Euler38 memory gate (1 required) | Unrun |
-| 87c | rebound independent original Euler38 state gate (1 required) | Unrun |
+| 87c | rebound original Euler38 memory gate (1 required) | 1 passed, 0 failed/ignored; unchanged 2 GiB child address-space limit |
+| 87c | rebound independent original Euler38 state gate (1 required) | 1 passed, 0 failed/ignored; all 11 samples and native receipts |
 
 The before producer unnecessarily calls a native projection preparation callback
 for a complete construction-issued causal value schedule. The fixture's callback
@@ -21,7 +21,7 @@ refuses that preparation, and construction returns `InvalidRow` with the message
 uncertified block's required preparation error still propagates (the passing
 control). The guardian exited 101 after 69.292 seconds without a resource stop.
 This proves the preparation-demand defect. It does not establish a repaired
-Euler38 memory or numerical outcome.
+Euler38 memory or numerical outcome by itself.
 
 The candidate derives the backend application demand from all issued
 uncertified refresh and remainder block inventories, plus the initialization
@@ -45,8 +45,9 @@ recipe SHA256 `2da78604c8c764011cedddccbbbf709081816ea583fd14fd39114e985a37d5d1`
 Both child exits are zero and both counted last-summary receipts are accepted.
 The focused four tests completed in 70.127 seconds including compilation; the
 complete ten-test owner gate completed in 5.190 seconds. Both guardians report
-no resource stop. These are ten unique tests, not fourteen. The original Euler
-rebound gates remain unrun in this receipt.
+no resource stop. These are ten unique tests, not fourteen. The later original
+Euler memory and state outcomes are recorded in the
+[independent original-model receipt](euler425-original-memory-after-87c.md).
 
 | After file | SHA256 |
 |---|---|
@@ -81,5 +82,5 @@ failed/ignored), the existing focused count wrapper, and the unchanged 600-secon
 The memory child additionally preserves its 2 GiB address-space limit and Rayon1.
 The state test preserves its default stack and all 11 requested samples, checking
 all 5,776 state values and actual Cranelift receipts without refusals/declines.
-These two independent outcomes are both required before claiming issue #425
-fixed; a passing solver control alone is insufficient.
+Both independent original-model gates now pass on 87c. These local outcomes
+do not establish fresh GitHub CI or landing, and no issue closure was performed.
