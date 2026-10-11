@@ -6,6 +6,8 @@
 
 use super::*;
 
+mod structured_selected_indices;
+
 #[test]
 fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
     let source = TestSource::new("input Integer m;");
