@@ -45,13 +45,13 @@ fn dynamic_tensor_index_preserves_source_bounds_and_provenance() {
         [real_kind(SolveRealFormat::Binary64, 6.0)]
     );
     for (row, column, axis, index, extent) in [
-        (0, 1, 0, 0, 2),
-        (-1, 1, 0, -1, 2),
-        (3, 1, 0, 3, 2),
-        (i64::MIN, 1, 0, i64::MIN, 2),
-        (i64::MAX, 1, 0, i64::MAX, 2),
-        (1, 4, 1, 4, 3),
-        (1, i64::MAX, 1, i64::MAX, 3),
+        (0, 1, 1, 0, 2),
+        (-1, 1, 1, -1, 2),
+        (3, 1, 1, 3, 2),
+        (i64::MIN, 1, 1, i64::MIN, 2),
+        (i64::MAX, 1, 1, i64::MAX, 2),
+        (1, 4, 2, 4, 3),
+        (1, i64::MAX, 2, i64::MAX, 3),
     ] {
         let error = eval_pure_call(
             &table,

@@ -1454,7 +1454,7 @@ fn select_modelica_element(
     for (axis, (&extent, &index)) in dimensions.iter().zip(indices).enumerate() {
         if index < 1 || index > i64::from(extent) {
             return Err(TypedProgramEvalError::TensorIndexOutOfBounds {
-                axis,
+                axis: axis + 1,
                 index,
                 extent,
                 provenance,
