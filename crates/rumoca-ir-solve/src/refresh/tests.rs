@@ -73,6 +73,7 @@ fn exact_zero_materialization_preserves_the_complete_tensor_register_range() {
 fn guarded_fold_dependency_includes_its_activation() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

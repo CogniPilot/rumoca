@@ -52,6 +52,7 @@ fn scalar_block_with_output_indices(
 fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

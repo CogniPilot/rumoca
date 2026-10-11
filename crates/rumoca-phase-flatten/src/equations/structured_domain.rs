@@ -5,6 +5,9 @@ use rumoca_ir_flat as flat;
 
 use crate::errors::FlattenError;
 
+#[cfg(test)]
+mod provenance_tests;
+
 pub(super) struct SourceStructuredIteration {
     pub(super) index_values: Vec<i64>,
     pub(super) equation_count: usize,
@@ -56,6 +59,7 @@ fn compact_binder(
         .find(|value| *value != lower)
         .map_or(1, |value| value - lower);
     Some(rumoca_core::StructuredIndexBinder {
+        provenance: index.binder?,
         id: dimension,
         display_name: index.ident.text.to_string(),
         lower,

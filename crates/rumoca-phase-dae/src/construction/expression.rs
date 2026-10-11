@@ -1491,6 +1491,7 @@ fn lower_vectorized_call_operands<'dae>(
         .iter()
         .enumerate()
         .map(|(ordinal, extent)| StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: ordinal,
             display_name: format!("vectorized_call_{ordinal}"),
             lower: 1,

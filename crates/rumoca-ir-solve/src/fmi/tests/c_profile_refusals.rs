@@ -291,6 +291,7 @@ fn a_parameter_read_only_inside_a_nested_program_stays_settable() {
     let fold = crate::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,

@@ -11,6 +11,7 @@ fn span() -> rumoca_core::Span {
 
 fn binder(id: usize, lower: i64, upper: i64, step: i64) -> StructuredIndexBinder {
     StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id,
         display_name: format!("b{id}"),
         lower,

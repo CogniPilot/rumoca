@@ -1151,6 +1151,7 @@ fn lower_seed_array<'dae>(
         .iter()
         .enumerate()
         .map(|(ordinal, extent)| StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: ordinal,
             display_name: format!("seed{ordinal}"),
             lower: 1,

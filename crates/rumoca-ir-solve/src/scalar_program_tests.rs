@@ -237,6 +237,7 @@ fn guarded_function_fold_construction_requires_defined_activation() {
     let fold = FunctionFoldProgram::checked(
         StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -882,6 +883,7 @@ fn window_fold(
     FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "start".to_string(),
                 lower: 1,

@@ -184,6 +184,7 @@ fn directional_fold_table(
 ) -> SolvePureCallTable {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 8,
             display_name: "i".into(),
             lower: 1,
@@ -749,6 +750,7 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
     let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 7,
             display_name: "i".into(),
             lower: 1,
@@ -810,6 +812,7 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
     let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 7,
             display_name: "i".into(),
             lower: 1,
@@ -1244,6 +1247,7 @@ fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_owned(),
             lower: 1,

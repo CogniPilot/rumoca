@@ -166,7 +166,8 @@ pub(crate) use construction_checks::{
 /// continuous-time definition, evaluated at every output point.
 /// 44 adds an optional continuation predicate to compact function folds: a
 /// bounded `while` loop is one fold that ends at its first false predicate.
-pub const DAE_SCHEMA_VERSION: u16 = 44;
+/// 45 requires source/generated provenance on every structured domain binder.
+pub const DAE_SCHEMA_VERSION: u16 = 45;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

@@ -17,6 +17,7 @@ fn mapped_tensor_directional_values_follow_domain_order() {
                 let mapped = builder.map(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".into(),
                             lower: 5,
@@ -91,6 +92,7 @@ fn mapped_predicates_keep_primal_control_without_tangent_outputs() {
                 let mapped = builder.map(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".into(),
                             lower: 1,

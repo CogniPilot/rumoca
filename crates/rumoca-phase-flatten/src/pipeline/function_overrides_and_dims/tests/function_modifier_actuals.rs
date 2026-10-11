@@ -171,6 +171,7 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
     let family = |body| rumoca_ir_flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,

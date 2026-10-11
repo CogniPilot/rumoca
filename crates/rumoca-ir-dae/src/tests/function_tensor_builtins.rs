@@ -197,6 +197,7 @@ fn vector_is_one_compact_constructor_derived_view_and_round_trips() {
     let binder_vector = source.source("vector(k)", 0);
     let domain_input = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "k".to_string(),
             lower: 1,

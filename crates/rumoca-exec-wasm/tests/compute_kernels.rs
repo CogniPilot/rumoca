@@ -9,6 +9,7 @@ fn domain(width: usize, height: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "row".into(),
                 lower: 9,
@@ -16,6 +17,7 @@ fn domain(width: usize, height: usize) -> StructuredIndexDomain {
                 step: -2,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "column".into(),
                 lower: -3,

@@ -500,6 +500,7 @@ mod tests {
     fn affine_jvp_sparsity_stays_compact_and_exact() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".into(),
                 lower: 1,
@@ -582,6 +583,7 @@ mod tests {
     fn affine_node(start: usize, upper: i64, seed: usize) -> ComputeNode {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".into(),
                 lower: 1,

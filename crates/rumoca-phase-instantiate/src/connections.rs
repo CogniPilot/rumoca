@@ -416,6 +416,7 @@ fn regular_connection_domain(
         }
         let (lower, step, upper) = connection_range_bounds(&index.range, int_params, prefix)?;
         let binder = rumoca_core::StructuredIndexBinder {
+            provenance: index.binder?,
             id,
             display_name: name.to_string(),
             lower,
@@ -685,6 +686,7 @@ fn expand_for_range(
     };
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "__expanded_connection_index".to_string(),
             lower,
@@ -1247,6 +1249,7 @@ fn connection_range_binders(
         .enumerate()
         .map(|(dimension, count)| {
             Ok(rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: dimension,
                 display_name: format!("__connection_index_{}", dimension + 1),
                 lower: 1,
@@ -1286,6 +1289,7 @@ fn compact_connection_ranges(
             };
             let domain = rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "__connection_range".to_string(),
                     lower: start,

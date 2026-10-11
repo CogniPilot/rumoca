@@ -16,6 +16,7 @@ pub(crate) fn structured_array_equation_family(
         .copied()
         .enumerate()
         .map(|(dimension, upper)| rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: dimension,
             display_name: format!("__array_i{}", dimension + 1),
             lower: 1,

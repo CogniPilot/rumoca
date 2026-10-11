@@ -113,6 +113,7 @@ fn full_frame_map_extrema_match_canonical_ieee_edges() {
         .collect();
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "pixel".into(),
             lower: 1,

@@ -296,6 +296,7 @@ pub(in crate::construction) fn specialized_comprehension_plan(
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = proven_comprehension_range(&index.range, &scoped, range_span)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.name.clone(),
             lower,
@@ -412,6 +413,7 @@ fn comprehension_plan(
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = evaluated_range(&index.range, constants)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.name.clone(),
             lower,

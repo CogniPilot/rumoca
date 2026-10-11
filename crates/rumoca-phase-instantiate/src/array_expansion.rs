@@ -454,6 +454,7 @@ fn component_family_domain(dims: &[i64]) -> rumoca_core::StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(position, upper)| rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: position,
                 display_name: format!("__comp_i{}", position + 1),
                 lower: 1,

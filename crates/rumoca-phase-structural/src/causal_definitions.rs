@@ -745,6 +745,7 @@ mod tests {
                 domains.structured(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".to_owned(),
                             lower: 1,

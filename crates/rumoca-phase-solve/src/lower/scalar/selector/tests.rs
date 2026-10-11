@@ -6,6 +6,7 @@ use rumoca_core::{SourceMap, StructuredIndexBinder, StructuredIndexDomain};
 fn domain(name: &str, lower: i64, upper: i64, step: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: name.into(),
             lower,

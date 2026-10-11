@@ -22,6 +22,7 @@ fn slice(rows: usize, columns: usize, start: usize, width: usize, output: usize)
         unreachable!()
     };
     domain.binders.push(StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 1,
         display_name: "column".into(),
         lower: 1,

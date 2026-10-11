@@ -10,6 +10,7 @@ fn cartesian(axes: &[(i64, i64, i64)]) -> StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(id, &(lower, upper, step))| StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id,
                 display_name: format!("i{id}"),
                 lower,

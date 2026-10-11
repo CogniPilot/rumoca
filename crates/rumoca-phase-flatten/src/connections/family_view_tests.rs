@@ -70,6 +70,7 @@ fn family_connection(count: i64) -> ast::InstanceConnection {
         family: Some(ast::InstanceConnectionFamily {
             domain: StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,

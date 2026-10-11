@@ -3,6 +3,7 @@ use super::*;
 fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -362,6 +363,7 @@ fn kernel_workgroup_count_rejects_overflow() {
 #[test]
 fn structured_binder_value_count_accepts_descending_domain() {
     let binder = rumoca_core::StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 0,
         display_name: "i".to_string(),
         lower: 5,
@@ -375,6 +377,7 @@ fn structured_binder_value_count_accepts_descending_domain() {
 #[test]
 fn structured_binder_value_count_rejects_extent_overflow() {
     let binder = rumoca_core::StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 0,
         display_name: "i".to_string(),
         lower: i64::MIN,
@@ -393,6 +396,7 @@ fn structured_binder_value_count_rejects_extent_overflow() {
 #[test]
 fn structured_binder_value_count_rejects_step_magnitude_overflow() {
     let binder = rumoca_core::StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 0,
         display_name: "i".to_string(),
         lower: 1,

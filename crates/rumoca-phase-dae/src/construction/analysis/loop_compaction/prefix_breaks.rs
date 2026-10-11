@@ -176,6 +176,7 @@ fn first_break(
 fn checked_progression(lower: i64, step: i64, upper: i64) -> Option<Progression> {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: String::new(),
             lower,

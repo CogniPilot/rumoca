@@ -374,6 +374,7 @@ fn derived_wire_fixture() -> Dae {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "k".to_owned(),
                         lower: 1,

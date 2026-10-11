@@ -337,6 +337,7 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let inner_range = source.at(43, 46);
     let singleton_domain = |name: &str, upper| StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: name.to_string(),
             lower: 1,

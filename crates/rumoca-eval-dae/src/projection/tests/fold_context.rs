@@ -3,6 +3,7 @@ use super::*;
 fn range(name: &str) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: name.to_string(),
             lower: 1,

@@ -4,6 +4,7 @@ use super::*;
 fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

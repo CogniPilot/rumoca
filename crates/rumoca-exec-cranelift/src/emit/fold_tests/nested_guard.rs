@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn domain(id: usize, name: &str) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id,
             display_name: name.into(),
             lower: 1,

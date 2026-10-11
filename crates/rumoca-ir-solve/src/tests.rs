@@ -11,6 +11,7 @@ const REPRESENTATIVE_SOLVE_PROBLEM_GOLDEN: &str =
 fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -2192,6 +2193,7 @@ fn solve_problem_shape_contract_rejects_zero_step_tensor_domain() {
         nodes: vec![ComputeNode::Map {
             domain: StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,

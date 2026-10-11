@@ -21,6 +21,7 @@ use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 fn family(count: usize, output: usize, target: usize, input: LinearOp) -> ComputeNode {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".into(),
             lower: 1,

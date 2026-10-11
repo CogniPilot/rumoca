@@ -302,6 +302,7 @@ fn compact_fold_owner_is_certified_without_domain_expansion() {
     let fold = solve::FunctionFoldProgram::checked(
         StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -397,6 +398,7 @@ fn conditional_regions_contribute_every_solver_y_input_range() {
 fn affine_compute_dependencies_include_every_shifted_solver_y_coordinate() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -441,6 +443,7 @@ fn affine_compute_dependencies_include_every_shifted_solver_y_coordinate() {
 fn map_dependencies_accumulate_negative_stride_terms_without_expansion() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -494,6 +497,7 @@ fn map_dependencies_accumulate_negative_stride_terms_without_expansion() {
 fn affine_dependency_storage_is_independent_of_domain_cardinality() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -535,6 +539,7 @@ fn affine_dependency_storage_is_independent_of_domain_cardinality() {
 fn empty_affine_domain_has_no_runtime_y_dependencies() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

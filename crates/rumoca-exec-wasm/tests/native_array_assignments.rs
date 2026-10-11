@@ -9,6 +9,7 @@ use wasmi::{Engine, Linker, Memory, MemoryType, Module, Store, TypedFunc};
 fn strided_column(rows: usize, columns: usize, column: usize) -> solve::ComputeNode {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "row".into(),
             lower: 1,
@@ -129,6 +130,7 @@ fn rectangular_slice(
         unreachable!()
     };
     domain.binders.push(rumoca_core::StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 1,
         display_name: "column".into(),
         lower: 1,
@@ -372,6 +374,7 @@ fn native_permuted_affine_stage_and_array_stage_share_bounded_private_registers(
     let domain = StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "column".into(),
                 lower: 1,
@@ -379,6 +382,7 @@ fn native_permuted_affine_stage_and_array_stage_share_bounded_private_registers(
                 step: 1,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "row".into(),
                 lower: 1,

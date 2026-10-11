@@ -1113,6 +1113,7 @@ fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
     model.add_structured_equation(flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,

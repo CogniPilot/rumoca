@@ -15,6 +15,7 @@ fn solve_problem_with_sparse_output_map_derivative() -> solve::SolveProblem {
     let mut problem = solve::SolveProblem::default();
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

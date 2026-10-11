@@ -194,6 +194,7 @@ fn affine_domains_keep_shifted_rows_and_signed_strides() {
     for stride in [-2, 2] {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".into(),
                 lower: 9,

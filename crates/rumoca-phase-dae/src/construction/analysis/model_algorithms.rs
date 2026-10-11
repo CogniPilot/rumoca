@@ -419,6 +419,7 @@ fn event_tensor_domain(
     let mut binder_spans = Vec::with_capacity(indices.len());
     for (ordinal, (index, extent)) in indices.iter().zip(dimensions).enumerate() {
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.ident.clone(),
             lower: 1,
@@ -576,6 +577,7 @@ fn analyze_separated_array_sum(
         validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.ident.clone(),
             lower: 1,
@@ -759,6 +761,7 @@ fn analyze_total_array_definition(
         validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.ident.clone(),
             lower: 1,

@@ -343,6 +343,7 @@ fn lower_nested_record_field<'dae>(
                 .iter()
                 .enumerate()
                 .map(|(ordinal, extent)| StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: ordinal,
                     display_name: format!("{}{ordinal}", nested.name),
                     lower: 1,

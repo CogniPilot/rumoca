@@ -6,6 +6,7 @@ fn fixture(rows: usize, columns: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>
     let domain = StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "column".into(),
                 lower: 1,
@@ -13,6 +14,7 @@ fn fixture(rows: usize, columns: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>
                 step: 1,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "row".into(),
                 lower: 1,

@@ -291,6 +291,7 @@ fn compact_map_derives_tensor_shape_and_replays_its_checked_region() {
     let arithmetic = profile();
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_owned(),
             lower: 1,
@@ -337,6 +338,7 @@ fn invalid_map_domain_commits_no_destination_or_operation() {
         let one = builder.constant(SolveValue::real(arithmetic, 1.0), span(30))?;
         let invalid = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_owned(),
                 lower: 1,
@@ -573,6 +575,7 @@ fn fold_rejects_an_invalid_domain_before_building_its_transition() {
         builder.fold(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".into(),
                     lower: 1,

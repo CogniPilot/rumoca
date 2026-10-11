@@ -70,6 +70,7 @@ fn family(source: &TestSource) -> flat::StructuredEquationFamily {
                 .into_iter()
                 .enumerate()
                 .map(|(id, name)| rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id,
                     display_name: name.into(),
                     lower: 1,

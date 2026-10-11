@@ -8,6 +8,7 @@ use rumoca_ir_solve::{
 fn test_domain() -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -258,6 +259,7 @@ fn prepared_compute_block_evaluates_map_through_native_affine_loop() {
 fn prepared_empty_map_does_not_require_inputs_from_its_unexecuted_body() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

@@ -27,6 +27,7 @@ fn domain(uppers: &[i64]) -> rumoca_core::StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(position, upper)| rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: position,
                 display_name: format!("i{position}"),
                 lower: 1,

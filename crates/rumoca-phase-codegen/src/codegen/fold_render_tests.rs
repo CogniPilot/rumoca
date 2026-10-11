@@ -15,6 +15,7 @@ const Y: [f64; 4] = [0.75, 1.0, 2.0, 0.0];
 fn domain(upper: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

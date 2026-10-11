@@ -131,6 +131,7 @@ mod tests {
     fn source_outputs_preserve_tensor_cursor_sparse_slots_and_program_offsets() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".into(),
                 lower: 1,

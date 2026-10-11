@@ -225,6 +225,7 @@ fn compact_calls_refuse_malformed_and_overflowing_domains() {
     };
     domain.binders[0].upper = i64::MAX;
     domain.binders.push(StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id: 1,
         display_name: "j".into(),
         lower: 1,

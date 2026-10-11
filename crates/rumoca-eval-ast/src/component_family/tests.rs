@@ -327,6 +327,7 @@ fn family_member_class_reindexes_compact_connection_family_endpoints() {
             family: Some(ast::InstanceConnectionFamily {
                 domain: rumoca_core::StructuredIndexDomain {
                     binders: vec![rumoca_core::StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "k".to_string(),
                         lower: 1,

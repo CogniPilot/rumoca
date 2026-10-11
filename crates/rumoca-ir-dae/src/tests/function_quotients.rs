@@ -31,6 +31,7 @@ fn quotient_body(builtin: PureBuiltin, in_loop: bool) -> Dae {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".into(),
                                 lower: -3,
