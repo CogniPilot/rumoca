@@ -210,6 +210,69 @@ fn source_family_does_not_exchange_axes_or_foreign_source_binders() {
 }
 
 #[test]
+fn source_family_rejects_foreign_lhs_binder_even_without_rhs_binder_reads() {
+    let source = TestSource::new(TEXT);
+    let mut model = control(&source);
+    let span = source.span("for i", 0);
+    // The constant body and its complete scalar view agree. No RHS iterator
+    // reference can incidentally supply the missing LHS identity check.
+    for equation in &mut model.equations {
+        let Expression::Binary { rhs, .. } = &mut equation.residual else {
+            unreachable!()
+        };
+        *rhs = Box::new(Expression::Literal {
+            value: Literal::Boolean(false),
+            span,
+        });
+    }
+    let mut family = model.structured_equations[0].clone();
+    let Expression::Binary { lhs, rhs, .. } = &mut family.template.as_mut().unwrap().body[0] else {
+        unreachable!()
+    };
+    *rhs = Box::new(Expression::Literal {
+        value: Literal::Boolean(false),
+        span,
+    });
+    let Expression::VarRef { subscripts, .. } = lhs.as_mut() else {
+        unreachable!()
+    };
+    let Subscript::Expr { expr, .. } = &mut subscripts[0] else {
+        unreachable!()
+    };
+    let Expression::VarRef { name, .. } = expr.as_mut() else {
+        unreachable!()
+    };
+    let original = name.clone();
+    let foreign =
+        rumoca_core::Reference::from_component_reference(test_component_reference("foreign", span))
+            .with_var_name(VarName::new("i"));
+    assert_eq!(original.var_name(), foreign.var_name());
+    assert_ne!(original.target_def_id(), foreign.target_def_id());
+    model.structured_equations[0] = family.clone();
+    assert!(
+        admitted(&model, &family),
+        "issued LHS constant-body control"
+    );
+    let Expression::Binary { lhs, .. } = &mut family.template.as_mut().unwrap().body[0] else {
+        unreachable!()
+    };
+    let Expression::VarRef { subscripts, .. } = lhs.as_mut() else {
+        unreachable!()
+    };
+    let Subscript::Expr { expr, .. } = &mut subscripts[0] else {
+        unreachable!()
+    };
+    let Expression::VarRef { name, .. } = expr.as_mut() else {
+        unreachable!()
+    };
+    *name = foreign;
+    assert!(
+        !admitted(&model, &family),
+        "LHS iterator must match the family's issued declaration, even with constant RHS"
+    );
+}
+
+#[test]
 fn source_family_requires_the_entire_ordered_member_range() {
     let source = TestSource::new(TEXT);
     let model = control(&source);
