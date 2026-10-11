@@ -15,21 +15,27 @@ fn required_text(path: &Path) -> String {
 async fn render_workshop_request(path: &Path, model: &str, target: &str) -> serde_json::Value {
     let path = path.canonicalize().expect("required fixture path");
     let service = new_test_service();
-    let server = service.inner();
-    server
-        .session
-        .write()
-        .await
-        .update_document(&path.to_string_lossy(), &required_text(&path));
+    execute_workshop_command(
+        service.inner(),
+        "rumoca.workspace.renderTarget",
+        serde_json::json!({
+            "uri": Url::from_file_path(&path).expect("fixture URI").to_string(),
+            "model": model,
+            "target": target,
+        }),
+    )
+    .await
+}
+
+async fn execute_workshop_command(
+    server: &ModelicaLanguageServer,
+    command: &str,
+    argument: serde_json::Value,
+) -> serde_json::Value {
     server
         .execute_command(ExecuteCommandParams {
-            command: "rumoca.workspace.renderTarget".to_owned(),
-            arguments: vec![serde_json::json!({
-                "uri": Url::from_file_path(&path)
-                    .expect("fixture URI").to_string(),
-                "model": model,
-                "target": target,
-            })],
+            command: command.to_owned(),
+            arguments: vec![argument],
             work_done_progress_params: WorkDoneProgressParams::default(),
         })
         .await
@@ -61,6 +67,7 @@ fn rendered_files(response: &serde_json::Value) -> BTreeMap<String, String> {
 
 fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
     let expected: &[(&str, &str)] = match target {
+        "jax-ode" => &[("SympyDecay_jax_ode.py", "def rhs(t, x, u, p):")],
         "c-ode" => &[
             ("SympyDecay_ode.h", "SympyDecay_derivative_rhs"),
             ("SympyDecay_ode.c", "SympyDecay_derivative_rhs"),
@@ -90,6 +97,10 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
             "{target}/{path} must contain {marker}: {source}"
         );
     }
+    if target == "jax-ode" {
+        let source = &files["SympyDecay_jax_ode.py"];
+        assert_python_defaults(source);
+    }
     if matches!(
         target,
         "checked_dae_report" | "custom_checked_variables.jinja"
@@ -111,7 +122,7 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
 }
 
 #[test]
-fn actual_codegen_scenarios_render_complete_editor_artifacts_or_declared_refusal() {
+fn actual_codegen_scenarios_render_complete_editor_artifacts() {
     run_async_test(async {
         let directory = repository_root().join("examples/codegen");
         let mut scenarios: Vec<_> = std::fs::read_dir(&directory)
@@ -149,28 +160,117 @@ fn actual_codegen_scenarios_render_complete_editor_artifacts_or_declared_refusal
             let target = config["codegen"]["target"]
                 .as_str()
                 .expect("configured target");
-            let response = render_workshop_request(&path, model, target).await;
-            if target == "jax-ode" {
-                // Ball.mo contains when/reinit. The target's declared event
-                // refusal must survive the editor route (SPEC_0007 product contract).
-                assert_eq!(model, "Ball");
-                assert_eq!(
-                    response["ok"], false,
-                    "eventful Ball/JAX must refuse: {response}"
-                );
-                assert!(
-                    response.to_string().contains("unsupported-feature:events"),
-                    "{response}"
-                );
-                assert!(
-                    response.get("files").is_none(),
-                    "a refusal cannot expose success artifacts"
-                );
-            } else {
-                assert_scenario_artifacts(target, &rendered_files(&response));
+            let service = new_test_service();
+            let server = service.inner();
+            let uri = Url::from_file_path(path.canonicalize().expect("scenario path"))
+                .expect("scenario URI");
+            // The extension asks for the descriptor, then issues Generate Code
+            // using its scenario URI. The handler reads TOML from disk itself;
+            // TOML must never be injected as a Modelica compilation document.
+            let scenario = execute_workshop_command(
+                server,
+                "rumoca.scenario.getScenarioConfig",
+                serde_json::json!({"uri": uri.to_string()}),
+            )
+            .await;
+            assert_eq!(
+                scenario["ok"], true,
+                "actual scenario descriptor: {scenario}"
+            );
+            assert_eq!(scenario["task"], "codegen");
+            assert_eq!(scenario["model"], model);
+            assert_eq!(scenario["target"], target);
+            assert_eq!(
+                scenario["outputDir"].as_str(),
+                config["codegen"]["output_dir"].as_str()
+            );
+            let response = execute_workshop_command(server, "rumoca.workspace.renderTarget",
+                serde_json::json!({"uri": uri.to_string(), "model": scenario["model"], "target": scenario["target"]})).await;
+            assert_scenario_artifacts(target, &rendered_files(&response));
+            assert!(
+                server
+                    .document_snapshot(&session_document_uri_key(&uri))
+                    .await
+                    .is_none(),
+                "scenario TOML is configuration, not a Modelica session document"
+            );
+            if matches!(
+                target,
+                "checked_dae_report" | "custom_checked_variables.jinja"
+            ) {
+                assert_relative_target_requires_scenario_uri(server, &model_path, model, target)
+                    .await;
             }
         }
     });
+}
+
+async fn assert_relative_target_requires_scenario_uri(
+    server: &ModelicaLanguageServer,
+    model_path: &Path,
+    model: &str,
+    target: &str,
+) {
+    let uri = Url::from_file_path(model_path.canonicalize().expect("actual model path"))
+        .expect("model URI");
+    let response = execute_workshop_command(
+        server,
+        "rumoca.workspace.renderTarget",
+        serde_json::json!({"uri": uri.to_string(), "model": model, "target": target}),
+    )
+    .await;
+    assert_eq!(
+        response["ok"], false,
+        "relative custom target cannot resolve beside model source: {response}"
+    );
+    assert!(
+        response.get("files").is_none(),
+        "wrong target base cannot expose artifacts"
+    );
+    assert!(
+        response["error"]
+            .as_str()
+            .expect("target path error")
+            .contains(target),
+        "refusal must identify the misplaced relative target: {response}"
+    );
+}
+
+#[test]
+fn actual_ball_jax_editor_request_preserves_event_refusal() {
+    run_async_test(async {
+        let path = repository_root().join("examples/models/Ball.mo");
+        let response = render_workshop_request(&path, "Ball", "jax-ode").await;
+        assert_eq!(
+            response["ok"], false,
+            "eventful Ball/JAX must refuse: {response}"
+        );
+        assert!(
+            response.to_string().contains("unsupported-feature:events"),
+            "{response}"
+        );
+        assert!(
+            response.get("files").is_none(),
+            "a refusal cannot expose success artifacts"
+        );
+    });
+}
+
+fn assert_python_defaults(source: &str) {
+    for (name, expected) in [("DEFAULT_X", vec![1.0]), ("DEFAULT_P", vec![0.5])] {
+        let values: Vec<f64> = source
+            .split(&format!("{name} = ["))
+            .nth(1)
+            .expect("checked defaults")
+            .split(']')
+            .next()
+            .expect("default list")
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().parse().expect("numeric default"))
+            .collect();
+        assert_eq!(values, expected, "actual SympyDecay {name}");
+    }
 }
 
 #[test]
@@ -195,20 +295,7 @@ fn actual_sympy_decay_casadi_editor_export_contains_checked_callable_and_initial
                 "missing checked callable surface {marker}: {source}"
             );
         }
-        for (name, expected) in [("DEFAULT_X", vec![1.0]), ("DEFAULT_P", vec![0.5])] {
-            let values: Vec<f64> = source
-                .split(&format!("{name} = ["))
-                .nth(1)
-                .expect("checked defaults")
-                .split(']')
-                .next()
-                .expect("default list")
-                .split(',')
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| value.trim().parse().expect("numeric default"))
-                .collect();
-            assert_eq!(values, expected, "actual SympyDecay {name}");
-        }
+        assert_python_defaults(source);
     });
 }
 

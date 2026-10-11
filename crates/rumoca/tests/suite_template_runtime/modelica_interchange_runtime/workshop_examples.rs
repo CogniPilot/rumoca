@@ -1,6 +1,11 @@
 //! Actual workshop models, independently executed before and after interchange.
 
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+    process::Command,
+};
 
 use rumoca::{Compiler, render_target_files};
 
@@ -62,6 +67,17 @@ struct OmcResult {
     samples: Vec<BTreeMap<String, f64>>,
 }
 
+impl OmcResult {
+    fn settled_trace(&self) -> &[BTreeMap<String, f64>] {
+        let initial = self
+            .samples
+            .iter()
+            .rposition(|sample| sample["time"] == 0.0)
+            .expect("settled sample at exact common start time");
+        &self.samples[initial..]
+    }
+}
+
 fn example_source(example: &Example) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/models")
@@ -74,9 +90,18 @@ fn example_source(example: &Example) -> String {
 }
 
 fn omc_is_available() -> bool {
+    let timeout_available = Command::new("timeout")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let omc_available = timeout_available
+        && Command::new("timeout")
+            .args(["--kill-after=2s", "5s", "omc", "--version"])
+            .output()
+            .is_ok_and(|output| output.status.success());
     super::super::template_runtime_policy::prerequisites_are_available(
         "actual workshop Modelica roundtrip",
-        &[("OMC", Command::new("omc").arg("--version").output().is_ok())],
+        &[("GNU timeout", timeout_available), ("OMC", omc_available)],
     )
 }
 
@@ -107,8 +132,10 @@ fn run_omc(example: &Example, source: &str, target: &str) -> OmcResult {
         ),
     )
     .expect("write OMC script");
-    let output = Command::new("omc")
-        .arg("check.mos")
+    // GNU timeout bounds compilation and execution together and terminates the
+    // process group, including OMC's generated compiler/simulation children.
+    let output = Command::new("timeout")
+        .args(["--kill-after=5s", "60s", "omc", "check.mos"])
         .current_dir(directory.path())
         .output()
         .expect("execute required OMC");
@@ -148,6 +175,15 @@ fn omc_csv_samples(trace: &str) -> Vec<BTreeMap<String, f64>> {
         .trim_matches('"')
         .split("\",\"")
         .collect();
+    assert!(
+        names.iter().all(|name| !name.is_empty()),
+        "empty OMC channel"
+    );
+    assert_eq!(
+        names.iter().copied().collect::<BTreeSet<_>>().len(),
+        names.len(),
+        "duplicate OMC channels must not overwrite data"
+    );
     let samples: Vec<_> = lines
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
@@ -172,7 +208,13 @@ fn omc_csv_samples(trace: &str) -> Vec<BTreeMap<String, f64>> {
         "OMC must produce initial and short-step samples"
     );
     assert_eq!(samples[0]["time"], 0.0);
-    assert!((samples.last().expect("last sample")["time"] - 0.002).abs() < 1e-12);
+    assert!(
+        samples
+            .windows(2)
+            .all(|pair| pair[0]["time"] <= pair[1]["time"]),
+        "OMC time must be nondecreasing"
+    );
+    assert_eq!(samples.last().expect("last sample")["time"], 0.002);
     samples
 }
 
@@ -202,20 +244,25 @@ fn assert_roundtrip(example: &Example, target: &str, reference: &OmcResult, actu
         "{target}/{} variables",
         example.name
     );
+    let reference_trace = reference.settled_trace();
+    let actual_trace = actual.settled_trace();
     for &(name, expected) in example.initial {
         assert_close(
-            observable(&actual.samples[0], name),
+            observable(&actual_trace[0], name),
             expected,
             &format!("{target}/{} initial {name}", example.name),
         );
     }
     assert_eq!(
-        actual.samples.len(),
-        reference.samples.len(),
+        actual_trace.len(),
+        reference_trace.len(),
         "same OMC sample grid"
     );
-    for (expected, actual) in reference.samples.iter().zip(&actual.samples) {
-        assert_close(actual["time"], expected["time"], "same OMC sample times");
+    for (expected, actual) in reference_trace.iter().zip(actual_trace) {
+        assert_eq!(
+            actual["time"], expected["time"],
+            "same exact OMC sample times"
+        );
         for &name in example.observables {
             assert_close(
                 observable(actual, name),
@@ -240,7 +287,7 @@ fn actual_workshop_exports_preserve_omc_structure_initialization_and_short_trace
         let reference = run_omc(example, &source, "original");
         for &(name, expected) in example.initial {
             assert_close(
-                observable(&reference.samples[0], name),
+                observable(&reference.settled_trace()[0], name),
                 expected,
                 &format!("original/{} initial {name}", example.name),
             );

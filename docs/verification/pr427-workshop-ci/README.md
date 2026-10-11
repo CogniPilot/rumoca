@@ -1,6 +1,7 @@
 # PR 427 workshop CI coverage inventory
 
-Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`.
+Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
+replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.
 This is a source-derived roster and candidate regression record. No candidate
 Cargo or OMC checks have run yet; execution is waiting for the shared-host build
 lease. Manual PR claims are not CI evidence.
@@ -12,8 +13,8 @@ lease. Manual PR claims are not CI evidence.
 | `examples/models/Circuit.mo`, `Circuit.Test` | Reload all three Modelica exports in Rumoca and OMC; compare scalar equation/variable counts, initial values, and circuit observables over 0–0.002 s. Covers flattened component names and quoted identifiers. | Template Runtime (modelica), `modelica_interchange_runtime::workshop_examples::` |
 | `SympyDecay.mo`, `FmiTensorDecay.mo` | Same reload and independent short OMC trace; preserve scalar/tensor starts and coordinate count. | Same Modelica lane |
 | `NeuralODETensor.mo`, `NeuralPredatorPrey.mo`, `NeuralODEBackprop.mo` | Same independent OMC checks on actual default dimensions; preserve arrays, matrices, comprehensions, loops, elementwise expressions, and fixed starts. Compare states and algebraic outputs, including neural loss/derivatives. | Same Modelica lane |
-| All five TOMLs in `examples/codegen/` | Parse actual TOML, use actual referenced `.mo`, invoke `rumoca.workspace.renderTarget` with scenario URI, check complete artifact roster and checked metadata. Custom directory and raw template resolve relative to the real scenario. | Workspace tests, `cargo test -p rumoca-tool-lsp workshop_codegen_tests::` |
-| Actual `Ball.mo` via configured `jax-ode` scenario | Require `unsupported-feature:events` and no success artifacts. **This configured scenario is broken for a successful workshop Generate Code demonstration.** | Same LSP workspace tests |
+| All five TOMLs in `examples/codegen/` | Request `getScenarioConfig`, verify actual model/target/output directory, use the referenced `.mo`, invoke `rumoca.workspace.renderTarget` with scenario URI, require successful complete artifacts. Custom directory/raw template resolve relative to the scenario; negative controls fail beside the model source. TOML is never injected as a Modelica document. | Workspace tests, `cargo test -p rumoca-tool-lsp workshop_codegen_tests::` |
+| Actual `Ball.mo`, independent direct `jax-ode` request | Require `unsupported-feature:events` and no success artifacts. Ball retains its event semantics; the configured JAX demo now uses existing event-free SympyDecay. | Same LSP workspace tests |
 | Actual `SympyDecay.mo`, direct CasADi command | Require checked callable and initialization surface. This is an additional request regression, not a sixth tracked scenario. | Same LSP tests; independent numerical CasADi proof belongs to companion backend tests |
 | Actual `FmiTensorDecay.mo`, direct FMI2/FMI3 commands | Require every manifest-declared source project file, ME/CS metadata, scalar FMI2 vs tensor FMI3 dimensions/starts, build description, and valid minted identity. These are source previews, not built or executed FMUs. | Same LSP tests; FMI runtime/conformance remains in its existing lane |
 
@@ -21,14 +22,20 @@ The existing xtask Modelica filter is exactly `modelica_interchange_runtime::`.
 The new child module is beneath that filter and discovered recursively by
 `gate_runs_every_declared_test_of_every_pinned_target`; no selector is weakened.
 The Modelica CI lane passes `--require-external-tools` and provides OMC via
-`ci-template-modelica`. Missing OMC therefore fails that lane. Missing tracked
+`ci-template-modelica`. Each OMC compile/simulation command is bounded by GNU
+`timeout` at 60 seconds plus five seconds before process-group kill. Missing
+OMC or GNU timeout therefore fails that lane. Missing tracked
 fixtures or output files always fail. Ordinary local runs retain the existing
 optional-OMC policy.
 
 The comparison fixes OMC solver tolerance at 1e-10 and compares each selected
-observable at every sample with tolerance `1e-8 * (1 + abs(expected))`. Original
-and generated source must produce finite initial and final data; missing
-coordinates, empty traces, failed simulation, or missing files fail. No source
+observable from settled initialization onward with tolerance
+`1e-8 * (1 + abs(expected))`. Initialization is the last row at exactly time zero
+in each trace, preserving the settled side when OMC emits duplicate initial rows.
+Subsequent sample grids must match exactly without interpolation or dropping
+event rows. Original/generated source must produce finite, nondecreasing time,
+finite channel values, unique nonempty channel names, and rectangular data.
+Missing coordinates, empty traces, failed simulation, or missing files fail. No source
 rewriting, changed model parameters, retries, or model-name bypasses are used.
 This is a bounded six-model tripwire, not a cohort parity claim.
 
@@ -36,7 +43,7 @@ This is a bounded six-model tripwire, not a cohort parity claim.
 
 | Scenario file in `examples/codegen/` | Actual model | Target | Candidate verdict |
 |---|---|---|---|
-| `rumoca-scenario.ball_jax_ode.toml` | Ball | jax-ode | Expected typed refusal; broken success demonstration |
+| `rumoca-scenario.sympy_decay_jax_ode.toml` | SympyDecay | jax-ode | Checked RHS callable and actual state/parameter defaults |
 | `rumoca-scenario.galec_counter_production.toml` | GalecCounter | galec-production | Five algorithm/production source preview files; no eFMU metadata/package claim |
 | `rumoca-scenario.sympy_decay_c_ode.toml` | SympyDecay | c-ode | Header and derivative C source |
 | `rumoca-scenario.sympy_decay_checked_dae_report.toml` | SympyDecay | checked_dae_report | Complete checked DAE report |
@@ -86,10 +93,13 @@ CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify te
 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test -p xtask gate_runs_every_declared_test_of_every_pinned_target
 ```
 
-The reviewable `ball-jax-scenario-proposal.patch` is deliberately unapplied. It
-uses existing event-free SympyDecay for the configured JAX demonstration and
-preserves Ball and its refusal proof. If adopted, require successful configured
-SympyDecay/JAX artifacts and retain Ball/JAX refusal as a separate direct test.
+The approved scenario correction is applied: the former Ball/JAX scenario is
+renamed to `rumoca-scenario.sympy_decay_jax_ode.toml`, points to existing
+`SympyDecay.mo`, and writes to `gen/sympy_decay_jax`. The README command matches
+those fields. Ball remains unchanged, and a separate direct-request test proves
+its event refusal. All configured scenarios must render successfully. The
+previously unapplied proposal file is removed; its contents remain in the prior
+review-evidence commit rather than being described as a pending patch.
 
 ## Declared built-in targets
 
