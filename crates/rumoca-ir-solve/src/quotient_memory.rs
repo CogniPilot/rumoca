@@ -1,6 +1,7 @@
 //! Check numeric event-buffer ownership independently of source lowering.
 
 use super::*;
+use std::collections::BTreeMap;
 
 type Outputs<'a> = BTreeMap<usize, (&'a [LinearOp], usize, usize)>;
 
@@ -79,7 +80,7 @@ fn validate_root(
         LinearOp::Unary {
             dst,
             op,
-            src: ratio,
+            arg: ratio,
         },
         LinearOp::StoreOutput { src },
     ] = program
@@ -141,7 +142,7 @@ fn ratio_indicator(prefix: &[LinearOp], ratio: Reg) -> Option<Vec<LinearOp>> {
         LinearOp::Unary {
             dst: sine,
             op: UnaryOp::Sin,
-            src: phase,
+            arg: phase,
         },
         LinearOp::Const {
             dst: zero,

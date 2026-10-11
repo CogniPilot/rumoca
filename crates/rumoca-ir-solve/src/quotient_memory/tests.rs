@@ -14,7 +14,7 @@ fn fixture() -> SolveProblem {
         LinearOp::Unary {
             dst: 1,
             op: UnaryOp::Floor,
-            src: 0,
+            arg: 0,
         },
         LinearOp::StoreOutput { src: 1 },
     ]);
