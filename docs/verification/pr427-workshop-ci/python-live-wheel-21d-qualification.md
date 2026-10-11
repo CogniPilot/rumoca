@@ -20,4 +20,4 @@ Install that actual wheel into the owned virtual environment with `pip install -
 python crates/rumoca-bind-python/tests/export_test.py --require-backend jax --require-backend casadi
 ```
 
-The adjacent JSON pins wheel/native-library/raw-log/guardian/source-manifest hashes. Build elapsed 291.69 s, peak group RSS 2,903,028 KiB; live script elapsed 4.91 s, peak 358,508 KiB. Both guardians exited 0 without a resource stop. The separate actual neural-model JAX/CasADi initialization refusal remains a workshop blocker; this small wheel proof does not claim all authored examples work.
+The adjacent JSON pins wheel/native-library/raw-log/guardian/source-manifest hashes. Build elapsed 291.69 s, peak group RSS 2,903,028 KiB; live script elapsed 4.91 s, peak 358,508 KiB. Both guardians exited 0 without a resource stop. At this original compiler source the neural-model JAX/CasADi initialization refusal remained a workshop blocker; this small wheel proof does not claim all authored examples work. The later [static Integer export qualification](static-integer-export-qualification.md) records the actual shared-owner repair and ten passing backend cells at source `92f916958`.

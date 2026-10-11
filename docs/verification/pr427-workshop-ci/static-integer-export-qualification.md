@@ -1,0 +1,19 @@
+# Actual neural export qualification
+
+Source `92f9169585948afafe8042ecb28b6c2763994930` passes the existing mandatory JAX and CasADi numerical fixtures: two Rust tests, ten backend/model cells. Each fixture executes the unchanged sources for SympyDecay, NeuralODETensor (`nHidden=32`), NeuralPredatorPrey (`nHidden=24`), NeuralLatentOscillator (`nHidden=128`, eight states), and NeuralODEBackprop (`nHidden=12`, `nBatch=8`, 218 states). This is the actual five-model fixture roster; it is not a recovered 32-model matrix or a 100k-variant qualification.
+
+Both backends compare completed parameter/state initialization and RHS values at two state/time points against the canonical native runtime. JAX also executes JIT, a forward directional derivative and a reverse gradient. CasADi executes a symbolic state Jacobian. The derivative oracle is a native central finite difference with the fixture’s unchanged bounds. Actual dependencies were JAX 0.9.2, CasADi 3.7.2, NumPy 2.4.3 and Python 3.12.13.
+
+Published source `21d64ecaa9d205b671598991ee8c4d2f556fed6c` failed both fixtures after SympyDecay: NeuralODETensor’s checked initialization updates could not cross the scalar projection because every Integer call input was refused. The remaining three models were unrun in those attempts. Tensor’s initializer has 1088 ordered parameter updates and no residual/projection solve; this repair admits only Integer captures proved from the existing emitted constant/move prefix. Runtime inputs, overwritten captures, invalid values and exhausted budgets retain refusal. Capability flags and templates are unchanged.
+
+An independent original source control exposed an existing scalar ABI error: passing Integer `9007199254740993` into an Integer function input produced derivative `5` instead of exact `6`. The repaired declared Integer boundary reuses the checked Integer evaluator and checked scalar ABI before emission. An initial placement also rejected a Real formal input’s legitimate Integer-to-Real conversion; that unchanged negative control caught the mistake, and the final placement preserves Real conversion. Final public controls pass both tests; constructor-backed capture controls pass all three tests. The JSON retains earlier compilation failures and the actual intermediate one-pass/one-fail result. No failure is counted as a successful workshop demonstration.
+
+Existing backend CI selects these fixtures through the `jax_` and `casadi_` filters in `TEMPLATE_RUNTIME_GROUPS`. Reproduce through the supported Nix environment with the required packages, owned Cargo/TMPDIR directories, and the pinned environment’s `python` first on PATH (unset Nix `PYTHONPATH`):
+
+```sh
+cargo test -p rumoca --no-default-features --features template-runtime-tests --test suite_template_runtime workshop_numerical_examples::jax_actual_workshop_examples_jit_initialize_and_differentiate -- --exact --nocapture
+cargo test -p rumoca --no-default-features --features template-runtime-tests --test suite_template_runtime workshop_numerical_examples::casadi_actual_workshop_examples_initialize_evaluate_and_differentiate -- --exact --nocapture
+cargo test -p rumoca --test suite_core reported_bug_runtime::static_integer_capture:: -- --nocapture
+```
+
+JAX ran one test with 52 filtered, 202.32 seconds of test time; CasADi ran one with 52 filtered, 23.06 seconds. JAX’s guardian included compilation: 362.86 seconds, peak aggregate RSS 3,462,376 KiB, peak cache 4,583,755,776 bytes. All final attempts exited zero within the unchanged 600-second, 4-GiB RSS and 8-GiB cache limits. Raw logs, guardians, source manifests and hashes are pinned in the adjacent JSON. Generated modules/native snapshots belonged to dropped TempDirs and are not claimed as retained artifacts. Installed-wheel neural live defaults, larger variants, fresh instrumented coverage and remote CI require separate proof.
