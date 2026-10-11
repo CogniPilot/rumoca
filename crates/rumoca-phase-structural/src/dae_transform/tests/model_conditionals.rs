@@ -1,13 +1,12 @@
 //! Shared function callbacks retain their issued model-scope suspension.
 use super::*;
 
-#[test]
-fn nested_model_arm_function_interval_survives_structural_replay() {
+fn nested_function_model() -> dae::Dae {
     let text = "if c then if d then f(3) else 4 else 5; f(6)";
     let mut sources = SourceMap::new();
     let source = sources.add("nested_function.mo", text);
     let at = source_provenance(source, text, text);
-    let dae = dae::Dae::construct(sources, |dae| {
+    dae::Dae::construct(sources, |dae| {
         let real = dae.types(|types| {
             types.intern(
                 rumoca_core::TypeId::new(0),
@@ -61,7 +60,12 @@ fn nested_model_arm_function_interval_survives_structural_replay() {
         dae.expressions(|e| e.at(at).call(function, 0, [six]))?;
         Ok(())
     })
-    .expect("one global function, two arm-local and global occurrences");
+    .expect("one global function, two arm-local and global occurrences")
+}
+
+#[test]
+fn nested_model_arm_function_interval_survives_structural_replay() {
+    let dae = nested_function_model();
     let snapshot = |view: dae::DaeView<'_>| {
         let f = view.function(view.function_id(0).unwrap()).unwrap();
         let range = f.construction_expression_range();
@@ -84,4 +88,75 @@ fn nested_model_arm_function_interval_survives_structural_replay() {
     let wire = serde_json::to_vec(&second).unwrap();
     let replay: dae::Dae = serde_json::from_slice(&wire).unwrap();
     assert_eq!(replay.inspect(snapshot), (1, 2));
+}
+
+#[test]
+fn model_guard_operations_survive_a_settled_literal_plan() {
+    let original = nested_function_model();
+    let plan = original.inspect(|view| {
+        let mut plan = vec![None; view.expression_count()];
+        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+        for owner in 0..view.model_conditional_count() {
+            let owner = view.model_conditional_at(owner).unwrap();
+            for expression in owner.guard_operations() {
+                let values = evaluator.expression(expression).unwrap();
+                plan[expression.index() as usize] =
+                    Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
+                        scalar: dae::ScalarType::Boolean,
+                        dimensions: Box::new([]),
+                        values: values.into(),
+                    }));
+            }
+        }
+        plan
+    });
+    let rebuilt = reconstruction::rebuild_literal_expressions(&original, &plan)
+        .expect("settled values do not replace construction-issued guard operations");
+    rebuilt.inspect(|view| {
+        assert_eq!(view.model_conditional_count(), 2);
+        for owner in 0..2 {
+            let owner = view.model_conditional_at(owner).unwrap();
+            let operations: Vec<_> = owner.guard_operations().collect();
+            assert_eq!(
+                operations.len(),
+                if owner.parent_arm().is_some() { 3 } else { 1 }
+            );
+            assert!(matches!(
+                view.expression(operations[0]).unwrap().operation(),
+                dae::ExpressionOperation::Unary {
+                    operator: dae::UnaryOperator::Not,
+                    ..
+                }
+            ));
+        }
+    });
+    let replay: dae::Dae = serde_json::from_slice(&serde_json::to_vec(&rebuilt).unwrap()).unwrap();
+    assert_eq!(replay.inspect(|view| view.model_conditional_count()), 2);
+}
+
+#[test]
+fn ordinary_conditional_still_settles_to_its_selected_value() {
+    let mut sources = SourceMap::new();
+    let text = "if true then 3 else 4";
+    let source = sources.add("ordinary_conditional.mo", text);
+    let at = source_provenance(source, text, text);
+    let original = dae::Dae::construct(sources, |dae| {
+        dae.expressions(|e| {
+            let condition = e.at(at).literal(dae::DaeLiteral::Boolean(true))?;
+            let taken = e.at(at).literal(dae::DaeLiteral::Real(3.0))?;
+            let fallback = e.at(at).literal(dae::DaeLiteral::Real(4.0))?;
+            e.at(at).conditional([(condition, taken)], fallback)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    let plan = original.inspect(|view| vec![None; view.expression_count()]);
+    let rebuilt = reconstruction::rebuild_literal_expressions(&original, &plan).unwrap();
+    rebuilt.inspect(|view| {
+        assert_eq!(view.model_conditional_count(), 0);
+        assert!((0..view.expression_count()).all(|index| !matches!(
+            view.expression(view.expression_id(index).unwrap()).unwrap().operation(),
+            dae::ExpressionOperation::Conditional(_)
+        )));
+    });
 }

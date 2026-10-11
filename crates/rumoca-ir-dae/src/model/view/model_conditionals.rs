@@ -20,6 +20,28 @@ impl<'dae> ModelConditionalView<'dae> {
             .arms
             .map(|arm| ExprId::from_raw(self.view.dae.storage.model_arms[arm as usize].guard))
     }
+    /// Canonical operations consumed by this checked activation owner.
+    /// The source condition may settle; its issued negation and parent guards
+    /// retain their operation identities when a whole DAE is reconstructed.
+    pub fn guard_operations(self) -> impl Iterator<Item = ExprId<'dae>> {
+        let [taken, fallback] = self.guards();
+        let operations = if self.parent_arm().is_none() {
+            [Some(fallback), None, None]
+        } else {
+            let negated = match self
+                .view
+                .expression(fallback)
+                .expect("checked model guard")
+                .operation()
+            {
+                ExpressionOperation::Conditional(operands) => operands.get(1),
+                _ => None,
+            }
+            .expect("checked model owner proves negated guard operand");
+            [Some(negated), Some(taken), Some(fallback)]
+        };
+        operations.into_iter().flatten()
+    }
     pub fn parent_arm(self) -> Option<ModelArm<'dae>> {
         self.view.dae.storage.model_arms[self.entry().arms[0] as usize]
             .parent

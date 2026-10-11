@@ -5,14 +5,28 @@ use rumoca_ir_dae as dae;
 pub(super) struct ModelConditionalReplay<'target> {
     owners: Vec<Option<dae::ModelConditional<'target>>>,
     arms: Vec<dae::ModelArm<'target>>,
+    guards: rustc_hash::FxHashSet<u32>,
 }
 
 impl<'target> ModelConditionalReplay<'target> {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(source: dae::DaeView<'_>) -> Self {
         Self {
             owners: Vec::new(),
             arms: Vec::new(),
+            guards: (0..source.model_conditional_count())
+                .flat_map(|owner| {
+                    source
+                        .model_conditional_at(owner)
+                        .expect("checked conditional owner")
+                        .guard_operations()
+                        .map(|guard| guard.index())
+                })
+                .collect(),
         }
+    }
+
+    pub(super) fn owns_guard(&self, expression: u32) -> bool {
+        self.guards.contains(&expression)
     }
 
     pub(super) fn prepare<'source>(

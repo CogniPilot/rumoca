@@ -261,6 +261,30 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         Ok(rebuilt)
     }
 
+    /// Replay an exact guard operation selected by its model conditional owner.
+    /// STRUCT-T10 may settle its operands, but the owner's parent/arm authority
+    /// still consumes this canonical operation, not its selected value.
+    pub(super) fn rebuild_model_guard(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let source = self
+            .source
+            .expression(source_id)
+            .expect("issued model guard");
+        let rebuilt = match source.operation() {
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.rebuild_conditional_arms(operands, source.provenance())?
+            }
+            operation => {
+                let value_type = self.types[source.value_type_id().index() as usize];
+                self.rebuild_operation(source_id, operation, source.provenance(), value_type)?
+            }
+        };
+        self.rebuilt[source_id.index() as usize] = Some(rebuilt);
+        Ok(rebuilt)
+    }
+
     /// Rebuild an expression from a checked Modelica function body after
     /// substituting the exact arguments of the call being differentiated.
     pub(super) fn rebuild_instantiated(

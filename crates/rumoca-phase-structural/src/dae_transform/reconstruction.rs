@@ -786,7 +786,11 @@ fn rebuild_expression_segment<'source, 'target>(
                 .source
                 .expression_id(index)
                 .expect("finalized expression ordinal resolves");
-            rebuilder.rebuild(source_id)?;
+            if quotients.owns_model_guard(source_id) {
+                rebuilder.rebuild_model_guard(source_id)?;
+            } else {
+                rebuilder.rebuild(source_id)?;
+            }
             Ok(())
         })?;
     }

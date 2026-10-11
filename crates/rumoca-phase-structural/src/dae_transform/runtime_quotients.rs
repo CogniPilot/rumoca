@@ -73,6 +73,10 @@ pub(super) struct QuotientExpressionContext<'source, 'borrow, 'target> {
 }
 
 impl<'target> RuntimeQuotientReplayPlan<'target> {
+    pub(super) fn owns_model_guard(&self, expression: dae::ExprId<'_>) -> bool {
+        self.conditionals.owns_guard(expression.index())
+    }
+
     pub(super) fn prepare_model_expression(
         &mut self,
         source: dae::DaeView<'_>,
@@ -96,7 +100,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
     }
     pub(super) fn collect(source: dae::DaeView<'_>) -> Result<Self, dae::DaeConstructionError> {
         let mut plan = Self {
-            conditionals: model_conditionals::ModelConditionalReplay::new(),
+            conditionals: model_conditionals::ModelConditionalReplay::new(source),
             owners: Vec::with_capacity(source.runtime_quotient_owner_count()),
             expressions: vec![None; source.expression_count()],
             relations: vec![None; source.relation_count()],
