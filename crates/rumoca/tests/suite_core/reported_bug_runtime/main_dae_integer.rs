@@ -436,9 +436,9 @@ fn model_arm_relation_protects_inactive_arithmetic_without_a_quotient() {
         assert_eq!(result.times.last(), Some(&opts.t_end));
         assert!(result.times.iter().all(|time| time.is_finite()));
         assert!(result.times.windows(2).all(|pair| pair[0] <= pair[1]));
-        // timeline::merge_output_times_with_event_observations permits event
-        // rows. Require the original grid and allow extras only at its sole
-        // event, using the canonical timestamp matcher, then check all states.
+        // The common ME session publishes event-left and settled observations.
+        // Require the original grid and bound any extra observation to the
+        // source event at 0.5, then check every recorded state and output.
         for ordinal in 0..=10 {
             let requested = ordinal as f64 / 10.0;
             let count = result
