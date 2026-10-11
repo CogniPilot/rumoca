@@ -25,6 +25,7 @@ Run these examples from the Rumoca repository root. They use the tracked
 model, whose state is `x` and whose tunable decay rate is `k`.
 
 ```python
+from pathlib import Path
 import rumoca as rm
 
 session = rm.Session()
@@ -69,9 +70,12 @@ Runtime knobs are scenario overrides, not a separate execution surface:
 session = rm.Session()
 run = session.run_scenario(
     scenario,
-    overrides={"t_end": 2.0, "mode": "lockstep", "output": "results.csv"},
+    overrides={"t_end": 2.0, "mode": "lockstep", "output": str(Path("results.csv").resolve())},
 )
 ```
+
+Relative output paths are resolved beside the scenario file; an absolute path
+as above writes into the current working directory.
 
 ## Inspecting a model
 
