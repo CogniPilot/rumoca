@@ -39,6 +39,10 @@
 //! let result = session.compile_model("MyPackage.MyModel")?;
 //! ```
 
+#[cfg(test)]
+mod adversarial_function_projection_tests;
+#[cfg(test)]
+mod adversarial_when_call_tests;
 pub mod cache;
 mod codegen_api;
 mod codegen_target;
@@ -232,8 +236,3 @@ pub mod compile {
 
 // Root exports intentionally kept minimal to avoid a "god facade".
 pub use compile::{Session, SessionConfig};
-
-#[cfg(test)]
-mod adversarial_when_call_tests;
-#[cfg(test)]
-mod adversarial_function_projection_tests;

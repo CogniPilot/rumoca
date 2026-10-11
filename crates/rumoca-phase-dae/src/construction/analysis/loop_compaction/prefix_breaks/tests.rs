@@ -35,6 +35,44 @@ fn entry() -> Environment {
     ])
 }
 
+fn compare_execution(
+    range: (i64, i64, i64),
+    operator: &OpBinary,
+    threshold: i64,
+    reverse: bool,
+) -> bool {
+    let (lower, step, upper) = range;
+    let (lhs, rhs) = if reverse {
+        (integer(threshold), var("i"))
+    } else {
+        (var("i"), integer(threshold))
+    };
+    let source = loop_source(
+        lower,
+        step,
+        upper,
+        vec![
+            leading_break(binary(operator.clone(), lhs, rhs)),
+            assign(
+                "y",
+                binary(
+                    OpBinary::Add,
+                    var("y"),
+                    binary(OpBinary::Add, var("u"), var("i")),
+                ),
+            ),
+        ],
+    );
+    let after = truncate_prefix_breaks(&source);
+    let expected = interpret(&source, &entry()).expect("bounded source executes its break");
+    let actual = interpret(&after, &entry()).expect("bounded compact prefix executes");
+    assert_eq!(
+        actual, expected,
+        "{lower}:{step}:{upper}, {operator:?}, {threshold}, reverse={reverse}"
+    );
+    source != after
+}
+
 #[test]
 fn finite_prefix_breaks_preserve_observable_execution_in_both_directions() {
     let operators = [
@@ -57,37 +95,12 @@ fn finite_prefix_breaks_preserve_observable_execution_in_both_directions() {
         for operator in &operators {
             for threshold in -10..=10 {
                 for reverse in [false, true] {
-                    let (lhs, rhs) = if reverse {
-                        (integer(threshold), var("i"))
-                    } else {
-                        (var("i"), integer(threshold))
-                    };
-                    let source = loop_source(
-                        lower,
-                        step,
-                        upper,
-                        vec![
-                            leading_break(binary(operator.clone(), lhs, rhs)),
-                            assign(
-                                "y",
-                                binary(
-                                    OpBinary::Add,
-                                    var("y"),
-                                    binary(OpBinary::Add, var("u"), var("i")),
-                                ),
-                            ),
-                        ],
-                    );
-                    let after = truncate_prefix_breaks(&source);
-                    rewritten += usize::from(source != after);
-                    let expected =
-                        interpret(&source, &entry()).expect("bounded source executes its break");
-                    let actual =
-                        interpret(&after, &entry()).expect("bounded compact prefix executes");
-                    assert_eq!(
-                        actual, expected,
-                        "{lower}:{step}:{upper}, {operator:?}, {threshold}, reverse={reverse}"
-                    );
+                    rewritten += usize::from(compare_execution(
+                        (lower, step, upper),
+                        operator,
+                        threshold,
+                        reverse,
+                    ));
                 }
             }
         }
