@@ -77,16 +77,6 @@ int main(void) {
     return 0;
 }
 
-#[test]
-fn c_ode_selected_regions_reject_real_equality_outside_functions() {
-    // Retain the original illegal trigger as a language-admission control.
-    let source = SOURCE.replace("noEvent(x < 0 or x > 0)", "x <> 0");
-    let failure = Compiler::new()
-        .model("Probe")
-        .compile_str(&source, "selected_vector_real_equality.mo")
-        .expect_err("MLS §3.5 forbids Real equality outside functions");
-    assert!(failure.to_string().contains("ER029"), "{failure}");
-}
 "#,
     )
     .unwrap();
@@ -102,6 +92,17 @@ fn c_ode_selected_regions_reject_real_equality_outside_functions() {
         "compile selected C regions",
     );
     run_checked(&mut Command::new(executable), "execute selected C regions");
+}
+
+#[test]
+fn c_ode_selected_regions_reject_real_equality_outside_functions() {
+    // Retain the original illegal trigger as a language-admission control.
+    let source = SOURCE.replace("noEvent(x < 0 or x > 0)", "x <> 0");
+    let failure = Compiler::new()
+        .model("Probe")
+        .compile_str(&source, "selected_vector_real_equality.mo")
+        .expect_err("MLS §3.5 forbids Real equality outside functions");
+    assert!(failure.to_string().contains("ER029"), "{failure}");
 }
 
 #[test]
