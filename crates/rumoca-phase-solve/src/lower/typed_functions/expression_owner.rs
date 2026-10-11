@@ -1,7 +1,13 @@
 //! Integer quotients and comparisons use the canonical typed expression owner.
 
 use super::*;
+use crate::lower::call_scoped_actions::CallAssertionProjection;
 use rumoca_core::Span;
+
+pub(super) struct RegisteredExactExpression<'dae> {
+    call: RegisteredCall<'dae>,
+    assertion_projections: Box<[CallAssertionProjection]>,
+}
 
 pub(crate) struct ExactExpressionForm<'dae> {
     expression: dae::ExprId<'dae>,
@@ -147,8 +153,8 @@ impl<'dae> PureCallRegistry<'dae> {
         view: dae::DaeView<'dae>,
         form: &ExactExpressionForm<'dae>,
     ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
-        if let Some(site) = self.identities.expressions.get(&form.expression) {
-            return Ok(site.clone());
+        if let Some(registered) = self.identities.expressions.get(&form.expression) {
+            return Ok(registered.call.clone());
         }
         let node = view
             .expression(form.expression)
@@ -162,6 +168,7 @@ impl<'dae> PureCallRegistry<'dae> {
         let output = lower_primitive_type(view, node.value_type_id(), arithmetic_profile())?;
         let (callees, predicate_ranges, assertions, assertion_slots) =
             self.register_expression_calls(view, [(form.expression, ())])?;
+        let assertion_projections = assertions.iter().map(|entry| entry.projection).collect();
         let assertions = assertions
             .into_iter()
             .map(|entry| {
@@ -217,9 +224,26 @@ impl<'dae> PureCallRegistry<'dae> {
                 recursive,
             },
         };
+        self.identities.expressions.insert(
+            form.expression,
+            RegisteredExactExpression {
+                call: registered.clone(),
+                assertion_projections,
+            },
+        );
+        Ok(registered)
+    }
+
+    pub(in crate::lower) fn exact_assertion_projection(
+        &self,
+        expression: dae::ExprId<'dae>,
+        assertion: usize,
+    ) -> Option<CallAssertionProjection> {
         self.identities
             .expressions
-            .insert(form.expression, registered.clone());
-        Ok(registered)
+            .get(&expression)?
+            .assertion_projections
+            .get(assertion)
+            .copied()
     }
 }

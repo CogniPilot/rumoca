@@ -325,7 +325,7 @@ struct CallRegistration<'dae> {
     calls: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
     /// SOLVE-C70 owners, keyed by the DAE family they lower.
     families: HashMap<dae::ContinuousFamilyId<'dae>, solve::SolvePureCallSite>,
-    expressions: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    expressions: HashMap<dae::ExprId<'dae>, expression_owner::RegisteredExactExpression<'dae>>,
     /// Functions whose call SCC was already examined for a SOLVE-C62 group.
     examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
     /// What each function contributes to every owner of it, derived once.

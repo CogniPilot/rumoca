@@ -37,6 +37,23 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         .transpose()?
         .map(std::sync::Arc::<[solve::LinearOp]>::from);
         for (output_offset, assertion) in registered.callee.assertions.iter().enumerate() {
+            let projection = match invocation {
+                TypedCallInvocation::Call { .. } => CallAssertionProjection {
+                    owner: registered.callee.owner,
+                    output_offset,
+                },
+                TypedCallInvocation::Expression(expression) => self
+                    .layout
+                    .pure_calls
+                    .borrow()
+                    .exact_assertion_projection(expression, output_offset)
+                    .ok_or_else(|| {
+                        LowerError::contract(
+                            "typed expression lost its issued assertion projection",
+                            call_span,
+                        )
+                    })?,
+            };
             let message_owner = AssertionMessageOwner::Specialized {
                 invocation,
                 registered,
@@ -60,10 +77,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 message,
                 assertion.level,
                 assertion.provenance,
-                Some(CallAssertionProjection {
-                    owner: registered.callee.owner,
-                    output_offset,
-                }),
+                Some(projection),
             )?;
         }
         Ok(())
