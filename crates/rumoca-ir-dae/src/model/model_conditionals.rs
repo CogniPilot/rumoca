@@ -124,6 +124,12 @@ impl<'dae> DaeConstruction<'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         if self.storage.active_function_boundary {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
@@ -201,6 +207,12 @@ impl<'dae> DaeConstruction<'dae> {
     ) -> Result<(), DaeConstructionError> {
         let next = arm.map(|arm| arm.index);
         if self.storage.active_function_boundary && next.is_some() {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
@@ -223,6 +235,12 @@ impl<'dae> DaeConstruction<'dae> {
                 .expression
                 .is_some()
             {
+                eprintln!(
+                    "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                    file!(),
+                    line!(),
+                    std::backtrace::Backtrace::force_capture()
+                );
                 return Err(DaeConstructionError::InvalidModelActivationScope {
                     span: provenance.span(),
                 });
@@ -231,6 +249,12 @@ impl<'dae> DaeConstruction<'dae> {
         let current = self.storage.active_model_arm;
         if !(parent(next) == current || parent(current) == next || parent(next) == parent(current))
         {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
@@ -261,6 +285,12 @@ impl<'dae> DaeConstruction<'dae> {
             .ok_or_else(|| unknown("model conditional", owner.owner, owner.provenance))?;
         let provenance = entry.provenance;
         if self.storage.active_function_boundary {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
@@ -275,6 +305,12 @@ impl<'dae> DaeConstruction<'dae> {
         let arm = entry.arms[usize::from(!selected)];
         let parent = self.storage.model_arms[arm as usize].parent;
         if self.storage.active_model_arm != parent {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
@@ -295,6 +331,12 @@ impl<'dae> DaeConstruction<'dae> {
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let entry = self.storage.model_conditionals[owner.owner as usize].clone();
         if self.storage.active_function_boundary {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: entry.provenance.span(),
             });
@@ -307,6 +349,12 @@ impl<'dae> DaeConstruction<'dae> {
             ));
         }
         if self.storage.active_model_arm != self.storage.model_arms[entry.arms[0] as usize].parent {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: entry.provenance.span(),
             });
@@ -317,6 +365,12 @@ impl<'dae> DaeConstruction<'dae> {
             if scope.is_some_and(|scope| {
                 scope != arm && !self.storage.active_model_ancestors.contains(&scope)
             }) {
+                eprintln!(
+                    "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                    file!(),
+                    line!(),
+                    std::backtrace::Backtrace::force_capture()
+                );
                 return Err(DaeConstructionError::InvalidModelActivationScope {
                     span: entry.provenance.span(),
                 });
@@ -344,6 +398,12 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         if parent != self.active_model_arm {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         self.expect_model_arm_visible(condition.index(), at)?;
@@ -376,6 +436,12 @@ impl Storage {
                 && conditional_guard(guards[1].index(), true)
         };
         if !valid {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         Ok(())
@@ -407,6 +473,12 @@ impl Storage {
             return Ok(());
         };
         if self.active_function_boundary {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         if self.active_model_arm.is_some() {
@@ -414,6 +486,12 @@ impl Storage {
         }
         let owner = self.model_arms[scope as usize].owner;
         if self.model_conditionals[owner as usize].expression.is_none() {
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         Ok(())
@@ -430,6 +508,19 @@ impl Storage {
             .copied()
             .ok_or_else(|| unknown("expression", expression.index(), at))?;
         if scope.is_some() && self.owned_quotient_surface.is_none() {
+            eprintln!(
+                "[TEMP model-arm publication] expression={} node={:?} scope={scope:?} active={:?} ancestors={:?} at={at:?}",
+                expression.index(),
+                self.expressions.nodes[expression.index() as usize],
+                self.active_model_arm,
+                self.active_model_ancestors
+            );
+            eprintln!(
+                "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                file!(),
+                line!(),
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         Ok(())
@@ -450,6 +541,21 @@ impl Storage {
                 .closing_model_conditional
                 .is_some_and(|owner| self.model_arms[scope as usize].owner == owner);
             if !own_closing_arm && !self.active_model_ancestors.contains(&scope) {
+                eprintln!(
+                    "[TEMP model-arm visibility] expression={expression} node={:?} scope={scope} arm={:?} conditional={:?} active={:?} ancestors={:?} closing={:?} at={at:?}",
+                    self.expressions.nodes[expression as usize],
+                    self.model_arms[scope as usize],
+                    self.model_conditionals[self.model_arms[scope as usize].owner as usize],
+                    self.active_model_arm,
+                    self.active_model_ancestors,
+                    self.closing_model_conditional
+                );
+                eprintln!(
+                    "[TEMP model-arm rejection] site={}:{} backtrace={}",
+                    file!(),
+                    line!(),
+                    std::backtrace::Backtrace::force_capture()
+                );
                 return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
             }
         }
