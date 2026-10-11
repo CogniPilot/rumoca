@@ -4524,20 +4524,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
         let scheduled = self.active_clock.is_none() && !registered.callee.assertions.is_empty();
         if scheduled {
-            self.schedule_typed_pure_call_assertions(call, function, &registered, span)
-                .map_err(|error| match error {
-                    // A refused feature already names its own construct and
-                    // span; restating it as a specialization failure would
-                    // move the diagnostic away from the source it rejects.
-                    LowerError::Unsupported { .. } => error,
-                    error => LowerError::non_computable(
-                        format!(
-                            "typed assertions for `{}` could not be specialized: {error}",
-                            self.function_name_for_diagnostic(function)
-                        ),
-                        span,
+            self.schedule_typed_pure_call_assertions(
+                super::call_scoped_actions::TypedCallInvocation::Call { call, function },
+                &registered,
+                span,
+            )
+            .map_err(|error| match error {
+                // A refused feature already names its own construct and
+                // span; restating it as a specialization failure would
+                // move the diagnostic away from the source it rejects.
+                LowerError::Unsupported { .. } => error,
+                error => LowerError::non_computable(
+                    format!(
+                        "typed assertions for `{}` could not be specialized: {error}",
+                        self.function_name_for_diagnostic(function)
                     ),
-                })?;
+                    span,
+                ),
+            })?;
         }
         Ok(scheduled)
     }
@@ -4638,7 +4642,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.typed_pure_call_cache
             .insert(key, (start, registered.clone()));
         if !self.call_action_compilation && !registered.callee.assertions.is_empty() {
-            self.schedule_typed_pure_call_assertions(call, function_id, &registered, span)?;
+            self.schedule_typed_pure_call_assertions(
+                super::call_scoped_actions::TypedCallInvocation::Call {
+                    call,
+                    function: function_id,
+                },
+                &registered,
+                span,
+            )?;
         }
         Ok(Some((start, registered)))
     }

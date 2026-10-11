@@ -14,6 +14,8 @@ pub(super) struct RegisteredExpressionAssertion<'dae, Scope> {
     pub(super) assertion: RegisteredAssertion<'dae>,
     pub(super) projection: CallAssertionProjection,
     pub(super) scope: Scope,
+    pub(super) source_result_count: usize,
+    pub(super) slot_start: usize,
 }
 
 /// Whether a call targets a native `ModelicaStandardTables` interpolation
@@ -106,6 +108,8 @@ impl<'dae> PureCallRegistry<'dae> {
                         output_offset,
                     },
                     scope,
+                    source_result_count: registered.result_leaf_count,
+                    slot_start: start,
                 },
             ));
             callees.insert(owner, registered);

@@ -384,20 +384,12 @@ pub(super) fn assertion_layout<'dae>(
         let start = slots.len();
         slots.extend(nested.assertion_slots.iter().cloned());
         predicate_ranges.insert(*nested_call, start..slots.len());
-        let shift = |output: usize| result_leaf_count + start + output - nested.result_leaf_count;
-        registered.extend(nested.assertions.iter().map(|assertion| {
-            RegisteredAssertion {
-                predicate_output: shift(assertion.predicate_output),
-                message: assertion.message,
-                message_values: assertion
-                    .message_values
-                    .iter()
-                    .map(|&(value, output)| (value, shift(output)))
-                    .collect(),
-                level: assertion.level,
-                provenance: assertion.provenance,
-            }
-        }));
+        let target_start = result_leaf_count
+            .checked_add(start)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        for assertion in &nested.assertions {
+            registered.push(assertion.project_outputs(nested.result_leaf_count, target_start)?);
+        }
     }
     Ok(AssertionLayout {
         slots,
@@ -405,6 +397,35 @@ pub(super) fn assertion_layout<'dae>(
         direct_message_values,
         registered,
     })
+}
+
+impl<'dae> RegisteredAssertion<'dae> {
+    /// Project the same predicate/message tuple into its enclosing owner.
+    pub(super) fn project_outputs(
+        &self,
+        source_result_count: usize,
+        target_slot_start: usize,
+    ) -> Result<Self, solve::SolveProgramConstructionError> {
+        let shift = |output: usize| {
+            output
+                .checked_sub(source_result_count)
+                .and_then(|slot| target_slot_start.checked_add(slot))
+                .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
+                    provenance: self.provenance.span(),
+                })
+        };
+        Ok(Self {
+            predicate_output: shift(self.predicate_output)?,
+            message: self.message,
+            message_values: self
+                .message_values
+                .iter()
+                .map(|&(value, output)| shift(output).map(|output| (value, output)))
+                .collect::<Result<_, _>>()?,
+            level: self.level,
+            provenance: self.provenance,
+        })
+    }
 }
 
 /// The scalar output type of one converted message value, or `None` for a

@@ -1,6 +1,7 @@
 //! Integer quotients and comparisons use the canonical typed expression owner.
 
 use super::*;
+use rumoca_core::Span;
 
 pub(crate) struct ExactExpressionForm<'dae> {
     expression: dae::ExprId<'dae>,
@@ -49,8 +50,7 @@ impl<'dae> ExactExpressionForm<'dae> {
                         _ => supported = false,
                     }
                 }
-                dae::ExpressionOperation::Call { .. }
-                | dae::ExpressionOperation::FunctionValue { .. }
+                dae::ExpressionOperation::FunctionValue { .. }
                 | dae::ExpressionOperation::FunctionFoldParameter { .. }
                 | dae::ExpressionOperation::FunctionFoldOutput { .. }
                 | dae::ExpressionOperation::ClockTransfer { .. }
@@ -84,6 +84,31 @@ impl<'dae> ExactExpressionForm<'dae> {
 
     pub(crate) fn input_readers(&self) -> impl Iterator<Item = dae::ExprId<'dae>> + '_ {
         self.inputs.iter().map(|(_, _, reader)| *reader)
+    }
+
+    fn load_inputs<'builder, 'program>(
+        &self,
+        view: dae::DaeView<'dae>,
+        builder: &'builder mut solve::TypedProgramBuilder<'program>,
+        inputs: &[solve::ProgramSlot<'program>],
+        provenance: Span,
+    ) -> Result<ExpressionLowerer<'builder, 'program, 'dae>, solve::SolveProgramConstructionError>
+    {
+        let mut lowerer = ExpressionLowerer::for_model_coordinates(view, builder, HashMap::new());
+        for ((key, ty, _), input) in self.inputs.iter().zip(inputs) {
+            let register = lowerer.builder.load(*input, provenance)?;
+            match key {
+                ExpressionInput::Coordinate(key) => {
+                    lowerer
+                        .model_coordinates
+                        .insert(*key, LoweredValue::scalar(*ty, register));
+                }
+                ExpressionInput::Binder(domain, ordinal) => {
+                    lowerer.binders.insert((domain.index(), *ordinal), register);
+                }
+            }
+        }
+        Ok(lowerer)
     }
 }
 
@@ -121,7 +146,7 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         form: &ExactExpressionForm<'dae>,
-    ) -> Result<solve::SolvePureCallSite, solve::SolveProgramConstructionError> {
+    ) -> Result<RegisteredCall<'dae>, solve::SolveProgramConstructionError> {
         if let Some(site) = self.identities.expressions.get(&form.expression) {
             return Ok(site.clone());
         }
@@ -135,55 +160,66 @@ impl<'dae> PureCallRegistry<'dae> {
             .map(|(_, ty, _)| lower_primitive_type(view, *ty, arithmetic_profile()))
             .collect::<Result<Vec<_>, _>>()?;
         let output = lower_primitive_type(view, node.value_type_id(), arithmetic_profile())?;
+        let (callees, predicate_ranges, assertions, assertion_slots) =
+            self.register_expression_calls(view, [(form.expression, ())])?;
+        let assertions = assertions
+            .into_iter()
+            .map(|entry| {
+                let target_start = entry.slot_start.checked_add(1).ok_or(
+                    solve::SolveProgramConstructionError::InvalidCallOutput { provenance },
+                )?;
+                entry
+                    .assertion
+                    .project_outputs(entry.source_result_count, target_start)
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
+        let mut outputs = vec![solve::SolvePureCallOutput::result(output)];
+        outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
+        let recursive = callees.values().any(|callee| callee.recursive);
         let identity = self.identities.issue(provenance)?;
         let owner = self.table.add_owner(
             identity,
             inputs,
-            vec![solve::SolvePureCallOutput::result(output)],
+            outputs,
             provenance,
             |builder, inputs, outputs| {
-                let values = form
-                    .inputs
-                    .iter()
-                    .zip(inputs)
-                    .map(|((key, ty, _), input)| {
-                        let register = builder.load(*input, provenance)?;
-                        Ok((*key, LoweredValue::scalar(*ty, register)))
-                    })
-                    .collect::<Result<Vec<_>, solve::SolveProgramConstructionError>>()?;
-                let mut lowerer =
-                    ExpressionLowerer::for_model_coordinates(view, builder, HashMap::new());
-                for (key, value) in values {
-                    match key {
-                        ExpressionInput::Coordinate(key) => {
-                            lowerer.model_coordinates.insert(key, value);
-                        }
-                        ExpressionInput::Binder(domain, ordinal) => {
-                            lowerer.binders.insert(
-                                (domain.index(), ordinal),
-                                value.only_register(provenance)?,
-                            );
-                        }
-                    }
-                }
+                let mut lowerer = form.load_inputs(view, builder, inputs, provenance)?;
+                lowerer.callees = callees;
+                lowerer.predicate_ranges = predicate_ranges;
+                lowerer.predicate_values = vec![None; assertion_slots.len()];
+                lowerer.assertion_slots = assertion_slots.clone();
                 let value = lowerer
                     .expression(form.expression)?
                     .only_register(provenance)?;
-                let [output] = outputs else {
-                    return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
-                        provenance,
-                    });
-                };
-                lowerer.builder.store(*output, value, provenance)
+                lowerer.builder.store(outputs[0], value, provenance)?;
+                for (&output, value) in outputs[1..].iter().zip(lowerer.predicate_values) {
+                    let value =
+                        value.ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
+                            provenance,
+                        })?;
+                    lowerer.builder.store(output, value, provenance)?;
+                }
+                Ok(())
             },
         )?;
         let site = self
             .table
             .call_site(owner)
             .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
+        let registered = RegisteredCall {
+            site,
+            callee: CalleeInterface {
+                owner,
+                result_ranges: std::iter::once(0..1).collect(),
+                result_leaf_count: 1,
+                assertion_slots,
+                assertions,
+                recursive,
+            },
+        };
         self.identities
             .expressions
-            .insert(form.expression, site.clone());
-        Ok(site)
+            .insert(form.expression, registered.clone());
+        Ok(registered)
     }
 }
