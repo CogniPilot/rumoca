@@ -265,3 +265,40 @@ fn checked_static_integer_binary(operator: &OpBinary, lhs: i64, rhs: i64) -> Opt
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod settled_integer_tests {
+    use super::*;
+
+    #[test]
+    fn settled_integer_division_refuses_the_minimum_overflow_domain() {
+        let span = Span::from_offsets(rumoca_core::SourceId::from_source_name("settled.mo"), 0, 1);
+        for operator in [OpBinary::Div, OpBinary::DivElem] {
+            for (lhs, rhs, expected) in [
+                (i64::MIN, -1, None),
+                (1, 0, None),
+                (3, 2, None),
+                (-6, 2, Some(-3)),
+                (i64::MIN, 1, Some(i64::MIN)),
+            ] {
+                let expression = Expression::Binary {
+                    op: operator.clone(),
+                    lhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(lhs),
+                        span,
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(rhs),
+                        span,
+                    }),
+                    span,
+                };
+                assert_eq!(
+                    static_integer_expression(&expression, &HashMap::new()),
+                    expected,
+                    "{lhs} / {rhs}"
+                );
+            }
+        }
+    }
+}
