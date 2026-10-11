@@ -515,6 +515,7 @@ struct FunctionValidationContext<'scope> {
     flat: &'scope flat::Model,
     roles: &'scope HashMap<VarName, PlannedRole>,
     static_integers: &'scope HashMap<VarName, i64>,
+    comprehension_values: Option<&'scope function_definitions::ComprehensionValues>,
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
     generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],

@@ -1,4 +1,6 @@
+mod iterator_values;
 mod loop_entry;
+pub(super) use iterator_values::ComprehensionValues;
 
 use super::fold_scopes::{FoldScopes, SymbolicIndices};
 use super::guard_facts::{GuardFacts, PathSet};
@@ -1122,7 +1124,7 @@ impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
         indices: &[rumoca_core::ComprehensionIndex],
         filter: Option<&Expression>,
     ) -> Result<(), Self::Error> {
-        for index in indices {
+        for index in indices.iter().rev() {
             self.visit_expression(&index.range)?;
         }
         let Some(points) = comprehension_points(indices, self.context) else {
@@ -1130,14 +1132,12 @@ impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
             return filter.map_or(Ok(()), |filter| self.visit_expression(filter));
         };
         for point in points {
-            let mut integers = self.context.static_integers.clone();
-            integers.extend(point);
             let mut checker = DefinedValueReadChecker {
                 definitions: self.definitions,
                 folds: std::borrow::Cow::Borrowed(&self.folds),
                 selected_by: self.selected_by.clone(),
                 context: FunctionValidationContext {
-                    static_integers: &integers,
+                    comprehension_values: Some(&point),
                     ..self.context
                 },
                 span: self.span,
@@ -1152,25 +1152,22 @@ impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
 }
 
 /// Enumerate every iterator binding of a comprehension whose ranges all
-/// settle to static integers, binding the iterators in declaration order.
+/// settle to static integers, opening the last textual iterator first.
 fn comprehension_points(
     indices: &[rumoca_core::ComprehensionIndex],
     context: FunctionValidationContext<'_>,
-) -> Option<Vec<Vec<(VarName, i64)>>> {
-    let mut points: Vec<Vec<(VarName, i64)>> = vec![Vec::new()];
-    for index in indices {
-        let name = VarName::new(&index.name);
+) -> Option<Vec<ComprehensionValues>> {
+    let mut points = vec![context.comprehension_values.cloned().unwrap_or_default()];
+    for index in indices.iter().rev() {
         let mut extended = Vec::new();
         for prefix in &points {
-            let mut integers = context.static_integers.clone();
-            integers.extend(prefix.iter().cloned());
             let point_context = FunctionValidationContext {
-                static_integers: &integers,
+                comprehension_values: Some(prefix),
                 ..context
             };
             for value in static_subscript_indices(&index.range, point_context)? {
                 let mut point = prefix.clone();
-                point.push((name.clone(), value));
+                point.bind(index, value);
                 extended.push(point);
             }
         }
@@ -1532,11 +1529,15 @@ fn indices_under(
             let [index] = indices.as_slice() else {
                 return None;
             };
-            let mut scoped = integers.clone();
+            let mut scoped = context.comprehension_values.cloned().unwrap_or_default();
             let mut selected = Vec::new();
             for value in indices_under(&index.range, integers, context)? {
-                scoped.insert(VarName::new(&index.name), value);
-                selected.push(settled_subscript_integer(expr, &scoped, context)?);
+                scoped.bind(index, value);
+                let context = FunctionValidationContext {
+                    comprehension_values: Some(&scoped),
+                    ..context
+                };
+                selected.push(settled_subscript_integer(expr, integers, context)?);
             }
             Some(selected)
         }
@@ -1549,9 +1550,16 @@ fn settled_subscript_integer(
     integers: &HashMap<VarName, i64>,
     context: FunctionValidationContext<'_>,
 ) -> Option<i64> {
-    static_shape_integer_expression(expression, integers, context.shapes)
-        .ok()
-        .flatten()
+    let rewritten = context
+        .comprehension_values
+        .map(|values| values.rewrite(expression));
+    static_shape_integer_expression(
+        rewritten.as_ref().unwrap_or(expression),
+        integers,
+        context.shapes,
+    )
+    .ok()
+    .flatten()
 }
 
 /// Whether `expression` reads only function inputs (MLS §12.2: never assigned),

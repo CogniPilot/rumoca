@@ -226,6 +226,7 @@ struct FunctionEnv {
     /// Local/protected variables.
     locals: IndexMap<String, Value>,
     source_iterators: Vec<(rumoca_core::IndexBinderProvenance, String, Value)>,
+    source_iterator_declarations: std::collections::HashSet<rumoca_core::DefId>,
 }
 
 /// Function-call argument after expression evaluation.
@@ -260,6 +261,7 @@ impl FunctionEnv {
             outputs: IndexMap::new(),
             locals: IndexMap::new(),
             source_iterators: Vec::new(),
+            source_iterator_declarations: std::collections::HashSet::new(),
         };
         env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
@@ -1303,6 +1305,12 @@ fn eval_var_ref(
     {
         return apply_subscripts_flat(value, subscripts, env, eval);
     }
+    if reference
+        .target_def_id()
+        .is_some_and(|id| env.source_iterator_declarations.contains(&id))
+    {
+        return Err(EvalError::unknown_variable(name, eval.span));
+    }
     if let Some(val) = env.get(name) {
         return apply_subscripts_flat(val, subscripts, env, eval);
     }
@@ -1494,8 +1502,15 @@ fn eval_array_comprehension(
         outputs: env.outputs.clone(),
         locals: env.locals.clone(),
         source_iterators: env.source_iterators.clone(),
+        source_iterator_declarations: env.source_iterator_declarations.clone(),
     };
 
+    local_env
+        .source_iterator_declarations
+        .extend(indices.iter().filter_map(|index| match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => Some(id),
+            rumoca_core::IndexBinderProvenance::Generated => None,
+        }));
     eval_comprehension_recursive(expr, indices, filter, &mut local_env, eval)
 }
 
