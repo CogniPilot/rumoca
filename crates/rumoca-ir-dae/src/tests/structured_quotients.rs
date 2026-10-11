@@ -108,16 +108,11 @@ fn structured_quotient_roundtrips_retain_one_compact_owner_for_real_and_integer(
                 let encoded = serde_json::to_vec(&dae).unwrap();
                 let replayed: Dae = serde_json::from_slice(&encoded).unwrap();
                 assert_eq!(serde_json::to_vec(&replayed).unwrap(), encoded);
-                let encoded =
-                    bincode::serde::encode_to_vec(&dae, bincode::config::standard()).unwrap();
-                let (replayed, consumed): (Dae, _) =
-                    bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
-                        .unwrap();
-                assert_eq!(consumed, encoded.len());
-                assert_eq!(
-                    bincode::serde::encode_to_vec(&replayed, bincode::config::standard()).unwrap(),
-                    encoded
-                );
+                let encoded = bincode::serialize(&dae).unwrap();
+                let mut input = std::io::Cursor::new(encoded.as_slice());
+                let replayed: Dae = bincode::deserialize_from(&mut input).unwrap();
+                assert_eq!(input.position(), encoded.len() as u64);
+                assert_eq!(bincode::serialize(&replayed).unwrap(), encoded);
             }
             assert!(
                 counts.iter().all(|count| *count == counts[0]),
