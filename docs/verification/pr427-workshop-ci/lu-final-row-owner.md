@@ -21,6 +21,15 @@ The repair returns the unchanged sole row for this identity interchange.
 Pivot publication, singular-status calculation and retained multipliers
 still execute; the conditional constructor stays strict.
 
+The helper is private and has two callers. LU builds `taken` from exactly
+the magnitudes of `rows[step..]`; `first_largest` emits one Boolean per
+magnitude. Thus both slices have the same positive length. The checked
+LU interface requires both matrix extents to be positive, and
+`step < min(height,width)` ensures at least one remaining row. The other
+caller is `zero_pivot_step` through `eliminate`, guarded by `step + 1 < n`:
+it always supplies at least two rows, so its behavior is unchanged. No
+empty-row or unaligned-selection admission is added.
+
 The ownership contract is accepted SPEC_0007's referenced DAE-C34 row in
 SPEC_0040, with MLS §12.9 and declaration initialization in §12.4.4.
 The change stays in the existing shared DAE LAPACK body constructor and
