@@ -59,11 +59,11 @@ fn a_runtime_index_is_not_a_compile_time_derivative_projection() {
 fn an_invalid_runtime_derivative_index_cannot_complete() {
     let error = simulate(&source("der(x)={values[k,1],values[k,2]}", 3)).unwrap_err();
     assert!(
-        matches!(error.kind(), rumoca_sim::SimError::ModelExchangeSession(_)),
+        matches!(error.kind(), rumoca_sim::SimError::SolveIr(_)),
         "{error}"
     );
     assert!(
-        error.to_string().contains("non-finite derivative"),
+        error.to_string().contains("tensor index 3 on axis 1 is outside 1..=2"),
         "{error}"
     );
 }

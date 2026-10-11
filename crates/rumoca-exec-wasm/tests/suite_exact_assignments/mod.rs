@@ -47,8 +47,8 @@ fn late_source_fault_keeps_prior_tuple_commits_then_recovers_without_input_mutat
         let mut expected = y;
         let error = fixture.canonical(&mut expected, &p).unwrap_err();
         assert!(error.to_string().contains("Real-to-Integer conversion"));
-        // The legacy scalar wrapper retains the message but erases the typed span.
-        assert_eq!(error.source_span(), None);
+        // Scalar and WASM execution retain the exact issued conversion provenance.
+        assert_eq!(error.source_span(), Some(fixture::span(22)));
         let owner = &fixture.calls.owners()[0];
         let argument = rumoca_eval_solve::TypedValue::construct(
             owner.inputs()[0].clone(),

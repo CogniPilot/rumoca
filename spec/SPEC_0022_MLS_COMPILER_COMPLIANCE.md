@@ -34,12 +34,12 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.13 SIM contracts | 786–800 | Simulation rules (10 contracts) |
 | §4.14 CLK contracts | 801–825 | Clock/synchronous rules (20 contracts) |
 | §4.15 STRM contracts | 826–843 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 844–942 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 943–964 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 965–980 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 981–1006 | Category counts and totals |
-| §6. Compiler Phases | 1007–1056 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1057–1084 | MLS chapter → contract category mapping |
+| §4.16 SM contracts | 844–950 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 951–972 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 973–988 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 989–1014 | Category counts and totals |
+| §6. Compiler Phases | 1015–1064 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1065–1092 | MLS chapter → contract category mapping |
 
 ---
 

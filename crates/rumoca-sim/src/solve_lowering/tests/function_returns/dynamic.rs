@@ -52,7 +52,7 @@ fn dynamic_active_return_predicates_keep_invalid_gather_faults() {
         let report = evaluate(function, 5.0, 2.0, -1.0);
         let error = report.error.expect("selected gather must fault");
         assert!(
-            error.contains("project aggregate element"),
+            error.contains("tensor index 2 on axis 1 is outside 1..=1"),
             "{function}: {error}"
         );
     }
