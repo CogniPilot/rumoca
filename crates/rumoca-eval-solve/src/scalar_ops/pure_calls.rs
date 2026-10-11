@@ -22,6 +22,7 @@
 //! capability gate instead of emitting a different function.
 
 mod admission;
+mod conditional;
 mod number;
 mod shape;
 
@@ -921,9 +922,7 @@ impl Inliner<'_> {
         self.sum(terms)
     }
 
-    /// A lazy structured conditional: a condition known at expansion time
-    /// selects one region; otherwise both regions are checked and expanded
-    /// and every result element is selected at run time.
+    /// Keep selected regions lazy in the final scalar view.
     fn conditional(
         &mut self,
         frame: &mut Frame<'_>,
@@ -939,19 +938,8 @@ impl Inliner<'_> {
                 self.region(if value { if_true } else { if_false }, captures)?
             }
             Elem::Const(_) => return None,
-            Elem::Reg(_) => {
-                self.budget.reserve(captures.len())?;
-                let taken = self.region(if_true, captures.clone());
-                let other = self.region(if_false, captures);
-                let (taken, other) = (taken?, other?);
-                if taken.len() != other.len() {
-                    return None;
-                }
-                taken
-                    .into_iter()
-                    .zip(other)
-                    .map(|(taken, other)| self.select_value(condition, taken, &other))
-                    .collect::<Option<Vec<_>>>()?
+            Elem::Reg(condition) => {
+                self.selected_regions(condition, captures, if_true, if_false)?
             }
         };
         if outputs.len() != destinations.len() {
@@ -961,28 +949,5 @@ impl Inliner<'_> {
             frame.write_val(*destination, value)?;
         }
         Some(())
-    }
-}
-
-impl Inliner<'_> {
-    /// `condition ? taken : other`, element by element.
-    fn select_value(&mut self, condition: Elem, taken: Val, other: &Val) -> Option<Val> {
-        if taken.scalar != other.scalar
-            || taken.dims != other.dims
-            || matches!(taken.scalar, solve::SolveScalarType::Integer(_))
-        {
-            return None;
-        }
-        let elems = taken
-            .elems
-            .iter()
-            .zip(other.elems.iter())
-            .map(|(taken, other)| self.select(condition, *taken, *other))
-            .collect::<Option<Vec<_>>>()?;
-        Some(Val {
-            scalar: taken.scalar,
-            dims: taken.dims,
-            elems: Arc::new(elems),
-        })
     }
 }

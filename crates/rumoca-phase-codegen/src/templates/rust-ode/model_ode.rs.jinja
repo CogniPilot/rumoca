@@ -76,6 +76,39 @@
     let __r{{ op.dst }}: f64 = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     let __r{{ op.dst }}: f64 = if __r{{ op.cond }} != 0.0 { __r{{ op.if_true }} } else { __r{{ op.if_false }} };
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+    let __r{{ op.dst }}: f64 = __captures[{{ op.index }}];
+{%- elif op.kind == "FunctionConditional" %}
+    let __result_{{ op.dst }} = {
+        let __captures: [f64; {{ op.capture_count }}] = [{% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}{{ ", " if not loop.last else "" }}{% endfor %}];
+        let mut __result = [0.0; {{ op.result_count }}];
+        let mut __taken = false;
+{%- for arm in op.arms %}
+        if !__taken {
+            let mut __condition = [0.0; 1];
+            {
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child, y=y, out="__condition") }}
+{%- endfor %}
+            }
+            if __condition[0] != 0.0 {
+                __taken = true;
+{%- for child in arm.result.ops %}
+{{ scalar_op(child, y=y, out="__result") }}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if !__taken {
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child, y=y, out="__result") }}
+{%- endfor %}
+        }
+        __result
+    };
+{%- for offset in range(op.result_count) %}
+    let __r{{ op.dst + offset }}: f64 = __result_{{ op.dst }}[{{ offset }}];
+{%- endfor %}
 {%- elif op.kind == "StoreOutput" %}
     {{ out }}[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}

@@ -38,38 +38,67 @@
 {%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}
-{%- macro scalar_op(op, y="x", out="out") %}
+{%- macro scalar_op(op, y="x", out="out", captures="__captures", indent="\t") %}
 {%- if op.kind == "Const" %}
-	__r{{ op.dst }} = {{ scalar_const(op) }}
+{{ indent }}__r{{ op.dst }} = {{ scalar_const(op) }}
 {%- elif op.kind == "LoadTime" %}
-	__r{{ op.dst }} = t
+{{ indent }}__r{{ op.dst }} = t
 {%- elif op.kind == "LoadY" %}
-	__r{{ op.dst }} = {{ y }}[{{ op.index }}]
+{{ indent }}__r{{ op.dst }} = {{ y }}[{{ op.index }}]
 {%- elif op.kind == "LoadP" %}
-	__r{{ op.dst }} = P[{{ op.index }}]
+{{ indent }}__r{{ op.dst }} = P[{{ op.index }}]
 {%- elif op.kind == "LoadIndexedP" %}
-	__index{{ op.dst }} = jnp.clip(jnp.where(jnp.isnan(__r{{ op.index_ref }}), 0.0, jnp.where(__r{{ op.index_ref }} >= 0.0, jnp.floor(__r{{ op.index_ref }} + 0.5), jnp.ceil(__r{{ op.index_ref }} - 0.5))), 0.0, {{ op.count - 1 if op.count > 0 else 0 }}.0).astype(jnp.int64)
-	__r{{ op.dst }} = P[{{ op.base }} + __index{{ op.dst }}]
+{{ indent }}__index{{ op.dst }} = jnp.clip(jnp.where(jnp.isnan(__r{{ op.index_ref }}), 0.0, jnp.where(__r{{ op.index_ref }} >= 0.0, jnp.floor(__r{{ op.index_ref }} + 0.5), jnp.ceil(__r{{ op.index_ref }} - 0.5))), 0.0, {{ op.count - 1 if op.count > 0 else 0 }}.0).astype(jnp.int64)
+{{ indent }}__r{{ op.dst }} = P[{{ op.base }} + __index{{ op.dst }}]
 {%- elif op.kind == "Move" %}
-	__r{{ op.dst }} = __r{{ op.src }}
+{{ indent }}__r{{ op.dst }} = __r{{ op.src }}
 {%- elif op.kind == "LinearSolveComponent" %}
-	__r{{ op.dst }} = _linsolve_component(
-		[{% for index in range(op.matrix_start, op.matrix_start + op.n * op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
-		[{% for index in range(op.rhs_start, op.rhs_start + op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
-		{{ op.n }}, {{ op.component }})
+{{ indent }}__r{{ op.dst }} = _linsolve_component(
+{{ indent }}	[{% for index in range(op.matrix_start, op.matrix_start + op.n * op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
+{{ indent }}	[{% for index in range(op.rhs_start, op.rhs_start + op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
+{{ indent }}	{{ op.n }}, {{ op.component }})
 {%- elif op.kind == "Unary" %}
-	__r{{ op.dst }} = {{ unary(op.operator, op.arg) }}
+{{ indent }}__r{{ op.dst }} = {{ unary(op.operator, op.arg) }}
 {%- elif op.kind == "Binary" %}
-	__r{{ op.dst }} = {{ binary(op.operator, op.lhs, op.rhs) }}
+{{ indent }}__r{{ op.dst }} = {{ binary(op.operator, op.lhs, op.rhs) }}
 {%- elif op.kind == "Compare" %}
-	__r{{ op.dst }} = {{ compare(op.operator, op.lhs, op.rhs) }}
+{{ indent }}__r{{ op.dst }} = jnp.asarray({{ compare(op.operator, op.lhs, op.rhs) }}, dtype=jnp.float64)
 {%- elif op.kind == "Select" %}
-	__r{{ op.dst }} = if_else(__r{{ op.cond }}, __r{{ op.if_true }}, __r{{ op.if_false }})
+{{ indent }}__r{{ op.dst }} = if_else(__r{{ op.cond }}, __r{{ op.if_true }}, __r{{ op.if_false }})
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+{{ indent }}__r{{ op.dst }} = {{ captures }}[{{ op.index }}]
+{%- elif op.kind == "FunctionConditional" %}
+{{ indent }}def __fallback_{{ op.dst }}(__captures):
+{{ indent }}	__result = [None] * {{ op.result_count }}
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child, y=y, out="__result", indent=indent ~ "\t") }}
+{%- endfor %}
+{{ indent }}	return tuple(__result)
+{%- for arm in op.arms %}
+{{ indent }}def __branch_{{ op.dst }}_{{ loop.index0 }}(__captures):
+{{ indent }}	__result = [None] * {{ op.result_count }}
+{%- for child in arm.result.ops %}
+{{ scalar_op(child, y=y, out="__result", indent=indent ~ "\t") }}
+{%- endfor %}
+{{ indent }}	return tuple(__result)
+{{ indent }}def __condition_{{ op.dst }}_{{ loop.index0 }}(__captures):
+{{ indent }}	__condition = [None]
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child, y=y, out="__condition", indent=indent ~ "\t") }}
+{%- endfor %}
+{{ indent }}	return __condition[0] != 0.0
+{{ indent }}def __dispatch_{{ op.dst }}_{{ loop.index0 }}(__captures):
+{{ indent }}	return jax.lax.cond(__condition_{{ op.dst }}_{{ loop.index0 }}(__captures), __branch_{{ op.dst }}_{{ loop.index0 }}, {% if loop.last %}__fallback_{{ op.dst }}{% else %}__dispatch_{{ op.dst }}_{{ loop.index }}{% endif %}, __captures)
+{%- endfor %}
+{{ indent }}__result_{{ op.dst }} = __dispatch_{{ op.dst }}_0(({% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}, {% endfor %}))
+{%- for offset in range(op.result_count) %}
+{{ indent }}__r{{ op.dst + offset }} = __result_{{ op.dst }}[{{ offset }}]
+{%- endfor %}
 {%- elif op.kind == "StoreOutput" %}
-	{{ out }}[{{ op.output_index }}] = __r{{ op.src }}
+{{ indent }}{{ out }}[{{ op.output_index }}] = __r{{ op.src }}
 {%- elif op.kind == "StoreOutputRange" %}
 {%- for output_index in op.output_indices %}
-	{{ out }}[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }}
+{{ indent }}{{ out }}[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }}
 {%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
@@ -78,8 +107,10 @@
 # Generated by Rumoca - JAX solve-IR export
 #
 # Standalone explicit ODE right-hand side  xdot = rhs(t, x, u, p)  built directly
-# from the scalarized, causalized solve IR. rhs is pure jnp, so it is
-# jit / grad / vmap compatible. No DAE residual, no rootfinder.
+# from the scalarized, causalized solve IR, with checked selected regions.
+# Scalar evaluation supports jit and differentiation. Under vmap, JAX may
+# convert cond to select; use lax.map for branch-sensitive batched derivatives.
+# No DAE residual, no rootfinder.
 #
 #   x : state vector           ({{ solve.solve_layout.state_scalar_count }})
 #   u : control inputs         ({{ solve.solve_layout.input_scalar_names | length }})
@@ -161,7 +192,7 @@ def init_state(p):
 	return [float(v) for v in y[:N_Y]]
 
 def rhs(t, x, u, p):
-	"""Explicit ODE right-hand side: xdot = f(t, x, u, p). jit/grad/vmap-able."""
+	"""Explicit ODE right-hand side: xdot = f(t, x, u, p). See batching caveat above."""
 	t = jnp.asarray(t, dtype=jnp.float64)
 	x = jnp.asarray(x, dtype=jnp.float64)
 	u = jnp.asarray(u, dtype=jnp.float64)

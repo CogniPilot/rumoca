@@ -4,7 +4,12 @@
 
 Use this target for differentiable simulation experiments, batched parameter
 studies, learned-model coupling, and control optimization in JAX. It provides a
-pure explicit RHS suitable for `jax.jit`, `vmap`, and JAX differentiation.
+pure explicit RHS suitable for `jax.jit` and JAX differentiation. Checked
+function conditionals run only their selected branch for scalar evaluation.
+JAX transforms `lax.cond` to eager selection under `vmap` over predicates,
+which can make reverse derivatives non-finite when an inactive branch has an
+undefined derivative. Use `jax.lax.map` for those branch-sensitive batched
+computations; ordinary branch-free RHS functions remain suitable for `vmap`.
 
 ## Contract
 

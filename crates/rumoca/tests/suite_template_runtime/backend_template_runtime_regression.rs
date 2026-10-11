@@ -1,4 +1,5 @@
 mod jax_lazy_conditionals;
+mod selected_regions;
 
 use rumoca::Compiler;
 use rumoca_compile::codegen::targets::RenderedTargetFile;

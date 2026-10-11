@@ -77,6 +77,55 @@
     const double __r{{ op.dst }} = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     const double __r{{ op.dst }} = (__r{{ op.cond }} != 0.0 ? __r{{ op.if_true }} : __r{{ op.if_false }});
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+    const double __r{{ op.dst }} = __captures[{{ op.index }}];
+{%- elif op.kind == "FunctionConditional" %}
+{%- for offset in range(op.result_count) %}
+    double __r{{ op.dst + offset }};
+{%- endfor %}
+    {
+        const double __captures[{{ op.capture_count }}] = { {% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}{{ ", " if not loop.last else "" }}{% endfor %} };
+        double __result[{{ op.result_count }}];
+        int __taken = 0;
+        (void)__captures;
+{%- for arm in op.arms %}
+        if (!__taken) {
+            double __condition[1];
+            {
+                double *__out = __condition;
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+            if (__condition[0] != 0.0) {
+                double *__out = __result;
+                __taken = 1;
+{%- for child in arm.result.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if (!__taken) {
+            double *__out = __result;
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+            (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+        }
+{%- for offset in range(op.result_count) %}
+        __r{{ op.dst + offset }} = __result[{{ offset }}];
+        (void)__r{{ op.dst + offset }};
+{%- endfor %}
+    }
 {%- elif op.kind == "StoreOutput" %}
     {{ out }}[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}
