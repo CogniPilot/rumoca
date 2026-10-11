@@ -142,6 +142,10 @@ fn algorithm_preview_refuses_an_empty_source_output_set() {
 
 #[test]
 fn algorithm_preview_does_not_invent_artifact_evidence() {
+    let files = custom_preview("Counter.alg", "{{ model_name }}", true)
+        .expect("the same custom target renders its available source context");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].content, "BrowserPreviewCounter");
     for template in [
         "{{ artifact.generated_at }}",
         "{{ artifact.generation_tool }}",
@@ -151,7 +155,9 @@ fn algorithm_preview_does_not_invent_artifact_evidence() {
         let error = custom_preview("Counter.alg", template, true)
             .expect_err("source previews have no packaging artifact evidence");
         assert!(
-            error.message().contains("artifact"),
+            error
+                .message()
+                .contains("template render error: undefined value"),
             "{template}: {error:?}"
         );
     }
