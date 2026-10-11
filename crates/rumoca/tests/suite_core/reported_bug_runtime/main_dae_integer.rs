@@ -31,7 +31,13 @@ fn main_dae_integer_quotients_preserve_negative_operand_rules() {
     }
 }
 
-fn integer_fault(source: &str, control: &[(&str, f64)], expected: f64, invalid: &[(&str, f64)]) {
+fn integer_fault(
+    source: &str,
+    control: &[(&str, f64)],
+    expected: f64,
+    invalid: &[(&str, f64)],
+    parameter: Option<(&str, f64, f64)>,
+) {
     let compiled = compile(source, "IntegerFault");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         let mut opts = options(policy);
@@ -39,6 +45,9 @@ fn integer_fault(source: &str, control: &[(&str, f64)], expected: f64, invalid: 
             .iter()
             .map(|(name, value)| ((*name).into(), *value))
             .collect();
+        if let Some((name, valid, _)) = parameter {
+            opts.param_overrides = vec![(name.into(), valid)];
+        }
         let result =
             simulate_dae(&compiled.dae, &opts).expect("same compiled model has a valid control");
         assert_eq!(last(&result, "y"), expected, "{policy:?}");
@@ -46,42 +55,76 @@ fn integer_fault(source: &str, control: &[(&str, f64)], expected: f64, invalid: 
             .iter()
             .map(|(name, value)| ((*name).into(), *value))
             .collect();
+        if let Some((name, _, invalid)) = parameter {
+            opts.param_overrides = vec![(name.into(), invalid)];
+        }
         let error =
             simulate_dae(&compiled.dae, &opts).expect_err("selected Integer arithmetic must fault");
         let diagnostic = format!("{error:?}");
-        assert!(diagnostic.contains("Integer"), "{policy:?}: {diagnostic}");
-        assert!(
-            diagnostic.contains("domain") || diagnostic.contains("zero"),
-            "{policy:?}: {diagnostic}"
-        );
+        if parameter.is_some_and(|(_, _, invalid)| invalid == 0.0) {
+            // The quotient's generated boundary indicator can observe the
+            // undefined parameter reciprocal before the Integer publication.
+            assert!(
+                diagnostic.contains("domain")
+                    || diagnostic.contains("zero")
+                    || diagnostic.contains("non-finite"),
+                "{policy:?}: {diagnostic}"
+            );
+        } else {
+            assert!(diagnostic.contains("Integer"), "{policy:?}: {diagnostic}");
+            assert!(
+                diagnostic.contains("domain") || diagnostic.contains("zero"),
+                "{policy:?}: {diagnostic}"
+            );
+        }
     }
 }
 
 #[test]
 fn main_dae_integer_quotients_refuse_zero_divisors_and_checked_arithmetic_overflow() {
+    // Model-level dynamic divisors need a different discontinuity owner;
+    // retain their typed admission refusal instead of pretending they run.
+    let dynamic = "model IntegerFault input Integer n(start=0); input Integer d(start=7); output Integer y; equation y=mod(9007199254740993+n,d); end IntegerFault;";
+    let error = Compiler::new()
+        .model("IntegerFault")
+        .compile_str(dynamic, "ReportedBug.mo")
+        .expect_err("a changing model divisor is outside the checked DAE profile");
+    let rumoca::CompilerError::CompileDiagnosticsError { failures, .. } = error else {
+        panic!("dynamic divisor must retain a typed phase diagnostic: {error:?}");
+    };
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.error_code.as_deref() == Some("ED018")),
+        "{failures:?}"
+    );
     integer_fault(
-        "model IntegerFault input Integer n(start=0); input Integer d(start=7); output Integer y; equation y=mod(9007199254740993+n,d); end IntegerFault;",
-        &[("n", 0.0), ("d", 7.0)],
+        "model IntegerFault input Integer n(start=0); parameter Integer d=7 annotation(Evaluate=false); output Integer y; equation y=mod(9007199254740993+n,d); end IntegerFault;",
+        &[("n", 0.0)],
         5.0,
-        &[("n", 0.0), ("d", 0.0)],
+        &[("n", 0.0)],
+        Some(("d", 7.0, 0.0)),
     );
     integer_fault(
         "model IntegerFault input Integer n(start=0); output Integer y; equation y=mod(9223372036854775807+n,7); end IntegerFault;",
         &[("n", -1.0)],
         6.0,
         &[("n", 1.0)],
+        None,
     );
     integer_fault(
         "model IntegerFault input Integer n(start=0); output Integer y; equation y=mod(9223372036854775807*n,7); end IntegerFault;",
         &[("n", 0.0)],
         0.0,
         &[("n", 2.0)],
+        None,
     );
     integer_fault(
-        "model IntegerFault input Integer d(start=1); output Integer y; equation y=div(-9223372036854775807-1,d); end IntegerFault;",
-        &[("d", 1.0)],
+        "model IntegerFault input Integer n(start=1); parameter Integer d=1 annotation(Evaluate=false); output Integer y; equation y=div(-9223372036854775807-n,d); end IntegerFault;",
+        &[("n", 1.0)],
         i64::MIN as f64,
-        &[("d", -1.0)],
+        &[("n", 1.0)],
+        Some(("d", 1.0, -1.0)),
     );
 }
 
