@@ -73,6 +73,14 @@ impl CompiledPureCallTable {
         output_cells.clear();
         output_cells.resize(output_count, 0);
         self.jit.call_cells(site, input_cells, output_cells)?;
+        let mut checked_offset = 0;
+        for value in site.outputs() {
+            let end = checked_offset + value.value_type().scalar_count() as usize;
+            for &cell in &output_cells[checked_offset..end] {
+                checked_typed_scalar(value.value_type(), cell)?;
+            }
+            checked_offset = end;
+        }
         let mut output_offset = 0usize;
         for value in site.outputs() {
             let count = value.value_type().scalar_count() as usize;
@@ -81,7 +89,7 @@ impl CompiledPureCallTable {
                 value.value_type(),
                 &output_cells[output_offset..end],
                 &mut output[output_offset..end],
-            );
+            )?;
             output_offset = end;
         }
         Ok(())
@@ -93,39 +101,16 @@ fn encode_typed_cells(
     values: &[f64],
     cells: &mut Vec<u64>,
 ) -> Result<(), CompileError> {
-    use rumoca_ir_solve::{SolveRealFormat, SolveScalarType};
-    match value_type.element_type() {
-        SolveScalarType::Real {
-            format: SolveRealFormat::Binary32,
-            ..
-        } => cells.extend(
-            values
-                .iter()
-                .map(|value| u64::from((*value as f32).to_bits())),
-        ),
-        SolveScalarType::Real {
-            format: SolveRealFormat::Binary64,
-            ..
-        } => cells.extend(values.iter().map(|value| value.to_bits())),
-        SolveScalarType::Integer(domain) => {
-            for &value in values {
-                if !value.is_finite() || value.fract() != 0.0 {
-                    return Err(CompileError::Input(
-                        "typed Integer input is not integral".into(),
-                    ));
-                }
-                let integer = value as i64;
-                if !domain.contains(integer) || integer as f64 != value {
-                    return Err(CompileError::Input(
-                        "typed Integer input is outside its domain".into(),
-                    ));
-                }
-                cells.push(integer as u64);
-            }
-        }
-        SolveScalarType::Boolean => {
-            cells.extend(values.iter().map(|value| u64::from(*value != 0.0)));
-        }
+    use rumoca_ir_solve::SolveValueKind;
+    for &value in values {
+        let value = rumoca_eval_solve::typed_kind_from_scalar(value, value_type)
+            .map_err(|error| CompileError::Input(error.to_string()))?;
+        cells.push(match value {
+            SolveValueKind::Real32(bits) => u64::from(bits),
+            SolveValueKind::Real64(bits) => bits,
+            SolveValueKind::Integer(integer) => integer as u64,
+            SolveValueKind::Boolean(value) => u64::from(value),
+        });
     }
     Ok(())
 }
@@ -134,22 +119,32 @@ fn decode_typed_cells(
     value_type: &rumoca_ir_solve::SolveValueType,
     cells: &[u64],
     values: &mut [f64],
-) {
-    use rumoca_ir_solve::{SolveRealFormat, SolveScalarType};
+) -> Result<(), CompileError> {
     for (value, cell) in values.iter_mut().zip(cells) {
-        *value = match value_type.element_type() {
-            SolveScalarType::Real {
-                format: SolveRealFormat::Binary32,
-                ..
-            } => f32::from_bits(*cell as u32) as f64,
-            SolveScalarType::Real {
-                format: SolveRealFormat::Binary64,
-                ..
-            } => f64::from_bits(*cell),
-            SolveScalarType::Integer(_) => *cell as i64 as f64,
-            SolveScalarType::Boolean => f64::from(*cell != 0),
-        };
+        *value = checked_typed_scalar(value_type, *cell)?;
     }
+    Ok(())
+}
+
+fn checked_typed_scalar(
+    value_type: &rumoca_ir_solve::SolveValueType,
+    cell: u64,
+) -> Result<f64, CompileError> {
+    use rumoca_ir_solve::{SolveRealFormat, SolveScalarType, SolveValueKind};
+    let value = match value_type.element_type() {
+        SolveScalarType::Real {
+            format: SolveRealFormat::Binary32,
+            ..
+        } => SolveValueKind::Real32(cell as u32),
+        SolveScalarType::Real {
+            format: SolveRealFormat::Binary64,
+            ..
+        } => SolveValueKind::Real64(cell),
+        SolveScalarType::Integer(_) => SolveValueKind::Integer(cell as i64),
+        SolveScalarType::Boolean => SolveValueKind::Boolean(cell != 0),
+    };
+    rumoca_eval_solve::checked_scalar_payload_value(value)
+        .map_err(|error| CompileError::Input(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -575,6 +570,7 @@ mod tests {
     mod projection_jacobian;
     mod recursive_groups;
     mod register_constants;
+    mod scalar_integer_payload;
     mod selected_jvp;
     mod selected_residual;
 

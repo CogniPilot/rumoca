@@ -4162,13 +4162,15 @@ fn eval_typed_call_payload(
         inputs,
         output_count,
     } = signature;
+    let provenance = table.owner(owner).map(|owner| owner.provenance());
     let mut arguments = Vec::with_capacity(inputs.len());
     for (&start, value_type) in input_starts.iter().zip(inputs) {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
         for offset in 0..value_type.scalar_count() as usize {
-            elements.push(pure_call_execution::read_input_element(
-                start, offset, value_type, read,
-            )?);
+            elements.push(
+                pure_call_execution::read_input_element(start, offset, value_type, read)
+                    .map_err(|error| error.with_source_span(provenance))?,
+            );
         }
         arguments.push(
             TypedValue::construct(value_type.clone(), elements)
@@ -4180,17 +4182,24 @@ fn eval_typed_call_payload(
     } else {
         typed_program::eval_pure_call(table, owner, &arguments)
     }
-    .map_err(|error| invalid_row(error.to_string()))?;
+    .map_err(EvalSolveError::from)?;
     let mut flattened = Vec::with_capacity(
         output_count.ok_or_else(|| invalid_row("pure-call output width overflows"))?,
     );
     for output in outputs {
-        flattened.extend(output.elements().iter().copied().map(typed_kind_to_scalar));
+        for &value in output.elements() {
+            flattened.push(
+                checked_scalar_payload_value(value)
+                    .map_err(|error| error.with_source_span(provenance))?,
+            );
+        }
     }
     Ok(flattened)
 }
 
-pub(crate) fn typed_kind_from_scalar(
+/// Decode one scalar runtime ABI value against its checked typed interface.
+/// Integer inputs must fit the signed domain before conversion.
+pub fn typed_kind_from_scalar(
     value: f64,
     value_type: &SolveValueType,
 ) -> Result<SolveValueKind, EvalSolveError> {
@@ -4206,6 +4215,9 @@ pub(crate) fn typed_kind_from_scalar(
         SolveScalarType::Integer(domain) => {
             if !value.is_finite() || value.fract() != 0.0 {
                 return Err(invalid_row("pure-call Integer input is not integral"));
+            }
+            if value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
+                return Err(invalid_row("pure-call Integer input is outside its domain"));
             }
             let integer = value as i64;
             if !domain.contains(integer) || integer as f64 != value {
@@ -4224,6 +4236,20 @@ pub(crate) fn typed_kind_to_scalar(value: SolveValueKind) -> f64 {
         SolveValueKind::Integer(value) => value as f64,
         SolveValueKind::Boolean(value) => f64::from(value),
     }
+}
+
+/// Project one typed value into the scalar runtime ABI without Integer rounding.
+/// This boundary does not restrict typed Int64 storage or Integer-to-Real coercion.
+pub fn checked_scalar_payload_value(value: SolveValueKind) -> Result<f64, EvalSolveError> {
+    let scalar = typed_kind_to_scalar(value);
+    if let SolveValueKind::Integer(integer) = value
+        && scalar as i128 != i128::from(integer)
+    {
+        return Err(invalid_row(
+            "Integer result is not exactly representable in the scalar ABI",
+        ));
+    }
+    Ok(scalar)
 }
 
 pub(crate) fn required_registers(row: &[LinearOp]) -> Result<usize, EvalSolveError> {

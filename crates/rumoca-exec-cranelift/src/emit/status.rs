@@ -13,6 +13,8 @@ pub(super) const NATIVE_BODY_FAILURE: u8 = 4;
 pub(super) const NATIVE_BODY_FOREIGN_ERROR: u8 = 5;
 /// A SOLVE-C62 member call would exceed its group's declared depth limit.
 const RECURSION_DEPTH_EXCEEDED: i64 = 6;
+const SCALAR_PAYLOAD_FAILURE: i64 = 7;
+const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
@@ -34,6 +36,13 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         )),
         6 => Err(CompileError::Input(
             "recursive call exceeds the execution profile's depth limit".into(),
+        )),
+        7 => Err(CompileError::Input(
+            "Integer value is outside its domain or not exactly representable in the scalar ABI"
+                .into(),
+        )),
+        8 => Err(CompileError::Input(
+            "native Integer arithmetic left the checked target domain".into(),
         )),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"
@@ -71,6 +80,14 @@ pub(super) fn require_recursion_depth(builder: &mut FunctionBuilder<'_>, valid: 
 
 pub(super) fn require_integer_quotient(builder: &mut FunctionBuilder<'_>, valid: Value) {
     require(builder, valid, INTEGER_QUOTIENT_FAILURE);
+}
+
+pub(super) fn require_scalar_payload(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, SCALAR_PAYLOAD_FAILURE);
+}
+
+pub(super) fn require_integer_arithmetic(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, INTEGER_ARITHMETIC_FAILURE);
 }
 
 fn require(builder: &mut FunctionBuilder<'_>, valid: Value, failure: i64) {

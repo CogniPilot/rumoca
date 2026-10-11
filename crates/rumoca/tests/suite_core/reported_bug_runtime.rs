@@ -1,5 +1,7 @@
 //! Public original Bug reproductions, beyond compiler admission.
 
+mod main_dae_integer;
+
 use rumoca::{CompilationResult, Compiler};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, SimulationSession, simulate_dae};
 use rumoca_solver::{SimExecutionEngine, SimExecutionPolicy};

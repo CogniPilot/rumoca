@@ -892,7 +892,13 @@ areas.
 - Functions (§3.7.2, §12): `div`/`mod`/`rem` of Integer operands in a
   function body are exact Integer quotients (truncating `div`, flooring `mod`)
   in the typed Solve program, and a function-body quotient needs no event owner
-  whatever its operands' variability.
+  whatever its operands' variability. Model-level Integer quotients also retain
+  the whole Integer expression in the typed owner before final scalar-runtime
+  publication (SPEC_0040 SOLVE-C84); an Integer scalar payload that cannot be
+  represented exactly is refused, while typed Int64 interfaces remain Int64.
+  Regression evidence: `suite_core::reported_bug_runtime::issue_411_*` and
+  `suite_core::reported_bug_runtime::main_dae_integer` (MLS §3.7.2 Operators
+  3.4/3.5/3.6).
 - Event clocks (§16.3 Operator 16.4): `Clock(condition, startInterval)` whose
   condition names a scalar Boolean coordinate ticks when `edge(pre(condition))`
   becomes true, once per rise: a condition that stays true through later event

@@ -9,6 +9,7 @@ mod constants;
 mod coordinates;
 mod family_calls;
 mod functions;
+mod integer_quotient;
 mod literal_values;
 mod operators;
 mod region_catalog;
@@ -1389,6 +1390,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
+        if let Some(result) = self.exact_integer_quotient(expression, scalar)? {
+            self.expression_cache.insert(key, result);
+            return Ok(result);
+        }
         if !matches!(node.operation(), dae::ExpressionOperation::Literal(_))
             && let Some(value) = self.exact_literal(expression, scalar)
         {

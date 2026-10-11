@@ -1934,7 +1934,26 @@ fn encode_typed_cell(
             format: rumoca_ir_solve::SolveRealFormat::Binary64,
             ..
         } => value,
-        rumoca_ir_solve::SolveScalarType::Integer(_) => fb.ins().fcvt_to_sint(types::I64, value),
+        rumoca_ir_solve::SolveScalarType::Integer(domain) => {
+            let integer = fb.ins().fcvt_to_sint_sat(types::I64, value);
+            let round_trip = fb.ins().fcvt_from_sint(types::F64, integer);
+            let exact = fb.ins().fcmp(FloatCC::Equal, value, round_trip);
+            let upper = fb.ins().f64const(9_223_372_036_854_775_808.0);
+            let below_upper = fb.ins().fcmp(FloatCC::LessThan, value, upper);
+            let minimum = fb.ins().iconst(types::I64, domain.minimum());
+            let maximum = fb.ins().iconst(types::I64, domain.maximum());
+            let above_minimum = fb
+                .ins()
+                .icmp(IntCC::SignedGreaterThanOrEqual, integer, minimum);
+            let below_maximum = fb
+                .ins()
+                .icmp(IntCC::SignedLessThanOrEqual, integer, maximum);
+            let in_domain = fb.ins().band(above_minimum, below_maximum);
+            let exact = fb.ins().band(exact, below_upper);
+            let valid = fb.ins().band(exact, in_domain);
+            status::require_scalar_payload(fb, valid);
+            integer
+        }
         rumoca_ir_solve::SolveScalarType::Boolean => {
             let zero = fb.ins().f64const(0.0);
             let condition = fb.ins().fcmp(FloatCC::NotEqual, value, zero);
@@ -1957,7 +1976,16 @@ fn decode_typed_cell(
             format: rumoca_ir_solve::SolveRealFormat::Binary64,
             ..
         } => value,
-        rumoca_ir_solve::SolveScalarType::Integer(_) => fb.ins().fcvt_from_sint(types::F64, value),
+        rumoca_ir_solve::SolveScalarType::Integer(_) => {
+            let scalar = fb.ins().fcvt_from_sint(types::F64, value);
+            let round_trip = fb.ins().fcvt_to_sint_sat(types::I64, scalar);
+            let exact = fb.ins().icmp(IntCC::Equal, value, round_trip);
+            let upper = fb.ins().f64const(9_223_372_036_854_775_808.0);
+            let below_upper = fb.ins().fcmp(FloatCC::LessThan, scalar, upper);
+            let valid = fb.ins().band(exact, below_upper);
+            status::require_scalar_payload(fb, valid);
+            scalar
+        }
         rumoca_ir_solve::SolveScalarType::Boolean => fb.ins().fcvt_from_uint(types::F64, value),
     }
 }

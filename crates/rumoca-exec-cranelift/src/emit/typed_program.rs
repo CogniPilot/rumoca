@@ -8,6 +8,7 @@ mod control;
 mod input_results;
 #[cfg(test)]
 mod input_reuse_tests;
+mod integer;
 mod linear_solve;
 mod native;
 pub(super) use native::rumoca_host_native;
@@ -1482,31 +1483,7 @@ impl ProgramLowerer<'_, '_> {
                 )?;
                 Ok(demote_real(self.builder, format, result))
             }
-            solve::SolveScalarType::Integer(_) => Ok(match operator {
-                solve::SolveUnaryOperator::Negate => self.builder.ins().ineg(value),
-                solve::SolveUnaryOperator::Abs => {
-                    let negative = self.builder.ins().icmp_imm(IntCC::SignedLessThan, value, 0);
-                    let negated = self.builder.ins().ineg(value);
-                    self.builder.ins().select(negative, negated, value)
-                }
-                solve::SolveUnaryOperator::Sign => {
-                    let zero = self.builder.ins().iconst(types::I64, 0);
-                    let one = self.builder.ins().iconst(types::I64, 1);
-                    let negative_one = self.builder.ins().iconst(types::I64, -1);
-                    let positive = self
-                        .builder
-                        .ins()
-                        .icmp_imm(IntCC::SignedGreaterThan, value, 0);
-                    let negative = self.builder.ins().icmp_imm(IntCC::SignedLessThan, value, 0);
-                    let nonpositive = self.builder.ins().select(negative, negative_one, zero);
-                    self.builder.ins().select(positive, one, nonpositive)
-                }
-                _ => {
-                    return Err(CompileError::Backend(
-                        "invalid typed Integer unary operator".into(),
-                    ));
-                }
-            }),
+            solve::SolveScalarType::Integer(domain) => self.integer_unary(operator, domain, value),
             solve::SolveScalarType::Boolean => match operator {
                 solve::SolveUnaryOperator::Not => {
                     let condition = self.builder.ins().icmp_imm(IntCC::Equal, value, 0);
@@ -1542,42 +1519,9 @@ impl ProgramLowerer<'_, '_> {
                 )?;
                 Ok(demote_real(self.builder, format, result))
             }
-            solve::SolveScalarType::Integer(_) => Ok(match operator {
-                solve::SolveBinaryOperator::Add => self.builder.ins().iadd(lhs, rhs),
-                solve::SolveBinaryOperator::Subtract => self.builder.ins().isub(lhs, rhs),
-                solve::SolveBinaryOperator::Multiply => self.builder.ins().imul(lhs, rhs),
-                solve::SolveBinaryOperator::IntegerQuotient => {
-                    // `sdiv` traps on a zero divisor and on `MIN / -1`; both are
-                    // reported through the kernel status instead.
-                    let ty = self.builder.func.dfg.value_type(rhs);
-                    let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, rhs, 0);
-                    let minus_one = self.builder.ins().icmp_imm(IntCC::Equal, rhs, -1);
-                    let minimum = self.builder.ins().icmp_imm(
-                        IntCC::Equal,
-                        lhs,
-                        i64::MIN >> (64 - ty.bits()),
-                    );
-                    let overflow = self.builder.ins().band(minus_one, minimum);
-                    let representable = self.builder.ins().bnot(overflow);
-                    let valid = self.builder.ins().band(nonzero, representable);
-                    status::require_integer_quotient(self.builder, valid);
-                    self.builder.ins().sdiv(lhs, rhs)
-                }
-                solve::SolveBinaryOperator::Min | solve::SolveBinaryOperator::Max => {
-                    let code = if operator == solve::SolveBinaryOperator::Min {
-                        IntCC::SignedLessThan
-                    } else {
-                        IntCC::SignedGreaterThan
-                    };
-                    let condition = self.builder.ins().icmp(code, lhs, rhs);
-                    self.builder.ins().select(condition, lhs, rhs)
-                }
-                _ => {
-                    return Err(CompileError::Backend(
-                        "typed Integer binary operator is unsupported".into(),
-                    ));
-                }
-            }),
+            solve::SolveScalarType::Integer(domain) => {
+                self.integer_binary(operator, domain, lhs, rhs)
+            }
             solve::SolveScalarType::Boolean => Ok(match operator {
                 // MLS §10.3.4 orders `false < true`: the least of two Booleans
                 // is their conjunction and the greatest their disjunction.
