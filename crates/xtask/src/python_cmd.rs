@@ -1,5 +1,8 @@
 //! Installed-wheel verification shared by CI and the full local suite.
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -7,9 +10,6 @@ use anyhow::{Context, Result, ensure};
 use clap::Args;
 
 use crate::{repo_root, run_status};
-
-#[cfg(test)]
-mod tests;
 
 #[derive(Debug, Args, Clone)]
 pub(crate) struct PythonTestArgs {

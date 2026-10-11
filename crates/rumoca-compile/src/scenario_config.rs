@@ -1,3 +1,6 @@
+mod json;
+mod targets;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,8 +11,6 @@ use serde::{Deserialize, Serialize};
 use crate::merge::collect_model_names;
 use crate::parse::{parse_files_parallel_lenient, parse_source_to_ast};
 
-mod json;
-mod targets;
 pub use json::{
     codegen_config_from_json, codegen_config_to_json, parse_fallback_simulation,
     parse_views_payload, scenario_config_full_to_json, scenario_config_response,
