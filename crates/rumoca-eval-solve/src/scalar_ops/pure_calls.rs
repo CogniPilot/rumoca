@@ -125,9 +125,6 @@ impl<'a> Inliner<'a> {
         }
         self.budget
             .reserve(owner.inputs().iter().try_fold(0usize, |total, value| {
-                if matches!(value.element_type(), solve::SolveScalarType::Integer(_)) {
-                    return None;
-                }
                 total
                     .checked_add(value.scalar_count() as usize)?
                     .checked_add(value.dimensions().len())?
@@ -139,7 +136,17 @@ impl<'a> Inliner<'a> {
             .zip(input_starts)
             .map(|(value_type, start)| {
                 let elems = (0..value_type.scalar_count())
-                    .map(|offset| start.checked_add(offset).map(Elem::Reg))
+                    .map(|offset| {
+                        let register = start.checked_add(offset)?;
+                        if matches!(
+                            value_type.element_type(),
+                            solve::SolveScalarType::Integer(_)
+                        ) {
+                            self.literal_input(register, value_type)
+                        } else {
+                            Some(Elem::Reg(register))
+                        }
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 Some(Val {
                     scalar: value_type.element_type(),
@@ -156,6 +163,35 @@ impl<'a> Inliner<'a> {
             dst = dst.checked_add(1)?;
         }
         Some(())
+    }
+
+    /// A literal capture retains the checked scalar ABI's exact Integer value.
+    /// Follow only moves through the already emitted prefix. The first other
+    /// write refuses, so a later load cannot inherit an earlier literal value.
+    fn literal_input(
+        &mut self,
+        mut register: Reg,
+        value_type: &solve::SolveValueType,
+    ) -> Option<Elem> {
+        for operation in self.out.iter().rev() {
+            self.budget.reserve(1)?;
+            let Some(start) = operation.dst_register() else {
+                continue;
+            };
+            let end = start.checked_add(Reg::try_from(operation.dst_register_count()).ok()?)?;
+            if !(start..end).contains(&register) {
+                continue;
+            }
+            match operation {
+                LinearOp::Const { value, .. } => {
+                    let kind = crate::typed_kind_from_scalar(*value, value_type).ok()?;
+                    return Some(constant(kind));
+                }
+                LinearOp::Move { src, .. } => register = *src,
+                _ => return None,
+            }
+        }
+        None
     }
 
     fn owner(&mut self, id: SolvePureCallOwnerId, arguments: Vec<Val>) -> Option<Vec<Val>> {
