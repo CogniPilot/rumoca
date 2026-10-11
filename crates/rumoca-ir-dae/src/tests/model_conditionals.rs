@@ -1,5 +1,7 @@
 use super::*;
 
+mod guard_dependencies;
+
 fn conditional_fixture() -> Dae {
     let source = TestSource::new("if c then 1 else 2");
     let at = source.source("if c then 1 else 2", 0);
