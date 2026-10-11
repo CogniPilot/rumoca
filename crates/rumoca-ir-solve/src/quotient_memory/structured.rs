@@ -53,7 +53,7 @@ pub(super) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
         let count = domain
             .scalar_count()
             .map_err(|_| event_iteration_contract(row, "numeric memory domain overflows"))?;
-        validate_storage(problem, row, update, domain, count, &reserved)?;
+        let target = validate_storage(problem, row, update, domain, count, &reserved)?;
         let end = root_index
             .checked_add(count)
             .ok_or_else(|| event_iteration_contract(row, "numeric memory root range overflows"))?;
@@ -75,9 +75,6 @@ pub(super) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
             ));
         }
         owned.insert(range.start, range.end);
-        let ScalarSlot::P { index: target, .. } = update.target.base else {
-            unreachable!("validated P-backed memory")
-        };
         let held_load = validate_held_load(row, target, domain, base_ops, load_strides)?;
         let expected = activation::indicator(row, step, base_ops, target, held_load)?;
         validate_root_family(
@@ -164,7 +161,7 @@ fn validate_storage(
     domain: &rumoca_core::StructuredIndexDomain,
     count: usize,
     reserved: &BTreeSet<usize>,
-) -> Result<(), SolveProblemShapeContractError> {
+) -> Result<usize, SolveProblemShapeContractError> {
     let ScalarSlot::P { index, .. } = update.target.base else {
         return Err(event_iteration_contract(
             row,
@@ -207,7 +204,7 @@ fn validate_storage(
             "numeric memory Map has no exclusive private initialization/event span",
         ));
     }
-    Ok(())
+    Ok(index)
 }
 
 fn validate_held_load(
