@@ -309,13 +309,13 @@ fn user_guide_rhs_fit_uses_the_authored_neural_model() {
         .expect("the documented neural model compiles");
     let target_derivatives = vec![0.0, 0.0];
     // ANCHOR: guide-rhs-fit
-    let model = rumoca_opt::DifferentiableModel::from_dae_default(
+    let mut model = rumoca_opt::DifferentiableModel::from_dae_default(
         &compiled.dae,
         &rumoca_solver::SimOptions::default(),
     )
     .expect("prepare the compiled neural model");
-    let trainables = rumoca_opt::TrainableSet::by_names(&model, &["W1[1,1]", "b1[1]"])
-        .expect("select the documented network weights");
+    let trainables = rumoca_opt::TrainableSet::by_names(&model, &["b1[1]", "bmid[1]"])
+        .expect("select the documented independent network biases");
     let objective = rumoca_opt::RhsMseObjective::new(0.0, target_derivatives);
     let gradient = rumoca_opt::rhs_mse_value_and_gradient(
         &model,
@@ -326,8 +326,50 @@ fn user_guide_rhs_fit_uses_the_authored_neural_model() {
     .expect("differentiate the neural RHS fitting objective");
     // ANCHOR_END: guide-rhs-fit
     assert_eq!(gradient.gradients.len(), 2);
-    assert_eq!(gradient.trainable_names, ["W1[1,1]", "b1[1]"]);
+    assert_eq!(gradient.trainable_names, ["b1[1]", "bmid[1]"]);
     assert!(gradient.loss.is_finite());
     assert!(gradient.gradients.iter().all(|value| value.is_finite()));
-    assert!(gradient.gradients.iter().any(|value| value.abs() > 1e-12));
+    assert!(gradient.gradients.iter().all(|value| value.abs() > 1e-12));
+    assert!(matches!(
+        TrainableSet::by_names(&model, &["W1[1,1]"]),
+        Err(OptError::UnknownTrainable { .. })
+    ));
+    let slots = ["b1[1]", "bmid[1]"].map(|name| {
+        model
+            .parameter_slots()
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .expect("the canonical parameter owner issues this independent bias")
+            .slot
+    });
+    assert_eq!(gradient.trainable_slots, slots);
+    let before = slots.map(|slot| model.parameters()[slot]);
+    let loss = |model: &DifferentiableModel| {
+        let rhs = model.eval_rhs(0.0).expect("evaluate the actual neural RHS");
+        rhs.iter().map(|value| value * value).sum::<f64>() / (2.0 * rhs.len() as f64)
+    };
+    for (index, slot) in slots.iter().copied().enumerate() {
+        let step = 1e-5;
+        model.params_mut()[slot] = before[index] + step;
+        let plus = loss(&model);
+        model.params_mut()[slot] = before[index] - step;
+        let minus = loss(&model);
+        model.params_mut()[slot] = before[index];
+        let expected = (plus - minus) / (2.0 * step);
+        assert!(
+            (gradient.gradients[index] - expected).abs() <= 1e-6 * (1.0 + expected.abs()),
+            "bias {index}: actual={}, finite difference={expected}",
+            gradient.gradients[index]
+        );
+    }
+    let fitted = GradientDescent::new(1e-3, 2)
+        .optimize_rhs_mse(&mut model, &objective, &trainables)
+        .expect("update the actual neural bias parameters");
+    assert!(
+        fitted.final_loss().expect("final loss") < fitted.initial_loss().expect("initial loss")
+    );
+    for (index, slot) in slots.iter().copied().enumerate() {
+        let after = model.parameters()[slot];
+        assert!(after.is_finite() && after != before[index]);
+    }
 }

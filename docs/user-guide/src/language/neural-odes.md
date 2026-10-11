@@ -94,7 +94,7 @@ vector-field training problem:
 
 The following code uses `compiled` from compiling the unchanged
 `NeuralODETensor.mo` model and a two-element `target_derivatives` vector.
-It selects the actual first-layer weight and bias names in that model.
+It selects independent first- and second-layer biases from `parameter_slots()`.
 The excerpt is included directly from its executable Rust test:
 
 ```rust
