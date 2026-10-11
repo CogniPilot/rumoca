@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone)]
 pub(super) struct DefinitionOwner<'dae> {
     definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
@@ -46,11 +49,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return None;
         };
         let variable = dae::VariableId::from(variable).index();
-        let definition = self
-            .same_tick_definitions
-            .as_ref()?
-            .0
-            .definition(variable)?;
+        let owner = self.same_tick_definitions.as_ref()?;
+        let definition = owner.definitions.definition(variable)?;
+        let reads = owner
+            .definitions
+            .variable_read_closure(self.view, BTreeSet::from([variable]));
+        if reads.is_disjoint(&owner.targets) {
+            return None;
+        }
         Some((variable, definition))
     }
 

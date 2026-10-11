@@ -1607,6 +1607,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .frame(context, |frame| match frame {
                     ScalarContextFrame::NoEvent { .. }
                     | ScalarContextFrame::RelationObservation { .. }
+                    | ScalarContextFrame::CurrentDefinitions { .. }
+                    | ScalarContextFrame::EntryDefinitions { .. }
                     | ScalarContextFrame::Function { .. }
                     | ScalarContextFrame::DerivativeSeed { .. } => None,
                     frame => Some(frame.parent()),
