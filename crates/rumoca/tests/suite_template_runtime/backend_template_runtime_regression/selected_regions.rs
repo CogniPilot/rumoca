@@ -102,7 +102,15 @@ fn c_ode_selected_regions_reject_real_equality_outside_functions() {
         .model("Probe")
         .compile_str(&source, "selected_vector_real_equality.mo")
         .expect_err("MLS §3.5 forbids Real equality outside functions");
-    assert!(failure.to_string().contains("ER029"), "{failure}");
+    let rumoca::CompilerError::CompileDiagnosticsError { failures, .. } = failure else {
+        panic!("Real equality must retain a typed phase diagnostic: {failure:?}");
+    };
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.error_code.as_deref() == Some("ER029")),
+        "{failures:?}"
+    );
 }
 
 #[test]
