@@ -79,17 +79,7 @@ fn projected_model(projection: Projection) -> dae::Dae {
             })
         })?;
         let fallback = model.model_conditional_arm(&owner, false, |model| {
-            model.expressions(|expressions| {
-                let value = expressions
-                    .at(at)
-                    .literal(dae::DaeLiteral::Boolean(false))?;
-                match projection {
-                    Projection::Binder => Ok(value),
-                    Projection::Columns | Projection::RepeatedColumn => {
-                        expressions.at(at).array([value; 3])
-                    }
-                }
-            })
+            model.expressions(|expressions| fallback_value(expressions, projection, at))
         })?;
         let value = model.finish_model_conditional(owner, [selected, fallback])?;
         model.b1c([flags], |topology| {
@@ -109,6 +99,20 @@ fn projected_model(projection: Projection) -> dae::Dae {
         })
     })
     .unwrap()
+}
+
+fn fallback_value<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    projection: Projection,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let value = expressions
+        .at(at)
+        .literal(dae::DaeLiteral::Boolean(false))?;
+    match projection {
+        Projection::Binder => Ok(value),
+        Projection::Columns | Projection::RepeatedColumn => expressions.at(at).array([value; 3]),
+    }
 }
 
 fn selected_values<'dae>(
