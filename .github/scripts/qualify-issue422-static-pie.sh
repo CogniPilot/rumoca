@@ -59,6 +59,9 @@ qualify() {
 qualify memcmp rumoca_exec_cranelift lib \
   emit::host_runtime::tests::issue_422_memcmp_relocation_needs_no_process_symbol_export \
   -p rumoca-exec-cranelift --lib
+qualify memory rumoca_exec_cranelift lib \
+  emit::host_runtime::tests::issue_422_memory_libcalls_relocate_without_process_symbol_export \
+  -p rumoca-exec-cranelift --lib
 qualify original-u4 suite_core test \
   reported_bug_runtime::issue_422_original_array_function_runs_without_native_fallback \
   -p rumoca --no-default-features --features fmu-packaging --test suite_core
