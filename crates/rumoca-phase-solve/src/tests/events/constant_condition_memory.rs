@@ -3,9 +3,13 @@ use super::*;
 
 #[test]
 fn internal_false_condition_omits_only_its_redundant_memory_row() {
-    let text = "sample(0, 1); initial(); true; false;";
+    let text = "Real x; equation der(x) = 0; sample(0, 1); initial(); true; false;";
     let source = TestSource::new(text);
-    let sample_at = source.at(0, "sample(0, 1)".len());
+    let declaration = source.at(0, "Real x".len());
+    let equation_start = text.find("der(x)").unwrap();
+    let equation = source.at(equation_start, equation_start + "der(x) = 0".len());
+    let sample_start = text.find("sample(0, 1)").unwrap();
+    let sample_at = source.at(sample_start, sample_start + "sample(0, 1)".len());
     let initial_start = text.find("initial()").unwrap();
     let initial_at = source.at(initial_start, initial_start + "initial()".len());
     let true_start = text.find("true").unwrap();
@@ -18,6 +22,33 @@ fn internal_false_condition_omits_only_its_redundant_memory_row() {
     let mut omitted = Vec::new();
     let mut retained = Vec::new();
     let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let zero = expressions
+                .at(equation)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(equation)
+                .binary(dae::BinaryOperator::Subtract, derivative, zero)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation, residual))?;
         let literals = model.expressions(|expressions| {
             Ok([
                 expressions
