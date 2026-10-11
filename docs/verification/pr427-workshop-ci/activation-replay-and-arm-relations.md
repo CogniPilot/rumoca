@@ -68,8 +68,17 @@ Original test-only commit `a8286477f320128f42353dd01a456de7cc627cfb`
 is based on the unchanged dependency implementation in `3fb67e6a`. Its tests
 keep independent positive controls: the same B.1c producers in correct order
 with strict bincode roundtrip, and a constant primitive whose guard alone owns
-the issued 0.1 clock. Their BEFORE and AFTER execution is pending in the ROOT
-lane; none is claimed to have passed here.
+the issued 0.1 clock. ROOT executed their BEFORE at `98a307a4e`: IR selected two
+tests, with the binder control passing and the producer-prefix control failing;
+the clock test failed because Previous escaped its clock schedule. The binder
+control already fails closed because expression insertion merges the active
+guard's binder domain into each arm expression. It is retained protection, not
+a newly established missing proof. AFTER execution remains pending.
+
+| BEFORE log | SHA256 | Outcome |
+|---|---|---|
+| `pr427-arm-guard-dependencies-before-98a3-20261012/arm-guard-construction-before-two.log` | `cc41be2029d61ce8a0038e81867f64593a4ad88299c57018a41eff633126f304` | 1 pass / 1 fail |
+| `pr427-arm-guard-clock-before-98a3-20261012/arm-guard-clock-before-one.log` | `9530624009ffc3ebe57167def1d917dff23eaf81d5df48cec4319afe718c60cf` | 0 pass / 1 fail |
 
 ```sh
 cargo test --locked --offline -p rumoca-ir-dae --lib tests::model_conditionals::guard_dependencies:: -- --nocapture
@@ -80,3 +89,13 @@ cargo test --locked --offline -p rumoca-phase-solve --lib tests::clocks::arm_rel
 
 The complete model-conditional IR selector contains 9 tests after this test-only
 commit. The earlier 7-test command above records the initial repair's scope.
+
+The clock followup visits every reachable expression and condition once using
+the existing IR expression traversal. It expands each exact arm guard and
+checked condition coordinate, including nested Relation/Discrete operands.
+Ancestor guards are explicit operands of the issued parent-guard Conditional.
+The conflict checker consumes every found clock rather than a first-clock
+summary. Periodic condition activation lanes alone are not reclassified as
+clock-partition ownership. No arithmetic evaluator or expression grammar is
+duplicated, and the original mixed-clock control remains a separate test-only
+commit with BEFORE execution pending.
