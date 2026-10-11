@@ -4672,7 +4672,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(());
         }
         if !value.is_record() {
-            starts.push(self.pack_expression(argument)?);
+            starts.push(self.pack_typed_scalar_argument(argument, value.scalar_type())?);
             return Ok(());
         }
         if !value.dimensions().is_empty() {

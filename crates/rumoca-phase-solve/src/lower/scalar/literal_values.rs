@@ -12,10 +12,23 @@ use super::*;
 const MAXIMUM_DEPTH: usize = 64;
 
 impl<'dae> ScalarCompiler<'_, 'dae> {
+    pub(super) fn pack_typed_scalar_argument(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        scalar_type: dae::ScalarType,
+    ) -> Result<solve::Reg, LowerError> {
+        if scalar_type == dae::ScalarType::Integer
+            && let Some(start) = self.pack_literal_integer_argument(expression)?
+        {
+            return Ok(start);
+        }
+        self.pack_expression(expression)
+    }
+
     /// Integer call captures cross the scalar ABI exactly. Evaluate only source
     /// constants with the existing checked Integer owner; runtime parameters and
     /// explicit Integer-to-Real conversions keep their ordinary lowering.
-    pub(super) fn pack_literal_integer_argument(
+    fn pack_literal_integer_argument(
         &mut self,
         expression: dae::ExprId<'dae>,
     ) -> Result<Option<solve::Reg>, LowerError> {

@@ -49,7 +49,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })?;
         let inputs = form
             .input_readers()
-            .map(|reader| self.pack_expression(reader))
+            .map(|reader| {
+                self.pack_typed_scalar_argument(
+                    reader,
+                    self.node(reader).value_type().scalar_type(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let count = registered
             .site

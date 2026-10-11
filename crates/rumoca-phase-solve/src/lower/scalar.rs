@@ -1166,10 +1166,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.packed_expression_cache.insert(key, start);
             return Ok(start);
         }
-        if let Some(start) = self.pack_literal_integer_argument(expression)? {
-            self.packed_expression_cache.insert(key, start);
-            return Ok(start);
-        }
         let start = self.pack_expression_uncached(expression)?;
         self.packed_expression_cache.insert(key, start);
         Ok(start)
