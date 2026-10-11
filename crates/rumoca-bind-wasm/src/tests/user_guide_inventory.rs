@@ -66,6 +66,44 @@ fn require_neural_benchmark() {
     );
 }
 
+fn require_browser_owner() {
+    require_source(
+        "packages/playground/tests/browser_launcher.mjs",
+        "info.isFallbackAdapter",
+    );
+    for script in [
+        "book_live_smoke.mjs",
+        "fixedwing_book_smoke.mjs",
+        "interactive_scenario_parameters_smoke.mjs",
+        "user_guide_scenarios_smoke.mjs",
+    ] {
+        require_source(
+            &format!("packages/playground/tests/{script}"),
+            "launchGuideBrowser",
+        );
+    }
+    require_source(
+        "packages/playground/tests/user_guide_scenarios_smoke.mjs",
+        "linked-scenarios.json",
+    );
+    require_source(
+        "packages/playground/tests/user_guide_browser.mjs",
+        "\"user_guide_scenarios_smoke.mjs\"",
+    );
+    require_source(
+        "packages/playground/tests/book_live_smoke.mjs",
+        "All mandatory book checks passed",
+    );
+    require_source(
+        "packages/playground/tests/user_guide_browser.mjs",
+        "\"book_live_smoke.mjs\", \"fixedwing_book_smoke.mjs\"",
+    );
+    require_source(
+        ".github/workflows/ci.yml",
+        "node packages/playground/tests/user_guide_browser.mjs",
+    );
+}
+
 fn require_execution_owner(owner: &str) {
     match owner {
         "neural-benchmark" => require_neural_benchmark(),
@@ -140,43 +178,7 @@ fn require_execution_owner(owner: &str) {
                 "cargo xtask python test --wheel",
             );
         }
-        "book-browser" => {
-            require_source(
-                "packages/playground/tests/browser_launcher.mjs",
-                "info.isFallbackAdapter",
-            );
-            for script in [
-                "book_live_smoke.mjs",
-                "fixedwing_book_smoke.mjs",
-                "interactive_scenario_parameters_smoke.mjs",
-                "user_guide_scenarios_smoke.mjs",
-            ] {
-                require_source(
-                    &format!("packages/playground/tests/{script}"),
-                    "launchGuideBrowser",
-                );
-            }
-            require_source(
-                "packages/playground/tests/user_guide_scenarios_smoke.mjs",
-                "linked-scenarios.json",
-            );
-            require_source(
-                "packages/playground/tests/user_guide_browser.mjs",
-                "\"user_guide_scenarios_smoke.mjs\"",
-            );
-            require_source(
-                "packages/playground/tests/book_live_smoke.mjs",
-                "All mandatory book checks passed",
-            );
-            require_source(
-                "packages/playground/tests/user_guide_browser.mjs",
-                "\"book_live_smoke.mjs\", \"fixedwing_book_smoke.mjs\"",
-            );
-            require_source(
-                ".github/workflows/ci.yml",
-                "node packages/playground/tests/user_guide_browser.mjs",
-            );
-        }
+        "book-browser" => require_browser_owner(),
         "displayed-output" | "metadata-output" | "protocol-output" => {}
         _ => panic!("unregistered guide owner {owner}"),
     }

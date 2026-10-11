@@ -136,7 +136,10 @@ adapter identity prints a per-model `SKIP` receipt. Admission exceptions and
 failures after hardware admission fail the test; timeouts do not skip GPU work.
 An admitted run must submit command buffers, dispatch positive compute groups
 and read finite computed state samples. These are correctness observations, not
-hardware performance measurements. The native
+hardware performance measurements. Admission observes an independently requested
+adapter; the canonical driver may request a different adapter. Compute receipts
+therefore establish hardware-admitted WebGPU execution, without asserting the
+actual device is hardware. The native
 `user_guide_gpu_examples_prepare_for_webgpu` and
 `user_guide_gpu_examples_simulate_on_the_cpu_path` tests remain mandatory even
 when browser GPU execution is skipped. Browser source registration and syntax

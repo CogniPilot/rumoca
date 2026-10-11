@@ -70,7 +70,7 @@ try {
     check(receipt.readbacks > before.readbacks && receipt.sampledValues > before.sampledValues,
       `${name} read actual computed state samples`);
     check(receipt.nonfiniteValues === before.nonfiniteValues, `${name} GPU state samples are finite`);
-    console.log("WebGPU hardware API receipt (no performance claim)",
+    console.log("Hardware-admitted WebGPU API receipt (actual device type unmeasured; no performance claim)",
       name, JSON.stringify(receipt));
   }
 
@@ -169,7 +169,7 @@ try {
     const widget = page.locator(".rumoca-live").nth(index);
     check(await widget.locator(".rumoca-live-gpu input").first().isChecked(), `${name} authored GPU default selected`);
     if (!admission.admitted) {
-      console.log(`SKIP: ${name} hardware WebGPU execution: ${admission.reason}; mandatory CPU compilation/preparation is a separate native gate`);
+      console.log(`SKIP: ${name} hardware-admitted WebGPU execution: ${admission.reason}; mandatory CPU compilation/preparation is a separate native gate`);
       continue;
     }
     const before = await page.evaluate(() => ({ ...window.guideGpuReceipt }));
