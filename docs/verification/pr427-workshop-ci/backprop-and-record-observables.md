@@ -21,7 +21,7 @@ extent [2]. No substring matching, guessed index splitting, synthesized channel
 or default value is used. Each mapped exported column must actually exist;
 the same original values and settled/grid/trace comparison remain authoritative.
 
-These source/fixture corrections passed rustfmt and `git diff --check` only.
-Their OMC qualification is pending. The main roster remains six actual models;
+These source/fixture corrections passed rustfmt and `git diff --check`, followed
+by the [actual c758 OMC/Node qualification](qualification-c758-20261011.md). The main roster remains six actual models;
 the additional fixture remains separate. No compiler admission rule, exporter
 guard, tolerance or runtime resource limit changed.

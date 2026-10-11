@@ -3,7 +3,8 @@
 Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
 replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.
 This is a source-derived roster and candidate regression record. The focused
-LSP gate passed at `169ed612c`; the six-model OMC gate is not yet qualified.
+LSP gate passed at `169ed612c`; the six-model OMC and Node gates passed at
+`c758abd70`, as recorded in the [actual qualification receipt](qualification-c758-20261011.md).
 Manual PR claims are not CI evidence.
 
 ## Candidate CI coverage
@@ -98,11 +99,14 @@ before OMC rejected the DAE NeuralPredatorPrey derivative projection syntax;
 NeuralODEBackprop was not reached. The derivative repair at `4659ef1d5` then
 passed all fifteen exports for those five models, before OMC rejected the
 authored Backprop array `fixed = true` modifiers. The actual example now uses
-`each fixed = true`, retaining the intended fixed starts; this correction is
-not yet executed. The extra record-member fixture now declares exact original
-and exported CSV column names and checks its flat Real declaration/shape.
-See the exact [first receipt](qualification-26f-20261011.md) and
-[derivative repair attempt](qualification-4659-20261011.md). No six-model roundtrip,
+`each fixed = true`, retaining the intended fixed starts. The extra record-member
+fixture declares exact original/exported CSV column names and checks its flat
+Real declaration/shape. At frozen `c758abd70`, both Rust tests passed with exactly
+28 completed OMC controls: all six originals and eighteen exports, plus the
+separate fixture's four variants. Node passed all three workspace tests.
+See the [first receipt](qualification-26f-20261011.md),
+[derivative repair attempt](qualification-4659-20261011.md), and
+[successful actual qualification](qualification-c758-20261011.md). No full
 workspace/clippy, fixed MSL canary, or broader gate is claimed green.
 
 Raw bounded attempts are retained below
