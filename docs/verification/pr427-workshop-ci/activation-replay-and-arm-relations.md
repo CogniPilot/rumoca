@@ -53,3 +53,30 @@ The independent non-quotient source keeps its authored conditional and square
 root. Its full integral is `min(t,0.5) + 2*max(t-0.5,0)`; it must protect the
 negative square root while inactive and activate the later branch at its
 boundary. It is supplementary coverage, not a rewrite of the original failure.
+
+Guard dependency followup (source-only, AFTER unrun): the canonical model owner
+projects the relation and its exact activation guard together. Scalar relation
+admission checks both roots for closed coordinates. B.1c construction checks
+both roots against the same issued producer prefix. Clock ownership, continuous
+root classification and condition-memory scheduling inspect both roots,
+including a `previous` coordinate occurring only in the guard. This preserves
+MLS §16.5 partition ownership and §16.8.1 clocked event semantics; it introduces
+no new domain expansion or wire field. Structured numeric quotient families
+retain their separate domain-aware admission.
+
+Original test-only commit `a8286477f320128f42353dd01a456de7cc627cfb`
+is based on the unchanged dependency implementation in `3fb67e6a`. Its tests
+keep independent positive controls: the same B.1c producers in correct order
+with strict bincode roundtrip, and a constant primitive whose guard alone owns
+the issued 0.1 clock. Their BEFORE and AFTER execution is pending in the ROOT
+lane; none is claimed to have passed here.
+
+```sh
+cargo test --locked --offline -p rumoca-ir-dae --lib tests::model_conditionals::guard_dependencies:: -- --nocapture
+# Exactly 2: guard-domain refusal, and guard discrete-producer-prefix proof.
+cargo test --locked --offline -p rumoca-phase-solve --lib tests::clocks::arm_relation_previous_guard_owns_its_condition_memory_clock -- --exact --nocapture
+# Exactly 1: no continuous roots, one condition-memory row on its issued clock.
+```
+
+The complete model-conditional IR selector contains 9 tests after this test-only
+commit. The earlier 7-test command above records the initial repair's scope.

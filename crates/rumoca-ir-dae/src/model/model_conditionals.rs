@@ -21,6 +21,15 @@ pub(crate) struct ModelArmEntry {
     pub(crate) guard: u32,
 }
 
+/// Project an exact guard from construction-issued expression scope.
+pub(super) fn activation_guard(
+    scopes: &[Option<u32>],
+    arms: &[ModelArmEntry],
+    expression: u32,
+) -> Option<u32> {
+    scopes[expression as usize].map(|arm| arms[arm as usize].guard)
+}
+
 /// One in-flight model conditional. The fields cannot name a foreign arm.
 pub struct ModelConditional<'dae> {
     owner: u32,
@@ -361,6 +370,15 @@ impl Storage {
         }
         Ok(())
     }
+    pub(crate) fn model_expression_roots(&self, expression: u32) -> impl Iterator<Item = u32> {
+        let guard = activation_guard(
+            &self.expressions.model_arm_scopes,
+            &self.model_arms,
+            expression,
+        );
+        [Some(expression), guard].into_iter().flatten()
+    }
+
     /// MLS §3.6.5 / DAE-C22: a relation is observed only under its
     /// construction-issued arm guard.
     /// Live construction requires current lexical visibility. Whole-model

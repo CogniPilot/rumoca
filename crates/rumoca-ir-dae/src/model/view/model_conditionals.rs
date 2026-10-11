@@ -92,8 +92,23 @@ impl<'dae> DaeView<'dae> {
     /// Consumers of a separately published relation must use this same guard
     /// for its lazy numeric surface and Boolean observation.
     pub fn model_activation_guard(self, expression: ExprId<'dae>) -> Option<ExprId<'dae>> {
-        self.model_arm_of(expression)
-            .map(|arm| ExprId::from_raw(self.dae.storage.model_arms[arm.index() as usize].guard))
+        crate::model::model_conditionals::activation_guard(
+            &self.dae.storage.expressions.model_arm_scopes,
+            &self.dae.storage.model_arms,
+            expression.index(),
+        )
+        .map(ExprId::from_raw)
+    }
+    /// Data and activation roots of one checked model expression. Scheduling
+    /// and dependency proofs must include the issued guard, not only the value.
+    pub fn model_expression_roots(
+        self,
+        expression: ExprId<'dae>,
+    ) -> impl Iterator<Item = ExprId<'dae>> {
+        self.dae
+            .storage
+            .model_expression_roots(expression.index())
+            .map(ExprId::from_raw)
     }
     pub fn model_arm_of(self, expression: ExprId<'dae>) -> Option<ModelArm<'dae>> {
         self.dae.storage.expressions.model_arm_scopes[expression.index() as usize].map(|index| {

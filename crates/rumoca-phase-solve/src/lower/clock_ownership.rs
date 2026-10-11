@@ -6,26 +6,28 @@ pub(crate) fn expression_clock_owner<'dae>(
     variable_clock: impl Fn(dae::VariableId<'dae>) -> Option<dae::ClockId<'dae>>,
 ) -> Option<dae::ClockId<'dae>> {
     let mut owner = None;
-    dae::for_each_expression(view, expression, |_, node| {
-        if owner.is_some() {
-            return;
-        }
-        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
-            return;
-        };
-        if let dae::CoordinateView::Previous(previous) = coordinate {
-            owner = Some(
-                view.previous(previous)
-                    .expect("checked previous identity")
-                    .clock(),
-            );
-            return;
-        }
-        owner = super::coordinate_variable(coordinate)
-            .or_else(|| super::pre_coordinate_variable(coordinate))
-            .and_then(|index| view.variable_id(index as usize))
-            .and_then(&variable_clock);
-    });
+    for root in view.model_expression_roots(expression) {
+        dae::for_each_expression(view, root, |_, node| {
+            if owner.is_some() {
+                return;
+            }
+            let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
+                return;
+            };
+            if let dae::CoordinateView::Previous(previous) = coordinate {
+                owner = Some(
+                    view.previous(previous)
+                        .expect("checked previous identity")
+                        .clock(),
+                );
+                return;
+            }
+            owner = super::coordinate_variable(coordinate)
+                .or_else(|| super::pre_coordinate_variable(coordinate))
+                .and_then(|index| view.variable_id(index as usize))
+                .and_then(&variable_clock);
+        });
+    }
     owner
 }
 
@@ -46,23 +48,25 @@ pub(crate) fn relation_clock_owner<'dae>(
 ) -> Option<dae::ClockId<'dae>> {
     let owner = expression_clock_owner(view, expression, &variable_clock)?;
     let mut continuous = false;
-    dae::for_each_expression(view, expression, |_, node| {
-        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
-            return;
-        };
-        let variable = match coordinate {
-            dae::CoordinateView::Time => {
-                continuous = true;
+    for root in view.model_expression_roots(expression) {
+        dae::for_each_expression(view, root, |_, node| {
+            let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
                 return;
-            }
-            dae::CoordinateView::State(id) | dae::CoordinateView::Derivative(id) => id.index(),
-            dae::CoordinateView::Algebraic(id) => id.index(),
-            dae::CoordinateView::Input(id) => id.index(),
-            _ => return,
-        };
-        continuous |= view
-            .variable_id(variable as usize)
-            .is_some_and(|variable| variable_clock(variable).is_none());
-    });
+            };
+            let variable = match coordinate {
+                dae::CoordinateView::Time => {
+                    continuous = true;
+                    return;
+                }
+                dae::CoordinateView::State(id) | dae::CoordinateView::Derivative(id) => id.index(),
+                dae::CoordinateView::Algebraic(id) => id.index(),
+                dae::CoordinateView::Input(id) => id.index(),
+                _ => return,
+            };
+            continuous |= view
+                .variable_id(variable as usize)
+                .is_some_and(|variable| variable_clock(variable).is_none());
+        });
+    }
     (!continuous).then_some(owner)
 }

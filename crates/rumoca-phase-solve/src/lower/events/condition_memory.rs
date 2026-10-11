@@ -113,12 +113,14 @@ fn condition_reads_previous<'dae>(
             | dae::ConditionOperation::Clock(_) => None,
         };
         if let Some(expression) = expression {
-            dae::for_each_expression(view, expression, |_, node| {
-                reads |= matches!(
-                    node.operation(),
-                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Previous(_))
-                );
-            });
+            for root in view.model_expression_roots(expression) {
+                dae::for_each_expression(view, root, |_, node| {
+                    reads |= matches!(
+                        node.operation(),
+                        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Previous(_))
+                    );
+                });
+            }
         }
     }
     reads
@@ -221,8 +223,10 @@ fn condition_operand_clock<'dae>(
                     .relation(relation)
                     .expect("checked condition relation resolves")
                     .expression();
-                if let Some(found) = expression_clock_owner(view, clocks, expression) {
-                    visit(found);
+                for root in view.model_expression_roots(expression) {
+                    if let Some(found) = expression_clock_owner(view, clocks, root) {
+                        visit(found);
+                    }
                 }
             }
             dae::ConditionOperation::Discrete(expression) => {

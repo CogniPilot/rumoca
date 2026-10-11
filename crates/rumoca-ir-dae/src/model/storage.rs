@@ -553,7 +553,9 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         self.expect_relation_model_arm(relation, at)?;
-        self.expect_closed_coordinates(relation, at)?;
+        for root in self.model_expression_roots(relation.index()) {
+            self.expect_closed_coordinates(ExprId::from_raw(root), at)?;
+        }
         self.expect_relation_node(relation, at)
     }
 
