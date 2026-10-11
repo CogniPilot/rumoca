@@ -4,6 +4,7 @@ mod index_bounds;
 mod linear_solve;
 mod recursion;
 mod scalar_projection;
+mod static_integer_capture;
 
 use std::num::NonZeroU64;
 
