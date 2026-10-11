@@ -17,3 +17,18 @@ The DAE storage retained outside the repository shows that the mapped conversion
 Raw bounded logs and guardian reports remain under the owned attempt directory named in the adjacent JSON digest receipt. A prior DAE-inspection attempt stopped at the scratch floor before model output; its retry completed. No current-source simulation pass, OMC parity, forced-native execution or complete MSL cohort result is claimed.
 
 Current-source BEFORE subsequently executed with the ROOT-sealed CLI built from `c85128c50cd6e65198a712578c80679afc01aeaf`, binary SHA256 `e03b4f4093e4d66aadf57757e791b4959ad559222515e0fc1e98972b25f34f8b`. Both the unchanged original and public viscosity probe compiled through DAE, then failed Solve lowering with EL005/InvalidCallInterface at continuous algebraic row 2. Both processes exited 1, and zero CSV artifacts were emitted. This confirms that the current combined scope/identity fixes alone do not close this failure. The ordinary Rust test and any producer repair remain unrun. The adjacent `glycol-current-before.json` binds commands, logs and binary/source seals and reports the diagnostic resource-monitor scope explicitly.
+# Actual temporary diagnostic at 3475
+
+The tracing CLI compiled successfully. The first probe driver refused its
+artifact before execution because it expected optimization level zero; the
+workspace dev profile uses level one. A separate corrected driver verified
+the actual artifact and sealed a copy outside Cargo's cache.
+
+The corrected viscosity probe compiled through DAE, then failed Solve lowering
+with the same row-2 `InvalidCallInterface`. All nine primal typed owners were
+issued; neither owner-body nor nested `builder.call` failure callback fired.
+This rules out those construction sites as the observed first failure, but
+does not establish derivative availability or assertion replay correctness.
+The probe produced no CSV. Exact source, binary, commands, guards, and raw
+artifact hashes are bound in [glycol-diagnostic-before.json](glycol-diagnostic-before.json).
+The temporary source patch must not be landed.
