@@ -59,7 +59,14 @@ fn queue_conditional_reads<'dae>(
             break;
         };
         pending.push(condition);
-        match selector.translation_guard(condition)? {
+        // This query has no scalar domain point: retain all reads of a
+        // binder-dependent aggregate rather than expand its compact domain.
+        let guard = match selector.translation_guard(condition) {
+            Ok(guard) => guard,
+            Err(LowerError::NonComputable { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        match guard {
             Some(false) => {}
             Some(true) => {
                 pending.push(value);

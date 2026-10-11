@@ -92,3 +92,15 @@ fn selected_immutable_parameter_cycle_still_requires_a_coupled_owner() {
         .replace("then 1 else 100*small", "then small else 1");
     assert_cycle(&source);
 }
+
+#[test]
+fn compact_binder_condition_retains_dependencies_without_a_scalar_point() {
+    let source = r#"model ConditionalParameterOrder
+      parameter Real gain = 2;
+      parameter Real values[2] = {if i > 1 then gain else 1 for i in 1:2};
+      Real x(start=0, fixed=true);
+    equation
+      der(x) = sum(values);
+    end ConditionalParameterOrder;"#;
+    simulate_branch(source, 3.0);
+}
