@@ -271,12 +271,16 @@ impl ShapeEnvironment {
     pub(super) fn bind_comprehension_index(&mut self, index: &rumoca_core::ComprehensionIndex) {
         match index.binder {
             rumoca_core::IndexBinderProvenance::Source(id) => {
-                self.source_comprehension_binders.insert(id);
+                self.bind_source_comprehension_binder(id);
             }
             rumoca_core::IndexBinderProvenance::Generated => {
                 self.insert(VarName::new(&index.name), Vec::new())
             }
         }
+    }
+
+    pub(in crate::construction) fn bind_source_comprehension_binder(&mut self, id: DefId) {
+        self.source_comprehension_binders.insert(id);
     }
 
     pub(super) fn is_source_comprehension_binder(
@@ -1200,7 +1204,7 @@ impl ShapeAnalyzer<'_> {
             }
             let mut scoped = values.clone();
             for index in indices {
-                scoped.insert(VarName::new(&index.name), Vec::new());
+                scoped.bind_comprehension_index(index);
             }
             if let Some(filter) = filter {
                 self.discover_calls(filter, &scoped)?;

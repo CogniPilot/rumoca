@@ -1431,21 +1431,7 @@ pub(super) fn lower_call_operands<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<LoweredCallOperands<'dae>, dae::DaeConstructionError> {
-    // Function-shape discovery proves calls inside a compact loop with each
-    // loop index in scalar scope. Reconstruct that same lexical shape scope
-    // when selecting the immutable call certificate; the DAE binder map is
-    // the construction proof that these names are exactly the active locals.
-    let scoped_shapes = if binders.is_empty() {
-        None
-    } else {
-        let mut shapes = symbols.shapes.clone();
-        for (name, binder) in binders {
-            let (lower, upper) =
-                construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
-            shapes.bind_slice_binder(name.clone(), lower, upper);
-        }
-        Some(shapes)
-    };
+    let scoped_shapes = call_shape_scope(construction, symbols, binders, provenance)?;
     let call_shapes = scoped_shapes.as_ref().unwrap_or(symbols.shapes);
     let (call, function) = symbols.functions.select_with_call_certificate(
         name,
@@ -1499,6 +1485,38 @@ pub(super) fn lower_call_operands<'dae>(
         arguments,
         vectorization,
     })
+}
+
+/// Project the active issued binders into the same shape scope call discovery
+/// uses. Source comprehension identities stay separate from generated names.
+fn call_shape_scope<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    provenance: dae::DaeProvenance,
+) -> Result<Option<ShapeEnvironment>, dae::DaeConstructionError> {
+    let comprehension = symbols.source_comprehension_binders;
+    if binders.is_empty()
+        && comprehension.is_none_or(|scope| scope.source.is_empty() && scope.generated.is_empty())
+    {
+        return Ok(None);
+    }
+    let mut shapes = symbols.shapes.clone();
+    for (name, binder) in binders
+        .iter()
+        .chain(comprehension.into_iter().flat_map(|scope| &scope.generated))
+    {
+        let (lower, upper) =
+            construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
+        shapes.bind_slice_binder(name.clone(), lower, upper);
+    }
+    for id in comprehension
+        .into_iter()
+        .flat_map(|scope| scope.source.keys())
+    {
+        shapes.bind_source_comprehension_binder(*id);
+    }
+    Ok(Some(shapes))
 }
 
 fn lower_vectorized_call_operands<'dae>(
