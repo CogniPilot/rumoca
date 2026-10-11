@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { ensureNodeSelfForWasmBindgenRayon } from "./node_rayon_shim.mjs";
+import { compiledDaeJson } from "../src/modules/compiled_dae_output.js";
 
 const subdirIndex = process.argv.indexOf("--pkg-subdir");
 const pkgSubdir = subdirIndex < 0 ? "release-full-web" : process.argv[subdirIndex + 1];
@@ -116,7 +117,8 @@ async function run() {
   const compiled = JSON.parse(wasm.compile(decay, "SympyDecay"));
   assert.equal(compiled.balance.is_balanced, true, "the actual workshop model must compile");
   await assertFlatModelicaRoundtrip(wasm, targets.find((target) => target.id === "flat-modelica"), flatFiles, compiled);
-  const daeJson = JSON.stringify(compiled.dae);
+  const daeJson = compiledDaeJson(compiled);
+  assert.equal(typeof daeJson, "string", "checked DAE replay needs the compiler's exact wire text");
   assertFiles(wasm.render_target(daeJson, "SympyDecay", "dae-modelica", "", "{}"), "checked DAE API");
   assertRefusal(
     () => wasm.render_target(daeJson, "SympyDecay", "base-modelica", "", "{}"),

@@ -1,4 +1,5 @@
 import { setupCommandPalette } from './modules/command_palette.js';
+import { compiledDaeJson } from './modules/compiled_dae_output.js';
 import * as shared from '../vendor/visualization_shared.js';
 import { createSourceBreadcrumbs } from './modules/breadcrumbs.js';
 import { createPackageArchiveController } from './modules/package_archive_controller.js';
@@ -3705,16 +3706,9 @@ function displayDaeOutput(modelName) {
     if (result.error) { setDaeOutput(String(result.error || 'compile error')); return; }
     if (!result.dae) { setDaeOutput(`No DAE available for ${modelName}`); return; }
 
-    if (window.daeFormat === 'pretty') {
-        const prettyOutput = result.pretty || '';
-        setDaeOutput(prettyOutput || JSON.stringify(result.dae, null, 2));
-    } else {
-        if (result.dae_native) {
-            setDaeOutput(JSON.stringify(result.dae_native, null, 2), 'json');
-        } else {
-            setDaeOutput('DAE JSON not available');
-        }
-    }
+    const output = compiledDaeJson(result);
+    if (!output) { setDaeOutput('DAE JSON not available'); return; }
+    setDaeOutput(output, window.daeFormat === 'pretty' ? undefined : 'json');
 }
 
 async function createCodegenRunForModel(modelName, context = null) {
