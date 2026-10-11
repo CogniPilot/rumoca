@@ -94,9 +94,11 @@ def test_guide_python_fences():
                 if index == 4:
                     assert_decay(namespace["r"], "x", 0.1, 10.0)
             assert_live_exports(namespace)
-            assert namespace["array_model"].states.names == ["x[1]", "x[2]"]
-            assert namespace["m3"].states.names == ["x[1]", "x[2]", "x[3]"]
-            for name in namespace["m3"].states.names:
+            assert namespace["array_model"].states["x"].dims == [2]
+            assert namespace["m3"].states["x"].dims == [3]
+            assert namespace["m3"].states["x[3]"].dims == [3]
+            assert namespace["r3"].names == ["x[1]", "x[2]", "x[3]"]
+            for name in namespace["r3"].names:
                 assert_decay(namespace["r3"], name, 0.5, 1.0)
             assert list(Path("out/casadi").glob("*.py"))
             written = namespace["written"]
