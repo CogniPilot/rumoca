@@ -30,9 +30,10 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
             return Ok(None);
         }
         let span = node.provenance().span();
-        let mut registers = Vec::new();
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
+        let mut values = Vec::new();
         for scalar in 0..scalar_count(self.view, expression) {
-            let value = match self.integer(expression, scalar) {
+            let value = match selector.integer(expression, scalar) {
                 Ok(value) => value,
                 Err(LowerError::NonComputable { .. }) => return Ok(None),
                 Err(error) => return Err(error),
@@ -41,8 +42,12 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
                 solve::SolveValueKind::Integer(value),
             )
             .map_err(|error| LowerError::unsupported(error.to_string(), span))?;
-            registers.push(self.constant(value, span)?);
+            values.push(value);
         }
+        let registers = values
+            .into_iter()
+            .map(|value| self.constant(value, span))
+            .collect::<Result<Vec<_>, _>>()?;
         self.pack_registers(&registers, span).map(Some)
     }
 
