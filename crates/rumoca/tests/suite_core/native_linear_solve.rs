@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
 
-fn msl_root() -> Option<PathBuf> {
+pub(super) fn msl_root() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
     let available =

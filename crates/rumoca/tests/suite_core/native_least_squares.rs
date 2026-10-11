@@ -12,18 +12,6 @@ use std::path::PathBuf;
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
 
-fn msl_root() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
-    let available =
-        root.join("Complex.mo").is_file() && root.join("Modelica 4.1.0/package.mo").is_file();
-    assert!(
-        !cfg!(feature = "msl-sim-tests") || available,
-        "required MSL fixture is missing; run cargo xtask repo modelica-deps ensure"
-    );
-    available.then_some(root)
-}
-
 fn simulate(source: &str, model: &str, root: Option<&PathBuf>) -> SimResult {
     let mut compiler = Compiler::new().model(model);
     if let Some(root) = root {
@@ -61,7 +49,7 @@ end LeastSquaresFit;
 /// equations `A**T (A x - b) = 0`.
 #[test]
 fn matrices_least_squares_executes_its_lapack_driver() {
-    let Some(root) = msl_root() else {
+    let Some(root) = super::native_linear_solve::msl_root() else {
         eprintln!("skipping: the MSL is not available");
         return;
     };

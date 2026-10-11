@@ -35,9 +35,10 @@ those models. Defaults stay authored: Backprop uses nHidden=12/nBatch=8
 (218 trainable states); NeuralODETensor uses nHidden=32, with the separately
 declared nHidden=314 variant. No all-15 numeric or 32-model matrix claim is made.
 
-Kalman retains the existing example manifest reader. The two original MSL
-LAPACK solve/least-squares helpers now check both required MSL files rather
-than only the directory. `cargo xtask verify workspace` already selects
+Kalman retains the existing example manifest reader. The original MSL
+linear-solve helper now checks both required MSL files rather than only the
+directory, and least-squares reuses that private same-suite owner.
+`cargo xtask verify workspace` already selects
 `rumoca/msl-sim-tests`; under that feature missing or incomplete MSL is a hard
 failure. Ordinary local calls without that feature retain the existing optional
 MSL policy. No cross-suite path inclusion or new public helper is introduced.
