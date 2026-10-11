@@ -24,9 +24,21 @@ fn authored_counter_periodic_real_uses_the_issued_boolean_event() {
         let dae::DiscreteRealActivation::When { trigger, .. } = equations[0].activation() else {
             panic!("authored Real is owned by a Boolean when event");
         };
+        let dae::ConditionOperation::Or(tick, never) = view.condition(trigger).unwrap().operation()
+        else {
+            panic!("Boolean periodic event retains its unowned activation");
+        };
         assert!(matches!(
-            view.condition(trigger).unwrap().operation(),
+            view.condition(tick).unwrap().operation(),
             dae::ConditionOperation::Clock(_)
+        ));
+        let dae::ConditionOperation::Not(always) = view.condition(never).unwrap().operation()
+        else {
+            panic!("unowned activation has a never-active disjunct");
+        };
+        assert!(matches!(
+            view.condition(always).unwrap().operation(),
+            dae::ConditionOperation::Always
         ));
     });
     let package = lower_to_algorithm_code(
@@ -93,7 +105,7 @@ fn periodic_real_off_tick_disjunction_stays_refused() {
 #[test]
 fn periodic_real_mixed_tick_activation_stays_refused() {
     rejected_periodic_real(
-        "model Refused discrete Real y(start=0); equation when sample(0,0.1) or sample(0,0.2) then y=pre(y)+1; end when; end Refused;",
+        "model Refused discrete Real y(start=0); equation when {sample(0,0.1),sample(0,0.2)} then y=pre(y)+1; end when; end Refused;",
         "clock-domain",
     );
 }
