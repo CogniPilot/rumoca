@@ -2,19 +2,21 @@
   "base": "14e48c6704f3ebc444b8271eb12519e8be9b3340",
   "main_at_triage": "0b249f0f7",
   "baseline_source": "fb7c8217feb436e7691d353b892a549e38980ce5",
-  "baseline_scope": "Compiler-only source reproductions 423/424/426. One passes; two fail. No simulation or fixed-20 canary claim.",
-  "combined_source": "Awaiting ROOT assembly of published PR421 f84a4304e and PR427 cfe53b91d.",
+  "baseline_scope": "Historical compiler-only source reproductions 423/424/426 at fb7c8217f: 426 passes; 423/424 fail. No simulation or fixed-20 canary claim.",
+  "combined_source": "Historical published PR421 f84a4304e plus PR427 cfe53b91d assembly, qualified with the integration adapter at 206599d0f: original compiler tests 1 PASS, 2 FAIL. This is not the current workshop candidate.",
+  "current_gate_source": "17a5cdaa9a924d08d9f1917a370d543598ccc5cb: workshop candidate plus four test-only fixture commits; includes published PR427, not a complete PR421 composition.",
+  "current_gate_scope": "Pending original runtime 8, original B JAX execution/AD 1, and original compiler 3. Runtime policies are Interpreter and Auto, not forced Cranelift/WASM coverage. No current after-pass is claimed; issue 425 memory remains separately unmeasured.",
   "issues": [
     {
       "number": 403,
       "model": "GuardedOperands",
       "source_origin": "Concrete model built from the issue’s stated function/relation shape; the issue has no full Modelica listing.",
-      "baseline": "Source lowering still emits eager Boolean Binary operations; runtime census unmeasured.",
+      "baseline": "MLS 3.3 permits eager Boolean operands; only if branches guarantee protection. Current runtime profile and explicit-if controls are pending, not an established required-short-circuit conformance failure.",
       "controls": [
         "k=1,n=3 reads a[1]",
-        "k=4,n=3 must return 0 without reading a[4]",
+        "k=4,n=3 may return 0 through short-circuiting or retain the eager invalid-index fault",
         "k=4,n=4 must retain the active invalid-index fault",
-        "or guard with an already-true left operand skips a faulting right operand"
+        "explicit if with k=4,n=3 must return 0 without reading a[4]"
       ],
       "required": [
         "typed interpreter",
@@ -29,7 +31,7 @@
     {
       "number": 405,
       "model": "TopLevel",
-      "baseline": "Source repair 94cff417c is ancestral to main; exact issue schedule not executed in this census.",
+      "baseline": "The input-event repair is merged into main via squash 976a5141541a2a8b676a252740143517a9b8ae6c; 94cff417c itself is not ancestral. Historical regressions are retained in docs/verification/interactive-input-events.md; the current exact issue schedule is pending.",
       "controls": [
         "input schedule 0->7 at 0.3, 7->0 at 0.8, 0->7 at 1.3",
         "when u>3 increments exactly twice",
