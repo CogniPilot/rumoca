@@ -10,8 +10,10 @@
 //! forward dual lowering and reverse rows; `rumoca_phase_solve`'s
 //! `kink_rule_tests` pins the three together.
 
+mod broadcast;
 mod linear_solve;
 mod mapped;
+mod partials;
 
 use super::*;
 use crate::typed_program::call::{
@@ -111,11 +113,6 @@ fn program_supports_directional(
                 program_supports_directional(body.body(), available)
             }
             SolveOperation::BroadcastBinary {
-                operator: SolveBinaryOperator::Divide,
-                scalar_on_lhs: true,
-                ..
-            }
-            | SolveOperation::BroadcastBinary {
                 operator:
                     SolveBinaryOperator::IntegerQuotient
                     | SolveBinaryOperator::Power
@@ -240,7 +237,6 @@ fn program_supports_directional(
             }
             | SolveOperation::BroadcastBinary {
                 operator: SolveBinaryOperator::Divide,
-                scalar_on_lhs: false,
                 ..
             }
             | SolveOperation::Reduce {
@@ -995,11 +991,11 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .binary(SolveBinaryOperator::Add, first, second, provenance)?
             }
-            SolveBinaryOperator::Divide => self.derive_quotient(
-                lhs,
-                rhs,
+            SolveBinaryOperator::Divide => partials::quotient_tangent(
+                self.builder,
+                [lhs.primal, rhs.primal],
                 [lhs_tangent, rhs_tangent],
-                (value_type, zero),
+                zero,
                 provenance,
             )?,
             SolveBinaryOperator::Power => self.derive_power(
@@ -1036,39 +1032,6 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             primal,
             tangent: Some(tangent),
         })
-    }
-
-    /// `l / r` under the division kink rule of `rumoca_eval_solve::reverse`:
-    /// `1 / r` and `-l / r²`, each when finite, else zero.
-    fn derive_quotient(
-        &mut self,
-        lhs: Directional<ProgramRegister<'program>>,
-        rhs: Directional<ProgramRegister<'program>>,
-        [lhs_tangent, rhs_tangent]: [ProgramRegister<'program>; 2],
-        (value_type, zero): (&SolveValueType, ProgramRegister<'program>),
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let one = self.constant_like(value_type, 1.0, provenance)?;
-        let lhs_partial =
-            self.builder
-                .binary(SolveBinaryOperator::Divide, one, rhs.primal, provenance)?;
-        let square = self.builder.binary(
-            SolveBinaryOperator::Multiply,
-            rhs.primal,
-            rhs.primal,
-            provenance,
-        )?;
-        let negated = self
-            .builder
-            .unary(SolveUnaryOperator::Negate, lhs.primal, provenance)?;
-        let rhs_partial =
-            self.builder
-                .binary(SolveBinaryOperator::Divide, negated, square, provenance)?;
-        self.sum_of_scaled_partials(
-            [(lhs_tangent, lhs_partial), (rhs_tangent, rhs_partial)],
-            zero,
-            provenance,
-        )
     }
 
     /// `atan2(l, r)` under the kink rule of `rumoca_eval_solve::reverse`:
@@ -1127,10 +1090,12 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         zero: ProgramRegister<'program>,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let lhs_term = self.scale_by_finite_partial(lhs_tangent, lhs_partial, zero, provenance)?;
-        let rhs_term = self.scale_by_finite_partial(rhs_tangent, rhs_partial, zero, provenance)?;
-        self.builder
-            .binary(SolveBinaryOperator::Add, lhs_term, rhs_term, provenance)
+        partials::sum_of_scaled_partials(
+            self.builder,
+            [(lhs_tangent, lhs_partial), (rhs_tangent, rhs_partial)],
+            zero,
+            provenance,
+        )
     }
 
     /// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial
@@ -1216,9 +1181,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         zero: ProgramRegister<'program>,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let partial = self.finite_or_zero(partial, zero, provenance)?;
-        self.builder
-            .binary(SolveBinaryOperator::Multiply, tangent, partial, provenance)
+        partials::scale_by_finite_partial(self.builder, tangent, partial, zero, provenance)
     }
 
     /// `value` when finite, else zero: `value - value` is `0` exactly for every
@@ -1229,13 +1192,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         zero: ProgramRegister<'program>,
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let difference =
-            self.builder
-                .binary(SolveBinaryOperator::Subtract, value, value, provenance)?;
-        let finite =
-            self.builder
-                .compare(SolveCompareOperator::Equal, difference, zero, provenance)?;
-        self.builder.select(finite, value, zero, provenance)
+        partials::finite_or_zero(self.builder, value, zero, provenance)
     }
 
     fn expanded_registers(
@@ -1427,33 +1384,15 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .binary(SolveBinaryOperator::Add, first, second, provenance)?
             }
-            // `a / s`: the scalar quotient rule of `derive_quotient` per
-            // element, `da / s - (a / s²) ds`.
-            SolveBinaryOperator::Divide if !scalar_on_lhs => {
-                let first = self.builder.broadcast_binary(
-                    SolveBinaryOperator::Divide,
-                    aggregate_tangent,
-                    scalar.primal,
-                    false,
-                    provenance,
-                )?;
-                let square = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    scalar.primal,
-                    scalar.primal,
-                    provenance,
-                )?;
-                let partial = self.builder.broadcast_binary(
-                    SolveBinaryOperator::Divide,
-                    aggregate.primal,
-                    square,
-                    false,
-                    provenance,
-                )?;
-                let second = self.builder.scale(partial, scalar_tangent, provenance)?;
-                self.builder
-                    .binary(SolveBinaryOperator::Subtract, first, second, provenance)?
-            }
+            SolveBinaryOperator::Divide => broadcast::quotient_tangent(
+                self.builder,
+                aggregate,
+                scalar,
+                [aggregate_tangent, scalar_tangent],
+                scalar_on_lhs,
+                &value_type,
+                provenance,
+            )?,
             _ => {
                 return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
             }
