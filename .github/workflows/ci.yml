@@ -700,10 +700,36 @@ jobs:
           if [ "$TEMPLATE_BACKEND" = fmi ]; then
             export PATH="$(dirname "$system_cmake"):$PATH"
           fi
-          cargo xtask verify template-runtimes \
-            --backend "$TEMPLATE_BACKEND" \
-            --require-external-tools
+          runtime_check=(cargo xtask verify template-runtimes
+            --backend "$TEMPLATE_BACKEND" --require-external-tools)
+          if [ "$TEMPLATE_BACKEND" = modelica ]; then
+            export TMPDIR="${RUNNER_TEMP:?}/rumoca-workshop-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
+            mkdir "$TMPDIR"
+            "${runtime_check[@]}" 2>&1 | tee "$TMPDIR/template-runtime.log"
+          else
+            "${runtime_check[@]}"
+          fi
           EOF
+
+      - name: Hash retained workshop Modelica evidence
+        if: always() && matrix.backend == 'modelica'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP:?}/rumoca-workshop-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
+          if [ -d "$evidence" ]; then
+            cd "$evidence"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z |
+              xargs -0 -r sha256sum > SHA256SUMS
+          fi
+
+      - name: Upload retained workshop Modelica evidence
+        if: always() && matrix.backend == 'modelica'
+        uses: actions/upload-artifact@v6
+        with:
+          name: workshop-modelica-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rumoca-workshop-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate

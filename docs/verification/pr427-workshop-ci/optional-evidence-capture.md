@@ -23,3 +23,10 @@ alongside the existing frozen recipe, log and guardian. The tests
 still run the same two selected functions and all six originals/eighteen exports
 plus the separate fixture. This capture is additional evidence, not qualification
 until the unchanged gates execute successfully on the new frozen source.
+
+The existing Modelica template-runtime CI lane creates its `TMPDIR` under
+`RUNNER_TEMP`, with the GitHub run ID and attempt in the directory name. It
+retains the actual combined runtime log and uploads the directory with an
+independent `SHA256SUMS` file in `always()` steps, including failed checks.
+The directory is outside Cargo caches; the workflow requires a new directory
+and an actual artifact rather than uploading evidence from an earlier run.
