@@ -712,9 +712,20 @@ fn unowned_zero_phase_sample_model() -> solve::SolveModel {
     .unwrap();
     solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 0, 4),
             solve_layout: solve::SolveLayout {
-                parameter_count: 4,
                 compiled_parameter_len: 4,
+                discrete_valued_scalar_names: vec!["counter".to_owned()],
+                variable_storage_runs: vec![solve::SolveVariableStorageRun {
+                    base: solve::scalar_slot_p(0),
+                    scalar_count: 1,
+                    role: solve::SolveVariableStorageRole::DiscreteValue,
+                    value_kind: solve::SolveVariableValueKind::Integer,
+                }],
+                variable_declarations: vec![solve::SolveVariableDeclaration::new(
+                    solve::SolveVariableStorageRole::DiscreteValue,
+                    solve::SolveVariableValueKind::Integer,
+                )],
                 pre_param_bindings: vec![solve::PreParamBinding {
                     dest_p_index: 1,
                     source: solve::PreParamSource::P { index: 0 },
@@ -727,6 +738,15 @@ fn unowned_zero_phase_sample_model() -> solve::SolveModel {
                 activation_parameter_indices: vec![2],
             },
             discrete: solve::DiscreteSolveSystem {
+                // The checked iteration owner advances the ordinary pre lane
+                // between passes; a raw binding without its run cannot do so.
+                event_iteration_plan: solve::EventIterationPlan::new(vec![
+                    solve::EventIterationRun {
+                        variable: 0,
+                        pre_binding_start: 0,
+                        owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+                    },
+                ]),
                 rhs: spanned_block(
                     vec![
                         unowned_sample_counter_program(),
