@@ -480,3 +480,46 @@ fn model_arm_relation_protects_inactive_arithmetic_without_a_quotient() {
         }
     }
 }
+
+#[test]
+fn compact_model_arm_relations_keep_each_domain_point_activation() {
+    // The nested domain-local relations occur in the authored QuadrotorAcro
+    // rate controller. This smaller source isolates their event owner.
+    let compiled = compile(
+        "model StructuredArmRelation Real x[2](start={2,-2},each fixed=true); output Real y[2]; equation for i in 1:2 loop y[i]=if x[i]>1 then -x[i] elseif x[i]<-1 then -2*x[i] else x[i]; end for; der(x)=y; end StructuredArmRelation;",
+        "StructuredArmRelation",
+    );
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let opts = SimOptions {
+            t_end: 0.2,
+            ..options(policy)
+        };
+        let result = simulate_dae(&compiled.dae, &opts)
+            .expect("nested structured relations retain their exact model arm");
+        assert_eq!(result.times, vec![0.0, 0.1, 0.2]);
+        for (name, rate, initial) in [("x[1]", 1.0, 2.0), ("x[2]", 2.0, -2.0)] {
+            let states = series(&result, name);
+            let output_name = name.replace('x', "y");
+            let outputs = series(&result, &output_name);
+            assert_eq!(states.len(), result.times.len());
+            assert_eq!(outputs.len(), result.times.len());
+            for (ordinal, &time) in result.times.iter().enumerate() {
+                let expected = initial * (-rate * time).exp();
+                assert!(
+                    states[ordinal].is_finite()
+                        && (states[ordinal] - expected).abs()
+                            <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                    "{policy:?}: {name}({time})={}, expected {expected}",
+                    states[ordinal]
+                );
+                assert!(
+                    outputs[ordinal].is_finite()
+                        && (outputs[ordinal] + rate * states[ordinal]).abs() <= opts.atol,
+                    "{policy:?}: {output_name}({time})={}, expected {}",
+                    outputs[ordinal],
+                    -rate * states[ordinal]
+                );
+            }
+        }
+    }
+}
