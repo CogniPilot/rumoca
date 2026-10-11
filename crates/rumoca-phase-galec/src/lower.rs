@@ -1105,7 +1105,7 @@ fn lower_action_guard<'dae>(
         )),
         // An unguarded algorithm section and a section-level `assert` run
         // whenever the section runs, so their guard adds nothing to the clock.
-        dae::ConditionOperation::Always => Ok(None),
+        dae::ConditionOperation::Always => Ok(Some(gast::Expression::Bool(true))),
     }
 }
 
