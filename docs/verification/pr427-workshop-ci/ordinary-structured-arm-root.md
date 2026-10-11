@@ -4,7 +4,7 @@ The unchanged original scenario test at `6688b285347080fc1529dcede929bff77b4f8f9
 failed for QuadrotorAcro and ReusableBoosterLanding. The temporary diagnostic
 probe recorded two distinct owners; [the BEFORE receipt](ordinary-structured-arm-root-before.json)
 binds the original source bytes, exact spans, raw log and resource measurements.
-The probe must be removed before final production validation.
+The temporary probe was removed before the AFTER source was frozen.
 
 QuadrotorAcro's nested rate-controller relation (QuadrotorSIL.mo line 239)
 was expression 1772, issued and active in arm 7. ToDAE requested a structured
@@ -30,4 +30,14 @@ sibling arm and function-boundary refusals. The public-source control keeps
 two loop points with opposite selected branches and independent exponential
 state/RHS oracles before their next thresholds. Its three samples deliberately
 isolate admission and point activation; it does not claim event-crossing
-numerical proof. These AFTER controls remain UNRUN in this source lane.
+numerical proof. At source `61f75e31a17b8ac039b6ac3596748d2140f24df2`, all three constructor
+controls and the public runtime test passed with exact selected counts. The
+public test ran both Interpreter and Auto policies. [The AFTER receipt](ordinary-structured-arm-root-after.json)
+binds the commands, source files, logs, count receipts and unchanged resource
+guards.
+
+The unchanged original scenario compiler gate reached all fifteen other
+models, including QuadrotorAcro, and failed only ReusableBoosterLanding at its
+distinct guarded deadline owner. This is compiler-boundary evidence for the
+authored Quad model; it does not establish its full simulation or all-guide
+success. The Booster repair and final guide/runtime refresh remain pending.

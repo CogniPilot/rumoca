@@ -1,0 +1,319 @@
+{
+  "artifact_root": "$HOME/scratch/rumoca/slam-integration-cycle-20261010",
+  "artifact_directory": "pr427-structured-arm-owner-after-61f75-20261012",
+  "source": "61f75e31a17b8ac039b6ac3596748d2140f24df2",
+  "recipe_sha256": "19eb4527ab8e731cdbc04582830c73c436d3a6781c1ef429cc9b4fe4b392cb02",
+  "guards": {
+    "seconds": 600,
+    "rssMiB": 4096,
+    "availableMiB": 16384,
+    "cacheMiB": 8192,
+    "scratchFreeFloorBytes": 8589934592
+  },
+  "production_commit": "ed6b0176af51fb86f17c3ac73c5901b104021ed8",
+  "qualification_scope": "Three checked constructor tests and one public runtime control passed. Original scenario compiler gate retains one distinct Booster failure.",
+  "source_files": {
+    "crates/rumoca-ir-dae/src/model/storage.rs": "f0a34de7694da309ae33ed7ddfd57ddf240e24deaa3c113b1634e91a0af0677f",
+    "crates/rumoca-ir-dae/src/conditions.rs": "91a2acccded4f36de9bac0691b65584546e619112ed14fea4fcd122470b9ca22",
+    "crates/rumoca-ir-dae/src/tests/model_conditionals/structured_relations.rs": "ec41d3e560eb3341dc6a20993b5718c3f331a52a89c09362684cfd26d088c586",
+    "crates/rumoca/tests/suite_core/reported_bug_runtime/main_dae_integer.rs": "d859cad2abb643a79dba08ad3ed94e82f36a35b2dadc945beb26ef27dcc7b89d",
+    "crates/rumoca-bind-wasm/src/tests/user_guide_scenario_tests.rs": "c4b46c38d31305dcaeaed1c419f45faa0f7ff5793172f026fbec7d147cd6b60c",
+    "examples/interactive/quadrotor/QuadrotorSIL.mo": "823fe3bfb69446133951abfc87cb32e4b3acc4ac6e3aa50f41e101b005affc55",
+    "examples/interactive/reusable_booster/ReusableBoosterLanding.mo": "180760c31308ed7a49d6cedd9869e5f29619695b7e138f23feb5268939fdc38e"
+  },
+  "gates": [
+    {
+      "name": "structured-arm-constructor-three",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-dae",
+        "--lib",
+        "tests::model_conditionals::structured_relations::",
+        "--",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 3,
+      "raw_log_sha256": "72108a45cd5e60e7b99f87edaada335249945735bc4a3052d50c6db8f725ac9c",
+      "guardian_sha256": "3d27df0f950719e5d185fa784ae82edab0371254571b77eeeefb48da2419d1c3",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-ir-dae",
+          "--lib",
+          "tests::model_conditionals::structured_relations::",
+          "--",
+          "--nocapture"
+        ],
+        "elapsedMs": 36160.759998999994,
+        "peakRssKiB": 1224128,
+        "minimumAvailableKiB": 53058924,
+        "minimumScratchFreeBytes": 42442387456,
+        "scratchFreeFloorMiB": 8192,
+        "peakCacheBytes": 7357423616,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 0
+      },
+      "rust_summary": "ok. 3 passed; 0 failed; 0 ignored; 0 measured; 218 filtered out; finished in 0.00s",
+      "count_receipt_sha256": "934d9cb00b67666de84b0a334690c93b6a3e3a62c29a5cc3f45814f8dc580e07",
+      "count_receipt": {
+        "gate": "structured-arm-constructor-three",
+        "childCode": 0,
+        "expectedTests": 3,
+        "observed": {
+          "last": {
+            "status": "ok",
+            "passed": 3,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filteredOut": 218,
+            "line": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 218 filtered out; finished in 0.00s"
+          },
+          "summaries": 1
+        },
+        "accepted": true
+      }
+    },
+    {
+      "name": "compact-model-arm-public-one",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "compact_model_arm_relations_keep_each_domain_point_activation",
+        "--",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 1,
+      "raw_log_sha256": "9e8119f660a04fb119cdf3492228f427ff622fb4baa7b11caed32ff77a1e7510",
+      "guardian_sha256": "fe1ae4f21b15aee57595987c5c5e8c75e19ef22e5386b3e67f5920891bcd4549",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca",
+          "--test",
+          "suite_core",
+          "compact_model_arm_relations_keep_each_domain_point_activation",
+          "--",
+          "--nocapture"
+        ],
+        "elapsedMs": 213371.199233,
+        "peakRssKiB": 3016728,
+        "minimumAvailableKiB": 53001628,
+        "minimumScratchFreeBytes": 41425395712,
+        "scratchFreeFloorMiB": 8192,
+        "peakCacheBytes": 7381274624,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 0
+      },
+      "rust_summary": "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1436 filtered out; finished in 0.03s",
+      "count_receipt_sha256": "3fc49156f5e2056a086abd41a7de04bafe17fa6d9981acbdfcef659d205bc9cd",
+      "count_receipt": {
+        "gate": "compact-model-arm-public-one",
+        "childCode": 0,
+        "expectedTests": 1,
+        "observed": {
+          "last": {
+            "status": "ok",
+            "passed": 1,
+            "failed": 0,
+            "ignored": 0,
+            "measured": 0,
+            "filteredOut": 1436,
+            "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1436 filtered out; finished in 0.03s"
+          },
+          "summaries": 1
+        },
+        "accepted": true
+      }
+    },
+    {
+      "name": "original-guide-scenario-arm-probe-one",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-bind-wasm",
+        "--features",
+        "full-web",
+        "--lib",
+        "tests::user_guide_scenario_tests::user_guide_scenarios_compile_the_authored_models_with_pinned_libraries",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 1,
+      "raw_log_sha256": "3358eb994ced1450e251364e1c8725608fee2193d0ae048a17144a7875d969bc",
+      "guardian_sha256": "f9d36c7d73b71e2eb921c58b93b08cc564ef7ca88da566f3f7233bc6b7f01b98",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-bind-wasm",
+          "--features",
+          "full-web",
+          "--lib",
+          "tests::user_guide_scenario_tests::user_guide_scenarios_compile_the_authored_models_with_pinned_libraries",
+          "--",
+          "--exact",
+          "--nocapture"
+        ],
+        "elapsedMs": 206145.481734,
+        "peakRssKiB": 2711832,
+        "minimumAvailableKiB": 55153408,
+        "minimumScratchFreeBytes": 41192747008,
+        "scratchFreeFloorMiB": 8192,
+        "peakCacheBytes": 7354638336,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 101
+      },
+      "rust_summary": "FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 167 filtered out; finished in 38.45s",
+      "successful_compiler_cells": [
+        {
+          "model": "GalecCounter",
+          "scenario": "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+          "elapsed": "1.910465s"
+        },
+        {
+          "model": "FixedWing",
+          "scenario": "examples/interactive/fixedwing/rumoca-scenario.toml",
+          "elapsed": "1.837711s"
+        },
+        {
+          "model": "QuadrotorAcro",
+          "scenario": "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
+          "elapsed": "1.823324s"
+        },
+        {
+          "model": "ReusableBoosterEmbeddedControlLaw",
+          "scenario": "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
+          "elapsed": "1.736158s"
+        },
+        {
+          "model": "Rover",
+          "scenario": "examples/interactive/rover/rumoca-scenario.toml",
+          "elapsed": "1.697220s"
+        },
+        {
+          "model": "Ball",
+          "scenario": "examples/simulation/rumoca-scenario.ball.toml",
+          "elapsed": "1.699619s"
+        },
+        {
+          "model": "KalmanFilterStepTest",
+          "scenario": "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
+          "elapsed": "1.705570s"
+        },
+        {
+          "model": "NeuralLatentOscillator",
+          "scenario": "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",
+          "elapsed": "2.748895s"
+        },
+        {
+          "model": "NeuralODEBackprop",
+          "scenario": "examples/simulation/rumoca-scenario.neural_ode_backprop.toml",
+          "elapsed": "1.857831s"
+        },
+        {
+          "model": "NeuralODETensor",
+          "scenario": "examples/simulation/rumoca-scenario.neural_ode_tensor.toml",
+          "elapsed": "1.809605s"
+        },
+        {
+          "model": "NeuralPredatorPrey",
+          "scenario": "examples/simulation/rumoca-scenario.neural_predator_prey.toml",
+          "elapsed": "1.802624s"
+        },
+        {
+          "model": "PIDMSL",
+          "scenario": "examples/simulation/rumoca-scenario.pidmsl.toml",
+          "elapsed": "2.147454s"
+        },
+        {
+          "model": "SwitchedRLC",
+          "scenario": "examples/simulation/rumoca-scenario.switched_rlc.toml",
+          "elapsed": "1.696041s"
+        },
+        {
+          "model": "SwitchedRLC_MSL",
+          "scenario": "examples/simulation/rumoca-scenario.switched_rlc_msl.toml",
+          "elapsed": "1.778600s"
+        },
+        {
+          "model": "SympyDecay",
+          "scenario": "examples/simulation/rumoca-scenario.sympy_decay.toml",
+          "elapsed": "1.699251s"
+        }
+      ],
+      "failed_compiler_cells": [
+        {
+          "model": "ReusableBoosterLanding",
+          "scenario": "examples/interactive/reusable_booster/rumoca-scenario.toml",
+          "phase": "ToDae",
+          "diagnostic": "model expression escaped its construction-issued conditional arm"
+        }
+      ]
+    }
+  ]
+}
