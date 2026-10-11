@@ -1,6 +1,33 @@
 //! Shared function callbacks retain their issued model-scope suspension.
 use super::*;
 
+fn suspended_identity_function<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+    let (function, ()) = dae.function(
+        dae::FunctionSignature::new(VarName::new("f"), [real], [real], at),
+        |dae, reservation| {
+            let input = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, at)
+            })?;
+            let output = dae
+                .functions(|functions| functions.output(&reservation, VarName::new("y"), 0, at))?;
+            let value = dae.expressions(|e| e.at(at).function_parameter(input))?;
+            let mut body = dae.functions(|functions| functions.begin(reservation, at))?;
+            dae.functions(|functions| functions.assign(&mut body, output, value, at))?;
+            dae.functions(|functions| functions.define(body, at))?;
+            // A dead closed body expression must remain within the
+            // actual global function suspension, not an inferred
+            // dependency-only extent.
+            dae.expressions(|e| e.at(at).literal(dae::DaeLiteral::Real(99.0)))?;
+            Ok(())
+        },
+    )?;
+    Ok(function)
+}
+
 fn nested_function_model() -> dae::Dae {
     let text = "if c then if d then f(3) else 4 else 5; f(6)";
     let mut sources = SourceMap::new();
@@ -20,27 +47,7 @@ fn nested_function_model() -> dae::Dae {
             let inner = dae.begin_model_conditional(condition, at)?;
             let (value, function) = dae.model_conditional_arm(&inner, true, |dae| {
                 let argument = dae.expressions(|e| e.at(at).literal(dae::DaeLiteral::Real(3.0)))?;
-                let (function, ()) = dae.function(
-                    dae::FunctionSignature::new(VarName::new("f"), [real], [real], at),
-                    |dae, reservation| {
-                        let input = dae.functions(|functions| {
-                            functions.parameter(&reservation, VarName::new("u"), 0, at)
-                        })?;
-                        let output = dae.functions(|functions| {
-                            functions.output(&reservation, VarName::new("y"), 0, at)
-                        })?;
-                        let value = dae.expressions(|e| e.at(at).function_parameter(input))?;
-                        let mut body =
-                            dae.functions(|functions| functions.begin(reservation, at))?;
-                        dae.functions(|functions| functions.assign(&mut body, output, value, at))?;
-                        dae.functions(|functions| functions.define(body, at))?;
-                        // A dead closed body expression must remain within the
-                        // actual global function suspension, not an inferred
-                        // dependency-only extent.
-                        dae.expressions(|e| e.at(at).literal(dae::DaeLiteral::Real(99.0)))?;
-                        Ok(())
-                    },
-                )?;
+                let function = suspended_identity_function(dae, real, at)?;
                 let value = dae.expressions(|e| e.at(at).call(function, 0, [argument]))?;
                 Ok((value, function))
             })?;
