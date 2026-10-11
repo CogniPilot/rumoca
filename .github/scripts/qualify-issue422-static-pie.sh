@@ -46,7 +46,7 @@ qualify() {
   fi
   cp "$executable" "$evidence/$name.elf"
   sha256sum "$evidence/$name.elf" > "$evidence/$name.elf.sha256"
-  if ! timeout --kill-after=5s 60s "$evidence/$name.elf" \
+  if ! timeout --foreground --kill-after=5s 60s "$evidence/$name.elf" \
     "$selector" --exact --nocapture --test-threads="$RUST_TEST_THREADS" \
     > "$evidence/$name.test.log" 2>&1; then
     cat "$evidence/$name.test.log"
