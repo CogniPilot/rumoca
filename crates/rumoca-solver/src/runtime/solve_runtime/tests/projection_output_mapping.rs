@@ -12,7 +12,7 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
         vec![1, 0],
     )
     .expect("valid nonidentity residual output mapping");
-    let model = solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
@@ -50,6 +50,21 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
         parameters: vec![1.0],
         ..Default::default()
     };
+    // Both primal and tangent retain program outputs [1, 0]; projection rows
+    // are logical output coordinates, not source program positions.
+    let jvp = solve::ScalarProgramBlock::with_output_indices(
+        vec![
+            affine_seed_row(&[(1, 1.0)]),
+            affine_seed_row(&[(1, 1.0), (0, -1.0)]),
+        ],
+        vec![span; 2],
+        vec![1, 0],
+    )
+    .expect("checked tangent preserves nonidentity output mapping");
+    model.artifacts.continuous.implicit_jacobian_v_scalar = jvp;
+    mirror_scalar_implicit_jvp(&mut model);
+    mapped_tangent_matches_directional_difference(&model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
@@ -86,4 +101,36 @@ fn chained_assignment_residual_row() -> Vec<solve::LinearOp> {
         },
         solve::LinearOp::StoreOutput { src: 2 },
     ]
+}
+
+fn mapped_tangent_matches_directional_difference(model: &solve::SolveModel) {
+    let primal = to_scalar_program_block(&model.problem.continuous.implicit_rhs).unwrap();
+    let y = [2.0, 4.0];
+    let direction = [0.3, -0.7];
+    let mut tangent = [0.0; 2];
+    solve_eval::eval_scalar_program_block(
+        &model.artifacts.continuous.implicit_jacobian_v_scalar,
+        &y,
+        &[1.0],
+        0.0,
+        Some(&direction),
+        &mut tangent,
+    )
+    .unwrap();
+    assert_eq!(
+        tangent,
+        [-1.0, -0.7],
+        "logical outputs are [d(sample-output), d(sample)]"
+    );
+    let step = 1e-6;
+    let mut plus = [0.0; 2];
+    let mut minus = [0.0; 2];
+    let y_plus = std::array::from_fn::<_, 2, _>(|index| y[index] + step * direction[index]);
+    let y_minus = std::array::from_fn::<_, 2, _>(|index| y[index] - step * direction[index]);
+    solve_eval::eval_scalar_program_block(&primal, &y_plus, &[1.0], 0.0, None, &mut plus).unwrap();
+    solve_eval::eval_scalar_program_block(&primal, &y_minus, &[1.0], 0.0, None, &mut minus)
+        .unwrap();
+    for index in 0..2 {
+        assert!((tangent[index] - (plus[index] - minus[index]) / (2.0 * step)).abs() < 1e-8);
+    }
 }
