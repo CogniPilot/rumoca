@@ -21,31 +21,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("quotient domain is not issued by this DAE", span))?
             .structured()
             .clone();
-        let extents = domain
-            .extents()
-            .map_err(|error| LowerError::contract(error.to_string(), span))?;
-        let mut values = Vec::with_capacity(domain.binders.len());
-        let mut const_strides = Vec::with_capacity(domain.binders.len());
-        for (dimension, (binder, count)) in domain.binders.iter().zip(extents).enumerate() {
-            prove_exact_index_progression(binder, count, span)?;
-            let dst = self.register(span)?;
-            let op_position = self.ops.len();
-            // This is a symbolic value, not the base-point literal. Recording
-            // it in the constant ledger would freeze dependent arithmetic.
-            self.ops.push(solve::LinearOp::Const {
-                dst,
-                value: binder.lower as f64,
-            });
-            values.push(dst);
-            const_strides.push(solve::AffineStencilConstStride {
-                op_position,
-                terms: vec![solve::AffineStencilConstStrideTerm {
-                    dimension,
-                    stride: binder.step as f64,
-                }],
-            });
-        }
-        self.symbolic_domain_points.push((id, values));
+        let const_strides = self.bind_quotient_domain(id, None, span)?;
         let mut load_strides = Vec::new();
         let step = if let Some(guard) = memory.activation_guard {
             let position = self.ops.len();
@@ -86,6 +62,73 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             metadata: solve::TensorNodeMetadata::default(),
             span,
         })
+    }
+
+    /// A numeric root is a view of the same symbolic domain as its Map.
+    /// Keep its substituted coordinates out of the literal-folding ledger:
+    /// folding only the scalar view would change the certified ratio term.
+    pub(in crate::lower) fn quotient_root_program(
+        mut self,
+        memory: crate::layout::QuotientMemory<'dae>,
+        point: &[i64],
+        expression: dae::ExprId<'dae>,
+        guard: Option<dae::ExprId<'dae>>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let id = memory
+            .domain
+            .ok_or_else(|| LowerError::contract("numeric root has no structured domain", span))?;
+        self.bind_quotient_domain(id, Some(point), span)?;
+        self.root_expression_program(expression, guard, span)
+    }
+
+    fn bind_quotient_domain(
+        &mut self,
+        id: dae::DomainId<'dae>,
+        point: Option<&[i64]>,
+        span: Span,
+    ) -> Result<Vec<solve::AffineStencilConstStride>, LowerError> {
+        let domain = self
+            .view
+            .domain(id)
+            .ok_or_else(|| LowerError::contract("quotient domain is not issued by this DAE", span))?
+            .structured()
+            .clone();
+        if let Some(point) = point {
+            let ordinal = domain
+                .ordinal_of(point)
+                .map_err(|error| LowerError::contract(error.to_string(), span))?;
+            if ordinal.is_none() {
+                return Err(LowerError::contract(
+                    "numeric root point is outside its domain",
+                    span,
+                ));
+            }
+        }
+        let extents = domain
+            .extents()
+            .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        let mut values = Vec::with_capacity(domain.binders.len());
+        let mut strides = Vec::with_capacity(domain.binders.len());
+        for (dimension, (binder, count)) in domain.binders.iter().zip(extents).enumerate() {
+            prove_exact_index_progression(binder, count, span)?;
+            let dst = self.register(span)?;
+            let position = self.ops.len();
+            self.ops.push(solve::LinearOp::Const {
+                dst,
+                value: point.map_or(binder.lower, |values| values[dimension]) as f64,
+            });
+            values.push(dst);
+            strides.push(solve::AffineStencilConstStride {
+                op_position: position,
+                terms: vec![solve::AffineStencilConstStrideTerm {
+                    dimension,
+                    stride: binder.step as f64,
+                }],
+            });
+        }
+        self.symbolic_domain_points.push((id, values));
+        Ok(strides)
     }
 
     pub(super) fn quotient_memory_read(

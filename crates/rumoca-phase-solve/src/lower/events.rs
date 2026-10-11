@@ -1757,18 +1757,28 @@ fn lower_structured_roots<'dae>(
                 root.provenance().span(),
             )
         })?;
+        let memory = layout.buffered_quotients.entries().iter().find(|memory| {
+            memory.domain == Some(root.domain()) && memory.root_index == zero_domains.len()
+        });
         for point in points {
             let row = zero_domains.len();
-            rows.push(
+            let program = if let Some(&memory) = memory {
+                ScalarCompiler::new(view, layout, None).quotient_root_program(
+                    memory,
+                    &point,
+                    root.expression(),
+                    root.activation_guard(),
+                    root.provenance().span(),
+                )?
+            } else {
                 ScalarCompiler::new(view, layout, Some((root.domain(), &point)))
                     .root_expression_program(
                         root.expression(),
                         root.activation_guard(),
                         root.provenance().span(),
-                    )?,
-                root.provenance().span(),
-                row,
-            );
+                    )?
+            };
+            rows.push(program, root.provenance().span(), row);
             zero_domains.push(root_zero_domain(view, root.expression()));
             relation_memory_targets.push(None);
         }
