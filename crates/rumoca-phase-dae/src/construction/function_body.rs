@@ -1,5 +1,5 @@
 mod loop_selection;
-use loop_selection::{continue_while_selected, selected_body_condition};
+use loop_selection::continue_while_selected;
 
 mod branch_assertions;
 mod path_definedness;
