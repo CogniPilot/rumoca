@@ -33,8 +33,8 @@ fn legacy_wire_is_refused(json: &str, source: &str) {
     assert_eq!(wire["source"], source);
     assert_eq!(wire["compilerRevision"], "943aa7d7b745");
     let error = serde_json::from_value::<solve::SolvePureCallTable>(wire["table"].take())
-        .expect_err("legacy wire must not receive missing recursion defaults");
-    assert_eq!(error.to_string(), "missing field `recursion`");
+        .expect_err("legacy wire must not receive missing binder provenance defaults");
+    assert_eq!(error.to_string(), "missing field `provenance`");
 }
 
 fn arguments(values: &[f64], initial: f64, final_value: f64) -> Vec<Vec<solve::SolveValueKind>> {
