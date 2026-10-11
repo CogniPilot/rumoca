@@ -66,9 +66,9 @@ exact body line count, classification, finite execution owner and proof scope.
 The inventory rejects unknown owners, language/classification mismatches, missing
 source spans, and absent required test or CI registrations. Source registration
 is distinct from actual completion:
-a registered owner or syntax check is not an execution receipt. Some required
-owners are not yet integrated into this source, so its inventory gate must fail
-until those concrete routes are present. New/changed snippets
+a registered owner or syntax check is not an execution receipt. The required
+routes are now integrated; their current runtime qualification remains separate.
+New/changed snippets
 fail the mandatory FullWeb inventory test until the inventory is reviewed.
 Sixteen TOML excerpts enter the actual scenario/workspace configuration parser;
 application paths and external-process placeholders are not claimed as runnable
@@ -85,10 +85,27 @@ independent repeated hysteresis-cycle test at
 agree with the piecewise analytic temperature and relay state, including more
 than 20 switches. The raw log SHA256 is
 `75ec1effbba2078605eab2c76da543dc640058d8c1cdaafb41a13ea38f824995`.
-The complete 19-test suite, Latent256/512, PredatorPrey313 and stronger execution
-owner registry remain unmeasured. The isolated TOML-context test produced a
-passing raw result but its guardian recorded a scratch free-space refusal;
-it needs a clean bounded retry.
+The current complete 19-test attempt at
+`c85128c50cd6e65198a712578c80679afc01aeaf` failed with SIGABRT during
+Latent512 initialization. Four tests reported pass before the abort (TOML
+contexts, Airfoil slider reseeding, GPU preparation and GPU CPU execution).
+Inside the width test, the full Latent256 model compiled, initialized and
+produced three samples in 27.17 seconds; that test did not complete because
+Latent512 subsequently aborted. The retained original core identifies a
+2,253,424-byte native JIT stack tape during FMI initialization, after successful
+compilation. The full 19-test gate, the remaining test outcomes and current
+neural widths are not qualified. The bounded attempt took 161.43 seconds,
+peaked at 3,723,736 KiB RSS and recorded no resource stop. Raw evidence is in
+`pr427-guide-and-scope-after-integrated-20261011/guide-all-native.log` and its
+matching guardian receipt. The earlier isolated TOML resource refusal remains
+historical and is not a completed gate.
+
+At `c01db27355d9be5836c605acf80ed84325b7168f`, the three CLI context tests
+passed with 78 original CLI argument vectors, all 66 Bash source spans and 30
+actual disposable commands, including the exact ten-step stdio controller.
+The Rust fitting test also passed with two actual optimizer updates and
+independent finite-difference checks in 113.48 seconds. These earlier focused
+receipts do not establish a complete current source or installed-wheel gate.
 
 ## Required execution routes
 
