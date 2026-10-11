@@ -11,6 +11,33 @@ fn compile(source: &str) {
 }
 
 #[test]
+fn bounded_dependent_slice_keeps_the_issued_generated_binder() {
+    compile(
+        r#"
+function eliminate
+  input Real A[3,3];
+  output Real matrix[3,3];
+protected
+  Real factor;
+algorithm
+  matrix := A;
+  for column in 1:3 loop
+    for row in column+1:3 loop
+      factor := matrix[row,column]/matrix[column,column];
+      matrix[row,column:3] := matrix[row,column:3]-factor*matrix[column,column:3];
+    end for;
+  end for;
+end eliminate;
+model Probe
+  Real matrix[3,3];
+equation
+  matrix=eliminate({{4+time,1,0},{1,3,1},{0,1,2}});
+end Probe;
+"#,
+    );
+}
+
+#[test]
 fn mixed_numeric_cross_arguments_are_promoted_to_the_real_builtin_signature() {
     compile(
         r#"
