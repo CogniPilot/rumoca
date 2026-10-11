@@ -25,6 +25,7 @@ import that path.
 
 | Helper(s) | Owner | Notes |
 |---|---|---|
+| `resolve_scenario_codegen_target` | `rumoca-compile::scenario` | Shared scenario-relative target context for Python and LSP; built-in target IDs remain unchanged. |
 | `balance`, `balance_detail` | `rumoca-phase-dae::balance` | DAE equation/unknown balance arithmetic |
 | `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |

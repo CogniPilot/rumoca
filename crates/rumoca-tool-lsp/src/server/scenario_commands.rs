@@ -8,6 +8,7 @@ use rumoca_compile::codegen::targets::{
     validate_solve_target_capabilities, validate_solve_target_capabilities_with_calls,
 };
 use rumoca_compile::codegen::{SolveTemplateRenderer, render_dae_template_with_name};
+use rumoca_compile::scenario::resolve_scenario_codegen_target;
 
 fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
 {
@@ -666,17 +667,6 @@ fn load_codegen_target_bundle(
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("codegen target path is not UTF-8"))?,
     )
-}
-
-fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
-    let target_path = PathBuf::from(target);
-    if target_path.is_absolute() {
-        return target_path;
-    }
-    uri_path
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(target_path)
 }
 
 /// Render a GALEC codegen target's inspectable sources for the scenario
