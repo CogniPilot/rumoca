@@ -417,22 +417,14 @@ fn first_binder_reference(
     binder: &str,
 ) -> Option<Reference> {
     struct Finder<'a> {
-        binder: &'a rumoca_core::ComprehensionIndex,
+        binder: &'a str,
         found: Option<Reference>,
     }
     impl rumoca_core::ExpressionVisitor for Finder<'_> {
         fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
             if self.found.is_none()
                 && subscripts.is_empty()
-                && match self.binder.binder {
-                    rumoca_core::IndexBinderProvenance::Source(id) => {
-                        reference.target_def_id() == Some(id)
-                    }
-                    rumoca_core::IndexBinderProvenance::Generated => {
-                        reference.is_generated()
-                            && reference.var_name() == &VarName::new(&self.binder.name)
-                    }
-                }
+                && reference.var_name() == &VarName::new(self.binder)
             {
                 self.found = Some(reference.clone());
             }

@@ -923,7 +923,7 @@ fn lower_variable_reference<'dae>(
     {
         return Err(dae::DaeConstructionError::UnknownId {
             kind: "Flat comprehension source binder",
-            index: id.index() as usize,
+            index: id.index(),
             span: provenance.span(),
         });
     }

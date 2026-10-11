@@ -569,6 +569,7 @@ fn lower_attribute_expression<'dae>(
     lower_expression_scoped(
         construction,
         LoweringSymbols {
+            source_comprehension_binders: None,
             coordinates,
             functions,
             // A variable's attribute and binding values keep their MLS §3.6.5
@@ -892,6 +893,7 @@ fn lower_structured_equations<'dae>(
                 .iter()
                 .map(|body| {
                     let symbols = LoweringSymbols {
+                        source_comprehension_binders: None,
                         coordinates,
                         functions,
                         shapes: &scoped_shapes,
@@ -1106,6 +1108,7 @@ fn lower_structured_discrete_family<'dae>(
         .expect("a structured discrete family has one planned B.1c owner");
     for plan in input.assignments {
         let symbols = LoweringSymbols {
+            source_comprehension_binders: None,
             coordinates: input.coordinates,
             functions: input.functions,
             shapes: input.shapes,
