@@ -1,3 +1,5 @@
+mod jax_lazy_conditionals;
+
 use rumoca::Compiler;
 use rumoca_compile::codegen::targets::RenderedTargetFile;
 use std::fs;

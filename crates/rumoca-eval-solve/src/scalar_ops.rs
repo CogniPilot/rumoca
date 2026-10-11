@@ -16,6 +16,8 @@
 //! numbers) makes the whole program unlowerable, so the caller can refuse the
 //! model at the capability gate instead of failing inside a template.
 
+#[cfg(test)]
+mod budget_tests;
 mod pure_calls;
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, TensorInputKind};
