@@ -1,6 +1,7 @@
 //! One checked coordinate cannot reuse a register from the other read lane.
 
 use super::*;
+mod lazy;
 
 fn alias_model() -> (dae::Dae, Span) {
     let mut sources = rumoca_core::SourceMap::new();

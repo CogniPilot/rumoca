@@ -71,6 +71,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(())
     }
 
+    pub(super) fn current_definition_is_acyclic(
+        &self,
+        variable: u32,
+        definition: dae::ExprId<'dae>,
+    ) -> bool {
+        self.same_tick_definitions.as_ref().is_some_and(|owner| {
+            !owner
+                .definitions
+                .read_closure(self.view, &[definition], &[])
+                .contains(&variable)
+        })
+    }
+
     pub(super) fn current_definition_value(
         &mut self,
         (variable, definition): (u32, dae::ExprId<'dae>),
