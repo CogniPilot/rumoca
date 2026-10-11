@@ -111,8 +111,11 @@ fn periodic_real_mixed_tick_activation_stays_refused() {
         .model("Refused")
         .compile_str(source, "Refused.mo")
         .expect_err("mixed clock owners remain outside the checked source profile");
+    let rumoca::CompilerError::CompileDiagnosticsError { ref failures, .. } = error else {
+        panic!("expected checked source diagnostics, got {error}");
+    };
     assert!(
-        error.failures.iter().any(|failure| {
+        failures.iter().any(|failure| {
             failure.error_code.as_deref() == Some("ED020")
                 && failure
                     .error
