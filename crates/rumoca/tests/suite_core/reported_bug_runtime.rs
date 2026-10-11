@@ -2,7 +2,7 @@
 
 use rumoca::{CompilationResult, Compiler};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, SimulationSession, simulate_dae};
-use rumoca_solver::SimExecutionPolicy;
+use rumoca_solver::{SimExecutionEngine, SimExecutionPolicy};
 
 const GUARDED: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_403.mo");
@@ -14,6 +14,8 @@ const ALGEBRAIC: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_418.mo");
 const NEIGHBOR: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_426.mo");
+const ITERATOR_MOD: &str =
+    include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_423.mo");
 
 fn compile(source: &str, model: &str) -> CompilationResult {
     Compiler::new()
@@ -194,6 +196,48 @@ fn issue_426_original_inactive_neighbor_simulates_its_analytic_solution() {
                 (last(&result, name) - expected).abs() < 1e-7,
                 "{policy:?}: {name}"
             );
+        }
+    }
+}
+
+#[test]
+fn issue_423_original_iterator_mod_simulates_its_analytic_solution() {
+    let compiled = compile(ITERATOR_MOD, "C13");
+    // MLS §3.7.2: mod(k - 1, 3) gives {0, 1, 2}; y' = -2*y, y(0) = 1.
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let opts = options(policy);
+        let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+            .unwrap_or_else(|error| panic!("original C13 initializes under {policy:?}: {error:?}"));
+        let initial = session.state().expect("settled initialization state");
+        assert_eq!(initial.time, 0.0);
+        assert_eq!(initial.values["y"], 1.0);
+        for time in [0.02, 0.04, 0.1, 1.0] {
+            session.advance_to(time).unwrap_or_else(|error| {
+                panic!("original C13 advances under {policy:?}: {error:?}")
+            });
+            let state = session.state().expect("actual simulation state");
+            assert_eq!(state.time, time);
+            let actual = state.values["y"];
+            let expected = (-2.0 * time).exp();
+            let bound = 20.0 * (opts.atol + opts.rtol * expected.abs());
+            assert!(
+                actual.is_finite() && (actual - expected).abs() <= bound,
+                "C13/{policy:?}: y({time})={actual}, expected {expected}, bound {bound}"
+            );
+            for (name, value) in [("m[1]", 0.0), ("m[2]", 1.0), ("m[3]", 2.0)] {
+                assert_eq!(state.values[name], value, "C13/{policy:?}: {name}");
+            }
+        }
+        let receipt = session.execution_receipt();
+        eprintln!("original C13/{policy:?} after full simulation: {receipt:?}");
+        if policy == SimExecutionPolicy::Interpreter {
+            assert_eq!(receipt.engine, SimExecutionEngine::Interpreter);
+            assert_eq!(receipt.refusal, None);
+            assert!(receipt.declined.is_empty());
+        } else if receipt.is_compiled() {
+            assert_eq!(receipt.refusal, None);
+        } else {
+            assert!(receipt.refusal.is_some(), "Auto must expose its refusal");
         }
     }
 }
