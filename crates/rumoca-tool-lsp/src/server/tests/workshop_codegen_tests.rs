@@ -73,7 +73,7 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
             ("SympyDecay_ode.c", "SympyDecay_derivative_rhs"),
         ],
         "checked_dae_report" => &[("SympyDecay_checked_dae.txt", "model SympyDecay")],
-        "custom_checked_variables.jinja" => &[("custom_checked_variables", "state x Real")],
+        "custom_checked_variables.jinja" => &[("custom_checked_variables", "state x real")],
         "galec-production" => &[
             ("AlgorithmCode/GalecCounter.alg", "method DoStep"),
             ("ProductionCode/rumoca_galec_kernels.h", "rumoca_galec"),
@@ -107,11 +107,11 @@ fn assert_scenario_artifacts(target: &str, files: &BTreeMap<String, String>) {
     ) {
         let source = files.values().next().expect("report");
         assert!(
-            source.contains("state x Real"),
+            source.contains("state x real"),
             "checked state metadata: {source}"
         );
         assert!(
-            source.contains("parameter k Real"),
+            source.contains("parameter k real"),
             "checked parameter metadata: {source}"
         );
         assert!(
