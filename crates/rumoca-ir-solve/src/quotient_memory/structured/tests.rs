@@ -44,8 +44,10 @@ fn fixture(descending: bool) -> SolveProblem {
         .into_iter()
         .map(|point| ratio_indicator(&prefix(point), 2).unwrap())
         .collect();
-    let mut problem = SolveProblem::default();
-    problem.layout = VarLayout::from_parts(Default::default(), 0, 2);
+    let mut problem = SolveProblem {
+        layout: VarLayout::from_parts(Default::default(), 0, 2),
+        ..Default::default()
+    };
     problem.solve_layout.parameter_count = 2;
     problem.solve_layout.compiled_parameter_len = 2;
     problem.discrete.structured_rhs = ComputeBlock {
@@ -259,6 +261,40 @@ fn structured_quotient_current_wire_rejects_overlap_between_complete_maps() {
     assert!(serde_json::from_slice::<SolveProblem>(&tampered).is_err());
 }
 
+fn activated_root_program(condition: &[LinearOp], point: f64) -> Vec<LinearOp> {
+    let prefix = [
+        LinearOp::Const {
+            dst: 0,
+            value: point,
+        },
+        LinearOp::LoadTime { dst: 1 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 1,
+            rhs: 0,
+        },
+    ];
+    let root = FunctionConditionalProgram::checked(
+        0,
+        vec![1],
+        [(condition.to_vec(), ratio_indicator(&prefix, 2).unwrap())],
+        vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .unwrap();
+    vec![
+        LinearOp::FunctionConditional {
+            dst_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(root),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ]
+}
+
 fn activated_map_fixture() -> SolveProblem {
     let mut problem = fixture(false);
     let condition = vec![
@@ -325,39 +361,7 @@ fn activated_map_fixture() -> SolveProblem {
     }];
     let roots = [1.0, 2.0]
         .into_iter()
-        .map(|point| {
-            let prefix = [
-                LinearOp::Const {
-                    dst: 0,
-                    value: point,
-                },
-                LinearOp::LoadTime { dst: 1 },
-                LinearOp::Binary {
-                    dst: 2,
-                    op: BinaryOp::Add,
-                    lhs: 1,
-                    rhs: 0,
-                },
-            ];
-            let root = FunctionConditionalProgram::checked(
-                0,
-                vec![1],
-                [(condition.clone(), ratio_indicator(&prefix, 2).unwrap())],
-                vec![
-                    LinearOp::Const { dst: 0, value: 1.0 },
-                    LinearOp::StoreOutput { src: 0 },
-                ],
-            )
-            .unwrap();
-            vec![
-                LinearOp::FunctionConditional {
-                    dst_start: 0,
-                    capture_start: 0,
-                    program: std::sync::Arc::new(root),
-                },
-                LinearOp::StoreOutput { src: 0 },
-            ]
-        })
+        .map(|point| activated_root_program(&condition, point))
         .collect();
     problem.events.root_conditions = ScalarProgramBlock::with_program_spans(
         roots,
