@@ -262,7 +262,7 @@ impl Storage {
 
     /// Closed coordinates may additionally belong to a separately checked
     /// model activation owner. This helper does not discharge that owner.
-    fn expect_closed_coordinates(
+    pub(crate) fn expect_closed_coordinates(
         &self,
         expression: ExprId<'_>,
         at: DaeProvenance,
@@ -303,7 +303,7 @@ impl Storage {
         self.expect_domain_coordinates(expression, domain, at)
     }
 
-    fn expect_domain_coordinates(
+    pub(crate) fn expect_domain_coordinates(
         &self,
         expression: ExprId<'_>,
         domain: DomainId<'_>,
