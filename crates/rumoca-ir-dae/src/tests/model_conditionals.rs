@@ -1,6 +1,7 @@
 use super::*;
 
 mod guard_dependencies;
+mod operand_scope;
 mod structured_relations;
 
 fn conditional_fixture() -> Dae {
