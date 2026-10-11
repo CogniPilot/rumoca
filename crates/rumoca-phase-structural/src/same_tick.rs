@@ -1276,6 +1276,17 @@ mod tests {
     }
 
     fn fixture(wiring: Wiring) -> dae::Dae {
+        fixture_with(wiring, |_, _, _| Ok(()))
+    }
+
+    fn fixture_with(
+        wiring: Wiring,
+        extra: impl for<'dae> FnOnce(
+            &mut dae::DaeConstruction<'dae>,
+            FixtureVariables<'dae>,
+            dae::DaeProvenance,
+        ) -> Result<(), dae::DaeConstructionError>,
+    ) -> dae::Dae {
         let mut sources = SourceMap::new();
         let text = "discrete Real a; discrete Real b; discrete Integer n; \
                     Real aAlias; Integer nAlias; Real ambiguous;";
@@ -1285,9 +1296,112 @@ mod tests {
         dae::Dae::construct(sources, |dae| {
             let variables = define_fixture_variables(dae, at)?;
             let rows = define_fixture_rows(dae, variables, at)?;
-            define_fixture_equations(dae, wiring, variables, rows, at)
+            define_fixture_equations(dae, wiring, variables, rows, at)?;
+            extra(dae, variables, at)
         })
         .expect("the same-tick fixture is a valid DAE")
+    }
+
+    /// Distinct source activation and body predicates may read the same
+    /// coordinate (MLS §8.5 / SOLVE-C58). Only the activation's issued
+    /// condition identity is excluded, never all reads of that coordinate.
+    fn trigger_body_fixture() -> dae::Dae {
+        fixture_with(Wiring::Aliases, |dae, variables, at| {
+            let values = dae.expressions(|expressions| {
+                let current = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(variables.a))?;
+                let previous = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::PreDiscreteReal(variables.a))?;
+                let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
+                Ok([
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::GreaterEqual, current, zero)?,
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::Greater, current, previous)?,
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::Greater, previous, zero)?,
+                ])
+            })?;
+            dae.conditions(|conditions| {
+                let mut ids = Vec::new();
+                for value in values {
+                    let id = conditions.reserve(at)?;
+                    conditions.define(id, dae::ConditionInput::Discrete(value), at)?;
+                    ids.push(id);
+                }
+                for body in [ids[1], ids[2]] {
+                    let guard = conditions.reserve(at)?;
+                    conditions.define(guard, dae::ConditionInput::And(ids[0], body), at)?;
+                }
+                Ok(())
+            })
+        })
+    }
+
+    #[test]
+    fn trigger_identity_pruning_retains_the_same_coordinate_body_read() {
+        trigger_body_fixture().inspect(|view| {
+            let trigger = view.condition_id(0).unwrap();
+            let body = view.condition_id(1).unwrap();
+            let guard = view.condition_id(3).unwrap();
+            assert_ne!(trigger, body, "independently issued predicates");
+            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view));
+            let probe = Probe { view, definitions };
+            let expected = BTreeSet::from([probe.index("a")]);
+            let mut reads = BTreeSet::new();
+            collect_condition_same_instant_reads(view, trigger, &mut reads);
+            assert_eq!(reads, expected, "source trigger reads the coordinate");
+            reads.clear();
+            collect_condition_same_instant_reads_except(
+                view,
+                guard,
+                &BTreeSet::from([trigger]),
+                &mut reads,
+            );
+            assert_eq!(reads, expected, "body keeps its same-instant dependency");
+        });
+    }
+
+    #[test]
+    fn trigger_identity_pruning_omits_the_trigger_only_dependency() {
+        trigger_body_fixture().inspect(|view| {
+            let trigger = view.condition_id(0).unwrap();
+            let mut reads = BTreeSet::new();
+            collect_condition_same_instant_reads_except(
+                view,
+                trigger,
+                &BTreeSet::from([trigger]),
+                &mut reads,
+            );
+            assert!(
+                reads.is_empty(),
+                "entry-only activation orders no body read"
+            );
+        });
+    }
+
+    #[test]
+    fn trigger_identity_pruning_keeps_pre_only_body_reads_in_the_history_lane() {
+        trigger_body_fixture().inspect(|view| {
+            let trigger = view.condition_id(0).unwrap();
+            let guard = view.condition_id(4).unwrap();
+            let mut reads = BTreeSet::new();
+            collect_condition_same_instant_reads_except(
+                view,
+                guard,
+                &BTreeSet::from([trigger]),
+                &mut reads,
+            );
+            assert!(
+                reads.is_empty(),
+                "pre(a) does not observe a current producer"
+            );
+        });
     }
 
     /// One branded view plus the derived definitions, so a test names
