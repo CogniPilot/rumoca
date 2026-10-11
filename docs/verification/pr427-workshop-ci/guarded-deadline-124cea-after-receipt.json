@@ -1,0 +1,298 @@
+{
+  "source": "124cea3839c812ae55a3a0daaf2ad7837b51fc82",
+  "attempt": "pr427-guarded-deadline-correct-session-api-20261012",
+  "recipeSha256": "981f41a26e37a523e797a31a95b4826ce480d5973657f8bdf811e5195fc22af9",
+  "result": "PASS 4; 0 ignored; test count accepted",
+  "scope": {
+    "policies": [
+      "Interpreter",
+      "Auto with actual Cranelift, no refusal or declined programs"
+    ],
+    "samples": "11 samples 0..1 at 0.1 for each curve",
+    "controls": [
+      "rising > and >=",
+      "falling < and <=",
+      "discrete reset deadline 0.45 to 0.85",
+      "inactive sqrt(deadline-1) and selected invalid arithmetic refusal"
+    ],
+    "oracle": "Independent piecewise state integrals; unchanged 40*(atol+rtol*abs(expected)), atol=rtol=1e-9",
+    "testSeconds": 0.03
+  },
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--jobs",
+    "4",
+    "-p",
+    "rumoca",
+    "--no-default-features",
+    "--features",
+    "fmu-packaging",
+    "--test",
+    "suite_core",
+    "reported_bug_runtime::guarded_time_deadlines::",
+    "--",
+    "--nocapture"
+  ],
+  "sourceFileSha256": {
+    "crates/rumoca/tests/suite_core/reported_bug_runtime.rs": "98699db18d569affde69814408060c8984271b4f9668746ee22bcc4af152da5a",
+    "crates/rumoca/tests/suite_core/reported_bug_runtime/guarded_time_deadlines.rs": "39c544e50d89c1b06f3e99b921f630cc55417bd4bd2e04e5611787bad67d5b74"
+  },
+  "environment": {
+    "CARGO_BUILD_JOBS": "4",
+    "RUST_TEST_THREADS": "4",
+    "RAYON_NUM_THREADS": "4",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "guards": {
+    "seconds": 600,
+    "rssMiB": 4096,
+    "availableMiB": 16384,
+    "cacheMiB": 8192,
+    "scratchFreeFloorBytes": 8589934592
+  },
+  "guardian": {
+    "command": [
+      "nix",
+      "develop",
+      ".#full",
+      "--command",
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca",
+      "--no-default-features",
+      "--features",
+      "fmu-packaging",
+      "--test",
+      "suite_core",
+      "reported_bug_runtime::guarded_time_deadlines::",
+      "--",
+      "--nocapture"
+    ],
+    "log": "guarded-time-integral-native-interpreter-four.log",
+    "elapsedMs": 209251.847664,
+    "peakRssKiB": 2861492,
+    "minimumAvailableKiB": 50329812,
+    "minimumScratchFreeBytes": 83877728256,
+    "scratchFreeFloorMiB": 8192,
+    "cacheDirectory": "$HOME/scratch/rumoca/workshop427-ci/target",
+    "peakCacheBytes": 8007348224,
+    "cacheLimitMiB": 8192,
+    "rssLimitMiB": 4096,
+    "availableFloorMiB": 16384,
+    "rssScope": "owned process group and identified descendants, including detached browser groups",
+    "secondsLimit": 600,
+    "signal": null,
+    "exitCode": 0
+  },
+  "testCount": {
+    "gate": "guarded-time-integral-native-interpreter-four",
+    "childCode": 0,
+    "expectedTests": 4,
+    "observed": {
+      "last": {
+        "status": "ok",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filteredOut": 1437,
+        "line": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1437 filtered out; finished in 0.03s"
+      },
+      "summaries": 1
+    },
+    "accepted": true
+  },
+  "sha256": {
+    "recipe.json": "981f41a26e37a523e797a31a95b4826ce480d5973657f8bdf811e5195fc22af9",
+    "guarded-time-integral-native-interpreter-four.log": "4de3041f64d302d346a244f1a7a2d9dca7139867dd0f1058762bba094c6f1ef7",
+    "guarded-time-integral-native-interpreter-four.guardian.json": "8b24d48bf1d5e2a2e114dbbbcebc1896fc26cc7d2fd1315bf37f3fe63934fca6",
+    "guarded-time-integral-native-interpreter-four.test-count.json": "50c7b190ad06f5f393de9a02d9a8a7dd74abe36e8897ed076f8e416ec4124ff2"
+  },
+  "remaining": [
+    "Exact initialization equality control unrun.",
+    "Existing unconditional time-activation/dynamic rescheduling controls not executed in this recipe.",
+    "No cohort parity, final workshop CI or exact-time scheduling equivalence claim."
+  ],
+  "before": "Prior 60b948 query1 and clock1 passed; runtime4 compile-only E0599 and original scenario unrun. See guarded-deadline-60b948-compile-receipt.json.",
+  "guardianPathNormalization": "Copied guard fields use portable relative log and $HOME cache roles; sha256.guardian binds the unchanged raw original.",
+  "originalScenarios": {
+    "result": "PASS 1 roster test; all 16 authored configurations compile",
+    "scope": "Compilation with original model sources and pinned external libraries; no browser execution or full authored horizon claim",
+    "testSeconds": 41.33,
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca-bind-wasm",
+      "--features",
+      "full-web",
+      "--lib",
+      "tests::user_guide_scenario_tests::user_guide_scenarios_compile_the_authored_models_with_pinned_libraries",
+      "--",
+      "--exact",
+      "--nocapture"
+    ],
+    "guardian": {
+      "command": [
+        "nix",
+        "develop",
+        ".#full",
+        "--command",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-bind-wasm",
+        "--features",
+        "full-web",
+        "--lib",
+        "tests::user_guide_scenario_tests::user_guide_scenarios_compile_the_authored_models_with_pinned_libraries",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "log": "original-guide-scenario-arm-probe-one.log",
+      "elapsedMs": 231449.545274,
+      "peakRssKiB": 2716772,
+      "minimumAvailableKiB": 47841480,
+      "minimumScratchFreeBytes": 82778693632,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "$HOME/scratch/rumoca/workshop427-ci/target",
+      "peakCacheBytes": 8096980992,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    },
+    "testCount": {
+      "gate": "original-guide-scenario-arm-probe-one",
+      "childCode": 0,
+      "expectedTests": 1,
+      "observed": {
+        "last": {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filteredOut": 167,
+          "line": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 167 filtered out; finished in 41.33s"
+        },
+        "summaries": 1
+      },
+      "accepted": true
+    },
+    "sourceFileSha256": {
+      "crates/rumoca-bind-wasm/src/tests/user_guide_scenario_tests.rs": "c4b46c38d31305dcaeaed1c419f45faa0f7ff5793172f026fbec7d147cd6b60c"
+    },
+    "externalInputManifestSha256": "5c2fa1ad53f41087f1e581757e2fb07e8f64b0fa90b12a7ace19ace190510b52",
+    "externalInputCount": 3072,
+    "configurations": [
+      {
+        "model": "GalecCounter",
+        "configuration": "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+        "compileSeconds": 1.967112
+      },
+      {
+        "model": "FixedWing",
+        "configuration": "examples/interactive/fixedwing/rumoca-scenario.toml",
+        "compileSeconds": 2.013891
+      },
+      {
+        "model": "QuadrotorAcro",
+        "configuration": "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
+        "compileSeconds": 1.953382
+      },
+      {
+        "model": "ReusableBoosterEmbeddedControlLaw",
+        "configuration": "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
+        "compileSeconds": 1.930699
+      },
+      {
+        "model": "ReusableBoosterLanding",
+        "configuration": "examples/interactive/reusable_booster/rumoca-scenario.toml",
+        "compileSeconds": 0.910765
+      },
+      {
+        "model": "Rover",
+        "configuration": "examples/interactive/rover/rumoca-scenario.toml",
+        "compileSeconds": 1.873661
+      },
+      {
+        "model": "Ball",
+        "configuration": "examples/simulation/rumoca-scenario.ball.toml",
+        "compileSeconds": 1.834317
+      },
+      {
+        "model": "KalmanFilterStepTest",
+        "configuration": "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
+        "compileSeconds": 1.81527
+      },
+      {
+        "model": "NeuralLatentOscillator",
+        "configuration": "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",
+        "compileSeconds": 2.848441
+      },
+      {
+        "model": "NeuralODEBackprop",
+        "configuration": "examples/simulation/rumoca-scenario.neural_ode_backprop.toml",
+        "compileSeconds": 1.967873
+      },
+      {
+        "model": "NeuralODETensor",
+        "configuration": "examples/simulation/rumoca-scenario.neural_ode_tensor.toml",
+        "compileSeconds": 1.923204
+      },
+      {
+        "model": "NeuralPredatorPrey",
+        "configuration": "examples/simulation/rumoca-scenario.neural_predator_prey.toml",
+        "compileSeconds": 1.912152
+      },
+      {
+        "model": "PIDMSL",
+        "configuration": "examples/simulation/rumoca-scenario.pidmsl.toml",
+        "compileSeconds": 2.249261
+      },
+      {
+        "model": "SwitchedRLC",
+        "configuration": "examples/simulation/rumoca-scenario.switched_rlc.toml",
+        "compileSeconds": 1.809637
+      },
+      {
+        "model": "SwitchedRLC_MSL",
+        "configuration": "examples/simulation/rumoca-scenario.switched_rlc_msl.toml",
+        "compileSeconds": 1.908451
+      },
+      {
+        "model": "SympyDecay",
+        "configuration": "examples/simulation/rumoca-scenario.sympy_decay.toml",
+        "compileSeconds": 1.80269
+      }
+    ],
+    "sha256": {
+      "original-guide-scenario-arm-probe-one.log": "d5405cd5135bd3b418da16f61ab92f32be66d1ba2b7e661bd1796d62d8687e64",
+      "original-guide-scenario-arm-probe-one.guardian.json": "0947e9d1dc909b6c912161c250ea52ed9be74b08d8f3820b0e8be1b0d28ab2b6",
+      "original-guide-scenario-arm-probe-one.test-count.json": "e90678abb7ac572e7b0e03f52a5b8cd2867a9d7ef24d0e2c92ec9d53f15e3b7e"
+    }
+  }
+}

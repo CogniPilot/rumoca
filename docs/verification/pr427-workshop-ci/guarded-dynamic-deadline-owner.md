@@ -41,7 +41,20 @@ failed compilation with E0599: the fixture called a nonexistent
 `SimulationSession::initialize` method. All four runtime tests and the following
 original scenario gate are **unrun**, with no runtime-semantic conclusion.
 The test-only correction uses the initializing `SimulationSession::new` entry
-and preserves models, options, curve oracles and engine receipts; it is unrun.
+and preserves models, options, curve oracles and engine receipts. Its four
+public runtime controls passed at
+`124cea3839c812ae55a3a0daaf2ad7837b51fc82` with zero ignored tests and an
+accepted exact count. The test process took 0.03 seconds; the guarded command
+took 209.252 seconds including compilation. Both interpreter curves and
+observed Cranelift execution without refusal/declines satisfied the unchanged
+independent integral oracles.
+[Exact runtime AFTER bindings](guarded-deadline-124cea-after-receipt.json)
+retain the recipe, command, source hashes, guard and count receipt. The
+original scenario gate also passed one roster test (41.33 seconds test time,
+231.450 seconds including compilation), compiling all sixteen unchanged
+authored configurations with pinned libraries. This includes QuadAcro,
+ReusableBoosterLanding and the embedded Booster controller. This is a source
+compilation result, not browser execution or full-horizon simulation.
 [Exact attempt bindings](guarded-deadline-60b948-compile-receipt.json) retain the
 recipe, logs, count decisions and guard receipt.
 
@@ -54,7 +67,8 @@ for a `Previous` read outside its issued schedule. The existing IR relation
 test now verifies the construction guard query during its live arm, refuses
 open/foreign-arm queries, and preserves closed JSON/binary replay.
 
-Pending counted gates:
+Focused commands (runtime four passed; query and clock passed on the preceding
+`60b948` source):
 
 ```sh
 # Four public native/interpreter curve controls.
@@ -72,8 +86,23 @@ cargo test --locked --offline --jobs 4 -p rumoca-ir-dae --lib \
 ```
 
 Existing unconditional time-activation and dynamic rescheduling regressions
-remain required controls. Original Booster/QuadAcro guide execution is pending;
+remain required controls. Original Booster/QuadAcro browser runtime execution is pending;
 no workshop success, public bug closure, or runtime equivalence is claimed from
 source review alone. If the strict crossing or reset controls falsify this
 owner, the candidate must remain unintegrated and an explicit checked schedule
 activation representation must be reconsidered.
+
+Required follow-up controls not executed by this recipe:
+
+```sh
+# Existing unconditional time/when owners, including dynamic rescheduling.
+cargo test --locked --offline --jobs 4 -p rumoca --no-default-features \
+  --features fmu-packaging --test suite_core time_event_when_activation:: -- --nocapture
+# Construction-owned event-dependent deadline classification.
+cargo test --locked --offline --jobs 4 -p rumoca-phase-dae --lib \
+  event_dependent_threshold_owns_a_dynamic_time_event -- --nocapture
+```
+
+The separately proposed exact-initialization equality test is unrun here.
+Default-feature runtime qualification, browser/scenario execution and final
+mandatory CI remain separate obligations.
