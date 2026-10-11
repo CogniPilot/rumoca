@@ -1017,6 +1017,7 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
 fn algebraic_relation_partition_model() -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 2, 2),
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
                     vec![
@@ -1051,6 +1052,7 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
                     ..Default::default()
                 },
                 state_scalar_count: 1,
+                algebraic_scalar_count: 1,
                 compiled_parameter_len: 2,
                 relation_memory_parameter_indices: vec![0, 1],
                 ..Default::default()
