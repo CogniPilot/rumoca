@@ -14,6 +14,12 @@ impl GuideFence {
         self.flags.iter().any(|value| value == flag)
     }
 
+    pub(super) fn fragment_context(&self) -> Option<&str> {
+        self.flags
+            .iter()
+            .find_map(|flag| flag.strip_prefix("context-"))
+    }
+
     pub(super) fn model_name(&self) -> Option<String> {
         self.source.lines().rev().find_map(|line| {
             let rest = line.strip_prefix("model ")?;
@@ -86,12 +92,12 @@ pub(super) fn guide_fences() -> Vec<GuideFence> {
 #[test]
 fn user_guide_fence_inventory_preserves_every_embedded_source() {
     let fences = guide_fences();
-    assert_eq!(fences.len(), 44, "review new embedded examples explicitly");
+    assert_eq!(fences.len(), 45, "review new embedded examples explicitly");
     assert_eq!(
         fences.iter().filter(|f| f.model_name().is_some()).count(),
-        16
+        17
     );
-    assert_eq!(fences.iter().filter(|f| f.has_flag("fragment")).count(), 1);
+    assert_eq!(fences.iter().filter(|f| f.has_flag("fragment")).count(), 8);
     let scenarios: Vec<_> = fences
         .iter()
         .filter_map(GuideFence::scenario_path)
@@ -105,6 +111,29 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         );
     }
     for fence in fences {
+        let classified = if fence.has_flag("fragment") {
+            matches!(
+                fence.fragment_context(),
+                Some(
+                    "neural-tensor"
+                        | "neural-width"
+                        | "neural-population"
+                        | "neural-observed"
+                        | "neural-dynamics"
+                        | "state"
+                        | "experiment"
+                        | "tanks"
+                )
+            )
+        } else {
+            fence.model_name().is_some() || fence.scenario_path().is_some()
+        };
+        assert!(
+            classified,
+            "unclassified guide example {}:{}",
+            fence.page.display(),
+            fence.line
+        );
         assert!(fence.line > 0, "{}", fence.page.display());
         assert!(fence.source.ends_with('\n'));
     }

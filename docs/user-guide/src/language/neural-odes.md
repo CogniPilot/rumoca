@@ -30,9 +30,11 @@ rumoca sim -c examples/simulation/rumoca-scenario.neural_ode_tensor.toml
 
 ## What the Model Does
 
-The core equations are three matrix-vector layers with smooth activations:
+The core equations are three matrix-vector layers with smooth activations.
+This excerpt keeps the activation equations inside their respective
+`for i in 1:nHidden loop` sections in the complete `NeuralODETensor.mo` model:
 
-```modelica
+```modelica,fragment,context-neural-tensor
 z1 = W1 * x;
 a1[i] = tanh(z1[i] + b1[i]);
 z2 = Wmid * a1;
@@ -71,7 +73,7 @@ The committed scenario uses `H = 32`, which is small enough for a quick browser
 run and gives `1186` trainable parameters. To exercise a roughly 100k-parameter
 model, edit `nHidden` in `examples/models/NeuralODETensor.mo`:
 
-```modelica
+```modelica,fragment,context-neural-width
 parameter Integer nHidden(min = 2) = 314;
 ```
 
@@ -181,7 +183,7 @@ normalized prey and predator populations. The neural network reads normalized
 prey, normalized predator, and a seasonal forcing term, then outputs per-capita
 growth rates:
 
-```modelica
+```modelica,fragment,context-neural-population
 features[1] = population[1] / preyEquilibrium - 1.0;
 features[2] = population[2] / predatorEquilibrium - 1.0;
 features[3] = sin(seasonRate * time);
@@ -232,7 +234,7 @@ in latent space, and the decoder is another learned map.
 `NeuralLatentOscillator` uses eight latent states, three decoded output
 channels, time features, a large recurrent tensor block, and a learned decoder:
 
-```modelica
+```modelica,fragment,context-neural-observed
 z1 = W1 * features;
 z2 = Wmid * a1;
 latentResidual = Wdyn * a2 + bdyn;
@@ -243,7 +245,7 @@ The baseline dynamics are four lightly damped oscillator pairs. The neural
 network adds a learned residual to the latent derivative and decodes the hidden
 trajectory into three observable signals:
 
-```modelica
+```modelica,fragment,context-neural-dynamics
 der(latent[2 * k - 1]) =
   -damping * latent[2 * k - 1] - freq[k] * latent[2 * k]
   + residualGain * latentResidual[2 * k - 1];

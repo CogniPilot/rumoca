@@ -57,7 +57,7 @@ fn user_guide_inline_models_compile_as_authored() {
     let examples = inline_examples();
     assert_eq!(
         examples.len(),
-        15,
+        16,
         "new inline models need runtime expectations"
     );
     let mut failures = Vec::new();

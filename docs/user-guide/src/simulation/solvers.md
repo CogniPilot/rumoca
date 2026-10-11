@@ -42,7 +42,10 @@ the explicit solver path. If omitted, the runtime chooses automatically.
 
 ## Experiment Annotations
 
-```modelica
+Place this annotation inside a model, before its closing `end`, for example
+in the [complete decay example](./running.md):
+
+```modelica,fragment,context-experiment
 annotation(experiment(
   StartTime = 0.0,
   StopTime = 30.0,

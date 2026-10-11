@@ -1,0 +1,148 @@
+//! Teaching excerpts compile in their documented complete source context.
+
+use super::user_guide_sources::{GuideFence, guide_fences, repository_root};
+use super::*;
+
+fn fragment(context: &str) -> GuideFence {
+    guide_fences()
+        .into_iter()
+        .find(|f| f.fragment_context() == Some(context))
+        .unwrap()
+}
+
+fn model_source(model: &str) -> String {
+    std::fs::read_to_string(repository_root().join(format!("examples/models/{model}.mo"))).unwrap()
+}
+
+fn assert_excerpt_in_order(excerpt: &str, source: &str) {
+    let mut actual = source.lines();
+    for line in excerpt.lines().filter(|line| !line.trim().is_empty()) {
+        assert!(
+            actual
+                .by_ref()
+                .any(|candidate| candidate.trim() == line.trim()),
+            "exact teaching line absent from complete context: {line}"
+        );
+    }
+}
+
+fn compile_balanced(source: &str, model: &str) {
+    let json = compile(source, model).unwrap_or_else(|error| panic!("{model}: {error}"));
+    let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(result["balance"]["is_balanced"], true, "{model}");
+}
+
+fn neural_context(context: &str) -> (String, &'static str) {
+    let model = match context {
+        "neural-tensor" | "neural-width" => "NeuralODETensor",
+        "neural-population" => "NeuralPredatorPrey",
+        "neural-observed" | "neural-dynamics" => "NeuralLatentOscillator",
+        _ => panic!("unclassified neural fragment {context}"),
+    };
+    let mut source = model_source(model);
+    let excerpt = fragment(context).source;
+    if context == "neural-width" {
+        let original = "parameter Integer nHidden(min = 2) = 32\n    \"Hidden width; nHidden=314 gives about 100k trainable parameters\";";
+        assert_eq!(source.matches(original).count(), 1);
+        source = source.replacen(original, excerpt.trim(), 1);
+    }
+    assert_excerpt_in_order(&excerpt, &source);
+    (source, model)
+}
+
+#[test]
+fn user_guide_neural_fragments_compile_in_the_complete_authored_models() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    for context in [
+        "neural-tensor",
+        "neural-width",
+        "neural-population",
+        "neural-observed",
+        "neural-dynamics",
+    ] {
+        let (source, model) = neural_context(context);
+        let started = std::time::Instant::now();
+        compile_balanced(&source, model);
+        let mut session = WasmSimulationSession::with_interactive_options(
+            &source, model, 0.01, "rk-like", 1e-8, 1e-8, "[]",
+        )
+        .unwrap();
+        for time in [0.0, 0.01, 0.02] {
+            session.advance_to(time).unwrap();
+            let names = match model {
+                "NeuralPredatorPrey" => ["population[1]", "population[2]"],
+                "NeuralLatentOscillator" => ["latent[1]", "latent[2]"],
+                _ => ["x[1]", "x[2]"],
+            };
+            for name in names {
+                assert!(
+                    session.get(name).unwrap().unwrap().is_finite(),
+                    "{context}: {name}"
+                );
+            }
+        }
+        eprintln!(
+            "[guide-fragment] {context} {:.6}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    clear_source_root_cache().unwrap();
+}
+
+fn annotated_decay_context() -> String {
+    let source = model_source("SympyDecay");
+    assert_eq!(source.matches("Real x(start=1);").count(), 1);
+    let source = source.replacen("Real x(start=1);", fragment("state").source.trim(), 1);
+    source.replacen(
+        "end SympyDecay;",
+        &format!("{}end SympyDecay;", fragment("experiment").source),
+        1,
+    )
+}
+
+#[test]
+fn user_guide_state_and_experiment_fragments_preserve_start_and_full_curve() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let source = annotated_decay_context();
+    compile_balanced(&source, "SympyDecay");
+    let json = simulate_model(&source, "SympyDecay", 0.0, 0.0, "", "{}").unwrap();
+    let result: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let columns = result["payload"]["allData"].as_array().unwrap();
+    let times = columns[0].as_array().unwrap();
+    let values = columns[1].as_array().unwrap();
+    assert_eq!(times.len(), 3001);
+    assert_eq!(times.first().unwrap(), 0.0);
+    assert_eq!(times.last().unwrap(), 30.0);
+    assert_eq!(values.first().unwrap(), 1.0);
+    for (time, value) in times.iter().zip(values) {
+        let expected = (-0.5 * time.as_f64().unwrap()).exp();
+        assert!((value.as_f64().unwrap() - expected).abs() < 1e-5);
+    }
+    clear_source_root_cache().unwrap();
+}
+
+#[test]
+fn user_guide_tank_composition_uses_the_documented_connector_and_modifications() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let context = guide_fences()
+        .into_iter()
+        .find(|f| f.model_name().as_deref() == Some("Tank"))
+        .unwrap();
+    let source = format!("{}{}", context.source, fragment("tanks").source);
+    compile_balanced(&source, "TwoTanks");
+    let mut session = WasmSimulationSession::with_interactive_options(
+        &source, "TwoTanks", 0.01, "rk-like", 1e-10, 1e-10, "[]",
+    )
+    .unwrap();
+    for time in [0.0, 0.5, 1.0] {
+        session.advance_to(time).unwrap();
+        assert_eq!(session.get("tank1.h").unwrap(), Some(1.0));
+        assert_eq!(session.get("tank2.h").unwrap(), Some(1.0));
+    }
+    assert_eq!(session.get("tank1.area").unwrap(), Some(2.0));
+    assert_eq!(session.get("tank2.area").unwrap(), Some(0.5));
+    clear_source_root_cache().unwrap();
+}
