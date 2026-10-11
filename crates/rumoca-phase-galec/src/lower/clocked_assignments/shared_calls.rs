@@ -1054,9 +1054,14 @@ fn clock_domain_value_roots<'dae>(
         };
         whole_discrete_real_definition(definition, equation.provenance().span())?;
         let target = dae::VariableId::from(definition.target());
-        if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
-            != clock.index()
-        {
+        if !periodic_real::runs_in_domain(
+            view,
+            &real_clocks,
+            target,
+            equation.activation(),
+            clock,
+            equation.provenance().span(),
+        )? {
             continue;
         }
         roots.push(DomainValueRoot {
