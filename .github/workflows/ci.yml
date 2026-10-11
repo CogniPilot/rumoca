@@ -2398,6 +2398,7 @@ jobs:
             WHEEL=$(ls dist/*.whl | head -1)
             python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
             python crates/rumoca-bind-python/tests/smoke_test.py
+            python crates/rumoca-bind-python/tests/fmi_codegen_test.py
             python crates/rumoca-bind-python/tests/api_test.py
             python crates/rumoca-bind-python/tests/magic_test.py
             python crates/rumoca-bind-python/tests/export_test.py
@@ -2413,6 +2414,7 @@ jobs:
           WHEEL=$(ls dist/*.whl | head -1)
           python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
           python crates/rumoca-bind-python/tests/smoke_test.py
+          python crates/rumoca-bind-python/tests/fmi_codegen_test.py
           python crates/rumoca-bind-python/tests/api_test.py
           python crates/rumoca-bind-python/tests/magic_test.py
           python crates/rumoca-bind-python/tests/export_test.py
