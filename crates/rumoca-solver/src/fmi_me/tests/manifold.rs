@@ -39,6 +39,7 @@ fn constrained_state_with_nonlinear_output(target: f64) -> solve::SolveModel {
             alternate_charts: Vec::new(),
         }],
     };
+    crate::test_fixtures::derive_structural_artifacts(&mut model);
     model
 }
 

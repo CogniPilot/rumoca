@@ -4,6 +4,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
     use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput};
     use solve::{BinaryOp, ComputeBlock};
     let mut model = solve::SolveModel::default();
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 0);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "a".to_string()];
@@ -82,6 +83,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
     );
     mirror_scalar_implicit_jvp(&mut model);
     model.initial_y = vec![0.0, 0.0];
+    derive_test_structural_artifacts(&mut model);
     model
 }
 
@@ -266,6 +268,7 @@ fn parameter_projection_model() -> solve::SolveModel {
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(parameter_projection_jvp(false));
     model.initial_y = vec![0.0, 0.0];
+    derive_test_structural_artifacts(&mut model);
     model
 }
 
@@ -312,6 +315,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
     let load_seed: fn(u32, usize) -> solve::LinearOp = |dst, index| LoadSeed { dst, index };
     // Slots: x = 0 (state), a = 1, b = 2 (algebraics).
     let mut model = solve::SolveModel::default();
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 3, 0);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 2;
     model.problem.solve_layout.solver_maps.names =
@@ -368,6 +372,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
     );
     mirror_scalar_implicit_jvp(&mut model);
     model.initial_y = vec![0.0, 0.0, 0.0];
+    derive_test_structural_artifacts(&mut model);
     model
 }
 
@@ -397,6 +402,7 @@ fn singular_algebraic_loop_state_model() -> solve::SolveModel {
         "singular_loop_implicit_jvp.mo",
     );
     mirror_scalar_implicit_jvp(&mut model);
+    derive_test_structural_artifacts(&mut model);
     model
 }
 

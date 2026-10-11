@@ -53,13 +53,7 @@ fn set_test_implicit_jvp(
     mirror_scalar_implicit_jvp(model);
 }
 
-fn derive_test_structural_artifacts(model: &mut solve::SolveModel) {
-    let (continuous, initialization) =
-        solve_eval::derive_solve_structural_artifacts(&model.problem, &model.artifacts)
-            .expect("fixture programs derive their structural artifacts");
-    model.artifacts.continuous.structural = continuous;
-    model.artifacts.initialization.structural = initialization;
-}
+use crate::test_fixtures::derive_structural_artifacts as derive_test_structural_artifacts;
 
 fn set_complete_test_projection_plan(model: &mut solve::SolveModel) {
     let state_count = model.state_scalar_count();
@@ -144,6 +138,7 @@ fn warm_start_test_model() -> solve::SolveModel {
         "solver_y_warm_start_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     model
 }
 
@@ -827,6 +822,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
         ]],
         "positive_residual_jvp.mo",
     );
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
@@ -1106,6 +1102,7 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
         "causal_newton_seed_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
