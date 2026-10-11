@@ -61,6 +61,7 @@ struct QuotientBatch<'dae> {
 /// owner can reach a finalized DAE on any path, and finishing several live
 /// tokens in any order settles each exact slot rather than a stack.
 pub struct QuotientReplayToken<'dae> {
+    guard: Option<ExprId<'dae>>,
     quotient: ExprId<'dae>,
     generated: [ExprId<'dae>; 6],
     builtin: PureBuiltin,
@@ -91,6 +92,16 @@ impl<'dae> QuotientReplayToken<'dae> {
 }
 
 impl<'dae> DaeConstruction<'dae> {
+    fn with_quotient_surface<T>(
+        &mut self,
+        build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,
+    ) -> Result<T, DaeConstructionError> {
+        let previous = self.storage.owned_quotient_surface;
+        self.storage.owned_quotient_surface = true;
+        let result = build(self);
+        self.storage.owned_quotient_surface = previous;
+        result
+    }
     /// Construct the canonical seven-node expression batch of one dynamic
     /// quotient: the checked quotient itself and the six generated nodes of
     /// its continuous indicator `sin(pi * lhs / rhs) >= 0`, in fixed order.
@@ -236,6 +247,10 @@ impl<'dae> DaeConstruction<'dae> {
         let pending_slot = self.storage.pending_quotient_replays.len();
         self.storage.pending_quotient_replays.push(Some(provenance));
         Ok(QuotientReplayToken {
+            guard: self
+                .storage
+                .active_model_arm
+                .map(|arm| ExprId::from_raw(self.storage.model_arms[arm as usize].guard)),
             quotient: batch.quotient,
             generated: batch.generated,
             builtin,
@@ -264,8 +279,11 @@ impl<'dae> DaeConstruction<'dae> {
                 span: token.generated_at.span(),
             });
         }
-        let relation = self
-            .conditions(|conditions| conditions.relation(token.generated[5], token.generated_at))?;
+        let relation = self.with_quotient_surface(|construction| {
+            construction.conditions(|conditions| {
+                conditions.relation(token.generated[5], token.generated_at)
+            })
+        })?;
         token.relation = Some(relation);
         Ok(relation)
     }
@@ -299,8 +317,16 @@ impl<'dae> DaeConstruction<'dae> {
             });
         }
         let generated_at = token.generated_at;
-        self.conditions(|conditions| {
-            conditions.define(activation, ConditionInput::Always, generated_at)
+        self.with_quotient_surface(|construction| {
+            construction.conditions(|conditions| {
+                conditions.define(
+                    activation,
+                    token
+                        .guard
+                        .map_or(ConditionInput::Always, ConditionInput::Discrete),
+                    generated_at,
+                )
+            })
         })?;
         token.activation = Some(activation);
         Ok(())
@@ -344,8 +370,15 @@ impl<'dae> DaeConstruction<'dae> {
                 span: token.generated_at.span(),
             });
         }
-        let root = self.conditions(|conditions| {
-            conditions.structured_root(domain, token.generated[5], token.generated_at)
+        let root = self.with_quotient_surface(|construction| {
+            construction.conditions(|conditions| {
+                conditions.structured_root_activated(
+                    domain,
+                    token.generated[5],
+                    token.guard,
+                    token.generated_at,
+                )
+            })
         })?;
         token.structured_root = Some(root);
         Ok(root)

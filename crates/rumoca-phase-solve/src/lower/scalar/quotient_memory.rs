@@ -46,8 +46,34 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             });
         }
         self.symbolic_domain_points.push((id, values));
-        let ratio = self.expression(memory.ratio, 0)?;
-        let step = self.solve_unary(memory.step(), ratio, span)?;
+        let mut load_strides = Vec::new();
+        let step = if let Some(guard) = memory.activation_guard {
+            let position = self.ops.len();
+            let held = self.load_slot(solve::scalar_slot_p(memory.parameter), span)?;
+            let strides = domain
+                .ordinal_strides()
+                .map_err(|error| LowerError::contract(format!("{error:?}"), span))?;
+            let terms = strides
+                .into_iter()
+                .enumerate()
+                .map(|(dimension, stride)| {
+                    Ok(solve::AffineStencilIndexStrideTerm {
+                        dimension,
+                        stride: isize::try_from(stride).map_err(|_| {
+                            LowerError::contract("quotient memory stride overflows", span)
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, LowerError>>()?;
+            load_strides.push(solve::AffineStencilLoadStride {
+                op_position: position,
+                terms,
+            });
+            self.guarded_quotient_step(memory, guard, held, span)?
+        } else {
+            let ratio = self.expression(memory.ratio, 0)?;
+            self.solve_unary(memory.step(), ratio, span)?
+        };
         self.ops.push(solve::LinearOp::StoreOutput { src: step });
         let output_map = solve::TensorOutputMap::dense_contiguous(output_start, &domain)
             .map_err(|error| LowerError::contract(format!("{error:?}"), span))?;
@@ -55,7 +81,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             domain,
             output_map,
             base_ops: self.ops,
-            load_strides: Vec::new(),
+            load_strides,
             const_strides,
             metadata: solve::TensorNodeMetadata::default(),
             span,

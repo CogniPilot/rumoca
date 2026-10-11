@@ -34,6 +34,9 @@ pub(super) fn verify_surface(
             .is_some()
         || root.domain != domain
         || root.expression != generated[5]
+        || root.activation
+            != arena.model_arm_scopes[quotient as usize]
+                .map(|arm| storage.model_arms[arm as usize].guard)
         || arena.provenance.get(generated[5] as usize) != Some(&root.provenance)
     {
         return Err(

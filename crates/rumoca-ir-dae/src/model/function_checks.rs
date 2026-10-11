@@ -216,6 +216,7 @@ pub(super) fn expect_function_body_expression(
     expression: ExprId<'_>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
+    storage.expect_discharged_model_arm(expression, provenance)?;
     match body.domain {
         Some(domain) => storage.expect_domain_expression(expression, domain, provenance)?,
         None => {

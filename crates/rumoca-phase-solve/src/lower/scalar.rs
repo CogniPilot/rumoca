@@ -12,6 +12,7 @@ mod functions;
 mod integer_quotient;
 mod literal_values;
 mod operators;
+mod quotient_activation;
 mod quotient_memory;
 mod region_catalog;
 mod register_folding;
@@ -151,6 +152,9 @@ enum ScalarContextFrame<'dae> {
     NoEvent {
         parent: u64,
     },
+    RelationObservation {
+        parent: u64,
+    },
     Activation {
         parent: u64,
         condition: ActivationCondition<'dae>,
@@ -187,6 +191,7 @@ impl ScalarContextFrame<'_> {
     const fn parent(&self) -> u64 {
         match self {
             Self::NoEvent { parent }
+            | Self::RelationObservation { parent }
             | Self::Activation { parent, .. }
             | Self::Function { parent, .. }
             | Self::Domain { parent, .. }
@@ -1327,23 +1332,56 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn buffered_relation_slot(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
         let slot = self.layout.buffered_relations.expression_slot(expression)?;
-        self.event_buffering_enabled().then_some(slot)
+        self.relation_buffering_enabled().then_some(slot)
     }
 
-    fn event_buffering_enabled(&self) -> bool {
+    fn context_contains(
+        &self,
+        mut predicate: impl FnMut(&ScalarContextFrame<'dae>) -> bool,
+    ) -> bool {
         let mut context = self.context_id;
-        while let Some((no_event, parent)) = self.contexts.borrow().frame(context, |frame| {
-            (
-                matches!(frame, ScalarContextFrame::NoEvent { .. }),
-                frame.parent(),
-            )
-        }) {
-            if no_event {
-                return false;
+        while let Some((found, parent)) = self
+            .contexts
+            .borrow()
+            .frame(context, |frame| (predicate(frame), frame.parent()))
+        {
+            if found {
+                return true;
             }
             context = parent;
         }
-        true
+        false
+    }
+
+    fn event_buffering_enabled(&self) -> bool {
+        !self.context_contains(|frame| matches!(frame, ScalarContextFrame::NoEvent { .. }))
+    }
+
+    fn relation_buffering_enabled(&self) -> bool {
+        !self.context_contains(|frame| {
+            matches!(
+                frame,
+                ScalarContextFrame::NoEvent { .. } | ScalarContextFrame::RelationObservation { .. }
+            )
+        })
+    }
+
+    fn relation_observation_enabled(&self) -> bool {
+        self.context_contains(|frame| {
+            matches!(frame, ScalarContextFrame::RelationObservation { .. })
+        })
+    }
+
+    fn with_relation_observation<T>(
+        &mut self,
+        lower: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        self.enter_context(ScalarContextFrame::RelationObservation {
+            parent: self.context_id,
+        });
+        let result = lower(self);
+        self.leave_context();
+        result
     }
 
     fn with_no_event<T>(
@@ -1421,7 +1459,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.binary_expression(operator, lhs, rhs, scalar, node.provenance().span())
             }
             dae::ExpressionOperation::Conditional(operands)
-                if node.function_scope().is_none() && !self.conditional_is_total(operands) =>
+                if node.function_scope().is_none()
+                    && (self.relation_observation_enabled()
+                        || !self.conditional_is_total(operands)) =>
             {
                 self.selected_arm_conditional(operands, scalar, node.provenance().span())
             }
@@ -1548,6 +1588,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .borrow()
                 .frame(context, |frame| match frame {
                     ScalarContextFrame::NoEvent { .. }
+                    | ScalarContextFrame::RelationObservation { .. }
                     | ScalarContextFrame::Function { .. }
                     | ScalarContextFrame::DerivativeSeed { .. } => None,
                     frame => Some(frame.parent()),

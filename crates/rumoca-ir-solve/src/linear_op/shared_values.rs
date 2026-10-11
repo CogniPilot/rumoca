@@ -53,14 +53,14 @@ pub(crate) fn check_same_output_transformed<'a>(
     let evaluate = |terms: &mut Terms, ops: &[LinearOp], output: usize| {
         ScalarProgramRegisterFlow::derive(ops).ok()?;
         let targets = (0..crate::ScalarProgramBlock::program_output_count(ops)).collect::<Vec<_>>();
-        SymbolicSlots::default()
+        SymbolicSlots::value_proof()
             .run(terms, ops, &targets)?
             .get(output)
             .copied()
     };
     ScalarProgramRegisterFlow::derive(left).map_err(|_| SharedValueError::Unevaluable)?;
     let targets = (0..crate::ScalarProgramBlock::program_output_count(left)).collect::<Vec<_>>();
-    let a = SymbolicSlots::default()
+    let a = SymbolicSlots::value_proof()
         .run_transformed(&mut terms, left, &targets, transform)
         .and_then(|outputs| outputs.get(left_output).copied())
         .ok_or(SharedValueError::Unevaluable)?;

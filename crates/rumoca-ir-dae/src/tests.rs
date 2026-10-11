@@ -9,6 +9,7 @@ mod function_scopes;
 mod function_tensor_builtins;
 mod function_wire;
 mod linear_solve;
+mod model_conditionals;
 mod model_event_transactions;
 mod provenance;
 mod range_wire;

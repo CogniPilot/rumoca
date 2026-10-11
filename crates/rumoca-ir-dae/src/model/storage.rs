@@ -38,6 +38,8 @@ impl DeclaredEntry for ConditionEntry {
 impl Storage {
     pub(super) fn freeze(self) -> FrozenStorage {
         FrozenStorage {
+            model_conditionals: self.model_conditionals.into_boxed_slice(),
+            model_arms: self.model_arms.into_boxed_slice(),
             predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
             flat_type_ids: self.flat_type_ids.into_boxed_slice(),
@@ -254,6 +256,7 @@ impl Storage {
         expression: ExprId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        self.expect_discharged_model_arm(expression, at)?;
         match self.expr_binder_domain(expression, at)? {
             None => {}
             Some(found_domain) => Err(DaeConstructionError::InvalidBinderScope {
@@ -278,6 +281,7 @@ impl Storage {
         domain: DomainId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        self.expect_discharged_model_arm(expression, at)?;
         match self.expr_binder_domain(expression, at)? {
             None => Ok(()),
             Some(found_domain)
@@ -712,6 +716,21 @@ impl Storage {
     }
 
     pub(super) fn finish_construction(&self) -> Result<(), DaeConstructionError> {
+        if self.active_model_arm.is_some()
+            || !self.active_model_ancestors.is_empty()
+            || self.closing_model_conditional.is_some()
+            || self.owned_quotient_surface
+        {
+            return Err(DaeConstructionError::InvalidModelActivationScope { span: Span::DUMMY });
+        }
+        if let Some((index, entry)) = self
+            .model_conditionals
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.expression.is_none())
+        {
+            return Err(incomplete("model conditional", index, entry.provenance));
+        }
         if self.unfilled_variables != 0 {
             return Err(self.incomplete_arena("variable", &self.variables));
         }

@@ -101,7 +101,8 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 77;
+/// 78 checks lazy quotient root/step activation and exact inactive private holds.
+pub const SOLVE_SCHEMA_VERSION: u16 = 78;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)

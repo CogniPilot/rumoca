@@ -65,6 +65,7 @@ fn relation_view(entry: &RelationEntry) -> RelationView<'_> {
 
 fn structured_root_view(entry: &StructuredRootEntry) -> StructuredRootView<'_> {
     StructuredRootView {
+        activation: entry.activation.map(ExprId::from_raw),
         domain: DomainId::from_raw(entry.domain),
         expression: ExprId::from_raw(entry.expression),
         provenance: entry.provenance,

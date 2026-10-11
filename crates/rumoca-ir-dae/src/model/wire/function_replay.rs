@@ -57,6 +57,8 @@ fn function_output<'storage>(
         ),
     };
     FunctionEntryWire {
+        construction_start: function.construction_start,
+        construction_end: function.construction_end,
         name: &function.name,
         parameters: function
             .parameter_values
@@ -260,6 +262,14 @@ pub(super) fn reconstruct<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let mut links = vec![Vec::new(); wire.functions.len()];
     for component in function_graph::function_components(wire)? {
+        while ids.expressions.len() < component.construction_start {
+            if !super::reconstruct_next_expression(wire, dae, ids)? {
+                return Err(malformed("function construction prefix"));
+            }
+        }
+        if ids.expressions.len() != component.construction_start {
+            return Err(malformed("function construction boundary"));
+        }
         if component.recursive {
             reconstruct_recursive_component(
                 wire,
@@ -393,6 +403,17 @@ fn replay_component<'group, 'dae>(
 ) -> Result<(), DaeConstructionError> {
     let mut functions = begin_functions(wire, dae, reservations)?;
     while ids.expressions.len() < expression_end {
+        if wire
+            .expressions
+            .model_contexts
+            .get(ids.next_wire_expression)
+            != Some(&None)
+            || ids
+                .model_conditional_closes
+                .contains_key(&(ids.expressions.len() as u32))
+        {
+            return Err(malformed("function global construction scope"));
+        }
         let expression = wire_expression(wire, ids.next_wire_expression)?;
         match expression.node {
             ExprNodeWire::FunctionValue {

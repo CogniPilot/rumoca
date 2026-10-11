@@ -13,6 +13,7 @@ use rumoca_ir_dae as dae;
 use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltIdentities};
+mod model_conditionals;
 
 #[derive(Clone, Copy)]
 enum ExpressionClaim {
@@ -54,6 +55,7 @@ enum ReplayOwner<'target> {
 
 /// Dense source-stream plan and the linear replay capabilities it stages.
 pub(super) struct RuntimeQuotientReplayPlan<'target> {
+    conditionals: model_conditionals::ModelConditionalReplay<'target>,
     owners: Vec<ReplayOwner<'target>>,
     expressions: Vec<Option<ExpressionClaim>>,
     relations: Vec<Option<usize>>,
@@ -71,8 +73,30 @@ pub(super) struct QuotientExpressionContext<'source, 'borrow, 'target> {
 }
 
 impl<'target> RuntimeQuotientReplayPlan<'target> {
+    pub(super) fn prepare_model_expression(
+        &mut self,
+        source: dae::DaeView<'_>,
+        index: usize,
+        target: &mut dae::DaeConstruction<'target>,
+        rebuilt: &[Option<dae::ExprId<'target>>],
+    ) -> Result<(), dae::DaeConstructionError> {
+        let id = source.expression_id(index).expect("checked source ordinal");
+        self.conditionals.prepare(source, id, target, rebuilt)
+    }
+
+    pub(super) fn close_model_expression(
+        &mut self,
+        source: dae::DaeView<'_>,
+        index: usize,
+        target: &mut dae::DaeConstruction<'target>,
+        rebuilt: &mut [Option<dae::ExprId<'target>>],
+    ) -> Result<bool, dae::DaeConstructionError> {
+        let id = source.expression_id(index).expect("checked source ordinal");
+        self.conditionals.close(source, id, target, rebuilt)
+    }
     pub(super) fn collect(source: dae::DaeView<'_>) -> Result<Self, dae::DaeConstructionError> {
         let mut plan = Self {
+            conditionals: model_conditionals::ModelConditionalReplay::new(),
             owners: Vec::with_capacity(source.runtime_quotient_owner_count()),
             expressions: vec![None; source.expression_count()],
             relations: vec![None; source.relation_count()],
@@ -307,6 +331,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         };
         let (quotient, builtin, arguments, generated, provenance) =
             (*quotient, *builtin, *arguments, *generated, *provenance);
+        self.prepare_model_expression(context.source, quotient as usize, target, rebuilt)?;
         let arguments = target.expressions(|expressions| {
             let mut rebuilder = ExpressionRebuilder::new(
                 context.source,

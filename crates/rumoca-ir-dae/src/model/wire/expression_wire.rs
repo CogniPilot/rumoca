@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExpressionArenaWire {
+    pub(super) model_contexts: Vec<Option<u32>>,
     pub(super) nodes: Vec<ExprNodeWire>,
     #[serde(deserialize_with = "deserialize_provenance_vec")]
     pub(super) provenance: Vec<DaeProvenance>,
@@ -80,7 +81,14 @@ impl Serialize for ExpressionArenaOutput<'_> {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("ExpressionArena", 4)?;
+        let mut state = serializer.serialize_struct("ExpressionArena", 5)?;
+        state.serialize_field(
+            "model_contexts",
+            &FilteredSeqOutput {
+                values: &self.arena.model_arm_scopes,
+                skip: &self.projection.skip_nodes,
+            },
+        )?;
         state.serialize_field(
             "nodes",
             &ExpressionNodesOutput {

@@ -1663,9 +1663,18 @@ fn lower_roots<'dae>(
     let mut rows = ScalarRows::default();
     let mut zero_domains = Vec::with_capacity(view.root_count());
     let mut relation_memory_targets = Vec::with_capacity(view.root_count());
+    let mut activation_guards = vec![None; view.root_count()];
+    for index in 0..view.runtime_quotient_owner_count() {
+        let owner = view
+            .runtime_quotient_owner_at(index)
+            .expect("dense quotient owner");
+        if let dae::RuntimeQuotientOwnerKind::ModelEvent { root, .. } = owner.kind() {
+            activation_guards[root.index() as usize] = owner.activation_guard();
+        }
+    }
     let mut owner_relations = Vec::new();
     let mut owner_span = None;
-    for (_, root) in view.roots() {
+    for (root_id, root) in view.roots() {
         let relation = view
             .relation(root.relation())
             .expect("checked root relation resolves");
@@ -1681,7 +1690,7 @@ fn lower_roots<'dae>(
             flush_root_owner(view, layout, &mut rows, &mut owner_relations, owner_span)?;
         }
         owner_span = Some(span);
-        owner_relations.push(root.relation());
+        owner_relations.push((root.relation(), activation_guards[root_id.index() as usize]));
         zero_domains.push(root_zero_domain(view, relation.expression()));
         relation_memory_targets.push(layout.buffered_relations.target(root.relation()));
     }
@@ -1705,7 +1714,7 @@ fn flush_root_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     rows: &mut ScalarRows,
-    relations: &mut Vec<dae::RelationId<'dae>>,
+    relations: &mut Vec<(dae::RelationId<'dae>, Option<dae::ExprId<'dae>>)>,
     span: Option<Span>,
 ) -> Result<(), LowerError> {
     if relations.is_empty() {
@@ -1752,7 +1761,11 @@ fn lower_structured_roots<'dae>(
             let row = zero_domains.len();
             rows.push(
                 ScalarCompiler::new(view, layout, Some((root.domain(), &point)))
-                    .root_expression_program(root.expression(), root.provenance().span())?,
+                    .root_expression_program(
+                        root.expression(),
+                        root.activation_guard(),
+                        root.provenance().span(),
+                    )?,
                 root.provenance().span(),
                 row,
             );

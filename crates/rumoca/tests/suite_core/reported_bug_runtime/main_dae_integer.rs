@@ -361,3 +361,56 @@ fn real_quotient_selected_undefined_ratio_remains_a_fault() {
         );
     }
 }
+
+#[test]
+fn real_quotient_nested_first_true_arms_protect_later_conditions_and_ratios() {
+    let source = "model FirstTrueQuotient output Real y; Real x(start=0,fixed=true); equation y=if time<0.5 then (if time<0.25 then 1 else mod(1/time,7.0)) elseif mod(1/time,7.0)>0 then 2 else 3; der(x)=y; end FirstTrueQuotient;";
+    let compiled = compile(source, "FirstTrueQuotient");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let mut opts = options(policy);
+        opts.t_end = 0.1;
+        opts.dt = Some(0.01);
+        let result = simulate_dae(&compiled.dae, &opts)
+            .expect("both nested and later-arm undefined ratios are inactive");
+        assert_eq!(result.times.len(), 11);
+        for (ordinal, (&time, &value)) in result.times.iter().zip(series(&result, "y")).enumerate()
+        {
+            assert_eq!(time, ordinal as f64 / 100.0);
+            assert_eq!(value, 1.0);
+            let state = series(&result, "x")[ordinal];
+            assert!((state - time).abs() <= 20.0 * (opts.atol + opts.rtol * time.abs()));
+        }
+    }
+}
+
+#[test]
+fn real_quotient_structured_inactive_points_keep_their_own_step() {
+    let source = "model GuardedStructuredQuotient output Real y[2]; Real x[2](each start=0,each fixed=true); equation for i in 1:2 loop y[i]=if time<0.5 then mod(14*i+8*time+i,7.0) else i; end for; der(x)=y; end GuardedStructuredQuotient;";
+    let compiled = compile(source, "GuardedStructuredQuotient");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let opts = options(policy);
+        let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+            .expect("point-specific nonzero initial steps");
+        for sample in 0..=10 {
+            let time = sample as f64 / 10.0;
+            if sample != 0 {
+                session.advance_to(time).unwrap();
+            }
+            let state = session.state().unwrap();
+            assert_eq!(state.time, time);
+            for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
+                let expected = if time < 0.5 { 8.0 * time + axis } else { axis };
+                let expected_integral = 4.0 * time.min(0.5).powi(2) + axis * time;
+                for (name, expected) in [(output, expected), (integral, expected_integral)] {
+                    let actual = state.values[name];
+                    assert!(
+                        actual.is_finite()
+                            && (actual - expected).abs()
+                                <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                        "{policy:?} {name}({time})={actual}, expected {expected}"
+                    );
+                }
+            }
+        }
+    }
+}

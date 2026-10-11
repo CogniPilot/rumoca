@@ -3,6 +3,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
+mod activation;
 mod structured;
 
 type Outputs<'a> = BTreeMap<usize, (&'a [LinearOp], usize, usize)>;
@@ -53,7 +54,7 @@ pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
         let program = single_output(&programs, row).ok_or_else(|| {
             event_iteration_contract(row, "quotient memory has no single-output program")
         })?;
-        validate_root(row, step, root_index, program, &roots)?;
+        validate_root(row, step, root_index, index, program, &roots)?;
         let Some(Some(initial_row)) = initial_targets.get(&index) else {
             return Err(event_iteration_contract(
                 row,
@@ -74,33 +75,11 @@ fn validate_root(
     row: usize,
     step: UnaryOp,
     root: usize,
+    target: usize,
     program: &[LinearOp],
     roots: &Outputs<'_>,
 ) -> Result<(), SolveProblemShapeContractError> {
-    let [
-        prefix @ ..,
-        LinearOp::Unary {
-            dst,
-            op,
-            arg: ratio,
-        },
-        LinearOp::StoreOutput { src },
-    ] = program
-    else {
-        return Err(event_iteration_contract(
-            row,
-            "quotient memory does not publish its declared rounding step",
-        ));
-    };
-    if dst != src || *op != step {
-        return Err(event_iteration_contract(
-            row,
-            "quotient memory does not publish its declared rounding step",
-        ));
-    }
-    let expected = ratio_indicator(prefix, *ratio).ok_or_else(|| {
-        event_iteration_contract(row, "quotient root certificate exceeds the register domain")
-    })?;
+    let expected = activation::indicator(row, step, program, target, None)?;
     let Some(&(found, output, _)) = roots.get(&root) else {
         return Err(event_iteration_contract(
             row,
@@ -124,6 +103,10 @@ fn ratio_indicator(prefix: &[LinearOp], ratio: Reg) -> Option<Vec<LinearOp>> {
             .register_count(),
     )
     .ok()?;
+    ratio_indicator_at(prefix, ratio, first)
+}
+
+fn ratio_indicator_at(prefix: &[LinearOp], ratio: Reg, first: Reg) -> Option<Vec<LinearOp>> {
     let pi = first;
     let phase = first.checked_add(1)?;
     let sine = first.checked_add(2)?;

@@ -5,8 +5,10 @@ mod calls;
 mod clock_transfer;
 pub(super) mod conditional_guards;
 mod integer_steps;
+mod model_conditionals;
 mod operators;
 mod queries;
+use model_conditionals::lower_conditional_expression;
 mod shared_record_calls;
 mod temporal;
 
@@ -1655,61 +1657,6 @@ fn lower_empty_function_argument<'dae>(
 /// exactly as written, and a proven-`true` branch reached only after an earlier
 /// unproven condition becomes the fallback, since MLS §11.5 would still test the
 /// earlier condition first.
-fn lower_conditional_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    (branches, else_branch, span): (&[(Expression, Expression)], &Expression, Span),
-    provenance: dae::DaeProvenance,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    // A variable's attribute or binding value keeps a conditional whose guard
-    // reads a tunable parameter unfolded, so a change to that parameter
-    // re-selects the branch after the code is generated (an eFMI `Recalibrate`
-    // runs the same statement). Folding it to the parameter's translation-time
-    // value silently freezes the branch. The conditional is preserved only when
-    // no arm calls a user function and every arm has one proven shape
-    // ([`attribute_conditional_folds`]): shape discovery prunes a dead arm's
-    // calls, so preserving an arm whose call carries no shape certificate could
-    // not be built, and arms of different sizes select structure. A structural
-    // guard, and any such conditional, keep folding.
-    // In an equation, such a guard is kept as a run-time branch when its arms
-    // are structurally equal (SPEC_0040 DAE-C22); only a structural selection
-    // is evaluated at translation.
-    let preserve_tunable_conditional = retained_conditional(symbols, branches, else_branch, span);
-    let mut lowered = Vec::with_capacity(branches.len());
-    for (condition, value) in branches {
-        let proven = if preserve_tunable_conditional {
-            None
-        } else {
-            symbols.shapes.proven_value(condition)
-        };
-        match proven {
-            Some(ProvenValue::Boolean(false)) => continue,
-            Some(ProvenValue::Boolean(true)) => {
-                let taken = lower_expression_scoped(construction, symbols, binders, value, None)?;
-                if lowered.is_empty() {
-                    return Ok(taken);
-                }
-                return construction.expressions(|expressions| {
-                    expressions.at(provenance).conditional(lowered, taken)
-                });
-            }
-            _ => {
-                lowered.push((
-                    lower_expression_scoped(construction, symbols, binders, condition, None)?,
-                    lower_expression_scoped(construction, symbols, binders, value, None)?,
-                ));
-            }
-        }
-    }
-    let fallback = lower_expression_scoped(construction, symbols, binders, else_branch, None)?;
-    if lowered.is_empty() {
-        return Ok(fallback);
-    }
-    construction
-        .expressions(|expressions| expressions.at(provenance).conditional(lowered, fallback))
-}
-
 /// The shared DAE-C22 authority used by ordinary and structured equations.
 pub(super) fn retained_conditional(
     symbols: LoweringSymbols<'_, '_>,

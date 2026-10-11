@@ -258,3 +258,142 @@ fn structured_quotient_current_wire_rejects_overlap_between_complete_maps() {
     let tampered = serde_json::to_vec(&problem).unwrap();
     assert!(serde_json::from_slice::<SolveProblem>(&tampered).is_err());
 }
+
+fn activated_map_fixture() -> SolveProblem {
+    let mut problem = fixture(false);
+    let condition = vec![
+        LinearOp::LoadTime { dst: 0 },
+        LinearOp::Const { dst: 1, value: 0.5 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Lt,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let selected_prefix = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+        LinearOp::LoadTime { dst: 1 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Add,
+            lhs: 1,
+            rhs: 0,
+        },
+    ];
+    let mut selected = selected_prefix.clone();
+    selected.extend([
+        LinearOp::Unary {
+            dst: 3,
+            op: UnaryOp::Floor,
+            arg: 2,
+        },
+        LinearOp::StoreOutput { src: 3 },
+    ]);
+    let fallback = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 1 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let program =
+        FunctionConditionalProgram::checked(2, vec![1], [(condition.clone(), selected)], fallback)
+            .unwrap();
+    let ComputeNode::Map {
+        base_ops,
+        load_strides,
+        ..
+    } = &mut problem.discrete.structured_rhs.nodes[0]
+    else {
+        unreachable!()
+    };
+    *base_ops = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::FunctionConditional {
+            dst_start: 2,
+            capture_start: 0,
+            program: std::sync::Arc::new(program),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    *load_strides = vec![AffineStencilLoadStride {
+        op_position: 1,
+        terms: vec![AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 1,
+        }],
+    }];
+    let roots = [1.0, 2.0]
+        .into_iter()
+        .map(|point| {
+            let prefix = [
+                LinearOp::Const {
+                    dst: 0,
+                    value: point,
+                },
+                LinearOp::LoadTime { dst: 1 },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: BinaryOp::Add,
+                    lhs: 1,
+                    rhs: 0,
+                },
+            ];
+            let root = FunctionConditionalProgram::checked(
+                0,
+                vec![1],
+                [(condition.clone(), ratio_indicator(&prefix, 2).unwrap())],
+                vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ],
+            )
+            .unwrap();
+            vec![
+                LinearOp::FunctionConditional {
+                    dst_start: 0,
+                    capture_start: 0,
+                    program: std::sync::Arc::new(root),
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ]
+        })
+        .collect();
+    problem.events.root_conditions = ScalarProgramBlock::with_program_spans(
+        roots,
+        vec![problem.events.root_conditions.program_span(0).unwrap(); 2],
+    )
+    .unwrap();
+    problem
+}
+
+#[test]
+fn activated_map_requires_its_complete_private_hold_geometry() {
+    let problem = activated_map_fixture();
+    problem
+        .validate()
+        .expect("one compact conditional Map with exact ordinal holds");
+    for mutation in 0..4 {
+        let mut wrong = problem.clone();
+        let ComputeNode::Map {
+            load_strides,
+            base_ops,
+            ..
+        } = &mut wrong.discrete.structured_rhs.nodes[0]
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => load_strides.clear(),
+            1 => load_strides[0].op_position = 0,
+            2 => load_strides[0].terms[0].stride = 0,
+            _ => base_ops.insert(2, LinearOp::LoadP { dst: 1, index: 0 }),
+        }
+        assert!(
+            wrong.validate().is_err(),
+            "hold geometry mutation {mutation} must not pass"
+        );
+    }
+    let value = serde_json::to_value(&problem).unwrap();
+    serde_json::from_value::<SolveProblem>(value).expect("current compact owner wire roundtrip");
+}

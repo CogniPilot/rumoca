@@ -744,6 +744,19 @@ fn rebuild_expression_segment<'source, 'target>(
         return Ok(());
     }
     for index in start..end {
+        let source_id = context
+            .source
+            .expression_id(index)
+            .expect("finalized expression ordinal resolves");
+        // Rebuilt function-owned nodes already crossed their checked global
+        // function boundary. They do not suspend or enter a model arm here.
+        if rebuilt[index].is_some()
+            && context.source.model_arm_of(source_id).is_none()
+            && context.source.model_conditional_of(source_id).is_none()
+        {
+            continue;
+        }
+        quotients.prepare_model_expression(context.source, index, target, rebuilt)?;
         quotients.replay_model_owners_through(
             index,
             target,
@@ -755,6 +768,9 @@ fn rebuild_expression_segment<'source, 'target>(
             },
             rebuilt,
         )?;
+        if quotients.close_model_expression(context.source, index, target, rebuilt)? {
+            continue;
+        }
         target.expressions(|expressions| {
             let mut rebuilder = ExpressionRebuilder::new(
                 context.source,

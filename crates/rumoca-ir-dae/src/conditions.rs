@@ -46,6 +46,7 @@ pub(crate) struct RootEntry {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StructuredRootEntry {
+    pub(crate) activation: Option<u32>,
     pub(crate) domain: u32,
     pub(crate) expression: u32,
     pub(crate) provenance: DaeProvenance,
@@ -135,12 +136,16 @@ impl<'dae> RootView<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct StructuredRootView<'dae> {
+    pub(crate) activation: Option<ExprId<'dae>>,
     pub(crate) domain: DomainId<'dae>,
     pub(crate) expression: ExprId<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
 impl<'dae> StructuredRootView<'dae> {
+    pub const fn activation_guard(self) -> Option<ExprId<'dae>> {
+        self.activation
+    }
     pub const fn domain(self) -> DomainId<'dae> {
         self.domain
     }
@@ -276,6 +281,16 @@ impl<'dae> Conditions<'_, 'dae> {
         expression: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<StructuredRootId<'dae>, DaeConstructionError> {
+        self.structured_root_activated(domain, expression, None, provenance)
+    }
+
+    pub(crate) fn structured_root_activated(
+        &mut self,
+        domain: DomainId<'dae>,
+        expression: ExprId<'dae>,
+        activation: Option<ExprId<'dae>>,
+        provenance: DaeProvenance,
+    ) -> Result<StructuredRootId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         self.storage
             .expect_domain_relation(expression, domain, provenance)?;
@@ -285,6 +300,7 @@ impl<'dae> Conditions<'_, 'dae> {
             provenance,
         )?;
         self.storage.structured_roots.push(StructuredRootEntry {
+            activation: activation.map(ExprId::index),
             domain: domain.index(),
             expression: expression.index(),
             provenance,

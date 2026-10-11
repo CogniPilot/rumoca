@@ -294,7 +294,15 @@ fn verify_model_owner_surface(
         .conditions
         .get(activation as usize)
         .is_some_and(|entry| {
-            matches!(entry.node, Some(crate::conditions::ConditionNode::Always))
+            entry.node
+                == Some(
+                    match storage.expressions.model_arm_scopes[quotient as usize] {
+                        None => crate::conditions::ConditionNode::Always,
+                        Some(arm) => crate::conditions::ConditionNode::Discrete(
+                            storage.model_arms[arm as usize].guard,
+                        ),
+                    },
+                )
                 && entry.provenance == canonical
         });
     let root_ok = storage.roots.get(root as usize).is_some_and(|entry| {

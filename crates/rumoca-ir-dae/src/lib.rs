@@ -177,11 +177,12 @@ pub use model::{
     FunctionDerivativeView, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionPurity,
     FunctionReservation, FunctionScopeRelation, FunctionScopeView, FunctionSignature,
     FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
-    Functions, InitializationOwnerView, InputVariability, NativeBodyView, QuotientReplayToken,
-    RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
-    RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
-    SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality,
-    VariableIdentity, VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
+    Functions, InitializationOwnerView, InputVariability, ModelArm, ModelConditional,
+    ModelConditionalView, NativeBodyView, QuotientReplayToken, RangeBoundView, RangeView,
+    RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
     broadcast_scalar_values,
 };
 pub use model_event_transactions::{

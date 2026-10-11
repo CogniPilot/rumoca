@@ -282,6 +282,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ));
             }
         };
+        self.emit_conditional_program(captures, program, span)
+    }
+
+    pub(super) fn emit_conditional_program(
+        &mut self,
+        captures: Vec<solve::Reg>,
+        program: solve::FunctionConditionalProgram,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
         let capture_start = self.next_register;
         for source in captures {
             let destination = self.register(span)?;
@@ -313,7 +322,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// evaluation context with its own register file, the symbolic domain
     /// points loaded from the program's captures, and the branch guards on
     /// its activation path so scheduled call assertions keep the same path.
-    fn selected_arm_region(
+    pub(super) fn selected_arm_region(
         &self,
         branch_guards: &[(dae::ExprId<'dae>, bool)],
         span: Span,

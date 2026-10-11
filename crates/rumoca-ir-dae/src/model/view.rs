@@ -1,5 +1,7 @@
 mod arena_walks;
+mod model_conditionals;
 mod quotient_owners;
+pub use model_conditionals::ModelConditionalView;
 #[cfg(test)]
 mod scalar_owner_tests;
 pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};

@@ -68,7 +68,6 @@ pub(super) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
             .range(..end)
             .next_back()
             .is_some_and(|(_, &previous_end)| previous_end > root_index)
-            || !load_strides.is_empty()
         {
             return Err(event_iteration_contract(
                 row,
@@ -76,7 +75,11 @@ pub(super) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
             ));
         }
         owned.insert(range.start, range.end);
-        let expected = rounding_indicator(row, step, base_ops)?;
+        let ScalarSlot::P { index: target, .. } = update.target.base else {
+            unreachable!("validated P-backed memory")
+        };
+        let held_load = validate_held_load(row, target, domain, base_ops, load_strides)?;
+        let expected = activation::indicator(row, step, base_ops, target, held_load)?;
         validate_root_family(
             row,
             root_index,
@@ -207,34 +210,65 @@ fn validate_storage(
     Ok(())
 }
 
-fn rounding_indicator(
+fn validate_held_load(
     row: usize,
-    step: UnaryOp,
+    target: usize,
+    domain: &rumoca_core::StructuredIndexDomain,
     program: &[LinearOp],
-) -> Result<Vec<LinearOp>, SolveProblemShapeContractError> {
-    let [
-        prefix @ ..,
-        LinearOp::Unary { dst, op, arg },
-        LinearOp::StoreOutput { src },
-    ] = program
-    else {
+    loads: &[AffineStencilLoadStride],
+) -> Result<Option<usize>, SolveProblemShapeContractError> {
+    let activated = matches!(
+        program,
+        [
+            ..,
+            LinearOp::FunctionConditional { .. },
+            LinearOp::StoreOutput { .. }
+        ]
+    );
+    if !activated {
+        return if loads.is_empty() {
+            Ok(None)
+        } else {
+            Err(event_iteration_contract(
+                row,
+                "unconditional numeric memory has foreign affine loads",
+            ))
+        };
+    }
+    let [load] = loads else {
         return Err(event_iteration_contract(
             row,
-            "numeric memory Map does not publish its rounding step",
+            "numeric memory has foreign affine loads",
         ));
     };
-    if !matches!(step, UnaryOp::Floor | UnaryOp::Trunc) || *op != step || dst != src {
+    if !matches!(program.get(load.op_position), Some(LinearOp::LoadP { index, .. }) if *index == target)
+    {
         return Err(event_iteration_contract(
             row,
-            "numeric memory Map does not publish its rounding step",
+            "numeric memory affine hold is not its private slot",
         ));
     }
-    ratio_indicator(prefix, *arg).ok_or_else(|| {
-        event_iteration_contract(
+    let expected = domain
+        .ordinal_strides()
+        .map_err(|_| event_iteration_contract(row, "numeric memory hold strides overflow"))?
+        .into_iter()
+        .enumerate()
+        .map(|(dimension, stride)| {
+            Ok(AffineStencilIndexStrideTerm {
+                dimension,
+                stride: isize::try_from(stride).map_err(|_| {
+                    event_iteration_contract(row, "numeric memory hold stride overflows")
+                })?,
+            })
+        })
+        .collect::<Result<Vec<_>, SolveProblemShapeContractError>>()?;
+    if load.terms != expected {
+        return Err(event_iteration_contract(
             row,
-            "numeric memory root certificate exceeds the register domain",
-        )
-    })
+            "numeric memory affine hold does not follow its domain ordinals",
+        ));
+    }
+    Ok(Some(load.op_position))
 }
 
 fn project_constant<'a>(

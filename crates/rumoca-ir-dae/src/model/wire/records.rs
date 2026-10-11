@@ -75,6 +75,8 @@ pub(super) struct VariableAttributesInput {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
+    pub(super) construction_start: u32,
+    pub(super) construction_end: u32,
     pub(super) name: Name,
     pub(super) parameters: Vec<FunctionNamedValueWire<Name>>,
     pub(super) outputs: Vec<FunctionNamedValueWire<Name>>,

@@ -7,6 +7,7 @@ use crate::LowerError;
 #[derive(Clone, Copy)]
 pub(crate) struct QuotientMemory<'dae> {
     pub(crate) quotient: dae::ExprId<'dae>,
+    pub(crate) activation_guard: Option<dae::ExprId<'dae>>,
     pub(crate) ratio: dae::ExprId<'dae>,
     pub(crate) builtin: dae::PureBuiltin,
     pub(crate) parameter: usize,
@@ -105,6 +106,7 @@ impl<'dae> BufferedQuotients<'dae> {
             by_expression[owner.quotient().index() as usize] = Some(entries.len());
             entries.push(QuotientMemory {
                 quotient: owner.quotient(),
+                activation_guard: owner.activation_guard(),
                 ratio: generated[0],
                 builtin: owner.builtin(),
                 parameter,

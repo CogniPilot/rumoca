@@ -617,3 +617,48 @@ fn the_unshared_sequence_keeps_every_program_and_checks() {
         (&rows[1].0[..], &[11][..], 1)
     );
 }
+
+#[test]
+fn conditional_value_proofs_do_not_merge_distinct_execution_owners() {
+    let conditional = |identity| {
+        let owner = FunctionConditionalOwnerId::checked(identity).unwrap();
+        let region = |value| {
+            vec![
+                LinearOp::Const { dst: 0, value },
+                LinearOp::StoreOutput { src: 0 },
+            ]
+        };
+        let program = FunctionConditionalProgram::checked_owned(
+            owner,
+            0,
+            vec![1],
+            [(region(1.0), region(7.0))],
+            region(8.0),
+        )
+        .unwrap();
+        vec![
+            LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(program),
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]
+    };
+    let rows = [(conditional(1), vec![10]), (conditional(2), vec![11])];
+    let programs = programs(&rows);
+    let shared = SharedValueSegments::derive(&programs);
+    shared
+        .check(&programs)
+        .expect("execution-owner identity remains in normal segment proofs");
+    let calls = shared
+        .segments()
+        .iter()
+        .flat_map(|segment| segment.ops())
+        .filter(|op| matches!(op, LinearOp::FunctionConditional { .. }))
+        .count();
+    assert_eq!(
+        calls, 2,
+        "equal values do not erase distinct execution owners"
+    );
+}

@@ -126,15 +126,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// dependencies and are evaluated with the source call's cardinality.
     pub(in crate::lower) fn root_program_outputs(
         mut self,
-        relations: impl IntoIterator<Item = dae::RelationId<'dae>>,
+        relations: impl IntoIterator<Item = (dae::RelationId<'dae>, Option<dae::ExprId<'dae>>)>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        for relation in relations {
+        for (relation, guard) in relations {
             let relation = self
                 .view
                 .relation(relation)
                 .expect("checked relation identity resolves");
-            let output =
-                self.root_expression(relation.expression(), relation.provenance().span())?;
+            let output = self.activated_root_expression(
+                relation.expression(),
+                guard,
+                relation.provenance().span(),
+            )?;
             self.ops.push(solve::LinearOp::StoreOutput { src: output });
         }
         Ok(self.ops)
@@ -143,14 +146,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(in crate::lower) fn root_expression_program(
         mut self,
         expression: dae::ExprId<'dae>,
+        guard: Option<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let output = self.root_expression(expression, span)?;
+        let output = self.activated_root_expression(expression, guard, span)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
     }
 
-    fn root_expression(
+    pub(super) fn root_expression(
         &mut self,
         expression: dae::ExprId<'dae>,
         span: Span,

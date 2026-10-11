@@ -1,0 +1,173 @@
+use super::*;
+
+fn conditional_fixture() -> Dae {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let owner = dae.begin_model_conditional(condition, at)?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(1.0)))
+        })?;
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(2.0)))
+        })?;
+        dae.finish_model_conditional(owner, [first, second])?;
+        Ok(())
+    })
+    .expect("checked arms close once")
+}
+
+#[test]
+fn model_arm_cannot_escape_or_borrow_a_sibling_value() {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let owner = dae.begin_model_conditional(condition, at)?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(1.0)))
+        })?;
+        assert!(matches!(
+            dae.expressions(|e| e.at(at).unary(UnaryOperator::Plus, first)),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. })
+        ));
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            assert!(matches!(
+                dae.expressions(|e| e.at(at).unary(UnaryOperator::Plus, first)),
+                Err(DaeConstructionError::InvalidModelActivationScope { .. })
+            ));
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(2.0)))
+        })?;
+        let value = dae.finish_model_conditional(owner, [first, second])?;
+        dae.expressions(|e| e.at(at).unary(UnaryOperator::Plus, value))?;
+        Ok(())
+    })
+    .expect("discharged value is visible, sibling and undischarged values are not");
+}
+
+#[test]
+fn model_conditional_replay_refuses_a_foreign_guard() {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    Dae::construct(source.map, |dae| {
+        let (condition, foreign, not) = dae.expressions(|e| {
+            let condition = e.at(at).literal(DaeLiteral::Boolean(true))?;
+            let foreign = e.at(at).literal(DaeLiteral::Boolean(false))?;
+            let not = e.at(at).unary(UnaryOperator::Not, condition)?;
+            Ok((condition, foreign, not))
+        })?;
+        assert!(matches!(
+            dae.replay_model_conditional(condition, [foreign, not], at),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. })
+        ));
+        Ok(())
+    })
+    .expect("failed authority admission inserts no open owner");
+}
+
+#[test]
+fn model_conditional_wire_reissues_authority_and_rejects_context_tampering() {
+    let original = conditional_fixture();
+    let value = serde_json::to_value(&original).expect("serialize checked DAE");
+    let decoded: Dae = serde_json::from_value(value.clone()).expect("current operations replay");
+    decoded.inspect(|view| assert_eq!(view.model_conditional_count(), 1));
+    let last = value["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .len()
+        - 1;
+    let mut missing = value.clone();
+    missing["storage"]["expressions"]
+        .as_object_mut()
+        .unwrap()
+        .remove("model_contexts");
+    assert!(serde_json::from_value::<Dae>(missing).is_err());
+    let mut swapped = value.clone();
+    let contexts = swapped["storage"]["expressions"]["model_contexts"]
+        .as_array_mut()
+        .unwrap();
+    let index = contexts
+        .iter()
+        .position(|value| value.as_u64() == Some(0))
+        .expect("then-arm operation");
+    contexts[index] = serde_json::json!(1);
+    assert!(serde_json::from_value::<Dae>(swapped).is_err());
+    let mut missing_parent = value.clone();
+    missing_parent["storage"]["model_conditionals"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("parent");
+    assert!(serde_json::from_value::<Dae>(missing_parent).is_err());
+    let mut foreign_close = value;
+    foreign_close["storage"]["model_conditionals"][0]["expression"] = serde_json::json!(last - 1);
+    assert!(serde_json::from_value::<Dae>(foreign_close).is_err());
+}
+
+#[test]
+fn nested_model_arm_first_creates_a_shared_global_function() {
+    let source = TestSource::new("if c then if d then f(3) else 4 else 5; f(6)");
+    let at = source.source("if c then if d then f(3) else 4 else 5; f(6)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae
+            .types(|types| types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), at))?;
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let outer = dae.begin_model_conditional(condition, at)?;
+        let (first, function) = dae.model_conditional_arm(&outer, true, |dae| {
+            let inner = dae.begin_model_conditional(condition, at)?;
+            let (value, function) = dae.model_conditional_arm(&inner, true, |dae| {
+                let argument = dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(3.0)))?;
+                let (function, ()) = dae.function(
+                    FunctionSignature::new(VarName::new("f"), [real], [real], at),
+                    |dae, reservation| {
+                        let input = dae.functions(|functions| {
+                            functions.parameter(&reservation, VarName::new("u"), 0, at)
+                        })?;
+                        let output = dae.functions(|functions| {
+                            functions.output(&reservation, VarName::new("y"), 0, at)
+                        })?;
+                        let value = dae.expressions(|e| e.at(at).function_parameter(input))?;
+                        let mut body =
+                            dae.functions(|functions| functions.begin(reservation, at))?;
+                        dae.functions(|functions| functions.assign(&mut body, output, value, at))?;
+                        dae.functions(|functions| functions.define(body, at))?;
+                        // A dead closed body expression must remain within the
+                        // actual global function suspension, not an inferred
+                        // dependency-only extent.
+                        dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(99.0)))?;
+                        Ok(())
+                    },
+                )?;
+                let value = dae.expressions(|e| e.at(at).call(function, 0, [argument]))?;
+                Ok((value, function))
+            })?;
+            let fallback = dae.model_conditional_arm(&inner, false, |dae| {
+                dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(4.0)))
+            })?;
+            Ok((
+                dae.finish_model_conditional(inner, [value, fallback])?,
+                function,
+            ))
+        })?;
+        let fallback = dae.model_conditional_arm(&outer, false, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(5.0)))
+        })?;
+        dae.finish_model_conditional(outer, [first, fallback])?;
+        let six = dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(6.0)))?;
+        dae.expressions(|e| e.at(at).call(function, 0, [six]))?;
+        Ok(())
+    })
+    .expect("one global function, two arm-local and global occurrences");
+    let binary = bincode::serialize(&dae).expect("serialize nested construction operations");
+    let decoded: Dae =
+        bincode::deserialize(&binary).expect("function suspension and exact arms replay");
+    assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+    let json = serde_json::to_value(&dae).unwrap();
+    serde_json::from_value::<Dae>(json.clone()).expect("JSON reissues the same boundaries");
+    let mut earlier = json;
+    earlier["storage"]["functions"][0]["construction_start"] = serde_json::json!(0);
+    assert!(
+        serde_json::from_value::<Dae>(earlier).is_err(),
+        "a function cannot consume a model prefix as its body"
+    );
+}

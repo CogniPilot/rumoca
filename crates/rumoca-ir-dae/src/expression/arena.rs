@@ -34,6 +34,8 @@ impl OperandRange {
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ExpressionArenaStorage {
+    pub(crate) model_conditional_owners: Vec<Option<u32>>,
+    pub(crate) model_arm_scopes: Vec<Option<u32>>,
     pub(crate) nodes: Vec<ExprNode>,
     pub(crate) provenance: Vec<DaeProvenance>,
     pub(crate) value_types: Vec<u32>,
@@ -49,6 +51,8 @@ pub(crate) struct ExpressionArenaStorage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FrozenExpressionArenaStorage {
+    pub(crate) model_conditional_owners: Box<[Option<u32>]>,
+    pub(crate) model_arm_scopes: Box<[Option<u32>]>,
     pub(crate) nodes: Box<[ExprNode]>,
     pub(crate) provenance: Box<[DaeProvenance]>,
     pub(crate) value_types: Box<[u32]>,
@@ -72,6 +76,8 @@ impl ExpressionArenaStorage {
 
     pub(crate) fn freeze(self) -> FrozenExpressionArenaStorage {
         FrozenExpressionArenaStorage {
+            model_conditional_owners: self.model_conditional_owners.into_boxed_slice(),
+            model_arm_scopes: self.model_arm_scopes.into_boxed_slice(),
             nodes: self.nodes.into_boxed_slice(),
             provenance: self.provenance.into_boxed_slice(),
             value_types: self.value_types.into_boxed_slice(),

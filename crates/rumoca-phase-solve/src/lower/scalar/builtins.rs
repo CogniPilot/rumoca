@@ -513,8 +513,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let span = self.node(expression).provenance().span();
         // The indicator's ratio remains live; only its integer-valued step is
         // assigned at initialization and accepted event transactions.
-        let ratio = self.expression(memory.ratio, 0)?;
-        let step = self.quotient_step(memory.builtin, ratio, span)?;
+        let step = if let Some(guard) = memory.activation_guard {
+            let held = self.load_slot(solve::scalar_slot_p(memory.parameter), span)?;
+            self.guarded_quotient_step(memory, guard, held, span)?
+        } else {
+            let ratio = self.expression(memory.ratio, 0)?;
+            self.quotient_step(memory.builtin, ratio, span)?
+        };
         self.ops.push(solve::LinearOp::StoreOutput { src: step });
         Ok(solve::prune_dead_constants(self.ops))
     }

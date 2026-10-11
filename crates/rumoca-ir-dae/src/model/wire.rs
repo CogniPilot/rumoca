@@ -27,6 +27,8 @@ use helpers::{
 };
 use quotient_projection::*;
 use records::*;
+mod model_conditionals;
+use model_conditionals::{ModelConditionalInput, ModelConditionalsOutput};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,7 +72,7 @@ impl Serialize for FrozenStorage {
         S: serde::Serializer,
     {
         let projection = verify_owner_projection(self).map_err(serde::ser::Error::custom)?;
-        let mut state = serializer.serialize_struct("DaeStorage", 26)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 27)?;
         state.serialize_field(
             "predefined_string_declaration",
             &self.predefined_string_declaration,
@@ -84,6 +86,7 @@ impl Serialize for FrozenStorage {
             &function_replay::FunctionArenaOutput::new(&self.functions, &self.function_folds),
         )?;
         state.serialize_field("domains", &self.domains)?;
+        state.serialize_field("model_conditionals", &ModelConditionalsOutput(self))?;
         state.serialize_field(
             "expressions",
             &ExpressionArenaOutput {
@@ -177,6 +180,7 @@ struct StorageWire {
     variables: Vec<VariableEntryWire>,
     functions: Vec<FunctionEntryWire>,
     domains: Vec<DomainEntryWire>,
+    model_conditionals: Vec<ModelConditionalInput>,
     expressions: ExpressionArenaWire,
     continuous_equation_operations: Vec<EquationOperationInput>,
     initialization_equation_operations: Vec<EquationOperationInput>,
@@ -249,6 +253,9 @@ impl<'dae> WireClockId<'dae> {
 }
 
 struct WireIds<'dae> {
+    model_conditionals: Vec<Option<ModelConditional<'dae>>>,
+    model_arms: Vec<ModelArm<'dae>>,
+    model_conditional_closes: rustc_hash::FxHashMap<u32, usize>,
     types: Vec<ValueTypeId<'dae>>,
     variables: Vec<VariableId<'dae>>,
     functions: Vec<FunctionId<'dae>>,
@@ -311,6 +318,9 @@ fn reconstruct<'dae>(
     let domains = reconstruct_domains(wire, dae)?;
     let conditions = reconstruct_conditions(wire, dae)?;
     let mut ids = WireIds {
+        model_conditionals: Vec::new(),
+        model_arms: Vec::new(),
+        model_conditional_closes: model_conditionals::closing_owners(wire)?,
         types,
         variables,
         functions: Vec::with_capacity(wire.functions.len()),
@@ -719,7 +729,24 @@ fn reconstruct_next_expression<'dae>(
     let expression = wire_expression(wire, ids.next_wire_expression)?;
     let provenance = expression.provenance;
     let node = expression.node;
+    let closing = ids.model_conditional_closes.get(&raw).copied();
+    let context = *wire
+        .expressions
+        .model_contexts
+        .get(ids.next_wire_expression)
+        .ok_or_else(|| malformed("model expression contexts"))?;
+    model_conditionals::prepare(wire, dae, ids, context, closing, provenance)?;
     let id = match node {
+        ExprNodeWire::Conditional { operand_count } if closing.is_some() => {
+            model_conditionals::close(
+                wire,
+                dae,
+                ids,
+                closing.expect("selected checked close"),
+                *operand_count,
+                provenance,
+            )?
+        }
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
             reconstruct_delay_coordinate(wire, dae, ids, *delay, provenance)?
         }
@@ -868,6 +895,9 @@ fn expect_expression_arena_consumed(
     // exact owner widths: six extra nodes/provenance and three packed
     // operands per model owner, two packed operands per function owner.
     if wire.expressions.provenance.len() != count
+        || wire.expressions.model_contexts.len() != count
+        || ids.model_conditionals.len() != wire.model_conditionals.len()
+        || ids.model_conditionals.iter().any(Option::is_some)
         || ids.next_wire_expression != count
         || ids.next_operand != wire.expressions.operands.len()
         || ids.next_subscript != wire.expressions.subscripts.len()
