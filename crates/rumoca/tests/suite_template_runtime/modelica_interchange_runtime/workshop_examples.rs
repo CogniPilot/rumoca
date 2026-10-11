@@ -184,7 +184,7 @@ fn omc_csv_samples(trace: &str) -> Vec<BTreeMap<String, f64>> {
         names.len(),
         "duplicate OMC channels must not overwrite data"
     );
-    let samples: Vec<_> = lines
+    let samples: Vec<BTreeMap<String, f64>> = lines
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let values: Vec<f64> = line
