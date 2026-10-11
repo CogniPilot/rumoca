@@ -732,13 +732,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             })?;
             return Ok(());
         }
-        let (condition, _) = lower_condition(
-            self.construction,
-            self.request.coordinates,
-            self.request.functions,
-            self.request.sample_lattices,
-            condition,
-        )?;
+        let condition = self.lower_body_condition(guard, condition, span)?;
         let failed = negate_condition(self.construction, condition, span)?;
         let action_guard =
             combine_conditions(self.construction, guard.condition, failed, false, span)?;
