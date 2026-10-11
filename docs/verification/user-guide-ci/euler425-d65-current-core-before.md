@@ -59,3 +59,24 @@ Machine-local raw evidence is retained under `$HOME/scratch/rumoca`:
 
 The independent quiescent-state test and any repaired-source result have no
 claim in this receipt.
+
+## Independent state gate
+
+The same d65 source's separate
+`reported_bug_runtime::issue_425_original_38_preserves_quiescent_states_and_native_receipts`
+gate timed out at 600.041 seconds (guardian exit 124, SIGKILL,
+`stopped=timeout`). It produced no requested samples and no Rust test summary.
+Its aggregate peak RSS was 2,292,968 KiB and peak cache bytes were
+7,333,744,640. This is **unqualified**, not one passing or one completed failing
+Rust test. It does not independently diagnose an allocation failure or establish
+an after-fix curve. The memory gate above completed its Rust failure report;
+the state gate did not complete.
+
+Raw evidence under
+`$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-euler38-states-d65f1-20261011`:
+
+| File | SHA256 |
+|---|---|
+| `recipe.json` | `6ef22776960d882b592a6160cd2fa60b2a8181795805880ba6f6f481ba01c72c` |
+| `original-euler38-states-1.log` | `3c45b600d6d77e0296ac1026d984a572188e9e9f049c6b9950f42f297df6dd2d` |
+| `original-euler38-states-1.guardian.json` | `a5fc2f2ed8bdd4626c1459aec13ceb2b33f5c9594879bbfe361c0d4b95c8b58c` |
