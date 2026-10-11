@@ -42,27 +42,11 @@ impl SolveTemplateRenderer {
         })
     }
 
-    /// Build a renderer by taking ownership of the lowered Solve IR. Target
-    /// builders that do not reuse these values avoid cloning the complete
-    /// program and artifact graphs into the lazy template context.
-    pub fn new_owned_with_dae(
-        problem: solve::SolveProblem,
-        artifacts: solve::SolveArtifacts,
-        dae_model: &dae::Dae,
-    ) -> Result<Self, CodegenError> {
-        let dae_entry = checked_dae_template_value(dae_model)?;
-        let handle = super::solve_lazy::SolveRenderHandle::standalone(
-            std::sync::Arc::new(problem),
-            std::sync::Arc::new(artifacts),
-        );
-        Ok(Self {
-            context: solve_render_context_value_with_handles(handle, None, dae_entry)?,
-        })
-    }
-
-    /// [`Self::new_owned_with_dae`] with the model's pure-call owners from the
-    /// same Solve lowering, so scalar targets inline `PureCall` ops instead of
-    /// refusing the programs that contain them.
+    /// Build a renderer by taking ownership of the lowered Solve IR and the
+    /// model's pure-call owners from the same Solve lowering, so scalar
+    /// targets inline `PureCall` ops instead of refusing the programs that
+    /// contain them. Target builders that do not reuse these values avoid
+    /// cloning the complete program and artifact graphs into the context.
     pub fn new_owned_with_dae_and_calls(
         problem: solve::SolveProblem,
         artifacts: solve::SolveArtifacts,

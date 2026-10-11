@@ -20,6 +20,7 @@ mod hover_definition_timing_tests;
 mod hover_preview_tests;
 mod multi_source_root_completion_tests;
 mod open_and_nested_model_tests;
+mod render_target_tests;
 mod simulation_override_diagnostic_tests;
 mod simulation_surface_tests;
 mod source_root_load_diagnostic_tests;
