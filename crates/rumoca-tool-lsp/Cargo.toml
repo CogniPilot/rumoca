@@ -32,7 +32,7 @@ clap = { workspace = true }
 blake3 = { workspace = true }
 toml = { workspace = true }
 time = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, optional = true }
 
 # Server-only dependencies (not needed for WASM)
 tower-lsp = { workspace = true, optional = true }
@@ -45,7 +45,7 @@ default = ["server"]
 # that only need completions/hover/diagnostics use `default-features = false`
 # to drop both server and simulation, keeping concrete solver backends
 # (e.g. diffsol) out of the transitive graph.
-server = ["dep:tower-lsp", "dep:tokio", "simulation"]
+server = ["dep:tower-lsp", "dep:tokio", "dep:uuid", "simulation"]
 # Enables the simulate_dae entry points and pulls in rumoca-sim.
 simulation = ["dep:rumoca-sim"]
 
