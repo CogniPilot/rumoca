@@ -50,7 +50,7 @@ fn rows(site: rumoca_ir_solve::SolvePureCallSite, count: u32) -> ScalarProgramBl
             },
             LinearOp::StoreOutputRange {
                 start: 1,
-                count,
+                count: usize::try_from(count).unwrap(),
                 stride: 1,
             },
         ]],
