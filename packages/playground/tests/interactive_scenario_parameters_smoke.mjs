@@ -13,13 +13,16 @@ const browser = await chromium.launch({
 });
 try {
   const page = await browser.newPage();
-  await page.goto(`${base}/docs/user-guide/book/introduction.html`, { waitUntil: "domcontentloaded" });
+  // This focused public-runtime proof uses the authored repository bytes.
+  // It does not claim that the current compiler or complete book is qualified.
+  const response = await page.goto(`${base}/examples/models/SympyDecay.mo`, { waitUntil: "domcontentloaded" });
+  assert.ok(response.ok(), "the exact repository model must be served");
   const traces = await page.evaluate(async () => {
     const wasm = await import("/packages/rumoca/dist/release-full-web/rumoca_bind_wasm.js");
     await wasm.default();
     const THREE = await import("/packages/rumoca-web/vendor/three_viewer.js");
     const runtime = await import("/packages/rumoca/dist/release-full-web/rumoca_interactive.js");
-    const root = "/docs/user-guide/book/repo-examples/";
+    const root = "/examples/";
     const model = await (await fetch(`${root}models/SympyDecay.mo`)).text();
     const path = "simulation/rumoca-scenario.sympy_decay.toml";
     const text = await (await fetch(root + path)).text();
