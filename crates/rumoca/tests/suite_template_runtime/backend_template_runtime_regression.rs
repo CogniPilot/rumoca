@@ -19,8 +19,16 @@ fn checked_decay() -> rumoca::CompilationResult {
 
 fn rendered_target(target: &str) -> (tempfile::TempDir, Vec<RenderedTargetFile>) {
     let result = checked_decay();
-    let files = rumoca::render_target_files(&result, "Decay", target, None)
-        .expect("checked target renders");
+    rendered_model_target(&result, "Decay", target)
+}
+
+fn rendered_model_target(
+    result: &rumoca::CompilationResult,
+    model: &str,
+    target: &str,
+) -> (tempfile::TempDir, Vec<RenderedTargetFile>) {
+    let files =
+        rumoca::render_target_files(result, model, target, None).expect("checked target renders");
     let directory = tempfile::tempdir().expect("temporary target directory");
     for file in &files {
         let path = directory.path().join(&file.path);
@@ -940,12 +948,31 @@ assert float(derivative(ca.DM([1.0]))) == -2.0
 #[test]
 fn jax_ode_target_imports_jits_evaluates_and_differentiates() {
     let (directory, files) = rendered_target("jax-ode");
+    assert_jax_decay(directory.path(), &files);
+}
+
+#[test]
+fn jax_ode_target_handles_reported_explicit_algebraic_assignments() {
+    let compiled = Compiler::new()
+        .model("B")
+        .compile_str(
+            include_str!(
+                "../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_418.mo"
+            ),
+            "B.mo",
+        )
+        .expect("the original issue 418 model compiles");
+    let (directory, files) = rendered_model_target(&compiled, "B", "jax-ode");
+    assert_jax_decay(directory.path(), &files);
+}
+
+fn assert_jax_decay(directory: &Path, files: &[RenderedTargetFile]) {
     let module = files
         .iter()
         .find(|file| file.path.ends_with(".py"))
         .expect("JAX target emits Python");
     run_python(
-        &directory.path().join(&module.path),
+        &directory.join(&module.path),
         r#"
 import importlib.util, sys
 import jax

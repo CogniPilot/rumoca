@@ -25,6 +25,7 @@
 //! bare test name still works, and `<file_stem>::` selects one member file.
 
 mod history_operator_checked;
+mod reported_bug_runtime;
 mod initial_boolean_parameter;
 mod periodic_clock_session;
 
