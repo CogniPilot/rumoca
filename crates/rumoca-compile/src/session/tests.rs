@@ -19,6 +19,7 @@ mod overconstrained_closure_tests;
 mod package_def_map_tests;
 mod persisted_summary_tests;
 mod record_forwarding_tests;
+mod reported_bug_regressions;
 mod semantic_diagnostics_tests;
 mod source_root_tests;
 mod static_reduction_tests;
