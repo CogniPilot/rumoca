@@ -994,6 +994,14 @@ fn structured_family_partition<'flat>(
     template: &'flat rumoca_core::ComprehensionTemplate,
     environment: StructuredEquationEnvironment<'flat, '_>,
 ) -> StructuredFamilyPartition<'flat> {
+    if let Some(assignment) = environment.aggregate_connections.source_family_assignment(
+        environment.flat,
+        family,
+        template,
+        environment.roles,
+    ) {
+        return StructuredFamilyPartition::DiscreteValue(vec![assignment]);
+    }
     let assignments = template
         .body
         .iter()

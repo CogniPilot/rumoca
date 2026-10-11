@@ -1,5 +1,6 @@
 mod alias_orientation;
 mod connection_ranks;
+mod source_families;
 
 pub(in crate::construction) use connection_ranks::{
     ConnectionOrientation, DiscreteConnectionRanks, discrete_connection_ranks,
@@ -86,6 +87,7 @@ struct AggregateDiscreteConnection {
     value: Expression,
     scalar_count: usize,
     ordered_scalar_self_dependencies: bool,
+    ordered_rows: Option<std::ops::Range<usize>>,
 }
 
 pub(in crate::construction) fn equation_partition<'flat>(
@@ -456,6 +458,15 @@ impl AggregateConnectionGroup {
             .collect::<Vec<_>>();
         let owner_row = members[0].row;
         let owner_span = members[0].span;
+        // SPEC_0032 §§1–3: retain the group's exact source-row ownership proof
+        // while its already-validated members are available, without another list.
+        let ordered_rows = owner_row.checked_add(members.len()).and_then(|end| {
+            members
+                .iter()
+                .enumerate()
+                .all(|(ordinal, member)| member.row == owner_row + ordinal)
+                .then_some(owner_row..end)
+        });
         let values = members
             .iter()
             .map(|member| member.value.clone())
@@ -475,6 +486,7 @@ impl AggregateConnectionGroup {
                 value,
                 scalar_count,
                 ordered_scalar_self_dependencies,
+                ordered_rows,
             },
         );
         Ok(())

@@ -51,6 +51,7 @@ pub(super) fn reversed_alias_owners(
                 value,
                 scalar_count,
                 ordered_scalar_self_dependencies: false,
+                ordered_rows: None,
             },
         );
     }
