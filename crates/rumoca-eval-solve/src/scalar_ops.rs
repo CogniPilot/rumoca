@@ -50,6 +50,8 @@ fn dot_cost(count: usize) -> Option<usize> {
 /// Check the complete direct tensor expansion before allocating its output.
 fn expansion_cost(op: &LinearOp) -> Option<usize> {
     match op {
+        // Scalar templates emit one assignment per output coordinate.
+        LinearOp::StoreOutputRange { count, .. } => Some(*count),
         _ if is_scalar_op(op) => Some(1),
         LinearOp::TensorLoad {
             lanes: 1, count, ..
@@ -494,6 +496,19 @@ mod tests {
         assert_eq!(value_type.scalar_count(), 24);
         let largest = SolveValueType::tensor(SolveScalarType::Boolean, vec![u32::MAX]).unwrap();
         assert_eq!(largest.scalar_count(), u32::MAX);
+    }
+
+    #[test]
+    fn scalar_template_output_ranges_are_admitted_by_expanded_output_count() {
+        let program = [
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutputRange {
+                start: 0,
+                count: 4_000_001,
+                stride: 0,
+            },
+        ];
+        assert!(lower_scalar_ops(&program, None).is_none());
     }
 
     #[test]
