@@ -1134,6 +1134,8 @@ mod tests {
         let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 35)).unwrap();
         let model = dae::Dae::construct(sources, |model| {
             let variables = define_fixture_variables(model, at)?;
+            let rows = define_fixture_rows(model, variables, at)?;
+            define_fixture_equations(model, Wiring::Aliases, variables, rows, at)?;
             let (integer_guard, real_guard) = model.expressions(|expressions| {
                 let n = expressions
                     .at(at)
