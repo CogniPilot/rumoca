@@ -371,7 +371,7 @@ impl Storage {
             .get(expression.index() as usize)
             .copied()
             .ok_or_else(|| unknown("expression", expression.index(), at))?;
-        if scope.is_some() && !self.owned_quotient_surface {
+        if scope.is_some() && self.owned_quotient_surface.is_none() {
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         Ok(())

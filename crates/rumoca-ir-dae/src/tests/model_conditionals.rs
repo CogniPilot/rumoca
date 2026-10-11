@@ -19,6 +19,22 @@ fn conditional_fixture() -> Dae {
 }
 
 #[test]
+fn unfinished_active_model_arm_reports_its_issued_source() {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    let result = Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let owner = dae.begin_model_conditional(condition, at)?;
+        dae.replay_model_arm_context(Some(owner.arm(dae, true)), at)?;
+        Ok(())
+    });
+    assert!(matches!(result,
+        Err(DaeConstructionError::InvalidModelActivationScope { span })
+            if span == at.span() && !span.is_dummy()
+    ));
+}
+
+#[test]
 fn model_arm_cannot_escape_or_borrow_a_sibling_value() {
     let source = TestSource::new("if c then 1 else 2");
     let at = source.source("if c then 1 else 2", 0);

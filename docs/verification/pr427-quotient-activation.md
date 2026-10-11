@@ -51,7 +51,7 @@ All candidate results below are **UNRUN** at this source freeze. Formatting and
 
 | Command suffix (ordinary locked Cargo tests) | Selected tests | Purpose |
 | --- | ---: | --- |
-| `-p rumoca-ir-dae --lib tests::model_conditionals::` | 5 | sibling/escape refusal, foreign guards, replay entry invariants, mandatory-wire mutation, nested global-function JSON/bincode replay |
+| `-p rumoca-ir-dae --lib tests::model_conditionals::` | 6 | issued-source diagnostics, sibling/escape refusal, foreign guards, replay entry invariants, mandatory-wire mutation, nested global-function JSON/bincode replay |
 | `-p rumoca-phase-structural --lib nested_model_arm_function_interval_survives_structural_replay` | 1 | two actual whole-DAE reconstructions retain the nested shared function's closed dead tail inside its issued interval |
 | `-p rumoca-ir-solve --lib quotient_memory::` | 12 | original scalar/compact certificates and activated hold/root/affine-load tampering |
 | `-p rumoca-ir-solve --lib conditional_value_proofs_do_not_merge_distinct_execution_owners` | 1 | term proofs preserve ordinary call-owner cardinality |

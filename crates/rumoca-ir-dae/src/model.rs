@@ -539,7 +539,7 @@ pub(crate) struct Storage {
     pub(crate) active_model_arm: Option<u32>,
     pub(crate) active_model_ancestors: rustc_hash::FxHashSet<u32>,
     pub(crate) closing_model_conditional: Option<u32>,
-    pub(crate) owned_quotient_surface: bool,
+    pub(crate) owned_quotient_surface: Option<DaeProvenance>,
     pub(crate) active_function_boundary: bool,
     pub(crate) predefined_string_declaration: Option<rumoca_core::DefId>,
     pub(crate) value_types: Vec<ValueType>,

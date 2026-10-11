@@ -716,12 +716,18 @@ impl Storage {
     }
 
     pub(super) fn finish_construction(&self) -> Result<(), DaeConstructionError> {
-        if self.active_model_arm.is_some()
-            || !self.active_model_ancestors.is_empty()
-            || self.closing_model_conditional.is_some()
-            || self.owned_quotient_surface
-        {
-            return Err(DaeConstructionError::InvalidModelActivationScope { span: Span::DUMMY });
+        let active_owner = self
+            .active_model_arm
+            .or_else(|| self.active_model_ancestors.iter().copied().min())
+            .map(|arm| self.model_arms[arm as usize].owner)
+            .or(self.closing_model_conditional);
+        let active_provenance = active_owner
+            .map(|owner| self.model_conditionals[owner as usize].provenance)
+            .or(self.owned_quotient_surface);
+        if let Some(provenance) = active_provenance {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: provenance.span(),
+            });
         }
         if let Some((index, entry)) = self
             .model_conditionals

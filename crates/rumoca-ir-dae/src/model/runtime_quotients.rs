@@ -94,10 +94,11 @@ impl<'dae> QuotientReplayToken<'dae> {
 impl<'dae> DaeConstruction<'dae> {
     fn with_quotient_surface<T>(
         &mut self,
+        provenance: DaeProvenance,
         build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,
     ) -> Result<T, DaeConstructionError> {
         let previous = self.storage.owned_quotient_surface;
-        self.storage.owned_quotient_surface = true;
+        self.storage.owned_quotient_surface = Some(provenance);
         let result = build(self);
         self.storage.owned_quotient_surface = previous;
         result
@@ -279,7 +280,7 @@ impl<'dae> DaeConstruction<'dae> {
                 span: token.generated_at.span(),
             });
         }
-        let relation = self.with_quotient_surface(|construction| {
+        let relation = self.with_quotient_surface(token.generated_at, |construction| {
             construction.conditions(|conditions| {
                 conditions.relation(token.generated[5], token.generated_at)
             })
@@ -317,7 +318,7 @@ impl<'dae> DaeConstruction<'dae> {
             });
         }
         let generated_at = token.generated_at;
-        self.with_quotient_surface(|construction| {
+        self.with_quotient_surface(token.generated_at, |construction| {
             construction.conditions(|conditions| {
                 conditions.define(
                     activation,
@@ -370,7 +371,7 @@ impl<'dae> DaeConstruction<'dae> {
                 span: token.generated_at.span(),
             });
         }
-        let root = self.with_quotient_surface(|construction| {
+        let root = self.with_quotient_surface(token.generated_at, |construction| {
             construction.conditions(|conditions| {
                 conditions.structured_root_activated(
                     domain,
