@@ -275,6 +275,14 @@ impl Storage {
                 span: at.span(),
             })?,
         }
+        self.expect_closed_function_scope(expression, at)
+    }
+
+    fn expect_closed_function_scope(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         match self.expr_function_scope(expression, at)? {
             None => Ok(()),
             Some(found_function) => Err(DaeConstructionError::InvalidFunctionScope {
@@ -292,6 +300,15 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         self.expect_discharged_model_arm(expression, at)?;
+        self.expect_domain_coordinates(expression, domain, at)
+    }
+
+    fn expect_domain_coordinates(
+        &self,
+        expression: ExprId<'_>,
+        domain: DomainId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         match self.expr_binder_domain(expression, at)? {
             None => Ok(()),
             Some(found_domain)
@@ -565,7 +582,12 @@ impl Storage {
         domain: DomainId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        self.expect_domain_expression(relation, domain, at)?;
+        self.expect_relation_model_arm(relation, at)?;
+        for root in self.model_expression_roots(relation.index()) {
+            let root = ExprId::from_raw(root);
+            self.expect_domain_coordinates(root, domain, at)?;
+            self.expect_closed_function_scope(root, at)?;
+        }
         self.expect_relation_node(relation, at)
     }
 

@@ -294,6 +294,15 @@ impl<'dae> Conditions<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         self.storage
             .expect_domain_relation(expression, domain, provenance)?;
+        // MLS §3.6.5 / §8.5: the same issued arm protects this whole domain.
+        // The quotient owner supplies its separately certified activation;
+        // ordinary relations derive it from their checked expression scope.
+        let activation = activation.or_else(|| {
+            self.storage
+                .model_expression_roots(expression.index())
+                .nth(1)
+                .map(ExprId::from_raw)
+        });
         let raw = checked_u32(
             self.storage.structured_roots.len(),
             "structured root arena",
