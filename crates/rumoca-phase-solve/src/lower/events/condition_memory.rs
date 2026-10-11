@@ -29,6 +29,13 @@ pub(super) fn lower_condition_memory<'dae>(
         if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
             continue;
         }
+        // A negated internal Always is false at every instant. Its zeroed
+        // memory slot already represents that truth, so no refresh row is
+        // needed. Source literal conditions are Discrete nodes and retain
+        // their initialization/edge buffers, including source `when true`.
+        if internal_false_condition(view, condition) {
+            continue;
+        }
         let span = condition_view.provenance().span();
         let memory = condition_memory(layout, condition, span)?;
         let target = solve::scalar_slot_p(memory);
@@ -78,6 +85,29 @@ pub(super) fn lower_condition_memory<'dae>(
         }
     }
     Ok(())
+}
+
+/// Prove constant false from internal Always/Not nodes alone. Reading no
+/// expression, clock or initial flag preserves every real activation owner.
+fn internal_false_condition<'dae>(
+    view: dae::DaeView<'dae>,
+    mut condition: dae::ConditionId<'dae>,
+) -> bool {
+    let mut negated = false;
+    loop {
+        match view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation()
+        {
+            dae::ConditionOperation::Always => return negated,
+            dae::ConditionOperation::Not(operand) => {
+                negated = !negated;
+                condition = operand;
+            }
+            _ => return false,
+        }
+    }
 }
 
 /// Whether a relation or discrete operand of `condition` reads a `previous`
