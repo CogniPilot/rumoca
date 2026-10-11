@@ -56,28 +56,32 @@ fn require_execution_owner(owner: &str) {
     match owner {
         "cli-context" => {
             require_source(
-                "crates/rumoca/tests/suite_core/user_guide_cli.rs",
-                "fn user_guide_cli_templates_execute(",
+                "crates/rumoca/tests/suite_examples_smoke/guide_cli_contexts.rs",
+                "fn cli_commands_use_declared_teaching_contexts(",
             );
             require_source(
-                "crates/rumoca/tests/suite_core/main.rs",
-                "mod user_guide_cli;",
+                "crates/rumoca/tests/suite_examples_smoke/main.rs",
+                "mod guide_cli_contexts;",
             );
-            require_source(".github/workflows/ci.yml", "cargo xtask verify workspace");
+            require_source(".github/workflows/ci.yml", "cargo xtask verify examples");
         }
         "package-install" => {
             require_source(
-                "crates/rumoca/tests/suite_core/user_guide_cli.rs",
-                "fn user_guide_bash_syntax(",
+                "crates/rumoca/tests/suite_examples_smoke/guide_cli_contexts.rs",
+                "fn bash_sources_have_valid_syntax(",
             );
             require_source(".github/workflows/ci.yml", "build-python-wheels:");
         }
         "cli-stdio" => {
             require_source(
-                "crates/rumoca/tests/suite_core/user_guide_cli.rs",
-                "fn user_guide_stdio_python(",
+                "crates/rumoca/tests/suite_examples_smoke/guide_cli_contexts.rs",
+                "fn stdio_controller_follows_the_sampled_curve(",
             );
-            require_source("crates/xtask/src/verify_cmd.rs", "user_guide_stdio_python");
+            require_source(
+                "crates/rumoca/tests/suite_examples_smoke/main.rs",
+                "mod guide_cli_contexts;",
+            );
+            require_source(".github/workflows/ci.yml", "cargo xtask verify examples");
         }
         "guide-toml" => {
             require_source(
@@ -103,16 +107,22 @@ fn require_execution_owner(owner: &str) {
                 "def test_guide_cmake_fences(",
             );
             require_source(
-                ".github/workflows/ci.yml",
-                "python crates/rumoca-bind-python/tests/guide_scenario_test.py",
-            );
-            require_source(
                 "crates/rumoca-bind-python/tests/guide_test.py",
                 "def test_guide_python_fences(",
             );
             require_source(
+                "crates/rumoca-bind-python/tests/wheel_test.py",
+                "\"guide_test.py\", \"guide_scenario_test.py\"",
+            );
+            require_source("crates/xtask/src/python_cmd.rs", "--require-guide");
+            require_source(
+                "crates/xtask/src/verify_cmd.rs",
+                "&[\"python\", \"test\", \"--require-guide\"]",
+            );
+            require_source(".github/workflows/ci.yml", "export_args=(--require-guide)");
+            require_source(
                 ".github/workflows/ci.yml",
-                "python crates/rumoca-bind-python/tests/guide_test.py",
+                "cargo xtask python test --wheel",
             );
         }
         "book-browser" => {
@@ -120,7 +130,14 @@ fn require_execution_owner(owner: &str) {
                 "packages/playground/tests/book_live_smoke.mjs",
                 "All book live-example checks passed",
             );
-            require_source(".github/workflows/ci.yml", "book_live_smoke.mjs");
+            require_source(
+                "packages/playground/tests/user_guide_browser.mjs",
+                "\"book_live_smoke.mjs\", \"fixedwing_book_smoke.mjs\"",
+            );
+            require_source(
+                ".github/workflows/ci.yml",
+                "node packages/playground/tests/user_guide_browser.mjs",
+            );
         }
         "displayed-output" | "metadata-output" | "protocol-output" => {}
         _ => panic!("unregistered guide owner {owner}"),

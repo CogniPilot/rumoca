@@ -78,6 +78,33 @@ actually passed all14 tests (93.15s test execution), including all16 scenario
 compilations with the corrected periodic equation scheduler. Its raw log SHA256
 is50da8178c8158bf89530b7f9ac98b9b6daa7c9dc07aaa60e918a420328a175dc.
 That receipt includes the original thermostat counterexample, which proves
-heat0.02 never switches. The heat0.05 correction and independent repeated
-hysteresis-cycle after-test are unmeasured here, as are the future19-test suite,
-Latent256/512 and PredatorPrey313, configuration contexts, and stronger owner registry.
+heat 0.02 never switches. The corrected heat 0.05 model subsequently passed the
+independent repeated hysteresis-cycle test at
+`1b3e1139b41dde6113383af03b2d455deceee1a9`: all 241 samples through 7200 s
+agree with the piecewise analytic temperature and relay state, including more
+than 20 switches. The raw log SHA256 is
+`75ec1effbba2078605eab2c76da543dc640058d8c1cdaafb41a13ea38f824995`.
+The complete 19-test suite, Latent256/512, PredatorPrey313 and stronger execution
+owner registry remain unmeasured. The isolated TOML-context test produced a
+passing raw result but its guardian recorded a scratch free-space refusal;
+it needs a clean bounded retry.
+
+## Required execution routes
+
+The registry requires these concrete owners. This table describes source
+reachability, not a completed combined CI run. Missing implementations or
+registrations make the inventory test fail.
+
+| Owner | Required command or selector | Scope |
+|---|---|---|
+| Modelica and configuration contexts | `cargo xtask playground test`; focused `cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --nocapture` | 19 native tests on the current source, including both inventory checks |
+| Rust fitting excerpt | `cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` | One test, using the exact anchored snippet and unchanged Tensor32 model |
+| CLI and shell contexts | `cargo xtask verify examples`; focused `cargo test --locked -p rumoca --test suite_examples_smoke --features examples-smoke-tests guide_cli_contexts:: -- --nocapture` | Three tests: all 66 Bash snippets, declared command contexts, and the exact sampled stdio controller |
+| Installed-wheel Python and CMake | `cargo xtask python test --require-guide` (also selected by `cargo xtask verify full`) | The shared wheel roster requires all 10 Python fences, the notebook cell, both CMake fences and four authored codegen configurations on Linux x86_64 |
+| Browser visualizations and controls | `node packages/playground/tests/user_guide_browser.mjs` in the mandatory PR `build-wasm` job | The shipped FullWeb artifact, actual local guide, four authored visualizers and FixedWing keyboard controls |
+
+The schema-2 `contexts` table also identifies the exact authored Plant and
+HangingMass source spans for the CLI owner. It supplies locations and hashes,
+not copied models. The CLI loader reads those spans from the actual guide.
+Display-only text, XML and JSON examples have explicit output classifications;
+they cannot be used to exempt executable-language snippets.
