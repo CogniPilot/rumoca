@@ -1,0 +1,9 @@
+# Predator-prey width 313 observer correction
+
+At d65f1f659e1c5b8cf4f107b5ae901eb05b8006b1 the mandatory native guide group executed 20 tests: 19 passed and the PredatorPrey313 test failed before runtime. The raw log, command and guard bounds are pinned in `predator313-cardinality-before-d65f1.json`.
+
+The source declares `trainableParams` as a final Integer parameter. `rumoca-sim::build_tunable_parameter_meta` deliberately publishes only checked Parameter variables with `is_tunable`; that editing API is not an inventory of every declared parameter. The observer's lookup of the final counter was incorrect. SPEC_0043's structural parameter row distinguishes evaluable/non-tunable parameters from editable ones; SPEC_0029 permits read-only queries through the existing compilation facade, and SPEC_0032 requires observing compact tensor owners without replacing them with scalar declarations.
+
+The correction reads the checked DAE views of the six authored Real network parameter tensors. It verifies their exact shapes `[313,3]`, `[313]`, `[313,313]`, `[313]`, `[2,313]`, `[2]` and sums their issued scalar capacities to 100162. This is a declaration cardinality claim, not a claim that every weight has an independent public runtime override. The full original source remains unchanged apart from the documented width24→313 configuration. Finite population checks at times 0, 0.01, 0.02 remain mandatory; they cover a short interval, not the authored 24-second horizon.
+
+The corrected test is unrun. Focused qualification selects exactly one test with `cargo test --locked --offline --jobs4 -p rumoca-bind-wasm --lib --features full-web tests::user_guide_fragment_tests::user_guide_predator_width_313_uses_the_full_authored_source -- --exact --nocapture`; the full `user_guide_` group selects 20 tests. No production API, tunability policy or model dimensions were changed.
