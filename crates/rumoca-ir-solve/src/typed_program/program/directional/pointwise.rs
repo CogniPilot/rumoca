@@ -1,4 +1,4 @@
-//! One compact pointwise quotient tangent over the checked aggregate shape.
+//! Compact pointwise tangents over one arithmetic-profile-checked aggregate shape.
 
 use super::*;
 use rumoca_core::{IndexBinderProvenance, StructuredIndexBinder};
@@ -12,7 +12,7 @@ pub(super) fn quotient_tangent<'program>(
     value_type: &SolveValueType,
     provenance: Span,
 ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-    let domain = quotient_domain(value_type, builder.arithmetic, provenance)?;
+    let domain = pointwise_domain(value_type, builder.arithmetic, provenance)?;
     builder.map(
         domain,
         &[aggregate.primal, tangents[0], scalar.primal, tangents[1]],
@@ -42,7 +42,38 @@ pub(super) fn quotient_tangent<'program>(
     )
 }
 
-pub(super) fn quotient_domain(
+pub(super) fn logarithm_tangent<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    operand: ProgramRegister<'program>,
+    tangent: ProgramRegister<'program>,
+    base_ten: bool,
+    value_type: &SolveValueType,
+    provenance: Span,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let domain = pointwise_domain(value_type, builder.arithmetic, provenance)?;
+    builder.map(
+        domain,
+        &[operand, tangent],
+        SolveValueType::scalar(value_type.element_type()),
+        provenance,
+        |builder, captures, binders, output| {
+            let coordinates = binders
+                .iter()
+                .map(|binder| builder.load(*binder, provenance))
+                .collect::<Result<Vec<_>, _>>()?;
+            let operand = builder.load(captures[0], provenance)?;
+            let operand = builder.project_element_dynamic(operand, &coordinates, provenance)?;
+            let tangent = builder.load(captures[1], provenance)?;
+            let tangent = builder.project_element_dynamic(tangent, &coordinates, provenance)?;
+            let zero = builder.constant(SolveValue::real(builder.arithmetic, 0.0), provenance)?;
+            let tangent =
+                partials::logarithm_tangent(builder, operand, tangent, base_ten, zero, provenance)?;
+            builder.store(output, tangent, provenance)
+        },
+    )
+}
+
+pub(super) fn pointwise_domain(
     value_type: &SolveValueType,
     arithmetic: SolveArithmeticProfile,
     provenance: Span,

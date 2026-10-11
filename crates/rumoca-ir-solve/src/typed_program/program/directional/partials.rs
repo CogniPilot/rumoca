@@ -2,6 +2,28 @@
 
 use super::*;
 
+pub(super) fn logarithm_tangent<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    operand: ProgramRegister<'program>,
+    tangent: ProgramRegister<'program>,
+    base_ten: bool,
+    zero: ProgramRegister<'program>,
+    provenance: Span,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let denominator = if base_ten {
+        let ln10 = builder.constant(
+            SolveValue::real(builder.arithmetic, std::f64::consts::LN_10),
+            provenance,
+        )?;
+        builder.binary(SolveBinaryOperator::Multiply, operand, ln10, provenance)?
+    } else {
+        operand
+    };
+    let one = builder.constant(SolveValue::real(builder.arithmetic, 1.0), provenance)?;
+    let partial = builder.binary(SolveBinaryOperator::Divide, one, denominator, provenance)?;
+    scale_by_finite_partial(builder, tangent, partial, zero, provenance)
+}
+
 pub(super) fn quotient_tangent<'program>(
     builder: &mut TypedProgramBuilder<'program>,
     [lhs, rhs]: [ProgramRegister<'program>; 2],

@@ -10,10 +10,10 @@
 //! forward dual lowering and reverse rows; `rumoca_phase_solve`'s
 //! `kink_rule_tests` pins the three together.
 
-mod broadcast;
 mod linear_solve;
 mod mapped;
 mod partials;
+mod pointwise;
 
 use super::*;
 use crate::typed_program::call::{
@@ -120,7 +120,7 @@ fn program_supports_directional(
                 .register_types()
                 .get(destination.index())
                 .is_some_and(|value_type| {
-                    broadcast::quotient_domain(
+                    pointwise::pointwise_domain(
                         value_type,
                         program.arithmetic(),
                         operation.provenance(),
@@ -167,13 +167,27 @@ fn program_supports_directional(
             }
             SolveOperation::Unary {
                 destination,
+                operator: SolveUnaryOperator::Log | SolveUnaryOperator::Log10,
+                ..
+            } => program
+                .register_types()
+                .get(destination.index())
+                .is_some_and(|value_type| {
+                    value_type.dimensions().is_empty()
+                        || pointwise::pointwise_domain(
+                            value_type,
+                            program.arithmetic(),
+                            operation.provenance(),
+                        )
+                        .is_ok()
+                }),
+            SolveOperation::Unary {
+                destination,
                 operator:
                     SolveUnaryOperator::Abs
                     | SolveUnaryOperator::Sqrt
                     | SolveUnaryOperator::Asin
-                    | SolveUnaryOperator::Acos
-                    | SolveUnaryOperator::Log
-                    | SolveUnaryOperator::Log10,
+                    | SolveUnaryOperator::Acos,
                 ..
             }
             | SolveOperation::Binary {
@@ -765,6 +779,25 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             });
         }
         let tangent = self.tangent_or_zero(operand, value_type, provenance)?;
+        if !value_type.dimensions().is_empty()
+            && matches!(
+                operator,
+                SolveUnaryOperator::Log | SolveUnaryOperator::Log10
+            )
+        {
+            let tangent = pointwise::logarithm_tangent(
+                self.builder,
+                operand.primal,
+                tangent,
+                operator == SolveUnaryOperator::Log10,
+                value_type,
+                provenance,
+            )?;
+            return Ok(Directional {
+                primal,
+                tangent: Some(tangent),
+            });
+        }
         let zero = self.zero(value_type, provenance)?;
         let derivative = match operator {
             SolveUnaryOperator::Negate => {
@@ -902,28 +935,14 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .binary(SolveBinaryOperator::Multiply, tangent, primal, provenance)?
             }
-            SolveUnaryOperator::Log | SolveUnaryOperator::Log10 => {
-                let denominator = if operator == SolveUnaryOperator::Log10 {
-                    let ln10 =
-                        self.constant_like(value_type, std::f64::consts::LN_10, provenance)?;
-                    self.builder.binary(
-                        SolveBinaryOperator::Multiply,
-                        operand.primal,
-                        ln10,
-                        provenance,
-                    )?
-                } else {
-                    operand.primal
-                };
-                let one = self.constant_like(value_type, 1.0, provenance)?;
-                let partial = self.builder.binary(
-                    SolveBinaryOperator::Divide,
-                    one,
-                    denominator,
-                    provenance,
-                )?;
-                self.scale_by_finite_partial(tangent, partial, zero, provenance)?
-            }
+            SolveUnaryOperator::Log | SolveUnaryOperator::Log10 => partials::logarithm_tangent(
+                self.builder,
+                operand.primal,
+                tangent,
+                operator == SolveUnaryOperator::Log10,
+                zero,
+                provenance,
+            )?,
             SolveUnaryOperator::Sqrt => {
                 let half = self.constant_like(value_type, 0.5, provenance)?;
                 let partial =
@@ -1395,7 +1414,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .binary(SolveBinaryOperator::Add, first, second, provenance)?
             }
-            SolveBinaryOperator::Divide => broadcast::quotient_tangent(
+            SolveBinaryOperator::Divide => pointwise::quotient_tangent(
                 self.builder,
                 aggregate,
                 scalar,
