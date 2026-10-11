@@ -1,17 +1,15 @@
 // Mandatory actual user-guide browser entrypoints, using the built npm artifact.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { resolveBrowserExecutable } from "./browser_launcher.mjs";
 
 const root = process.cwd();
 const port = 8731;
 const base = `http://127.0.0.1:${port}`;
 const browserArg = process.argv.indexOf("--browser-binary");
-const browser = browserArg >= 0 ? process.argv[browserArg + 1] :
-  ["google-chrome", "chromium", "chromium-browser"].find((name) =>
-    spawnSync("which", [name], { encoding: "utf8" }).status === 0);
-assert.ok(browser, "a real Chrome/Chromium executable is required");
+const browser = resolveBrowserExecutable(browserArg >= 0 ? process.argv[browserArg + 1] : undefined);
 
 async function run(command, args) {
   const { terminal } = start(command, args);

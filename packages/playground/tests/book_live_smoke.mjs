@@ -6,11 +6,10 @@
 //
 // Verifies: widgets mount with Monaco editors, Simulate produces a plot,
 // LSP diagnostics produce markers, Show DAE renders Modelica text, the
-// editable turkey visualization animates to "done", and the Wave2D GPU widget
-// renders a surface.
-import { chromium } from "playwright-core";
-import { spawnSync } from "node:child_process";
-import path from "node:path";
+// editable turkey visualization renders, and hardware-admitted Wave2D/Airfoil
+// executions produce finite computed state readbacks. Hardware absence is an
+// explicit skip; CPU compilation and GPU preparation remain mandatory native tests.
+import { launchGuideBrowser, hardwareWebGpuAdmission } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 
 function argValue(name, fallback) {
@@ -19,19 +18,7 @@ function argValue(name, fallback) {
 }
 
 const base = argValue("--base-url", "http://127.0.0.1:8731");
-const browserBinary = argValue("--browser-binary", "google-chrome");
-const browserExecutablePath = path.isAbsolute(browserBinary)
-  ? browserBinary
-  : spawnSync("which", [browserBinary], { encoding: "utf8" }).stdout.trim();
-if (!browserExecutablePath) {
-  throw new Error(`failed to resolve browser executable path for ${browserBinary}`);
-}
-
-const browser = await chromium.launch({
-  executablePath: browserExecutablePath,
-  headless: true,
-  args: ["--no-sandbox", "--enable-unsafe-webgpu", "--enable-unsafe-swiftshader"],
-});
+const browser = await launchGuideBrowser(argValue("--browser-binary"));
 
 let failures = 0;
 const check = (ok, label) => {
@@ -83,7 +70,7 @@ try {
     check(receipt.readbacks > before.readbacks && receipt.sampledValues > before.sampledValues,
       `${name} read actual computed state samples`);
     check(receipt.nonfiniteValues === before.nonfiniteValues, `${name} GPU state samples are finite`);
-    console.log("WebGPU API receipt (software adapter permitted; no hardware timing claim)",
+    console.log("WebGPU hardware API receipt (no performance claim)",
       name, JSON.stringify(receipt));
   }
 
@@ -176,30 +163,30 @@ try {
     .map((model) => model.getValue()).filter((source) => source.includes("model ")));
   check(models.some((source) => source.includes("model Wave2D")), "authored Wave2D source present");
   check(models.some((source) => source.includes("model AirfoilFlow")), "authored AirfoilFlow source present");
-  const waveWidget = page.locator(".rumoca-live").nth(1);
-  check(await waveWidget.locator(".rumoca-live-gpu input").first().isChecked(), "Wave2D authored GPU default selected");
-  const beforeWave = await page.evaluate(() => ({ ...window.guideGpuReceipt }));
-  await waveWidget.locator(".rumoca-live-run").click();
-  const surface = await waveWidget.locator(".rumoca-live-surface canvas")
-    .waitFor({ timeout: 180000 }).then(() => true).catch(() => false);
-  check(surface, "Wave2D GPU widget rendered the exact surface visualization");
-  await completedGpuRun(waveWidget, "Wave2D", beforeWave);
-
-  const airfoilWidget = page.locator(".rumoca-live").nth(2);
-  check(await airfoilWidget.locator(".rumoca-live-gpu input").first().isChecked(), "AirfoilFlow authored GPU default selected");
-  const beforeAirfoil = await page.evaluate(() => ({ ...window.guideGpuReceipt }));
-  await airfoilWidget.locator(".rumoca-live-run").click();
-  const airfoil = await airfoilWidget.locator("canvas")
-    .waitFor({ timeout: 180000 }).then(() => true).catch(() => false);
-  check(airfoil, "AirfoilFlow GPU widget rendered the exact heatmap visualization");
-  await completedGpuRun(airfoilWidget, "AirfoilFlow", beforeAirfoil);
-  const fields = airfoilWidget.locator(".rumoca-live-tuner select");
-  check(await fields.count() >= 1, "AirfoilFlow field selector is available");
-  if (await fields.count()) {
-    await fields.first().selectOption("q");
-    check(await fields.first().inputValue() === "q", "AirfoilFlow switches to pressure field");
-    await fields.first().selectOption("speed");
-    check(await fields.first().inputValue() === "speed", "AirfoilFlow switches to speed field");
+  const admission = await hardwareWebGpuAdmission(page);
+  for (const [index, name, canvasSelector] of [[1, "Wave2D", ".rumoca-live-surface canvas"],
+    [2, "AirfoilFlow", "canvas"]]) {
+    const widget = page.locator(".rumoca-live").nth(index);
+    check(await widget.locator(".rumoca-live-gpu input").first().isChecked(), `${name} authored GPU default selected`);
+    if (!admission.admitted) {
+      console.log(`SKIP: ${name} hardware WebGPU execution: ${admission.reason}; mandatory CPU compilation/preparation is a separate native gate`);
+      continue;
+    }
+    const before = await page.evaluate(() => ({ ...window.guideGpuReceipt }));
+    await widget.locator(".rumoca-live-run").click();
+    await widget.locator(canvasSelector).waitFor({ timeout: 180000 });
+    check(true, `${name} rendered its exact authored visualization`);
+    await completedGpuRun(widget, name, before);
+    if (name === "AirfoilFlow") {
+      const fields = widget.locator(".rumoca-live-tuner select");
+      check(await fields.count() >= 1, "AirfoilFlow field selector is available");
+      if (await fields.count()) {
+        for (const field of ["q", "speed"]) {
+          await fields.first().selectOption(field);
+          check(await fields.first().inputValue() === field, `AirfoilFlow switches to ${field} field`);
+        }
+      }
+    }
   }
 
   await verifyArtifact();
@@ -211,4 +198,4 @@ if (failures > 0) {
   console.error(`${failures} checks failed`);
   process.exit(1);
 }
-console.log("All book live-example checks passed");
+console.log("All mandatory book checks passed; hardware GPU execution scope is recorded above");

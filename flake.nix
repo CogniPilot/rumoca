@@ -363,12 +363,15 @@
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
         );
-        docsShell = mkDevShell [
-          pkgs.binaryen
-          pkgs.mdbook
-          pkgs.nodejs_22
-          pkgs.wasm-pack
-        ];
+        docsShell = mkDevShell (
+          [
+            pkgs.binaryen
+            pkgs.mdbook
+            pkgs.nodejs_22
+            pkgs.wasm-pack
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ]
+        );
         fullShell = templateRuntimeShell (
           pkgs.lib.optionals pkgs.stdenv.isLinux [
             ciJulia

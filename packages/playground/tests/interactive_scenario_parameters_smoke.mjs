@@ -1,17 +1,13 @@
 // Exact authored model/config through the real browser interactive runtime.
 import assert from "node:assert/strict";
-import { chromium } from "playwright-core";
+import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
   return index < 0 ? fallback : process.argv[index + 1];
 }
 const base = argument("--base-url", "http://127.0.0.1:8731");
-const browser = await chromium.launch({
-  executablePath: argument("--browser-binary", "google-chrome"),
-  headless: true,
-  args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
-});
+const browser = await launchGuideBrowser(argument("--browser-binary"));
 try {
   const page = await browser.newPage();
   const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { chromium } from "playwright-core";
+import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 
 function argument(name, fallback) {
@@ -13,11 +13,7 @@ const base = argument("--base-url", "http://127.0.0.1:8731");
 const roster = JSON.parse(await readFile("docs/verification/user-guide-ci/linked-scenarios.json", "utf8"));
 assert.equal(roster.length, 16);
 assert.equal(new Set(roster).size, 16);
-const browser = await chromium.launch({
-  executablePath: argument("--browser-binary", "google-chrome"),
-  headless: true,
-  args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
-});
+const browser = await launchGuideBrowser(argument("--browser-binary"));
 try {
   const page = await browser.newPage();
   const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js",

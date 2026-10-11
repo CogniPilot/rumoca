@@ -102,7 +102,7 @@ registrations make the inventory test fail.
 | Rust fitting excerpt | `cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` | One test, using the exact anchored snippet and unchanged Tensor32 model |
 | CLI and shell contexts | `cargo xtask verify examples`; focused `cargo test --locked -p rumoca --test suite_examples_smoke --features examples-smoke-tests guide_cli_contexts:: -- --nocapture` | Three tests: all 66 Bash snippets, declared command contexts, and the exact sampled stdio controller |
 | Installed-wheel Python and CMake | `cargo xtask python test --require-guide` (also selected by `cargo xtask verify full`) | The shared wheel roster requires all 10 Python fences, the notebook cell, both CMake fences and four authored codegen configurations on Linux x86_64 |
-| Browser visualizations and controls | `node packages/playground/tests/user_guide_browser.mjs` in the mandatory PR `build-wasm` job | The shipped FullWeb artifact, actual local guide, four authored visualizers, FixedWing keyboard controls and all16 linked scenario runtime/export cells |
+| Browser visualizations and controls | `node packages/playground/tests/user_guide_browser.mjs` in the mandatory PR `build-wasm` job | The shipped FullWeb artifact, actual local guide, Balloon/Turkey visualizers, hardware-admitted Wave2D/Airfoil compute, FixedWing keyboard controls and all16 linked scenario runtime/export cells |
 
 The linked scenario roster is `linked-scenarios.json`. The sole Rust fence
 parser checks its exact set against all21 authored references, so a new linked
@@ -124,3 +124,20 @@ HangingMass source spans for the CLI owner. It supplies locations and hashes,
 not copied models. The CLI loader reads those spans from the actual guide.
 Display-only text, XML and JSON examples have explicit output classifications;
 they cannot be used to exempt executable-language snippets.
+
+The browser launcher is `packages/playground/tests/browser_launcher.mjs`.
+The Linux docs shell includes Chromium explicitly. Every required browser
+context uses Chromium's [SwANGLE CPU WebGL path](https://chromium.googlesource.com/chromium/src/+/main/docs/gpu/swiftshader.md),
+so Balloon, Turkey, FixedWing and the scenario roster do not require a graphics
+card. GPU execution of Wave2D and AirfoilFlow is conditional on an actual adapter
+with [`GPUAdapter.info.isFallbackAdapter`](https://gpuweb.github.io/gpuweb/#dom-gpuadapterinfo-isfallbackadapter)
+equal to `false`. Missing WebGPU, no adapter, a fallback adapter or unavailable
+adapter identity prints a per-model `SKIP` receipt. Admission exceptions and
+failures after hardware admission fail the test; timeouts do not skip GPU work.
+An admitted run must submit command buffers, dispatch positive compute groups
+and read finite computed state samples. These are correctness observations, not
+hardware performance measurements. The native
+`user_guide_gpu_examples_prepare_for_webgpu` and
+`user_guide_gpu_examples_simulate_on_the_cpu_path` tests remain mandatory even
+when browser GPU execution is skipped. Browser source registration and syntax
+checks do not establish an executed browser receipt.

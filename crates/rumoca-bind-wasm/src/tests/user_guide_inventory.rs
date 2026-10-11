@@ -142,6 +142,21 @@ fn require_execution_owner(owner: &str) {
         }
         "book-browser" => {
             require_source(
+                "packages/playground/tests/browser_launcher.mjs",
+                "info.isFallbackAdapter",
+            );
+            for script in [
+                "book_live_smoke.mjs",
+                "fixedwing_book_smoke.mjs",
+                "interactive_scenario_parameters_smoke.mjs",
+                "user_guide_scenarios_smoke.mjs",
+            ] {
+                require_source(
+                    &format!("packages/playground/tests/{script}"),
+                    "launchGuideBrowser",
+                );
+            }
+            require_source(
                 "packages/playground/tests/user_guide_scenarios_smoke.mjs",
                 "linked-scenarios.json",
             );
@@ -151,7 +166,7 @@ fn require_execution_owner(owner: &str) {
             );
             require_source(
                 "packages/playground/tests/book_live_smoke.mjs",
-                "All book live-example checks passed",
+                "All mandatory book checks passed",
             );
             require_source(
                 "packages/playground/tests/user_guide_browser.mjs",
