@@ -1,0 +1,513 @@
+{
+  "source": "86c3bc1a6128e3d3174fefa169ae7bd5e03243e9",
+  "scope": "Exact-source Linux strict C and Modelica export verification, not full CI/cohort parity",
+  "tool_versions": {
+    "gcc": "15.2.0",
+    "rustc": "1.95.0-nightly 6a979b3e3 2026-02-26",
+    "omc": "a96aa1a-cmake"
+  },
+  "environment": {
+    "CARGO_BUILD_JOBS": "4",
+    "RUST_TEST_THREADS": "4",
+    "RAYON_NUM_THREADS": "4",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "canonical_inner_cargo_jobs": 1,
+  "source_files_verified_before_after": 4037,
+  "terminal_refs": [],
+  "original_stops": {
+    "c": {
+      "status": "UNQUALIFIED",
+      "reason": "owned-swap-limit",
+      "exit_code": 137,
+      "elapsed_ms": 404317.649806,
+      "guardian_sha256": "4eb256b90e2ebb31287c6a942a0986670755bc246deb2b3593f14028736f44c4",
+      "log_sha256": "cc1a720c55da1722228180618a5519c6e79a0f9d8ea6fab3e3a09f0e870271a9"
+    },
+    "modelica": {
+      "status": "UNQUALIFIED",
+      "reason": "timeout",
+      "exit_code": 124,
+      "elapsed_ms": 600038.5035,
+      "guardian_sha256": "74dbda3df6f9aaeb7818a896a8d3f0b18d06688d2e3dff7776304712fe4d8583",
+      "log_sha256": "6157f65fdd607e3be4e7ed9f91dfab286b86b6cd30b52126000ae2fface5f4c0"
+    }
+  },
+  "qualified": {
+    "c": {
+      "command": [
+        "cargo",
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "c",
+        "--require-external-tools"
+      ],
+      "actual_pass_counts": [
+        11,
+        1
+      ],
+      "rust_tests": [
+        "backend_template_runtime_regression::selected_regions::c_ode_selected_regions_reject_real_equality_outside_functions",
+        "c_ode_pure_call_semantics::a_guarded_invalid_array_write_cannot_become_a_successful_rhs",
+        "c_ode_pure_call_semantics::constant_only_function_loops_are_bounded_before_scalar_expansion",
+        "c_ode_pure_call_semantics::exact_integer_arithmetic_survives_a_runtime_real_call",
+        "c_ode_pure_call_semantics::a_statically_inactive_invalid_write_is_not_expanded",
+        "c_ode_pure_call_semantics::runtime_integer_conversions_retain_the_checked_domain_failure",
+        "backend_template_runtime_regression::c_ode_checked_target_compiles_and_executes",
+        "backend_template_runtime_regression::selected_regions::c_ode_selected_regions_keep_inactive_domain_faults_unexecuted",
+        "c_ode_pure_call_semantics::finite_fold_break_and_runtime_branch_keep_the_carried_values",
+        "c_ode_pure_call_semantics::tensor_call_views_and_products_preserve_row_major_values",
+        "workshop_numerical_examples::c_ode_actual_workshop_examples_initialize_and_match_native_rhs",
+        "backend_template_runtime_regression::ode_targets_inline_a_compacted_algebraic_family_call"
+      ],
+      "resource_limits": {
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "memoryLimitScope": "aggregate resident RSS plus swapped private pages"
+      },
+      "resources": {
+        "elapsedMs": 71257.55167900001,
+        "peakRssKiB": 2260484,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 2260484,
+        "peakCacheBytes": 2781229056,
+        "minimumAvailableKiB": 45081996,
+        "minimumScratchFreeBytes": 19298381824,
+        "exitCode": 0
+      },
+      "file_sha256": {
+        "c-warm.log": "a2dc37a4a8aa25fe00d891b2429641c54a953794114c5b5a0095dc1f247c7152",
+        "c-warm.guardian.json": "738f0c0910570f3fb61bcd1137c8bb7dd9c7e5db1e6c4f4cb4332c0af0f2c744",
+        "c-warm-recipe.json": "0af87611c8f56919e7ccbdd734f3dae4f45357265c00da966115ff12866d662b",
+        "source-bindings.json": "dc003e7dafbf713acf73f8f0fb54e3db6cf5a83cd5a2c66c9c1003ab5a399d98",
+        "tool-preflight.txt": "93e2d53ad80057efa3f5a74514296be7adc6713577d8796a5050a30f50cdf989",
+        "guardian-resident-plus-swap-20261012.mjs": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c"
+      },
+      "executables": [
+        {
+          "source": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/xtask",
+          "artifact": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/c-warm-corrected-memory/executables/xtask-4f02998a595e18e6",
+          "sha256": "4f02998a595e18e6d6bdf93d1877abb05dbb95118d20240a0c4e85e56f4e57e2",
+          "execution": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/xtask verify template-runtimes --backend c --require-external-tools"
+        },
+        {
+          "source": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/suite_template_runtime-7f2b805e34602c45",
+          "artifact": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/c-warm-corrected-memory/executables/suite_template_runtime-7f2b805e34602c45-45dca4169d34655a",
+          "sha256": "45dca4169d34655a5ebe5033346ab7ee6a7a948b0a439b68bb3d7452fa81e77e",
+          "execution": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/suite_template_runtime-7f2b805e34602c45 c_ode_ --nocapture"
+        }
+      ],
+      "omc_workshop_cells": [],
+      "omc_evidence": []
+    },
+    "modelica": {
+      "command": [
+        "cargo",
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "modelica",
+        "--require-external-tools"
+      ],
+      "actual_pass_counts": [
+        4
+      ],
+      "rust_tests": [
+        "modelica_interchange_runtime::targets_round_trip_through_the_compiler",
+        "modelica_interchange_runtime::targets_are_accepted_by_required_omc",
+        "modelica_interchange_runtime::workshop_examples::derivative_coordinate_projections_preserve_vector_matrix_and_record_member_traces",
+        "modelica_interchange_runtime::workshop_examples::actual_workshop_exports_preserve_omc_structure_initialization_and_short_trace"
+      ],
+      "resource_limits": {
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "memoryLimitScope": "aggregate resident RSS plus swapped private pages"
+      },
+      "resources": {
+        "elapsedMs": 72517.34674,
+        "peakRssKiB": 1642708,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 1642708,
+        "peakCacheBytes": 2781229056,
+        "minimumAvailableKiB": 45703716,
+        "minimumScratchFreeBytes": 9920749568,
+        "exitCode": 0
+      },
+      "file_sha256": {
+        "modelica-warm.log": "50acf9d4b927319d0de68c0fc78f2ec5e224fa50f0cf2609bff9cd28501d0a56",
+        "modelica-warm.guardian.json": "2734966e0a961760d4ec34c1da8c71daacdd96c20a138b39836282c1ed610827",
+        "modelica-warm-recipe.json": "19b04542b850231f40699898f7990adb4c408961d848aa41eb8051084c98a04f",
+        "source-bindings.json": "dc003e7dafbf713acf73f8f0fb54e3db6cf5a83cd5a2c66c9c1003ab5a399d98",
+        "tool-preflight.txt": "93e2d53ad80057efa3f5a74514296be7adc6713577d8796a5050a30f50cdf989",
+        "guardian-resident-plus-swap-20261012.mjs": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c"
+      },
+      "executables": [
+        {
+          "source": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/xtask",
+          "artifact": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/modelica-warm-corrected-memory/executables/xtask-4f02998a595e18e6",
+          "sha256": "4f02998a595e18e6d6bdf93d1877abb05dbb95118d20240a0c4e85e56f4e57e2",
+          "execution": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/xtask verify template-runtimes --backend modelica --require-external-tools"
+        },
+        {
+          "source": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/suite_template_runtime-7f2b805e34602c45",
+          "artifact": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/modelica-warm-corrected-memory/executables/suite_template_runtime-7f2b805e34602c45-45dca4169d34655a",
+          "sha256": "45dca4169d34655a5ebe5033346ab7ee6a7a948b0a439b68bb3d7452fa81e77e",
+          "execution": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/suite_template_runtime-7f2b805e34602c45 'modelica_interchange_runtime::' --nocapture"
+        }
+      ],
+      "omc_workshop_cells": [
+        "original/Circuit.Test",
+        "original/DerivativeCoordinateProjection",
+        "base-modelica/Circuit.Test",
+        "base-modelica/DerivativeCoordinateProjection",
+        "flat-modelica/Circuit.Test",
+        "flat-modelica/DerivativeCoordinateProjection",
+        "dae-modelica/Circuit.Test",
+        "dae-modelica/DerivativeCoordinateProjection",
+        "original/SympyDecay",
+        "base-modelica/SympyDecay",
+        "flat-modelica/SympyDecay",
+        "dae-modelica/SympyDecay",
+        "original/FmiTensorDecay",
+        "base-modelica/FmiTensorDecay",
+        "flat-modelica/FmiTensorDecay",
+        "dae-modelica/FmiTensorDecay",
+        "original/NeuralODETensor",
+        "base-modelica/NeuralODETensor",
+        "flat-modelica/NeuralODETensor",
+        "dae-modelica/NeuralODETensor",
+        "original/NeuralPredatorPrey",
+        "base-modelica/NeuralPredatorPrey",
+        "flat-modelica/NeuralPredatorPrey",
+        "dae-modelica/NeuralPredatorPrey",
+        "original/NeuralODEBackprop",
+        "base-modelica/NeuralODEBackprop",
+        "flat-modelica/NeuralODEBackprop",
+        "dae-modelica/NeuralODEBackprop"
+      ],
+      "omc_evidence": [
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-Circuit.Test-original-6eohUJ",
+          "files": {
+            "check.mos": "fbf3fe1f8e385314fc43639decde66d339be571c482412e17b50110f708d87a2",
+            "model.mo": "1177e9cbd504a6f4f4b216c773313bb637b3fb13e6df63aaac11291d355e0c54",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "baed95e137547b1f9b6b819fe977708a846458d0a606a726c65f5c395777fdbe",
+            "trace_res.csv": "5256719975d0ef81fd4c5674811324552db57752fbcb90168515b7089fa8f46d"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-DerivativeCoordinateProjection-original-b53Kk8",
+          "files": {
+            "check.mos": "5868979e4d0e2b93d6630922d876b722c187bef65be42770bb04085f09545a0a",
+            "model.mo": "98b2f98e86021ddb72fb6085507c59dc6dde408d850884dddfbf6b8debda494c",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "6fd37b9bb5527f5dd0fd831597d55c6d1c6e3086aec24f4bcb41c7c1dea43d43",
+            "trace_res.csv": "ce64c75bb8c7a4113024498c97992cc8800ee205cbfecfa2cfa17f77032707a4"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-Circuit.Test-base-modelica-gXebiS",
+          "files": {
+            "check.mos": "98ed7ec3e59b8f34089fdca9269f445fa0d09eecbc509e6779b1dadde6255db3",
+            "model.mo": "59903e88f384033caedb18742ebdbfa61132ec1e6c8a71026e4aead6511d7c01",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "4bf89165f5276ae63aa996ddecadc4a1598cbeb145106718fadbb2869205ee39",
+            "trace_res.csv": "b2ae649a6ca5661cbe80579c40944f896b8573f46e5a020354b51f5be3f8ee13"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-DerivativeCoordinateProjection-base-modelica-0gUc5q",
+          "files": {
+            "check.mos": "5868979e4d0e2b93d6630922d876b722c187bef65be42770bb04085f09545a0a",
+            "model.mo": "82cf84b522537264a095437a566720d5429fafadd38595a442de5ae73201c81d",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "268137848ac834d2eaebc00341bf2edb05ff0b807bf1d4fde426b54d8ee8fc28",
+            "trace_res.csv": "ffffed0dca932ec079e9aa4fb701b1a6c2938c73cf5804cd698574e1d7331274"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-Circuit.Test-flat-modelica-Gmxz3c",
+          "files": {
+            "check.mos": "98ed7ec3e59b8f34089fdca9269f445fa0d09eecbc509e6779b1dadde6255db3",
+            "model.mo": "48f274d5597198460df556d17aecb9c3b3cb87bf4c4d6236f7dfadbc5642365a",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "01c265476d92e030b116660f708e10e310edb746955199691bae7c0f378d59ec",
+            "trace_res.csv": "b2ae649a6ca5661cbe80579c40944f896b8573f46e5a020354b51f5be3f8ee13"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-DerivativeCoordinateProjection-flat-modelica-0RP0Rk",
+          "files": {
+            "check.mos": "5868979e4d0e2b93d6630922d876b722c187bef65be42770bb04085f09545a0a",
+            "model.mo": "920963099fd45290c4d55d7b7f41d2cc11de7bcc5886d2a02604bfdc1d5746bd",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "90489172972111e1314f25a6b2187449f9ae820ea2088babea24f631f0e8ed33",
+            "trace_res.csv": "ffffed0dca932ec079e9aa4fb701b1a6c2938c73cf5804cd698574e1d7331274"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-Circuit.Test-dae-modelica-8jJHRt",
+          "files": {
+            "check.mos": "98ed7ec3e59b8f34089fdca9269f445fa0d09eecbc509e6779b1dadde6255db3",
+            "model.mo": "687b3478187ab8e9be972ef5af2f1390f2dc1b1afd8c8565146fae66dc399b01",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "0784ea45f0f12cedb096772b3eb0648e406c1c3e71d4f637f31640cb022aea9b",
+            "trace_res.csv": "b2ae649a6ca5661cbe80579c40944f896b8573f46e5a020354b51f5be3f8ee13"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-DerivativeCoordinateProjection-dae-modelica-ahsVPo",
+          "files": {
+            "check.mos": "5868979e4d0e2b93d6630922d876b722c187bef65be42770bb04085f09545a0a",
+            "model.mo": "5b5f417f08318dca7c8779622aebc0411aef93671b48841205a0adaa681381c6",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "487a51300858cc777ec5e8b88bee49ec987434fc2de34ae73e7bacd500fdb48d",
+            "trace_res.csv": "ffffed0dca932ec079e9aa4fb701b1a6c2938c73cf5804cd698574e1d7331274"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-SympyDecay-original-o6xbIv",
+          "files": {
+            "check.mos": "e460bf5fc1b7d3266b39d52b7c5582b41f922cf594727acb7d473de61472e109",
+            "model.mo": "847cd6aba7b2df72c7aac45f5a4651f61bc351e7d857698207053a36d049ae29",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "2e1c2382ba358d756665b715302bedb989a6f4e078dfda90fe33fc077a8ad44e",
+            "trace_res.csv": "0759bd11d1468875d5284265ebb1aa1cd176ed25588b076b2495d1f721a1d4fd"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-SympyDecay-base-modelica-sjqFEx",
+          "files": {
+            "check.mos": "e460bf5fc1b7d3266b39d52b7c5582b41f922cf594727acb7d473de61472e109",
+            "model.mo": "5db43c3722a65483518842a24d9816f04c6a4f2cb0bb54a962753da0de61e4ac",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "af246109cb1cc6b0b92acad330c929e54c4664a6c0a04913319053e6c376eda8",
+            "trace_res.csv": "0759bd11d1468875d5284265ebb1aa1cd176ed25588b076b2495d1f721a1d4fd"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-SympyDecay-flat-modelica-l046cF",
+          "files": {
+            "check.mos": "e460bf5fc1b7d3266b39d52b7c5582b41f922cf594727acb7d473de61472e109",
+            "model.mo": "2775e70d06e0b44aabc4395efb9b65beab14000f963d32d578b578a73495b4e2",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "65414e76e11094138d1aba0fb9e9a66e5fc6e911f5b63aa2f109069bda1f4ea8",
+            "trace_res.csv": "0759bd11d1468875d5284265ebb1aa1cd176ed25588b076b2495d1f721a1d4fd"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-SympyDecay-dae-modelica-zrErq4",
+          "files": {
+            "check.mos": "e460bf5fc1b7d3266b39d52b7c5582b41f922cf594727acb7d473de61472e109",
+            "model.mo": "64d3809eeb4eddd919d48773468a7ca839fb1bceb3e71458eb5802c8ead26b35",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "974977c346a3d7f96eb35baad714609b5eececc21428423c2a1481e781e9bc7e",
+            "trace_res.csv": "0759bd11d1468875d5284265ebb1aa1cd176ed25588b076b2495d1f721a1d4fd"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-FmiTensorDecay-original-hiCfct",
+          "files": {
+            "check.mos": "0c72485acfad43f894ef70855a66bb9a441db3323fa67b1399210a96aac613e2",
+            "model.mo": "d447c3ecae257571e345f59001cdd17a5967b03a937af2ff7dab34ca6967efc2",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "765a6d6344158d1b00e768c4ba724c3f285d44d5b2663fd9115115c122e86a9e",
+            "trace_res.csv": "7b0843c9426e58fedae1ed47df1175e84e04d9a0f0f29017054b5afabdbe1117"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-FmiTensorDecay-base-modelica-JLGxq4",
+          "files": {
+            "check.mos": "0c72485acfad43f894ef70855a66bb9a441db3323fa67b1399210a96aac613e2",
+            "model.mo": "7e15280955adf29d5e68ad6ff576414d0b6c8045ad1850edbe13af885537939d",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "b3a81c022face1a49415c0a29c80c9a75e0e05c24225248e96008f8e4ddb3979",
+            "trace_res.csv": "7b0843c9426e58fedae1ed47df1175e84e04d9a0f0f29017054b5afabdbe1117"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-FmiTensorDecay-flat-modelica-YIxhdd",
+          "files": {
+            "check.mos": "0c72485acfad43f894ef70855a66bb9a441db3323fa67b1399210a96aac613e2",
+            "model.mo": "1e432e89bebbcce509bb61d70961e9a9679f1d81c2d52ec1b8822f4e9a37ec23",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "d92b03ab71a651f63b0312fc0e292b79a13c2ebdcfff57297c1e883bc230d628",
+            "trace_res.csv": "7b0843c9426e58fedae1ed47df1175e84e04d9a0f0f29017054b5afabdbe1117"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-FmiTensorDecay-dae-modelica-5UKu7X",
+          "files": {
+            "check.mos": "0c72485acfad43f894ef70855a66bb9a441db3323fa67b1399210a96aac613e2",
+            "model.mo": "ada729f2969a81c73a8cc9c63f9e3df55f60fa4d4b5c5e0164021c9e24bfe9d4",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "077f72855e1489dce54929fb6bf7ce14f06e2cdf20aaa5b712723273d3796d58",
+            "trace_res.csv": "7b0843c9426e58fedae1ed47df1175e84e04d9a0f0f29017054b5afabdbe1117"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODETensor-original-Q1ESpX",
+          "files": {
+            "check.mos": "8f6b4849cf1184cb6c741fb9370464d9d372e74e46701cbb1565ffc15f4bb6a4",
+            "model.mo": "f1e5fca9fcc28b91e941a2c637824e1fd72e00da925a1ebb0504677165a83cac",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "88db0a47e48763209cd687ffd4adc0290df4ed997c54e26788e681f492e70872",
+            "trace_res.csv": "2d1d78836b6e38649f0ce5a1f11879edefaca92be3ff5d36aba2caee8c7c07d7"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODETensor-base-modelica-AnSwKc",
+          "files": {
+            "check.mos": "8f6b4849cf1184cb6c741fb9370464d9d372e74e46701cbb1565ffc15f4bb6a4",
+            "model.mo": "1acdbd9d811d488aea8a51f61781684b1de827567b9189f682def9be8a4c3786",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "04c5d9630030066dcc0e379250a37be1598eca1fdc97c7c03d58c66ae47f92dd",
+            "trace_res.csv": "2d1d78836b6e38649f0ce5a1f11879edefaca92be3ff5d36aba2caee8c7c07d7"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODETensor-flat-modelica-jHbKmw",
+          "files": {
+            "check.mos": "8f6b4849cf1184cb6c741fb9370464d9d372e74e46701cbb1565ffc15f4bb6a4",
+            "model.mo": "9de12cf5f67d707c3b784a292f37402e16757bebd25f0359382987ed5dcd9392",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "358813c8fd06d7cf6ed174f5cdafc73f05e39f4a76ec8c4f15f803283a23096e",
+            "trace_res.csv": "2d1d78836b6e38649f0ce5a1f11879edefaca92be3ff5d36aba2caee8c7c07d7"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODETensor-dae-modelica-MXffvA",
+          "files": {
+            "check.mos": "8f6b4849cf1184cb6c741fb9370464d9d372e74e46701cbb1565ffc15f4bb6a4",
+            "model.mo": "7115c71d00e80bf5ac35672191acc58d4a1f1343d01fa8f27e6f4bab0ff49890",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "7b1c9da3a86144967c4af145c42ded93d6cee01835c5e1cfe6ab6f8901d3a8e8",
+            "trace_res.csv": "adbdf55ede38fabd3ed280d764dca0b97eb98df57281ad504593ecd1d403698e"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralPredatorPrey-original-4Kb1Cx",
+          "files": {
+            "check.mos": "a381e462336c713b1b55fb4edcd40913db59e3e1f477297c81a5cb875d3dd3e6",
+            "model.mo": "e05d7e768873dd0d5c4fd64671617ea1ab324943f4fb8a8b0618b41e86408c91",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "04dfd24b9630a1bf8f43471129ef34aa157e7f315ad1f569ee2c5139cfc535e8",
+            "trace_res.csv": "b05aa4934f6705b63b081d1d208b01e3657bf201b535db24d9799f3c3b51b6e0"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralPredatorPrey-base-modelica-PqKSRO",
+          "files": {
+            "check.mos": "a381e462336c713b1b55fb4edcd40913db59e3e1f477297c81a5cb875d3dd3e6",
+            "model.mo": "2f1ea19afac1f12f1e52efd3bbe8ddcceb104d4d7187ced106f391d7d3130247",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "c8150174dc33fb091bb6527ca85fca28190b5c6007af650039f9772ba73300e9",
+            "trace_res.csv": "b05aa4934f6705b63b081d1d208b01e3657bf201b535db24d9799f3c3b51b6e0"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralPredatorPrey-flat-modelica-O6meHk",
+          "files": {
+            "check.mos": "a381e462336c713b1b55fb4edcd40913db59e3e1f477297c81a5cb875d3dd3e6",
+            "model.mo": "0f78ae598233663eb23d2b349ab7ac3fe47fe088f5e53e2bb3e8a3e0c83f0c68",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "c878b7c139871fa8d81811dcb9ac7e3b48cd986d170c1571b1eed358e7764217",
+            "trace_res.csv": "b05aa4934f6705b63b081d1d208b01e3657bf201b535db24d9799f3c3b51b6e0"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralPredatorPrey-dae-modelica-iK4Vm8",
+          "files": {
+            "check.mos": "a381e462336c713b1b55fb4edcd40913db59e3e1f477297c81a5cb875d3dd3e6",
+            "model.mo": "6ee16008924004c62120d2fb9fa460f1ad7197c56bbfcf5bb165c64306735002",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "6266cbf27800ba0630a14cc4183a7c2f6c35a17528f61f4a2c40a414271d4927",
+            "trace_res.csv": "57a95d8e880ecda47d05173ecf92fd0996c9ba1a2aa85784fc71f43d4d609e3b"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODEBackprop-original-lP8zKO",
+          "files": {
+            "check.mos": "707488d101556f508252c2b707c273e223f6fd3c296419024952b4777c889406",
+            "model.mo": "158a75cf63d83c7592b459432f67ec90ef2e5c2ac3d372f5c73a9c11e0c02ddf",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "7c6be900928863a6a24a1deab3216825f5c519de3c582e21a3d9faa1aae2f8bc",
+            "trace_res.csv": "e510f00fac789dcb9ad854b27b4c8281393f8170c87632432ee008f956b2edc9"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODEBackprop-base-modelica-d4phC6",
+          "files": {
+            "check.mos": "707488d101556f508252c2b707c273e223f6fd3c296419024952b4777c889406",
+            "model.mo": "c41550598cf23b656f7fd121f042f99a94c121a8fcb1a815baf2a6a31294b1f2",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "72ab998d4367fac085e5fb9bcf49434d2902c12a5e2c7bd706a562d8f18f66cf",
+            "trace_res.csv": "e510f00fac789dcb9ad854b27b4c8281393f8170c87632432ee008f956b2edc9"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODEBackprop-flat-modelica-Hnk0rZ",
+          "files": {
+            "check.mos": "707488d101556f508252c2b707c273e223f6fd3c296419024952b4777c889406",
+            "model.mo": "2e798f555e7ebbe6c2a3422d364542f22e1a78fba5a38d1bd5fb33bd7d69da09",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "d3702b0f78c7d0d9d96d25aab47c50cbf3a1679d88bb8cbf0d1e58cf7a76df53",
+            "trace_res.csv": "e510f00fac789dcb9ad854b27b4c8281393f8170c87632432ee008f956b2edc9"
+          }
+        },
+        {
+          "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/tmp/modelica-warm-corrected-memory/nix-shell.a1le9S/rumoca-workshop-NeuralODEBackprop-dae-modelica-roCdP3",
+          "files": {
+            "check.mos": "707488d101556f508252c2b707c273e223f6fd3c296419024952b4777c889406",
+            "model.mo": "0c108bcfcdf34ab3be876e845d81453a496cf642be6254d8d3266123eb69bed3",
+            "status.txt": "a1bc09f1314dd1fb8a803aa710fa8b9e28cbc92a2aaa3c8ba3536268390bb9ec",
+            "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout.log": "bdde4427661f6ab31bf72c221d47d15c1881a7f37acf69b5161a773ba4d6294a",
+            "trace_res.csv": "da3a0f74632df18c8905ba1f903d185f659f8e07a5b82085a985c58ea9005e2d"
+          }
+        }
+      ]
+    }
+  },
+  "count_correction": "Initial recipe annotation predicted4+1 C tests by function names; actual c_ode_ also selects7 module-prefixed tests. Qualified counts independently checked against complete Rust summaries11+1; no recipe count enforcement was claimed.",
+  "raw_directory": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012"
+}
