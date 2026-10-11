@@ -378,17 +378,35 @@ fn arm_relation_binds_its_exact_guard_and_replay_requires_closed_authority() {
 fn borrowed_conditional_owner_restores_errors_and_keeps_closed_arms_closed() {
     let source = TestSource::new("if c then 1 else 2");
     let at = source.source("if c then 1 else 2", 0);
-    Dae::construct(source.map,|dae| {
-        let condition=dae.expressions(|e|e.at(at).literal(DaeLiteral::Boolean(true)))?;
-        let owner=dae.expressions(|e|e.begin_model_conditional(condition,at))?;
-        let failed:Result<(),DaeConstructionError>=dae.model_conditional_arm(&owner,true,|_|Err(DaeConstructionError::InvalidExpressionForm{span:at.span()}));
-        assert!(matches!(failed,Err(DaeConstructionError::InvalidExpressionForm{span}) if span==at.span()));
-        dae.expressions(|e| { assert!(e.model_arm_context().is_none()); Ok(()) })?;
-        let first=dae.model_conditional_arm(&owner,true,|dae|dae.expressions(|e|e.at(at).literal(DaeLiteral::Real(1.0))))?;
-        let second=dae.model_conditional_arm(&owner,false,|dae|dae.expressions(|e|e.at(at).literal(DaeLiteral::Real(2.0))))?;
-        let first_arm=owner.arm(dae,true);
-        let value=dae.expressions(|e|e.finish_model_conditional(owner,[first,second]))?;
-        assert!(matches!(dae.replay_model_arm_context(Some(first_arm),at),Err(DaeConstructionError::InvalidModelActivationScope{..})));
-        dae.expressions(|e| { assert!(e.model_arm_of(value,at)?.is_none()); e.at(at).unary(UnaryOperator::Plus,value)?; Ok(()) })
-    }).expect("borrowed owner uses the same scope and close rules");
+    Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let owner = dae.expressions(|e| e.begin_model_conditional(condition, at))?;
+        let failed: Result<(), DaeConstructionError> =
+            dae.model_conditional_arm(&owner, true, |_| {
+                Err(DaeConstructionError::InvalidExpressionForm { span: at.span() })
+            });
+        assert!(matches!(failed, Err(DaeConstructionError::InvalidExpressionForm { span }) if span == at.span()));
+        dae.expressions(|e| {
+            assert!(e.model_arm_context().is_none());
+            Ok(())
+        })?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(1.0)))
+        })?;
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(2.0)))
+        })?;
+        let first_arm = owner.arm(dae, true);
+        let value = dae.expressions(|e| e.finish_model_conditional(owner, [first, second]))?;
+        assert!(matches!(
+            dae.replay_model_arm_context(Some(first_arm), at),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. })
+        ));
+        dae.expressions(|e| {
+            assert!(e.model_arm_of(value, at)?.is_none());
+            e.at(at).unary(UnaryOperator::Plus, value)?;
+            Ok(())
+        })
+    })
+    .expect("borrowed owner uses the same scope and close rules");
 }
