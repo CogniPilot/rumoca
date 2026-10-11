@@ -1,6 +1,7 @@
 //! Before probes at the ordinary checked construction/prepared execution boundary.
 
 use super::*;
+use rumoca_ir_solve::{TensorConcatenateSource, TensorUpdateSubscript};
 
 fn assert_prepared_snapshot(values: &[f64], operation: LinearOp, expected: &[f64]) {
     let destination = operation.dst_register().unwrap();
@@ -256,4 +257,124 @@ fn prepared_tensor_snapshot_unique_selected_row_retains_cached_lazy_execution() 
             .unwrap();
         assert_eq!(actual, [expected]);
     }
+}
+
+fn assert_disjoint_snapshot_lazy(values: &[f64], operation: LinearOp, expected: &[f64]) {
+    let destination = operation.dst_register().unwrap();
+    assert_eq!(destination, 64);
+    let mut row = (0..63)
+        .map(|dst| LinearOp::Const {
+            dst,
+            value: values.get(dst as usize).copied().unwrap_or(0.0),
+        })
+        .collect::<Vec<_>>();
+    row.push(LinearOp::LoadY { dst: 63, index: 0 });
+    row.push(operation);
+    let selected = destination + Reg::try_from(expected.len()).unwrap();
+    row.push(LinearOp::Select {
+        dst: selected,
+        cond: 63,
+        if_true: destination,
+        if_false: selected - 1,
+    });
+    row.push(LinearOp::StoreOutput { src: selected });
+    let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()])
+        .expect("initialized disjoint aggregate has a checked owner");
+    assert!(
+        PreparedLazyRowPlan::new(
+            block.program(0).unwrap(),
+            block.program_register_count(0).unwrap()
+        )
+        .is_some(),
+        "unique-writer aggregate retains lazy admission"
+    );
+    let compute = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(block.clone());
+    let prepared = PreparedComputeBlock::new(&compute).unwrap();
+    for (condition, expected) in [
+        (1.0, expected[0]),
+        (0.0, *expected.last().unwrap()),
+        (1.0, expected[0]),
+    ] {
+        let mut reference = [f64::NAN];
+        eval_scalar_program_block(&block, &[condition], &[], 0.0, None, &mut reference).unwrap();
+        assert_eq!(
+            reference,
+            [expected],
+            "checked selected aggregate reference"
+        );
+        let mut actual = [f64::NAN];
+        prepared
+            .eval_with_context(
+                &[condition],
+                &[],
+                0.0,
+                RowEvalContext::default(),
+                &mut actual,
+            )
+            .unwrap();
+        assert_eq!(
+            actual,
+            [expected],
+            "fresh and cached lazy aggregate execution"
+        );
+    }
+}
+
+#[test]
+fn prepared_tensor_additional_alias_concatenate_keeps_later_source_values() {
+    let operation = |dst_start| LinearOp::TensorConcatenate {
+        dst_start,
+        sources: vec![
+            TensorConcatenateSource {
+                start: 2,
+                dimensions: vec![2].into(),
+            },
+            TensorConcatenateSource {
+                start: 0,
+                dimensions: vec![2].into(),
+            },
+        ]
+        .into(),
+        dimensions: vec![4].into(),
+        axis: 0,
+        lanes: 1,
+    };
+    let expected = [3., 4., 1., 2.];
+    assert_prepared_snapshot(&[1., 2., 3., 4., 0., 0., 0., 0.], operation(4), &expected);
+    assert_disjoint_snapshot_lazy(&[1., 2., 3., 4.], operation(64), &expected);
+    assert_prepared_snapshot(&[1., 2., 3., 4.], operation(0), &expected);
+}
+
+#[test]
+fn prepared_tensor_additional_alias_update_keeps_replacement_values() {
+    let operation = |dst_start| LinearOp::TensorUpdate {
+        dst_start,
+        base_start: 0,
+        value_start: 0,
+        dimensions: vec![3].into(),
+        subscripts: vec![TensorUpdateSubscript::Slice {
+            start: 3,
+            dimensions: vec![2].into(),
+        }]
+        .into(),
+        lanes: 1,
+    };
+    let expected = [1., 1., 2.];
+    assert_prepared_snapshot(&[1., 2., 3., 2., 3., 0., 0., 0.], operation(5), &expected);
+    assert_disjoint_snapshot_lazy(&[1., 2., 3., 2., 3.], operation(64), &expected);
+    assert_prepared_snapshot(&[1., 2., 3., 2., 3.], operation(0), &expected);
+}
+
+#[test]
+fn prepared_tensor_additional_alias_fill_keeps_packed_lane_values() {
+    let operation = |dst_start| LinearOp::TensorFill {
+        dst_start,
+        value_start: 1,
+        count: 2,
+        lanes: 2,
+    };
+    let expected = [1., 2., 1., 2.];
+    assert_prepared_snapshot(&[0., 1., 2., 0., 0., 0., 0., 0.], operation(4), &expected);
+    assert_disjoint_snapshot_lazy(&[0., 1., 2., 0.], operation(64), &expected);
+    assert_prepared_snapshot(&[0., 1., 2., 0.], operation(0), &expected);
 }
