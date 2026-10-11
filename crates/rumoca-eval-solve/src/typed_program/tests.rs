@@ -1,5 +1,6 @@
 mod directional_map;
 mod immutable_payloads;
+mod index_bounds;
 mod linear_solve;
 mod recursion;
 
