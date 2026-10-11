@@ -57,7 +57,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     pub(super) facts: &'borrow DifferentiationFacts,
     pub(super) auxiliary_functions: &'borrow super::auxiliary_blocks::AuxiliaryFunctions<'target>,
     pub(super) auxiliary_expressions: std::collections::BTreeMap<
-        (u32, u8, bool),
+        (u32, u8, bool, Option<u32>),
         super::auxiliary_blocks::AuxiliaryExpression<'target>,
     >,
     pub(super) candidate: Option<DirectStateConstraint>,
@@ -221,10 +221,22 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         &mut self,
         source_id: dae::ExprId<'source>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        if self.transforming_model_arm && self.source.model_arm_of(source_id).is_some() {
-            return self.rebuild_model_arm_value(source_id);
-        }
+        let source = self
+            .source
+            .expression(source_id)
+            .expect("finalized expression identity resolves");
         let index = source_id.index() as usize;
+        if self.transforming_model_arm {
+            if let Some(value) = self.rebuilt[index]
+                && self
+                    .target
+                    .model_arm_of(value, source.provenance())?
+                    .is_none()
+            {
+                return Ok(value);
+            }
+            return self.rebuild_model_arm_value(source_id, source);
+        }
         if let Some(rebuilt) = self.rebuilt[index] {
             return Ok(rebuilt);
         }
@@ -248,10 +260,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 span: provenance.span(),
             });
         }
-        let source = self
-            .source
-            .expression(source_id)
-            .expect("finalized expression identity resolves");
         let provenance = source.provenance();
         let rebuilt = match self.literal_expressions.get(index).cloned().flatten() {
             Some(value) => {
@@ -271,11 +279,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     fn rebuild_model_arm_value(
         &mut self,
         source_id: dae::ExprId<'source>,
+        source: dae::ExpressionView<'source>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        let source = self
-            .source
-            .expression(source_id)
-            .expect("checked scoped expression");
         let key = self.scoped_reconstruction_key(source_id, 0, source.provenance());
         if let Some(value) = self.scoped_cache.model_values.get(&key).copied() {
             return Ok(value);

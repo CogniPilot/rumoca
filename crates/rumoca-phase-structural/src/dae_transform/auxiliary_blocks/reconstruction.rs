@@ -201,7 +201,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             order <= 2,
             "auxiliary preflight admits orders zero through two"
         );
-        let key = (variable, order, self.state_only_derivative);
+        let key = (
+            variable,
+            order,
+            self.state_only_derivative,
+            self.target.model_arm_context().map(|arm| arm.index()),
+        );
         if let Some(&expression) = self.auxiliary_expressions.get(&key) {
             return Ok(expression);
         }

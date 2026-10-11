@@ -418,6 +418,25 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
         }
         Ok(())
     }
+    /// Exact construction scope of a value, including values first rebuilt
+    /// while transforming an arm. Global mappings can be shared across arms.
+    pub fn model_arm_of(
+        &self,
+        expression: ExprId<'dae>,
+        at: DaeProvenance,
+    ) -> Result<Option<ModelArm<'dae>>, DaeConstructionError> {
+        let scope = self
+            .storage
+            .expressions
+            .model_arm_scopes
+            .get(expression.index() as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression", expression.index(), at))?;
+        Ok(scope.map(|index| ModelArm {
+            index,
+            marker: PhantomData,
+        }))
+    }
     /// The exact current arm is part of a scoped reconstruction cache key.
     pub fn model_arm_context(&self) -> Option<ModelArm<'dae>> {
         self.storage.active_model_arm.map(|index| ModelArm {
