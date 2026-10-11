@@ -82,3 +82,33 @@ fn scalar_dense_solve_final_operand_expansion_refuses_before_large_template_outp
         "final scalar solve operands exceed the existing projection budget"
     );
 }
+
+#[test]
+fn scalar_dense_solve_operand_budget_also_applies_to_scalar_only_programs() {
+    let op = LinearOp::LinearSolveComponent {
+        dst: 0,
+        matrix_start: 0,
+        rhs_start: 0,
+        n: 2000,
+        component: 0,
+    };
+    assert!(lower_scalar_ops(&[op], None).is_none());
+}
+
+#[test]
+fn scalar_dense_solve_operand_cost_refuses_overflow_and_preserves_exact_limit() {
+    let solve = |n| LinearOp::LinearSolveComponent {
+        dst: 0,
+        matrix_start: 0,
+        rhs_start: 0,
+        n,
+        component: 0,
+    };
+    assert_eq!(expansion_cost(&solve(2)), Some(7));
+    assert_eq!(expansion_cost(&solve(usize::MAX)), None);
+    assert!(lower_scalar_ops(&[solve(usize::MAX)], None).is_none());
+    let mut budget = ExpansionBudget { used: 0 };
+    assert!(budget.reserve(EXPANSION_LIMIT).is_some());
+    assert!(budget.reserve(1).is_none());
+    assert_eq!(budget.used, EXPANSION_LIMIT);
+}

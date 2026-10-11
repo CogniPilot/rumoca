@@ -58,6 +58,11 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
     match op {
         // Scalar templates emit one assignment per output coordinate.
         LinearOp::StoreOutputRange { count, .. } => Some(*count),
+        // Each emitted component passes the entire dense matrix and RHS.
+        // Count those final scalar operands, not just the compact IR opcode.
+        LinearOp::LinearSolveComponent { n, .. } => {
+            n.checked_mul(*n)?.checked_add(*n)?.checked_add(1)
+        }
         _ if is_scalar_op(op) => Some(1),
         LinearOp::TensorLoad {
             lanes: 1, count, ..
