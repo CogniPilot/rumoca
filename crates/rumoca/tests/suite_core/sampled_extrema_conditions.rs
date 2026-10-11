@@ -5,9 +5,8 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae};
 use rumoca_solver::SimExecutionPolicy;
 
-const SOURCE: &str = include_str!(
-    "../../../../docs/verification/pr427-workshop-ci/sampled-extrema-reproduction.mo"
-);
+const SOURCE: &str =
+    include_str!("../../../../docs/verification/pr427-workshop-ci/sampled-extrema-reproduction.mo");
 
 #[test]
 fn a_sampled_body_condition_does_not_create_a_crossing_root() {
@@ -15,7 +14,9 @@ fn a_sampled_body_condition_does_not_create_a_crossing_root() {
         .model("SampledExtremaReproduction")
         .compile_str(SOURCE, "SampledExtremaReproduction.mo")
         .unwrap();
-    compiled.dae.inspect(|view| assert_eq!(view.root_count(), 0));
+    compiled
+        .dae
+        .inspect(|view| assert_eq!(view.root_count(), 0));
 }
 
 #[test]
@@ -51,7 +52,11 @@ fn assert_sampled_timestamps(source: &str) {
         for name in ["y_max", "t_max"] {
             let column = result.names.iter().position(|value| value == name).unwrap();
             for (time, expected) in [(0.05, 0.0), (0.15, 0.1), (0.25, 0.2), (0.3, 0.3)] {
-                let row = result.times.iter().rposition(|value| *value <= time + 1e-10).unwrap();
+                let row = result
+                    .times
+                    .iter()
+                    .rposition(|value| *value <= time + 1e-10)
+                    .unwrap();
                 let actual = result.data[column][row];
                 assert!(
                     (actual - expected).abs() < 1e-10,
