@@ -6,6 +6,7 @@ mod clock_transfer;
 pub(super) mod conditional_guards;
 mod integer_steps;
 mod operators;
+mod queries;
 mod shared_record_calls;
 mod temporal;
 
@@ -18,6 +19,10 @@ use conditional_guards::{
     attribute_conditional_folds, guard_reads_tunable_parameter, retains_equation_guard,
 };
 use operators::*;
+pub(super) use queries::{
+    all_model_expressions, expression_children, expression_span, planned_input_variability,
+    require_span, variable_attribute_expressions,
+};
 use shared_record_calls::SharedRecordCalls;
 use temporal::*;
 
@@ -1897,105 +1902,4 @@ fn lower_subscript<'dae>(
             }
         }
     })
-}
-
-pub(super) fn planned_input_variability(variable: &flat::Variable) -> dae::InputVariability {
-    if matches!(variable.variability, Variability::Discrete(_)) || variable.is_discrete_type {
-        dae::InputVariability::Discrete
-    } else {
-        dae::InputVariability::Continuous
-    }
-}
-
-pub(super) fn expression_span(expression: &Expression) -> Result<Span, ToDaeError> {
-    expression
-        .span()
-        .ok_or_else(|| ToDaeError::MissingProvenance {
-            owner: format!("{expression:?}"),
-        })
-}
-
-pub(super) fn require_span(span: Span, owner: impl Into<String>) -> Result<(), ToDaeError> {
-    if span.is_dummy() {
-        return Err(ToDaeError::MissingProvenance {
-            owner: owner.into(),
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn variable_attribute_expressions(
-    variable: &flat::Variable,
-) -> impl Iterator<Item = &Expression> {
-    [
-        variable.start.as_ref(),
-        variable.min.as_ref(),
-        variable.max.as_ref(),
-        variable.nominal.as_ref(),
-        variable.binding.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-}
-
-pub(super) fn all_model_expressions(flat: &flat::Model) -> impl Iterator<Item = &Expression> {
-    flat.variables
-        .values()
-        .flat_map(variable_attribute_expressions)
-        .chain(flat.equations.iter().map(|equation| &equation.residual))
-        .chain(
-            flat.initial_equations
-                .iter()
-                .map(|equation| &equation.residual),
-        )
-}
-
-pub(super) fn expression_children(expression: &Expression) -> Vec<&Expression> {
-    match expression {
-        Expression::Binary { lhs, rhs, .. } => vec![lhs, rhs],
-        Expression::Unary { rhs, .. } => vec![rhs],
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            args.iter().collect()
-        }
-        Expression::StringConversion { value, format, .. } => std::iter::once(value.as_ref())
-            .chain(format.operands())
-            .collect(),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => branches
-            .iter()
-            .flat_map(|(condition, value)| [condition, value])
-            .chain(std::iter::once(else_branch.as_ref()))
-            .collect(),
-        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-            elements.iter().collect()
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => std::iter::once(start.as_ref())
-            .chain(step.as_deref())
-            .chain(std::iter::once(end.as_ref()))
-            .collect(),
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => std::iter::once(expr.as_ref())
-            .chain(indices.iter().map(|index| &index.range))
-            .chain(filter.as_deref())
-            .collect(),
-        Expression::Index {
-            base, subscripts, ..
-        } => std::iter::once(base.as_ref())
-            .chain(subscripts.iter().filter_map(subscript_expression))
-            .collect(),
-        Expression::VarRef { subscripts, .. } => {
-            subscripts.iter().filter_map(subscript_expression).collect()
-        }
-        Expression::FieldAccess { base, .. } => vec![base],
-        Expression::Literal { .. } | Expression::Empty { .. } => Vec::new(),
-    }
 }
