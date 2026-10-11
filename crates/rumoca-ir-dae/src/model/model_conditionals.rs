@@ -361,6 +361,36 @@ impl Storage {
         }
         Ok(())
     }
+    /// MLS §3.6.5 / DAE-C22: a relation is observed only under its
+    /// construction-issued arm guard.
+    /// Live construction requires current lexical visibility. Whole-model
+    /// replay may use an arm only after its exact conditional was closed.
+    pub(crate) fn expect_relation_model_arm(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let scope = self
+            .expressions
+            .model_arm_scopes
+            .get(expression.index() as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression", expression.index(), at))?;
+        let Some(scope) = scope else {
+            return Ok(());
+        };
+        if self.active_function_boundary {
+            return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
+        }
+        if self.active_model_arm.is_some() {
+            return self.expect_model_arm_visible(expression.index(), at);
+        }
+        let owner = self.model_arms[scope as usize].owner;
+        if self.model_conditionals[owner as usize].expression.is_none() {
+            return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
+        }
+        Ok(())
+    }
     pub(crate) fn expect_discharged_model_arm(
         &self,
         expression: ExprId<'_>,

@@ -257,6 +257,16 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         self.expect_discharged_model_arm(expression, at)?;
+        self.expect_closed_coordinates(expression, at)
+    }
+
+    /// Closed coordinates may additionally belong to a separately checked
+    /// model activation owner. This helper does not discharge that owner.
+    fn expect_closed_coordinates(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         match self.expr_binder_domain(expression, at)? {
             None => {}
             Some(found_domain) => Err(DaeConstructionError::InvalidBinderScope {
@@ -542,7 +552,8 @@ impl Storage {
         relation: ExprId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        self.expect_closed_expression(relation, at)?;
+        self.expect_relation_model_arm(relation, at)?;
+        self.expect_closed_coordinates(relation, at)?;
         self.expect_relation_node(relation, at)
     }
 

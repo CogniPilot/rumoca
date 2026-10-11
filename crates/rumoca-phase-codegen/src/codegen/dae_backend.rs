@@ -843,6 +843,8 @@ fn project_conditions(view: dae::DaeView<'_>) -> Value {
                 json!({
                     "id": id.index(),
                     "expression": relation.expression().index(),
+                    "activation_guard": view.model_activation_guard(relation.expression())
+                        .map(|guard| guard.index()),
                     "provenance": relation.provenance(),
                 })
             })

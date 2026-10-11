@@ -258,3 +258,58 @@ fn nested_model_arm_first_creates_a_shared_global_function() {
         "a function cannot consume a model prefix as its body"
     );
 }
+
+#[test]
+fn arm_relation_binds_its_exact_guard_and_replay_requires_closed_authority() {
+    let source = TestSource::new("if c then time>0 else false");
+    let at = source.source("if c then time>0 else false", 0);
+    let model = Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        let owner = dae.begin_model_conditional(condition, at)?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            let expression = dae.expressions(|e| {
+                let time = e.at(at).coordinate(CoordinateInput::Time)?;
+                let zero = e.at(at).literal(DaeLiteral::Real(0.0))?;
+                e.at(at).binary(BinaryOperator::Greater, time, zero)
+            })?;
+            dae.conditions(|c| c.relation(expression, at))?;
+            Ok(expression)
+        })?;
+        assert!(matches!(
+            dae.conditions(|c| c.relation(first, at)),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. })
+        ));
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            assert!(matches!(
+                dae.conditions(|c| c.relation(first, at)),
+                Err(DaeConstructionError::InvalidModelActivationScope { .. })
+            ));
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(false)))
+        })?;
+        dae.finish_model_conditional(owner, [first, second])?;
+        let relation = dae.conditions(|c| c.relation(first, at))?;
+        assert_eq!(
+            relation.index(),
+            0,
+            "closed replay reuses the exact relation"
+        );
+        let activation = dae.conditions(|c| c.reserve(at))?;
+        dae.conditions(|c| c.define(activation, ConditionInput::Relation(relation), at))?;
+        dae.conditions(|c| c.root(relation, activation, at))?;
+        Ok(())
+    })
+    .expect("relation is observed only under its own issued arm guard");
+    let check = |view: DaeView<'_>| {
+        assert_eq!(view.relation_count(), 1);
+        let relation = view.relation(view.relation_id(0).unwrap()).unwrap();
+        let guard = view.model_activation_guard(relation.expression()).unwrap();
+        assert_eq!(guard, view.model_conditional_at(0).unwrap().guards()[0]);
+        assert_eq!(view.root_count(), 1);
+    };
+    model.inspect(check);
+    let json: Dae = serde_json::from_slice(&serde_json::to_vec(&model).unwrap()).unwrap();
+    json.inspect(check);
+    let bytes = bincode::serialize(&model).unwrap();
+    let binary: Dae = bincode::deserialize(&bytes).unwrap();
+    binary.inspect(check);
+}

@@ -562,7 +562,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .relation(relation)
                     .expect("checked condition relation resolves")
                     .expression();
-                self.expression(expression, 0)
+                self.activated_relation_expression(expression, span)
             }
             dae::ConditionOperation::Discrete(expression) => self.expression(expression, 0),
             dae::ConditionOperation::Clock(clock) => match self.active_clock {

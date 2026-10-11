@@ -88,6 +88,13 @@ impl<'dae> DaeView<'dae> {
         self.dae.storage.expressions.model_conditional_owners[expression.index() as usize]
             .map(|owner| ModelConditionalView { view: self, owner })
     }
+    /// Exact activation of an expression constructed in a model arm.
+    /// Consumers of a separately published relation must use this same guard
+    /// for its lazy numeric surface and Boolean observation.
+    pub fn model_activation_guard(self, expression: ExprId<'dae>) -> Option<ExprId<'dae>> {
+        self.model_arm_of(expression)
+            .map(|arm| ExprId::from_raw(self.dae.storage.model_arms[arm.index() as usize].guard))
+    }
     pub fn model_arm_of(self, expression: ExprId<'dae>) -> Option<ModelArm<'dae>> {
         self.dae.storage.expressions.model_arm_scopes[expression.index() as usize].map(|index| {
             ModelArm {

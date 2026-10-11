@@ -414,3 +414,27 @@ fn real_quotient_structured_inactive_points_keep_their_own_step() {
         }
     }
 }
+
+#[test]
+fn model_arm_relation_protects_inactive_arithmetic_without_a_quotient() {
+    let compiled = compile(
+        "model GuardedRelation output Real y; Real x(start=0,fixed=true); equation y=if time<0.5 then 1 elseif sqrt(time-0.5)>0 then 2 else 3; der(x)=y; end GuardedRelation;",
+        "GuardedRelation",
+    );
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let opts = options(policy);
+        let result = simulate_dae(&compiled.dae, &opts)
+            .expect("inactive square root remains lazy; the later arm activates at its boundary");
+        assert_eq!(result.times.len(), 11);
+        for (ordinal, &time) in result.times.iter().enumerate() {
+            assert_eq!(time, ordinal as f64 / 10.0);
+            let expected = time.min(0.5) + 2.0 * (time - 0.5).max(0.0);
+            let actual = series(&result, "x")[ordinal];
+            assert!(
+                actual.is_finite()
+                    && (actual - expected).abs() <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                "{policy:?}: x({time})={actual}, expected {expected}"
+            );
+        }
+    }
+}
