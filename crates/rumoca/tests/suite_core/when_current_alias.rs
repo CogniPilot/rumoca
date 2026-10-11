@@ -3,7 +3,7 @@
 use rumoca::Compiler;
 use rumoca_sim::{SimExecutionPolicy, SimOptions, SimulationSession};
 
-fn check_trace(source: &str, expected: impl Fn(i32, &indexmap::IndexMap<String, f64>)) {
+fn check_trace(source: &str, expected: impl Fn(i32, &rumoca_sim::SessionState)) {
     let compiled = Compiler::new()
         .model("CurrentAlias")
         .compile_str(source, "current_alias.mo")
@@ -16,7 +16,7 @@ fn check_trace(source: &str, expected: impl Fn(i32, &indexmap::IndexMap<String, 
 fn check_policy(
     compiled: &rumoca::CompilationResult,
     policy: SimExecutionPolicy,
-    expected: &impl Fn(i32, &indexmap::IndexMap<String, f64>),
+    expected: &impl Fn(i32, &rumoca_sim::SessionState),
 ) {
     let mut session = SimulationSession::new(
         &compiled.dae,
@@ -34,7 +34,7 @@ fn check_policy(
         }
         let state = session.state().unwrap();
         assert_eq!(state.time, time);
-        expected(sample, &state.values);
+        expected(sample, &state);
     }
 }
 
@@ -53,16 +53,16 @@ fn source(alias: &str, extra: &str) -> String {
     )
 }
 
-fn current_and_pre(sample: i32, values: &indexmap::IndexMap<String, f64>) {
+fn current_and_pre(sample: i32, values: &rumoca_sim::SessionState) {
     let count = f64::from(sample / 2);
-    assert_eq!(values["count"], count, "sample {sample}");
+    assert_eq!(values.values["count"], count, "sample {sample}");
     assert_eq!(
-        values["current"],
+        values.values["current"],
         2.0 * count,
         "current alias at sample {sample}"
     );
     assert_eq!(
-        values["held"],
+        values.values["held"],
         (count - 1.0).max(0.0),
         "pre at sample {sample}"
     );
@@ -102,7 +102,7 @@ end CurrentAlias;
     check_trace(source, |sample, values| {
         current_and_pre(sample, values);
         assert_eq!(
-            values["edge"],
+            values.values["edge"],
             if sample >= 4 { 4.0 } else { 0.0 },
             "edge at sample {sample}"
         );
