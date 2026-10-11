@@ -6,7 +6,6 @@ fn broadcast_division_directional_preserves_narrow_integer_profile_primal_owner(
         (-128, 127, 4, true),
         (-128, 127, 128, false),
         (2, 127, 4, false),
-        (-1, 1, 0, true),
     ] {
         let arithmetic = SolveArithmeticProfile::construct(
             SolveRealFormat::Binary64,
@@ -49,4 +48,9 @@ fn broadcast_division_directional_preserves_narrow_integer_profile_primal_owner(
             );
         }
     }
+    assert_eq!(
+        SolveValueType::tensor(SolveScalarType::real(profile()), vec![0]),
+        Err(crate::SolveTypeConstructionError::ZeroTensorExtent),
+        "the canonical tensor constructor refuses zero extents before owner issuance"
+    );
 }

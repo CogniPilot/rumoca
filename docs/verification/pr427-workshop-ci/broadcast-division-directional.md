@@ -41,7 +41,9 @@ The generated index domain is checked by the existing Map-domain constructor
 against the owner's Integer profile before advertising the derivative. A shape
 whose ordinal indices do not fit that profile retains its admitted primal owner
 and has no directional relation. A constructor regression covers both supported
-and unsupported extents, a profile excluding index 1, and an empty aggregate.
+and unsupported extents and a profile excluding index 1. The canonical tensor
+constructor refuses zero extents before owner issuance; the test asserts that
+actual refusal instead of claiming an admitted empty tensor.
 
 Two ordinary `rumoca-phase-solve` tests reuse the source-backed division fixture:
 independent central differences for scalar-only, tensor-only and mixed tangents
