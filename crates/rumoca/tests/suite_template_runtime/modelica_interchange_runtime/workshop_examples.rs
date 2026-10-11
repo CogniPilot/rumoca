@@ -121,6 +121,42 @@ fn check_count(transcript: &str, label: &str) -> usize {
         .unwrap_or_else(|| panic!("missing OMC {label} count: {transcript}"))
 }
 
+fn retain_requested_omc_evidence(
+    example: &Example,
+    target: &str,
+    temporary: &Path,
+    output: &std::process::Output,
+) {
+    let Some(requested) = std::env::var_os("RUMOCA_WORKSHOP_EVIDENCE_DIR") else {
+        return;
+    };
+    let root = Path::new(&requested);
+    assert!(
+        root.is_absolute(),
+        "workshop evidence root must be absolute"
+    );
+    fs::create_dir_all(root).expect("create requested workshop evidence root");
+    let directory = root.join(format!("{}-{target}", example.name));
+    // A fresh cell is required: old successful products cannot represent this run.
+    fs::create_dir(&directory).expect("create fresh workshop evidence cell");
+    for name in ["model.mo", "check.mos"] {
+        fs::copy(temporary.join(name), directory.join(name)).expect("retain exact OMC source");
+    }
+    fs::write(directory.join("stdout.log"), &output.stdout).expect("retain OMC stdout");
+    fs::write(directory.join("stderr.log"), &output.stderr).expect("retain OMC stderr");
+    let trace = temporary.join("trace_res.csv");
+    let trace_present = trace.is_file();
+    if trace_present {
+        fs::copy(&trace, directory.join("trace_res.csv")).expect("retain actual OMC CSV");
+    }
+    fs::write(
+        directory.join("status.txt"),
+        format!("status={}\ncsv_present={trace_present}\n", output.status),
+    )
+    .expect("retain actual OMC status");
+    eprintln!("OMC evidence retained at {}", directory.display());
+}
+
 fn run_omc(example: &Example, source: &str, target: &str) -> OmcResult {
     let model = if target == "original" {
         example.name.to_owned()
@@ -146,6 +182,7 @@ fn run_omc(example: &Example, source: &str, target: &str) -> OmcResult {
         .current_dir(directory.path())
         .output()
         .expect("execute required OMC");
+    retain_requested_omc_evidence(example, target, directory.path(), &output);
     let transcript = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
