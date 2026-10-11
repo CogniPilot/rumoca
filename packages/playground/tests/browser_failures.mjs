@@ -26,13 +26,23 @@ export function installGpuFailureObserver() {
     return device;
   };
   globalThis.guideGpuFailureSnapshot = async () => {
-    for (const state of devices) {
+    const completion = Promise.all(devices.map(async (state) => {
       if (!state.destroyed) {
         try { await state.device.queue.onSubmittedWorkDone(); }
         catch (error) {
           if (!state.destroyed) failures.push(`GPU queue completion: ${error}`);
         }
       }
+    }));
+    let timer;
+    try {
+      await Promise.race([completion, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("GPU queue completion exceeded browser 180000ms budget")), 180000);
+      })]);
+    } catch (error) {
+      failures.push(String(error));
+    } finally {
+      clearTimeout(timer);
     }
     // Device errors are delivered asynchronously; observe a task turn after
     // the actual submitted work completes, before browser teardown begins.

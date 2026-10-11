@@ -5,14 +5,14 @@ import { createContext, runInContext } from "node:vm";
 import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
 // Notification fixtures test the observer boundary, not GPU execution.
-function fixture({ gpu = true } = {}) {
+function fixture({ gpu = true, schedule = setTimeout } = {}) {
   let lose;
   const device = new EventTarget();
   device.lost = new Promise((resolve) => { lose = resolve; });
   device.queue = { onSubmittedWorkDone: async () => {} };
   device.destroy = () => { lose({ reason: "destroyed", message: "explicit teardown" }); return 17; };
   class GPUAdapter { async requestDevice() { return device; } }
-  const context = createContext({ setTimeout, ...(gpu ? { GPUAdapter } : {}) });
+  const context = createContext({ setTimeout: schedule, clearTimeout, ...(gpu ? { GPUAdapter } : {}) });
   const page = new EventEmitter();
   page.isClosed = () => false;
   page.evaluate = (fn) => runInContext(`(${fn.toString()})()`, context);
@@ -105,4 +105,21 @@ test("asynchronous page errors are flushed before the final assertion", async ()
   const { collector, page } = fixture({ gpu: false });
   setTimeout(() => page.emit("pageerror", new Error("next task failure")), 0);
   await assert.rejects(collector.check(), /next task failure/);
+});
+
+test("a never-resolving GPU queue fails at the existing browser deadline", async () => {
+  const deadlines = [];
+  const f = fixture({ schedule(callback, delay) {
+    if (delay === 180000) {
+      deadlines.push(callback);
+      return undefined;
+    }
+    return setTimeout(callback, delay);
+  } });
+  await f.request();
+  f.device.queue.onSubmittedWorkDone = () => new Promise(() => {});
+  const checked = f.collector.check();
+  assert.equal(deadlines.length, 1);
+  deadlines[0]();
+  await assert.rejects(checked, /GPU queue completion exceeded browser 180000ms budget/);
 });
