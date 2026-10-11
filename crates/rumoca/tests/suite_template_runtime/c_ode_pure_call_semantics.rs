@@ -252,3 +252,104 @@ end Probe;
         "{error:#}"
     );
 }
+
+#[test]
+fn tensor_call_views_and_products_preserve_row_major_values() {
+    let source = r#"
+function tensorViews
+  input Real u;
+  output Real y;
+protected
+  Real t[3,2];
+  Real p[3];
+  Real c[3];
+  Real v[6];
+  Real w[3];
+  Real d[3,3];
+  Real e[3,3];
+algorithm
+  t := transpose({{u,2,3},{4,5,6}});
+  p := t*{1,2};
+  c := cross({u,2,3},{4,5,6});
+  v := cat(1,p,c);
+  w := t[:,2];
+  d := diagonal({u,2,3});
+  e := identity(3);
+  y := sum(v) + sum(w) + sum(d*{1,2,3}) + sum(e*{u,2,3});
+end tensorViews;
+model Probe
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = tensorViews(x);
+end Probe;
+"#;
+    // Independently: sum(p)=u+35, sum(c)=1-u, sum(w)=15,
+    // sum(d*{1,2,3})=u+13, sum(e*{u,2,3})=u+5.
+    assert_eq!(native_rhs(source, 1.0).unwrap(), 71.0);
+    assert_eq!(native_rhs(source, -2.0).unwrap(), 65.0);
+    run_rhs(
+        source,
+        r#"
+double y[RUMOCA_PROBE_Y_LEN] = {1.0};
+double out[RUMOCA_PROBE_DERIVATIVE_LEN] = {0};
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 1;
+if (out[0] != 71.0) return 2;
+y[0] = -2.0;
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 3;
+return out[0] == 65.0 ? 0 : 4;
+"#,
+    );
+}
+
+#[test]
+fn finite_fold_break_and_runtime_branch_keep_the_carried_values() {
+    let source = r#"
+function boundedSum
+  input Real u;
+  output Real y;
+protected
+  Real a[5];
+  Real s;
+algorithm
+  for i in 1:5 loop
+    a[i] := u + i;
+  end for;
+  s := 0;
+  for i in 1:5 loop
+    if i == 4 then
+      break;
+    end if;
+    s := s + a[i];
+  end for;
+  if u > 0 then
+    y := s;
+  else
+    y := -s;
+  end if;
+end boundedSum;
+model Probe
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = boundedSum(x);
+end Probe;
+"#;
+    // Only indices 1,2,3 contribute, so s=3*u+6. The branch is strict.
+    assert_eq!(native_rhs(source, 1.0).unwrap(), 9.0);
+    assert_eq!(native_rhs(source, -3.0).unwrap(), 3.0);
+    assert_eq!(native_rhs(source, 0.0).unwrap(), -6.0);
+    run_rhs(
+        source,
+        r#"
+double y[RUMOCA_PROBE_Y_LEN] = {1.0};
+double out[RUMOCA_PROBE_DERIVATIVE_LEN] = {0};
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 1;
+if (out[0] != 9.0) return 2;
+y[0] = -3.0;
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 3;
+if (out[0] != 3.0) return 4;
+y[0] = 0.0;
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 5;
+return out[0] == -6.0 ? 0 : 6;
+"#,
+    );
+}

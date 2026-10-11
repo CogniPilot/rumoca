@@ -440,6 +440,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scalar_tensor_views_match_checked_reference_evaluation_and_independent_values() {
+        let mut program = (0..12)
+            .map(|dst| LinearOp::Const {
+                dst,
+                value: f64::from(dst + 1),
+            })
+            .collect::<Vec<_>>();
+        program.extend([
+            LinearOp::TensorTranspose {
+                dst_start: 12,
+                src_start: 0,
+                rows: 3,
+                columns: 2,
+                element_width: 2,
+                lanes: 1,
+            },
+            LinearOp::TensorCross {
+                dst_start: 24,
+                lhs_start: 0,
+                rhs_start: 3,
+                lanes: 1,
+            },
+            LinearOp::TensorIdentity {
+                dst_start: 27,
+                size: 3,
+                lanes: 1,
+            },
+        ]);
+        program.extend((12..36).map(|src| LinearOp::StoreOutput { src }));
+        let lowered = lower_scalar_ops(&program, None).expect("bounded primal tensor views");
+        let expected = [
+            1.0, 2.0, 7.0, 8.0, 3.0, 4.0, 9.0, 10.0, 5.0, 6.0, 11.0, 12.0, -3.0, 6.0, -3.0, 1.0,
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        for ops in [program, lowered] {
+            let span = rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("scalar_tensor_views.mo"),
+                0,
+                1,
+            );
+            let block = rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+                vec![ops],
+                vec![span],
+                (0..expected.len()).collect(),
+            )
+            .expect("checked tensor program outputs");
+            let mut actual = [f64::NAN; 24];
+            crate::eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut actual)
+                .expect("reference evaluator accepts compact and scalar programs");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
     fn empty_direct_tensor_views_do_not_traverse_unused_huge_axes() {
         for (rows, columns) in [(usize::MAX, 0), (0, usize::MAX)] {
             let program = [
