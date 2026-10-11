@@ -500,10 +500,9 @@ fn resolve_compiler(root: &Path, args: &VerifyCorpusPinArgs) -> Result<PathBuf> 
         .arg("rumoca")
         .current_dir(root);
     run_status(command)?;
-    let path = root
-        .join("target")
+    let path = super::cargo_target_dir(root)
         .join(RUMOCA_BUILD_PROFILE)
-        .join("rumoca");
+        .join(format!("rumoca{}", std::env::consts::EXE_SUFFIX));
     ensure!(
         path.is_file(),
         "the `{RUMOCA_BUILD_PROFILE}` build did not produce {}",
