@@ -187,6 +187,8 @@ fn eval_var_ref_reads_only_registered_enumeration_literals() {
         inputs: IndexMap::new(),
         outputs: IndexMap::new(),
         locals: IndexMap::new(),
+        source_iterators: Vec::new(),
+        source_iterator_declarations: std::collections::HashSet::new(),
     };
     let mut ctx = EvalContext::new();
     ctx.enum_literals.insert(
@@ -902,6 +904,8 @@ fn record_field_read_is_not_guessed_as_an_enumeration_literal() {
         inputs: IndexMap::new(),
         outputs: IndexMap::new(),
         locals,
+        source_iterators: Vec::new(),
+        source_iterator_declarations: std::collections::HashSet::new(),
     };
 
     let field = eval_var_ref(&rumoca_core::Reference::new("z.im"), &[], &env, &eval)

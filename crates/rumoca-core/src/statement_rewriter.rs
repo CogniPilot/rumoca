@@ -345,7 +345,7 @@ mod tests {
 
     fn indices() -> Vec<ForIndex> {
         vec![ForIndex {
-            binder: rumoca_core::IndexBinderProvenance::Generated,
+            binder: crate::IndexBinderProvenance::Generated,
             ident: "i".to_string(),
             range: Expression::Empty { span: Span::DUMMY },
         }]
