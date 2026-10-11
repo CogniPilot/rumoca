@@ -97,5 +97,21 @@ Ancestor guards are explicit operands of the issued parent-guard Conditional.
 The conflict checker consumes every found clock rather than a first-clock
 summary. Periodic condition activation lanes alone are not reclassified as
 clock-partition ownership. No arithmetic evaluator or expression grammar is
-duplicated, and the original mixed-clock control remains a separate test-only
-commit with BEFORE execution pending.
+duplicated. The original mixed-clock control is test-only commit
+`336cfe02f5b3aadd77f8c202d39c7cf1ea4f7cd7`. Its first attempt at
+`7b8e3971ce61e3568f21c5cd471092705ce60edb` failed compilation because the
+frozen view called a method implemented only on constructor storage: no test
+executed. Compile-only repair `2bf99fa42463b68831dcd8fddd0598052452af30`
+shares one projection function between both storage views.
+
+At `9a47e85b0ef58263b1a3070b58a40008d176f67d`, the unchanged mixed-clock
+control executed and failed: lowering reported `previous coordinate escaped
+its owning clock schedule`, rather than rejecting both clocks at the condition
+ownership proof. This establishes the first-owner masking defect separately
+from the earlier compile failure. AFTER remains unqualified here.
+
+[The exact BEFORE receipt](arm-relation-guard-before.json) binds all four
+attempts to their source commits, counted recipes, raw log and guardian hashes,
+commands, observed Rust summaries and resource measurements. The executed
+BEFORE results are IR 1 pass / 1 fail, clock 0 pass / 1 fail, and mixed clock
+0 pass / 1 fail. The compile-only failure has no observed test summary.
