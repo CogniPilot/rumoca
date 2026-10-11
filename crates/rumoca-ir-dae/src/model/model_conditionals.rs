@@ -4,6 +4,7 @@
 //! that discharges those contexts. MLS §3.6.5 selects one value expression.
 
 use super::*;
+use crate::UnaryOperator;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct ModelConditionalEntry {

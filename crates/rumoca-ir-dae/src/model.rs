@@ -196,10 +196,10 @@ pub use view::{
     ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
     FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
     FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
-    FunctionView, InitializationOwnerView, NativeBodyView, RangeBoundView, RangeView,
-    RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
-    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
+    FunctionView, InitializationOwnerView, ModelConditionalView, NativeBodyView, RangeBoundView,
+    RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
+    RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
+    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
