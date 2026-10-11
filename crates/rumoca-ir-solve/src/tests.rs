@@ -5,6 +5,9 @@ use super::*;
 use indexmap::IndexMap;
 use rumoca_core::{SourceId, StructuredIndexBinder};
 
+// Temporary issuance probe; remove before committing the refreshed golden.
+mod current_golden_issuer;
+
 const REPRESENTATIVE_SOLVE_PROBLEM_GOLDEN: &str =
     include_str!("../tests/golden/representative_solve_problem.solve.json");
 
