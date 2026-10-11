@@ -235,3 +235,5 @@ pub use compile::{Session, SessionConfig};
 
 #[cfg(test)]
 mod adversarial_when_call_tests;
+#[cfg(test)]
+mod adversarial_function_projection_tests;
