@@ -434,7 +434,7 @@ pub fn lower_scalar_ops(
     })?;
     budget.reserve(cost)?;
     if program.iter().all(is_scalar_op) {
-        return Some(program.to_vec());
+        return Some(rumoca_ir_solve::prune_dead_constants(program.to_vec()));
     }
     let next = program.iter().try_fold(0, |highest, op| {
         let Some(start) = op.dst_register() else {
@@ -452,7 +452,7 @@ pub fn lower_scalar_ops(
     for op in program {
         lowering.lower_with_snapshot(op)?;
     }
-    Some(lowering.out)
+    Some(rumoca_ir_solve::prune_dead_constants(lowering.out))
 }
 
 #[cfg(test)]
