@@ -1,79 +1,10 @@
 //! Preserve aggregate read-before-write semantics in bounded scalar views.
 
-use super::{LinearOp, Lowering, Reg};
+use super::{LinearOp, Lowering};
 
-/// Intersect a contiguous destination with a compact strided source, without
-/// enumerating registers or treating gaps in a strided source as reads.
-fn intersects(dst: Reg, count: usize, src: Reg, reads: usize, stride: usize) -> Option<bool> {
-    if count == 0 || reads == 0 {
-        return Some(false);
-    }
-    let first = usize::try_from(src).ok()?;
-    let last = first.checked_add(reads.checked_sub(1)?.checked_mul(stride)?)?;
-    Reg::try_from(last).ok()?;
-    let low = usize::try_from(dst).ok()?;
-    let high = low.checked_add(count.checked_sub(1)?)?;
-    Reg::try_from(high).ok()?;
-    if last < low || first > high {
-        return Some(false);
-    }
-    if stride == 0 || first >= low {
-        return Some(true);
-    }
-    let distance = low.checked_sub(first)?;
-    let index = distance / stride + usize::from(distance % stride != 0);
-    Some(index < reads && first.checked_add(index.checked_mul(stride)?)? <= high)
-}
-
-/// Number of temporary results needed by an overlapping aggregate. Shapes
-/// remain compact; this is admission work, not a scalar register inventory.
+/// Number of staged values, from the shared compact read-before-write witness.
 pub(super) fn result_count(op: &LinearOp) -> Option<usize> {
-    let Some(dst) = op.dst_register() else {
-        return Some(0);
-    };
-    let count = op.dst_register_count();
-    if count == 0 {
-        return Some(0);
-    }
-    let overlap = match op {
-        LinearOp::TensorBinary {
-            lanes: 1,
-            lhs_start,
-            rhs_start,
-            count: reads,
-            lhs_stride,
-            rhs_stride,
-            ..
-        } => {
-            intersects(dst, count, *lhs_start, *reads, *lhs_stride)?
-                | intersects(dst, count, *rhs_start, *reads, *rhs_stride)?
-        }
-        LinearOp::MatrixMultiply {
-            lanes: 1,
-            lhs_start,
-            rhs_start,
-            rows,
-            inner,
-            columns,
-            ..
-        } => {
-            intersects(dst, count, *lhs_start, rows.checked_mul(*inner)?, 1)?
-                | intersects(dst, count, *rhs_start, inner.checked_mul(*columns)?, 1)?
-        }
-        LinearOp::TensorTranspose {
-            lanes: 1,
-            src_start,
-            ..
-        } => intersects(dst, count, *src_start, count, 1)?,
-        LinearOp::TensorCross {
-            lanes: 1,
-            lhs_start,
-            rhs_start,
-            ..
-        } => intersects(dst, count, *lhs_start, 3, 1)? | intersects(dst, count, *rhs_start, 3, 1)?,
-        _ => false,
-    };
-    Some(if overlap { count } else { 0 })
+    Some(crate::tensor_snapshot::Snapshot::issue(op)?.width())
 }
 
 impl Lowering<'_> {

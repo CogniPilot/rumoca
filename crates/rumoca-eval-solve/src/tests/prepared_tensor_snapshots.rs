@@ -108,3 +108,152 @@ fn prepared_tensor_snapshot_binary_broadcast_matches_checked_reference() {
         );
     }
 }
+
+#[test]
+fn prepared_tensor_snapshot_binary_preserves_broadcast_dual_lanes() {
+    assert_prepared_snapshot(
+        &[1., 10., 2., 20., 3., 30.],
+        LinearOp::TensorBinary {
+            dst_start: 0,
+            op: BinaryOp::Add,
+            lhs_start: 2,
+            rhs_start: 0,
+            count: 2,
+            lanes: 2,
+            lhs_stride: 1,
+            rhs_stride: 0,
+        },
+        &[3., 30., 4., 40.],
+    );
+}
+
+#[test]
+fn prepared_tensor_snapshot_matmul_preserves_both_dual_operands() {
+    for dst in [0, 8] {
+        assert_prepared_snapshot(
+            &[
+                1., 10., 2., 20., 3., 30., 4., 40., 5., 50., 6., 60., 7., 70., 8., 80.,
+            ],
+            LinearOp::MatrixMultiply {
+                dst_start: dst,
+                lhs_start: 0,
+                rhs_start: 8,
+                rows: 2,
+                inner: 2,
+                columns: 2,
+                lanes: 2,
+            },
+            &[19., 380., 22., 440., 43., 860., 50., 1000.],
+        );
+    }
+}
+
+#[test]
+fn prepared_tensor_snapshot_transpose_preserves_trailing_axes_and_dual_lanes() {
+    let values = (1..=24).map(f64::from).collect::<Vec<_>>();
+    assert_prepared_snapshot(
+        &values,
+        LinearOp::TensorTranspose {
+            dst_start: 0,
+            src_start: 0,
+            rows: 3,
+            columns: 2,
+            element_width: 2,
+            lanes: 2,
+        },
+        &[
+            1., 2., 3., 4., 13., 14., 15., 16., 5., 6., 7., 8., 17., 18., 19., 20., 9., 10., 11.,
+            12., 21., 22., 23., 24.,
+        ],
+    );
+}
+
+#[test]
+fn prepared_tensor_snapshot_long_selected_row_preserves_ordered_aliases() {
+    let mut row = (0..64)
+        .map(|dst| LinearOp::Const {
+            dst,
+            value: f64::from(dst + 1),
+        })
+        .collect::<Vec<_>>();
+    row.push(LinearOp::TensorTranspose {
+        dst_start: 0,
+        src_start: 0,
+        rows: 3,
+        columns: 2,
+        element_width: 1,
+        lanes: 1,
+    });
+    row.push(LinearOp::Select {
+        dst: 64,
+        cond: 63,
+        if_true: 1,
+        if_false: 2,
+    });
+    row.push(LinearOp::StoreOutput { src: 64 });
+    let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()])
+        .expect("ordered initialized aliases retain a checked owner");
+    let mut reference = [f64::NAN];
+    eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut reference).unwrap();
+    assert_eq!(reference, [4.0]);
+    let compute = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(block);
+    let prepared = PreparedComputeBlock::new(&compute).unwrap();
+    let mut actual = [f64::NAN];
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut actual)
+        .unwrap();
+    assert_eq!(actual, [4.0]);
+}
+
+#[test]
+fn prepared_tensor_snapshot_unique_selected_row_retains_cached_lazy_execution() {
+    let mut row = (0..63)
+        .map(|dst| LinearOp::Const {
+            dst,
+            value: f64::from(dst + 1),
+        })
+        .collect::<Vec<_>>();
+    row.push(LinearOp::LoadY { dst: 63, index: 0 });
+    row.push(LinearOp::TensorTranspose {
+        dst_start: 64,
+        src_start: 0,
+        rows: 3,
+        columns: 2,
+        element_width: 1,
+        lanes: 1,
+    });
+    row.push(LinearOp::Select {
+        dst: 70,
+        cond: 63,
+        if_true: 65,
+        if_false: 66,
+    });
+    row.push(LinearOp::StoreOutput { src: 70 });
+    let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()]).unwrap();
+    assert!(
+        PreparedLazyRowPlan::new(
+            block.program(0).unwrap(),
+            block.program_register_count(0).unwrap()
+        )
+        .is_some(),
+        "a checked unique-writer row retains demand scheduling"
+    );
+    let compute = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(block.clone());
+    let prepared = PreparedComputeBlock::new(&compute).unwrap();
+    for (condition, expected) in [(1.0, 4.0), (0.0, 2.0), (1.0, 4.0)] {
+        let mut reference = [f64::NAN];
+        eval_scalar_program_block(&block, &[condition], &[], 0.0, None, &mut reference).unwrap();
+        assert_eq!(reference, [expected]);
+        let mut actual = [f64::NAN];
+        prepared
+            .eval_with_context(
+                &[condition],
+                &[],
+                0.0,
+                RowEvalContext::default(),
+                &mut actual,
+            )
+            .unwrap();
+        assert_eq!(actual, [expected]);
+    }
+}
