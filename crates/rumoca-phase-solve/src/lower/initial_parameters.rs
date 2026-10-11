@@ -69,6 +69,8 @@ use crate::LowerError;
 use crate::layout::LoweredLayout;
 use crate::lower::scalar::{ParameterBindingSubstitutions, ScalarCompiler};
 
+mod dependencies;
+
 pub(super) struct InitialParameterUpdates {
     pub(super) rows: ScalarRows,
     pub(super) targets: Vec<solve::ScalarSlot>,
@@ -339,14 +341,7 @@ fn bound_parameters(
         let Some(binding) = initialization.or_else(|| variable.binding()) else {
             continue;
         };
-        let mut reads = BTreeSet::new();
-        dae::for_each_expression(view, binding, |_, expression| {
-            if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) =
-                expression.operation()
-            {
-                reads.insert(parameter.index());
-            }
-        });
+        let reads = dependencies::binding_parameter_reads(view, binding)?;
         bound.insert(
             id.index(),
             BoundParameter {

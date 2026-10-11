@@ -16,7 +16,7 @@ impl<'dae> ScalarSelector<'dae> {
     /// The exact Boolean guard fixed by immutable declarations and this
     /// lexical domain point. Runtime inputs and tunable parameter defaults
     /// never select an arm during lowering.
-    pub(super) fn translation_guard(
+    pub(in crate::lower) fn translation_guard(
         &self,
         condition: dae::ExprId<'dae>,
     ) -> Result<Option<bool>, LowerError> {
