@@ -225,3 +225,11 @@ carrying a message that teaches.
 diagnostics = rm.validate("examples/models/SympyDecay.mo")
 invalid = rm.validate_source("model Broken Real x = ; end Broken;")
 ```
+
+The required Linux x86_64 installed-wheel check is
+`cargo xtask python test --require-guide`; it also runs in `cargo xtask verify full`.
+It builds the current source unless `--wheel` supplies a wheel, and uses
+`--python` to select an interpreter provisioned with the optional dependencies
+above. The same check executes these Python and notebook examples, both CMake
+build steps, and the four linked SympyDecay codegen scenarios. Other wheel
+platforms run the base API checks without claiming this guide qualification.

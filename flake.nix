@@ -114,6 +114,7 @@
             doCheck = false;
           }))
           ps.numpy
+          ps.matplotlib
           ps.pandas
           ps.pip
           ps.sympy
@@ -381,6 +382,7 @@
             pkgs.cargo-expand
             pkgs.cargo-llvm-cov
             pkgs.cargo-nextest
+            pkgs.cmake
             pkgs.hyperfine
             pkgs.jq
             pkgs.libxml2

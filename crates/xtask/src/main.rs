@@ -11,6 +11,7 @@ mod lsp_benchmark_cmd;
 mod main_tests;
 mod modelica_dependency_cache;
 mod playground_cmd;
+mod python_cmd;
 mod release_cmd;
 mod repo_cli_cmd;
 mod resource_budget;
@@ -249,6 +250,8 @@ struct PythonArgs {
 enum PythonCommand {
     /// Build/install Python bindings via maturin
     Build(BuildPythonArgs),
+    /// Verify the public API through an isolated installed wheel
+    Test(python_cmd::PythonTestArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -535,6 +538,7 @@ fn cmd_playground(args: PlaygroundArgs) -> Result<()> {
 fn cmd_python(args: PythonArgs) -> Result<()> {
     match args.command {
         PythonCommand::Build(args) => cmd_build_python(args),
+        PythonCommand::Test(args) => python_cmd::run(args),
     }
 }
 
@@ -807,7 +811,7 @@ fn cmd_install_git_hooks() -> Result<()> {
 
 fn cmd_build_python(args: BuildPythonArgs) -> Result<()> {
     let root = repo_root();
-    let python_dir = root.join("bindings/python");
+    let python_dir = root.join("crates/rumoca-bind-python");
     ensure!(
         python_dir.is_dir(),
         "missing python bindings dir: {}",
@@ -821,10 +825,15 @@ fn cmd_build_python(args: BuildPythonArgs) -> Result<()> {
     if args.release {
         println!("Building release Python wheel...");
         let mut build = Command::new("maturin");
-        build.arg("build").arg("--release").current_dir(&python_dir);
+        let wheels_dir = verify_cmd::cargo_target_dir(&root).join("wheels");
+        build
+            .arg("build")
+            .arg("--release")
+            .arg("--out")
+            .arg(&wheels_dir)
+            .current_dir(&python_dir);
         run_status(build)?;
 
-        let wheels_dir = root.join("target/wheels");
         let wheel = newest_file_with_ext(&wheels_dir, "whl")?.with_context(|| {
             format!(
                 "no wheel found in {} after maturin build --release",

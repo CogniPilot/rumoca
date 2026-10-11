@@ -552,6 +552,12 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         include_in_quick: false,
     },
     VerifyStep {
+        label: "installed Python wheel and guide checks",
+        args: &["python", "test", "--require-guide"],
+        include_in_full: true,
+        include_in_quick: false,
+    },
+    VerifyStep {
         label: "coverage run",
         args: &["coverage", "run"],
         include_in_full: true,
@@ -985,7 +991,7 @@ fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cargo_target_dir(root: &Path) -> PathBuf {
+pub(crate) fn cargo_target_dir(root: &Path) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .map(|path| {

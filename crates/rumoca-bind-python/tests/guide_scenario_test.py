@@ -64,6 +64,9 @@ def assert_generated_c(directory):
 
 
 def test_authored_codegen_scenarios():
+    guide = (REPOSITORY / "docs/user-guide/src/codegen/targets.md").read_text(encoding="utf-8")
+    linked = set(re.findall(r"rumoca-scenario\.sympy_decay_[a-z_]+\.toml", guide))
+    assert linked == {f"rumoca-scenario.sympy_decay_{profile}.toml" for profile, _ in SCENARIOS}
     failures = []
     session = rm.Session()
     with TemporaryDirectory(prefix="rumoca-guide-scenarios-") as temporary:

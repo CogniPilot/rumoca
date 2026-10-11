@@ -86,6 +86,7 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     assert!(steps.contains(&vec!["verify", "examples"]));
     assert!(steps.contains(&vec!["verify", "binaries"]));
     assert!(steps.contains(&vec!["verify", "template-runtimes"]));
+    assert!(steps.contains(&vec!["python", "test", "--require-guide"]));
     assert!(steps.contains(&vec!["coverage", "run"]));
     assert!(steps.contains(&vec!["playground", "test"]));
     assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));

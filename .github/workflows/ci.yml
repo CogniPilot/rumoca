@@ -2402,17 +2402,9 @@ jobs:
             export_args=()
             if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
               python -m pip install jax==0.9.2 casadi==3.7.2 numpy==2.4.3 matplotlib==3.10.8
-              export_args=(--require-backend jax --require-backend casadi)
+              export_args=(--require-guide)
             fi
-            python crates/rumoca-bind-python/tests/smoke_test.py
-            python crates/rumoca-bind-python/tests/fmi_codegen_test.py
-            python crates/rumoca-bind-python/tests/api_test.py
-            python crates/rumoca-bind-python/tests/magic_test.py
-            python crates/rumoca-bind-python/tests/export_test.py "${export_args[@]}"
-            if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
-              python crates/rumoca-bind-python/tests/guide_test.py
-              python crates/rumoca-bind-python/tests/guide_scenario_test.py
-            fi
+            cargo xtask python test --wheel "$WHEEL" --python "$(command -v python)" "${export_args[@]}"
           '
 
       - name: Smoke test installed wheel (Windows)
@@ -2424,11 +2416,7 @@ jobs:
           python -m pip install --upgrade pip
           WHEEL=$(ls dist/*.whl | head -1)
           python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-          python crates/rumoca-bind-python/tests/smoke_test.py
-          python crates/rumoca-bind-python/tests/fmi_codegen_test.py
-          python crates/rumoca-bind-python/tests/api_test.py
-          python crates/rumoca-bind-python/tests/magic_test.py
-          python crates/rumoca-bind-python/tests/export_test.py
+          cargo xtask python test --wheel "$WHEEL" --python "$(command -v python)"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6
