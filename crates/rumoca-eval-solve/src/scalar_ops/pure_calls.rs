@@ -134,26 +134,7 @@ impl<'a> Inliner<'a> {
             .inputs()
             .iter()
             .zip(input_starts)
-            .map(|(value_type, start)| {
-                let elems = (0..value_type.scalar_count())
-                    .map(|offset| {
-                        let register = start.checked_add(offset)?;
-                        if matches!(
-                            value_type.element_type(),
-                            solve::SolveScalarType::Integer(_)
-                        ) {
-                            self.literal_input(register, value_type)
-                        } else {
-                            Some(Elem::Reg(register))
-                        }
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(Val {
-                    scalar: value_type.element_type(),
-                    dims: Arc::new(value_type.dimensions().to_vec()),
-                    elems: Arc::new(elems),
-                })
-            })
+            .map(|(value_type, start)| self.input_value(value_type, *start))
             .collect::<Option<Vec<_>>>()?;
         let results = self.owner(site.owner(), arguments)?;
         let mut dst = dst_start;
@@ -163,6 +144,27 @@ impl<'a> Inliner<'a> {
             dst = dst.checked_add(1)?;
         }
         Some(())
+    }
+
+    fn input_value(&mut self, value_type: &solve::SolveValueType, start: Reg) -> Option<Val> {
+        let elems = (0..value_type.scalar_count())
+            .map(|offset| {
+                let register = start.checked_add(offset)?;
+                if matches!(
+                    value_type.element_type(),
+                    solve::SolveScalarType::Integer(_)
+                ) {
+                    self.literal_input(register, value_type)
+                } else {
+                    Some(Elem::Reg(register))
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Val {
+            scalar: value_type.element_type(),
+            dims: Arc::new(value_type.dimensions().to_vec()),
+            elems: Arc::new(elems),
+        })
     }
 
     /// A literal capture retains the checked scalar ABI's exact Integer value.
