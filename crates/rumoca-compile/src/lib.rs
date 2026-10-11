@@ -232,3 +232,6 @@ pub mod compile {
 
 // Root exports intentionally kept minimal to avoid a "god facade".
 pub use compile::{Session, SessionConfig};
+
+#[cfg(test)]
+mod adversarial_when_call_tests;
