@@ -23,7 +23,12 @@ fn issue_426_inactive_neighbor_preserves_the_structured_family() {
 fn issue_423_iterator_mod_parameter_stays_in_its_domain() {
     // MLS §3.7.2: a time-invariant quotient needs no model event root.
     let compiled = compile(include_str!("fixtures/reported_bugs/issue_423.mo"), "C13");
-    assert_eq!(compiled.balance_detail.equations_unknowns(), (4, 4));
+    // Parameter-only assignments settle m before runtime balance is counted.
+    assert_eq!(
+        compiled.flat.variables[&rumoca_core::VarName::new("m")].dims,
+        vec![3]
+    );
+    assert_eq!(compiled.balance_detail.equations_unknowns(), (1, 1));
     compiled
         .dae
         .inspect(|view| assert_eq!(view.root_count(), 0));
