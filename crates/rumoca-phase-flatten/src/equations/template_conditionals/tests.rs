@@ -255,7 +255,7 @@ end M;
 }
 
 #[test]
-fn conditional_template_declines_nested_branch_domains_without_changing_rows() {
+fn conditional_template_retains_selected_child_domains_without_changing_rows() {
     let source = r#"
 model M Real x[3,2]; equation
   for i in 1:3 loop
@@ -268,11 +268,29 @@ model M Real x[3,2]; equation
 end M;
 "#;
     let flat = differential(source, "M");
-    assert!(
-        flat.structured_equations
-            .iter()
-            .all(|family| family.template.is_none())
-    );
+    assert_eq!(flat.equations.len(), 6);
+    assert_eq!(flat.structured_equations.len(), 3);
+    for (outer_point, family) in flat.structured_equations.iter().enumerate() {
+        assert_eq!(family.first_equation_index, outer_point * 2);
+        assert_eq!(family.equations_per_point, 1);
+        assert_eq!(family.domain.binders.len(), 1);
+        assert_eq!(family.domain.binders[0].display_name, "j");
+        assert!(matches!(
+            family.domain.binders[0].provenance,
+            rumoca_core::IndexBinderProvenance::Source(_)
+        ));
+        assert_eq!(
+            family.domain.index_tuples().unwrap(),
+            vec![vec![1], vec![2]]
+        );
+        let template = family.template.as_ref().expect("selected child-loop owner");
+        assert_eq!(template.body.len(), 1);
+        assert!(
+            !matches!(template.body[0], rumoca_core::Expression::If { .. }),
+            "the outer static branch has already selected this child body"
+        );
+    }
+    checked_dae(source, &flat).expect("nonoverlapping selected child owners are checked");
 }
 
 #[test]
