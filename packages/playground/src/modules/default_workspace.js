@@ -21,7 +21,7 @@ const DEFAULT_EXAMPLE_FILE_PATHS = [
     'examples/codegen/README.md',
     'examples/codegen/custom_checked_variables.jinja',
     'examples/codegen/rumoca-scenario.galec_counter_production.toml',
-    'examples/codegen/rumoca-scenario.ball_jax_ode.toml',
+    'examples/codegen/rumoca-scenario.sympy_decay_jax_ode.toml',
     'examples/codegen/rumoca-scenario.sympy_decay_custom_checked_variables.toml',
     'examples/codegen/rumoca-scenario.sympy_decay_checked_dae_report.toml',
     'examples/codegen/rumoca-scenario.sympy_decay_c_ode.toml',

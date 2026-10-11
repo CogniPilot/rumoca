@@ -68,6 +68,51 @@
 {%- for id in ids -%}{{ expr(id) }}{% if not loop.last %}, {% endif %}{%- endfor -%}
 {%- endmacro %}
 
+{# MLS 3.7 §3.7: array derivatives are elementwise. Preserve the checked
+   coordinate owner and projection path inside der's argument; a subscript
+   after a function call is not a primary in Appendix A.2.7. #}
+{% macro derivative_projection(id) -%}
+{%- set op = dae.expressions[id].operation -%}
+{%- if op.kind == "coordinate" and op.coordinate.kind == "derivative" -%}yes
+{%- elif op.kind == "field" -%}{{ derivative_projection(op.base) }}
+{%- elif op.kind == "index" -%}
+{%- set ns = namespace(invariant=true) -%}
+{%- for item in op.subscripts -%}
+{%- if item.kind != "whole" and dae.expressions[item.expression].variability not in ["constant", "parameter"] -%}
+{%- set ns.invariant = false -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if ns.invariant -%}{{ derivative_projection(op.base) }}{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{# General expressions need parentheses before selection (MLS §3.6, §10.5).
+   In particular, a time-varying index stays outside der: no differentiation
+   of the index is introduced by printing the checked projection. #}
+{% macro selection_base(id) -%}
+{%- set op = dae.expressions[id].operation -%}
+{%- set component = op.kind == "coordinate" and op.coordinate.kind in ["parameter", "input", "state", "algebraic", "discrete_real", "discrete_value", "function_parameter"] -%}
+{% if not component %}({% endif %}{{ expr(id) }}{% if not component %}){% endif %}
+{%- endmacro %}
+
+{% macro projected_state(id) -%}
+{%- set e = dae.expressions[id] -%}
+{%- set op = e.operation -%}
+{%- if op.kind == "coordinate" and op.coordinate.kind == "derivative" -%}
+{{ qname(dae.variables[op.coordinate.id].name) }}
+{%- elif op.kind in ["index", "field"] -%}
+{%- set base = dae.expressions[op.base] -%}
+{%- if base.operation.kind != "coordinate" -%}({%- endif -%}
+{{ projected_state(op.base) }}
+{%- if base.operation.kind != "coordinate" -%}){%- endif -%}
+{%- if op.kind == "index" -%}
+[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- else -%}.{{ dae.value_types[base.value_type_id].value_type.record_fields[op.field].name }}
+{%- endif -%}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-derivative-projection", e.provenance) }}
+{%- endif -%}
+{%- endmacro %}
+
 {% macro expr(id) -%}
 {%- set e = dae.expressions[id] -%}
 {%- set op = e.operation -%}
@@ -95,13 +140,19 @@
   {{ " else " }}{{ expr(op.operands[op.operands | length - 1]) }}
 {%- elif op.kind == "array" -%}{{ "{" }}{{ expression_list(op.elements) }}{{ "}" }}
 {%- elif op.kind == "record" -%}{{ dae.value_types[e.value_type_id].value_type.record_name }}({{ expression_list(op.fields) }})
-{%- elif op.kind == "field" -%}{{ expr(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
+{%- elif op.kind == "field" -%}
+{%- if derivative_projection(id) -%}der({{ projected_state(id) }})
+{%- else -%}{{ selection_base(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
+{%- endif -%}
 {%- elif op.kind == "range" -%}
 {{ op.start.value }}:{% if op.explicit_step is not none %}{{ op.explicit_step.value }}:{% endif %}{{ op.stop.value }}
 {%- elif op.kind == "comprehension" -%}
 {{ "{" }}{{ expr(op.body) }} for {% for binder in dae.domains[op.domain].domain.binders %}{{ binder.display_name }} in {{ binder.lower }}:{% if binder.step != 1 %}{{ binder.step }}:{% endif %}{{ binder.upper }}{% if not loop.last %}, {% endif %}{% endfor %}{{ "}" }}
 {%- elif op.kind == "index" -%}
-{{ expr(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- if derivative_projection(id) -%}der({{ projected_state(id) }})
+{%- else -%}
+{{ selection_base(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- endif -%}
 {%- elif op.kind == "array_update" -%}
 {{ fail_at("unsupported-feature:dae-modelica-expression:array_update", e.provenance) }}
 {%- elif op.kind == "builtin" -%}

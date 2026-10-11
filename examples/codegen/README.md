@@ -5,10 +5,10 @@ Generated files go under `gen/`, which is ignored by git.
 
 ```bash
 cargo run -p rumoca -- \
-  compile examples/models/Ball.mo \
-  --model Ball \
+  compile examples/models/SympyDecay.mo \
+  --model SympyDecay \
   --target jax-ode \
-  --output examples/codegen/gen/ball_jax_ode
+  --output examples/codegen/gen/sympy_decay_jax
 
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
@@ -31,7 +31,7 @@ cargo run -p rumoca -- \
 
 Scenarios:
 
-- `rumoca-scenario.ball_jax_ode.toml`: checked ODE RHS JAX target.
+- `rumoca-scenario.sympy_decay_jax_ode.toml`: checked ODE RHS JAX target.
 - `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
   Code target (`.alg` plus generated C).
 - `rumoca-scenario.sympy_decay_c_ode.toml`: checked ODE RHS C target.

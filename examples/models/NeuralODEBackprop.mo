@@ -22,25 +22,25 @@ model NeuralODEBackprop
       else 0.10 * inputScale * (sin(0.17 * i + 0.31 * j)
                               + 0.5 * cos(0.11 * i - 0.23 * j))
       for j in 1:nState} for i in 1:nHidden},
-    fixed = true) "Trainable first-layer weights";
+    each fixed = true) "Trainable first-layer weights";
   Real b1[nHidden](
     start = {0.02 * sin(0.19 * i) for i in 1:nHidden},
-    fixed = true) "Trainable first-layer bias";
+    each fixed = true) "Trainable first-layer bias";
   Real Wmid[nHidden, nHidden](
     start = {{if i == j then recurrentScale
       else 0.04 * recurrentScale * (sin(0.07 * i + 0.13 * j)
                                   - 0.3 * cos(0.05 * i - 0.17 * j))
       for j in 1:nHidden} for i in 1:nHidden},
-    fixed = true) "Trainable hidden-layer weights";
+    each fixed = true) "Trainable hidden-layer weights";
   Real bmid[nHidden](
     start = {0.01 * cos(0.17 * i) for i in 1:nHidden},
-    fixed = true) "Trainable hidden-layer bias";
+    each fixed = true) "Trainable hidden-layer bias";
   Real W2[nState, nHidden](
     start = {{outputScale * (sin(0.23 * i + 0.07 * j)
                            - 0.4 * cos(0.13 * i - 0.11 * j))
       for j in 1:nHidden} for i in 1:nState},
-    fixed = true) "Trainable output weights";
-  Real b2[nState](start = {0.0 for i in 1:nState}, fixed = true)
+    each fixed = true) "Trainable output weights";
+  Real b2[nState](start = {0.0 for i in 1:nState}, each fixed = true)
     "Trainable output bias";
 
   Real angle[nBatch] "Training sample phase";
