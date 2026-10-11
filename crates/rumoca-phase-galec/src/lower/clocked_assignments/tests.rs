@@ -1970,3 +1970,68 @@ fn whole_array_clocked_definitions_collapse_only_under_proven_correspondence() {
     let shapes = state_assignment_shapes(&statements);
     assert_whole_array_assignment_shapes(&statements, &shapes);
 }
+
+#[test]
+fn periodic_guard_totality_reuses_the_checked_boolean_activation() {
+    let mut sources = SourceMap::new();
+    let text = "when sample(0,1) then y=f(x); end when;";
+    let source = sources.add("periodic-call.mo", text);
+    let provenance = at(source, text, text);
+    let model = dae::Dae::construct(sources, |model| {
+        let clock = periodic_clock(model, provenance)?;
+        let other = periodic_clock(model, provenance)?;
+        model.conditions(|conditions| {
+            let tick = conditions.reserve(provenance)?;
+            conditions.define(tick, dae::ConditionInput::Clock(clock), provenance)?;
+            let always = conditions.reserve(provenance)?;
+            conditions.define(always, dae::ConditionInput::Always, provenance)?;
+            let never = conditions.reserve(provenance)?;
+            conditions.define(never, dae::ConditionInput::Not(always), provenance)?;
+            let wrapper = conditions.reserve(provenance)?;
+            conditions.define(wrapper, dae::ConditionInput::Or(tick, never), provenance)?;
+            let initial = conditions.reserve(provenance)?;
+            conditions.define(initial, dae::ConditionInput::Initial, provenance)?;
+            let narrow = conditions.reserve(provenance)?;
+            conditions.define(narrow, dae::ConditionInput::And(tick, initial), provenance)?;
+            let foreign = conditions.reserve(provenance)?;
+            conditions.define(foreign, dae::ConditionInput::Clock(other), provenance)?;
+            let mixed = conditions.reserve(provenance)?;
+            conditions.define(mixed, dae::ConditionInput::Or(tick, foreign), provenance)
+        })
+    })
+    .unwrap();
+    model.inspect(|view| {
+        let clock = view.clocks().next().unwrap().0;
+        let conditions = view.conditions().map(|(id, _)| id).collect::<Vec<_>>();
+        assert!(periodic_trigger::condition_true_on_tick(
+            view,
+            conditions[3],
+            clock
+        ));
+        assert!(periodic_trigger::condition_requires_clock(
+            view,
+            conditions[3],
+            clock
+        ));
+        assert!(!periodic_trigger::condition_true_on_tick(
+            view,
+            conditions[5],
+            clock
+        ));
+        assert!(periodic_trigger::condition_requires_clock(
+            view,
+            conditions[5],
+            clock
+        ));
+        assert!(!periodic_trigger::condition_requires_clock(
+            view,
+            conditions[7],
+            clock
+        ));
+        assert!(!periodic_trigger::condition_true_on_tick(
+            view,
+            conditions[6],
+            clock
+        ));
+    });
+}
