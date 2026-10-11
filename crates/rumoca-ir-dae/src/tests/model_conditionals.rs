@@ -177,6 +177,32 @@ fn model_conditional_wire_reissues_authority_and_rejects_context_tampering() {
     assert!(serde_json::from_value::<Dae>(foreign_close).is_err());
 }
 
+fn shared_identity_function_with_dead_tail<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    real: ValueTypeId<'dae>,
+    at: DaeProvenance,
+) -> Result<(FunctionId<'dae>, ()), DaeConstructionError> {
+    dae.function(
+        FunctionSignature::new(VarName::new("f"), [real], [real], at),
+        |dae, reservation| {
+            let input = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, at)
+            })?;
+            let output = dae
+                .functions(|functions| functions.output(&reservation, VarName::new("y"), 0, at))?;
+            let value = dae.expressions(|e| e.at(at).function_parameter(input))?;
+            let mut body = dae.functions(|functions| functions.begin(reservation, at))?;
+            dae.functions(|functions| functions.assign(&mut body, output, value, at))?;
+            dae.functions(|functions| functions.define(body, at))?;
+            // A dead closed body expression must remain within the
+            // actual global function suspension, not an inferred
+            // dependency-only extent.
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(99.0)))?;
+            Ok(())
+        },
+    )
+}
+
 #[test]
 fn nested_model_arm_first_creates_a_shared_global_function() {
     let source = TestSource::new("if c then if d then f(3) else 4 else 5; f(6)");
@@ -190,27 +216,7 @@ fn nested_model_arm_first_creates_a_shared_global_function() {
             let inner = dae.begin_model_conditional(condition, at)?;
             let (value, function) = dae.model_conditional_arm(&inner, true, |dae| {
                 let argument = dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(3.0)))?;
-                let (function, ()) = dae.function(
-                    FunctionSignature::new(VarName::new("f"), [real], [real], at),
-                    |dae, reservation| {
-                        let input = dae.functions(|functions| {
-                            functions.parameter(&reservation, VarName::new("u"), 0, at)
-                        })?;
-                        let output = dae.functions(|functions| {
-                            functions.output(&reservation, VarName::new("y"), 0, at)
-                        })?;
-                        let value = dae.expressions(|e| e.at(at).function_parameter(input))?;
-                        let mut body =
-                            dae.functions(|functions| functions.begin(reservation, at))?;
-                        dae.functions(|functions| functions.assign(&mut body, output, value, at))?;
-                        dae.functions(|functions| functions.define(body, at))?;
-                        // A dead closed body expression must remain within the
-                        // actual global function suspension, not an inferred
-                        // dependency-only extent.
-                        dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(99.0)))?;
-                        Ok(())
-                    },
-                )?;
+                let (function, ()) = shared_identity_function_with_dead_tail(dae, real, at)?;
                 let value = dae.expressions(|e| e.at(at).call(function, 0, [argument]))?;
                 Ok((value, function))
             })?;

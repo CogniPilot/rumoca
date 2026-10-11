@@ -73,6 +73,26 @@ fn scalar_arm_relation_refuses_a_domain_capture_in_its_guard() {
     .expect("a closed conditional does not erase its guard's domain identity");
 }
 
+fn discrete_guard_owners<'dae>(
+    topology: &mut DiscreteValueTopology<'_, 'dae>,
+    order: [DiscreteValueId<'dae>; 2],
+    a: DiscreteValueId<'dae>,
+    condition: ConditionId<'dae>,
+    value: ExprId<'dae>,
+    at: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    for target in order {
+        topology.owner(at, [target], |owner| {
+            if target == a {
+                owner.always(at, [(value, at)])
+            } else {
+                owner.when(condition, condition, at, [(value, at)])
+            }
+        })?;
+    }
+    Ok(())
+}
+
 fn discrete_guard_fixture(producer_first: bool) -> Result<Dae, DaeConstructionError> {
     let source = TestSource::new(
         "discrete Boolean a; discrete Boolean b; if a then time>0 else false; a=true; b=true;",
@@ -98,16 +118,7 @@ fn discrete_guard_fixture(producer_first: bool) -> Result<Dae, DaeConstructionEr
         let value = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
         let order = if producer_first { [a, b] } else { [b, a] };
         dae.b1c(order, |topology| {
-            for target in order {
-                topology.owner(at, [target], |owner| {
-                    if target == a {
-                        owner.always(at, [(value, at)])
-                    } else {
-                        owner.when(condition, condition, at, [(value, at)])
-                    }
-                })?;
-            }
-            Ok(())
+            discrete_guard_owners(topology, order, a, condition, value, at)
         })?;
         Ok(())
     })
