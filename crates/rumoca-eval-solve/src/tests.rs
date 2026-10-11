@@ -1,4 +1,5 @@
 mod demanded_gathers;
+mod prepared_tensor_snapshots;
 
 use super::*;
 use crate::prepared::assignment_shape_reads_y_index;
