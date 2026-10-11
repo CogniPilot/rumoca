@@ -224,19 +224,19 @@ fn source_family_rejects_foreign_lhs_binder_even_without_rhs_binder_reads() {
         let Expression::Binary { rhs, .. } = &mut equation.residual else {
             unreachable!()
         };
-        *rhs = Box::new(Expression::Literal {
+        **rhs = Expression::Literal {
             value: Literal::Boolean(false),
             span,
-        });
+        };
     }
     let mut family = model.structured_equations[0].clone();
     let Expression::Binary { lhs, rhs, .. } = &mut family.template.as_mut().unwrap().body[0] else {
         unreachable!()
     };
-    *rhs = Box::new(Expression::Literal {
+    **rhs = Expression::Literal {
         value: Literal::Boolean(false),
         span,
-    });
+    };
     let Expression::VarRef { subscripts, .. } = lhs.as_mut() else {
         unreachable!()
     };
@@ -315,7 +315,7 @@ fn scalar_source_body_cannot_borrow_packed_backward_dependency_proof() {
     let Expression::Binary { rhs, .. } = &mut family.template.as_mut().unwrap().body[0] else {
         unreachable!()
     };
-    *rhs = Box::new(indexed_y(
+    **rhs = indexed_y(
         &source,
         vec![
             Subscript::Index {
@@ -327,7 +327,7 @@ fn scalar_source_body_cannot_borrow_packed_backward_dependency_proof() {
                 span: source.span("for i", 0),
             },
         ],
-    ));
+    );
     assert!(
         !admitted(&model, &family),
         "self reads retain the original constructor proof path"
