@@ -142,7 +142,16 @@ fn user_guide_tank_composition_uses_the_documented_connector_and_modifications()
         assert_eq!(session.get("tank1.h").unwrap(), Some(1.0));
         assert_eq!(session.get("tank2.h").unwrap(), Some(1.0));
     }
-    assert_eq!(session.get("tank1.area").unwrap(), Some(2.0));
-    assert_eq!(session.get("tank2.area").unwrap(), Some(0.5));
+    let metadata = model_parameter_metadata(&source, "TwoTanks").unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    for (name, value) in [("tank1.area", 2.0), ("tank2.area", 0.5)] {
+        let parameter = metadata
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["name"] == name)
+            .unwrap();
+        assert_eq!(parameter["defaultValue"], value, "{name}");
+    }
     clear_source_root_cache().unwrap();
 }

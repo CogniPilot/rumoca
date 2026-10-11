@@ -98,6 +98,16 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         17
     );
     assert_eq!(fences.iter().filter(|f| f.has_flag("fragment")).count(), 8);
+    let contexts: std::collections::BTreeSet<_> = fences
+        .iter()
+        .filter(|fence| fence.has_flag("fragment"))
+        .map(|fence| fence.fragment_context().expect("fragment context"))
+        .collect();
+    assert_eq!(
+        contexts.len(),
+        8,
+        "each exact fragment needs its own context"
+    );
     let scenarios: Vec<_> = fences
         .iter()
         .filter_map(GuideFence::scenario_path)
