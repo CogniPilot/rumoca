@@ -263,3 +263,67 @@ fn square_branch<'dae>(
         e.at(at).binary(dae::BinaryOperator::Multiply, y, y)
     })
 }
+
+fn closed_constant_conditional_with_consumer() -> dae::Dae {
+    let text = "-(if true then 3 else 4)";
+    let mut sources = SourceMap::new();
+    let source = sources.add("closed_constant_conditional.mo", text);
+    let at = source_provenance(source, text, text);
+    dae::Dae::construct(sources, |model| {
+        let condition = model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Boolean(true)))?;
+        let owner = model.begin_model_conditional(condition, at)?;
+        let taken = model.model_conditional_arm(&owner, true, |model| {
+            model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Real(3.0)))
+        })?;
+        let other = model.model_conditional_arm(&owner, false, |model| {
+            model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Real(4.0)))
+        })?;
+        let value = model.finish_model_conditional(owner, [taken, other])?;
+        model.expressions(|e| e.at(at).unary(dae::UnaryOperator::Negate, value))?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn closed_model_conditional_honors_its_checked_literal_replacement() {
+    let source = closed_constant_conditional_with_consumer();
+    let plan = source.inspect(|view| {
+        let mut plan = vec![None; view.expression_count()];
+        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+        for ordinal in 0..view.expression_count() {
+            let id = view.expression_id(ordinal).unwrap();
+            if view.model_conditional_of(id).is_some() {
+                let values = evaluator.expression(id).unwrap();
+                assert_eq!(values.as_slice(), &[3.0]);
+                plan[ordinal] = Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
+                    scalar: dae::ScalarType::Real,
+                    dimensions: Box::new([]),
+                    values: values.into(),
+                }));
+            }
+        }
+        plan
+    });
+    let rebuilt = reconstruction::rebuild_literal_expressions(&source, &plan).unwrap();
+    rebuilt.inspect(|view| {
+        assert_eq!(
+            view.model_conditional_count(),
+            1,
+            "issued owner remains replayed"
+        );
+        let id = view.expression_id(view.expression_count() - 1).unwrap();
+        let dae::ExpressionOperation::Unary { operand, .. } =
+            view.expression(id).unwrap().operation()
+        else {
+            panic!("original consumer remains unary");
+        };
+        assert!(
+            matches!(
+                view.expression(operand).unwrap().operation(),
+                dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(3.0))
+            ),
+            "checked whole-expression literal plan reaches the original consumer"
+        );
+    });
+}
