@@ -2,3 +2,4 @@
 //! `suite_core/main.rs` for the grouping rules.
 
 mod examples_smoke;
+mod tracked_models;
