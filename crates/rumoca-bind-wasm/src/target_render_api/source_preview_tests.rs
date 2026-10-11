@@ -156,3 +156,18 @@ fn algorithm_preview_does_not_invent_artifact_evidence() {
         );
     }
 }
+
+#[test]
+fn algorithm_preview_classifies_the_rendered_output_path() {
+    let expected = custom_preview("BrowserPreviewCounter.c", "{{ model_name }}", true)
+        .expect("literal C filename remains a source preview");
+    let rendered = custom_preview("{{ model_name ~ '.c' }}", "{{ model_name }}", true)
+        .expect("the checked renderer produces the same actual C output path");
+    assert_eq!(rendered.len(), expected.len());
+    assert_eq!(rendered[0].path, expected[0].path);
+    assert_eq!(rendered[0].content, expected[0].content);
+
+    let error = custom_preview("{{ model_name ~ '.xml' }}", "{{ model_name }}", true)
+        .expect_err("a rendered metadata filename cannot become a source preview");
+    assert!(error.message().contains("source files"), "{error:?}");
+}
