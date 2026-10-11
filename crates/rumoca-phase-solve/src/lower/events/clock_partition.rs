@@ -428,9 +428,9 @@ fn unclocked_member<'dae>(
         .iter()
         .map(|branch| branch.0)
         .collect::<Vec<_>>();
-    let excluded = triggers.iter().copied().collect();
     let mut direct = BTreeSet::new();
-    for &(_, guard, value, _) in &target.branches {
+    for &(trigger, guard, value, _) in &target.branches {
+        let excluded = BTreeSet::from([trigger]);
         rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
         rumoca_phase_structural::collect_condition_same_instant_reads_except(
             view,
