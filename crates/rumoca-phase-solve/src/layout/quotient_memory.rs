@@ -12,6 +12,20 @@ pub(crate) struct QuotientMemory<'dae> {
     pub(crate) parameter: usize,
 }
 
+impl QuotientMemory<'_> {
+    pub(crate) fn step(self) -> rumoca_ir_solve::UnaryOp {
+        quotient_step_operator(self.builtin)
+    }
+}
+
+pub(crate) fn quotient_step_operator(builtin: dae::PureBuiltin) -> rumoca_ir_solve::UnaryOp {
+    if builtin == dae::PureBuiltin::Mod {
+        rumoca_ir_solve::UnaryOp::Floor
+    } else {
+        rumoca_ir_solve::UnaryOp::Trunc
+    }
+}
+
 pub(crate) struct BufferedQuotients<'dae> {
     entries: Vec<QuotientMemory<'dae>>,
     by_expression: Vec<Option<usize>>,

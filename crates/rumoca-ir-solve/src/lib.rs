@@ -24,6 +24,7 @@ mod linear_op;
 mod model;
 mod parameter_classification;
 mod parameter_reads;
+mod quotient_memory;
 mod refresh;
 mod root_search;
 mod scalar_program_outputs;
@@ -1221,6 +1222,7 @@ fn validate_event_iteration_plan(
         ));
     }
     validate_scalar_event_producers(problem, &claims.scalar_rows)?;
+    quotient_memory::validate(problem)?;
     validate_structured_event_producers(problem, &claims.structured_updates)?;
     validate_guarded_event_producers(problem, &claims.guarded_ranges)?;
     validate_event_transaction_target_claims(problem, &claims.transaction_targets)

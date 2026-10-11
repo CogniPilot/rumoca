@@ -463,15 +463,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         ratio: solve::Reg,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        self.solve_unary(
-            if builtin == dae::PureBuiltin::Mod {
-                solve::UnaryOp::Floor
-            } else {
-                solve::UnaryOp::Trunc
-            },
-            ratio,
-            span,
-        )
+        self.solve_unary(crate::layout::quotient_step_operator(builtin), ratio, span)
     }
 
     fn quotient_result(

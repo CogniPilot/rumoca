@@ -1280,6 +1280,10 @@ pub enum DiscreteRowRole {
     EventAction,
     /// Runtime memory for detecting a condition edge.
     ConditionMemory,
+    /// The numeric step of a model-level quotient, held between events.
+    /// Its producer and initialization assignment must end in this rounding
+    /// operation and own the same private parameter slot.
+    QuotientMemory { step: UnaryOp },
     /// Condition memory whose condition reads a periodic clock activation
     /// lane (`clocks.activation_parameter_indices`).
     ///

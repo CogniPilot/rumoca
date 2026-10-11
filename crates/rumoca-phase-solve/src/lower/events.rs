@@ -130,7 +130,9 @@ fn lower_quotient_memory<'dae>(
             ScalarCompiler::new(view, layout, None).quotient_memory_program(memory.quotient)?,
             span,
             solve::scalar_slot_p(memory.parameter),
-            solve::DiscreteRowRole::Equation,
+            solve::DiscreteRowRole::QuotientMemory {
+                step: memory.step(),
+            },
             solve::DiscreteEventPreMode::FollowCurrent,
             None,
         );
