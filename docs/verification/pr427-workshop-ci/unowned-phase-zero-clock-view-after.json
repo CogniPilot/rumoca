@@ -1,0 +1,77 @@
+{
+  "scope": "Unchanged periodic and backward time/deadline controls plus checked constant-memory lowering; isolated corrected sample-owner witness. No full solver or CI-green claim.",
+  "public_after": {
+    "source": "9aec6edc9fd68ef422566ba9b83462916402987e",
+    "attempt": "pr427-periodic-public-and-owner-after-9aec-20261012",
+    "recipe_sha256": "01877584adacd589bb748c33e818041decbefa924f880c2491682e50e3a10058",
+    "gates": [
+      {
+        "gate": "phase-solve-all-one-hundred-eighty-eight",
+        "passed": 188,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "0f7b272c9d5630c2fe46827121df66ba37af16226ff7674d0c3945744ed11fda",
+        "guardian_sha256": "fd809c654644f2bad07e1f311d7af0d8379d157d7b37776d0cf78a6f3f67c2bd"
+      },
+      {
+        "gate": "periodic-source-counter-seventeen",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "869e5e995de3eedfa6e16ebc776ef09dbcf241d316c379631a7741625dbbb292",
+        "guardian_sha256": "98c9b8dbd796fecac73c74cd1ac6b97b0db507ae03829c635c4cc4da88c98276"
+      },
+      {
+        "gate": "unconditional-time-activation-thirty-two",
+        "passed": 32,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "598bda0996bac52bbfdefbbb297a3f5aa4b42fce3ce6c5778ce76e3c601abe67",
+        "guardian_sha256": "d072c0e3bd8810685f4840bc5e577b4ab023934c516eb8cb5189a230a49883e2"
+      },
+      {
+        "gate": "guarded-deadline-default-integrals-and-equality-five",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "d0d5c42203ee2aaf363edbd09a90d1a142e33beb32878a2c9dc8d7dcb860e1a8",
+        "guardian_sha256": "e89ee8366208b90d9b3f14b08baa3ce418c103537daaa09090b327bf14c78902"
+      }
+    ]
+  },
+  "isolated_after": {
+    "source": "8f4a4cce477b8142c31524226f136323c5050dbb",
+    "prePostSourceIdentityEqual": true,
+    "trackedEntries": 4024,
+    "status": "PASS",
+    "expectedTests": 1,
+    "actualTests": 1,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 600,
+    "finished_unix": 1791751867.9910026,
+    "binary": {
+      "sha256": "1c156114bbcf73729757592e8f896781651bf8c3f0d57486a11b97456248b8ce"
+    },
+    "recipe_sha256": "57716861d700a897e11e4ef904216da05ee770e392a3b295ea73c0cfa95be499",
+    "log_sha256": "1fbdd5814f34bec25fc61fd90530957c95f42207f9648ed3828cb4e97950460b",
+    "guardian_sha256": "fe9eba70121294e50c8faf82763c50d9ed5b09a1f496d9b1b2df1b78f9ec20df",
+    "guardian": {
+      "elapsedMs": 120690.919675,
+      "peakRssKiB": 2075180,
+      "minimumAvailableKiB": 54974332,
+      "minimumScratchFreeBytes": 72245809152,
+      "scratchFreeFloorMiB": 8192,
+      "peakCacheBytes": 524025856,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    },
+    "guardian_owner_sha256": "2106ebc8ac92fe4f54ed2789ae3d07ef233330284f9f6a623783df91938dc940",
+    "attempt": "pr427-unowned-clock-8f4-after-20261012"
+  }
+}

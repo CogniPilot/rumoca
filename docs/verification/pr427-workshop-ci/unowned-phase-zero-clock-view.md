@@ -24,15 +24,36 @@ SPEC0007's Solve event-pass ownership and the MLS initialization/transient
 boundary govern this distinction; source `when true` and `initial()` remain
 their existing independent controls.
 
-Test-only commit `f60e082000b6366ba884f7f8b0d98493572efa19` adds a runtime
-owner witness with an unowned counter, pulse memory, a zero-phase periodic
-schedule and no initial-flag slot. It requires a zero initialization value,
-one post-initial tick, rearmed pulse memory, and one further increment at the
-next tick. Production commit
-`aa1c23ab26e2a1e01d906774a706963e15d327b7` shares the checked pass's clock
-visibility between canonical updates and event actions. Both are unrun here;
-formatting and `git diff --check` passed, and independent source review found
-no blocking defect.
+The unchanged periodic suite now passes all seventeen tests at
+`9aec6edc9fd68ef422566ba9b83462916402987e`, including its independent
+`sample(0, 0.1)` oracle of one increment at initialization and one per later
+tick. The thirty-two backward time-activation controls, five guarded-deadline
+controls and all 188 phase-Solve tests also pass on that source.
+
+The additional runtime owner witness passes separately at
+`8f4a4cce477b8142c31524226f136323c5050dbb`: one test, zero ignored, with all
+assertions for initialization zero, post-initial one, next-tick two and pulse
+rearming reached. Its inactive arm holds the current target, matching the
+checked when producer (SOLVE-C07/C10), while only its active arm reads
+`pre(counter)`. Production commit
+`aa1c23ab26e2a1e01d906774a706963e15d327b7` is present in both qualified sources.
+
+Earlier versions of this supplemental fixture were incomplete: the Unary
+field first failed compilation; the event-iteration storage/run was missing;
+and the inactive arm restored `pre(counter)`, undoing an increment when the
+pulse buffer settled. The earlier one-observation failures reached no numeric
+assertions and do not establish the original double-increment defect. The
+original public seventeen-test BEFORE/AFTER pair establishes that defect;
+fixture corrections preserve all expected values and observation counts.
+
+Actual source/log/guardian bindings are in
+[`unowned-phase-zero-clock-view-after.json`](unowned-phase-zero-clock-view-after.json).
+The isolated witness's complete 4,024-entry source seal and HEAD were identical
+before and after execution. It used the unchanged 600-second, 4-GiB RSS,
+8-GiB cache and scratch-floor guards with four jobs; execution completed in
+120.691 seconds including a fresh offline build, with peak RSS 2,075,180 KiB
+and no resource stop. Formatting and diff checks passed. These results do
+not establish complete solver/workspace or CI success.
 
 Focused qualification commands:
 
@@ -58,5 +79,5 @@ unchanged. Actual BEFORE evidence is under attempt
 - periodic log SHA256: `0682ee1ed1a2dad4ffdf4e641e78fcfcb55fd4c7185bf2ae90e5e81054d38c47`
 - periodic guardian SHA256: `903d1a8ce4c4247a1b805d98cbbbe7d0b3214538e715c104c85e8a46f81054eb`
 
-No AFTER runtime success or complete CI success is inferred from source
-review.
+The qualified scopes above are runtime results; broader final gates remain
+separate obligations.
