@@ -1326,6 +1326,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn buffered_relation_slot(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
         let slot = self.layout.buffered_relations.expression_slot(expression)?;
+        self.event_buffering_enabled().then_some(slot)
+    }
+
+    fn event_buffering_enabled(&self) -> bool {
         let mut context = self.context_id;
         while let Some((no_event, parent)) = self.contexts.borrow().frame(context, |frame| {
             (
@@ -1334,11 +1338,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             )
         }) {
             if no_event {
-                return None;
+                return false;
             }
             context = parent;
         }
-        Some(slot)
+        true
     }
 
     fn with_no_event<T>(
@@ -1450,13 +1454,27 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 value,
                 subscripts,
             } => self.array_update(expression, base, value, subscripts, scalar),
-            dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
-                builtin,
-                arguments,
-                node.value_type().dimensions(),
-                scalar,
-                node.provenance().span(),
-            ),
+            dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                if self.event_buffering_enabled()
+                    && let Some(memory) = self.layout.buffered_quotients.get(expression)
+                {
+                    self.buffered_quotient(
+                        builtin,
+                        arguments,
+                        scalar,
+                        memory.parameter,
+                        node.provenance().span(),
+                    )
+                } else {
+                    self.builtin(
+                        builtin,
+                        arguments,
+                        node.value_type().dimensions(),
+                        scalar,
+                        node.provenance().span(),
+                    )
+                }
+            }
             dae::ExpressionOperation::Call {
                 function,
                 output,

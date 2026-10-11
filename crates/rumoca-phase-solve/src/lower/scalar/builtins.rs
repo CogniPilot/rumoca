@@ -453,7 +453,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             scalar,
         )?;
         let ratio = self.binary(dae::BinaryOperator::Divide, lhs, rhs, span)?;
-        let quotient = self.solve_unary(
+        let quotient = self.quotient_step(builtin, ratio, span)?;
+        self.quotient_result(builtin, lhs, rhs, quotient, span)
+    }
+
+    fn quotient_step(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        ratio: solve::Reg,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        self.solve_unary(
             if builtin == dae::PureBuiltin::Mod {
                 solve::UnaryOp::Floor
             } else {
@@ -461,12 +471,60 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             },
             ratio,
             span,
-        )?;
+        )
+    }
+
+    fn quotient_result(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        lhs: solve::Reg,
+        rhs: solve::Reg,
+        quotient: solve::Reg,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
         if builtin == dae::PureBuiltin::Div {
             return Ok(quotient);
         }
         let multiple = self.binary(dae::BinaryOperator::Multiply, quotient, rhs, span)?;
         self.binary(dae::BinaryOperator::Subtract, lhs, multiple, span)
+    }
+
+    pub(super) fn buffered_quotient(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        parameter: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let lhs = self.expression(
+            arguments.get(0).expect("checked quotient first argument"),
+            scalar,
+        )?;
+        let rhs = self.expression(
+            arguments.get(1).expect("checked quotient second argument"),
+            scalar,
+        )?;
+        let quotient = self.load_slot(solve::scalar_slot_p(parameter), span)?;
+        self.quotient_result(builtin, lhs, rhs, quotient, span)
+    }
+
+    pub(in crate::lower) fn quotient_memory_program(
+        mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let memory = self
+            .layout
+            .buffered_quotients
+            .get(expression)
+            .expect("construction-issued quotient memory");
+        let span = self.node(expression).provenance().span();
+        // The indicator's ratio remains live; only its integer-valued step is
+        // assigned at initialization and accepted event transactions.
+        let ratio = self.expression(memory.ratio, 0)?;
+        let step = self.quotient_step(memory.builtin, ratio, span)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: step });
+        Ok(solve::prune_dead_constants(self.ops))
     }
 
     /// Lower `homotopy(actual, simplified)` as the blend MLS 3.6 §3.7.4.3

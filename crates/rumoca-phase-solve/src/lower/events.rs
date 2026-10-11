@@ -51,6 +51,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     LowerError,
 > {
     let mut discrete = DiscreteRows::new(view)?;
+    lower_quotient_memory(view, layout, &mut discrete)?;
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
     lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
     let mut event_clock_targets = std::mem::take(&mut discrete.event_clock_targets);
@@ -112,6 +113,29 @@ pub(super) fn lower_discrete_and_events<'dae>(
         ..solve::SolveEventPartition::default()
     };
     Ok((discrete, events, event_transactions))
+}
+
+fn lower_quotient_memory<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    rows: &mut DiscreteRows<'dae>,
+) -> Result<(), LowerError> {
+    for memory in layout.buffered_quotients.entries() {
+        let span = view
+            .expression(memory.quotient)
+            .expect("checked quotient expression")
+            .provenance()
+            .span();
+        rows.push(
+            ScalarCompiler::new(view, layout, None).quotient_memory_program(memory.quotient)?,
+            span,
+            solve::scalar_slot_p(memory.parameter),
+            solve::DiscreteRowRole::Equation,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            None,
+        );
+    }
+    Ok(())
 }
 
 fn build_event_iteration_plan<'dae>(
