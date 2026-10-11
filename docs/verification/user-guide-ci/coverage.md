@@ -20,7 +20,7 @@ cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --noc
 
 The original expanded filter selected13 tests. The current source additionally
 selects the corrected thermostat cycle test and the full Latent256/512 prose
-variants plus TOML-context and two other-language inventory tests:18 tests,
+variants, full PredatorPrey313, plus TOML-context and two other-language inventory tests:19 tests,
 with no ignored tests. Completed and resource-stopped receipts
 remain distinct from the complete current gate. The same source fixtures enter the actual
 binding compilation/simulation front door rather than a separate snippet parser.
@@ -79,5 +79,5 @@ compilations with the corrected periodic equation scheduler. Its raw log SHA256
 is50da8178c8158bf89530b7f9ac98b9b6daa7c9dc07aaa60e918a420328a175dc.
 That receipt includes the original thermostat counterexample, which proves
 heat0.02 never switches. The heat0.05 correction and independent repeated
-hysteresis-cycle after-test are unmeasured here, as are the future18-test suite,
-Latent256/512, configuration contexts, and stronger owner registry.
+hysteresis-cycle after-test are unmeasured here, as are the future19-test suite,
+Latent256/512 and PredatorPrey313, configuration contexts, and stronger owner registry.

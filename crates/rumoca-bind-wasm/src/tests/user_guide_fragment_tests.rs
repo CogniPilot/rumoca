@@ -206,3 +206,57 @@ fn user_guide_latent_width_variants_use_the_full_authored_source() {
     }
     clear_source_root_cache().unwrap();
 }
+
+#[test]
+fn user_guide_predator_width_313_uses_the_full_authored_source() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let page = std::fs::read_to_string(
+        repository_root().join("docs/user-guide/src/language/neural-odes.md"),
+    )
+    .unwrap();
+    assert!(page.contains("`H = 313`"));
+    assert!(page.contains("`100162`"));
+    let original = model_source("NeuralPredatorPrey");
+    let declaration = "parameter Integer nHidden(min = 3) = 24";
+    assert_eq!(original.matches(declaration).count(), 1);
+    let source = original.replacen(declaration, "parameter Integer nHidden(min = 3) = 313", 1);
+    let started = std::time::Instant::now();
+    compile_balanced(&source, "NeuralPredatorPrey");
+    let metadata = model_parameter_metadata(&source, "NeuralPredatorPrey").unwrap();
+    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+    let count = metadata
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|parameter| parameter["name"] == "trainableParams")
+        .unwrap();
+    assert_eq!(count["defaultValue"], 100162);
+    let mut session = WasmSimulationSession::with_interactive_options(
+        &source,
+        "NeuralPredatorPrey",
+        0.01,
+        "rk-like",
+        1e-8,
+        1e-8,
+        "[]",
+    )
+    .unwrap();
+    for time in [0.0, 0.01, 0.02] {
+        session.advance_to(time).unwrap();
+        for index in 1..=2 {
+            assert!(
+                session
+                    .get(&format!("population[{index}]"))
+                    .unwrap()
+                    .unwrap()
+                    .is_finite()
+            );
+        }
+    }
+    eprintln!(
+        "[guide-prose-width] PredatorPrey313 100162parameters {:.6}s",
+        started.elapsed().as_secs_f64()
+    );
+    clear_source_root_cache().unwrap();
+}
