@@ -27,7 +27,9 @@ model SharedSourceCalls
 end SharedSourceCalls;
 "#;
     let mut session = Session::new(SessionConfig::default());
-    session.add_document("SharedSourceCalls.mo", source);
+    session
+        .add_document("SharedSourceCalls.mo", source)
+        .expect("the model parses");
     session
         .compile_model("SharedSourceCalls")
         .expect("instances of one declaration retain distinct semantic call owners");
