@@ -338,6 +338,11 @@ impl<'dae> LapackBuilder<'_, '_, 'dae> {
         rows: &mut [dae::ExprId<'dae>],
         taken: &[dae::ExprId<'dae>],
     ) -> Result<(), dae::DaeConstructionError> {
+        // DAE-C34 / MLS §12.9: with one remaining row the selected row
+        // is already first. An identity interchange has no conditional arms.
+        if rows.len() == 1 {
+            return Ok(());
+        }
         let pivot_row = self.expressions.at(self.provenance).conditional(
             taken[1..].iter().copied().zip(rows[1..].iter().copied()),
             rows[0],
