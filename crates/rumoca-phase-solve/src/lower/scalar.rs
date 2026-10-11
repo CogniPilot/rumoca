@@ -1390,7 +1390,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
-        if let Some(result) = self.exact_integer_quotient(expression, scalar)? {
+        if let Some(result) = self.exact_integer_expression(expression, scalar)? {
             self.expression_cache.insert(key, result);
             return Ok(result);
         }

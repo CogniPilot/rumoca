@@ -1,4 +1,4 @@
-//! Exact Integer expressions use the canonical typed expression owner.
+//! Integer quotients and comparisons use the canonical typed expression owner.
 
 use super::*;
 
@@ -18,16 +18,18 @@ enum ExpressionInput<'dae> {
 }
 
 impl<'dae> ExactExpressionForm<'dae> {
-    pub(crate) fn admit(
+    pub(crate) fn try_admit(
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
-    ) -> Result<Self, solve::SolveProgramConstructionError> {
+    ) -> Result<Option<Self>, solve::SolveProgramConstructionError> {
         let node = view
             .expression(expression)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        if !needs_integer_owner(view, node) {
+            return Ok(None);
+        }
         let provenance = node.provenance().span();
-        let mut supported = !node.value_type().is_record()
-            && node.value_type().scalar_type() == dae::ScalarType::Integer;
+        let mut supported = true;
         let mut readers = HashMap::new();
         let mut binders = HashMap::new();
         let mut owned_domains = BTreeSet::new();
@@ -77,11 +79,40 @@ impl<'dae> ExactExpressionForm<'dae> {
                     (ExpressionInput::Binder(domain, ordinal), ty, expression)
                 }),
         );
-        Ok(Self { expression, inputs })
+        Ok(Some(Self { expression, inputs }))
     }
 
     pub(crate) fn input_readers(&self) -> impl Iterator<Item = dae::ExprId<'dae>> + '_ {
         self.inputs.iter().map(|(_, _, reader)| *reader)
+    }
+}
+
+fn needs_integer_owner<'dae>(view: dae::DaeView<'dae>, node: dae::ExpressionView<'dae>) -> bool {
+    match node.operation() {
+        dae::ExpressionOperation::Builtin {
+            builtin: dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem,
+            ..
+        } => node.value_type().scalar_type() == dae::ScalarType::Integer,
+        dae::ExpressionOperation::Binary {
+            operator:
+                dae::BinaryOperator::Equal
+                | dae::BinaryOperator::NotEqual
+                | dae::BinaryOperator::Less
+                | dae::BinaryOperator::LessEqual
+                | dae::BinaryOperator::Greater
+                | dae::BinaryOperator::GreaterEqual,
+            lhs,
+            rhs,
+        } => [lhs, rhs].into_iter().all(|operand| {
+            // MLS §3.5, §6.7: compare Integer operands in their declared
+            // type; only a mixed Real operand requires language conversion.
+            view.expression(operand)
+                .expect("checked comparison operand resolves")
+                .value_type()
+                .scalar_type()
+                == dae::ScalarType::Integer
+        }),
+        _ => false,
     }
 }
 

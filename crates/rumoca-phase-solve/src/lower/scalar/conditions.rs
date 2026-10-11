@@ -156,6 +156,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let node = self.node(expression);
+        if node.value_type().scalar_type() == dae::ScalarType::Boolean
+            && let Some(condition) = self.exact_integer_expression(expression, 0)?
+        {
+            // Integer relations change at discrete events (MLS §3.8.5).
+            // Their signed truth surface must not subtract rounded operands
+            // or introduce overflow by subtracting two valid Integers.
+            let when_true = self.constant(-1.0, span)?;
+            let when_false = self.constant(1.0, span)?;
+            return self.select(condition, when_true, when_false, span);
+        }
         let output = match node.operation() {
             dae::ExpressionOperation::Binary {
                 operator: dae::BinaryOperator::Less | dae::BinaryOperator::LessEqual,

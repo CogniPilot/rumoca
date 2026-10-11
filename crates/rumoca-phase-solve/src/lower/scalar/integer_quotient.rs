@@ -1,28 +1,21 @@
-//! Model-level Integer quotients consume the shared typed expression owner.
+//! Model-level Integer quotients and relations consume one typed expression owner.
 
 use super::*;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
-    pub(super) fn exact_integer_quotient(
+    pub(super) fn exact_integer_expression(
         &mut self,
         expression: dae::ExprId<'dae>,
         scalar: usize,
     ) -> Result<Option<solve::Reg>, LowerError> {
         let node = self.node(expression);
-        if node.value_type().scalar_type() != dae::ScalarType::Integer
-            || !matches!(
-                node.operation(),
-                dae::ExpressionOperation::Builtin {
-                    builtin: dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem,
-                    ..
-                }
-            )
-        {
-            return Ok(None);
-        }
         let span = node.provenance().span();
-        let form = crate::lower::typed_functions::ExactExpressionForm::admit(self.view, expression)
-            .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        let Some(form) =
+            crate::lower::typed_functions::ExactExpressionForm::try_admit(self.view, expression)
+                .map_err(|error| LowerError::contract(error.to_string(), span))?
+        else {
+            return Ok(None);
+        };
         let site = self
             .layout
             .pure_calls

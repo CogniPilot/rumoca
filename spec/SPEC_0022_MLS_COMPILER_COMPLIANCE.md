@@ -894,7 +894,9 @@ areas.
   in the typed Solve program, and a function-body quotient needs no event owner
   whatever its operands' variability. Model-level Integer quotients also retain
   the whole Integer expression in the typed owner before final scalar-runtime
-  publication (SPEC_0040 SOLVE-C84); an Integer scalar payload that cannot be
+  publication (SPEC_0040 SOLVE-C84). Comparisons of two Integer operands
+  retain typed Integer arithmetic through their Boolean result (§3.5, §6.7);
+  mixed Real operands still require Real promotion. An Integer scalar payload that cannot be
   represented exactly is refused, while typed Int64 interfaces remain Int64.
   Regression evidence: `suite_core::reported_bug_runtime::issue_411_*` and
   `suite_core::reported_bug_runtime::main_dae_integer` (MLS §3.7.2 Operators
