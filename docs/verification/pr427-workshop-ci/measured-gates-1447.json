@@ -1,0 +1,783 @@
+{
+  "reportSource": "0db939b75deb0bf8b018c0378a2324537310f1c7",
+  "executedSource": "1447ed716d44cc3b020935f38bfb16372bab7fda",
+  "classification": "Focused13PASS/public14=12PASS2FAIL/browser-editor-renderer10PASS; examples stopped before any libtest result. No whole after-pass or issue closure.",
+  "attempts": [
+    {
+      "source": "1447ed716d44cc3b020935f38bfb16372bab7fda",
+      "attempt": "pr427-workshop-and-native-final-headroom-after-20261011",
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/recipe.json",
+        "bytes": 517172,
+        "sha256": "48705bbc41694a7089fd7df9ab8dbff97019a0562c5336de4cdcb0fc145121b5"
+      },
+      "terminalAudit": {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/terminal-idle.json",
+        "bytes": 462,
+        "sha256": "4c75d01b76a461172653d2e0ca52eacb233bf9b9a9d483b29cb784d1a4515c09"
+      },
+      "gates": [
+        {
+          "name": "integer-scalar-canonical-boundary-3",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 318 filtered out; finished in 0.00s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 38685.163356,
+            "peakRssKiB": 1120620,
+            "minimumScratchFreeBytes": 9540521984,
+            "peakCacheBytes": 6883004416
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/integer-scalar-canonical-boundary-3.log",
+            "bytes": 1056,
+            "sha256": "6d3e5db03338de314b0feaa74fca87e3e8231b6125575fee19eb1f31b4f15077"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/integer-scalar-canonical-boundary-3.guardian.json",
+            "bytes": 1009,
+            "sha256": "3021fd20f16b7617e2550dd5e73b0efc0b4ca423bf79b1dc7ada301d553f72b0"
+          }
+        },
+        {
+          "name": "integer-scalar-native-boundary-and-arithmetic-5",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 127 filtered out; finished in 0.01s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 34571.374443,
+            "peakRssKiB": 1600836,
+            "minimumScratchFreeBytes": 9548775424,
+            "peakCacheBytes": 6871252992
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/integer-scalar-native-boundary-and-arithmetic-5.log",
+            "bytes": 1493,
+            "sha256": "27da92b4b0321ffe828dba4b2738d329aa30536d0e5bfc79a6beca5618d99c18"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/integer-scalar-native-boundary-and-arithmetic-5.guardian.json",
+            "bytes": 1025,
+            "sha256": "842216c21dab4f21c1bbea0b67f3e175be4265679529fca239e93f078d7a5874"
+          }
+        },
+        {
+          "name": "issued-membership-guard-after-3",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 435 filtered out; finished in 0.00s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 42434.145537000004,
+            "peakRssKiB": 1219560,
+            "minimumScratchFreeBytes": 9531125760,
+            "peakCacheBytes": 6884179968
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/issued-membership-guard-after-3.log",
+            "bytes": 1483,
+            "sha256": "7529c1708b51e68d055791777af8697239598fb88c4e89133acb9a8e0bd4b3c3"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/issued-membership-guard-after-3.guardian.json",
+            "bytes": 996,
+            "sha256": "04f6371ec7929910a28b5e61a8f4df2ee982a248d12fb65215455d41e5178fa9"
+          }
+        },
+        {
+          "name": "native-scalar-update-address-1",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.00s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 38728.534391,
+            "peakRssKiB": 1590400,
+            "minimumScratchFreeBytes": 9549455360,
+            "peakCacheBytes": 6873231360
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/native-scalar-update-address-1.log",
+            "bytes": 1024,
+            "sha256": "a44f8c4d3f6612111ab499b322d9e78148142a42e7342951638c1ba7330c8d19"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/native-scalar-update-address-1.guardian.json",
+            "bytes": 1019,
+            "sha256": "c7638a3572db434c4acf9fcfdd463ef77ff035a9f898e834772b296f9e68c52d"
+          }
+        },
+        {
+          "name": "normal-for-enclosing-range-control-1",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 415 filtered out; finished in 0.01s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 144867.989471,
+            "peakRssKiB": 2536700,
+            "minimumScratchFreeBytes": 9511936000,
+            "peakCacheBytes": 6912659456
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/normal-for-enclosing-range-control-1.log",
+            "bytes": 3341,
+            "sha256": "d4806ad7a6a2ca75f63fcbc184e5baf210a08266ae729776651d6d01af01a9b5"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/normal-for-enclosing-range-control-1.guardian.json",
+            "bytes": 1049,
+            "sha256": "8f99ed32dac1e0534db8287c9e38f5af32ad9ef79292ac86a532415e9c673020"
+          }
+        },
+        {
+          "name": "original-public-runtime-plus-native-14",
+          "exitCode": 101,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: FAILED. 12 passed; 2 failed; 0 ignored; 0 measured; 1385 filtered out; finished in 0.05s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 191063.809586,
+            "peakRssKiB": 2873404,
+            "minimumScratchFreeBytes": 9052340224,
+            "peakCacheBytes": 7205216256
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/original-public-runtime-plus-native-14.log",
+            "bytes": 11213,
+            "sha256": "a243384772ce4ac941f2acf5a71edb088f6b8aa330c06bdb099bbd37da192648"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-and-native-final-headroom-after-20261011/original-public-runtime-plus-native-14.guardian.json",
+            "bytes": 1063,
+            "sha256": "58339305e68d0197eda83ca15483f5d315ef138ecb6b280ea1de8bc6118fb19f"
+          }
+        }
+      ]
+    },
+    {
+      "source": "1447ed716d44cc3b020935f38bfb16372bab7fda",
+      "attempt": "pr427-actual-browser-editor-and-tracked-examples-after-20261011",
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/recipe.json",
+        "bytes": 513677,
+        "sha256": "93f2c0269205b12a710dee817c0547672d17aca6d94fc21602467608521ad74b"
+      },
+      "terminalAudit": {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/terminal-idle.json",
+        "bytes": 462,
+        "sha256": "a69942d32202bbd273257c83757bd4327bbc16f9a5b09d4f90bb3c35823a2a7f"
+      },
+      "gates": [
+        {
+          "name": "actual-editor-catalog-1",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 345 filtered out; finished in 0.00s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 19933.980634,
+            "peakRssKiB": 905988,
+            "minimumScratchFreeBytes": 8763523072,
+            "peakCacheBytes": 7415074816
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/actual-editor-catalog-1.log",
+            "bytes": 1102,
+            "sha256": "8911f4b212819d9022bc2410e0dbce219611cc490636552e93d7fb793cbb2ddb"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/actual-editor-catalog-1.guardian.json",
+            "bytes": 1055,
+            "sha256": "6a1e4595ec36b0ddae2e48bb5248c2820cb7eba0d65fa26479cbb9aeb24a32d4"
+          }
+        },
+        {
+          "name": "actual-tracked-example-suite-7",
+          "exitCode": 137,
+          "stopped": "scratch-free-floor",
+          "libtestSummaries": [],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 31306.210129,
+            "peakRssKiB": 2068844,
+            "minimumScratchFreeBytes": 8587186176,
+            "peakCacheBytes": 7432101888
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/actual-tracked-example-suite-7.log",
+            "bytes": 1877,
+            "sha256": "c8a0a130c1cf67a09ddb0253d701ed8752eb3d264ceb20c56e8d5aceaaf8d704"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/actual-tracked-example-suite-7.guardian.json",
+            "bytes": 931,
+            "sha256": "8d2706a395aef4051a40a6ae62e0db3d69a1403256dd60e92dd1633a720458bb"
+          }
+        },
+        {
+          "name": "native-browser-preview-8",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.09s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 132662.373835,
+            "peakRssKiB": 2451124,
+            "minimumScratchFreeBytes": 8768049152,
+            "peakCacheBytes": 7419478016
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/native-browser-preview-8.log",
+            "bytes": 4789,
+            "sha256": "c91528ed4e43f1f739d3cfd22a38b95c58f6eb6da89752caa1bc1110e47a083f"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/native-browser-preview-8.guardian.json",
+            "bytes": 998,
+            "sha256": "c3f0cabafedbce4ed353a7c6a5d19b948f13cf66e266c96378a1d428d126f7b0"
+          }
+        },
+        {
+          "name": "public-no-dae-renderer-1",
+          "exitCode": 0,
+          "stopped": null,
+          "libtestSummaries": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1398 filtered out; finished in 0.03s"
+          ],
+          "limits": {
+            "secondsLimit": 600,
+            "rssLimitMiB": 4096,
+            "cacheLimitMiB": 8192,
+            "scratchFreeFloorMiB": 8192,
+            "availableFloorMiB": 16384
+          },
+          "observed": {
+            "elapsedMs": 1048.314883,
+            "peakRssKiB": 175492,
+            "minimumScratchFreeBytes": 8776790016,
+            "peakCacheBytes": 7412211712
+          },
+          "log": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/public-no-dae-renderer-1.log",
+            "bytes": 430,
+            "sha256": "6f41f3b3377b16f9d8262dc1285e85d4cc97a89c272e21f41f52a257e563c69c"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-actual-browser-editor-and-tracked-examples-after-20261011/public-no-dae-renderer-1.guardian.json",
+            "bytes": 1057,
+            "sha256": "747b5b697dd54d723b1f00d39322974468cb25db8e778cfd5b0e3102c3cc65c8"
+          }
+        }
+      ]
+    }
+  ],
+  "historical": {
+    "omcSource": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+    "omcProof": [
+      "Historical attempt pr427-workshop-retained-omc-after-cache-retirement-20261011; exact receipt remains source-pinned."
+    ],
+    "cells": 28,
+    "retainedFiles": 168,
+    "note": "6 originals+18 exports+one independent original/3 exports; this is historical, not final-tip replay."
+  },
+  "historicalEvidence": [
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-workshop-retained-omc-after-cache-retirement-20261011",
+      "gate": "actual-default-workspace-node-3",
+      "libtestSummaries": [
+        "# pass 3",
+        "# fail 0"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/recipe.json",
+          "bytes": 512490,
+          "sha256": "130da719865196d65af59b1b9f2e1bc15de71dab6c87400f32897c9b1528d087"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-default-workspace-node-3.log",
+          "bytes": 726,
+          "sha256": "c9f5326f309935bb47a4a4da82763e98815ac3a6bfde87bfdee328532fc3348c"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-default-workspace-node-3.guardian.json",
+          "bytes": 1013,
+          "sha256": "a0335563f9963d8adec14335cfeac85d2550087cdf2995ae413152811b1c41cd"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-workshop-retained-omc-after-cache-retirement-20261011",
+      "gate": "actual-workshop-lsp-4",
+      "libtestSummaries": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 250 filtered out; finished in 0.54s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/recipe.json",
+          "bytes": 512490,
+          "sha256": "130da719865196d65af59b1b9f2e1bc15de71dab6c87400f32897c9b1528d087"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-workshop-lsp-4.log",
+          "bytes": 5245,
+          "sha256": "65547a4993758fc3969f94c662d77d4e21d114aa7ed50cd0373ab3aa670e1deb"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-workshop-lsp-4.guardian.json",
+          "bytes": 993,
+          "sha256": "220b84b79f37998a8101c3126ab3e17097cc998cc5aed39752fb97eaf3505bc7"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-workshop-retained-omc-after-cache-retirement-20261011",
+      "gate": "actual-workshop-modelica-2-with-28-retained-cells",
+      "libtestSummaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 54.99s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/recipe.json",
+          "bytes": 512490,
+          "sha256": "130da719865196d65af59b1b9f2e1bc15de71dab6c87400f32897c9b1528d087"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-workshop-modelica-2-with-28-retained-cells.log",
+          "bytes": 19725,
+          "sha256": "d46513e8127320ebd357f23e413734ef9cbf91228e302d1efe14aa267ede8957"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/actual-workshop-modelica-2-with-28-retained-cells.guardian.json",
+          "bytes": 803,
+          "sha256": "c33e7467e243a802314edd304d590a962e681b12ad0cfe1a2f36a3e6d55d44de"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-workshop-retained-omc-after-cache-retirement-20261011",
+      "gate": "native-browser-preview-8",
+      "libtestSummaries": [
+        "test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.07s"
+      ],
+      "guardianExitCode": 101,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/recipe.json",
+          "bytes": 512490,
+          "sha256": "130da719865196d65af59b1b9f2e1bc15de71dab6c87400f32897c9b1528d087"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/native-browser-preview-8.log",
+          "bytes": 5362,
+          "sha256": "2264d4a05133125dc2c374c70dabc57be573ca82cf30f638d1b5ae47d10f080b"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-workshop-retained-omc-after-cache-retirement-20261011/native-browser-preview-8.guardian.json",
+          "bytes": 997,
+          "sha256": "1ac7270fa0889e766ce00958928bde1fa9de2fa9677f878cf283f9894e76bef4"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-native-copies-after-and-original-comprehension-omc-20261011",
+      "gate": "all-native-snapshot-controls",
+      "libtestSummaries": [
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 299 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 1,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-copies-after-and-original-comprehension-omc-20261011/recipe.json",
+          "bytes": 512909,
+          "sha256": "a0b6318d759ccc6b6ca0b3bdf4b9ca02498736797e4940c82c1a272fb693c0b2"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-copies-after-and-original-comprehension-omc-20261011/all-native-snapshot-controls.log",
+          "bytes": 2147,
+          "sha256": "16b55b064a5faafbfacc8189e4bb77f4cae375eb8b930be709cbc4491a431ac1"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-copies-after-and-original-comprehension-omc-20261011/all-native-snapshot-controls.guardian.json",
+          "bytes": 972,
+          "sha256": "ce4d2bd61faaca38fb01f0ae39ecb98bb0fce5d2c24f266b3a24ed4472458c97"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-native-staging-after-and-original-resolve-before-20261011",
+      "gate": "native-staging-reuse-controls",
+      "libtestSummaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 312 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/recipe.json",
+          "bytes": 511602,
+          "sha256": "f56ff051d85d60c78f03a69cb797f9238c02b3ae8b069525bbc6d4b2ca0ba56e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/native-staging-reuse-controls.log",
+          "bytes": 575,
+          "sha256": "9e503b137c2b4a0ccf0f212826e269a2121a0a3b961188bfa3bfd28c494cf6b7"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/native-staging-reuse-controls.guardian.json",
+          "bytes": 975,
+          "sha256": "fe9dafa7af3f08e285f37a3750047b651415b38f01dbc123054b80e7b211611d"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-native-staging-after-and-original-resolve-before-20261011",
+      "gate": "shared-scalar-snapshot-controls",
+      "libtestSummaries": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/recipe.json",
+          "bytes": 511602,
+          "sha256": "f56ff051d85d60c78f03a69cb797f9238c02b3ae8b069525bbc6d4b2ca0ba56e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/shared-scalar-snapshot-controls.log",
+          "bytes": 853,
+          "sha256": "9d0ae964f357174a10c1f4513caefdb6d31eb0654ef8eab21ab3940b12318dde"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/shared-scalar-snapshot-controls.guardian.json",
+          "bytes": 984,
+          "sha256": "e16da9fa4ff363c57f1a87adaa1b8bd06e6304a40cbe6e16cb9bc59a32153dac"
+        }
+      ]
+    },
+    {
+      "source": "2a0cbb0fd510afefa7685b9070fd7c114efe8100",
+      "attempt": "pr427-native-staging-after-and-original-resolve-before-20261011",
+      "gate": "original-resolve-comprehension-scope-before",
+      "libtestSummaries": [
+        "test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 152 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 101,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/recipe.json",
+          "bytes": 511602,
+          "sha256": "f56ff051d85d60c78f03a69cb797f9238c02b3ae8b069525bbc6d4b2ca0ba56e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/original-resolve-comprehension-scope-before.log",
+          "bytes": 3785,
+          "sha256": "d3afbe29103478a9c25d903cfde45a081179953f2026e1b2dff4f6e891b87713"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-staging-after-and-original-resolve-before-20261011/original-resolve-comprehension-scope-before.guardian.json",
+          "bytes": 995,
+          "sha256": "ca4cdb38ffaf78fee40169d78f4cd7c64d315a1d3520c6fe1d293ee9e2a455de"
+        }
+      ]
+    },
+    {
+      "source": "a137a6d6be5eb3739a63fee00fe962f132a70fff",
+      "attempt": "pr427-original-bug-runtime-and-jax-after-20261011",
+      "gate": "canonical-memcmp-registration-1",
+      "libtestSummaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-and-jax-after-20261011/recipe.json",
+          "bytes": 511089,
+          "sha256": "02d126788a5c397d994ff49c070b00580bc5b1f2607ac3c11374dc64f3a9dcd9"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-and-jax-after-20261011/canonical-memcmp-registration-1.log",
+          "bytes": 997,
+          "sha256": "af575d59b519aa6c7a213a936cd1af61ac770aafe33cf9fdb39d1f2a5d403c8d"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-and-jax-after-20261011/canonical-memcmp-registration-1.guardian.json",
+          "bytes": 1031,
+          "sha256": "96441bbb4bd3e3442b53e5080d86c580b94c14afdb8c65cbdf6e6285b035b5fa"
+        }
+      ]
+    },
+    {
+      "source": "a137a6d6be5eb3739a63fee00fe962f132a70fff",
+      "attempt": "pr427-original-bug-runtime-packaging-feature-after-20261011",
+      "gate": "original-bug-runtime-9",
+      "libtestSummaries": [
+        "test result: FAILED. 4 passed; 5 failed; 0 ignored; 0 measured; 1384 filtered out; finished in 0.03s"
+      ],
+      "guardianExitCode": 101,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-packaging-feature-after-20261011/recipe.json",
+          "bytes": 510538,
+          "sha256": "16c192e808db56a60d8d1cf1c4878864a43da70eb4dc2be9e03134010fd22b58"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-packaging-feature-after-20261011/original-bug-runtime-9.log",
+          "bytes": 9717,
+          "sha256": "f8ce6899bd4fa0b9a7a7084f6442b9d81c01f32b7e48e1512c2f1f8d0c3bbd30"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-original-bug-runtime-packaging-feature-after-20261011/original-bug-runtime-9.guardian.json",
+          "bytes": 1051,
+          "sha256": "55828c99644dca1eb3e38b31ccf755602d211bc7be7f5de1bc3803f50a2ecd00"
+        }
+      ]
+    },
+    {
+      "source": "a1ea61d8a2602d6dc4033d2ba10a94e07354cc8d",
+      "attempt": "pr427-typed-index-source-fault-focused-after-20261011",
+      "gate": "typed-dynamic-index-source-facts-1",
+      "libtestSummaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 314 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/recipe.json",
+          "bytes": 509710,
+          "sha256": "5b258f689df9aa5b5b9af573686e0e2cd5640712120ee594355735ce00cc38bf"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/typed-dynamic-index-source-facts-1.log",
+          "bytes": 851,
+          "sha256": "a0e0377e5f6c5267afe6ebc2563f56762ab368034b1d51d8b656a8a1a5a8fa0f"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/typed-dynamic-index-source-facts-1.guardian.json",
+          "bytes": 1041,
+          "sha256": "c0d5c556699ef9332ab6d5b8f4ca23743715fe04dfe8f9a79ba5d2c5ca4d18dd"
+        }
+      ]
+    },
+    {
+      "source": "a1ea61d8a2602d6dc4033d2ba10a94e07354cc8d",
+      "attempt": "pr427-typed-index-source-fault-focused-after-20261011",
+      "gate": "existing-one-based-fallback-control-1",
+      "libtestSummaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 314 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 0,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/recipe.json",
+          "bytes": 509710,
+          "sha256": "5b258f689df9aa5b5b9af573686e0e2cd5640712120ee594355735ce00cc38bf"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/existing-one-based-fallback-control-1.log",
+          "bytes": 424,
+          "sha256": "ea6a1e3a5398f92a1c3cbb13a32d428ed3f723aa6fcde292f21a41b773807b43"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-typed-index-source-fault-focused-after-20261011/existing-one-based-fallback-control-1.guardian.json",
+          "bytes": 1047,
+          "sha256": "7daec21debae00391bdc9dd73614cad8ee187a61defe001ed513cdd65e1a1555"
+        }
+      ]
+    },
+    {
+      "source": "4fdc7cb447dc356fc478047bccc6774f865aa24b",
+      "attempt": "pr427-issued-membership-guard-original-before-20261011",
+      "gate": "original-issued-membership-guard-1",
+      "libtestSummaries": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 435 filtered out; finished in 0.00s"
+      ],
+      "guardianExitCode": 101,
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-issued-membership-guard-original-before-20261011/recipe.json",
+          "bytes": 509439,
+          "sha256": "7548af9ebdc94f193804c20966b2fc76f7347ef483b687db94b5c1873a575eb6"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-issued-membership-guard-original-before-20261011/original-issued-membership-guard-1.log",
+          "bytes": 1810,
+          "sha256": "a4dc0836232b0d2e84df305f3caaf746e223b1652c82c2dec50e9e4e2ec5d7a0"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-issued-membership-guard-original-before-20261011/original-issued-membership-guard-1.guardian.json",
+          "bytes": 1045,
+          "sha256": "6edfc762ed70a62c9a367137f6417c3001d0032ef8feaca6c044275005c7457b"
+        }
+      ]
+    }
+  ],
+  "otherFocusedEvidence": [
+    {
+      "attempt": "pr427-native-guards-and-source-faults-after-20261011",
+      "source": "673ce6ec74418fb0043d3ad7354e0ceb2c7543da",
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-known-index-1.guardian.json",
+          "bytes": 1005,
+          "sha256": "789c16adca5b79268c259801c9fa3a0b9fa2fba8558f576480c62bac229b0887"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-known-index-1.log",
+          "bytes": 1020,
+          "sha256": "74242808ef507f39c3b09877d9a8bb393d41fbfca10ef324555c869bee6331e8"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-nested-guard-1.guardian.json",
+          "bytes": 1004,
+          "sha256": "fad4f762d3e96f8950201da6a7fedcc942b8410560996e13fb9bf4b2aee7e887"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-nested-guard-1.log",
+          "bytes": 1014,
+          "sha256": "2107db8c8fad724e18b9d8f9262b6a3f7540e122f3acc45f4721f40e4b8b9c2a"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-projection-storage-owners-2.guardian.json",
+          "bytes": 1012,
+          "sha256": "960a17fb9d1a399d2d32d5bd1a683f2106649f7c31969b80c31c5588e9ae226f"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/native-projection-storage-owners-2.log",
+          "bytes": 556,
+          "sha256": "d9d53cf1d489ca7b3b7a7c0eef0113f868fd1e9525fcb020791ef21345d51694"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/recipe.json",
+          "bytes": 513903,
+          "sha256": "e0803b359d2fc7ccc65cff2167a9a709cb4b6ca2dc4fd7c1732d893b2f9bd6de"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/shared-scalar-projection-3.guardian.json",
+          "bytes": 1004,
+          "sha256": "f869ff8bd4708ec0ae9e8835f04ef96c594fb014dd73d74ca414eb9540406f90"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/shared-scalar-projection-3.log",
+          "bytes": 686,
+          "sha256": "17ce58c48c478c735e74d6238fe6a0fe56277c5cbfa4dd9924cc44332e70bef0"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/typed-source-index-fault-1.guardian.json",
+          "bytes": 1003,
+          "sha256": "64b23523c700842bba0d240a37b7645af47abf3e096ce8813a783197b3f5364a"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guards-and-source-faults-after-20261011/typed-source-index-fault-1.log",
+          "bytes": 851,
+          "sha256": "f8d37c4444d9c65b1db8cea17d458a501f2edd84e18420638902f4df372fcfcd"
+        }
+      ]
+    },
+    {
+      "attempt": "pr427-native-valid-polarity-live-index-before-20261011",
+      "source": "a070366ddd2e016808eddb5836c91abf411f1696",
+      "bindings": [
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-valid-polarity-live-index-before-20261011/original-native-control-1.guardian.json",
+          "bytes": 1085,
+          "sha256": "c2f525530934b57e77414400d6350eaa883101345a3e0cff6773da8adbf80c98"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-valid-polarity-live-index-before-20261011/original-native-control-1.log",
+          "bytes": 1619,
+          "sha256": "3db8b27a59b621630a4c6e152406131202b1b385a67118af9b77721f04a61c0c"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-valid-polarity-live-index-before-20261011/recipe.json",
+          "bytes": 511021,
+          "sha256": "ada961b8a3c980e9d62faf02f5f40062699666ecdca677fbbb176b67fb1cff42"
+        }
+      ]
+    }
+  ]
+}

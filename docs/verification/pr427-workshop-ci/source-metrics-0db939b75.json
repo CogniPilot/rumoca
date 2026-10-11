@@ -1,0 +1,252 @@
+{
+  "head": "0db939b75deb0bf8b018c0378a2324537310f1c7",
+  "base": "0b249f0f725431613c25bb56e40fbbe0df54c4d2",
+  "method": "Per-line owner classification with cfg(test)/test Rust scopes, reconciled with git diff --numstat BASE...HEAD (rename-aware). Raw --no-renames accounting is retained separately. Public inventory counts unrestricted pub named declarations and pub-use statements in changed non-test Rust files, with lexical impl/module/cfg identity. Named unrestricted pub fields are included. Restricted visibility, implicit trait/enum members, tuple fields, macro expansion, dependency APIs and JavaScript exports are excluded; this is a lexical declaration/field diff, not a rustdoc reachable/semver API proof.",
+  "totals": {
+    "production": {
+      "added": 8058,
+      "deleted": 1425
+    },
+    "test": {
+      "added": 7734,
+      "deleted": 58
+    },
+    "docs": {
+      "added": 3096,
+      "deleted": 7
+    }
+  },
+  "numstatTotals": {
+    "added": 18888,
+    "deleted": 1490
+  },
+  "files_touched": 303,
+  "net_added_lines": 17398,
+  "public_items_added": 33,
+  "public_items_removed": 10,
+  "public_signatures_changed": 0,
+  "public_fields_added": 6,
+  "public_fields_removed": 0,
+  "public_fields_changed": 0,
+  "addedApi": [
+    {
+      "identity": "crates/rumoca-bind-wasm/src/lib.rs::#[cfg(target_arch = \"wasm32\")]::use::crate::target_render_api::{ get_builtin_targets, render_target, render_target_for_source, render_target_with_workspace_sources, }",
+      "signature": "pub use crate::target_render_api::{ get_builtin_targets, render_target, render_target_for_source, render_target_with_workspace_sources, }",
+      "line": 1190
+    },
+    {
+      "identity": "crates/rumoca-bind-wasm/src/target_render_api.rs::#[cfg(target_arch = \"wasm32\")]::fn::get_builtin_targets",
+      "signature": "pub fn get_builtin_targets() -> Result<JsValue, WasmError>",
+      "line": 107
+    },
+    {
+      "identity": "crates/rumoca-bind-wasm/src/target_render_api.rs::#[cfg(target_arch = \"wasm32\")]::fn::render_target",
+      "signature": "pub fn render_target( dae_json: &str, model_name: &str, target: &str, manifest_source: &str, templates_json: &str, ) -> Result<JsValue, WasmError>",
+      "line": 353
+    },
+    {
+      "identity": "crates/rumoca-bind-wasm/src/target_render_api.rs::#[cfg(target_arch = \"wasm32\")]::fn::render_target_for_source",
+      "signature": "pub fn render_target_for_source( source: &str, model_name: &str, target: &str, manifest_source: &str, templates_json: &str, ) -> Result<JsValue, WasmError>",
+      "line": 397
+    },
+    {
+      "identity": "crates/rumoca-bind-wasm/src/target_render_api.rs::#[cfg(target_arch = \"wasm32\")]::fn::render_target_with_workspace_sources",
+      "signature": "pub fn render_target_with_workspace_sources( source: &str, model_name: &str, workspace_sources_json: &str, target: &str, manifest_source: &str, templates_json: &str, ) -> Result<JsValue, WasmError>",
+      "line": 421
+    },
+    {
+      "identity": "crates/rumoca-compile/src/codegen_api.rs::use::rumoca_phase_codegen::{ AlgorithmCodeTemplateRenderer, SolveTemplateRenderer, render_algorithm_code_template_with_artifact, render_solve_template_with_name, }",
+      "signature": "pub use rumoca_phase_codegen::{ AlgorithmCodeTemplateRenderer, SolveTemplateRenderer, render_algorithm_code_template_with_artifact, render_solve_template_with_name, }",
+      "line": 40
+    },
+    {
+      "identity": "crates/rumoca-compile/src/codegen_target.rs::struct TargetCapabilities::field::algorithms",
+      "signature": "pub algorithms: Option<bool>",
+      "line": 156
+    },
+    {
+      "identity": "crates/rumoca-compile/src/codegen_target.rs::fn::validate_flat_target_capabilities",
+      "signature": "pub fn validate_flat_target_capabilities( flat: &rumoca_ir_flat::Model, manifest: &TargetManifest, capabilities: &TargetCapabilities, ) -> Result<()>",
+      "line": 735
+    },
+    {
+      "identity": "crates/rumoca-compile/src/codegen_target.rs::fn::validate_solve_target_capabilities_with_calls",
+      "signature": "pub fn validate_solve_target_capabilities_with_calls( solve: &rumoca_ir_solve::SolveProblem, pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>, manifest: &TargetManifest, capabilities: &TargetCapabilities, ) -> Result<()>",
+      "line": 882
+    },
+    {
+      "identity": "crates/rumoca-compile/src/lib.rs::mod codegen::use::crate::codegen_api::{ AlgorithmCodeTemplateRenderer, CodegenError, SolveTemplateRenderer, dae_to_template_json, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_dae_template, render_dae_template_with_name, render_flat_template_with_name, render_solve_template_with_name, }",
+      "signature": "pub use crate::codegen_api::{ AlgorithmCodeTemplateRenderer, CodegenError, SolveTemplateRenderer, dae_to_template_json, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_dae_template, render_dae_template_with_name, render_flat_template_with_name, render_solve_template_with_name, }",
+      "line": 142
+    },
+    {
+      "identity": "crates/rumoca-compile/src/lib.rs::mod codegen::mod targets::use::crate::codegen_target::{ AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed, RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot, TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage, TargetPartial, TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files, safe_target_join, target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities, validate_flat_target_capabilities, validate_solve_target_capabilities, validate_solve_target_capabilities_with_calls, validate_solve_tensor_inventory, }",
+      "signature": "pub use crate::codegen_target::{ AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed, RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot, TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage, TargetPartial, TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files, safe_target_join, target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities, validate_flat_target_capabilities, validate_solve_target_capabilities, validate_solve_target_capabilities_with_calls, validate_solve_tensor_inventory, }",
+      "line": 149
+    },
+    {
+      "identity": "crates/rumoca-core/src/ir_primitives/component_refs_and_functions.rs::enum::IndexBinderProvenance",
+      "signature": "pub enum IndexBinderProvenance",
+      "line": 5
+    },
+    {
+      "identity": "crates/rumoca-core/src/ir_primitives/component_refs_and_functions.rs::impl IndexBinderProvenance::fn::reference",
+      "signature": "pub fn reference(self, name: &str, span: Span) -> Result<Reference, ComponentReferenceError>",
+      "line": 29
+    },
+    {
+      "identity": "crates/rumoca-core/src/ir_primitives/component_refs_and_functions.rs::struct ComprehensionIndex::field::binder",
+      "signature": "pub binder: IndexBinderProvenance",
+      "line": 49
+    },
+    {
+      "identity": "crates/rumoca-core/src/ir_primitives/component_refs_and_functions.rs::struct ForIndex::field::binder",
+      "signature": "pub binder: IndexBinderProvenance",
+      "line": 451
+    },
+    {
+      "identity": "crates/rumoca-eval-solve/src/lib.rs::use::scalar_ops::lower_scalar_ops",
+      "signature": "pub use scalar_ops::lower_scalar_ops",
+      "line": 47
+    },
+    {
+      "identity": "crates/rumoca-eval-solve/src/lib.rs::fn::typed_kind_from_scalar",
+      "signature": "pub fn typed_kind_from_scalar( value: f64, value_type: &SolveValueType, ) -> Result<SolveValueKind, EvalSolveError>",
+      "line": 4202
+    },
+    {
+      "identity": "crates/rumoca-eval-solve/src/lib.rs::fn::checked_scalar_payload_value",
+      "signature": "pub fn checked_scalar_payload_value(value: SolveValueKind) -> Result<f64, EvalSolveError>",
+      "line": 4243
+    },
+    {
+      "identity": "crates/rumoca-eval-solve/src/scalar_ops.rs::fn::lower_scalar_ops",
+      "signature": "pub fn lower_scalar_ops( program: &[LinearOp], pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>, ) -> Option<Vec<LinearOp>>",
+      "line": 418
+    },
+    {
+      "identity": "crates/rumoca-ir-ast/src/nodes.rs::struct ForIndex::field::binder",
+      "signature": "pub binder: Option<rumoca_core::IndexBinderProvenance>",
+      "line": 821
+    },
+    {
+      "identity": "crates/rumoca-ir-solve/src/feature_query.rs::fn::solve_initialization_is_explicit",
+      "signature": "pub fn solve_initialization_is_explicit(problem: &SolveProblem) -> bool",
+      "line": 125
+    },
+    {
+      "identity": "crates/rumoca-ir-solve/src/lib.rs::use::feature_query::{ SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events, solve_initialization_is_explicit, }",
+      "signature": "pub use feature_query::{ SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events, solve_initialization_is_explicit, }",
+      "line": 56
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/algorithm_code_renderer.rs::impl AlgorithmCodeTemplateRenderer::fn::render_with_name",
+      "signature": "pub fn render_with_name( &self, template: &str, model_name: &str, ) -> Result<String, CodegenError>",
+      "line": 63
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/mod.rs::use::solve_lazy::{ explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls, explicit_initialization_renderable_with_calls, }",
+      "signature": "pub use solve_lazy::{ explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls, explicit_initialization_renderable_with_calls, }",
+      "line": 79
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs::fn::explicit_algebraic_assignment_complete_with_calls",
+      "signature": "pub fn explicit_algebraic_assignment_complete_with_calls( problem: &solve::SolveProblem, pure_calls: Option<&solve::SolvePureCallTable>, ) -> bool",
+      "line": 484
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs::fn::explicit_initialization_renderable_with_calls",
+      "signature": "pub fn explicit_initialization_renderable_with_calls( problem: &solve::SolveProblem, pure_calls: Option<&solve::SolvePureCallTable>, ) -> bool",
+      "line": 641
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs::struct ScalarInitializationBlocks::field::parameters",
+      "signature": "pub parameters: Option<solve::ComputeBlock>",
+      "line": 681
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_lazy.rs::struct ScalarInitializationBlocks::field::states",
+      "signature": "pub states: Option<solve::ComputeBlock>",
+      "line": 682
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs::impl SolveTemplateRenderer::fn::new_owned_with_dae_and_calls",
+      "signature": "pub fn new_owned_with_dae_and_calls( problem: solve::SolveProblem, artifacts: solve::SolveArtifacts, pure_calls: solve::SolvePureCallTable, dae_model: &dae::Dae, ) -> Result<Self, CodegenError>",
+      "line": 47
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs::impl SolveTemplateRenderer::fn::new_owned_with_calls",
+      "signature": "pub fn new_owned_with_calls( problem: solve::SolveProblem, artifacts: solve::SolveArtifacts, pure_calls: solve::SolvePureCallTable, model_name: &str, ) -> Result<Self, CodegenError>",
+      "line": 64
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs::impl SolveTemplateRenderer::fn::require_scalar_derivative_programs",
+      "signature": "pub fn require_scalar_derivative_programs(&self) -> Result<(), CodegenError>",
+      "line": 138
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/lib.rs::use::codegen::{ AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json, explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls, explicit_initialization_renderable_with_calls, me_refresh_admissible, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact, render_checked_algorithm_block_template_with_sources, render_flat_template_with_name, render_solve_template_with_name, render_template, render_template_for_input, render_template_with_name, render_template_with_name_for_input, }",
+      "signature": "pub use codegen::{ AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json, explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls, explicit_initialization_renderable_with_calls, me_refresh_admissible, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact, render_checked_algorithm_block_template_with_sources, render_flat_template_with_name, render_solve_template_with_name, render_template, render_template_for_input, render_template_with_name, render_template_with_name_for_input, }",
+      "line": 65
+    },
+    {
+      "identity": "crates/rumoca-sim/src/lib.rs::use::rumoca_phase_solve::{ deserialize_solve_model, fmi::{deserialize_fmi_component, fmi_component_wire}, lower_solve_artifacts, lower_solve_package, lower_solve_problem, solve_model_wire, }",
+      "signature": "pub use rumoca_phase_solve::{ deserialize_solve_model, fmi::{deserialize_fmi_component, fmi_component_wire}, lower_solve_artifacts, lower_solve_package, lower_solve_problem, solve_model_wire, }",
+      "line": 16
+    }
+  ],
+  "removedApi": [
+    {
+      "identity": "crates/rumoca-bind-wasm/src/lib.rs::fn::get_builtin_targets",
+      "signature": "pub fn get_builtin_targets() -> Result<JsValue, WasmError>",
+      "line": 278
+    },
+    {
+      "identity": "crates/rumoca-bind-wasm/src/lib.rs::fn::render_target",
+      "signature": "pub fn render_target( dae_json: &str, model_name: &str, target: &str, manifest_source: &str, templates_json: &str, ) -> Result<JsValue, WasmError>",
+      "line": 1210
+    },
+    {
+      "identity": "crates/rumoca-compile/src/codegen_api.rs::use::rumoca_phase_codegen::{ SolveTemplateRenderer, render_algorithm_code_template_with_artifact, render_solve_template_with_name, }",
+      "signature": "pub use rumoca_phase_codegen::{ SolveTemplateRenderer, render_algorithm_code_template_with_artifact, render_solve_template_with_name, }",
+      "line": 40
+    },
+    {
+      "identity": "crates/rumoca-compile/src/lib.rs::mod codegen::use::crate::codegen_api::{ CodegenError, SolveTemplateRenderer, dae_to_template_json, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_dae_template, render_dae_template_with_name, render_flat_template_with_name, render_solve_template_with_name, }",
+      "signature": "pub use crate::codegen_api::{ CodegenError, SolveTemplateRenderer, dae_to_template_json, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_dae_template, render_dae_template_with_name, render_flat_template_with_name, render_solve_template_with_name, }",
+      "line": 138
+    },
+    {
+      "identity": "crates/rumoca-compile/src/lib.rs::mod codegen::mod targets::use::crate::codegen_target::{ AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed, RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot, TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage, TargetPartial, TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files, safe_target_join, target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities, validate_solve_target_capabilities, validate_solve_tensor_inventory, }",
+      "signature": "pub use crate::codegen_target::{ AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed, RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot, TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage, TargetPartial, TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files, safe_target_join, target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities, validate_solve_target_capabilities, validate_solve_tensor_inventory, }",
+      "line": 145
+    },
+    {
+      "identity": "crates/rumoca-ir-solve/src/lib.rs::use::feature_query::{ SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events, }",
+      "signature": "pub use feature_query::{ SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events, }",
+      "line": 56
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/mod.rs::use::solve_lazy::explicit_algebraic_assignment_complete",
+      "signature": "pub use solve_lazy::explicit_algebraic_assignment_complete",
+      "line": 77
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs::impl SolveTemplateRenderer::fn::new_owned_with_dae",
+      "signature": "pub fn new_owned_with_dae( problem: solve::SolveProblem, artifacts: solve::SolveArtifacts, dae_model: &dae::Dae, ) -> Result<Self, CodegenError>",
+      "line": 48
+    },
+    {
+      "identity": "crates/rumoca-phase-codegen/src/lib.rs::use::codegen::{ AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json, explicit_algebraic_assignment_complete, me_refresh_admissible, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact, render_checked_algorithm_block_template_with_sources, render_flat_template_with_name, render_solve_template_with_name, render_template, render_template_for_input, render_template_with_name, render_template_with_name_for_input, }",
+      "signature": "pub use codegen::{ AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json, explicit_algebraic_assignment_complete, me_refresh_admissible, render_algorithm_code_template_with_artifact, render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact, render_checked_algorithm_block_template_with_sources, render_flat_template_with_name, render_solve_template_with_name, render_template, render_template_for_input, render_template_with_name, render_template_with_name_for_input, }",
+      "line": 65
+    },
+    {
+      "identity": "crates/rumoca-sim/src/lib.rs::use::rumoca_phase_solve::{ deserialize_solve_model, fmi::{deserialize_fmi_component, fmi_component_wire}, lower_solve_artifacts, lower_solve_problem, solve_model_wire, }",
+      "signature": "pub use rumoca_phase_solve::{ deserialize_solve_model, fmi::{deserialize_fmi_component, fmi_component_wire}, lower_solve_artifacts, lower_solve_problem, solve_model_wire, }",
+      "line": 16
+    }
+  ],
+  "modifiedApi": [],
+  "measurementScriptSha256": "a3390208b62339994d39b01600c6b8c74fd3a1913f49440dd7da49512d193f56"
+}
