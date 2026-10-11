@@ -7,6 +7,7 @@
 //! groups stay separable.
 
 mod backend_template_runtime_regression;
+mod c_ode_pure_call_semantics;
 #[cfg(feature = "fmu-packaging")]
 mod cli_target_fmi;
 mod codegen_example_regression;

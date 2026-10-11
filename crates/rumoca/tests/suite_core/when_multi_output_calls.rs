@@ -28,6 +28,28 @@ algorithm
 end divMod;
 "#;
 
+#[test]
+fn component_instances_have_distinct_when_call_owners() {
+    let source = format!(r#"{FUNCTION}
+model Cell
+  parameter Real offset = 1;
+  discrete Real s(start = 0, fixed = true);
+  discrete Real p(start = 0, fixed = true);
+equation
+  when sample(0, 0.1) then
+    (s, p) = sumAndProduct(offset, time);
+  end when;
+end Cell;
+model SharedSourceCalls
+  Cell first(offset = 1);
+  Cell second(offset = 2);
+end SharedSourceCalls;
+"#);
+    Compiler::new().model("SharedSourceCalls")
+        .compile_str(&source, "SharedSourceCalls.mo")
+        .expect("instances of one declaration must retain distinct semantic call owners");
+}
+
 fn simulate(model: &str, body: &str) -> SimResult {
     let source = format!("{FUNCTION}\n{body}");
     let compiled = Compiler::new()
