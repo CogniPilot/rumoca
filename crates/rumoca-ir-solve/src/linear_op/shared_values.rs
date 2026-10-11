@@ -26,6 +26,34 @@ use symbolic::{SymbolicSlots, Term, Terms, ValueKey, ValueShape, value_shape};
 
 use super::*;
 
+/// Compare outputs under the existing exact, register-independent term proof.
+/// Each program reads the same entry slots; neither program commits into the
+/// other's symbolic environment. An unsupported operation cannot prove equality.
+pub(crate) fn check_same_output(
+    left: &[LinearOp],
+    left_output: usize,
+    right: &[LinearOp],
+    right_output: usize,
+) -> Result<(), SharedValueError> {
+    let mut terms = Terms::default();
+    let evaluate = |terms: &mut Terms, ops: &[LinearOp], output: usize| {
+        ScalarProgramRegisterFlow::derive(ops).ok()?;
+        let targets = (0..crate::ScalarProgramBlock::program_output_count(ops)).collect::<Vec<_>>();
+        SymbolicSlots::default()
+            .run(terms, ops, &targets)?
+            .get(output)
+            .copied()
+    };
+    let a = evaluate(&mut terms, left, left_output).ok_or(SharedValueError::Unevaluable)?;
+    let b = evaluate(&mut terms, right, right_output).ok_or(SharedValueError::Unevaluable)?;
+    if a != b {
+        return Err(SharedValueError::Output {
+            index: right_output,
+        });
+    }
+    Ok(())
+}
+
 /// Most registers one segment's register file may hold. A program that would
 /// exceed it starts the next segment, and every value that segment recomputes
 /// because the earlier one is closed is recorded.

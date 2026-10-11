@@ -140,7 +140,11 @@ fn observation_rows(
                 .chain(p_dependencies.iter().copied().map(HistoryDependencySlot::P))
                 .collect::<BTreeSet<_>>();
             let safe = discrete.clock_owners.get(row) == Some(&None)
-                && discrete.pre_modes.get(row) == Some(&solve::DiscreteEventPreMode::FollowCurrent);
+                && discrete.pre_modes.get(row) == Some(&solve::DiscreteEventPreMode::FollowCurrent)
+                && !matches!(
+                    discrete.row_roles.get(row),
+                    Some(solve::DiscreteRowRole::QuotientMemory { .. })
+                );
             let seed = !p_dependencies
                 .into_iter()
                 .map(HistoryDependencySlot::P)

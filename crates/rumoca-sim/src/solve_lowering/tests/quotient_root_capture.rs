@@ -17,6 +17,63 @@ use super::{SimOptions, SimSolverMode, compile};
 const SOURCE: &str = "model ScalarRealQuotient output Real y; Real x(start=0, fixed=true); equation y=mod(8*time+2,7); der(x)=y; end ScalarRealQuotient;";
 const ROOT: f64 = 0.625;
 
+#[test]
+fn quotient_wire_replay_requires_the_issued_live_root() {
+    let dae = compile(SOURCE, "ScalarRealQuotient");
+    let solve = super::lower_dae_for_simulation(&dae, &SimOptions::default()).unwrap();
+    let mut wire = serde_json::to_value(&solve.problem).unwrap();
+    serde_json::from_value::<rumoca_ir_solve::SolveProblem>(wire.clone()).unwrap();
+    let roles = wire["discrete"]["row_roles"].as_array_mut().unwrap();
+    let memory = roles
+        .iter_mut()
+        .find(|role| role.get("QuotientMemory").is_some())
+        .unwrap();
+    memory["QuotientMemory"]["root_index"] = serde_json::json!(usize::MAX);
+    let error = serde_json::from_value::<rumoca_ir_solve::SolveProblem>(wire).unwrap_err();
+    assert!(error.to_string().contains("live root owner"), "{error}");
+}
+
+#[test]
+fn quotient_memory_uses_solved_initialization_and_signed_rounding() {
+    let cases = [
+        ("mod", "15", "1"),
+        ("mod", "-15", "6"),
+        ("rem", "-15", "-1"),
+    ];
+    for (builtin, initial, expected) in cases {
+        let source = format!(
+            "model InitializedQuotient parameter Real a(start=99,fixed=false); Real x(start=0,fixed=true); output Real y; initial equation a={initial}; equation y={builtin}(8*time+a,7); der(x)=y; end InitializedQuotient;"
+        );
+        let dae = compile(&source, "InitializedQuotient");
+        let expected: f64 = expected.parse().unwrap();
+        for execution_policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+            let opts = SimOptions {
+                execution_policy,
+                solver_mode: SimSolverMode::RkLike,
+                t_end: 0.1,
+                dt: Some(0.1),
+                atol: 1e-9,
+                rtol: 1e-9,
+                ..SimOptions::default()
+            };
+            let result = super::simulate_dae(&dae, &opts).unwrap();
+            let y = result.names.iter().position(|name| name == "y").unwrap();
+            let x = result.names.iter().position(|name| name == "x").unwrap();
+            assert!(
+                (result.data[y][0] - expected).abs() < 1e-9,
+                "{builtin}({initial},7): {:?}",
+                result.data[y]
+            );
+            let integral = expected * 0.1 + 4.0 * 0.1_f64.powi(2);
+            assert!(
+                (result.data[x].last().unwrap() - integral).abs() < 1e-8,
+                "{builtin}({initial},7): {:?}",
+                result.data[x]
+            );
+        }
+    }
+}
+
 struct Observation {
     kind: &'static str,
     start: f64,

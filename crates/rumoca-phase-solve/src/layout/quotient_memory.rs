@@ -10,6 +10,7 @@ pub(crate) struct QuotientMemory<'dae> {
     pub(crate) ratio: dae::ExprId<'dae>,
     pub(crate) builtin: dae::PureBuiltin,
     pub(crate) parameter: usize,
+    pub(crate) root_index: usize,
 }
 
 impl QuotientMemory<'_> {
@@ -46,18 +47,16 @@ impl<'dae> BufferedQuotients<'dae> {
                 .runtime_quotient_owner_at(index)
                 .expect("dense quotient owner");
             let dae::RuntimeQuotientOwnerKind::ModelEvent {
-                generated,
-                relation,
-                ..
+                generated, root, ..
             } = owner.kind()
             else {
                 continue;
             };
             // Reuse the selected continuous-root plan. Clock-owned relations
             // are evaluated on their tick and have no continuous buffer.
-            if relations.target(relation).is_none() {
+            let Some(root_index) = relations.root_ordinal(root) else {
                 continue;
-            }
+            };
             let expression = view
                 .expression(owner.quotient())
                 .expect("checked quotient expression");
@@ -79,6 +78,7 @@ impl<'dae> BufferedQuotients<'dae> {
                 ratio: generated[0],
                 builtin: owner.builtin(),
                 parameter,
+                root_index,
             });
         }
         Ok(Self {

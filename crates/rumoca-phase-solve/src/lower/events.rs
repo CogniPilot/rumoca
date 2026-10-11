@@ -132,6 +132,7 @@ fn lower_quotient_memory<'dae>(
             solve::scalar_slot_p(memory.parameter),
             solve::DiscreteRowRole::QuotientMemory {
                 step: memory.step(),
+                root_index: memory.root_index,
             },
             solve::DiscreteEventPreMode::FollowCurrent,
             None,
