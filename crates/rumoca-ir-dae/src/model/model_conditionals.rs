@@ -71,20 +71,7 @@ impl<'dae> DaeConstruction<'dae> {
         condition: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        if self.storage.active_function_boundary {
-            return Err(DaeConstructionError::InvalidModelActivationScope {
-                span: provenance.span(),
-            });
-        }
-        let ty = self.storage.expr_type(condition, provenance)?;
-        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Boolean {
-            return Err(DaeConstructionError::InvalidExpressionForm {
-                span: provenance.span(),
-            });
-        }
-        self.storage
-            .expect_model_arm_visible(condition.index(), provenance)?;
+        self.validate_model_condition(condition, provenance)?;
         let parent = self.storage.active_model_arm;
         let parent_guard = parent.map(|arm| self.storage.model_arms[arm as usize].guard);
         let guards = self.expressions(|expressions| {
@@ -110,6 +97,28 @@ impl<'dae> DaeConstruction<'dae> {
         self.issue_model_conditional(condition, guards, parent, provenance)
     }
 
+    fn validate_model_condition(
+        &self,
+        condition: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        if self.storage.active_function_boundary {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: provenance.span(),
+            });
+        }
+        let ty = self.storage.expr_type(condition, provenance)?;
+        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Boolean {
+            return Err(DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
+        }
+        self.storage
+            .expect_model_arm_visible(condition.index(), provenance)?;
+        Ok(())
+    }
+
     pub(crate) fn issue_model_conditional(
         &mut self,
         condition: ExprId<'dae>,
@@ -117,6 +126,7 @@ impl<'dae> DaeConstruction<'dae> {
         parent: Option<u32>,
         provenance: DaeProvenance,
     ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
+        self.validate_model_condition(condition, provenance)?;
         self.storage
             .validate_model_guards(condition, guards, parent, provenance)?;
         let owner = checked_u32(
@@ -170,6 +180,11 @@ impl<'dae> DaeConstruction<'dae> {
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         let next = arm.map(|arm| arm.index);
+        if self.storage.active_function_boundary && next.is_some() {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: provenance.span(),
+            });
+        }
         if next == self.storage.active_model_arm {
             return Ok(());
         }
@@ -225,6 +240,11 @@ impl<'dae> DaeConstruction<'dae> {
             .get(owner.owner as usize)
             .ok_or_else(|| unknown("model conditional", owner.owner, owner.provenance))?;
         let provenance = entry.provenance;
+        if self.storage.active_function_boundary {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: provenance.span(),
+            });
+        }
         if entry.expression.is_some() {
             return Err(duplicate(
                 "closed model conditional",
@@ -254,6 +274,11 @@ impl<'dae> DaeConstruction<'dae> {
         values: [ExprId<'dae>; 2],
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let entry = self.storage.model_conditionals[owner.owner as usize].clone();
+        if self.storage.active_function_boundary {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: entry.provenance.span(),
+            });
+        }
         if entry.expression.is_some() {
             return Err(duplicate(
                 "model conditional",
@@ -267,6 +292,7 @@ impl<'dae> DaeConstruction<'dae> {
             });
         }
         for (value, arm) in values.into_iter().zip(entry.arms) {
+            self.storage.expr_type(value, entry.provenance)?;
             let scope = self.storage.expressions.model_arm_scopes[value.index() as usize];
             if scope.is_some_and(|scope| {
                 scope != arm && !self.storage.active_model_ancestors.contains(&scope)

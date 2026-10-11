@@ -67,6 +67,60 @@ fn model_conditional_replay_refuses_a_foreign_guard() {
 }
 
 #[test]
+fn replay_model_conditional_preserves_every_entry_invariant() {
+    let source = TestSource::new("if c then 1 else 2; function f end f");
+    let at = source.source("if c then 1 else 2", 0);
+    let foreign = DaeProvenance::source(Span::from_offsets(
+        SourceId::from_source_name("foreign.mo"),
+        0,
+        1,
+    ))
+    .unwrap();
+    Dae::construct(source.map, |dae| {
+        let (condition, not, tensor, not_tensor) = dae.expressions(|e| {
+            let condition = e.at(at).literal(DaeLiteral::Boolean(true))?;
+            let not = e.at(at).unary(UnaryOperator::Not, condition)?;
+            let tensor = e.at(at).array([condition, condition])?;
+            let not_tensor = e.at(at).unary(UnaryOperator::Not, tensor)?;
+            Ok((condition, not, tensor, not_tensor))
+        })?;
+        assert!(matches!(
+            dae.replay_model_conditional(tensor, [tensor, not_tensor], at),
+            Err(DaeConstructionError::InvalidExpressionForm { .. })
+        ));
+        assert!(matches!(
+            dae.replay_model_conditional(condition, [condition, not], foreign),
+            Err(DaeConstructionError::UnknownSource { .. })
+        ));
+        let owner = dae.begin_model_conditional(condition, at)?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [], at),
+            |dae, reservation| {
+                assert!(matches!(
+                    dae.replay_model_conditional(condition, [condition, not], at),
+                    Err(DaeConstructionError::InvalidModelActivationScope { .. })
+                ));
+                assert!(matches!(
+                    dae.replay_model_arm_context(Some(owner.arm(dae, true)), at),
+                    Err(DaeConstructionError::InvalidModelActivationScope { .. })
+                ));
+                let body = dae.functions(|functions| functions.begin(reservation, at))?;
+                dae.functions(|functions| functions.define(body, at))
+            },
+        )?;
+        let first = dae.model_conditional_arm(&owner, true, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(1.0)))
+        })?;
+        let second = dae.model_conditional_arm(&owner, false, |dae| {
+            dae.expressions(|e| e.at(at).literal(DaeLiteral::Real(2.0)))
+        })?;
+        dae.finish_model_conditional(owner, [first, second])?;
+        Ok(())
+    })
+    .expect("replay failures do not issue partial authority or disturb its parent");
+}
+
+#[test]
 fn model_conditional_wire_reissues_authority_and_rejects_context_tampering() {
     let original = conditional_fixture();
     let value = serde_json::to_value(&original).expect("serialize checked DAE");
