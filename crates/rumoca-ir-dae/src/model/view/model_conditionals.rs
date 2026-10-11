@@ -105,10 +105,12 @@ impl<'dae> DaeView<'dae> {
         self,
         expression: ExprId<'dae>,
     ) -> impl Iterator<Item = ExprId<'dae>> {
-        self.dae
-            .storage
-            .model_expression_roots(expression.index())
-            .map(ExprId::from_raw)
+        crate::model::model_conditionals::expression_roots(
+            &self.dae.storage.expressions.model_arm_scopes,
+            &self.dae.storage.model_arms,
+            expression.index(),
+        )
+        .map(ExprId::from_raw)
     }
     pub fn model_arm_of(self, expression: ExprId<'dae>) -> Option<ModelArm<'dae>> {
         self.dae.storage.expressions.model_arm_scopes[expression.index() as usize].map(|index| {

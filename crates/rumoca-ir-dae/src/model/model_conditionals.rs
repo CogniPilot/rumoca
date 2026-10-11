@@ -30,6 +30,16 @@ pub(super) fn activation_guard(
     scopes[expression as usize].map(|arm| arms[arm as usize].guard)
 }
 
+pub(super) fn expression_roots(
+    scopes: &[Option<u32>],
+    arms: &[ModelArmEntry],
+    expression: u32,
+) -> impl Iterator<Item = u32> {
+    [Some(expression), activation_guard(scopes, arms, expression)]
+        .into_iter()
+        .flatten()
+}
+
 /// One in-flight model conditional. The fields cannot name a foreign arm.
 pub struct ModelConditional<'dae> {
     owner: u32,
@@ -371,12 +381,11 @@ impl Storage {
         Ok(())
     }
     pub(crate) fn model_expression_roots(&self, expression: u32) -> impl Iterator<Item = u32> {
-        let guard = activation_guard(
+        expression_roots(
             &self.expressions.model_arm_scopes,
             &self.model_arms,
             expression,
-        );
-        [Some(expression), guard].into_iter().flatten()
+        )
     }
 
     /// MLS §3.6.5 / DAE-C22: a relation is observed only under its
