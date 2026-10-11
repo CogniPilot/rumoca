@@ -1,5 +1,7 @@
 use super::*;
 
+const OWNED_INTEGER_SOURCE: &str = "model OwnedInteger input Integer n(start=0); output Integer y; equation y=mod(sum({9007199254740993+n+i for i in 1:2}),7); end OwnedInteger;";
+
 #[test]
 fn main_dae_integer_quotients_preserve_negative_operand_rules() {
     // Independently tabulated MLS truncating div/rem and divisor-signed mod.
@@ -154,10 +156,7 @@ fn main_dae_integer_quotients_keep_issued_outer_and_owned_comprehension_binders(
         "model OuterInteger input Integer n(start=0); output Integer y[2]; equation for i in 1:2 loop y[i]=mod(9007199254740993+n+i,7); end for; end OuterInteger;",
         "OuterInteger",
     );
-    let owned = compile(
-        "model OwnedInteger input Integer n(start=0); output Integer y; equation y=mod(sum({9007199254740993+n+i for i in 1:2}),7); end OwnedInteger;",
-        "OwnedInteger",
-    );
+    let owned = compile(OWNED_INTEGER_SOURCE, "OwnedInteger");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         for (input, expected, expected_sum) in [(0.0, [6.0, 0.0], 6.0), (1.0, [0.0, 1.0], 1.0)] {
             let mut opts = options(policy);
@@ -176,6 +175,28 @@ fn main_dae_integer_quotients_keep_issued_outer_and_owned_comprehension_binders(
                 expected_sum,
                 "{policy:?}: owned binder, n={input}"
             );
+        }
+    }
+}
+
+#[test]
+fn main_dae_integer_quotients_owned_comprehension_executes_independently() {
+    let compiled = compile(OWNED_INTEGER_SOURCE, "OwnedInteger");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        // Independent: (2*9007199254740993 + 3 + 2*n) mod 7 is 6 or 1.
+        for (input, expected) in [(0.0, 6.0), (1.0, 1.0)] {
+            let mut opts = options(policy);
+            opts.initial_inputs = vec![("n".into(), input)];
+            let result = simulate_dae(&compiled.dae, &opts)
+                .unwrap_or_else(|error| panic!("{policy:?}, n={input}: {error:?}"));
+            assert_eq!(result.times.len(), 11);
+            assert_eq!(result.times.first().copied(), Some(0.0));
+            assert_eq!(result.times.last().copied(), Some(1.0));
+            let values = series(&result, "y");
+            assert_eq!(values.len(), result.times.len());
+            for &value in values {
+                assert_eq!(value, expected, "{policy:?}, n={input}");
+            }
         }
     }
 }
