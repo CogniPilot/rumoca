@@ -282,7 +282,7 @@ fn index_function_expressions(source: dae::DaeView<'_>) -> FunctionExpressionInd
     // closed callback expressions once, alongside the existing value scopes;
     // deriving only value incidence would drop dead global callback nodes.
     let mut intervals = std::collections::BTreeSet::new();
-    for function_index in 0..source.function_count() {
+    for (function_index, scope) in scopes.iter_mut().enumerate() {
         let function = source
             .function(source.function_id(function_index).unwrap())
             .unwrap();
@@ -293,10 +293,10 @@ fn index_function_expressions(source: dae::DaeView<'_>) -> FunctionExpressionInd
         for ordinal in range {
             let id = source.expression_id(ordinal as usize).unwrap();
             if source.expression(id).unwrap().function_scope().is_none() {
-                scopes[function_index].push(id);
+                scope.push(id);
             }
         }
-        scopes[function_index].sort_unstable_by_key(|id| id.index());
+        scope.sort_unstable_by_key(|id| id.index());
     }
     indexed.sort_unstable_by_key(|entry| {
         (
