@@ -91,11 +91,12 @@ The first LSP run found a harness expectation bug (`Real` versus canonical
 `real` report spelling); the corrected run passed. The first Modelica attempt
 found a CSV collection type-inference error before OMC. After its correction,
 the actual original Circuit OMC check/simulation succeeded, then the required
-`src.v` column check failed because OMC omitted its constant alias. The physical
-channel correction above is not yet executed. A source review also found stale
-Ball/JAX filenames in the user guide and playground seed roster; both now point
-to SympyDecay/JAX, with an added actual-file loader check that is still unrun.
-No generated Modelica roundtrip,
+`src.v` column check failed because OMC omitted its constant alias. At frozen
+`26f474b15`, the physical-channel correction passed and the Node workspace
+gate passed all three tests. Five originals and fourteen export controls passed
+before OMC rejected the DAE NeuralPredatorPrey derivative projection syntax;
+NeuralODEBackprop was not reached. See the exact
+[qualification receipt](qualification-26f-20261011.md). No six-model roundtrip,
 workspace/clippy, fixed MSL canary, or broader gate is claimed green.
 
 Raw bounded attempts are retained below
