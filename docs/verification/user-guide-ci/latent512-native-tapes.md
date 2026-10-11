@@ -47,7 +47,7 @@ Focused qualification commands (all currently unrun):
 cargo test -p rumoca-exec-cranelift --lib emit::scratch::tests:: -- --nocapture
 cargo test -p rumoca-exec-cranelift --lib emit::register_storage_tests::full_width_tapes_execute_assignments_residual_batches_and_jvp_on_default_stack -- --exact --nocapture
 cargo test -p rumoca-exec-cranelift --lib full_width_typed_integer_tapes_preserve_exact_cells_on_default_stack -- --nocapture
-cargo test -p rumoca-bind-wasm --lib user_guide_latent_width_variants_use_the_full_authored_source -- --nocapture
+cargo test -p rumoca-bind-wasm --lib --features full-web user_guide_latent_width_variants_use_the_full_authored_source -- --nocapture
 ```
 
 The scratch filter selects four controls: stable parent pointers through site and
