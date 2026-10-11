@@ -21,16 +21,16 @@
 //! makes the whole call unexpandable, so the caller refuses the model at the
 //! capability gate instead of emitting a different function.
 
-use super::ExpansionBudget;
-use crate::typed_program::element_matches_type;
-use rumoca_core::Span;
-use rumoca_ir_solve as solve;
-use std::sync::Arc;
 mod admission;
-use admission::program_work;
 mod number;
 mod shape;
-use number::{binary_op, binders, compare_op, constant, identity_element, unary_op};
+
+use super::ExpansionBudget;
+use crate::typed_program::element_matches_type;
+use admission::program_work;
+use number::{binders, compare_op, constant, identity_element, unary_op};
+use rumoca_core::Span;
+use rumoca_ir_solve as solve;
 use shape::{concatenate, coordinates, row_major_offset, transpose};
 use solve::{
     BinaryOp, CompareOp, LinearOp, Reg, SolveBinaryOperator, SolveCompareOperator,
@@ -38,6 +38,7 @@ use solve::{
     SolvePureCallOwnerId, SolveReductionOperator, SolveRegisterId, SolveTensorViewAxis,
     SolveUnaryOperator, SolveValueKind, TypedProgram, UnaryOp,
 };
+use std::sync::Arc;
 
 /// Nested call depth before a (recursive) call is refused.
 const CALL_DEPTH: usize = 64;
@@ -609,14 +610,10 @@ impl Inliner<'_> {
                 let [rows, columns] = dims.as_slice() else {
                     return None;
                 };
+                let scalar = frame.program.register_types()[destination.index()].element_type();
                 let elems = (0..*rows)
                     .flat_map(|row| {
-                        (0..*columns).map(move |column| {
-                            identity_element(
-                                frame.program.register_types()[destination.index()].element_type(),
-                                row == column,
-                            )
-                        })
+                        (0..*columns).map(move |column| identity_element(scalar, row == column))
                     })
                     .collect();
                 frame.write(*destination, elems)
