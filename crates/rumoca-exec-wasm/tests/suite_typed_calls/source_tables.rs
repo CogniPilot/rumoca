@@ -19,16 +19,16 @@ pub(super) fn issued_current(json: &str, source: &str) -> solve::SolvePureCallTa
     let wire: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(
         wire["compilerSourceSha256"],
-        "a88161891ff1851c7586dd71a7c3e834123fcc7c0926b7bdc9bee5d97132819b"
+        "2bbcc91cb386b52cefa6c50f4c7a4f7612c9f6fb8159b5140f83013700a63890"
     );
     assert_eq!(
         wire["producerBinarySha256"],
-        "262ee681e0cdb87b499ee8907508d8ea77c9640caa2b480bb3eda782886d1457"
+        "7376abd34d6a040fe81b0e4f50a26652d23a5b92dd7b06e8ace2f9c919afef0d"
     );
     issued_revision(
         json,
         source,
-        "14694fd7e4369b775b15cd2dafc86f0b06bd4608-dirty",
+        "db0e68b9cd0470f5466e1e2874350505115362c6",
     )
 }
 
