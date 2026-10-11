@@ -314,3 +314,84 @@ fn issue_422_original_array_function_runs_without_native_fallback() {
         eprintln!("original U4/{sample} time={time} y={actual}: {receipt:?}");
     }
 }
+
+pub(super) fn issue_425_original_38_source() -> String {
+    use sha1::{Digest, Sha1};
+
+    const ORIGINAL: &str = include_str!(
+        "../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_425.mo"
+    );
+    assert_eq!(
+        format!("{:x}", Sha1::digest(ORIGINAL.as_bytes())),
+        "cafb32e2ce5be3e9ac8e4e28a585fd95ed8d0035",
+        "preserve the original reported 30x30 fixture"
+    );
+    assert_eq!(ORIGINAL.matches("parameter Integer nx = 30;").count(), 1);
+    assert_eq!(ORIGINAL.matches("parameter Integer ny = 30;").count(), 1);
+    let source = ORIGINAL
+        .replace("parameter Integer nx = 30;", "parameter Integer nx = 38;")
+        .replace("parameter Integer ny = 30;", "parameter Integer ny = 38;");
+    assert_eq!(
+        format!("{:x}", Sha1::digest(source.as_bytes())),
+        "ff36add31d0cbc593240535501a55a7cecfc8add",
+        "only the two grid extents change; model name and equations stay authored"
+    );
+    source
+}
+
+#[test]
+fn issue_425_original_38_preserves_quiescent_states_and_native_receipts() {
+    let compiled = compile(&issue_425_original_38_source(), "E30x30");
+    let expected = compiled.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == rumoca_ir_dae::VariableRole::State)
+            .flat_map(|(_, variable)| {
+                assert_eq!(variable.scalar_count(), 38 * 38);
+                let value = match variable.name().as_str() {
+                    "r" => 1.0,
+                    "mu" | "mv" => 0.0,
+                    "E" => 2.5,
+                    name => panic!("unexpected Euler state {name}"),
+                };
+                variable.scalar_names().map(move |name| (name, value))
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(expected.len(), 4 * 38 * 38);
+    let opts = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.01),
+        solver_mode: SimSolverMode::RkLike,
+        execution_policy: SimExecutionPolicy::Auto,
+        ..SimOptions::default()
+    };
+    {
+        let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts)
+            .expect("original 38x38 Euler lowers through the simulation owner");
+        let _native_calls = rumoca_exec_cranelift::compile_pure_call_table(&lowered.pure_calls)
+            .expect("retained checked Euler helpers compile without hidden fallback");
+    }
+    let mut session =
+        SimulationSession::new(&compiled.dae, opts).expect("original 38x38 Euler initializes");
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 100.0;
+        if sample != 0 {
+            session.advance_to(time).expect("original Euler advances");
+        }
+        let state = session.state().expect("actual original Euler state");
+        assert_eq!(state.time, time);
+        for (name, value) in &expected {
+            let actual = state.values[name];
+            assert!(actual.is_finite(), "{name} at {time}: {actual}");
+            assert_eq!(actual, *value, "quiescent {name} at {time}");
+        }
+        let receipt = session.execution_receipt();
+        assert_eq!(receipt.engine, SimExecutionEngine::Cranelift, "{receipt:?}");
+        assert_eq!(receipt.refusal, None, "{receipt:?}");
+        assert!(receipt.declined.is_empty(), "{receipt:?}");
+        eprintln!(
+            "original Euler38/{sample}: time={time}, states={}, {receipt:?}",
+            expected.len()
+        );
+    }
+}
