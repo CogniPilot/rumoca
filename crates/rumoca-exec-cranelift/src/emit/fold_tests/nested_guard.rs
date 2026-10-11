@@ -37,15 +37,16 @@ fn guarded_row(nested_when_true: bool) -> Vec<LinearOp> {
     let outer = rumoca_ir_solve::FunctionFoldProgram::checked(
         domain(1, "outer"),
         1,
-        1,
+        2,
         vec![
             LinearOp::LoadFoldCapture { dst: 0, index: 0 },
+            LinearOp::LoadFoldCapture { dst: 1, index: 1 },
             LinearOp::StoreOutputFunctionFold {
                 initial: Box::new([rumoca_ir_solve::FoldInitialSource::ParentCarried {
                     base: 0,
                     count: 1,
                 }]),
-                capture_start: 0,
+                capture_start: 1,
                 program: std::sync::Arc::new(nested),
                 result_base: 0,
                 count: 1,
@@ -57,14 +58,15 @@ fn guarded_row(nested_when_true: bool) -> Vec<LinearOp> {
     .expect("checked outer fold stores exactly its carried tuple");
     vec![
         LinearOp::LoadP { dst: 0, index: 0 },
-        LinearOp::Const { dst: 1, value: 3.0 },
+        LinearOp::LoadP { dst: 1, index: 1 },
+        LinearOp::Const { dst: 2, value: 3.0 },
         LinearOp::FunctionFold {
-            dst_start: 2,
-            initial_start: 1,
+            dst_start: 3,
+            initial_start: 2,
             capture_start: 0,
             program: std::sync::Arc::new(outer),
         },
-        LinearOp::StoreOutput { src: 2 },
+        LinearOp::StoreOutput { src: 3 },
     ]
 }
 
@@ -76,7 +78,7 @@ fn call_native(
     condition: f64,
     out: &mut [f64],
 ) -> Result<(), CompileError> {
-    let p = [condition];
+    let p = [condition, 2.0];
     validate_input_requirements(compiled.input_requirements, &[], &p, None)?;
     let [jit] = compiled.jits.as_slice() else {
         panic!("one compact source row has one issued native kernel");
@@ -111,11 +113,11 @@ fn nested_fold_guard_preserves_both_polarities_and_selected_access_faults() {
         let inactive = f64::from(!nested_when_true);
         let active = f64::from(nested_when_true);
         assert_eq!(
-            rumoca_eval_solve::eval_row(&row, &[], &[inactive], 0.0, None).unwrap(),
+            rumoca_eval_solve::eval_row(&row, &[], &[inactive, 2.0], 0.0, None).unwrap(),
             3.0,
             "canonical inactive arm preserves its initial tuple"
         );
-        let reference = rumoca_eval_solve::eval_row(&row, &[], &[active], 0.0, None)
+        let reference = rumoca_eval_solve::eval_row(&row, &[], &[active, 2.0], 0.0, None)
             .expect_err("canonical selected access faults");
         assert!(
             matches!(

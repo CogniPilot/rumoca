@@ -9,8 +9,9 @@ e4693ec3e and the parent test-type correction 718d131d5 (picked as 5208ef103).
 `bnot(1)` is nonzero, so `brif` enters a nested fold on an inactive false arm.
 This is a concrete source hypothesis pending execution of the original probe.
 
-The checked constructor witness retains a compact inner fold with one runtime
-index 2 into an extent-1 aggregate. An outer fold selects it with a live
+The checked constructor witness retains a compact inner fold with a live captured
+index 2 into an extent-1 aggregate; it is a second runtime input so constant
+projection folding cannot hide the actual index fault. An outer fold selects it with a live
 captured scalar condition and either polarity. The canonical evaluator must
 retain initial value 3 on the inactive arm and expose the selected typed
 axis-1/index-2/extent-1 fault. Native execution must do the same. The existing
