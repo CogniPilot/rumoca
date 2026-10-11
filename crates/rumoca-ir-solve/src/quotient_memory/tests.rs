@@ -115,9 +115,9 @@ fn activated_fixture() -> SolveProblem {
     let condition = vec![
         LinearOp::LoadTime { dst: 0 },
         LinearOp::Const { dst: 1, value: 0.5 },
-        LinearOp::Binary {
+        LinearOp::Compare {
             dst: 2,
-            op: BinaryOp::Lt,
+            op: crate::CompareOp::Lt,
             lhs: 0,
             rhs: 1,
         },

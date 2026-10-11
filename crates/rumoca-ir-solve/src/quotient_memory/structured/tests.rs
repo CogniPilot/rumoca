@@ -264,9 +264,9 @@ fn activated_map_fixture() -> SolveProblem {
     let condition = vec![
         LinearOp::LoadTime { dst: 0 },
         LinearOp::Const { dst: 1, value: 0.5 },
-        LinearOp::Binary {
+        LinearOp::Compare {
             dst: 2,
-            op: BinaryOp::Lt,
+            op: crate::CompareOp::Lt,
             lhs: 0,
             rhs: 1,
         },
@@ -413,9 +413,9 @@ fn activated_map_requires_its_complete_private_hold_geometry() {
     let condition = vec![
         LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 1 },
         LinearOp::Const { dst: 1, value: 0.0 },
-        LinearOp::Binary {
+        LinearOp::Compare {
             dst: 2,
-            op: BinaryOp::Eq,
+            op: crate::CompareOp::Eq,
             lhs: 0,
             rhs: 1,
         },
