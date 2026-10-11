@@ -364,3 +364,103 @@ fn assert_guard_identity(guard: &Expression, binder: rumoca_core::IndexBinderPro
         }
     }
 }
+
+#[test]
+fn membership_guard_constructor_preserves_generated_and_refuses_reserved_source_id() {
+    let range = integer_range(1, 3, span());
+    let guard = range_membership_guard(
+        rumoca_core::IndexBinderProvenance::Generated,
+        "j",
+        &range,
+        1,
+        span(),
+    )
+    .unwrap();
+    assert_guard_identity(&guard, rumoca_core::IndexBinderProvenance::Generated);
+    let error = range_membership_guard(
+        rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(0)),
+        "j",
+        &range,
+        1,
+        span(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, ToDaeError::UnsupportedFlatSemantics { feature, detail, span: actual } if feature == "function loop iterator" && detail.contains("reserved unresolved DefId(0)") && actual == span())
+    );
+}
+
+#[test]
+fn membership_guard_comprehension_preserves_body_read_admission_and_issued_identity() {
+    let issued = rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(42));
+    let foreign = rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(41));
+    let mut shapes = ShapeEnvironment::default();
+    shapes.bind_integer_bounds(VarName::new("k"), 1, 3);
+    let bounds = HashMap::from([(VarName::new("k"), (1, 3))]);
+    let integers = HashMap::new();
+    for (binder, body, admitted) in [
+        (issued, integer(7), false),
+        (
+            issued,
+            Expression::VarRef {
+                name: foreign.reference("j", span()).unwrap(),
+                subscripts: Vec::new(),
+                span: span(),
+            },
+            false,
+        ),
+        (
+            rumoca_core::IndexBinderProvenance::Generated,
+            Expression::VarRef {
+                name: foreign.reference("j", span()).unwrap(),
+                subscripts: Vec::new(),
+                span: span(),
+            },
+            false,
+        ),
+        (
+            issued,
+            Expression::VarRef {
+                name: issued.reference("j", span()).unwrap(),
+                subscripts: Vec::new(),
+                span: span(),
+            },
+            true,
+        ),
+    ] {
+        let expression = Expression::ArrayComprehension {
+            expr: Box::new(body),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                binder,
+                name: "j".into(),
+                range: Expression::Range {
+                    start: Box::new(integer(1)),
+                    step: None,
+                    end: Box::new(var("k")),
+                    span: span(),
+                },
+            }],
+            filter: None,
+            span: span(),
+        };
+        let mut rewriter = MaskedComprehensionRewriter {
+            static_integers: &integers,
+            shapes: &shapes,
+            bounds: &bounds,
+            error: None,
+        };
+        let rewritten = rewriter.rewrite_expression(&expression);
+        assert!(rewriter.error.is_none());
+        if !admitted {
+            assert_eq!(rewritten, expression);
+            continue;
+        }
+        let Expression::ArrayComprehension { expr, .. } = rewritten else {
+            panic!("constructor")
+        };
+        let Expression::If { branches, .. } = *expr else {
+            panic!("admitted membership guard")
+        };
+        assert_guard_identity(&branches[0].0, issued);
+    }
+}
