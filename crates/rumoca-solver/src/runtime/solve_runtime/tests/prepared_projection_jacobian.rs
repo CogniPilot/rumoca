@@ -418,6 +418,14 @@ fn projection_demand_preserves_initialization_settled_read_cones() {
             ..Default::default()
         })
         .unwrap();
+    model.artifacts.initialization.residual_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "settled_read_demand_jvp.mo",
+        ));
     derive_test_structural_artifacts(&mut model);
     let native = Rc::new(PreparedNative::default());
     let runtime = runtime_with_preparation_backend(model, native.clone()).unwrap();
