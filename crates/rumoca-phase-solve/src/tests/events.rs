@@ -4,6 +4,8 @@
 //! program, and an event action Solve cannot compute is rejected at the exact
 //! span of the construct that made it uncomputable.
 
+mod constant_condition_memory;
+
 use super::*;
 
 /// SOLVE-C11 preserves a checked dynamic deadline as a pure scalar program.
