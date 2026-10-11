@@ -113,6 +113,7 @@ fn integer_comparison_active_call_assertion_renders_its_declaring_frame() {
     }
 }
 
+// MLS §16.6 / SPEC_0022 CLK-015: use a clocked when-equation.
 const CLOCKED_SOURCE: &str = r#"
 function clockedInc
   input Integer n;
@@ -126,9 +127,9 @@ model ClockedIntegerCallAssertion
   parameter Integer n=0 annotation(Evaluate=false);
   output Boolean flag(start=false);
   Clock c=Clock(1, 4);
-algorithm
+equation
   when c then
-    flag := clockedInc(n) > 0;
+    flag = clockedInc(n) > 0;
   end when;
 end ClockedIntegerCallAssertion;
 "#;
@@ -137,17 +138,17 @@ end ClockedIntegerCallAssertion;
 fn clocked_integer_comparison_retains_original_assertion_projection() {
     let compiled = compile(CLOCKED_SOURCE, "ClockedIntegerCallAssertion");
     compiled.dae.inspect(|view| {
-        assert_eq!(view.model_event_transaction_count(), 1);
+        assert_eq!(view.model_event_transaction_count(), 0);
     });
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         let mut opts = options(policy);
         opts.param_overrides = vec![("n".into(), 0.0)];
         let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts)
-            .expect("the clock transaction retains its issued assertion action projection");
+            .expect("the clocked equation retains its issued assertion action projection");
         assert!(lowered.problem.events.root_conditions.is_empty());
         assert_eq!(lowered.problem.events.actions.len(), 1);
         assert!(lowered.problem.events.actions[0].clock_owner.is_some());
-        assert_eq!(lowered.problem.discrete.event_transactions.len(), 1);
+        assert!(lowered.problem.discrete.event_transactions.is_empty());
         let mut session = SimulationSession::new(&compiled.dae, opts.clone())
             .expect("the holding clock-owned assertion initializes");
         for sample in 0..=10 {
