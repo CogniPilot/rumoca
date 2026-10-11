@@ -78,7 +78,8 @@ pub struct CompilationResult {
     solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
     /// Cached solve-template renderer for targets that never read the `dae`
     /// template entry.
-    solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
+    solve_template_renderer_without_dae:
+        std::sync::OnceLock<Result<SolveTemplateRenderer, CompilerError>>,
 }
 
 #[derive(Clone, Copy)]
@@ -253,17 +254,10 @@ impl CompilationResult {
     }
 
     fn solve_renderer_without_dae(&self) -> Result<&SolveTemplateRenderer, CompilerError> {
-        if self.solve_template_renderer_without_dae.get().is_none() {
-            let renderer = build_solve_template_renderer_without_dae(&self.dae)?;
-            let _ = self.solve_template_renderer_without_dae.set(renderer);
-        }
         self.solve_template_renderer_without_dae
-            .get()
-            .ok_or_else(|| {
-                CompilerError::TemplateError(CodegenError::template(
-                    "solve template renderer was not initialized after build",
-                ))
-            })
+            .get_or_init(|| build_solve_template_renderer_without_dae(&self.dae))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     pub fn to_ir_json(&self, ir: TemplateIr) -> Result<String, CompilerError> {
