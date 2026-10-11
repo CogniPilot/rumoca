@@ -44,16 +44,49 @@ fn last(result: &SimResult, name: &str) -> f64 {
 }
 
 #[test]
-fn issue_403_inactive_boolean_operand_is_lazy_in_public_execution() {
+fn issue_403_boolean_operand_order_is_a_profile_observation() {
+    // MLS §3.3 permits short-circuiting; only an if arm guarantees protection.
     let compiled = compile(GUARDED, "GuardedOperands");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         for (index, expected) in [(3.0, 1.0), (4.0, 0.0)] {
             let mut opts = options(policy);
             opts.initial_inputs = vec![("k".into(), index)];
-            let result = simulate_dae(&compiled.dae, &opts)
-                .unwrap_or_else(|error| panic!("guarded operand {policy:?}, k={index}: {error:?}"));
-            assert_eq!(last(&result, "y"), expected, "{policy:?}, k={index}");
+            match simulate_dae(&compiled.dae, &opts) {
+                Ok(result) => {
+                    assert_eq!(last(&result, "y"), expected, "{policy:?}, k={index}");
+                    eprintln!("Boolean profile {policy:?}, k={index}: value {expected}");
+                }
+                Err(error) if index == 4.0 => {
+                    eprintln!("Boolean profile {policy:?}: eager inactive operand {error:?}");
+                    assert_index_fault(error);
+                }
+                Err(error) => panic!("in-bounds operand {policy:?}: {error:?}"),
+            }
         }
+    }
+}
+
+fn assert_index_fault(error: impl std::fmt::Debug) {
+    let diagnostic = format!("{error:?}").to_lowercase();
+    assert!(
+        diagnostic.contains("index") || diagnostic.contains("bounds"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
+fn issue_403_explicit_if_control_guarantees_inactive_operand_protection() {
+    let safe = GUARDED.replace(
+        "if k <= n and a[k] > 5 then 1 else 0",
+        "if k <= n then (if a[k] > 5 then 1 else 0) else 0",
+    );
+    let compiled = compile(&safe, "GuardedOperands");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let mut opts = options(policy);
+        opts.initial_inputs = vec![("k".into(), 4.0)];
+        let result = simulate_dae(&compiled.dae, &opts)
+            .unwrap_or_else(|error| panic!("explicit if control {policy:?}: {error:?}"));
+        assert_eq!(last(&result, "y"), 0.0, "{policy:?}");
     }
 }
 
@@ -65,11 +98,7 @@ fn issue_403_active_invalid_index_keeps_its_fault() {
         let mut opts = options(policy);
         opts.initial_inputs = vec![("k".into(), 4.0)];
         let error = simulate_dae(&compiled.dae, &opts).expect_err("selected invalid access faults");
-        let diagnostic = format!("{error:?}").to_lowercase();
-        assert!(
-            diagnostic.contains("index") || diagnostic.contains("bounds"),
-            "{diagnostic}"
-        );
+        assert_index_fault(error);
     }
 }
 
