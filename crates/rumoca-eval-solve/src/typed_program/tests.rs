@@ -58,10 +58,24 @@ fn assert_scalar_call_projection(
         })
         .collect::<Vec<_>>();
     let first = u32::try_from(inputs.len()).unwrap();
+    let site = table.owners()[owner].call_site();
+    let mut end = 0u32;
+    let input_starts = site
+        .inputs()
+        .iter()
+        .map(|value_type| {
+            let start = end;
+            end = end.checked_add(value_type.scalar_count()).unwrap();
+            start
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    assert_eq!(end, first, "inputs use the issued aggregate interface");
+    assert_eq!(site.output_scalar_count(), Some(expected.len()));
     program.push(LinearOp::PureCall {
         dst_start: first,
-        input_starts: (0..first).collect::<Vec<_>>().into_boxed_slice(),
-        site: table.owners()[owner].call_site(),
+        input_starts,
+        site,
     });
     program.extend(
         expected
@@ -1069,6 +1083,15 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         outputs[4].elements(),
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].map(real_value)
     );
+    assert_scalar_call_projection(
+        &table,
+        0,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 1.0, 1.0, 2.0],
+        &[
+            12.0, 30.0, 42.0, 2.0, 8.0, 4.0, 10.0, 6.0, 12.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    );
 }
 
 #[test]
@@ -1162,6 +1185,12 @@ fn compact_cross_product_evaluates_without_coordinate_operations() {
     let outputs = eval_pure_call(&table, table.owners()[0].id(), &[lhs, rhs]).unwrap();
 
     assert_eq!(outputs[0].elements(), [-3.0, 6.0, -3.0].map(real_value));
+    assert_scalar_call_projection(
+        &table,
+        0,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[-3.0, 6.0, -3.0],
+    );
     assert!(
         table.owners()[0]
             .body()
@@ -1203,6 +1232,7 @@ fn promoted_vector_columns_preserve_modelica_row_major_order() {
 
     assert_eq!(outputs[0].value_type(), &matrix);
     assert_eq!(outputs[0].elements(), [1.0, 3.0, 2.0, 4.0].map(real_value));
+    assert_scalar_call_projection(&table, 0, &[1.0, 2.0, 3.0, 4.0], &[1.0, 3.0, 2.0, 4.0]);
 }
 
 #[test]
@@ -1261,6 +1291,7 @@ fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let outputs = eval_pure_call(&table, table.owners()[0].id(), &[scale]).unwrap();
 
     assert_eq!(outputs[0].elements(), [2.0, 4.0, 6.0].map(real_value));
+    assert_scalar_call_projection(&table, 0, &[2.0], &[2.0, 4.0, 6.0]);
 }
 
 #[test]
