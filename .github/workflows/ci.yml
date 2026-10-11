@@ -1979,6 +1979,14 @@ jobs:
           node packages/rumoca/build.mjs --profile release --variant core --optimize
           EOF
 
+      - name: Execute user-guide browser examples
+        run: |
+          nix develop .#docs --command bash <<'EOF'
+          set -euo pipefail
+          npm ci --prefix packages/playground
+          node packages/playground/tests/user_guide_browser.mjs
+          EOF
+
       - name: Prepare GitHub Pages content
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |

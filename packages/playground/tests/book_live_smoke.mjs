@@ -1,11 +1,8 @@
 // Browser smoke test for the mdBook live examples (docs/user-guide/live/).
 //
-// Not part of the `cargo xtask playground test` gate because it depends on the
-// Monaco CDN. Run it manually when touching the live runner:
-//
-//   cargo xtask docs serve --port 8731
-//   node packages/playground/tests/book_live_smoke.mjs \
-//     --base-url http://127.0.0.1:8731 --browser-binary google-chrome
+// Required by the PR WASM job through user_guide_browser.mjs. Vendor assets
+// are staged by the actual npm package build, so this gate uses local Monaco.
+// The wrapper builds the book and serves it with the canonical xtask server.
 //
 // Verifies: widgets mount with Monaco editors, Simulate produces a plot,
 // LSP diagnostics produce markers, Show DAE renders Modelica text, the
@@ -32,7 +29,7 @@ if (!browserExecutablePath) {
 const browser = await chromium.launch({
   executablePath: browserExecutablePath,
   headless: true,
-  args: ["--no-sandbox", "--enable-unsafe-webgpu"],
+  args: ["--no-sandbox", "--enable-unsafe-webgpu", "--enable-unsafe-swiftshader"],
 });
 
 let failures = 0;
@@ -65,6 +62,10 @@ try {
     .then(() => true)
     .catch(() => false);
   check(plot, "Simulate produced an SVG plot");
+  const balloon = await page.locator(".rumoca-live").first()
+    .locator(".rumoca-live-surface canvas").waitFor({ timeout: 30000 })
+    .then(() => true).catch(() => false);
+  check(balloon, "HotAirBalloon exact visualization rendered its Three.js canvas");
 
   // Show DAE before the diagnostics mutation below; dae-modelica renders a
   // `class <Name> ... end <Name>;` document.
@@ -123,21 +124,35 @@ try {
     check(/t = /.test(label), `scrubbed to end: "${label}"`);
   }
 
-  const gpuStates = await page
-    .locator(".rumoca-live input[type='checkbox']")
-    .evaluateAll((nodes) => nodes.map((node) => node.checked));
-  const waveIndex = gpuStates.findIndex(Boolean);
-  check(waveIndex >= 0, "Wave2D GPU widget present");
-  if (waveIndex >= 0) {
-    const waveWidget = page.locator(".rumoca-live").nth(waveIndex);
-    await waveWidget.locator(".rumoca-live-run").click();
-    const surface = await waveWidget
-      .locator(".rumoca-live-surface canvas")
-      .waitFor({ timeout: 180000 })
-      .then(() => true)
-      .catch(() => false);
-    check(surface, "Wave2D GPU widget rendered a surface canvas");
+  // Each widget has separate GPU and Interactive checkboxes. A checkbox's
+  // position is not a widget identity; use the exact three authored models.
+  check(arrayWidgets === 3, "exact Turkey, Wave2D and AirfoilFlow widget roster");
+  const models = await page.evaluate(() => window.monaco.editor.getModels()
+    .map((model) => model.getValue()).filter((source) => source.includes("model ")));
+  check(models.some((source) => source.includes("model Wave2D")), "authored Wave2D source present");
+  check(models.some((source) => source.includes("model AirfoilFlow")), "authored AirfoilFlow source present");
+  const waveWidget = page.locator(".rumoca-live").nth(1);
+  check(await waveWidget.locator(".rumoca-live-gpu input").first().isChecked(), "Wave2D authored GPU default selected");
+  await waveWidget.locator(".rumoca-live-run").click();
+  const surface = await waveWidget.locator(".rumoca-live-surface canvas")
+    .waitFor({ timeout: 180000 }).then(() => true).catch(() => false);
+  check(surface, "Wave2D GPU widget rendered the exact surface visualization");
+
+  const airfoilWidget = page.locator(".rumoca-live").nth(2);
+  check(await airfoilWidget.locator(".rumoca-live-gpu input").first().isChecked(), "AirfoilFlow authored GPU default selected");
+  await airfoilWidget.locator(".rumoca-live-run").click();
+  const airfoil = await airfoilWidget.locator("canvas")
+    .waitFor({ timeout: 180000 }).then(() => true).catch(() => false);
+  check(airfoil, "AirfoilFlow GPU widget rendered the exact heatmap visualization");
+  const fields = airfoilWidget.locator(".rumoca-live-tuner select");
+  check(await fields.count() >= 1, "AirfoilFlow field selector is available");
+  if (await fields.count()) {
+    await fields.first().selectOption("q");
+    check(await fields.first().inputValue() === "q", "AirfoilFlow switches to pressure field");
+    await fields.first().selectOption("speed");
+    check(await fields.first().inputValue() === "speed", "AirfoilFlow switches to speed field");
   }
+
 } finally {
   await browser.close();
 }
