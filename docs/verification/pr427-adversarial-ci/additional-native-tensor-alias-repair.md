@@ -45,13 +45,20 @@ Focused after commands and selected counts:
 
 ```sh
 cargo test --locked --offline -p rumoca-eval-solve --lib prepared_tensor_additional_alias_ # 3
-cargo test --locked --offline -p rumoca-eval-solve --lib prepared_tensor_snapshot # 12
+cargo test --locked --offline -p rumoca-eval-solve --lib prepared_tensor_snapshot # 15
 cargo test --locked --offline -p rumoca-eval-solve --lib native_tensor_staging # 2
 cargo test --locked --offline -p rumoca-eval-solve --lib scalar_ops::snapshot_tests:: # 5
 ```
 
+The second selector also matches the module path of the three additional-alias
+tests: it selects nine original snapshots, three new update controls, and those
+three original alias probes. At root source `2a0cbb0fd`, the separate alias gate
+passed all three and the full module selector passed all fifteen. Its exact-count
+wrapper then refused the incorrectly proposed count twelve; this was a manifest
+count mismatch after successful test execution. Staging and scalar snapshot
+qualification were not executed in that first after attempt.
+
 All controls are unignored ordinary library tests in the existing workspace CI
-selection. Source review and rustfmt/diff checks are complete; after execution
-remains pending the root agent's guarded lane. The governing accepted specs are
+selection. Source review and rustfmt/diff checks are complete. The governing accepted specs are
 SPEC_0007 Stage 4, SPEC_0032 sections 2 and 4, SPEC_0029 sections 3b and 5, and
 SPEC_0033 sections 2 and 3, as recorded in the original before-probe document.
