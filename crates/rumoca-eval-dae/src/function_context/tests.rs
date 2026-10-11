@@ -73,6 +73,7 @@ fn integer_guards_are_exact_and_overflow_stays_unknown() {
                     .map(|id| id.index()),
                 expected
             );
+            assert_selected_and_source_reads(view, expression, expected);
         }
     });
 }
@@ -136,6 +137,7 @@ fn parameter_defaults_and_runtime_guards_cannot_select_a_branch() {
                     .map(|id| id.index()),
                 expected
             );
+            assert_selected_and_source_reads(view, expression, expected);
         }
     });
 }
@@ -345,4 +347,31 @@ fn functions_with_assertions_cannot_be_substituted_away() {
                 .is_none()
         );
     });
+}
+
+fn assert_selected_and_source_reads<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    selected: Option<u32>,
+) {
+    let dae::ExpressionOperation::Conditional(operands) =
+        view.expression(expression).unwrap().operation()
+    else {
+        panic!("the checked fixture root is conditional");
+    };
+    let yes = operands.get(1).unwrap().index();
+    let no = operands.get(operands.len() - 1).unwrap().index();
+    let mut effective = Vec::new();
+    crate::for_each_selected_value_expression(view, expression, |id, _| {
+        effective.push(id.index());
+    });
+    for branch in [yes, no] {
+        assert_eq!(
+            effective.contains(&branch),
+            selected.is_none_or(|id| id == branch)
+        );
+    }
+    let mut source = Vec::new();
+    dae::for_each_expression(view, expression, |id, _| source.push(id.index()));
+    assert!(source.contains(&yes) && source.contains(&no));
 }
