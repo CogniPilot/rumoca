@@ -108,7 +108,8 @@ fn program_supports_directional(
     program
         .operations()
         .iter()
-        .all(|operation| match operation.operation() {
+        .enumerate()
+        .all(|(operation_index, operation)| match operation.operation() {
             SolveOperation::Map { body, .. } => {
                 program_supports_directional(body.body(), available)
             }
@@ -188,7 +189,21 @@ fn program_supports_directional(
             } => program
                 .register_types()
                 .get(destination.index())
-                .is_some_and(|value_type| value_type.dimensions().is_empty()),
+                .is_some_and(|value_type| {
+                    let supported = value_type.dimensions().is_empty();
+                    if !supported
+                        && matches!(
+                            operation.operation(),
+                            SolveOperation::Unary { operator: SolveUnaryOperator::Log, .. }
+                        )
+                    {
+                        eprintln!(
+                            "TEMP checked directional aggregate Log refusal: operation_index={operation_index} destination={destination:?} element_type={:?} dimensions={:?} span={:?} supported=false",
+                            value_type.element_type(), value_type.dimensions(), operation.provenance()
+                        );
+                    }
+                    supported
+                }),
             SolveOperation::Constant { .. }
             | SolveOperation::Load { .. }
             | SolveOperation::Store { .. }
