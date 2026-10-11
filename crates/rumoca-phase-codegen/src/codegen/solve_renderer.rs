@@ -326,6 +326,15 @@ fn solve_render_context_value_with_handles(
     // materialization (`from_serialize(solve_problem)` alone was ~4.7 GB).
     let fmi_entry = handle.fmi_value();
     let solve_problem = handle.problem();
+    if solve_problem
+        .discrete
+        .structured_updates
+        .iter()
+        .any(|update| matches!(update.role, solve::DiscreteRowRole::QuotientMemory { .. }))
+    {
+        return Err(CodegenError::template(
+            "generated Solve targets do not yet support certified structured quotient initialization".to_string()));
+    }
     let artifacts = handle.artifacts();
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;

@@ -486,7 +486,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
         scalar: usize,
-        parameter: usize,
+        memory: crate::layout::QuotientMemory<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let lhs = self.expression(
@@ -497,7 +497,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             arguments.get(1).expect("checked quotient second argument"),
             scalar,
         )?;
-        let quotient = self.load_slot(solve::scalar_slot_p(parameter), span)?;
+        let quotient = self.quotient_memory_read(memory, span)?;
         self.quotient_result(builtin, lhs, rhs, quotient, span)
     }
 

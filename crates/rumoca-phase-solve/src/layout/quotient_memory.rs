@@ -11,6 +11,8 @@ pub(crate) struct QuotientMemory<'dae> {
     pub(crate) builtin: dae::PureBuiltin,
     pub(crate) parameter: usize,
     pub(crate) root_index: usize,
+    pub(crate) domain: Option<dae::DomainId<'dae>>,
+    pub(crate) count: usize,
 }
 
 impl QuotientMemory<'_> {
@@ -42,20 +44,48 @@ impl<'dae> BufferedQuotients<'dae> {
         let mut entries = Vec::new();
         let mut by_expression = vec![None; view.expression_count()];
         let mut end = base;
+        let structured_roots = structured_root_ordinals(view, relations.continuous_root_count())?;
         for index in 0..view.runtime_quotient_owner_count() {
             let owner = view
                 .runtime_quotient_owner_at(index)
                 .expect("dense quotient owner");
-            let dae::RuntimeQuotientOwnerKind::ModelEvent {
-                generated, root, ..
-            } = owner.kind()
-            else {
-                continue;
-            };
-            // Reuse the selected continuous-root plan. Clock-owned relations
-            // are evaluated on their tick and have no continuous buffer.
-            let Some(root_index) = relations.root_ordinal(root) else {
-                continue;
+            let (generated, root_index, domain, count) = match owner.kind() {
+                dae::RuntimeQuotientOwnerKind::ModelEvent {
+                    generated, root, ..
+                } => {
+                    // A clock-owned relation has no continuous quotient buffer.
+                    let Some(root_index) = relations.root_ordinal(root) else {
+                        continue;
+                    };
+                    (generated, root_index, None, 1)
+                }
+                dae::RuntimeQuotientOwnerKind::StructuredModelEvent {
+                    generated,
+                    domain,
+                    root,
+                } => {
+                    let count = view
+                        .domain(domain)
+                        .expect("checked quotient domain")
+                        .structured()
+                        .scalar_count()
+                        .map_err(|error| {
+                            LowerError::contract(
+                                error.to_string(),
+                                view.expression(owner.quotient())
+                                    .expect("checked quotient")
+                                    .provenance()
+                                    .span(),
+                            )
+                        })?;
+                    (
+                        generated,
+                        structured_roots[root.index() as usize],
+                        Some(domain),
+                        count,
+                    )
+                }
+                dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => continue,
             };
             let expression = view
                 .expression(owner.quotient())
@@ -66,7 +96,7 @@ impl<'dae> BufferedQuotients<'dae> {
                 continue;
             }
             let parameter = end;
-            end = end.checked_add(1).ok_or_else(|| {
+            end = end.checked_add(count).ok_or_else(|| {
                 LowerError::contract(
                     "quotient-memory layout overflow",
                     expression.provenance().span(),
@@ -79,6 +109,8 @@ impl<'dae> BufferedQuotients<'dae> {
                 builtin: owner.builtin(),
                 parameter,
                 root_index,
+                domain,
+                count,
             });
         }
         Ok(Self {
@@ -103,4 +135,24 @@ impl<'dae> BufferedQuotients<'dae> {
     pub(super) const fn end(&self) -> usize {
         self.end
     }
+}
+
+fn structured_root_ordinals(
+    view: dae::DaeView<'_>,
+    mut root_end: usize,
+) -> Result<Vec<usize>, LowerError> {
+    let mut structured_roots = vec![0; view.structured_root_count()];
+    for (id, root) in view.structured_roots() {
+        structured_roots[id.index() as usize] = root_end;
+        let count = view
+            .domain(root.domain())
+            .expect("checked root domain")
+            .structured()
+            .scalar_count()
+            .map_err(|error| LowerError::contract(error.to_string(), root.provenance().span()))?;
+        root_end = root_end.checked_add(count).ok_or_else(|| {
+            LowerError::contract("structured root ordinal overflow", root.provenance().span())
+        })?;
+    }
+    Ok(structured_roots)
 }

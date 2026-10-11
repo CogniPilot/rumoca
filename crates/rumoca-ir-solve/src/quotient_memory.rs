@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::BTreeMap;
 
+mod structured;
+
 type Outputs<'a> = BTreeMap<usize, (&'a [LinearOp], usize, usize)>;
 
 pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeContractError> {
@@ -12,7 +14,7 @@ pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
         .iter()
         .any(|role| matches!(role, DiscreteRowRole::QuotientMemory { .. }))
     {
-        return Ok(());
+        return structured::validate(problem);
     }
     let programs = outputs(&discrete.rhs);
     let roots = outputs(&problem.events.root_conditions);
@@ -65,7 +67,7 @@ pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
             ));
         }
     }
-    Ok(())
+    structured::validate(problem)
 }
 
 fn validate_root(

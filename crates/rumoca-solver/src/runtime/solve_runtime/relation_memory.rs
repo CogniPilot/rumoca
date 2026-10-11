@@ -106,16 +106,19 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: self.model.problem.initialization.update_rhs(),
-            targets: self.model.problem.initialization.update_targets(),
-            y,
-            p,
-            t,
-            context: self.row_eval_context(),
-            max_iters,
-        })
-        .map_err(Into::into)
+        let scalar_changed =
+            solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
+                block: self.model.problem.initialization.update_rhs(),
+                targets: self.model.problem.initialization.update_targets(),
+                y,
+                p,
+                t,
+                context: self.row_eval_context(),
+                max_iters,
+            })
+            .map_err(RuntimeSolveError::from)?;
+        let structured_changed = self.apply_initial_quotient_maps(y, p, t, max_iters)?;
+        Ok(scalar_changed || structured_changed)
     }
 
     pub fn apply_runtime_assignments_until_stable(

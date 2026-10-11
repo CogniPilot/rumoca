@@ -112,6 +112,11 @@ pub fn solve_has_initialization(problem: &SolveProblem) -> bool {
         || !initialization.projection_plan().is_empty()
         || !initialization.update_rhs().is_empty()
         || !initialization.update_targets().is_empty()
+        || problem
+            .discrete
+            .structured_updates
+            .iter()
+            .any(|update| matches!(update.role, crate::DiscreteRowRole::QuotientMemory { .. }))
 }
 
 /// Whether the problem's whole initialization is ordered explicit

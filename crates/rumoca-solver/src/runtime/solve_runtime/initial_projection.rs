@@ -968,6 +968,7 @@ impl SolveRuntime {
     /// exactly the reads that select an assembly branch.
     pub fn initialization_updates_read_algebraic_slots(&self) -> bool {
         updates_read_algebraic_slots(&self.model)
+            || self.initial_quotient_maps_read_algebraic_slots()
     }
 }
 
@@ -981,16 +982,20 @@ fn updates_read_algebraic_slots(model: &solve::SolveModel) -> bool {
         .programs()
         .iter()
         .flatten()
-        .any(|op| match op {
-            solve::LinearOp::LoadY { index, .. } => *index >= state_count,
-            solve::LinearOp::TensorLoad {
-                input: solve::TensorInputKind::Y,
-                input_start,
-                count,
-                ..
-            } => input_start.saturating_add(*count) > state_count,
-            _ => false,
-        })
+        .any(|op| reads_algebraic_slot(op, state_count))
+}
+
+pub(super) fn reads_algebraic_slot(op: &solve::LinearOp, state_count: usize) -> bool {
+    match op {
+        solve::LinearOp::LoadY { index, .. } => *index >= state_count,
+        solve::LinearOp::TensorLoad {
+            input: solve::TensorInputKind::Y,
+            input_start,
+            count,
+            ..
+        } => input_start.saturating_add(*count) > state_count,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

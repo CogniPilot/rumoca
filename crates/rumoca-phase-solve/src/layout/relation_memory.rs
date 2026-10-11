@@ -82,6 +82,13 @@ impl<'dae> BufferedRelations<'dae> {
             .flatten()
     }
 
+    pub(crate) fn continuous_root_count(&self) -> usize {
+        self.root_ordinals
+            .iter()
+            .filter(|ordinal| ordinal.is_some())
+            .count()
+    }
+
     pub(super) const fn end(&self) -> usize {
         self.parameters.end
     }

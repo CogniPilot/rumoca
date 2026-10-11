@@ -1282,7 +1282,10 @@ pub enum DiscreteRowRole {
     ConditionMemory,
     /// The numeric step of a model-level quotient, held between events.
     /// The checked root index binds its live ratio to the producer; the same
-    /// producer initializes its exclusive private parameter slot.
+    /// producer initializes its exclusive private parameter slot. On a checked
+    /// structured update, it owns the Map's whole private P span and this index
+    /// names the first root in the domain-ordered root view. The same prepared
+    /// Map, not a duplicated initialization program, initializes that span.
     QuotientMemory { step: UnaryOp, root_index: usize },
     /// Condition memory whose condition reads a periodic clock activation
     /// lane (`clocks.activation_parameter_indices`).

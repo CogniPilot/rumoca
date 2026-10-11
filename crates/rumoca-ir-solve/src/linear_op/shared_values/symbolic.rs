@@ -183,10 +183,23 @@ impl SymbolicSlots {
         ops: &[LinearOp],
         targets: &[usize],
     ) -> Option<Vec<Term>> {
+        self.run_transformed(terms, ops, targets, |_, op| {
+            Some(std::borrow::Cow::Borrowed(op))
+        })
+    }
+
+    pub(super) fn run_transformed<'a>(
+        &mut self,
+        terms: &mut Terms,
+        ops: &'a [LinearOp],
+        targets: &[usize],
+        mut transform: impl FnMut(usize, &'a LinearOp) -> Option<std::borrow::Cow<'a, LinearOp>>,
+    ) -> Option<Vec<Term>> {
         let mut registers = RegisterTable::<Term>::default();
         let mut outputs = Vec::with_capacity(targets.len());
-        for op in ops {
-            self.step(terms, op, &mut registers, &mut outputs)?;
+        for (index, op) in ops.iter().enumerate() {
+            let projected = transform(index, op)?;
+            self.step(terms, &projected, &mut registers, &mut outputs)?;
         }
         if outputs.len() != targets.len() {
             return None;

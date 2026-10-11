@@ -210,6 +210,58 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.constant(value, span)
     }
 
+    pub(super) fn domain_coordinate(
+        &mut self,
+        id: dae::DomainId<'dae>,
+        ordinal: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if let Some((_, values)) = self
+            .symbolic_domain_points
+            .iter()
+            .rev()
+            .find(|(domain, _)| *domain == id)
+        {
+            return values.get(ordinal).copied().ok_or_else(|| {
+                LowerError::contract("symbolic binder ordinal is out of range", span)
+            });
+        }
+        if let Some(source) = self
+            .deferred_fold_captures
+            .as_ref()
+            .and_then(|deferred| {
+                deferred
+                    .symbolic_domain_points
+                    .iter()
+                    .rev()
+                    .find(|(domain, _)| *domain == id)
+            })
+            .and_then(|(_, values)| values.get(ordinal))
+            .copied()
+        {
+            return self.deferred_fold_capture(source, span);
+        }
+        if let Some(register) = self.region_symbolic_point(id, ordinal, span)? {
+            return Ok(register);
+        }
+        let Some((_, values)) = self
+            .domain_points
+            .iter()
+            .rev()
+            .find(|(domain, _)| *domain == id)
+        else {
+            return Err(LowerError::non_computable(
+                "domain binder escaped its structured owner",
+                span,
+            ));
+        };
+        let value = values
+            .get(ordinal)
+            .copied()
+            .ok_or_else(|| LowerError::contract("binder ordinal is out of range", span))?;
+        self.constant(value as f64, span)
+    }
+
     // SPEC_0021: Exception - exhaustive coordinate dispatch, including scoped binders.
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub(super) fn coordinate(
@@ -225,55 +277,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return self.condition(condition);
         }
         if let dae::CoordinateView::Binder(binder) = coordinate {
-            if let Some((_, values)) = self
-                .symbolic_domain_points
-                .iter()
-                .rev()
-                .find(|(domain, _)| *domain == binder.domain())
-            {
-                return values
-                    .get(binder.ordinal() as usize)
-                    .copied()
-                    .ok_or_else(|| {
-                        LowerError::contract("symbolic binder ordinal is out of range", span)
-                    });
-            }
-            if let Some(source) = self
-                .deferred_fold_captures
-                .as_ref()
-                .and_then(|deferred| {
-                    deferred
-                        .symbolic_domain_points
-                        .iter()
-                        .rev()
-                        .find(|(domain, _)| *domain == binder.domain())
-                })
-                .and_then(|(_, values)| values.get(binder.ordinal() as usize))
-                .copied()
-            {
-                return self.deferred_fold_capture(source, span);
-            }
-            if let Some(register) =
-                self.region_symbolic_point(binder.domain(), binder.ordinal() as usize, span)?
-            {
-                return Ok(register);
-            }
-            let Some((_, values)) = self
-                .domain_points
-                .iter()
-                .rev()
-                .find(|(domain, _)| *domain == binder.domain())
-            else {
-                return Err(LowerError::non_computable(
-                    "domain binder escaped its structured owner",
-                    span,
-                ));
-            };
-            let value = values
-                .get(binder.ordinal() as usize)
-                .copied()
-                .ok_or_else(|| LowerError::contract("binder ordinal is out of range", span))?;
-            return self.constant(value as f64, span);
+            return self.domain_coordinate(binder.domain(), binder.ordinal() as usize, span);
         }
         if matches!(coordinate, dae::CoordinateView::Time) {
             let dst = self.register(span)?;

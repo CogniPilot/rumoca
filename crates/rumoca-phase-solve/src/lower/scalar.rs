@@ -12,6 +12,7 @@ mod functions;
 mod integer_quotient;
 mod literal_values;
 mod operators;
+mod quotient_memory;
 mod region_catalog;
 mod register_folding;
 mod register_ledger;
@@ -1462,7 +1463,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                         builtin,
                         arguments,
                         scalar,
-                        memory.parameter,
+                        memory,
                         node.provenance().span(),
                     )
                 } else {

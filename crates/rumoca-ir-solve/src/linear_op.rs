@@ -14,7 +14,7 @@ mod dead_constants;
 mod seed_invariance;
 mod shared_values;
 
-pub(crate) use shared_values::check_same_output;
+pub(crate) use shared_values::{check_same_output, check_same_output_transformed};
 
 pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;

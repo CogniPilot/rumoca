@@ -10,7 +10,7 @@ mod relation_memory;
 use relation_memory::BufferedRelations;
 mod quotient_memory;
 use quotient_memory::BufferedQuotients;
-pub(crate) use quotient_memory::quotient_step_operator;
+pub(crate) use quotient_memory::{QuotientMemory, quotient_step_operator};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StorageClass {

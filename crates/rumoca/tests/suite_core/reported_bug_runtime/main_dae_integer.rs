@@ -247,3 +247,64 @@ fn structured_real_quotient_keeps_each_domain_point_boundary_and_trace() {
         }
     }
 }
+
+#[test]
+fn structured_real_quotient_initializes_the_same_producer_in_both_domain_directions() {
+    // Adding two periods leaves the analytic value/trace unchanged, but the
+    // discontinuous step starts at two. Zero-filled hidden memory is wrong.
+    for range in ["1:2", "2:-1:1"] {
+        let source = format!(
+            "model InitializedStructuredQuotient output Real y[2]; Real x[2](each start=0, each fixed=true); equation for i in {range} loop y[i]=mod(8*time+i+14,7); end for; der(x)=y; end InitializedStructuredQuotient;"
+        );
+        let compiled = compile(&source, "InitializedStructuredQuotient");
+        for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+            let opts = options(policy);
+            let mut session = SimulationSession::new(&compiled.dae, opts.clone()).unwrap();
+            for sample in 0..=10 {
+                let time = f64::from(sample) / 10.0;
+                if sample != 0 {
+                    session.advance_to(time).unwrap();
+                }
+                let state = session.state().unwrap();
+                assert_eq!(state.time, time);
+                for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
+                    let expected_output = (8.0 * time + axis) % 7.0;
+                    let crossing = (7.0 - axis) / 8.0;
+                    let expected_integral =
+                        4.0 * time * time + axis * time - 7.0 * (time - crossing).max(0.0);
+                    for (name, expected) in
+                        [(output, expected_output), (integral, expected_integral)]
+                    {
+                        let actual = state.values[name];
+                        assert!(
+                            actual.is_finite()
+                                && (actual - expected).abs()
+                                    <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                            "{policy:?} range={range} {name}({time})={actual}, expected={expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn structured_real_quotient_refuses_generated_targets_without_initialization_support() {
+    let source = r#"model StructuredQuotientExport
+  output Real y[2]; Real x[2](each start=0,each fixed=true);
+equation
+  for i in 1:2 loop y[i]=mod(8*time+i,7); end for;
+  der(x)=y;
+end StructuredQuotientExport;"#;
+    let compiled = compile(source, "StructuredQuotientExport");
+    let error = compiled
+        .render_solve_template_str_without_dae("{{ model_name }}", "StructuredQuotientExport")
+        .expect_err("a generated target must not omit numeric Map initialization");
+    assert!(
+        error
+            .to_string()
+            .contains("structured quotient initialization"),
+        "{error:?}"
+    );
+}

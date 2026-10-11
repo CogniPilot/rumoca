@@ -68,7 +68,12 @@ pub(super) fn lower_initialization<'dae>(
     let dependents = ownership.lower_solved_parameter_reads(view, layout, derivatives)?;
     updates.rows.extend(dependents.rows);
     updates.targets.extend(dependents.targets);
-    for memory in layout.buffered_quotients.entries() {
+    for memory in layout
+        .buffered_quotients
+        .entries()
+        .iter()
+        .filter(|memory| memory.domain.is_none())
+    {
         let span = view
             .expression(memory.quotient)
             .expect("checked quotient expression")

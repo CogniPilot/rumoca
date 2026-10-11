@@ -35,6 +35,20 @@ pub(crate) fn check_same_output(
     right: &[LinearOp],
     right_output: usize,
 ) -> Result<(), SharedValueError> {
+    check_same_output_transformed(left, left_output, right, right_output, |_, op| {
+        Some(std::borrow::Cow::Borrowed(op))
+    })
+}
+
+/// Stream an affine view into the same checker. It retains one transient op,
+/// never a pointwise program or a second symbolic evaluator.
+pub(crate) fn check_same_output_transformed<'a>(
+    left: &'a [LinearOp],
+    left_output: usize,
+    right: &[LinearOp],
+    right_output: usize,
+    transform: impl FnMut(usize, &'a LinearOp) -> Option<std::borrow::Cow<'a, LinearOp>>,
+) -> Result<(), SharedValueError> {
     let mut terms = Terms::default();
     let evaluate = |terms: &mut Terms, ops: &[LinearOp], output: usize| {
         ScalarProgramRegisterFlow::derive(ops).ok()?;
@@ -44,7 +58,12 @@ pub(crate) fn check_same_output(
             .get(output)
             .copied()
     };
-    let a = evaluate(&mut terms, left, left_output).ok_or(SharedValueError::Unevaluable)?;
+    ScalarProgramRegisterFlow::derive(left).map_err(|_| SharedValueError::Unevaluable)?;
+    let targets = (0..crate::ScalarProgramBlock::program_output_count(left)).collect::<Vec<_>>();
+    let a = SymbolicSlots::default()
+        .run_transformed(&mut terms, left, &targets, transform)
+        .and_then(|outputs| outputs.get(left_output).copied())
+        .ok_or(SharedValueError::Unevaluable)?;
     let b = evaluate(&mut terms, right, right_output).ok_or(SharedValueError::Unevaluable)?;
     if a != b {
         return Err(SharedValueError::Output {
