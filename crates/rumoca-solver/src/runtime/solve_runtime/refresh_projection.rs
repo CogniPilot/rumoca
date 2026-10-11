@@ -3,7 +3,8 @@ mod grouped_residual;
 mod prepared_jacobian;
 
 pub(super) use prepared_jacobian::{
-    prepare_projection_jacobians, projection_jacobian_source, validate_projection_primal_source,
+    prepare_projection_jacobians, projection_jacobian_demand, projection_jacobian_source,
+    validate_projection_primal_source,
 };
 
 use crate::runtime::projection::{

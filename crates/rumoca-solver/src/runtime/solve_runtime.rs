@@ -607,19 +607,6 @@ impl SolveRuntime {
             primary.map(|primary| &primary.implicit_scalar_rhs),
             implicit_scalar_programs,
         )?;
-        let compiled_algebraic_jacobians = match primary {
-            Some(primary) => chart_sharing::shared_projection_jacobians(
-                primary,
-                &continuous_structural,
-                &replaced_rows,
-            ),
-            None => refresh_projection::prepare_projection_jacobians(
-                &continuous_structural,
-                &implicit_scalar_rhs,
-                &implicit_projection_scalar_jacobian,
-                compiled_implicit_projection_jacobian_v.as_deref(),
-            )?,
-        };
         let manifold = manifold_execution::PreparedManifoldProjection::new(
             model,
             execution_backend.as_deref(),
@@ -715,6 +702,22 @@ impl SolveRuntime {
             &continuous_structural,
             &algebraic_refresh.simultaneous_plan,
         );
+        let projection_demand =
+            refresh_projection::projection_jacobian_demand(model, settled_read_cones.as_deref())?;
+        let compiled_algebraic_jacobians = match primary {
+            Some(primary) => chart_sharing::shared_projection_jacobians(
+                primary,
+                &continuous_structural,
+                &replaced_rows,
+            ),
+            None => refresh_projection::prepare_projection_jacobians(
+                &continuous_structural,
+                &implicit_scalar_rhs,
+                &implicit_projection_scalar_jacobian,
+                compiled_implicit_projection_jacobian_v.as_deref(),
+                &projection_demand,
+            )?,
+        };
         trace_refresh_plan(model, "algebraic", &algebraic_refresh);
         trace_refresh_plan(model, "derivative", &derivative_refresh);
         trace_refresh_plan(model, "root", &root_refresh);

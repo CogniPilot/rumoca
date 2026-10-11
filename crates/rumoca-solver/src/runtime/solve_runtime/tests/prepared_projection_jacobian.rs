@@ -100,6 +100,11 @@ fn prepare(runtime: &mut SolveRuntime, native: Rc<PreparedNative>) {
         &runtime.implicit_scalar_rhs,
         runtime.implicit_projection_scalar_jacobian_v.block(),
         Some(&Compiler(native)),
+        &refresh_projection::projection_jacobian_demand(
+            &runtime.model,
+            runtime.settled_read_cones.as_deref(),
+        )
+        .unwrap(),
     )
     .unwrap();
 }
@@ -185,6 +190,11 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
         &mixed,
         runtime.implicit_projection_scalar_jacobian_v.block(),
         Some(&Compiler(native.clone())),
+        &refresh_projection::projection_jacobian_demand(
+            &runtime.model,
+            runtime.settled_read_cones.as_deref(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert!(prepared.iter().all(Option::is_none));
@@ -207,6 +217,11 @@ fn complete_projection_declines_a_separately_materialized_source_view() {
         &runtime.implicit_scalar_rhs,
         &materialized,
         Some(&Compiler(native.clone())),
+        &refresh_projection::projection_jacobian_demand(
+            &runtime.model,
+            runtime.settled_read_cones.as_deref(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert!(prepared.iter().all(Option::is_none));
@@ -388,4 +403,40 @@ fn projection_demand_uncertified_preparation_failure_remains_an_error() {
             .contains("required projection preparation failed")
     );
     assert_eq!(native.prepares.get(), 1);
+}
+
+#[test]
+fn projection_demand_preserves_initialization_settled_read_cones() {
+    let mut model = causal_grouped_model();
+    model.problem.initialization =
+        solve::InitializationSolveSystem::construct(solve::InitializationSystemInput {
+            residual: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                vec![shifted_variable_residual_row(0, 2.0)],
+                "settled_read_demand.mo",
+            )),
+            row_roles: vec![solve::InitializationRowRole::SurplusAlgebraicCheck],
+            ..Default::default()
+        })
+        .unwrap();
+    derive_test_structural_artifacts(&mut model);
+    let native = Rc::new(PreparedNative::default());
+    let runtime = runtime_with_preparation_backend(model, native.clone()).unwrap();
+    assert!(runtime.algebraic_refresh.causal_solution_certified);
+    assert_eq!(
+        runtime.settled_read_cones.as_deref().unwrap(),
+        [vec![0].into_boxed_slice()]
+    );
+    assert_eq!(native.prepares.get(), 1);
+    assert!(runtime.compiled_algebraic_jacobians[0].is_some());
+    assert!(runtime.compiled_algebraic_jacobians[1].is_none());
+}
+
+#[test]
+fn projection_demand_refuses_foreign_initialization_cone_positions() {
+    let runtime = SolveRuntime::new_fixture(&causal_grouped_model()).unwrap();
+    let cones = [vec![usize::MAX].into_boxed_slice()];
+    let error =
+        refresh_projection::projection_jacobian_demand(&runtime.model, Some(&cones)).unwrap_err();
+    assert!(matches!(error, EvalSolveError::InvalidRow { message, .. }
+        if message.contains("initialization read cone is outside")));
 }
