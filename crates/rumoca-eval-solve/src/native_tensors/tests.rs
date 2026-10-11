@@ -1,5 +1,13 @@
 use super::*;
 
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("native_tensor_staging.mo"),
+        1,
+        2,
+    )
+}
+
 fn checked(values: &[f64], op: LinearOp) -> ScalarProgramBlock {
     let mut row = values
         .iter()
@@ -10,7 +18,7 @@ fn checked(values: &[f64], op: LinearOp) -> ScalarProgramBlock {
         })
         .collect::<Vec<_>>();
     row.push(op);
-    ScalarProgramBlock::with_program_spans(vec![row], vec![crate::fixture_span()]).unwrap()
+    ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()]).unwrap()
 }
 
 #[test]
