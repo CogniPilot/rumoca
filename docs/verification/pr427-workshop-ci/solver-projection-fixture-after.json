@@ -1,0 +1,66 @@
+{
+  "source": "f32073326b91e0716c226a1c25b6044cecd231ef",
+  "recipe_sha256": "b1d00876c2cd75a8740c5e38fc5dfa3492d69bb3707e25aab893b9ff29994c0d",
+  "scope": "complete rumoca-solver library; genuine fixture issuance later in the same attempt remains separate",
+  "command": [
+    "nix",
+    "develop",
+    ".#full",
+    "--command",
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--jobs",
+    "4",
+    "-p",
+    "rumoca-solver",
+    "--lib",
+    "--",
+    "--nocapture"
+  ],
+  "tests": {
+    "gate": "solver-complete-six-hundred-two",
+    "childCode": 0,
+    "expectedTests": 602,
+    "observed": {
+      "last": {
+        "status": "ok",
+        "passed": 602,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filteredOut": 0,
+        "line": "test result: ok. 602 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s"
+      },
+      "summaries": 1
+    },
+    "accepted": true
+  },
+  "retained_negative_and_periodic_controls": [
+    "runtime::solve_runtime::tests::prepared_projection_jacobian::interpreted_projection_rejects_missing_structural_owner",
+    "runtime::solve_runtime::tests::prepared_projection_jacobian::prepared_projection_rejects_a_replaced_canonical_jvp_source",
+    "runtime::solve_runtime::tests::prepared_projection_jacobian::prepared_projection_rejects_a_replaced_canonical_primal_source",
+    "runtime::solve_runtime::tests::visibility::phase_zero_unowned_sample_waits_for_its_single_post_initial_tick"
+  ],
+  "raw_attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-solver602-and-current-wire-issuance-f320-20261012",
+  "raw_sha256": {
+    "recipe.json": "b1d00876c2cd75a8740c5e38fc5dfa3492d69bb3707e25aab893b9ff29994c0d",
+    "solver-complete-six-hundred-two.log": "1b7aaa6f3bdd0543796fe8be62a124cced063e7fa1ffd3a4b778d3e7c70bf8fd",
+    "solver-complete-six-hundred-two.guardian.json": "ce6b9a4f120dcc83dad555a571681a0ee440ec0faf4ed2f7c2385e774f585f53",
+    "solver-complete-six-hundred-two.test-count.json": "e6f2dcafe1c1b79913414601095c45f033b3ed789cfd7d5951b14ea06971f427"
+  },
+  "resource": {
+    "elapsedMs": 57127.280371,
+    "peakRssKiB": 1589260,
+    "minimumAvailableKiB": 56557084,
+    "minimumScratchFreeBytes": 69580324864,
+    "peakCacheBytes": 8087756800,
+    "cacheLimitMiB": 8192,
+    "rssLimitMiB": 4096,
+    "availableFloorMiB": 16384,
+    "secondsLimit": 600,
+    "exitCode": 0
+  },
+  "qualification_limits": "This proves the complete solver library at the pinned source, not final CI, fresh instrumented coverage, browser, fixture issuance, or whole-attempt completion."
+}
