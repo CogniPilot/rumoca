@@ -202,10 +202,11 @@ impl<'dae> LapackBuilder<'_, '_, 'dae> {
                 let at = self.is_integer(pivot, (offset + 1) as i64)?;
                 selected = self.conditional(at, *value, selected)?;
             }
-            for (offset, value) in values.iter_mut().enumerate() {
-                if offset == step {
-                    continue;
-                }
+            for (offset, value) in values
+                .iter_mut()
+                .enumerate()
+                .filter(|(offset, _)| *offset != step)
+            {
                 let at = self.is_integer(pivot, (offset + 1) as i64)?;
                 *value = self.conditional(at, old, *value)?;
             }

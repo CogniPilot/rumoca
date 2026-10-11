@@ -42,19 +42,14 @@ impl<'dae> ExactExpressionForm<'dae> {
         let mut owned_domains = BTreeSet::new();
         dae::for_each_expression(view, expression, |expression, node| {
             match node.operation() {
+                dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
+                    binders
+                        .entry((binder.domain(), binder.ordinal()))
+                        .or_insert((node.value_type_id(), expression));
+                }
                 dae::ExpressionOperation::Coordinate(coordinate) => {
-                    if let dae::CoordinateView::Binder(binder) = coordinate {
-                        binders
-                            .entry((binder.domain(), binder.ordinal()))
-                            .or_insert((node.value_type_id(), expression));
-                        return;
-                    }
-                    match ModelCoordinateKey::from_view(coordinate) {
-                        Some(key) if !node.value_type().is_record() => {
-                            readers.entry(key).or_insert(expression);
-                        }
-                        _ => supported = false,
-                    }
+                    supported &=
+                        collect_coordinate_reader(coordinate, node, expression, &mut readers);
                 }
                 dae::ExpressionOperation::FunctionValue { .. }
                 | dae::ExpressionOperation::FunctionFoldParameter { .. }
@@ -116,6 +111,21 @@ impl<'dae> ExactExpressionForm<'dae> {
         }
         Ok(lowerer)
     }
+}
+
+fn collect_coordinate_reader<'dae>(
+    coordinate: dae::CoordinateView<'dae>,
+    node: dae::ExpressionView<'dae>,
+    expression: dae::ExprId<'dae>,
+    readers: &mut HashMap<ModelCoordinateKey<'dae>, dae::ExprId<'dae>>,
+) -> bool {
+    let Some(key) =
+        ModelCoordinateKey::from_view(coordinate).filter(|_| !node.value_type().is_record())
+    else {
+        return false;
+    };
+    readers.entry(key).or_insert(expression);
+    true
 }
 
 fn needs_integer_owner<'dae>(view: dae::DaeView<'dae>, node: dae::ExpressionView<'dae>) -> bool {
