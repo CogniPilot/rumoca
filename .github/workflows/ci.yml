@@ -407,6 +407,11 @@ jobs:
           cargo xtask repo modelica-deps ensure
           test -f target/cmm/CMM-a642c381/LieGroups/package.mo
 
+      - name: Install Python for mandatory guide CLI and stdio examples
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Run example build smoke (Linux monitored)
         if: runner.os == 'Linux'
         shell: bash
