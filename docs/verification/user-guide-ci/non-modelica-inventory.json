@@ -38,7 +38,7 @@
     },
     "executable-benchmark-bash": {
       "classification": "executable-benchmark",
-      "owner": "cli-context",
+      "owner": "neural-benchmark",
       "scope": "The exact documented NeuralODEBackprop CLI/JAX benchmark uses the script-defined model and dimensions; larger neural width examples have separate controls."
     },
     "explanatory-output-xml": {
@@ -129,10 +129,10 @@
     {"page": "language/neural-odes.md", "line": 63, "language": "text", "source_sha256": "3d04fee6dba6e0992c2dbfd024e4fadd76a0e54ba82c2bcd04155356d1930963", "profile": "explanatory-output-text", "source_line_count": 7},
     {"page": "language/neural-odes.md", "line": 101, "language": "rust", "source_sha256": "b27f54a282ca2d7898b79d06b7111368742f0bc67eb02581a57a34b3ea383d87", "profile": "executable-context-rust", "source_line_count": 1},
     {"page": "language/neural-odes.md", "line": 124, "language": "bash", "source_sha256": "68492329ea898b7dad5fc6d874a0913b13e4944daa25fb25be5c8923d3903dda", "profile": "executable-benchmark-bash", "source_line_count": 4},
-    {"page": "language/neural-odes.md", "line": 200, "language": "bash", "source_sha256": "fd0fb011174f61f44eb5bfe88a36d4a2e05f9dcb6bde1a9b40c19ddda46781f3", "profile": "executable-command-bash", "source_line_count": 1},
-    {"page": "language/neural-odes.md", "line": 207, "language": "text", "source_sha256": "638178ed87b6123a438644fcc8c171b9b470aa6f326a606e80a6b8c7cae4eb1e", "profile": "explanatory-output-text", "source_line_count": 7},
-    {"page": "language/neural-odes.md", "line": 260, "language": "bash", "source_sha256": "7b6acfb3d08ae3575605fda9f6ece6e57a4c215b524f89e5194be9e816766f2f", "profile": "executable-command-bash", "source_line_count": 1},
-    {"page": "language/neural-odes.md", "line": 267, "language": "text", "source_sha256": "376c71b6ae4a624999016e0dccf5e5199d96630ac4c59b2e4bbe3f74aff92848", "profile": "explanatory-output-text", "source_line_count": 9},
+    {"page": "language/neural-odes.md", "line": 205, "language": "bash", "source_sha256": "fd0fb011174f61f44eb5bfe88a36d4a2e05f9dcb6bde1a9b40c19ddda46781f3", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 212, "language": "text", "source_sha256": "638178ed87b6123a438644fcc8c171b9b470aa6f326a606e80a6b8c7cae4eb1e", "profile": "explanatory-output-text", "source_line_count": 7},
+    {"page": "language/neural-odes.md", "line": 265, "language": "bash", "source_sha256": "7b6acfb3d08ae3575605fda9f6ece6e57a4c215b524f89e5194be9e816766f2f", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 272, "language": "text", "source_sha256": "376c71b6ae4a624999016e0dccf5e5199d96630ac4c59b2e4bbe3f74aff92848", "profile": "explanatory-output-text", "source_line_count": 9},
     {"page": "language/support-status.md", "line": 54, "language": "bash", "source_sha256": "4b2bcc6be4da6ef1f909f4a9ee477c4ae8940aef00d192d458e061b8f46396ea", "profile": "project-template-bash", "source_line_count": 1},
     {"page": "simulation/inspect.md", "line": 19, "language": "bash", "source_sha256": "0cc19194a61d3c0e061198d89bf921896d35182ea0739dce55b7fcd296b53cf7", "profile": "project-template-bash", "source_line_count": 2},
     {"page": "simulation/inspect.md", "line": 44, "language": "xml", "source_sha256": "c7e68f979f0b2d0ceaba041ec3908f5d75cb64e26133702fe48ad41355933a50", "profile": "explanatory-output-xml", "source_line_count": 4},
@@ -179,7 +179,7 @@
     {"page": "simulation/scenario-tomls.md", "line": 197, "language": "toml", "source_sha256": "d2a78144487b30e62a7da09affba6d18e0715ec32454f6a0d764469f553e7d0b", "profile": "configuration-context-toml", "source_line_count": 3},
     {"page": "simulation/stdio-session.md", "line": 12, "language": "bash", "source_sha256": "67d27cbe7b838e8db3f0cb8f2112115d5efc64d2293e416b5dd686db66b05d1c", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "simulation/stdio-session.md", "line": 33, "language": "json", "source_sha256": "f96d4c53d2df140df303e1660182f24029fbbdf99d9ec2a1f876168858791d62", "profile": "explanatory-output-json", "source_line_count": 1},
-    {"page": "simulation/stdio-session.md", "line": 107, "language": "text", "source_sha256": "d6d19d30bcc6dd7bd07a5e7d74da39dd09912275a5366b907b536a07d7e13e4c", "profile": "explanatory-output-text", "source_line_count": 8},
+    {"page": "simulation/stdio-session.md", "line": 107, "language": "text", "source_sha256": "34c336731158a782456e4b19e0b5f0c787af32a5d9a6293376451bbfae443b89", "profile": "explanatory-output-text", "source_line_count": 8},
     {"page": "simulation/stdio-session.md", "line": 135, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-stdio-python", "source_line_count": 20},
     {"page": "tools/cli.md", "line": 7, "language": "text", "source_sha256": "f39f5d6301ae4395854d50478f18b6a66c05268070424360083333c3fe0aa88a", "profile": "explanatory-output-text", "source_line_count": 10},
     {"page": "tools/cli.md", "line": 27, "language": "bash", "source_sha256": "98d4bc5032e46e0adf0b3beb355fd951b80c9cb9160fcc4922bba42aa6dadfe9", "profile": "project-template-bash", "source_line_count": 1},

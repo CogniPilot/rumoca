@@ -10,10 +10,8 @@ fn profile_owner(profile: &Value, language: &str, page: &str) -> Result<&'static
         .ok_or("missing classification")?;
     let owner = profile["owner"].as_str().ok_or("missing owner")?;
     let allowed = match (language, class) {
-        (
-            "bash",
-            "project-template" | "executable-command" | "executable-tool" | "executable-benchmark",
-        ) => "cli-context",
+        ("bash", "project-template" | "executable-command" | "executable-tool") => "cli-context",
+        ("bash", "executable-benchmark") => "neural-benchmark",
         ("bash", "environment-setup") => "package-install",
         ("toml", "configuration-context") => "guide-toml",
         ("js", "executable-visualizer") => "book-browser",
@@ -52,8 +50,25 @@ fn require_source(path: &str, marker: &str) {
     );
 }
 
+fn require_neural_benchmark() {
+    require_source(
+        "crates/rumoca-bind-python/tests/benchmark_test.py",
+        "def run_actual_benchmark(",
+    );
+    require_source(
+        "crates/rumoca-bind-python/tests/wheel_test.py",
+        "\"guide_test.py\", \"guide_scenario_test.py\", \"benchmark_test.py\"",
+    );
+    require_source(".github/workflows/ci.yml", "export_args=(--require-guide)");
+    require_source(
+        ".github/workflows/ci.yml",
+        "cargo xtask python test --wheel",
+    );
+}
+
 fn require_execution_owner(owner: &str) {
     match owner {
+        "neural-benchmark" => require_neural_benchmark(),
         "cli-context" => {
             require_source(
                 "crates/rumoca/tests/suite_examples_smoke/guide_cli_contexts.rs",
@@ -219,6 +234,8 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
 
 #[test]
 fn user_guide_inventory_rejects_unknown_or_missing_execution_owners() {
+    let syntax_only = serde_json::json!({"classification":"executable-benchmark", "owner":"cli-context", "scope":"syntax alone"});
+    assert!(profile_owner(&syntax_only, "bash", "language/neural-odes.md").is_err());
     let profile = serde_json::json!({"classification": "executable-context", "owner": "someone", "scope": "not proof"});
     assert!(profile_owner(&profile, "python", "tools/python.md").is_err());
     let profile = serde_json::json!({"classification": "executable-context", "scope": "not proof"});
