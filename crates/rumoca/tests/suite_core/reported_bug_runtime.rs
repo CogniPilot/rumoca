@@ -16,6 +16,8 @@ const ALGEBRAIC: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_418.mo");
 const NEIGHBOR: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_426.mo");
+const STATIC_PIE_ARRAY: &str =
+    include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_422.mo");
 const ITERATOR_MOD: &str =
     include_str!("../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_423.mo");
 
@@ -271,5 +273,42 @@ fn issue_423_original_iterator_mod_simulates_its_analytic_solution() {
         } else {
             assert!(receipt.refusal.is_some(), "Auto must expose its refusal");
         }
+    }
+}
+
+#[test]
+fn issue_422_original_array_function_runs_without_native_fallback() {
+    let compiled = compile(STATIC_PIE_ARRAY, "U4");
+    let opts = options(SimExecutionPolicy::Auto);
+    let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts)
+        .expect("original U4 lowers through the simulation owner");
+    eprintln!(
+        "original U4 checked pure-call owners: {}",
+        lowered.pure_calls.owners().len()
+    );
+    // Session admission alone does not expose a failed pure-call-table compile.
+    let _native_calls = rumoca_exec_cranelift::compile_pure_call_table(&lowered.pure_calls)
+        .expect("every retained U4 pure-call owner compiles without fallback");
+    let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+        .expect("original U4 initializes through the canonical native backend");
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 10.0;
+        if sample != 0 {
+            session.advance_to(time).expect("original U4 advances");
+        }
+        let state = session.state().expect("actual U4 state");
+        assert_eq!(state.time, time);
+        let actual = state.values["y"];
+        let expected = (-time).exp();
+        let bound = 20.0 * (opts.atol + opts.rtol * expected.abs());
+        assert!(
+            actual.is_finite() && (actual - expected).abs() <= bound,
+            "U4: y({time})={actual}, expected {expected}, bound {bound}"
+        );
+        let receipt = session.execution_receipt();
+        assert_eq!(receipt.engine, SimExecutionEngine::Cranelift, "{receipt:?}");
+        assert_eq!(receipt.refusal, None, "{receipt:?}");
+        assert!(receipt.declined.is_empty(), "{receipt:?}");
+        eprintln!("original U4/{sample} time={time} y={actual}: {receipt:?}");
     }
 }
