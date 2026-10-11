@@ -18,3 +18,4 @@ mod fmi_ls_wasm_runtime;
 mod modelica_interchange_runtime;
 mod template_runtime_policy;
 mod template_target_ci;
+mod workshop_numerical_examples;
