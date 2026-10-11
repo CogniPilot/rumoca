@@ -396,4 +396,45 @@ fn activated_map_requires_its_complete_private_hold_geometry() {
     }
     let value = serde_json::to_value(&problem).unwrap();
     serde_json::from_value::<SolveProblem>(value).expect("current compact owner wire roundtrip");
+
+    // A guard that consumes the held capture must not make the marker proof
+    // vacuous. The shared checker retains both branches even when marking the
+    // load makes this guard constant; a second unshifted same-base load still
+    // cannot supply the fallback's reaching value.
+    let mut guarded_by_hold = problem.clone();
+    let ComputeNode::Map { base_ops, .. } = &mut guarded_by_hold.discrete.structured_rhs.nodes[0]
+    else {
+        unreachable!()
+    };
+    let LinearOp::FunctionConditional { program, .. } = &mut base_ops[2] else {
+        unreachable!()
+    };
+    let original = program.as_ref();
+    let condition = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 1 },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Eq,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    *program = std::sync::Arc::new(
+        FunctionConditionalProgram::checked(
+            original.capture_count,
+            vec![1],
+            [(condition, original.arms[0].result.clone())],
+            original.fallback.clone(),
+        )
+        .unwrap(),
+    );
+    super::super::activation::indicator(0, UnaryOp::Floor, base_ops, 0, Some(1))
+        .expect("guard and fallback consume the exact shifted load");
+    base_ops.insert(2, LinearOp::LoadP { dst: 1, index: 0 });
+    assert!(
+        super::super::activation::indicator(0, UnaryOp::Floor, base_ops, 0, Some(1),).is_err(),
+        "a constant guard after marking cannot hide the foreign reaching load"
+    );
 }
