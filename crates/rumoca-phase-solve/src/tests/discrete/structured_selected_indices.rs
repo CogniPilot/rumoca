@@ -191,7 +191,7 @@ fn structured_selected_indices_keep_invalid_active_rows_faulting_and_inactive_ro
     assert!(matches!(
         evaluate(&problem, true, 99.0),
         Err(rumoca_eval_solve::EvalSolveError::TensorIndexOutOfBounds {
-            axis: 0,
+            axis: 1,
             index: 99,
             extent: 2,
             ..
