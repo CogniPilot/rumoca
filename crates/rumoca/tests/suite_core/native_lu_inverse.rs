@@ -2,7 +2,7 @@
 //! (MLS §12.4.4, §12.9). The foreign symbol alone cannot prove this interface.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, SimResult, simulate_dae};
+use rumoca_sim::{SimExecutionPolicy, SimOptions, SimResult, simulate_dae};
 
 // The ordered interfaces and declaration bindings are those of pinned MSL
 // 4.1.0 Math/package.mo; no foreign library is linked by these tests.
@@ -31,6 +31,28 @@ const FUNCTIONS: &str = r#"
     Real work[max(1, min(10, size(LU, 1))*size(LU, 1))];
   external "FORTRAN 77" dgetri(n, inv, lda, pivots, work, lwork, info);
   end dgetri;
+"#;
+
+// MLS §3.8.5 / EXPR-012: continuously varying calls may keep Integer
+// temporaries inside a function; a model Integer read by another equation
+// cannot acquire a continuous-time definition. All model results here are Real.
+const INVERSE_WRAPPER: &str = r#"
+  function inverseOf
+    input Real A[2,2];
+    output Real inverse[2,2];
+    output Real info;
+    output Real inverseInfo;
+  protected
+    Real LU[2,2];
+    Integer pivots[2];
+    Integer luStatus;
+    Integer inverseStatus;
+  algorithm
+    (LU,pivots,luStatus) := dgetrf(A);
+    (inverse,inverseStatus) := dgetri(LU,pivots);
+    info := luStatus;
+    inverseInfo := inverseStatus;
+  end inverseOf;
 "#;
 
 fn run(declarations: &str, equations: &str) -> SimResult {
@@ -98,8 +120,8 @@ fn lu_preserves_multipliers_pivot_order_and_first_singular_step() {
 #[test]
 fn inverse_consumes_the_issued_lu_and_pivot_tuple() {
     let result = run(
-        "Real LU[2,2]; Integer pivots[2]; Integer info; Real inverse[2,2]; Integer inverseInfo;",
-        "(LU,pivots,info) = dgetrf([2,1;4,3]*(1+time));\n(inverse,inverseInfo) = dgetri(LU,pivots);",
+        &format!("{INVERSE_WRAPPER}\nReal inverse[2,2]; Real info; Real inverseInfo;"),
+        "(inverse,info,inverseInfo) = inverseOf([2,1;4,3]*(1+time));",
     );
     for (sample, time) in result.times.iter().enumerate() {
         for (name, numerator) in [
@@ -115,6 +137,38 @@ fn inverse_consumes_the_issued_lu_and_pivot_tuple() {
         }
         assert_eq!(column(&result, "info")[sample], 0.0);
         assert_eq!(column(&result, "inverseInfo")[sample], 0.0);
+    }
+}
+
+#[test]
+fn continuous_model_integer_pivots_are_refused_when_read() {
+    // Preserve the original failing fixture as a strict variability control.
+    let source = format!(
+        "model LUProbe\n{FUNCTIONS}\nReal LU[2,2]; Integer pivots[2]; Integer info; Real inverse[2,2]; Integer inverseInfo;\nequation\n(LU,pivots,info) = dgetrf([2,1;4,3]*(1+time));\n(inverse,inverseInfo) = dgetri(LU,pivots);\nend LUProbe;"
+    );
+    let error = Compiler::new()
+        .model("LUProbe")
+        .compile_str(&source, "native_lu_inverse.mo")
+        .expect_err("model pivots read by the inverse require discrete-time variability");
+    let message = error.to_string();
+    assert!(message.contains("discrete-time expression"), "{message}");
+    assert!(message.contains("`pivots`"), "{message}");
+    assert!(message.contains("continuous-time `time`"), "{message}");
+}
+
+#[test]
+fn one_by_one_lu_has_the_identity_row_interchange() {
+    for (matrix, factor, status) in [("[4]", 4.0, 0.0), ("[0]", 0.0, 1.0)] {
+        let result = run(
+            "Real LU[1,1]; Integer pivots[1]; Integer info;",
+            &format!("(LU,pivots,info) = dgetrf({matrix});"),
+        );
+        for (name, expected) in [("LU[1,1]", factor), ("pivots[1]", 1.0), ("info", status)] {
+            assert!(
+                column(&result, name).iter().all(|value| *value == expected),
+                "{name}"
+            );
+        }
     }
 }
 
@@ -231,19 +285,40 @@ fn later_pivots_swap_stored_multipliers_and_compose_in_source_order() {
 
 #[test]
 fn inverse_refuses_pivots_outside_the_proven_matrix_extent() {
-    for pivot in [0, 3] {
-        let compiled = compile(
-            "Real inverse[2,2]; Integer info;",
-            &format!("(inverse,info) = dgetri([1,0;0,1], {{{pivot},2}});"),
-        );
-        let error = simulate_dae(&compiled.dae, &SimOptions::default())
-            .expect_err("a foreign pivot outside storage cannot produce an inverse");
-        assert!(
-            error
-                .to_string()
-                .contains("LAPACK dgetri pivot index out of range"),
-            "{error}"
-        );
+    let compiled = compile(
+        "input Integer firstPivot(start=1); Real inverse[2,2]; Integer info;",
+        "(inverse,info) = dgetri([1,0;0,1], {firstPivot,2});",
+    );
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let options = |pivot| SimOptions {
+            t_end: 0.2,
+            dt: Some(0.1),
+            initial_inputs: vec![("firstPivot".into(), pivot)],
+            execution_policy: policy,
+            ..SimOptions::default()
+        };
+        let valid = simulate_dae(&compiled.dae, &options(1.0))
+            .expect("the same runtime pivot input admits the identity inverse");
+        assert_eq!(valid.times, [0.0, 0.1, 0.2]);
+        for (name, expected) in [
+            ("inverse[1,1]", 1.0),
+            ("inverse[1,2]", 0.0),
+            ("inverse[2,1]", 0.0),
+            ("inverse[2,2]", 1.0),
+            ("info", 0.0),
+        ] {
+            assert!(column(&valid, name).iter().all(|value| *value == expected));
+        }
+        for pivot in [0.0, 3.0] {
+            let error = simulate_dae(&compiled.dae, &options(pivot))
+                .expect_err("a runtime pivot outside storage cannot produce an inverse");
+            assert!(
+                error
+                    .to_string()
+                    .contains("LAPACK dgetri pivot index out of range"),
+                "{policy:?}: {error}"
+            );
+        }
     }
 }
 
