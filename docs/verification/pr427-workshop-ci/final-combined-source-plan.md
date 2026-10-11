@@ -45,3 +45,7 @@ All recipes retain fixed four workers and the existing 600-second/4-GiB RSS,
 prepared source-only: no build, test, cache mutation, publication or adoption
 has run. Root must inspect terminal capacity and execute them under its lease.
 The c758 receipt remains the proof for the prior source, not this followup.
+
+The user's authorized notebook housekeeping removes the only tracked notebook,
+zero-byte `examples/notebooks/test.ipynb`. No model/configuration changes or
+notebook Markdown references accompany this removal; it needs no runtime test.
