@@ -32,3 +32,19 @@ does not establish derivative availability or assertion replay correctness.
 The probe produced no CSV. Exact source, binary, commands, guards, and raw
 artifact hashes are bound in [glycol-diagnostic-before.json](glycol-diagnostic-before.json).
 The temporary source patch must not be landed.
+# Actual first rejection at 9188
+
+The first scalar-context diagnostic failed to compile because temporary
+logging formatted a view without `Debug`; its runtime probe was unrun. A
+separate corrected diagnostic compiled and reproduced the lowering failure.
+Its first rejection is `ExactExpressionForm::try_admit`, at Integer equality
+expression 1576 in `dgelsy_vec`, with four active function frames. The source
+span is 207504–213334 in the pinned MSL `Matrices.mo`.
+
+This owner admits only Integer quotients or comparisons, so this is a
+contextual Integer-expression boundary. All nine primal owners were issued
+successfully before it. The enclosing row's “derivative reads” wording does
+not identify the first rejecting operation. No CSV was produced. Commands,
+source/binary identity, first-error lines, guards, and artifact hashes are in
+[glycol-context-diagnostic-before.json](glycol-context-diagnostic-before.json).
+The temporary diagnostic must not be landed; the repair remains unqualified.
