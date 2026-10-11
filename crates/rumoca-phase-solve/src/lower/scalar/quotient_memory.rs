@@ -21,7 +21,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("quotient domain is not issued by this DAE", span))?
             .structured()
             .clone();
-        let const_strides = self.bind_quotient_domain(id, None, span)?;
+        let const_strides = self.bind_symbolic_domain(id, None, span)?;
         let mut load_strides = Vec::new();
         let step = if let Some(guard) = memory.activation_guard {
             let position = self.ops.len();
@@ -60,57 +60,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let id = memory
             .domain
             .ok_or_else(|| LowerError::contract("numeric root has no structured domain", span))?;
-        self.bind_quotient_domain(id, Some(point), span)?;
+        self.bind_symbolic_domain(id, Some(point), span)?;
         self.root_expression_program(expression, guard, span)
-    }
-
-    fn bind_quotient_domain(
-        &mut self,
-        id: dae::DomainId<'dae>,
-        point: Option<&[i64]>,
-        span: Span,
-    ) -> Result<Vec<solve::AffineStencilConstStride>, LowerError> {
-        let domain = self
-            .view
-            .domain(id)
-            .ok_or_else(|| LowerError::contract("quotient domain is not issued by this DAE", span))?
-            .structured()
-            .clone();
-        if let Some(point) = point {
-            let ordinal = domain
-                .ordinal_of(point)
-                .map_err(|error| LowerError::contract(error.to_string(), span))?;
-            if ordinal.is_none() {
-                return Err(LowerError::contract(
-                    "numeric root point is outside its domain",
-                    span,
-                ));
-            }
-        }
-        let extents = domain
-            .extents()
-            .map_err(|error| LowerError::contract(error.to_string(), span))?;
-        let mut values = Vec::with_capacity(domain.binders.len());
-        let mut strides = Vec::with_capacity(domain.binders.len());
-        for (dimension, (binder, count)) in domain.binders.iter().zip(extents).enumerate() {
-            prove_exact_index_progression(binder, count, span)?;
-            let dst = self.register(span)?;
-            let position = self.ops.len();
-            self.ops.push(solve::LinearOp::Const {
-                dst,
-                value: point.map_or(binder.lower, |values| values[dimension]) as f64,
-            });
-            values.push(dst);
-            strides.push(solve::AffineStencilConstStride {
-                op_position: position,
-                terms: vec![solve::AffineStencilConstStrideTerm {
-                    dimension,
-                    stride: binder.step as f64,
-                }],
-            });
-        }
-        self.symbolic_domain_points.push((id, values));
-        Ok(strides)
     }
 
     pub(super) fn quotient_memory_read(
@@ -190,21 +141,4 @@ fn held_load_stride(
         })
         .collect::<Result<Vec<_>, LowerError>>()?;
     Ok(solve::AffineStencilLoadStride { op_position, terms })
-}
-
-fn prove_exact_index_progression(
-    binder: &rumoca_core::StructuredIndexBinder,
-    count: usize,
-    span: Span,
-) -> Result<(), LowerError> {
-    let delta = i128::from(binder.step) * count.saturating_sub(1) as i128;
-    let last = i128::from(binder.lower) + delta;
-    let exact = 1_i128 << 53;
-    if i128::from(binder.lower).abs() > exact || delta.abs() > exact || last.abs() > exact {
-        return Err(LowerError::unsupported(
-            "symbolic quotient indices require an exact scalar-ABI progression",
-            span,
-        ));
-    }
-    Ok(())
 }

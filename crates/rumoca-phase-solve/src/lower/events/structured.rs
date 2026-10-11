@@ -513,8 +513,9 @@ fn structured_map_program(
             .ok_or_else(|| {
                 LowerError::contract("structured B.1c scalar view overflow", input.span)
             })?;
-        let compiler =
+        let mut compiler =
             ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)));
+        compiler.bind_symbolic_domain(input.domain_id, Some(values), input.span)?;
         programs.push(match input.clock {
             Some((clock, _)) if input.sampled => {
                 compiler.sampled_program(clock, input.value, scalar)?
