@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_solver::timeline::sample_time_match_with_tol;
 
 const OWNED_INTEGER_SOURCE: &str = "model OwnedInteger input Integer n(start=0); output Integer y; equation y=mod(sum({9007199254740993+n+i for i in 1:2}),7); end OwnedInteger;";
 
@@ -425,16 +426,57 @@ fn model_arm_relation_protects_inactive_arithmetic_without_a_quotient() {
         let opts = options(policy);
         let result = simulate_dae(&compiled.dae, &opts)
             .expect("inactive square root remains lazy; the later arm activates at its boundary");
-        assert_eq!(result.times.len(), 11);
+        let states = series(&result, "x");
+        let outputs = series(&result, "y");
+        eprintln!(
+            "{policy:?}: times={:?}, x={states:?}, y={outputs:?}",
+            result.times
+        );
+        assert_eq!(result.times.first(), Some(&opts.t_start));
+        assert_eq!(result.times.last(), Some(&opts.t_end));
+        assert!(result.times.iter().all(|time| time.is_finite()));
+        assert!(result.times.windows(2).all(|pair| pair[0] <= pair[1]));
+        // timeline::merge_output_times_with_event_observations permits event
+        // rows. Require the original grid and allow extras only at its sole
+        // event, using the canonical timestamp matcher, then check all states.
+        for ordinal in 0..=10 {
+            let requested = ordinal as f64 / 10.0;
+            let count = result
+                .times
+                .iter()
+                .filter(|time| sample_time_match_with_tol(**time, requested))
+                .count();
+            assert!(
+                count > 0,
+                "{policy:?}: requested output time {requested} is missing"
+            );
+            if ordinal != 5 {
+                assert_eq!(
+                    count, 1,
+                    "{policy:?}: extra observation away from the 0.5 event at {requested}"
+                );
+            }
+        }
+        assert_eq!(states.len(), result.times.len());
+        assert_eq!(outputs.len(), result.times.len());
         for (ordinal, &time) in result.times.iter().enumerate() {
-            assert_eq!(time, ordinal as f64 / 10.0);
+            assert!(
+                (0..=10).any(|sample| sample_time_match_with_tol(time, sample as f64 / 10.0)),
+                "{policy:?}: unexpected observation at {time}; only the requested grid and the 0.5 event are valid"
+            );
             let expected = time.min(0.5) + 2.0 * (time - 0.5).max(0.0);
-            let actual = series(&result, "x")[ordinal];
+            let actual = states[ordinal];
             assert!(
                 actual.is_finite()
                     && (actual - expected).abs() <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
                 "{policy:?}: x({time})={actual}, expected {expected}"
             );
+            assert!(outputs[ordinal].is_finite());
+            // The event observation itself may report a left or right limit;
+            // on either open interval the selected source branch is exact.
+            if !sample_time_match_with_tol(time, 0.5) {
+                assert_eq!(outputs[ordinal], if time < 0.5 { 1.0 } else { 2.0 });
+            }
         }
     }
 }
