@@ -18,7 +18,22 @@ fn checked(values: &[f64], op: LinearOp) -> ScalarProgramBlock {
         })
         .collect::<Vec<_>>();
     row.push(op);
+    row.push(LinearOp::StoreOutput { src: 0 });
     ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()]).unwrap()
+}
+
+fn tensor_operation(block: &ScalarProgramBlock) -> &LinearOp {
+    block
+        .program(0)
+        .unwrap()
+        .iter()
+        .find(|op| {
+            matches!(
+                op,
+                LinearOp::MatrixMultiply { .. } | LinearOp::TensorBinary { .. }
+            )
+        })
+        .expect("checked fixture contains its tensor operation")
 }
 
 #[test]
@@ -34,7 +49,7 @@ fn native_tensor_staging_reuses_storage_and_leaves_disjoint_strided_gaps_unalloc
     };
     let values = [1., 2., 3., 4., 5., 6., 7., 8.];
     let block = checked(&values, matrix);
-    let op = block.program(0).unwrap().last().unwrap();
+    let op = tensor_operation(&block);
     let mut results = Vec::new();
     let mut regs = values.to_vec();
     eval(&mut regs, &mut results, op).unwrap();
@@ -65,7 +80,7 @@ fn native_tensor_staging_reuses_storage_and_leaves_disjoint_strided_gaps_unalloc
         rhs_stride: 1,
     };
     let block = checked(&regs, binary);
-    let op = block.program(0).unwrap().last().unwrap();
+    let op = tensor_operation(&block);
     let mut unused = Vec::new();
     eval(&mut regs, &mut unused, op).unwrap();
     assert_eq!(&regs[2..6], &[4., 40., 6., 60.]);
