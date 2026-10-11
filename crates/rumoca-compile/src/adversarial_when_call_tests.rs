@@ -34,3 +34,24 @@ end SharedSourceCalls;
         .compile_model("SharedSourceCalls")
         .expect("instances of one declaration retain distinct semantic call owners");
 }
+#[test]
+fn ordinary_periodic_when_equations_read_values_from_other_event_schedules() {
+    let source = r#"
+model MultiRateEvents
+  discrete Real fast(start=0,fixed=true);
+  discrete Real slow(start=0,fixed=true);
+equation
+  when sample(0,0.25) then
+    fast=time;
+  end when;
+  when sample(0,0.5) then
+    slow=fast;
+  end when;
+end MultiRateEvents;
+"#;
+    let mut session = crate::Session::new(crate::SessionConfig::default());
+    session.add_document("MultiRateEvents.mo", source).unwrap();
+    session
+        .compile_model("MultiRateEvents")
+        .expect("MLS §3.7.5 Boolean sample events impose no MLS §16 clock-domain restriction");
+}
