@@ -457,6 +457,25 @@ jobs:
           # sharding it buys no overall wall-clock, only jobs + runner cost.
           cargo xtask verify workspace
 
+      - name: Qualify GNU static-PIE memcmp and original U4 (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          export TMPDIR="$RUNNER_TEMP"
+          timeout --kill-after=5s 600s bash .github/scripts/qualify-issue422-static-pie.sh \
+            "$RUNNER_TEMP/issue422-gnu-static-pie"
+
+      - name: Upload GNU static-PIE qualification (Linux)
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: issue422-gnu-static-pie
+          path: ${{ runner.temp }}/issue422-gnu-static-pie
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Run heavy Solve counterexample regressions (Linux)
         if: runner.os == 'Linux' && !cancelled()
         shell: bash

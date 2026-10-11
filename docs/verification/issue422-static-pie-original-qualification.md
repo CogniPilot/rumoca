@@ -50,7 +50,7 @@ cargo test --locked --offline --jobs 4 -p rumoca \
 Then select just the final integration-test target:
 
 ```sh
-cargo rustc --locked --offline --jobs 4 -p rumoca \
+cargo rustc --locked --offline --jobs 4 --profile test -p rumoca \
   --no-default-features --features fmu-packaging --test suite_core \
   --message-format=json -- \
   -C target-feature=+crt-static -C relocation-model=pic -C link-arg=-static-pie
@@ -85,12 +85,32 @@ time, additional bytes, and link feasibility remain unmeasured. The mandatory
 source-key transition may rebuild first-party artifacts. If admission fails,
 retain the refusal and stop; do not create an unbounded alternate cache.
 
+## PR-reachable GNU qualification
+
+The existing Linux `test` job now invokes
+`.github/scripts/qualify-issue422-static-pie.sh` under one 600-second GNU
+timeout. It reuses that job's owned native target and the pinned toolchain;
+four Cargo/test/Rayon workers are explicit unless the owner already supplied
+a budget. The helper passes static-PIE flags only to each final compiler
+invocation, with `--profile test`, so the unit/integration targets are actual
+test harnesses. No global RUSTFLAGS or separate dependency cache is introduced.
+
+It selects exactly one Cargo JSON executable for each expected target name,
+kind and test profile, verifies both real ELF files as x86-64 ET_DYN without
+INTERP/NEEDED, and executes the existing memcmp unit and original U4 test.
+Both must report exactly one pass, no failures and no ignored tests. U4 must
+also retain at least one checked pure-call owner and eleven Cranelift receipts.
+Both ELFs, source/input hashes, build/test logs and readelf output are uploaded
+even on failure. This is source-only CI preparation; neither static link nor
+execution has been qualified by this change. It is GNU static-PIE evidence,
+not musl release/CLI packaging evidence.
+
 ## Authentic Linux release route
 
 The existing `build-rust-binaries` job provisions the pinned Rust musl target
 and musl-gcc, but is tag-only and checks no PT_INTERP rather than ET_DYN.
-A PR-reachable Linux x86-64 musl qualification job is needed before claiming
-static-PIE coverage on this PR. Reuse that provisioning and pinned Cargo.lock,
+A separate Linux x86-64 musl qualification is needed before claiming the musl
+release artifact is covered. Reuse that provisioning and pinned Cargo.lock,
 the same existing suite_core feature set, and a dedicated musl target cache.
 Use the above final-target flags with `--target x86_64-unknown-linux-musl` and
 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc` plus
