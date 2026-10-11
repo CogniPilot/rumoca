@@ -8,13 +8,14 @@ use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::TargetFile;
+#[cfg(feature = "fmi")]
+use rumoca_compile::codegen::targets::validate_solve_target_capabilities;
 #[cfg(test)]
 use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
     TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
-    validate_flat_target_capabilities, validate_solve_target_capabilities,
-    validate_solve_target_capabilities_with_calls,
+    validate_flat_target_capabilities, validate_solve_target_capabilities_with_calls,
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
@@ -655,7 +656,9 @@ fn validate_target_requirements(
     result: &CompilationResult,
     manifest: &TargetManifest,
 ) -> Result<ValidatedTarget> {
-    let mut validated = ValidatedTarget::default();
+    let validated = ValidatedTarget::default();
+    #[cfg(feature = "fmi")]
+    let mut validated = validated;
     match manifest.ir {
         TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
             let capabilities = declared_capabilities(manifest)?;
