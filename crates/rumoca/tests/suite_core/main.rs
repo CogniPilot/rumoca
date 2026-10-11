@@ -238,6 +238,8 @@ mod nanosecond_bdf_steps;
 mod native_foreign_bodies;
 mod native_least_squares;
 mod native_linear_solve;
+#[cfg(feature = "msl-sim-tests")]
+mod msl_nested_exp;
 mod native_lu_inverse;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
