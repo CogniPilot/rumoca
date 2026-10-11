@@ -1,5 +1,6 @@
 //! Shared compact tensor arithmetic and native snapshot commits.
 
+mod copies;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +19,14 @@ pub(super) fn eval(
         .dst_register()
         .expect("tensor operation has a destination") as usize;
     let count = snapshot.result_width();
+    if matches!(
+        op,
+        LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. }
+    ) {
+        return copies::eval(regs, results, op, snapshot);
+    }
     if snapshot.width() == 0 {
         for offset in 0..count {
             regs[dst + offset] = value_at(
@@ -28,10 +37,7 @@ pub(super) fn eval(
         }
         return Ok(());
     }
-    results.clear();
-    results
-        .try_reserve_exact(snapshot.width())
-        .map_err(|error| invalid_row(format!("native tensor result allocation failed: {error}")))?;
+    reserve_results(results, snapshot.width())?;
     for offset in 0..snapshot.width() {
         results.push(value_at(
             op,
@@ -41,6 +47,13 @@ pub(super) fn eval(
     }
     regs[dst..dst + snapshot.width()].copy_from_slice(results);
     Ok(())
+}
+
+fn reserve_results(results: &mut Vec<f64>, width: usize) -> Result<(), EvalSolveError> {
+    results.clear();
+    results
+        .try_reserve_exact(width)
+        .map_err(|error| invalid_row(format!("native tensor result allocation failed: {error}")))
 }
 
 /// One scalar of an aggregate result, read through the owner's register checks.

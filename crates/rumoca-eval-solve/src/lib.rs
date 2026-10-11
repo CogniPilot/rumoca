@@ -2080,10 +2080,11 @@ fn eval_lazy_pure_op(
         | LinearOp::TensorBinary { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
-        | LinearOp::TensorUpdate { .. }) => eval_lazy_tensor_algebra_op(regs, tensor_results, op)?,
-        op @ (LinearOp::TensorFill { .. }
-        | LinearOp::TensorIdentity { .. }
-        | LinearOp::TensorLoad { .. }) => eval_lazy_tensor_constructor_op(input, regs, op)?,
+        | LinearOp::TensorUpdate { .. }
+        | LinearOp::TensorFill { .. }) => eval_lazy_tensor_algebra_op(regs, tensor_results, op)?,
+        op @ (LinearOp::TensorIdentity { .. } | LinearOp::TensorLoad { .. }) => {
+            eval_lazy_tensor_constructor_op(input, regs, op)?
+        }
         op @ (LinearOp::FunctionFold { .. }
         | LinearOp::GuardedFunctionFold { .. }
         | LinearOp::FunctionConditional { .. }) => eval_lazy_region_op(input, regs, op)?,
@@ -2170,41 +2171,7 @@ fn eval_lazy_tensor_algebra_op(
     tensor_results: &mut Vec<f64>,
     op: LinearOp,
 ) -> Result<(), EvalSolveError> {
-    match op {
-        op @ (LinearOp::MatrixMultiply { .. }
-        | LinearOp::TensorBinary { .. }
-        | LinearOp::TensorTranspose { .. }) => native_tensors::eval(regs, tensor_results, &op)?,
-        LinearOp::TensorConcatenate {
-            dst_start,
-            sources,
-            dimensions,
-            axis,
-            lanes,
-        } => {
-            visit_tensor_concatenate(&sources, &dimensions, axis, lanes, |source, destination| {
-                regs[dst_start as usize + destination] = regs[source as usize];
-                Ok::<(), EvalSolveError>(())
-            })?
-        }
-        LinearOp::TensorUpdate {
-            dst_start,
-            base_start,
-            value_start,
-            dimensions,
-            subscripts,
-            lanes,
-        } => eval_tensor_update(
-            regs,
-            dst_start,
-            base_start,
-            value_start,
-            &dimensions,
-            &subscripts,
-            lanes,
-        )?,
-        _ => unreachable!("lazy tensor algebra dispatch receives only tensor operations"),
-    }
-    Ok(())
+    native_tensors::eval(regs, tensor_results, &op)
 }
 
 fn eval_lazy_tensor_constructor_op(
@@ -2213,19 +2180,6 @@ fn eval_lazy_tensor_constructor_op(
     op: LinearOp,
 ) -> Result<(), EvalSolveError> {
     match op {
-        LinearOp::TensorFill {
-            dst_start,
-            value_start,
-            count,
-            lanes,
-        } => {
-            for element in 0..count {
-                for lane in 0..lanes {
-                    regs[dst_start as usize + element * lanes + lane] =
-                        regs[value_start as usize + lane];
-                }
-            }
-        }
         LinearOp::TensorIdentity {
             dst_start,
             size,
@@ -3242,60 +3196,16 @@ fn eval_row_prepared_fast(
             }
             op @ (LinearOp::MatrixMultiply { .. }
             | LinearOp::TensorBinary { .. }
-            | LinearOp::TensorTranspose { .. }) => native_tensors::eval(regs, tensor_results, op)?,
+            | LinearOp::TensorTranspose { .. }
+            | LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. }) => native_tensors::eval(regs, tensor_results, op)?,
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,
                 rhs_start,
                 lanes,
             } => eval_tensor_cross(regs, *dst_start, *lhs_start, *rhs_start, *lanes),
-            LinearOp::TensorConcatenate {
-                dst_start,
-                sources,
-                dimensions,
-                axis,
-                lanes,
-            } => {
-                visit_tensor_concatenate(
-                    sources,
-                    dimensions,
-                    *axis,
-                    *lanes,
-                    |source, destination| {
-                        regs[*dst_start as usize + destination] = regs[source as usize];
-                        Ok::<(), EvalSolveError>(())
-                    },
-                )?;
-            }
-            LinearOp::TensorUpdate {
-                dst_start,
-                base_start,
-                value_start,
-                dimensions,
-                subscripts,
-                lanes,
-            } => eval_tensor_update(
-                regs,
-                *dst_start,
-                *base_start,
-                *value_start,
-                dimensions,
-                subscripts,
-                *lanes,
-            )?,
-            LinearOp::TensorFill {
-                dst_start,
-                value_start,
-                count,
-                lanes,
-            } => {
-                for element in 0..*count {
-                    for lane in 0..*lanes {
-                        regs[*dst_start as usize + element * *lanes + lane] =
-                            regs[*value_start as usize + lane];
-                    }
-                }
-            }
             LinearOp::TensorIdentity {
                 dst_start,
                 size,
@@ -3624,34 +3534,6 @@ fn visit_tensor_concatenate<E>(
             }
         }
         axis_offset += source_axis;
-    }
-    Ok(())
-}
-
-fn eval_tensor_update(
-    regs: &mut [f64],
-    dst_start: Reg,
-    base_start: Reg,
-    value_start: Reg,
-    dimensions: &[u32],
-    subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
-    lanes: usize,
-) -> Result<(), EvalSolveError> {
-    let count = dimensions
-        .iter()
-        .fold(1usize, |count, extent| count * *extent as usize);
-    for element in 0..count {
-        let value_offset =
-            tensor_update_register_value_offset(dimensions, subscripts, element, |register| {
-                Ok::<_, EvalSolveError>(regs[register as usize])
-            })?;
-        for lane in 0..lanes {
-            let source = match value_offset {
-                Some(offset) => value_start as usize + offset * lanes + lane,
-                None => base_start as usize + element * lanes + lane,
-            };
-            regs[dst_start as usize + element * lanes + lane] = regs[source];
-        }
     }
     Ok(())
 }

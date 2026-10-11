@@ -378,3 +378,65 @@ fn prepared_tensor_additional_alias_fill_keeps_packed_lane_values() {
     assert_disjoint_snapshot_lazy(&[0., 1., 2., 0.], operation(64), &expected);
     assert_prepared_snapshot(&[0., 1., 2., 0.], operation(0), &expected);
 }
+
+#[test]
+fn prepared_tensor_snapshot_update_keeps_runtime_index_before_destination_writes() {
+    let operation = |dst_start| LinearOp::TensorUpdate {
+        dst_start,
+        base_start: 0,
+        value_start: 3,
+        dimensions: vec![3].into(),
+        subscripts: vec![TensorUpdateSubscript::Index(
+            rumoca_ir_solve::TensorIndex::Runtime(4),
+        )]
+        .into(),
+        lanes: 1,
+    };
+    let values = [10., 20., 30., 99., 2., 0., 0., 0., 0., 0.];
+    let expected = [10., 99., 30.];
+    assert_prepared_snapshot(&values, operation(7), &expected);
+    assert_disjoint_snapshot_lazy(&values, operation(64), &expected);
+    assert_prepared_snapshot(&values, operation(4), &expected);
+}
+
+#[test]
+fn prepared_tensor_snapshot_update_keeps_slice_coordinates_before_destination_writes() {
+    let operation = |dst_start| LinearOp::TensorUpdate {
+        dst_start,
+        base_start: 0,
+        value_start: 6,
+        dimensions: vec![3].into(),
+        subscripts: vec![TensorUpdateSubscript::Slice {
+            start: 3,
+            dimensions: vec![2].into(),
+        }]
+        .into(),
+        lanes: 1,
+    };
+    let values = [1., 2., 3., 2., 3., 0., 7., 8., 0., 0., 0.];
+    let expected = [1., 7., 8.];
+    assert_prepared_snapshot(&values, operation(8), &expected);
+    assert_disjoint_snapshot_lazy(&values, operation(64), &expected);
+    assert_prepared_snapshot(&values, operation(3), &expected);
+}
+
+#[test]
+fn prepared_tensor_snapshot_update_keeps_shape_projected_replacement_values() {
+    let operation = |dst_start| LinearOp::TensorUpdate {
+        dst_start,
+        base_start: 0,
+        value_start: 4,
+        dimensions: vec![2, 2].into(),
+        subscripts: vec![
+            TensorUpdateSubscript::Whole,
+            TensorUpdateSubscript::Index(rumoca_ir_solve::TensorIndex::Constant(1)),
+        ]
+        .into(),
+        lanes: 1,
+    };
+    let values = [1., 2., 3., 4., 9., 8., 0., 0., 0., 0., 0., 0.];
+    let expected = [1., 9., 3., 8.];
+    assert_prepared_snapshot(&values, operation(8), &expected);
+    assert_disjoint_snapshot_lazy(&values, operation(64), &expected);
+    assert_prepared_snapshot(&values, operation(4), &expected);
+}

@@ -30,7 +30,11 @@ fn tensor_operation(block: &ScalarProgramBlock) -> &LinearOp {
         .find(|op| {
             matches!(
                 op,
-                LinearOp::MatrixMultiply { .. } | LinearOp::TensorBinary { .. }
+                LinearOp::MatrixMultiply { .. }
+                    | LinearOp::TensorBinary { .. }
+                    | LinearOp::TensorConcatenate { .. }
+                    | LinearOp::TensorUpdate { .. }
+                    | LinearOp::TensorFill { .. }
             )
         })
         .expect("checked fixture contains its tensor operation")
@@ -85,4 +89,84 @@ fn native_tensor_staging_reuses_storage_and_leaves_disjoint_strided_gaps_unalloc
     eval(&mut regs, &mut unused, op).unwrap();
     assert_eq!(&regs[2..6], &[4., 40., 6., 60.]);
     assert_eq!(unused.capacity(), 0, "a gap is not an operand read");
+}
+
+fn assert_copy_storage(values: &[f64], operation: LinearOp, expected: &[f64], destination: usize) {
+    let block = checked(values, operation);
+    let op = tensor_operation(&block);
+    let mut results = Vec::new();
+    let mut regs = values.to_vec();
+    eval(&mut regs, &mut results, op).unwrap();
+    assert_eq!(&regs[destination..destination + expected.len()], expected);
+    if destination != 0 {
+        assert_eq!(
+            results.capacity(),
+            0,
+            "disjoint copy leaves scratch unallocated"
+        );
+        return;
+    }
+    assert_eq!(results.len(), expected.len());
+    let (pointer, capacity) = (results.as_ptr(), results.capacity());
+    regs.copy_from_slice(values);
+    eval(&mut regs, &mut results, op).unwrap();
+    assert_eq!(&regs[..expected.len()], expected);
+    assert_eq!((results.as_ptr(), results.capacity()), (pointer, capacity));
+}
+
+#[test]
+fn native_tensor_staging_copy_operations_reuse_storage_and_leave_disjoint_destinations_unallocated()
+{
+    for dst_start in [0, 8] {
+        assert_copy_storage(
+            &[1., 2., 3., 4., 0., 0., 0., 0., 0., 0., 0., 0.],
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources: vec![
+                    rumoca_ir_solve::TensorConcatenateSource {
+                        start: 2,
+                        dimensions: vec![2].into(),
+                    },
+                    rumoca_ir_solve::TensorConcatenateSource {
+                        start: 0,
+                        dimensions: vec![2].into(),
+                    },
+                ]
+                .into(),
+                dimensions: vec![4].into(),
+                axis: 0,
+                lanes: 1,
+            },
+            &[3., 4., 1., 2.],
+            dst_start as usize,
+        );
+        assert_copy_storage(
+            &[1., 2., 3., 2., 3., 0., 0., 0., 0., 0., 0., 0.],
+            LinearOp::TensorUpdate {
+                dst_start,
+                base_start: 0,
+                value_start: 0,
+                dimensions: vec![3].into(),
+                subscripts: vec![rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                    start: 3,
+                    dimensions: vec![2].into(),
+                }]
+                .into(),
+                lanes: 1,
+            },
+            &[1., 1., 2.],
+            dst_start as usize,
+        );
+        assert_copy_storage(
+            &[0., 1., 2., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+            LinearOp::TensorFill {
+                dst_start,
+                value_start: 1,
+                count: 2,
+                lanes: 2,
+            },
+            &[1., 2., 1., 2.],
+            dst_start as usize,
+        );
+    }
 }

@@ -1,6 +1,6 @@
 //! Compact read-before-write admission shared by native and scalar consumers.
 
-use rumoca_ir_solve::{LinearOp, Reg};
+use rumoca_ir_solve::{LinearOp, Reg, TensorIndex, TensorUpdateSubscript};
 
 /// Issued before writes from the operation's checked compact storage geometry.
 pub(super) struct Snapshot {
@@ -105,6 +105,9 @@ impl Snapshot {
                 intersects(dst, count, *lhs_start, 3, 1, *lanes)?
                     | intersects(dst, count, *rhs_start, 3, 1, *lanes)?
             }
+            LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. } => copy_overlap(op, dst, count)?,
             _ => false,
         };
         Some(Self {
@@ -122,7 +125,15 @@ fn result_width(op: &LinearOp) -> Option<usize> {
             lanes,
             ..
         } => rows.checked_mul(*columns)?.checked_mul(*lanes),
-        LinearOp::TensorBinary { count, lanes, .. } => count.checked_mul(*lanes),
+        LinearOp::TensorBinary { count, lanes, .. } | LinearOp::TensorFill { count, lanes, .. } => {
+            count.checked_mul(*lanes)
+        }
+        LinearOp::TensorConcatenate {
+            dimensions, lanes, ..
+        }
+        | LinearOp::TensorUpdate {
+            dimensions, lanes, ..
+        } => shape_width(dimensions, *lanes),
         LinearOp::TensorTranspose {
             rows,
             columns,
@@ -136,4 +147,61 @@ fn result_width(op: &LinearOp) -> Option<usize> {
         LinearOp::TensorCross { lanes, .. } => 3usize.checked_mul(*lanes),
         _ => Some(0),
     }
+}
+
+fn shape_width(dimensions: &[u32], lanes: usize) -> Option<usize> {
+    dimensions
+        .iter()
+        .try_fold(lanes, |width, extent| width.checked_mul(*extent as usize))
+}
+
+fn copy_overlap(op: &LinearOp, dst: Reg, count: usize) -> Option<bool> {
+    match op {
+        LinearOp::TensorConcatenate { sources, lanes, .. } => {
+            let mut overlap = false;
+            for source in sources {
+                let width = shape_width(&source.dimensions, *lanes)?;
+                overlap |= intersects(dst, count, source.start, width, 1, 1)?;
+            }
+            Some(overlap)
+        }
+        LinearOp::TensorFill {
+            value_start, lanes, ..
+        } => intersects(dst, count, *value_start, *lanes, 1, 1),
+        LinearOp::TensorUpdate {
+            base_start,
+            value_start,
+            dimensions,
+            subscripts,
+            lanes,
+            ..
+        } => {
+            let mut overlap = intersects(dst, count, *base_start, count, 1, 1)?;
+            let mut values = *lanes;
+            for (&extent, subscript) in dimensions.iter().zip(subscripts) {
+                let (width, coordinates) = update_axis(extent, subscript)?;
+                values = values.checked_mul(width)?;
+                if let Some((start, width)) = coordinates {
+                    overlap |= intersects(dst, count, start, width, 1, 1)?;
+                }
+            }
+            Some(overlap | intersects(dst, count, *value_start, values, 1, 1)?)
+        }
+        _ => unreachable!("copy overlap accepts only concatenate, update and fill"),
+    }
+}
+
+fn update_axis(
+    extent: u32,
+    subscript: &TensorUpdateSubscript,
+) -> Option<(usize, Option<(Reg, usize)>)> {
+    Some(match subscript {
+        TensorUpdateSubscript::Whole => (extent as usize, None),
+        TensorUpdateSubscript::Index(TensorIndex::Constant(_)) => (1, None),
+        TensorUpdateSubscript::Index(TensorIndex::Runtime(register)) => (1, Some((*register, 1))),
+        TensorUpdateSubscript::Slice { start, dimensions } => {
+            let width = shape_width(dimensions, 1)?;
+            (width, Some((*start, width)))
+        }
+    })
 }
