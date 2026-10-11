@@ -36,6 +36,19 @@ fn prepared_projection_rejects_a_replaced_canonical_jvp_source() {
     );
 }
 
+#[test]
+fn interpreted_projection_rejects_missing_structural_owner() {
+    let mut model = grouped_projection_jvp::coupled_model();
+    assert!(SolveRuntime::new_fixture(&model).is_ok());
+    model.artifacts.continuous.structural = Default::default();
+    assert!(
+        matches!(SolveRuntime::new_fixture(&model),
+        Err(EvalSolveError::InvalidRow { message, .. })
+            if message == "projection demand is outside its continuous structural owner"),
+        "interpreter preparation cannot silently replace missing canonical structure"
+    );
+}
+
 #[derive(Default)]
 struct PreparedNative {
     prepares: Cell<usize>,

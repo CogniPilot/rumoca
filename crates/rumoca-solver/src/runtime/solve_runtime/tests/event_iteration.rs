@@ -1015,7 +1015,7 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
 }
 
 fn algebraic_relation_partition_model() -> solve::SolveModel {
-    solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
@@ -1088,7 +1088,14 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
         initial_y: vec![0.0, -1.0],
         parameters: vec![-1.0, 0.0],
         ..Default::default()
-    }
+    };
+    set_test_implicit_jvp(
+        &mut model,
+        vec![affine_seed_row(&[]), affine_seed_row(&[])],
+        "algebraic_relation_assignment_jvp.mo",
+    );
+    derive_test_structural_artifacts(&mut model);
+    model
 }
 
 #[test]
