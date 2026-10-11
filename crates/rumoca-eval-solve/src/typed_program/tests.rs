@@ -3,6 +3,7 @@ mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;
 mod recursion;
+mod scalar_projection;
 
 use std::num::NonZeroU64;
 
