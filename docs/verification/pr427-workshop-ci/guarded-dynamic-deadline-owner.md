@@ -30,7 +30,7 @@ system, SPEC0032 §1, and catalog SOLVE-C11. MLS 3.7 §8.5 permits a located
 relation event; exactly scheduling the special `time >= discrete expression`
 and `time < discrete expression` cases is a quality-of-implementation concern.
 The buffered value and event crossing must still be correct. The published
-[MLS PDF](https://specification.modelica.org/master/MLS.pdf), rather than a
+[MLS 3.7 PDF](https://specification.modelica.org/maint/3.7/MLS.pdf), rather than a
 development HTML version, is the semantic reference used for this distinction.
 The existing `activation_relation_roots` warning still governs unconditional
 `when` deadlines; this patch does not replace that optimized owner.
