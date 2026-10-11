@@ -21,14 +21,12 @@ mod tensor_product_tests;
 
 use super::host_runtime::{host_jit_builder, register_math_symbols};
 use super::owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
-use super::status;
 use super::{
     CompileError, MathImports, emit_binary_op, emit_unary_op, finalize_jit_module, to_backend_err,
 };
+use super::{scratch, status};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{
-    AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type, Value, types,
-};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Type, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
@@ -139,6 +137,7 @@ impl CompiledPureCallTable {
         signature.returns.push(AbiParam::new(types::I8));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let mut imports = HashMap::with_capacity(self.symbols.len());
         for symbol in &self.symbols {
             let function = module
@@ -203,15 +202,17 @@ impl CompiledPureCallTable {
                 output.len()
             )));
         }
-        type TypedCall = unsafe extern "C" fn(*const u64, *mut u64) -> u8;
+        type TypedCall =
+            unsafe extern "C" fn(*const u64, *mut u64, *mut scratch::NativeScratch) -> u8;
         // SAFETY: `symbol.address` is the finalized address of a Cranelift
-        // function constructed with exactly the two-pointer/status `TypedCall` ABI.
+        // function constructed with exactly the input/output/scratch-pointer/status `TypedCall` ABI.
         // The checked site/interface and cell extents are proved above, and
         // the owning JIT module remains alive in `self` for this call.
         let call: TypedCall = unsafe { std::mem::transmute(symbol.address) };
         // SAFETY: both slices have the exact checked cell extents required by
         // the compiled owner and remain valid for the duration of the call.
-        let status = unsafe { call(input.as_ptr(), output.as_mut_ptr()) };
+        let status =
+            scratch::invoke(|arena| unsafe { call(input.as_ptr(), output.as_mut_ptr(), arena) });
         status::check(status)
     }
 }
@@ -266,8 +267,11 @@ impl TableCompiler {
         signature.returns.push(AbiParam::new(types::I8));
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let mut recursive_signature = signature.clone();
-        recursive_signature.params.push(AbiParam::new(types::I64));
+        recursive_signature
+            .params
+            .insert(2, AbiParam::new(types::I64));
         let mut functions = Vec::with_capacity(table.owners().len());
         let mut directional_functions = Vec::with_capacity(table.owners().len());
         let mut recursive_functions = Vec::with_capacity(table.owners().len());
@@ -400,6 +404,11 @@ impl TableCompiler {
             .signature
             .params
             .push(AbiParam::new(pointer_type));
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(pointer_type)); // caller-owned scratch
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -408,12 +417,14 @@ impl TableCompiler {
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let parameters = builder.block_params(entry).to_vec();
+            scratch::enter(&mut builder);
             let depth = builder.ins().iconst(types::I64, 1);
             let local = declare_far_call_in_func(&mut self.module, recursive, builder.func);
             let call = builder
                 .ins()
-                .call(local, &[parameters[0], parameters[1], depth]);
+                .call(local, &[parameters[0], parameters[1], depth, parameters[2]]);
             let status = builder.inst_results(call)[0];
+            scratch::leave(&mut builder);
             builder.ins().return_(&[status]);
             builder.finalize();
         }
@@ -490,6 +501,11 @@ impl TableCompiler {
                 .params
                 .push(AbiParam::new(types::I64));
         }
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(pointer_type)); // caller-owned scratch
         let mut builder_context = FunctionBuilderContext::new();
         {
             let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -498,6 +514,7 @@ impl TableCompiler {
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let parameters = builder.block_params(entry).to_vec();
+            scratch::enter(&mut builder);
             let recursive_calls = match recursion {
                 Some(group) => {
                     let depth = parameters[2];
@@ -903,9 +920,8 @@ fn create_tape(
         .max(1)
         .checked_mul(CELL_BYTES as u32)
         .ok_or_else(|| CompileError::Backend("typed native tape size overflows".into()))?;
-    let slot =
-        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3));
-    Ok(builder.ins().stack_addr(pointer_type, slot, 0))
+    let slot = scratch::create_slot(builder, bytes)?;
+    Ok(scratch::stack_addr(builder, pointer_type, slot, 0))
 }
 
 fn cell_offset(cell: u32, context: &str) -> Result<i32, CompileError> {
@@ -1322,7 +1338,12 @@ impl ProgramLowerer<'_, '_> {
                     })?;
                 let local = declare_far_call_in_func(self.module, function, self.builder.func);
                 let depth = self.builder.ins().iadd_imm(calls.depth, 1);
-                self.builder.ins().call(local, &[input, output, depth])
+                {
+                    let arena = scratch::parameter(self.builder);
+                    self.builder
+                        .ins()
+                        .call(local, &[input, output, depth, arena])
+                }
             }
             None => {
                 let function = self
@@ -1334,7 +1355,10 @@ impl ProgramLowerer<'_, '_> {
                         CompileError::Backend("nested typed call owner is missing".into())
                     })?;
                 let local = declare_far_call_in_func(self.module, function, self.builder.func);
-                self.builder.ins().call(local, &[input, output])
+                {
+                    let arena = scratch::parameter(self.builder);
+                    self.builder.ins().call(local, &[input, output, arena])
+                }
             }
         };
         let status = self.builder.inst_results(call)[0];

@@ -2,15 +2,27 @@ use super::*;
 
 fn allocates_register_tape(row: &[LinearOp]) -> bool {
     let mut context = cranelift_codegen::Context::new();
+    context
+        .func
+        .signature
+        .params
+        .push(AbiParam::new(types::I64));
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::I8));
     let mut frontend = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
     let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
     builder.seal_block(entry);
+    scratch::enter(&mut builder);
     let allocated = create_row_register_tape(&mut builder, types::I64, row)
         .expect("native register storage")
         .is_some();
-    builder.ins().return_(&[]);
+    status::succeed(&mut builder);
     builder.finalize();
     allocated
 }
@@ -160,5 +172,48 @@ fn identity_tensors_lower_statically_and_through_the_tape() {
         let mut out = [f64::NAN; 4];
         compiled.call(&[], &[], 0.0, &mut out).unwrap();
         assert_eq!(out, [1.0, 0.0, 1.0, 1.0], "size {size}");
+    }
+}
+
+#[test]
+fn full_width_tapes_execute_assignments_residual_batches_and_jvp_on_default_stack() {
+    let count = 512 * 512;
+    let row = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::P,
+            input_start: 0,
+            count,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: 0 },
+        LinearOp::StoreOutput {
+            src: count as u32 - 1,
+        },
+    ];
+    let assignments = compile_assignment_schedule(std::slice::from_ref(&row), &[0, 1]).unwrap();
+    let residuals = compile_residual_rows(&[row.clone(), row.clone()]).unwrap();
+    let jacobian = compile_jacobian_rows(std::slice::from_ref(&row)).unwrap();
+    for value in [-0.0_f64, 1.25, -7.0] {
+        let mut parameters = vec![value; count];
+        parameters[count - 1] = -value;
+        let expected = [value.to_bits(), (-value).to_bits()];
+        let mut y = [f64::NAN; 2];
+        assignments.call(&mut y, &parameters, 0.0).unwrap();
+        assert_eq!(y.map(f64::to_bits), expected);
+        let mut residual = [f64::NAN; 4];
+        residuals
+            .call(&[], &parameters, 0.0, &mut residual)
+            .unwrap();
+        assert_eq!(
+            residual.map(f64::to_bits),
+            [expected[0], expected[1], expected[0], expected[1]]
+        );
+        let mut direction = [f64::NAN; 2];
+        jacobian
+            .call(&[], &parameters, 0.0, &[], &mut direction)
+            .unwrap();
+        assert_eq!(direction.map(f64::to_bits), expected);
     }
 }

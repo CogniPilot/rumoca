@@ -3,9 +3,7 @@
 // lowering and memory/ABI helpers into focused emitter submodules.
 use super::CompileError;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{
-    AbiParam, InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind, types,
-};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, StackSlot, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
@@ -34,6 +32,7 @@ mod register_constants;
 mod register_storage;
 #[cfg(test)]
 mod register_storage_tests;
+mod scratch;
 mod selected_jvp;
 mod selected_residual;
 mod status;
@@ -50,6 +49,7 @@ use input_validation::{
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
 pub(crate) use projection_batch::SharedProjectionModule;
+pub(crate) use scratch::NativeScratch;
 pub(crate) use tensor_kernel::{
     CompiledTensorKernels, DirectionalKernels, KernelFrame, KernelId, KernelKind, KernelProgram,
     ResidualKernels,
@@ -57,10 +57,20 @@ pub(crate) use tensor_kernel::{
 
 // Each compiled program writes its outputs through the trailing `*mut f64`
 // pointer (one program may emit several outputs via consecutive StoreOutputs).
-type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64) -> u8;
-type ResidualChunkFn = unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64, *mut f64) -> u8;
-type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64, *mut f64) -> u8;
-type AssignmentScheduleFn = unsafe extern "C" fn(*mut f64, *const f64, f64) -> u8;
+type ResidualRowFn =
+    unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64, *mut NativeScratch) -> u8;
+type ResidualChunkFn =
+    unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64, *mut f64, *mut NativeScratch) -> u8;
+type JacobianRowFn = unsafe extern "C" fn(
+    *const f64,
+    *const f64,
+    f64,
+    *const f64,
+    *mut f64,
+    *mut NativeScratch,
+) -> u8;
+type AssignmentScheduleFn =
+    unsafe extern "C" fn(*mut f64, *const f64, f64, *mut NativeScratch) -> u8;
 
 #[derive(Clone)]
 enum RowPlan {
@@ -243,7 +253,7 @@ impl CompiledAssignmentSchedule {
         let status = with_active_external_tables(external_tables, || {
             // SAFETY: compilation validates every input load and target offset;
             // the checks above establish both against these exact slices.
-            unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) }
+            scratch::invoke(|arena| unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t, arena) })
         });
         status::check(status)
     }
@@ -563,6 +573,7 @@ fn fold_signature(
     }
     signature.params.push(AbiParam::new(pointer_type));
     signature.params.push(AbiParam::new(pointer_type));
+    signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
     signature
 }
 
@@ -984,7 +995,9 @@ unsafe fn call_residual_jit(
     match jit {
         ResidualJit::Whole(jit) => {
             // SAFETY: prevalidation proves all input/output accesses.
-            unsafe { jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) }
+            scratch::invoke(|arena| unsafe {
+                jit(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena)
+            })
         }
         ResidualJit::Chunked(chunks) => {
             // Chunk functions exchange compiler registers through this tape.
@@ -993,15 +1006,16 @@ unsafe fn call_residual_jit(
             for jit in chunks {
                 // SAFETY: compilation validates row register flow and embeds
                 // output offsets against the already validated output slice.
-                let status = unsafe {
+                let status = scratch::invoke(|arena| unsafe {
                     jit(
                         y.as_ptr(),
                         p.as_ptr(),
                         t,
                         out.as_mut_ptr(),
                         regs.as_mut_ptr(),
+                        arena,
                     )
-                };
+                });
                 if status != 0 {
                     return status;
                 }
@@ -1022,7 +1036,16 @@ unsafe fn call_jacobian_jit(
     // SAFETY: the caller guarantees the function pointer came from
     // finalized_jacobian_fn, prevalidation ensures any loaded y/p/seed indices
     // are in bounds, and `out` has room for this program's outputs.
-    unsafe { jit(y.as_ptr(), p.as_ptr(), t, v.as_ptr(), out.as_mut_ptr()) }
+    scratch::invoke(|arena| unsafe {
+        jit(
+            y.as_ptr(),
+            p.as_ptr(),
+            t,
+            v.as_ptr(),
+            out.as_mut_ptr(),
+            arena,
+        )
+    })
 }
 
 fn validate_jit_matches_interpreter(
@@ -1234,6 +1257,7 @@ impl CraneliftEmitter {
         }
         signature.params.push(AbiParam::new(pointer_type)); // captures
         signature.params.push(AbiParam::new(pointer_type)); // results
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let name = match self.conditional_scope {
             Some(scope) => format!("rumoca_scope_{scope}_conditional_owner_{}", owner.get()),
             None => format!("rumoca_conditional_owner_{}", owner.get()),
@@ -1263,6 +1287,7 @@ impl CraneliftEmitter {
             fb.switch_to_block(entry);
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let y_ptr = params[0];
             let p_ptr = params[1];
             let t_value = params[2];
@@ -1352,6 +1377,7 @@ impl CraneliftEmitter {
             fb.switch_to_block(entry);
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let y_ptr = params[0];
             let p_ptr = params[1];
             let t_value = params[2];
@@ -1370,11 +1396,7 @@ impl CraneliftEmitter {
                 .ok_or_else(|| {
                     CompileError::Backend("fold kernel carried size overflow".to_string())
                 })?;
-            let carried = fb.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                bytes,
-                3,
-            ));
+            let carried = scratch::create_slot(&mut fb, bytes)?;
             let backing_regs_ptr =
                 create_fold_register_tape(&mut fb, pointer_type, &program.update)?;
             let mut lower = RowLowerCtx {
@@ -1458,6 +1480,7 @@ impl CraneliftEmitter {
         }
         signature.params.push(AbiParam::new(pointer_type)); // out (written, not returned)
 
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let func_id = self
             .module
             .declare_function(name, Linkage::Local, &signature)
@@ -1474,6 +1497,7 @@ impl CraneliftEmitter {
             fb.seal_block(entry);
 
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let y_ptr = params[0];
             let p_ptr = params[1];
             let t_value = params[2];
@@ -1581,6 +1605,7 @@ impl CraneliftEmitter {
         signature.params.push(AbiParam::new(types::F64));
         signature.params.push(AbiParam::new(pointer_type));
         let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let func_id = self
             .module
             .declare_function(
@@ -1599,6 +1624,7 @@ impl CraneliftEmitter {
             fb.switch_to_block(entry);
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let (y_ptr, p_ptr, t_value, out_ptr) = (params[0], params[1], params[2], params[3]);
             let mut loaded_y = HashMap::new();
             let mut loaded_p = HashMap::new();
@@ -1664,6 +1690,7 @@ impl CraneliftEmitter {
         signature.params.push(AbiParam::new(types::F64)); // t
         signature.params.push(AbiParam::new(pointer_type)); // out
         signature.params.push(AbiParam::new(pointer_type)); // register tape
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let func_id = self
             .module
             .declare_function(name, Linkage::Local, &signature)
@@ -1678,6 +1705,7 @@ impl CraneliftEmitter {
             fb.switch_to_block(entry);
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let mut regs = HashMap::new();
             let mut loaded_y = HashMap::new();
             let mut loaded_p = HashMap::new();
@@ -1736,6 +1764,7 @@ impl CraneliftEmitter {
         signature.params.push(AbiParam::new(pointer_type)); // mutable y
         signature.params.push(AbiParam::new(pointer_type)); // p
         signature.params.push(AbiParam::new(types::F64)); // t
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let profile_id = NEXT_ASSIGNMENT_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
         let func_id = self
             .module
@@ -1755,6 +1784,7 @@ impl CraneliftEmitter {
             fb.switch_to_block(entry);
             fb.seal_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let (y_ptr, p_ptr, t_value) = (params[0], params[1], params[2]);
             let flags = MemFlags::new();
             let mut target_offset = 0usize;
@@ -1887,9 +1917,8 @@ fn create_register_tape(
         .checked_mul(std::mem::size_of::<f64>())
         .and_then(|bytes| u32::try_from(bytes).ok())
         .ok_or_else(|| CompileError::Backend("row register tape size overflow".into()))?;
-    let tape =
-        fb.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3));
-    Ok(Some(fb.ins().stack_addr(pointer_type, tape, 0)))
+    let tape = scratch::create_slot(fb, bytes)?;
+    Ok(Some(scratch::stack_addr(fb, pointer_type, tape, 0)))
 }
 
 fn create_typed_cell_slot(
@@ -1902,7 +1931,7 @@ fn create_typed_cell_slot(
         .checked_mul(std::mem::size_of::<u64>())
         .and_then(|bytes| u32::try_from(bytes).ok())
         .ok_or_else(|| CompileError::Backend(format!("{context} stack size overflows")))?;
-    Ok(fb.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3)))
+    scratch::create_slot(fb, bytes)
 }
 
 fn typed_cell_type(scalar: rumoca_ir_solve::SolveScalarType) -> cranelift_codegen::ir::Type {
@@ -2333,7 +2362,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 .map_err(|_| {
                     CompileError::Backend("function-fold carried offset exceeds i32".to_string())
                 })?;
-                let value = self.fb.ins().stack_load(types::F64, carried, offset);
+                let value = scratch::stack_load(self.fb, types::F64, carried, offset);
                 self.insert(dst, value)
             }
             LinearOp::LoadIndexedFoldCarried {
@@ -2690,13 +2719,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 .ok_or_else(|| {
                     CompileError::Backend("function-fold carried storage size overflow".to_string())
                 })?;
-            let carried_slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                carried_bytes,
-                3,
-            ));
+            let carried_slot = scratch::create_slot(self.fb, carried_bytes)?;
             for (offset, value) in carried.iter().copied().enumerate() {
-                self.fb.ins().stack_store(
+                scratch::stack_store(
+                    self.fb,
                     value,
                     carried_slot,
                     stack_element_byte_offset(offset, "function-fold initial")?,
@@ -2707,7 +2733,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             carried_slot
         };
         for offset in 0..program.carried_count {
-            let value = self.fb.ins().stack_load(
+            let value = scratch::stack_load(
+                self.fb,
                 types::F64,
                 carried_slot,
                 stack_element_byte_offset(offset, "function-fold result")?,
@@ -2836,15 +2863,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let input_slot = create_typed_cell_slot(self.fb, input_cells, "pure-call input")?;
         let output_slot = create_typed_cell_slot(self.fb, output_cells, "pure-call output")?;
         let pointer_type = self.module.target_config().pointer_type();
-        let input_ptr = self.fb.ins().stack_addr(pointer_type, input_slot, 0);
-        let output_ptr = self.fb.ins().stack_addr(pointer_type, output_slot, 0);
+        let input_ptr = scratch::stack_addr(self.fb, pointer_type, input_slot, 0);
+        let output_ptr = scratch::stack_addr(self.fb, pointer_type, output_slot, 0);
         let mut input_cell = 0usize;
         for (start, value_type) in input_starts.iter().zip(inputs) {
             for offset in 0..value_type.scalar_count() as usize {
                 let register = checked_reg_offset(*start, offset, "typed pure-call input")?;
                 let value = self.lookup(register)?;
                 let value = encode_typed_cell(self.fb, value_type.element_type(), value);
-                self.fb.ins().stack_store(
+                scratch::stack_store(
+                    self.fb,
                     value,
                     input_slot,
                     stack_element_byte_offset(input_cell, "typed pure-call input")?,
@@ -2853,7 +2881,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             }
         }
         let function = declare_far_call_in_func(self.module, function, self.fb.func);
-        let call = self.fb.ins().call(function, &[input_ptr, output_ptr]);
+        let arena = scratch::parameter(self.fb);
+        let call = self
+            .fb
+            .ins()
+            .call(function, &[input_ptr, output_ptr, arena]);
         let status = self.fb.inst_results(call)[0];
         status::propagate(self.fb, status);
         self.pure_call_results.insert(cache_key, output_slot);
@@ -2870,7 +2902,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let mut output_cell = 0usize;
         for output in outputs {
             for _ in 0..output.value_type().scalar_count() {
-                let value = self.fb.ins().stack_load(
+                let value = scratch::stack_load(
+                    self.fb,
                     typed_cell_type(output.value_type().element_type()),
                     output_slot,
                     stack_element_byte_offset(output_cell, "typed pure-call output")?,
@@ -2934,11 +2967,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     "function-conditional result storage size overflow".to_string(),
                 )
             })?;
-        let result_slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            result_bytes,
-            3,
-        ));
+        let result_slot = scratch::create_slot(self.fb, result_bytes)?;
         let continuation = self.fb.create_block();
         for arm in &program.arms {
             let condition = self.lower_function_conditional_condition(
@@ -2998,24 +3027,21 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         "function-conditional capture storage size overflow".to_string(),
                     )
                 })?;
-            let captures = self.fb.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                capture_bytes,
-                3,
-            ));
+            let captures = scratch::create_slot(self.fb, capture_bytes)?;
             for offset in 0..program.capture_count {
                 let value = self.lookup(checked_reg_offset(
                     capture_start,
                     offset,
                     "function conditional capture",
                 )?)?;
-                self.fb.ins().stack_store(
+                scratch::stack_store(
+                    self.fb,
                     value,
                     captures,
                     stack_element_byte_offset(offset, "function-conditional capture")?,
                 );
             }
-            self.fb.ins().stack_addr(types::I64, captures, 0)
+            scratch::stack_addr(self.fb, types::I64, captures, 0)
         };
         let result_bytes = program
             .result_count
@@ -3026,18 +3052,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     "function-conditional result storage size overflow".to_string(),
                 )
             })?;
-        let results = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            result_bytes,
-            3,
-        ));
-        let results_ptr = self.fb.ins().stack_addr(types::I64, results, 0);
+        let results = scratch::create_slot(self.fb, result_bytes)?;
+        let results_ptr = scratch::stack_addr(self.fb, types::I64, results, 0);
         let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let mut arguments = vec![self.y_ptr, self.p_ptr, self.t_value];
         if let Some(seed) = self.v_ptr {
             arguments.push(seed);
         }
         arguments.extend([captures_ptr, results_ptr]);
+        arguments.push(scratch::parameter(self.fb));
         let call = self.fb.ins().call(function, &arguments);
         let status = self.fb.inst_results(call)[0];
         status::propagate(self.fb, status);
@@ -3051,13 +3074,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         result_count: usize,
     ) -> Result<(), CompileError> {
         if let Some(registers) = self.backing_regs_ptr {
-            let source = self.fb.ins().stack_addr(types::I64, result_slot, 0);
+            let source = scratch::stack_addr(self.fb, types::I64, result_slot, 0);
             let destination_offset = i64::from(register_byte_offset(dst_start)?);
             let destination = self.fb.ins().iadd_imm(registers, destination_offset);
             return self.copy_pointer_range(source, destination, result_count);
         }
         for offset in 0..result_count {
-            let value = self.fb.ins().stack_load(
+            let value = scratch::stack_load(
+                self.fb,
                 types::F64,
                 result_slot,
                 stack_element_byte_offset(offset, "function-conditional result")?,
@@ -3282,7 +3306,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     ) -> Result<usize, CompileError> {
         match *value {
             LoweredConditionalOutput::Value(value) => {
-                self.fb.ins().stack_store(
+                scratch::stack_store(
+                    self.fb,
                     value,
                     result_slot,
                     stack_element_byte_offset(output, "function-conditional result")?,
@@ -3297,7 +3322,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             } => {
                 let source_offset = i64::from(register_byte_offset(start)?);
                 let source = self.fb.ins().iadd_imm(pointer, source_offset);
-                let destination = self.fb.ins().stack_addr(
+                let destination = scratch::stack_addr(
+                    self.fb,
                     types::I64,
                     result_slot,
                     stack_element_byte_offset(output, "function-conditional result")?,
@@ -3324,7 +3350,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         pointer,
                         register_byte_offset(source)?,
                     );
-                    self.fb.ins().stack_store(
+                    scratch::stack_store(
+                        self.fb,
                         value,
                         result_slot,
                         stack_element_byte_offset(output, "function-conditional result")?,
@@ -3366,13 +3393,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     "guarded function-fold carried storage size overflow".to_string(),
                 )
             })?;
-        let carried_slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            carried_bytes,
-            3,
-        ));
+        let carried_slot = scratch::create_slot(self.fb, carried_bytes)?;
         for (offset, value) in carried.iter().copied().enumerate() {
-            self.fb.ins().stack_store(
+            scratch::stack_store(
+                self.fb,
                 value,
                 carried_slot,
                 stack_element_byte_offset(offset, "guarded function-fold initial")?,
@@ -3397,7 +3421,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.fb.switch_to_block(continuation);
         self.fb.seal_block(continuation);
         for offset in 0..program.carried_count {
-            let value = self.fb.ins().stack_load(
+            let value = scratch::stack_load(
+                self.fb,
                 types::F64,
                 carried_slot,
                 stack_element_byte_offset(offset, "guarded function-fold result")?,
@@ -3650,7 +3675,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         match operation {
             LinearOp::StoreOutput { src } => {
                 let value = self.lookup(src)?;
-                self.fb.ins().stack_store(
+                scratch::stack_store(
+                    self.fb,
                     value,
                     carried,
                     stack_element_byte_offset(cursor, "function-fold update")?,
@@ -3664,7 +3690,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             } => {
                 let values = self.lower_output_range(start, count, stride)?;
                 for (offset, value) in values.into_iter().enumerate() {
-                    self.fb.ins().stack_store(
+                    scratch::stack_store(
+                        self.fb,
                         value,
                         carried,
                         stack_element_byte_offset(cursor + offset, "function-fold update")?,
@@ -3742,26 +3769,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| CompileError::Backend("fold capture size overflow".to_string()))?;
-        let capture_slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            capture_bytes,
-            3,
-        ));
+        let capture_slot = scratch::create_slot(self.fb, capture_bytes)?;
         for (offset, value) in captures.iter().copied().enumerate() {
-            self.fb.ins().stack_store(
+            scratch::stack_store(
+                self.fb,
                 value,
                 capture_slot,
                 stack_element_byte_offset(offset, "fold capture")?,
             );
         }
-        let carried_ptr = self.fb.ins().stack_addr(types::I64, carried, 0);
-        let captures_ptr = self.fb.ins().stack_addr(types::I64, capture_slot, 0);
+        let carried_ptr = scratch::stack_addr(self.fb, types::I64, carried, 0);
+        let captures_ptr = scratch::stack_addr(self.fb, types::I64, capture_slot, 0);
         let function = declare_far_call_in_func(self.module, function, self.fb.func);
         let mut arguments = vec![self.y_ptr, self.p_ptr, self.t_value];
         if let Some(seed) = self.v_ptr {
             arguments.push(seed);
         }
         arguments.extend([carried_ptr, captures_ptr]);
+        arguments.push(scratch::parameter(self.fb));
         let call = self.fb.ins().call(function, &arguments);
         let status = self.fb.inst_results(call)[0];
         status::propagate(self.fb, status);
@@ -3914,11 +3939,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             program.carried_count,
             "nested function-fold storage size overflow",
         )?;
-        let nested_carried = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            carried_bytes,
-            3,
-        ));
+        let nested_carried = scratch::create_slot(self.fb, carried_bytes)?;
         let count =
             self.initialize_nested_fold_carried(parent_carried, nested_carried, &call_key.initial)?;
         if count != program.carried_count {
@@ -3959,7 +3980,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         match source {
             NestedFoldInitialKey::Registers(values) => {
                 for (offset, value) in values.iter().copied().enumerate() {
-                    self.fb.ins().stack_store(
+                    scratch::stack_store(
+                        self.fb,
                         value,
                         nested,
                         stack_element_byte_offset(
@@ -3999,19 +4021,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         }
         let capture_bytes =
             checked_f64_stack_bytes(captures.len().max(1), "inline fold capture size overflow")?;
-        let capture_slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            capture_bytes,
-            3,
-        ));
+        let capture_slot = scratch::create_slot(self.fb, capture_bytes)?;
         for (offset, value) in captures.iter().copied().enumerate() {
-            self.fb.ins().stack_store(
+            scratch::stack_store(
+                self.fb,
                 value,
                 capture_slot,
                 stack_element_byte_offset(offset, "inline fold capture")?,
             );
         }
-        let captures_ptr = self.fb.ins().stack_addr(types::I64, capture_slot, 0);
+        let captures_ptr = scratch::stack_addr(self.fb, types::I64, capture_slot, 0);
         self.lower_function_fold_on_stack(carried, captures, Some(captures_ptr), program)
     }
 
@@ -4052,16 +4071,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .fb
             .ins()
             .imul_imm(ordinal, std::mem::size_of::<f64>() as i64);
-        let source_address = self.fb.ins().stack_addr(types::I64, source, source_base);
+        let source_address = scratch::stack_addr(self.fb, types::I64, source, source_base);
         let source_address = self.fb.ins().iadd(source_address, byte_offset);
         let value = self
             .fb
             .ins()
             .load(types::F64, self.flags, source_address, 0);
         let destination_address =
-            self.fb
-                .ins()
-                .stack_addr(types::I64, destination, destination_base);
+            scratch::stack_addr(self.fb, types::I64, destination, destination_base);
         let destination_address = self.fb.ins().iadd(destination_address, byte_offset);
         self.fb
             .ins()
@@ -4081,7 +4098,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         destination: StackSlot,
         count: usize,
     ) -> Result<(), CompileError> {
-        let destination = self.fb.ins().stack_addr(types::I64, destination, 0);
+        let destination = scratch::stack_addr(self.fb, types::I64, destination, 0);
         self.copy_pointer_range(source, destination, count)
     }
 
@@ -4091,7 +4108,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         destination: cranelift_codegen::ir::Value,
         count: usize,
     ) -> Result<(), CompileError> {
-        let source = self.fb.ins().stack_addr(types::I64, source, 0);
+        let source = scratch::stack_addr(self.fb, types::I64, source, 0);
         self.copy_pointer_range(source, destination, count)
     }
 
@@ -5559,11 +5576,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .ok_or_else(|| {
                 CompileError::Backend("runtime tensor projection stack size overflow".to_string())
             })?;
-        let slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            byte_count,
-            3,
-        ));
+        let slot = scratch::create_slot(self.fb, byte_count)?;
         for offset in 0..count {
             let register =
                 checked_strided_register(base, offset, stride, "runtime tensor projection source")?;
@@ -5573,7 +5586,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     "runtime tensor projection stack offset exceeds i32".to_string(),
                 )
             })?;
-            self.fb.ins().stack_store(value, slot, byte_offset);
+            scratch::stack_store(self.fb, value, slot, byte_offset);
         }
 
         let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
@@ -5581,7 +5594,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .fb
             .ins()
             .imul_imm(flat, std::mem::size_of::<f64>() as i64);
-        let stack = self.fb.ins().stack_addr(types::I64, slot, 0);
+        let stack = scratch::stack_addr(self.fb, types::I64, slot, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
         let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
@@ -5620,7 +5633,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .fb
             .ins()
             .imul_imm(element_offset, std::mem::size_of::<f64>() as i64);
-        let stack = self.fb.ins().stack_addr(types::I64, carried, 0);
+        let stack = scratch::stack_addr(self.fb, types::I64, carried, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
         let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
@@ -5642,7 +5655,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let element = base
             .checked_add(offset)
             .ok_or_else(|| CompileError::Backend("function-fold tensor offset overflow".into()))?;
-        Ok(self.fb.ins().stack_load(
+        Ok(scratch::stack_load(
+            self.fb,
             types::F64,
             carried,
             stack_element_byte_offset(element, "function-fold tensor")?,
@@ -5859,11 +5873,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         "function-fold tensor update value storage overflow".to_string(),
                     )
                 })?;
-            let values = self.fb.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                value_bytes,
-                3,
-            ));
+            let values = scratch::create_slot(self.fb, value_bytes)?;
             for element in 0..value_count {
                 for lane in 0..lanes {
                     let register = checked_strided_register(
@@ -5884,7 +5894,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                         )
                     })?;
                     let value = self.lookup(register)?;
-                    self.fb.ins().stack_store(
+                    scratch::stack_store(
+                        self.fb,
                         value,
                         values,
                         i32::try_from((element * lanes + lane) * std::mem::size_of::<f64>())
@@ -6002,7 +6013,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             }
             patches.push((valid, value_element, values));
         }
-        let carried_base = self.fb.ins().stack_addr(types::I64, carried, 0);
+        let carried_base = scratch::stack_addr(self.fb, types::I64, carried, 0);
         for lane in 0..lanes {
             let source_element = self.fb.ins().imul_imm(
                 element,
@@ -6057,7 +6068,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             .fb
                             .ins()
                             .imul_imm(selected_element, std::mem::size_of::<f64>() as i64);
-                        let values_base = self.fb.ins().stack_addr(types::I64, values, 0);
+                        let values_base = scratch::stack_addr(self.fb, types::I64, values, 0);
                         let selected_address = self.fb.ins().iadd(values_base, selected_bytes);
                         let selected =
                             self.fb
@@ -6168,7 +6179,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let (element, address_valid) = self.lower_tensor_offset(dimensions, &indices)?;
         let zero = self.fb.ins().iconst(types::I64, 0);
         let element = self.fb.ins().select(address_valid, element, zero);
-        let carried_base = self.fb.ins().stack_addr(types::I64, carried, 0);
+        let carried_base = scratch::stack_addr(self.fb, types::I64, carried, 0);
         let source_element = self.fb.ins().imul_imm(
             element,
             i64::try_from(source_stride).map_err(|_| {

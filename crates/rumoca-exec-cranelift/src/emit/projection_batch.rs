@@ -193,15 +193,16 @@ impl ProjectionBatch {
         // SAFETY: the prepared application checks all input/output extents and
         // exclusively leases both scratch buffers. The seed pointer refers to
         // writable storage; this entry sets and clears its issued color seeds.
-        status::check(unsafe {
+        status::check(scratch::invoke(|arena| unsafe {
             (self.function)(
                 y.as_ptr(),
                 p.as_ptr(),
                 t,
                 seed.as_mut_ptr(),
                 output.as_mut_ptr(),
+                arena,
             )
-        })
+        }))
     }
 }
 
@@ -214,7 +215,7 @@ impl CraneliftEmitter {
         let pointer = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
         signature.returns.push(AbiParam::new(types::I8));
-        for kind in [pointer, pointer, types::F64, pointer, pointer] {
+        for kind in [pointer, pointer, types::F64, pointer, pointer, pointer] {
             signature.params.push(AbiParam::new(kind));
         }
         let id = self
@@ -230,6 +231,7 @@ impl CraneliftEmitter {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let params = builder.block_params(entry).to_vec();
+        scratch::enter(&mut builder);
         let mut loaded_y = HashMap::new();
         let mut loaded_p = HashMap::new();
         // Retained results only for the programs this application issues: the
