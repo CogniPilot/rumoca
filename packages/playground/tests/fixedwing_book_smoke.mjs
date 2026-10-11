@@ -5,6 +5,7 @@
 //   --browser-binary /path/to/chromium --base-url http://127.0.0.1:8731
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
+import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -20,6 +21,7 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext();
 const page = await context.newPage();
+const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);
 page.on("pageerror", (error) => console.error("pageerror:", error.message));
 let viewer = page;
 context.on("page", (opened) => {
@@ -46,8 +48,8 @@ try {
   // Observe the real session without replacing compilation, inputs, or stepping.
   await page.evaluate(async () => {
     const wasm = await import("/packages/rumoca/dist/release-full-web/rumoca_bind_wasm.js");
-    const create = wasm.WasmSimulationSession.withInteractiveOptions;
-    wasm.WasmSimulationSession.withInteractiveOptions = (...args) => {
+    const create = wasm.WasmSimulationSession.withInteractiveConfiguration;
+    wasm.WasmSimulationSession.withInteractiveConfiguration = (...args) => {
       const session = create(...args);
       if (args[1] === "FixedWing") window.fixedWingSession = session;
       return session;
@@ -106,6 +108,7 @@ try {
   await viewer.keyboard.press("Escape");
   assert.equal(await capture.getAttribute("aria-pressed"), "false");
   await widget.getByRole("button", { name: "Stop", exact: true }).click();
+  await verifyArtifact();
 } catch (error) {
   console.error(await page.locator(".rumoca-live-status").allTextContents());
   console.error(await page.locator(".rumoca-live-error").allTextContents());

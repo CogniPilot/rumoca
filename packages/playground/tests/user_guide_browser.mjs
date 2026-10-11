@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { once } from "node:events";
 import path from "node:path";
 
 const root = process.cwd();
@@ -15,11 +14,20 @@ const browser = browserArg >= 0 ? process.argv[browserArg + 1] :
 assert.ok(browser, "a real Chrome/Chromium executable is required");
 
 async function run(command, args) {
-  const child = spawn(command, args, { cwd: root, stdio: "inherit" });
-  const result = once(child, "exit");
-  child.once("error", (error) => console.error(error));
-  const [code, signal] = await result;
+  const { terminal } = start(command, args);
+  const { code, signal, error } = await terminal;
+  if (error) throw error;
   assert.equal(code, 0, `${command} ${args.join(" ")} failed: ${code}/${signal}`);
+}
+
+function start(command, args) {
+  const child = spawn(command, args, { cwd: root, stdio: "inherit" });
+  let launchError = null;
+  const terminal = new Promise((resolve) => {
+    child.once("error", (error) => { launchError = error; resolve({ error }); });
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  return { child, terminal, launchError: () => launchError };
 }
 
 // Reuse the same package built and shipped by the PR WASM job. No replacement
@@ -47,30 +55,31 @@ const targetRoot = path.resolve(root, process.env.CARGO_TARGET_DIR || "target");
 const xtask = path.join(targetRoot, "debug", process.platform === "win32" ? "xtask.exe" : "xtask");
 // docs build already built this shell-only xtask. Spawn it directly so normal
 // teardown owns the server PID, without leaving a Cargo-spawned child alive.
-const server = spawn(xtask, ["docs", "serve", "--book", "user",
-  "--port", String(port), "--skip-build", "--skip-wasm-build"],
-  { cwd: root, stdio: "inherit" });
-const terminal = once(server, "exit");
-server.once("error", (error) => console.error(error));
+const serverProcess = start(xtask, ["docs", "serve", "--book", "user",
+  "--port", String(port), "--skip-build", "--skip-wasm-build"]);
+const { child: server, terminal } = serverProcess;
 try {
   let ready = false;
   for (let attempt = 0; attempt < 100 && server.exitCode === null; attempt++) {
+    if (serverProcess.launchError()) throw serverProcess.launchError();
     try {
       const response = await fetch(`${base}/docs/user-guide/book/introduction.html`,
         { signal: AbortSignal.timeout(1000) });
+      await response.text();
       if (response.ok) { ready = true; break; }
     } catch { /* Wait for the owned server to bind. */ }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(ready, "the owned canonical docs server must become ready");
-  for (const script of ["book_live_smoke.mjs", "fixedwing_book_smoke.mjs"]) {
+  for (const script of ["book_live_smoke.mjs", "fixedwing_book_smoke.mjs",
+    "interactive_scenario_parameters_smoke.mjs"]) {
     await run(process.execPath, [path.join("packages/playground/tests", script),
       "--base-url", base, "--browser-binary", browser]);
   }
 } finally {
-  if (server.exitCode === null) server.kill("SIGTERM");
+  if (server.pid && server.exitCode === null) server.kill("SIGTERM");
   const timeout = setTimeout(() => {
-    if (server.exitCode === null) server.kill("SIGKILL");
+    if (server.pid && server.exitCode === null) server.kill("SIGKILL");
   }, 5000);
   await terminal;
   clearTimeout(timeout);

@@ -11,6 +11,7 @@
 import { chromium } from "playwright-core";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -40,6 +41,7 @@ const check = (ok, label) => {
 
 try {
   const page = await browser.newPage();
+  const verifyArtifact = await observeShippedArtifact(page, ["rumoca_gpu.js"]);
   page.on("pageerror", (e) => console.error("[pageerror]", e.message));
 
   // --- Introduction page: Monaco editor, simulate, diagnostics, DAE ---
@@ -153,6 +155,7 @@ try {
     check(await fields.first().inputValue() === "speed", "AirfoilFlow switches to speed field");
   }
 
+  await verifyArtifact();
 } finally {
   await browser.close();
 }

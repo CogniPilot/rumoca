@@ -1,6 +1,7 @@
 // Exact authored model/config through the real browser interactive runtime.
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
+import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
   return index < 0 ? fallback : process.argv[index + 1];
@@ -13,6 +14,7 @@ const browser = await chromium.launch({
 });
 try {
   const page = await browser.newPage();
+  const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);
   // This focused public-runtime proof uses the authored repository bytes.
   // It does not claim that the current compiler or complete book is qualified.
   const response = await page.goto(`${base}/packages/playground/index.html`, { waitUntil: "domcontentloaded" });
@@ -34,11 +36,14 @@ try {
     for (const parameters of [{}, { k: 3 }]) {
       const config = { ...response.config, parameters };
       let session;
-      const create = wasm.WasmSimulationSession.withInteractiveOptions;
-      wasm.WasmSimulationSession.withInteractiveOptions = (...args) => {
-        session = create(...args);
-        return session;
-      };
+      const constructors = ["withInteractiveOptions", "withInteractiveConfiguration"];
+      const original = new Map(constructors.map((name) => [name, wasm.WasmSimulationSession[name]]));
+      for (const [name, create] of original) {
+        wasm.WasmSimulationSession[name] = (...args) => {
+          session = create(...args);
+          return session;
+        };
+      }
       const host = document.createElement("div");
       host.style.cssText = "width:600px;height:400px";
       document.body.append(host);
@@ -60,7 +65,7 @@ try {
       } finally {
         controller?.dispose();
         host.remove();
-        wasm.WasmSimulationSession.withInteractiveOptions = create;
+        for (const [name, create] of original) wasm.WasmSimulationSession[name] = create;
       }
     }
     return traces;
@@ -80,6 +85,7 @@ try {
     });
   }
   console.log("PASS: actual authored scenario, configured parameter, independent analytic and checked batch controls");
+  await verifyArtifact();
 } finally {
   await browser.close();
 }
