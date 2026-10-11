@@ -275,14 +275,23 @@ fn arm_relation_binds_its_exact_guard_and_replay_requires_closed_authority() {
                 let zero = e.at(at).literal(DaeLiteral::Real(0.0))?;
                 e.at(at).binary(BinaryOperator::Greater, time, zero)
             })?;
+            assert_eq!(dae.model_activation_guard(expression, at)?, Some(condition));
             dae.conditions(|c| c.relation(expression, at))?;
             Ok(expression)
         })?;
+        assert!(matches!(
+            dae.model_activation_guard(first, at),
+            Err(DaeConstructionError::InvalidModelActivationScope { .. })
+        ));
         assert!(matches!(
             dae.conditions(|c| c.relation(first, at)),
             Err(DaeConstructionError::InvalidModelActivationScope { .. })
         ));
         let second = dae.model_conditional_arm(&owner, false, |dae| {
+            assert!(matches!(
+                dae.model_activation_guard(first, at),
+                Err(DaeConstructionError::InvalidModelActivationScope { .. })
+            ));
             assert!(matches!(
                 dae.conditions(|c| c.relation(first, at)),
                 Err(DaeConstructionError::InvalidModelActivationScope { .. })
@@ -290,6 +299,7 @@ fn arm_relation_binds_its_exact_guard_and_replay_requires_closed_authority() {
             dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(false)))
         })?;
         dae.finish_model_conditional(owner, [first, second])?;
+        assert_eq!(dae.model_activation_guard(first, at)?, Some(condition));
         let relation = dae.conditions(|c| c.relation(first, at))?;
         assert_eq!(
             relation.index(),

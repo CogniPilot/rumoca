@@ -71,6 +71,23 @@ impl<'dae> ModelConditional<'dae> {
 }
 
 impl<'dae> DaeConstruction<'dae> {
+    /// Read the exact arm guard issued for a checked model expression.
+    pub fn model_activation_guard(
+        &self,
+        expression: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<Option<ExprId<'dae>>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        self.storage
+            .expect_relation_model_arm(expression, provenance)?;
+        Ok(activation_guard(
+            &self.storage.expressions.model_arm_scopes,
+            &self.storage.model_arms,
+            expression.index(),
+        )
+        .map(ExprId::from_raw))
+    }
+
     pub(super) fn without_model_arm<T>(
         &mut self,
         build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,

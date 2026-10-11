@@ -343,21 +343,19 @@ fn lower_expression_event<'dae>(
         {
             return Err(dae::DaeConstructionError::UnsupportedStructuredEvent { span });
         }
-        let domain = construction
-            .expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
-        if let Some(domain) = domain {
-            construction
-                .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))?;
-        } else {
-            lower_state_relation_root(construction, lowered, provenance)?;
-        }
-        return Ok(());
+        return lower_model_relation_root(construction, lowered, provenance);
     }
     match plan {
         Some(ExpressionEventPlan::StateRelation) => {
             lower_state_relation_root(construction, lowered, provenance)
         }
         Some(ExpressionEventPlan::DynamicTimeEvent(operand)) => {
+            if construction
+                .model_activation_guard(lowered, provenance)?
+                .is_some()
+            {
+                return lower_model_relation_root(construction, lowered, provenance);
+            }
             let deadline = match operand {
                 DynamicTimeEventOperand::Lhs => lhs.as_ref(),
                 DynamicTimeEventOperand::Rhs => rhs.as_ref(),
@@ -375,6 +373,21 @@ fn lower_expression_event<'dae>(
                 .map(|_| ())
         }
         _ => Ok(()),
+    }
+}
+
+fn lower_model_relation_root<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    lowered: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let domain =
+        construction.expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
+    match domain {
+        Some(domain) => construction
+            .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))
+            .map(|_| ()),
+        None => lower_state_relation_root(construction, lowered, provenance),
     }
 }
 
