@@ -4,19 +4,19 @@ use super::{ExprId, ExpressionOperands};
 
 #[derive(Clone, Copy)]
 pub struct ConditionalExpressionOperands<'dae> {
-    branches: &'dae [u32],
+    branches: &'dae [[u32; 2]],
     fallback: ExprId<'dae>,
 }
 
 impl<'dae> ConditionalExpressionOperands<'dae> {
     pub fn branch_count(self) -> usize {
-        self.branches.len() / 2
+        self.branches.len()
     }
 
     pub fn branches(self) -> impl ExactSizeIterator<Item = (ExprId<'dae>, ExprId<'dae>)> {
         self.branches
-            .chunks_exact(2)
-            .map(|pair| (ExprId::from_raw(pair[0]), ExprId::from_raw(pair[1])))
+            .iter()
+            .map(|[condition, value]| (ExprId::from_raw(*condition), ExprId::from_raw(*value)))
     }
 
     pub fn fallback(self) -> ExprId<'dae> {
@@ -36,7 +36,8 @@ impl<'dae> ExpressionOperands<'dae> {
     /// Project condition/value pairs and the mandatory fallback once.
     pub fn conditional(self) -> Option<ConditionalExpressionOperands<'dae>> {
         let (&fallback, branches) = self.raw.split_last()?;
-        if branches.is_empty() || !branches.len().is_multiple_of(2) {
+        let (branches, remainder) = branches.as_chunks::<2>();
+        if branches.is_empty() || !remainder.is_empty() {
             return None;
         }
         Some(ConditionalExpressionOperands {

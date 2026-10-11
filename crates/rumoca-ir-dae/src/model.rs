@@ -192,14 +192,15 @@ pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
 pub use view::{
-    ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
-    ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
-    FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
-    FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
-    FunctionView, InitializationOwnerView, ModelConditionalView, NativeBodyView, RangeBoundView,
-    RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
-    RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
-    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
+    ConditionalExpressionOperands, ContinuousOwnerView, CoordinateView, DaeView, DomainView,
+    ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView, ExternalArgumentView,
+    ExternalFunctionView, FunctionConditionalView, FunctionDefinitionValues,
+    FunctionDefinitionView, FunctionFoldView, FunctionParameterView, FunctionStatementView,
+    FunctionStatements, FunctionValueView, FunctionView, InitializationOwnerView,
+    ModelConditionalView, NativeBodyView, RangeBoundView, RangeView, RecordFieldLayout,
+    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
