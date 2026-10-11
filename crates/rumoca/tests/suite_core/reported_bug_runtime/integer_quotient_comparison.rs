@@ -59,7 +59,8 @@ fn integer_comparison_operators_and_mixed_real_promotion_keep_their_types() {
         let source = SOURCE.replacen("+1 >", replacement, 1);
         let compiled = compile(&source, "QuotientComparison");
         for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
-            let opts = options(policy);
+            let mut opts = options(policy);
+            opts.initial_inputs = vec![("m".into(), 0.0)];
             let result = simulate_dae(&compiled.dae, &opts)
                 .unwrap_or_else(|error| panic!("{replacement}, {policy:?}: {error:?}"));
             assert_eq!(result.times.len(), 11);
@@ -80,7 +81,8 @@ fn integer_comparison_operators_and_mixed_real_promotion_keep_their_types() {
 #[test]
 fn integer_comparison_native_owner_and_full_session_do_not_fall_back() {
     let compiled = compile(SOURCE, "QuotientComparison");
-    let opts = options(SimExecutionPolicy::Auto);
+    let mut opts = options(SimExecutionPolicy::Auto);
+    opts.initial_inputs = vec![("m".into(), 0.0)];
     let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts)
         .expect("exact Integer predicate lowers through the canonical owner");
     assert!(!lowered.pure_calls.owners().is_empty());
