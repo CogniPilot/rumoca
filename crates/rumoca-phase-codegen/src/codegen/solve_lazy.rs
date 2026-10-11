@@ -670,11 +670,15 @@ pub(super) fn explicit_algebraic_assignment_block(
     if problem.solve_layout.algebraic_scalar_count() == 0
         || !algebraic_assignment_ownership_complete(problem)
     {
-        return Ok(None);
+        return Ok(unavailable_algebraic_assignment_block());
     }
     materialized_assignment_programs(problem, pure_calls)
         .map(materialize_output_assignments)
         .transpose()
+}
+
+fn unavailable_algebraic_assignment_block() -> Option<solve::ComputeBlock> {
+    None
 }
 
 pub(super) struct ScalarInitializationBlocks {

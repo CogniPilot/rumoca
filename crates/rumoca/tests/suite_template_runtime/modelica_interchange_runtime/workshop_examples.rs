@@ -11,6 +11,7 @@ use rumoca::{Compiler, render_target_files};
 
 struct Example {
     name: &'static str,
+    source_file: &'static str,
     observables: &'static [&'static str],
     initial: &'static [(&'static str, f64)],
     export_columns: &'static [(&'static str, &'static str)],
@@ -19,30 +20,35 @@ struct Example {
 const EXAMPLES: &[Example] = &[
     Example {
         name: "Circuit.Test",
+        source_file: "Circuit.mo",
         observables: &["cap.v", "res.v"],
         initial: &[("cap.v", 0.0), ("res.v", 5.0)],
         export_columns: &[],
     },
     Example {
         name: "SympyDecay",
+        source_file: "SympyDecay.mo",
         observables: &["x"],
         initial: &[("x", 1.0)],
         export_columns: &[],
     },
     Example {
         name: "FmiTensorDecay",
+        source_file: "FmiTensorDecay.mo",
         observables: &["x[1]", "x[2]"],
         initial: &[("x[1]", 1.0), ("x[2]", 1.0)],
         export_columns: &[],
     },
     Example {
         name: "NeuralODETensor",
+        source_file: "NeuralODETensor.mo",
         observables: &["x[1]", "x[2]", "dx[1]", "dx[2]", "radius"],
         initial: &[("x[1]", 1.0), ("x[2]", 0.0), ("radius", 1.0)],
         export_columns: &[],
     },
     Example {
         name: "NeuralPredatorPrey",
+        source_file: "NeuralPredatorPrey.mo",
         observables: &[
             "population[1]",
             "population[2]",
@@ -55,6 +61,7 @@ const EXAMPLES: &[Example] = &[
     },
     Example {
         name: "NeuralODEBackprop",
+        source_file: "NeuralODEBackprop.mo",
         observables: &[
             "W1[1,1]",
             "Wmid[1,1]",
@@ -88,10 +95,7 @@ impl OmcResult {
 fn example_source(example: &Example) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/models")
-        .join(format!(
-            "{}.mo",
-            example.name.split('.').next().expect("model file stem")
-        ));
+        .join(example.source_file);
     fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("required example {}: {error}", path.display()))
 }

@@ -262,10 +262,18 @@ fn prepared_tensor_snapshot_unique_selected_row_retains_cached_lazy_execution() 
 fn assert_disjoint_snapshot_lazy(values: &[f64], operation: LinearOp, expected: &[f64]) {
     let destination = operation.dst_register().unwrap();
     assert_eq!(destination, 64);
-    let mut row = (0..63)
-        .map(|dst| LinearOp::Const {
-            dst,
-            value: values.get(dst as usize).copied().unwrap_or(0.0),
+    let mut initialized = values.to_vec();
+    assert!(
+        initialized.len() <= 63,
+        "operands precede the lazy selection lane"
+    );
+    initialized.resize(63, 0.0);
+    let mut row = initialized
+        .into_iter()
+        .enumerate()
+        .map(|(dst, value)| LinearOp::Const {
+            dst: Reg::try_from(dst).unwrap(),
+            value,
         })
         .collect::<Vec<_>>();
     row.push(LinearOp::LoadY { dst: 63, index: 0 });

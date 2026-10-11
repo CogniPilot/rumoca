@@ -137,9 +137,15 @@ pub(super) fn call_native_with_parameters(
     out: &mut [f64],
 ) -> Result<(), CompileError> {
     validate_input_requirements(compiled.input_requirements, &[], p, None)?;
-    let [jit] = compiled.jits.as_slice() else {
-        panic!("one compact source row has one issued native kernel");
-    };
+    assert_eq!(
+        compiled.jits.len(),
+        1,
+        "one compact source row has one issued native kernel"
+    );
+    let jit = compiled
+        .jits
+        .first()
+        .expect("the issued row has its native kernel");
     validate_output_len(out, jit.output_count)?;
     assert_eq!(jit.output_start, 0);
     let mut registers = Vec::new();
