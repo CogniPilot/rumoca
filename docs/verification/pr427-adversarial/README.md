@@ -38,3 +38,12 @@ failures from separate attempts are likewise not compiler semantic evidence.
 External capability checks and initialization rendering still repeat some
 projection work; the repair removes duplicate algebraic materialization inside
 candidate construction without claiming every repeated pass was removed.
+
+Additional source audit: canonical `SolveValueType::tensor` rejects every zero
+extent and any positive product beyond u32, so huge empty typed subshape
+products cannot enter the pure-call projection. Constructor-backed controls
+pin that boundary. Direct compact `LinearOp` empty matrices/transposes have a
+different contract: zero output cardinality previously allowed enormous empty
+outer loops. Those now stop before unused products and traversal; usize::MAX
+axis controls expect an empty scalar view. This case has source evidence and
+pending after-test qualification, without a timed-out before execution claim.
