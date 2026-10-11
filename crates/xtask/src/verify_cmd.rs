@@ -803,7 +803,7 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::C,
         test: TEMPLATE_RUNTIME_TEST,
-        filters: &["c_ode_"],
+        filters: &["c_ode_", "ode_targets_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Casadi,
