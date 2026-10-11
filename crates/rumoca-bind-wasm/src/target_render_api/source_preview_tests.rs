@@ -58,7 +58,7 @@ fn builtin_algorithm_preview_emits_the_actual_checked_model() {
     assert_eq!(files.len(), 1, "packaging metadata is not a source preview");
     assert_eq!(files[0].path, "AlgorithmCode/BrowserPreviewCounter.alg");
     assert!(files[0].content.contains("BrowserPreviewCounter"));
-    assert!(files[0].content.contains("step"));
+    assert!(files[0].content.contains("DoStep"));
     assert!(files[0].content.contains("2.0"));
 }
 
