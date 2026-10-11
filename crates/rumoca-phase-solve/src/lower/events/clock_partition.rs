@@ -335,6 +335,7 @@ impl SameTickExchange {
 
     pub(super) fn derive<'dae>(
         view: dae::DaeView<'dae>,
+        layout: &LoweredLayout<'dae>,
         definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
         targets: &[GuardedTarget<'dae>],
     ) -> Self {
@@ -347,7 +348,7 @@ impl SameTickExchange {
             .iter()
             .map(|target| {
                 if target.clock.is_none() && target.event_clock.is_none() {
-                    return unclocked_member(view, definitions, target);
+                    return unclocked_member(view, layout, definitions, target);
                 }
                 let (value_reads, condition_reads) =
                     guarded_group_same_tick_reads(std::slice::from_ref(target));
@@ -420,6 +421,7 @@ impl SameTickExchange {
 /// equations' same-instant values (MLS §8.5 / SOLVE-C58).
 fn unclocked_member<'dae>(
     view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
     definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
     target: &GuardedTarget<'dae>,
 ) -> SameTickExchangeMember {
@@ -439,10 +441,25 @@ fn unclocked_member<'dae>(
             &mut direct,
         );
     }
+    let mut entry_reads = BTreeSet::new();
+    for trigger in triggers {
+        rumoca_phase_structural::collect_condition_same_instant_reads_pruned(
+            view,
+            trigger,
+            &BTreeSet::new(),
+            |expression| {
+                layout
+                    .buffered_relations
+                    .expression_slot(expression)
+                    .is_some()
+            },
+            &mut entry_reads,
+        );
+    }
     SameTickExchangeMember {
         targets: vec![target.variable.index()],
         reads: definitions.variable_read_closure(view, direct),
-        entry_reads: definitions.read_closure(view, &[], &triggers),
+        entry_reads: definitions.variable_read_closure(view, entry_reads),
     }
 }
 

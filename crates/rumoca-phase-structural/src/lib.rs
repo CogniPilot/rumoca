@@ -58,8 +58,8 @@ pub use runtime_defined::{
 pub use same_tick::{
     ClockCoincidence, SameTickDefinitions, SameTickOrderError, SameTickProducer, SameTickSchedule,
     SameTickStep, collect_condition_same_instant_reads,
-    collect_condition_same_instant_reads_except, collect_same_instant_reads,
-    issue_same_tick_schedule,
+    collect_condition_same_instant_reads_except, collect_condition_same_instant_reads_pruned,
+    collect_same_instant_reads, issue_same_tick_schedule,
 };
 pub use tearing::{TearingResult, tear_algebraic_loop, tear_algebraic_loop_with_causal_candidates};
 pub use types::{

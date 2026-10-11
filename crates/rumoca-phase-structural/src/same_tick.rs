@@ -1015,7 +1015,20 @@ pub fn collect_same_instant_reads<'dae>(
     expression: dae::ExprId<'dae>,
     reads: &mut BTreeSet<u32>,
 ) {
-    dae::for_each_expression(view, expression, |_, node| {
+    collect_same_instant_reads_pruned(view, expression, &mut |_| false, reads);
+}
+
+fn collect_same_instant_reads_pruned<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    projected: &mut impl FnMut(dae::ExprId<'dae>) -> bool,
+    reads: &mut BTreeSet<u32>,
+) {
+    let mut traversal = dae::ExpressionTraversal::new();
+    traversal.visit_pruned(view, [expression], |id, node| {
+        if projected(id) {
+            return false;
+        }
         let id = match node.operation() {
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) => {
                 Some(dae::VariableId::from(id))
@@ -1040,6 +1053,7 @@ pub fn collect_same_instant_reads<'dae>(
         if let Some(id) = id {
             reads.insert(id.index());
         }
+        true
     });
 }
 
@@ -1058,6 +1072,19 @@ pub fn collect_condition_same_instant_reads_except<'dae>(
     view: dae::DaeView<'dae>,
     root: dae::ConditionId<'dae>,
     excluded: &BTreeSet<dae::ConditionId<'dae>>,
+    reads: &mut BTreeSet<u32>,
+) {
+    collect_condition_same_instant_reads_pruned(view, root, excluded, |_| false, reads);
+}
+
+/// Collect condition reads while stopping at construction-issued storage projections.
+/// The consumer supplies the exact projected expression identities; their source
+/// operands are not executable reads of that projected context.
+pub fn collect_condition_same_instant_reads_pruned<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ConditionId<'dae>,
+    excluded: &BTreeSet<dae::ConditionId<'dae>>,
+    mut projected: impl FnMut(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) {
     let mut pending = vec![root];
@@ -1079,10 +1106,10 @@ pub fn collect_condition_same_instant_reads_except<'dae>(
                     .relation(relation)
                     .expect("checked relation identity resolves")
                     .expression();
-                collect_same_instant_reads(view, expression, reads);
+                collect_same_instant_reads_pruned(view, expression, &mut projected, reads);
             }
             dae::ConditionOperation::Discrete(expression) => {
-                collect_same_instant_reads(view, expression, reads);
+                collect_same_instant_reads_pruned(view, expression, &mut projected, reads);
             }
             dae::ConditionOperation::Not(inner) => pending.push(inner),
             dae::ConditionOperation::And(lhs, rhs)
@@ -1099,6 +1126,70 @@ mod tests {
     use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
     use super::*;
+
+    #[test]
+    fn condition_read_projection_prunes_only_the_issued_expression() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("entry-read.mo", "discrete Integer n; discrete Real a;");
+        let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 35)).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let variables = define_fixture_variables(model, at)?;
+            let (integer_guard, real_guard) = model.expressions(|expressions| {
+                let n = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::DiscreteValue(variables.n))?;
+                let a = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(variables.a))?;
+                let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+                let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
+                Ok((
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::GreaterEqual, n, one)?,
+                    expressions
+                        .at(at)
+                        .binary(dae::BinaryOperator::Greater, a, zero)?,
+                ))
+            })?;
+            model.conditions(|conditions| {
+                let integer = conditions.reserve(at)?;
+                conditions.define(integer, dae::ConditionInput::Discrete(integer_guard), at)?;
+                let real = conditions.reserve(at)?;
+                conditions.define(real, dae::ConditionInput::Discrete(real_guard), at)?;
+                let both = conditions.reserve(at)?;
+                conditions.define(both, dae::ConditionInput::And(integer, real), at)
+            })
+        })
+        .unwrap();
+        model.inspect(|view| {
+            let root = view.conditions().last().unwrap().0;
+            let dae::ConditionOperation::Discrete(integer_guard) =
+                view.conditions().next().unwrap().1.operation()
+            else {
+                panic!("issued integer condition");
+            };
+            let index = |name: &str| {
+                view.variables()
+                    .find(|(_, v)| v.name().as_str() == name)
+                    .unwrap()
+                    .0
+                    .index()
+            };
+            let mut direct = BTreeSet::new();
+            collect_condition_same_instant_reads(view, root, &mut direct);
+            assert_eq!(direct, BTreeSet::from([index("n"), index("a")]));
+            let mut projected = BTreeSet::new();
+            collect_condition_same_instant_reads_pruned(
+                view,
+                root,
+                &BTreeSet::new(),
+                |id| id == integer_guard,
+                &mut projected,
+            );
+            assert_eq!(projected, BTreeSet::from([index("a")]));
+        });
+    }
 
     /// Which same-tick paths the fixture wires between its coordinates.
     ///

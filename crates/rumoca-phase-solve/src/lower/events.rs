@@ -1471,10 +1471,10 @@ fn lower_guarded_targets<'dae>(
     // SOLVE-C58 / MLS §8.5: the equations of one event instant are simultaneous, so a
     // producer is issued before every target that reads its current value, and
     // the runtime evaluates the issued programs in that order.
-    let order =
-        SameTickExchange::derive(view, &rows.same_tick_definitions, targets).producer_order();
+    let order = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)
+        .producer_order();
     apply_permutation(targets, &order);
-    let exchange = SameTickExchange::derive(view, &rows.same_tick_definitions, targets);
+    let exchange = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets);
     let definition_targets = std::rc::Rc::new(
         targets
             .iter()
