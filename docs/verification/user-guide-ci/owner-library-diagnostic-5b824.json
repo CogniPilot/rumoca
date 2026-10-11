@@ -1,0 +1,146 @@
+{
+  "kind": "Measured bounded owner-library DIAGNOSTIC, not full qualification",
+  "source": "5b82462ea2b8a38530dca688a45c0cf1e08204cc",
+  "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-current-owner-library-diagnostic-5b824-20261012",
+  "recipeSha256": "7e1b0ffbe74452e2d0d472aed053816a640cecdca8662de6470c9366e0790c7e",
+  "actual": {
+    "passed": 1086,
+    "failed": 0,
+    "ignored": 0,
+    "excluded": 2,
+    "exitCode": 0
+  },
+  "gates": [
+    {
+      "name": "current-dae-library-215",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-dae",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "expectedTests": 215,
+      "testSummary": "test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+      "accepted": true,
+      "resources": {
+        "elapsedMs": 5158.086851,
+        "peakRssKiB": 514764,
+        "peakCacheBytes": 7342522368,
+        "minimumAvailableKiB": 57763104,
+        "minimumScratchFreeBytes": 62726995968
+      },
+      "files": {
+        "current-dae-library-215.log": "6d7a3a3f5c8859562b6a1ebdd1769854becbb53f4fa7c6322650b73f05616a02",
+        "current-dae-library-215.guardian.json": "16b8e4adf4b0d36fd2a4995f723543b23c9b268ef06068ca75ea346ebe81d003",
+        "current-dae-library-215.test-count.json": "35bdab2433f93744365a059a7fdf16b21c063ace2815ed550d39442674748504"
+      }
+    },
+    {
+      "name": "current-solve-library-remainder-608",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-solve",
+        "--lib",
+        "--",
+        "--nocapture",
+        "--skip",
+        "tests::representative_solve_problem_json_matches_committed_golden"
+      ],
+      "expectedTests": 608,
+      "testSummary": "test result: ok. 608 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 3.05s",
+      "accepted": true,
+      "resources": {
+        "elapsedMs": 7505.275350999999,
+        "peakRssKiB": 513736,
+        "peakCacheBytes": 7342522368,
+        "minimumAvailableKiB": 57113532,
+        "minimumScratchFreeBytes": 62726983680
+      },
+      "files": {
+        "current-solve-library-remainder-608.log": "21d3e2599e8ca3935df059ab495ec3ec5014d15fe0ed0d03a36a49b857859aba",
+        "current-solve-library-remainder-608.guardian.json": "e93d2006e44feaf91d19bd297cfd8228988363d0599a0b53579791392df6acf0",
+        "current-solve-library-remainder-608.test-count.json": "95865afa2f7844f5496cb7c8da0501824362dc06e14ff9d974594b197f66ec26"
+      }
+    },
+    {
+      "name": "current-structural-library-remainder-263",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-phase-structural",
+        "--lib",
+        "--",
+        "--nocapture",
+        "--skip",
+        "nested_model_arm_function_interval_survives_structural_replay"
+      ],
+      "expectedTests": 263,
+      "testSummary": "test result: ok. 263 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.10s",
+      "accepted": true,
+      "resources": {
+        "elapsedMs": 1985.006883,
+        "peakRssKiB": 440600,
+        "peakCacheBytes": 7342522368,
+        "minimumAvailableKiB": 56649012,
+        "minimumScratchFreeBytes": 62724710400
+      },
+      "files": {
+        "current-structural-library-remainder-263.log": "26cd09da2517220a219c3f186261ef0cfec0883d2f9ec08e0781e9197aa109bb",
+        "current-structural-library-remainder-263.guardian.json": "f6a8aaae3d894da8519363780cbd71a61553f7270fcc80bab9c66cbaa619a876",
+        "current-structural-library-remainder-263.test-count.json": "ae1c95618a0b4b253ec4e41eca6b8180923c4c6ea6df4d91e45ac0fbfed9f398"
+      }
+    }
+  ],
+  "excluded": [
+    {
+      "package": "rumoca-ir-solve",
+      "selector": "tests::representative_solve_problem_json_matches_committed_golden",
+      "reason": "Known stale serialized golden after current wire cutover; must run after canonical owner-issued current fixture refresh."
+    },
+    {
+      "package": "rumoca-phase-structural",
+      "selector": "nested_model_arm_function_interval_survives_structural_replay",
+      "reason": "Known issued model-arm guard replay failure; independent producerrepair and unchangedoriginaltest must qualify."
+    }
+  ],
+  "guards": {
+    "seconds": 600,
+    "rssMiB": 4096,
+    "availableMiB": 16384,
+    "cacheMiB": 8192,
+    "scratchFreeFloorBytes": 8589934592
+  },
+  "terminal": {
+    "time": "2026-10-11T18:52:37.133Z",
+    "ownedReferences": 0,
+    "deniedReads": 2275,
+    "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only",
+    "leaseReleased": true,
+    "sha256": "4db699bd29536d7031cd4f4249796669924b27189c86e5a0042f411f354f351e"
+  },
+  "boundRunner": [
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/run-owned-cargo-counted-parallel-safe-20261011.mjs",
+      "sha256": "82d4adde12445c2e15e1c432be0d55324e67aebd1b5b6bffb88740015e164d2a"
+    }
+  ],
+  "scope": "FullDAElibrary215. Solve608of609 andstructural263of264 executed. No exclusion is waived; no expected checker, baseline, ignored-test or profilechange. Finalexactsource full libraries, allCI, quick/full and fresh instrumented coverage remain mandatory."
+}
