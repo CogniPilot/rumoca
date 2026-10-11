@@ -425,6 +425,7 @@ end DerivativeCoordinateProjection;
     assert_eq!(compiled.flat.variable_type_names[&owner], "Real");
     let example = Example {
         name: "DerivativeCoordinateProjection",
+        source_file: "DerivativeCoordinateProjection.mo",
         observables: &[
             "vector[1]",
             "vector[2]",
