@@ -6166,6 +6166,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         };
 
         let (element, address_valid) = self.lower_tensor_offset(dimensions, &indices)?;
+        let zero = self.fb.ins().iconst(types::I64, 0);
+        let element = self.fb.ins().select(address_valid, element, zero);
         let carried_base = self.fb.ins().stack_addr(types::I64, carried, 0);
         let source_element = self.fb.ins().imul_imm(
             element,

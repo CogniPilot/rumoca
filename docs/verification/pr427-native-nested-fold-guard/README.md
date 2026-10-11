@@ -113,3 +113,54 @@ The two unchanged selected original tests plus these two new controls total
 the root agent owns the guarded Cargo lane. Source formatting and `git diff
 --check` passed. This is a checked-constructor/native-kernel profile; public
 Modelica source reachability of the nested-fold guard defect remains unproven.
+
+## Separate scalar-patch address repair
+
+This followup starts from `5aa0b10bf`. Compact fold patches have a distinct
+canonical matching contract: an invalid coordinate matches no element and
+leaves the carried tensor unchanged. This is not a tensor READ or a typed
+`UpdateElement` bounds-fault contract, and does not declare an invalid Modelica
+assignment legal. MLS §10.5 and §11.2.1 remain the source rules; this witness
+tests the retained compact IR's native consumer, including invalid-input safety.
+
+The checked constructor admits a live runtime-index register while proving a
+nonempty carried range. In native scalar-patch emission, a live NaN coordinate
+reaches `lower_tensor_offset`: pinned Cranelift **0.125.4** `fmin`/`fmax` propagate
+NaN; its `fcvt_to_sint_sat` converts NaN to zero, then one-based adjustment
+produces offset -1 with `valid = false`. The original scalar-patch consumer
+forms and loads/stores that address before using the validity predicate.
+For carried base 0 this addresses memory before its checked stack slot. This
+is a concrete source proof of an unsafe access; no observable wrong trace at
+`5aa0b10bf` is claimed. The exact installed primary definitions inspected are
+`cranelift-codegen-meta-0.125.4/src/shared/instructions.rs`, definitions `fmin`,
+`fmax`, and `fcvt_to_sint_sat`; `Cargo.lock` pins that version.
+
+The earliest divergent owner is
+`rumoca-exec-cranelift::emit::try_lower_scalar_fold_tensor_update`. It now selects
+element zero when address validity is false, before multiplying the stride or
+loading/storing memory. The checked nonempty range and lane/stride coverage
+prove that zero is a valid address. Existing node matching still uses the
+original validity predicate, so unmatched patches write back the unchanged
+value at that safe address. This adds one integer constant and one SSA select,
+without allocation, tensor expansion, a new error status, or a public API.
+
+One registered checked-constructor test exercises live indices 1/2 against
+independent results `[99, 20]` / `[10, 99]`; 0, 3, 1.5, both infinities, and NaN
+must preserve `[10, 20]`. Each runs under both activation polarities. It compares
+canonical block evaluation with actual issued native calls, preserves input
+bits (including NaN), and requires 16 JIT calls. Output agreement is a value
+regression control, not a substitute for the source address-safety proof.
+The existing native test helper's admission is reused and unchanged.
+
+Exact selector, expected **1**:
+
+```sh
+cargo test --locked --offline -p rumoca-exec-cranelift --lib \
+  emit::fold_tests::scalar_update_address::scalar_fold_patch_matching_keeps_invalid_coordinates_safe_and_unchanged
+```
+
+Formatting and diff checks passed. Cargo qualification is **UNRUN** because
+the root agent owns the guarded lane. An `rg` audit finds no remaining `bnot`
+calls anywhere in the native crate at this source. Governing ownership remains
+SPEC_0007/SPEC_0040 compact fold execution, SPEC_0032 §4 native compact tensors,
+SPEC_0029 single-owner helpers, and SPEC_0033 source-bound evidence.

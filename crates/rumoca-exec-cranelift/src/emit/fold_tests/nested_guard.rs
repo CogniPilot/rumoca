@@ -127,7 +127,15 @@ pub(super) fn call_native_with_index(
     out: &mut [f64],
 ) -> Result<(), CompileError> {
     let p = [condition, index];
-    validate_input_requirements(compiled.input_requirements, &[], &p, None)?;
+    call_native_with_parameters(compiled, &p, out)
+}
+
+pub(super) fn call_native_with_parameters(
+    compiled: &CompiledResidualRows,
+    p: &[f64],
+    out: &mut [f64],
+) -> Result<(), CompileError> {
+    validate_input_requirements(compiled.input_requirements, &[], p, None)?;
     let [jit] = compiled.jits.as_slice() else {
         panic!("one compact source row has one issued native kernel");
     };
@@ -143,7 +151,7 @@ pub(super) fn call_native_with_index(
             jit.register_count,
             &mut registers,
             &[],
-            &p,
+            p,
             0.0,
             out,
         )

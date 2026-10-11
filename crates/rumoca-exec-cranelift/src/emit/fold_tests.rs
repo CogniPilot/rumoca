@@ -1,6 +1,7 @@
 mod known_runtime_access;
 mod nested_guard;
 mod projection_faults;
+mod scalar_update_address;
 
 use super::*;
 
