@@ -81,6 +81,11 @@ fn target_axis_binders<'a>(
         .zip(subscripts)
         .enumerate()
     {
+        // SPEC_0001/SPEC_0041: the source domain, not an arbitrary nonzero
+        // reference id or matching spelling, supplies declaration authority.
+        let rumoca_core::IndexBinderProvenance::Source(source_id) = binder.provenance else {
+            return None;
+        };
         if binder.id != axis || binder.lower != 1 || binder.step != 1 || binder.upper != extent {
             return None;
         }
@@ -95,7 +100,8 @@ fn target_axis_binders<'a>(
         };
         if !subscripts.is_empty()
             || name.as_str() != binder.display_name
-            || (!name.is_generated() && name.target_def_id().is_none())
+            || name.is_generated()
+            || name.target_def_id() != Some(source_id)
             || references
                 .iter()
                 .any(|previous: &&rumoca_core::Reference| same_binder(previous, name))

@@ -7,11 +7,12 @@ const TEXT: &str =
     "model M Boolean y[2,2]; equation for i in 1:2, j in 1:2 loop y[i,j]=i>j; end for; end M;";
 
 fn binder(source: &TestSource, name: &str) -> Expression {
+    let span = source.span("for i", 0);
+    let provenance = rumoca_core::IndexBinderProvenance::Source(
+        test_component_reference(name, span).target_def_id(),
+    );
     Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(test_component_reference(
-            name,
-            source.span("for i", 0),
-        )),
+        name: provenance.reference(name, span).unwrap(),
         subscripts: Vec::new(),
         span: source.span("for i", 0),
     }
@@ -70,7 +71,9 @@ fn family(source: &TestSource) -> flat::StructuredEquationFamily {
                 .into_iter()
                 .enumerate()
                 .map(|(id, name)| rumoca_core::StructuredIndexBinder {
-                    provenance: rumoca_core::IndexBinderProvenance::Generated,
+                    provenance: rumoca_core::IndexBinderProvenance::Source(
+                        test_component_reference(name, span).target_def_id(),
+                    ),
                     id,
                     display_name: name.into(),
                     lower: 1,
@@ -270,6 +273,19 @@ fn source_family_rejects_foreign_lhs_binder_even_without_rhs_binder_reads() {
     assert!(
         !admitted(&model, &family),
         "LHS iterator must match the family's issued declaration, even with constant RHS"
+    );
+}
+
+#[test]
+fn source_family_does_not_infer_source_authority_for_generated_axes() {
+    let source = TestSource::new(TEXT);
+    let model = control(&source);
+    let mut family = model.structured_equations[0].clone();
+    assert!(admitted(&model, &family));
+    family.domain.binders[0].provenance = rumoca_core::IndexBinderProvenance::Generated;
+    assert!(
+        !admitted(&model, &family),
+        "an explicitly generated axis is not an issued source declaration"
     );
 }
 
