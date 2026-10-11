@@ -43,6 +43,8 @@ impl Inliner<'_> {
         domain: &rumoca_core::StructuredIndexDomain,
         body: &TypedProgram,
     ) -> Option<()> {
+        let metadata = domain.binders.len().checked_mul(2)?;
+        self.budget.reserve(metadata)?;
         let count = domain.scalar_count().ok()?;
         let point_work = domain.binders.len().checked_add(1)?;
         self.budget
