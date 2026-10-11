@@ -78,7 +78,7 @@ use symbol_alloc::{
 pub use me_projection::me_refresh_admissible;
 pub use solve_lazy::{
     explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls,
-    explicit_initialization_renderable, explicit_initialization_renderable_with_calls,
+    explicit_initialization_renderable_with_calls,
 };
 
 /// Result type for internal render functions.
@@ -271,12 +271,21 @@ fn render_solve_context(
     )?)?)
 }
 
+struct PreparedSolveBlocks {
+    value: Value,
+    scalar_derivative_programs: bool,
+}
+
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
     pure_calls: Option<&solve::SolvePureCallTable>,
-) -> Result<Value, CodegenError> {
-    Ok(minijinja::context! {
+) -> Result<PreparedSolveBlocks, CodegenError> {
+    let derivative_scalar =
+        solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs, pure_calls)?;
+    let scalar_derivative_programs = derivative_scalar.is_some();
+    let initialization = solve_lazy::initialization_blocks(solve_problem, pure_calls)?;
+    let value = minijinja::context! {
         continuous => minijinja::context! {
             implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
             residual => solve_template_compute_block_json(&solve_problem.continuous.residual)?,
@@ -284,7 +293,7 @@ fn solve_template_blocks_value(
             // The same rows with single-lane tensor register ops lowered to
             // scalar ops, for templates that render scalar ops only. Absent
             // (none) when a program holds an op no scalar template renders.
-            derivative_rhs_scalar => match solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs, pure_calls)? {
+            derivative_rhs_scalar => match derivative_scalar {
                 Some(block) => solve_template_compute_block_json(&block)?,
                 None => Value::from(()),
             },
@@ -300,13 +309,13 @@ fn solve_template_blocks_value(
         // parameters such as a weight matrix built from other parameters) for
         // targets without an initialization solver: render as
         // `init_params(p)`. Absent (none) when there are none.
-        parameter_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::Parameters, pure_calls)? {
+        parameter_initialization => match initialization.parameters {
             Some(block) => solve_template_compute_block_json(&block)?,
             None => Value::from(()),
         },
         // Explicit state starts computed from parameters, rendered as
         // `init_state(p)`; absent (none) when there are none.
-        state_initialization => match solve_lazy::initialization_block(solve_problem, solve_lazy::InitializationTargets::States, pure_calls)? {
+        state_initialization => match initialization.states {
             Some(block) => solve_template_compute_block_json(&block)?,
             None => Value::from(()),
         },
@@ -315,6 +324,10 @@ fn solve_template_blocks_value(
                 implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
             },
         },
+    };
+    Ok(PreparedSolveBlocks {
+        value,
+        scalar_derivative_programs,
     })
 }
 

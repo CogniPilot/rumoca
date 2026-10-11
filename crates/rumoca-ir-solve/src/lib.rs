@@ -56,7 +56,6 @@ pub use event_writes::{EventWrites, event_writes};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events, solve_initialization_is_explicit,
-    solve_initialization_is_parameter_only,
 };
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,

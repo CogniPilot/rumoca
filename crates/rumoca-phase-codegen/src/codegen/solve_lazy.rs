@@ -634,17 +634,9 @@ fn scalar_lowered_node(
     )
 }
 
-/// Whether the explicit initialization (ordered assignments into parameter
-/// and state slots) can be rendered by a scalar template as `init_params` /
-/// `init_state`: every update program assigns exactly one output and lowers
-/// to scalar ops.
-#[must_use]
-pub fn explicit_initialization_renderable(problem: &solve::SolveProblem) -> bool {
-    explicit_initialization_renderable_with_calls(problem, None)
-}
-
-/// [`explicit_initialization_renderable`] for a target that inlines the
-/// model's pure calls.
+/// Whether the explicit initialization's ordered parameter and state updates
+/// each assign one output and admit the final scalar projection, including
+/// the model's pure-call owners.
 #[must_use]
 pub fn explicit_initialization_renderable_with_calls(
     problem: &solve::SolveProblem,
@@ -681,80 +673,66 @@ pub(super) fn explicit_algebraic_assignment_block(
         return Ok(None);
     }
     materialized_assignment_programs(problem, pure_calls)
-        .map(materialize_algebraic_assignments)
+        .map(materialize_output_assignments)
         .transpose()
 }
 
-/// Which slots an explicit-initialization block assigns.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum InitializationTargets {
-    Parameters,
-    States,
+pub(super) struct ScalarInitializationBlocks {
+    pub parameters: Option<solve::ComputeBlock>,
+    pub states: Option<solve::ComputeBlock>,
 }
 
-/// The explicit initialization's assignments into one kind of slot, as one
-/// scalar block whose outputs are those slot indices, in construction order
-/// (a later program may read a parameter an earlier one computed; parameter
-/// assignments run before state assignments). `None` unless
-/// [`explicit_initialization_renderable`] holds and some program assigns that
-/// kind of slot.
-pub(super) fn initialization_block(
+/// Prepare each explicit update once, then partition its checked program into
+/// parameter or state outputs while retaining construction order and provenance.
+/// An unsupported update leaves both scalar views absent.
+pub(super) fn initialization_blocks(
     problem: &solve::SolveProblem,
-    targets: InitializationTargets,
     pure_calls: Option<&solve::SolvePureCallTable>,
-) -> Result<Option<solve::ComputeBlock>, CodegenError> {
-    explicit_initialization_renderable_with_calls(problem, pure_calls)
-        .then(|| initialization_assignments(problem, targets, pure_calls))
-        .transpose()
-        .map(Option::flatten)
-}
-
-fn initialization_assignments(
-    problem: &solve::SolveProblem,
-    targets: InitializationTargets,
-    pure_calls: Option<&solve::SolvePureCallTable>,
-) -> Result<Option<solve::ComputeBlock>, CodegenError> {
+) -> Result<ScalarInitializationBlocks, CodegenError> {
+    let absent = || ScalarInitializationBlocks {
+        parameters: None,
+        states: None,
+    };
+    if !solve::solve_initialization_is_explicit(problem) {
+        return Ok(absent());
+    }
     let initialization = &problem.initialization;
     let update = initialization.update_rhs();
-    let mut programs = Vec::new();
-    let mut spans = Vec::new();
-    let mut outputs = Vec::new();
+    let mut parameters = Vec::new();
+    let mut states = Vec::new();
     for (index, (program, target)) in update
         .programs()
         .iter()
         .zip(initialization.update_targets())
         .enumerate()
     {
-        let slot = match (target, targets) {
-            (solve::ScalarSlot::P { index, .. }, InitializationTargets::Parameters)
-            | (solve::ScalarSlot::Y { index, .. }, InitializationTargets::States) => *index,
-            _ => continue,
+        if solve::ScalarProgramBlock::program_output_count(program) != 1 {
+            return Ok(absent());
+        }
+        let Some(lowered) = rumoca_eval_solve::lower_scalar_ops(program, pure_calls) else {
+            return Ok(absent());
         };
-        let lowered =
-            rumoca_eval_solve::lower_scalar_ops(program, pure_calls).ok_or_else(|| {
-                CodegenError::template(
-                    "explicit initialization is not scalar-renderable".to_string(),
-                )
-            })?;
-        programs.push(lowered);
-        spans.push(update.program_span(index).ok_or_else(|| {
+        let span = update.program_span(index).ok_or_else(|| {
             CodegenError::template("initialization program has no provenance".to_string())
-        })?);
-        outputs.push(slot);
+        })?;
+        match target {
+            solve::ScalarSlot::P { index, .. } => parameters.push((lowered, span, vec![*index])),
+            solve::ScalarSlot::Y { index, .. } => states.push((lowered, span, vec![*index])),
+            _ => return Ok(absent()),
+        }
     }
-    (!programs.is_empty())
-        .then(|| {
-            solve::ScalarProgramBlock::with_output_indices(programs, spans, outputs)
-                .map(|block| solve::ComputeBlock {
-                    nodes: vec![solve::ComputeNode::ScalarPrograms(block)],
-                })
-                .map_err(|error| CodegenError::template(error.to_string()))
-        })
-        .transpose()
+    Ok(ScalarInitializationBlocks {
+        parameters: (!parameters.is_empty())
+            .then(|| materialize_output_assignments(parameters))
+            .transpose()?,
+        states: (!states.is_empty())
+            .then(|| materialize_output_assignments(states))
+            .transpose()?,
+    })
 }
 
-/// Build one scalar block whose outputs are the assigned `y` slots.
-fn materialize_algebraic_assignments(
+/// Build one scalar block whose outputs are the assigned slot indices.
+fn materialize_output_assignments(
     programs: Vec<MaterializedAssignment>,
 ) -> Result<solve::ComputeBlock, CodegenError> {
     let mut ops = Vec::new();

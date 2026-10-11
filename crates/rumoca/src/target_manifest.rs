@@ -686,6 +686,10 @@ fn validate_target_requirements(
                 manifest,
                 capabilities,
             )?;
+            if manifest.ir == TargetTemplateIr::Solve && capabilities.scalar_fallback == Some(true)
+            {
+                result.require_scalar_target_projection()?;
+            }
         }
         // A Flat template that declares a `[capabilities]` table is held to
         // it: `events` / `algorithms` declared unsupported refuse a model whose
