@@ -14,6 +14,8 @@ import jax
 import jax.numpy as jnp
 import rumoca as rm
 
+from guide_fixture import stage_examples
+
 REPOSITORY = Path(__file__).resolve().parents[3]
 SCENARIOS = (
     ("jax_ode", ["SympyDecay_jax_ode.py"]),
@@ -104,7 +106,7 @@ def test_guide_cmake_fences():
     assert len(fences) == 2, "update the guide inventory when its contexts change"
     with TemporaryDirectory(prefix="rumoca-guide-cmake-") as temporary:
         project = Path(temporary)
-        (project / "examples").symlink_to(REPOSITORY / "examples", target_is_directory=True)
+        stage_examples(project)
         (project / "CMakeLists.txt").write_text("\n".join(fences), encoding="utf-8")
         build = project / "build"
         subprocess.run(["cmake", "-S", str(project), "-B", str(build),

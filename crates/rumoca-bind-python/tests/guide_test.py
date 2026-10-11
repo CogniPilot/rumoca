@@ -16,6 +16,8 @@ import matplotlib
 import numpy as np
 import rumoca as rm
 
+from guide_fixture import stage_examples
+
 REPOSITORY = Path(__file__).resolve().parents[3]
 GUIDE = REPOSITORY / "docs/user-guide/src/tools/python.md"
 
@@ -73,7 +75,7 @@ def test_guide_python_fences():
     with TemporaryDirectory(prefix="rumoca-python-guide-") as temporary:
         workspace = Path(temporary)
         # Preserve every authored model/scenario byte and its relative paths.
-        (workspace / "examples").symlink_to(REPOSITORY / "examples", target_is_directory=True)
+        stage_examples(workspace)
         with chdir(workspace):
             for index, source in enumerate(fences):
                 exec(compile(source, f"{GUIDE}:python-fence-{index + 1}", "exec"), namespace)
