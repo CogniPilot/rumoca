@@ -177,7 +177,7 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
         &rumoca,
         &artifact_dir,
         Schedule {
-            jobs: jobs(args),
+            jobs: jobs(args)?,
             deadline,
         },
     )?;
@@ -244,10 +244,8 @@ fn selected_manifest(manifest: &CorpusManifest, only: &[String]) -> Result<Corpu
     })
 }
 
-fn jobs(args: &VerifyCorpusPinArgs) -> usize {
-    args.jobs
-        .unwrap_or_else(|| num_cpus::get().saturating_sub(1))
-        .clamp(1, MAX_JOBS)
+fn jobs(args: &VerifyCorpusPinArgs) -> Result<usize> {
+    crate::resource_budget::worker_jobs(args.jobs, MAX_JOBS)
 }
 
 /// Clear and recreate the per-run artifact directory.
