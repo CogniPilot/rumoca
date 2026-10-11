@@ -2,9 +2,9 @@
 
 Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
 replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.
-This is a source-derived roster and candidate regression record. No candidate
-Cargo or OMC checks have run yet; execution is waiting for the shared-host build
-lease. Manual PR claims are not CI evidence.
+This is a source-derived roster and candidate regression record. The focused
+LSP gate passed at `169ed612c`; the six-model OMC gate is not yet qualified.
+Manual PR claims are not CI evidence.
 
 ## Candidate CI coverage
 
@@ -38,6 +38,12 @@ finite channel values, unique nonempty channel names, and rectangular data.
 Missing coordinates, empty traces, failed simulation, or missing files fail. No source
 rewriting, changed model parameters, retries, or model-name bypasses are used.
 This is a bounded six-model tripwire, not a cohort parity claim.
+
+Circuit source declares `src.v` as an algebraic Real through `TwoPin`, then
+equates it to parameter `src.V = 5`. The actual original OMC CSV omits that
+constant alias. The predeclared measured channels are therefore `cap.v` and
+`res.v`, with settled starts 0 and 5, and every original/export sample must
+independently satisfy `cap.v + res.v = 5`. No replacement CSV column is minted.
 
 ## Tracked codegen scenarios
 
@@ -78,11 +84,21 @@ consulted as design context, not promoted to an active spec.
 
 ## Commands and status
 
-Completed: direct rustfmt on the two new test files; `git diff --check`.
-Not run: any Cargo build/test, OMC execution, workspace/clippy, fixed MSL canary,
-or broader gates. The serial build lease has not been granted to this worktree.
-Candidate source and test selection are reviewable; these are not yet green
-regression results.
+Completed: direct rustfmt, `git diff --check`, and the focused LSP gate
+(4 passed, 0 failed/ignored, including all five configured scenarios).
+The first LSP run found a harness expectation bug (`Real` versus canonical
+`real` report spelling); the corrected run passed. The first Modelica attempt
+found a CSV collection type-inference error before OMC. After its correction,
+the actual original Circuit OMC check/simulation succeeded, then the required
+`src.v` column check failed because OMC omitted its constant alias. The physical
+channel correction above is not yet executed. No generated Modelica roundtrip,
+workspace/clippy, fixed MSL canary, or broader gate is claimed green.
+
+Raw bounded attempts are retained below
+`$HOME/scratch/rumoca/slam-integration-cycle-20261010/` with prefixes
+`pr427-workshop-qualification-first-20261011`,
+`pr427-workshop-qualification-report-spelling-20261011`, and
+`pr427-workshop-qualification-omc-typed-csv-20261011`.
 
 Focused qualification commands (run under the resource guard, with outputs and
 TMPDIR below `$HOME/scratch/rumoca/`):

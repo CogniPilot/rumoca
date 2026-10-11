@@ -18,8 +18,8 @@ struct Example {
 const EXAMPLES: &[Example] = &[
     Example {
         name: "Circuit.Test",
-        observables: &["cap.v", "res.v", "src.v"],
-        initial: &[("cap.v", 0.0), ("src.v", 5.0)],
+        observables: &["cap.v", "res.v"],
+        initial: &[("cap.v", 0.0), ("res.v", 5.0)],
     },
     Example {
         name: "SympyDecay",
@@ -233,6 +233,21 @@ fn observable(sample: &BTreeMap<String, f64>, name: &str) -> f64 {
         .unwrap_or_else(|| panic!("missing observable {name}; columns: {:?}", sample.keys()))
 }
 
+fn assert_physical_controls(example: &Example, target: &str, result: &OmcResult) {
+    if example.name == "Circuit.Test" {
+        // Source `src.v = src.V` is an algebraic alias of parameter V=5.
+        // OMC CSV omits that constant alias. Its voltage is independently
+        // measured by the two dynamic drops, not supplied as a missing column.
+        for sample in result.settled_trace() {
+            assert_close(
+                observable(sample, "cap.v") + observable(sample, "res.v"),
+                5.0,
+                &format!("{target}/Circuit.Test source voltage at {}", sample["time"]),
+            );
+        }
+    }
+}
+
 fn assert_roundtrip(example: &Example, target: &str, reference: &OmcResult, actual: &OmcResult) {
     assert_eq!(
         actual.equations, reference.equations,
@@ -285,6 +300,7 @@ fn actual_workshop_exports_preserve_omc_structure_initialization_and_short_trace
             .compile_str(&source, &format!("{}.mo", example.name))
             .unwrap_or_else(|error| panic!("compile actual {}: {error:#}", example.name));
         let reference = run_omc(example, &source, "original");
+        assert_physical_controls(example, "original", &reference);
         for &(name, expected) in example.initial {
             assert_close(
                 observable(&reference.settled_trace()[0], name),
@@ -304,6 +320,7 @@ fn actual_workshop_exports_preserve_omc_structure_initialization_and_short_trace
                     panic!("Rumoca reload {target}/{}: {error:#}", example.name)
                 });
             let actual = run_omc(example, &file.content, target);
+            assert_physical_controls(example, target, &actual);
             assert_roundtrip(example, target, &reference, &actual);
         }
     }
