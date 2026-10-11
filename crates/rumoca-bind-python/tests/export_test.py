@@ -89,6 +89,35 @@ def test_magic_export_returns_checked_solve_object() -> None:
     assert namespace["model"] is exported
 
 
+def test_live_export_initializes_dependent_defaults() -> None:
+    model = rm.Session().loads(
+        "model Initialized parameter Real a=2; parameter Real b=3*a; "
+        "Real x(start=b, fixed=true); equation der(x)=-b*x; end Initialized;",
+        model="Initialized",
+    )
+    for backend, export in [("casadi", model.to_casadi), ("jax", model.to_jax)]:
+        if not _have(backend):
+            print(f"  ({backend} not installed; skipping initialized live-export)")
+            continue
+        exported = export()
+        assert exported.default_states == [6.0], backend
+        parameters = dict(zip(exported.parameter_names, exported.default_parameters))
+        assert parameters["a"] == 2.0 and parameters["b"] == 6.0, backend
+        if backend == "casadi":
+            import casadi as ca
+
+            actual = exported.rhs(0.0, ca.DM(exported.default_states),
+                                  ca.DM.zeros(exported.n_inputs), ca.DM(exported.default_parameters))
+            assert float(actual) == -36.0
+        else:
+            import jax
+            import jax.numpy as jnp
+
+            actual = jax.jit(exported.rhs)(0.0, jnp.array(exported.default_states),
+                                         jnp.zeros(exported.n_inputs), jnp.array(exported.default_parameters))
+            assert float(actual[0]) == -36.0
+
+
 def test_missing_dependency_raises_importerror() -> None:
     checks = [
         ("casadi", lambda model: model.to_casadi()),
@@ -122,6 +151,7 @@ def main() -> None:
     test_to_casadi()
     test_to_jax()
     test_magic_export_returns_checked_solve_object()
+    test_live_export_initializes_dependent_defaults()
     test_missing_dependency_raises_importerror()
     print("export_test: OK")
 
