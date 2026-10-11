@@ -73,6 +73,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     literal_expressions:
         &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
+    pub(super) transforming_model_arm: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -180,6 +181,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             inline_calls: &[],
             literal_expressions: &[],
             rebuilt,
+            transforming_model_arm: false,
         }
     }
 
@@ -219,6 +221,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         &mut self,
         source_id: dae::ExprId<'source>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        if self.transforming_model_arm && self.source.model_arm_of(source_id).is_some() {
+            return self.rebuild_model_arm_value(source_id);
+        }
         let index = source_id.index() as usize;
         if let Some(rebuilt) = self.rebuilt[index] {
             return Ok(rebuilt);
@@ -259,6 +264,31 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    /// A source arm occurrence is rebuilt under the fresh issued arm; the
+    /// global source mapping continues to name the original closed occurrence.
+    fn rebuild_model_arm_value(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let source = self
+            .source
+            .expression(source_id)
+            .expect("checked scoped expression");
+        let key = self.scoped_reconstruction_key(source_id, 0, source.provenance());
+        if let Some(value) = self.scoped_cache.model_values.get(&key).copied() {
+            return Ok(value);
+        }
+        let value_type = self.types[source.value_type_id().index() as usize];
+        let value = self.rebuild_operation(
+            source_id,
+            source.operation(),
+            source.provenance(),
+            value_type,
+        )?;
+        self.scoped_cache.model_values.insert(key, value);
+        Ok(value)
     }
 
     /// Replay an exact guard operation selected by its model conditional owner.
@@ -681,6 +711,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         operands: dae::ExpressionOperands<'source>,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        if self.transforming_model_arm
+            && let Some(owner) = self.source.model_conditional_of(conditional)
+        {
+            return self.materialize_owned_conditional(
+                owner,
+                super::differentiation::conditionals::BranchTransform::Rebuild,
+                provenance,
+            );
+        }
         let mut selected = operands
             .get(operands.len() - 1)
             .expect("checked conditional has a fallback");

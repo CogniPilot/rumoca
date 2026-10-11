@@ -12,7 +12,7 @@
 //! reaches these arms.
 
 mod algebra;
-mod conditionals;
+pub(super) mod conditionals;
 mod formal;
 mod geometry;
 mod lifted_values;
@@ -264,7 +264,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.differentiate_array(elements, order, provenance)
             }
             dae::ExpressionOperation::Conditional(operands) => self
-                .materialize_parameter_conditional(operands, Some(order), provenance)
+                .materialize_parameter_conditional(source_id, operands, Some(order), provenance)
                 .map(Derivative::Expression),
             dae::ExpressionOperation::Builtin { builtin, arguments }
                 if is_linear_tensor_map(builtin) =>
@@ -587,7 +587,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.rebuild_call_value(source_id, &arguments, provenance)
             }
             dae::ExpressionOperation::Conditional(operands) => {
-                self.materialize_parameter_conditional(operands, None, provenance)
+                self.materialize_parameter_conditional(source_id, operands, None, provenance)
             }
             dae::ExpressionOperation::Field { base, field } => {
                 self.materialize_projected_field(source_id, base, field, provenance)

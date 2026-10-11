@@ -119,52 +119,7 @@ impl<'dae> DaeConstruction<'dae> {
         condition: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
-        self.validate_model_condition(condition, provenance)?;
-        let parent = self.storage.active_model_arm;
-        let parent_guard = parent.map(|arm| self.storage.model_arms[arm as usize].guard);
-        let guards = self.expressions(|expressions| {
-            let not = expressions
-                .at(provenance)
-                .unary(UnaryOperator::Not, condition)?;
-            match parent_guard {
-                None => Ok([condition, not]),
-                Some(parent) => {
-                    let no = expressions
-                        .at(provenance)
-                        .literal(DaeLiteral::Boolean(false))?;
-                    let then_guard = expressions
-                        .at(provenance)
-                        .conditional([(ExprId::from_raw(parent), condition)], no)?;
-                    let else_guard = expressions
-                        .at(provenance)
-                        .conditional([(ExprId::from_raw(parent), not)], no)?;
-                    Ok([then_guard, else_guard])
-                }
-            }
-        })?;
-        self.issue_model_conditional(condition, guards, parent, provenance)
-    }
-
-    fn validate_model_condition(
-        &self,
-        condition: ExprId<'dae>,
-        provenance: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        if self.storage.active_function_boundary {
-            return Err(DaeConstructionError::InvalidModelActivationScope {
-                span: provenance.span(),
-            });
-        }
-        let ty = self.storage.expr_type(condition, provenance)?;
-        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Boolean {
-            return Err(DaeConstructionError::InvalidExpressionForm {
-                span: provenance.span(),
-            });
-        }
-        self.storage
-            .expect_model_arm_visible(condition.index(), provenance)?;
-        Ok(())
+        self.expressions(|expressions| expressions.begin_model_conditional(condition, provenance))
     }
 
     pub(crate) fn issue_model_conditional(
@@ -174,41 +129,8 @@ impl<'dae> DaeConstruction<'dae> {
         parent: Option<u32>,
         provenance: DaeProvenance,
     ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
-        self.validate_model_condition(condition, provenance)?;
-        let guard_operations = self
-            .storage
-            .validate_model_guards(condition, guards, parent, provenance)?;
-        let owner = checked_u32(
-            self.storage.model_conditionals.len(),
-            "model conditional arena",
-            provenance,
-        )?;
-        let first = checked_u32(
-            self.storage.model_arms.len(),
-            "model conditional arm arena",
-            provenance,
-        )?;
-        let second = first
-            .checked_add(1)
-            .ok_or_else(|| unknown("model conditional arm", first, provenance))?;
-        self.storage.model_conditionals.push(ModelConditionalEntry {
-            condition: condition.index(),
-            arms: [first, second],
-            closed: None,
-            provenance,
-            guard_operations,
-        });
-        self.storage
-            .model_arms
-            .extend(guards.map(|guard| ModelArmEntry {
-                owner,
-                parent,
-                guard: guard.index(),
-            }));
-        Ok(ModelConditional {
-            owner,
-            provenance,
-            marker: PhantomData,
+        self.expressions(|expressions| {
+            expressions.issue_model_conditional(condition, guards, parent, provenance)
         })
     }
 
@@ -284,40 +206,121 @@ impl<'dae> DaeConstruction<'dae> {
         selected: bool,
         build: impl FnOnce(&mut Self) -> Result<T, DaeConstructionError>,
     ) -> Result<T, DaeConstructionError> {
-        let entry = self
-            .storage
-            .model_conditionals
-            .get(owner.owner as usize)
-            .ok_or_else(|| unknown("model conditional", owner.owner, owner.provenance))?;
-        let provenance = entry.provenance;
+        self.expressions(|expressions| {
+            expressions.model_conditional_arm_context(owner, Some(selected))
+        })?;
+        let result = build(self);
+        self.expressions(|expressions| expressions.model_conditional_arm_context(owner, None))?;
+        result
+    }
+
+    /// Consume the actual then/else arms in their source order.
+    pub fn finish_model_conditional(
+        &mut self,
+        owner: ModelConditional<'dae>,
+        values: [ExprId<'dae>; 2],
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        self.expressions(|expressions| expressions.finish_model_conditional(owner, values))
+    }
+}
+
+impl<'storage, 'dae> Expressions<'storage, 'dae> {
+    pub fn begin_model_conditional(
+        &mut self,
+        condition: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
+        self.validate_model_condition(condition, provenance)?;
+        let parent = self.storage.active_model_arm;
+        let parent_guard = parent.map(|arm| self.storage.model_arms[arm as usize].guard);
+        let guards = (|| {
+            let expressions = &mut *self;
+            let not = expressions
+                .at(provenance)
+                .unary(UnaryOperator::Not, condition)?;
+            match parent_guard {
+                None => Ok([condition, not]),
+                Some(parent) => {
+                    let no = expressions
+                        .at(provenance)
+                        .literal(DaeLiteral::Boolean(false))?;
+                    let then_guard = expressions
+                        .at(provenance)
+                        .conditional([(ExprId::from_raw(parent), condition)], no)?;
+                    let else_guard = expressions
+                        .at(provenance)
+                        .conditional([(ExprId::from_raw(parent), not)], no)?;
+                    Ok([then_guard, else_guard])
+                }
+            }
+        })()?;
+        self.issue_model_conditional(condition, guards, parent, provenance)
+    }
+    fn validate_model_condition(
+        &self,
+        condition: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
         if self.storage.active_function_boundary {
             return Err(DaeConstructionError::InvalidModelActivationScope {
                 span: provenance.span(),
             });
         }
-        if entry.closed.is_some() {
-            return Err(duplicate(
-                "closed model conditional",
-                owner.owner,
-                provenance,
-            ));
-        }
-        let arm = entry.arms[usize::from(!selected)];
-        let parent = self.storage.model_arms[arm as usize].parent;
-        if self.storage.active_model_arm != parent {
-            return Err(DaeConstructionError::InvalidModelActivationScope {
+        let ty = self.storage.expr_type(condition, provenance)?;
+        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Boolean {
+            return Err(DaeConstructionError::InvalidExpressionForm {
                 span: provenance.span(),
             });
         }
-        self.storage.active_model_arm = Some(arm);
-        self.storage.active_model_ancestors.insert(arm);
-        let result = build(self);
-        self.storage.active_model_ancestors.remove(&arm);
-        self.storage.active_model_arm = parent;
-        result
+        self.storage
+            .expect_model_arm_visible(condition.index(), provenance)?;
+        Ok(())
     }
-
-    /// Consume the actual then/else arms in their source order.
+    pub(crate) fn issue_model_conditional(
+        &mut self,
+        condition: ExprId<'dae>,
+        guards: [ExprId<'dae>; 2],
+        parent: Option<u32>,
+        provenance: DaeProvenance,
+    ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
+        self.validate_model_condition(condition, provenance)?;
+        let guard_operations = self
+            .storage
+            .validate_model_guards(condition, guards, parent, provenance)?;
+        let owner = checked_u32(
+            self.storage.model_conditionals.len(),
+            "model conditional arena",
+            provenance,
+        )?;
+        let first = checked_u32(
+            self.storage.model_arms.len(),
+            "model conditional arm arena",
+            provenance,
+        )?;
+        let second = first
+            .checked_add(1)
+            .ok_or_else(|| unknown("model conditional arm", first, provenance))?;
+        self.storage.model_conditionals.push(ModelConditionalEntry {
+            condition: condition.index(),
+            arms: [first, second],
+            closed: None,
+            provenance,
+            guard_operations,
+        });
+        self.storage
+            .model_arms
+            .extend(guards.map(|guard| ModelArmEntry {
+                owner,
+                parent,
+                guard: guard.index(),
+            }));
+        Ok(ModelConditional {
+            owner,
+            provenance,
+            marker: PhantomData,
+        })
+    }
     pub fn finish_model_conditional(
         &mut self,
         owner: ModelConditional<'dae>,
@@ -353,11 +356,9 @@ impl<'dae> DaeConstruction<'dae> {
             }
         }
         self.storage.closing_model_conditional = Some(owner.owner);
-        let result = self.expressions(|expressions| {
-            expressions
-                .at(entry.provenance)
-                .conditional([(ExprId::from_raw(entry.condition), values[0])], values[1])
-        });
+        let result = self
+            .at(entry.provenance)
+            .conditional([(ExprId::from_raw(entry.condition), values[0])], values[1]);
         self.storage.closing_model_conditional = None;
         let result = result?;
         self.storage.model_conditionals[owner.owner as usize].closed =
@@ -369,6 +370,60 @@ impl<'dae> DaeConstruction<'dae> {
                 guard_operations: entry.guard_operations,
             });
         Ok(result)
+    }
+
+    /// Enter one arm of an open checked owner, or restore its parent. A
+    /// reconstruction must restore the parent on both success and error.
+    pub fn model_conditional_arm_context(
+        &mut self,
+        owner: &ModelConditional<'dae>,
+        selected: Option<bool>,
+    ) -> Result<(), DaeConstructionError> {
+        let entry = self
+            .storage
+            .model_conditionals
+            .get(owner.owner as usize)
+            .ok_or_else(|| unknown("model conditional", owner.owner, owner.provenance))?;
+        let at = entry.provenance;
+        if self.storage.active_function_boundary {
+            return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
+        }
+        if entry.closed.is_some() {
+            return Err(duplicate("closed model conditional", owner.owner, at));
+        }
+        let parent = self.storage.model_arms[entry.arms[0] as usize].parent;
+        match selected {
+            Some(selected) => {
+                if self.storage.active_model_arm != parent {
+                    return Err(DaeConstructionError::InvalidModelActivationScope {
+                        span: at.span(),
+                    });
+                }
+                let arm = entry.arms[usize::from(!selected)];
+                self.storage.active_model_arm = Some(arm);
+                self.storage.active_model_ancestors.insert(arm);
+            }
+            None => {
+                let current = self.storage.active_model_arm;
+                if !entry.arms.into_iter().any(|arm| current == Some(arm)) {
+                    return Err(DaeConstructionError::InvalidModelActivationScope {
+                        span: at.span(),
+                    });
+                }
+                if let Some(current) = current {
+                    self.storage.active_model_ancestors.remove(&current);
+                }
+                self.storage.active_model_arm = parent;
+            }
+        }
+        Ok(())
+    }
+    /// The exact current arm is part of a scoped reconstruction cache key.
+    pub fn model_arm_context(&self) -> Option<ModelArm<'dae>> {
+        self.storage.active_model_arm.map(|index| ModelArm {
+            index,
+            marker: PhantomData,
+        })
     }
 }
 

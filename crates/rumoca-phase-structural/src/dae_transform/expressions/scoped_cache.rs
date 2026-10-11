@@ -10,6 +10,7 @@ use super::ExpressionRebuilder;
 #[derive(PartialEq, Eq, Hash)]
 pub(in crate::dae_transform) struct ScopedReconstructionKey<'source> {
     expression: dae::ExprId<'source>,
+    model_arm: Option<u32>,
     calls: Vec<dae::ExprId<'source>>,
     order: u8,
     state_only: bool,
@@ -23,6 +24,8 @@ pub(in crate::dae_transform) struct ScopedReconstructionKey<'source> {
 /// finalized source/target construction that owns their branded identities.
 #[derive(Default)]
 pub(in crate::dae_transform) struct ScopedReconstructionCache<'source, 'target> {
+    pub(in crate::dae_transform) model_values:
+        HashMap<ScopedReconstructionKey<'source>, dae::ExprId<'target>>,
     pub(in crate::dae_transform) derivatives:
         HashMap<ScopedReconstructionKey<'source>, Derivative<'target>>,
     pub(in crate::dae_transform) materialized:
@@ -42,6 +45,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     ) -> ScopedReconstructionKey<'source> {
         ScopedReconstructionKey {
             expression,
+            model_arm: self.target.model_arm_context().map(|arm| arm.index()),
             calls: self.function_context.call_path().collect(),
             order,
             state_only: self.state_only_derivative,
