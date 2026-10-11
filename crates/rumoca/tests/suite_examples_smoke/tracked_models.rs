@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use rumoca::{CompilationResult, Compiler};
-use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, SimulationSession, simulate_dae};
 use rumoca_solver::SimExecutionPolicy;
 
 // File, standalone demo entrypoint, required MSL. Circuit's component models
@@ -203,6 +203,36 @@ fn actual_local_switched_rlc_follows_the_independent_voltage_step_response() {
 fn actual_kalman_example_executes_its_authored_numeric_initialization_assertions() {
     // The unchanged source asserts estimate/covariance against its independent
     // 1x1 reference numbers at tolerance 1e-10 before the ODE starts.
-    let (result, options) = simulate("KalmanFilterStepTest", 0.1);
-    assert_curve(&result, &options, "x", |time| time);
+    let compiled = compile("KalmanFilterStepTest").unwrap_or_else(|error| panic!("{error}"));
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let options = SimOptions {
+            execution_policy: policy,
+            solver_mode: SimSolverMode::RkLike,
+            t_end: 0.1,
+            dt: Some(0.01),
+            rtol: 1e-9,
+            atol: 1e-9,
+            ..SimOptions::default()
+        };
+        let mut session = SimulationSession::new(&compiled.dae, options.clone())
+            .unwrap_or_else(|error| panic!("actual Kalman {policy:?} initializes: {error}"));
+        for sample in 0..=10 {
+            let time = f64::from(sample) / 100.0;
+            if sample != 0 {
+                session.advance_to(time).expect("actual Kalman advances");
+            }
+            let state = session.state().expect("actual Kalman exposes its state");
+            assert_eq!(state.time, time);
+            let actual = state.values["x"];
+            let bound = 20.0 * (options.atol + options.rtol * time.abs());
+            assert!(
+                actual.is_finite() && (actual - time).abs() <= bound,
+                "{policy:?} x({time})={actual}"
+            );
+            eprintln!(
+                "[tracked-example] Kalman policy={policy:?} sample={sample} receipt={:?}",
+                session.execution_receipt()
+            );
+        }
+    }
 }
