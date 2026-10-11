@@ -26,7 +26,13 @@ cargo test --locked --offline -p rumoca --features fmu-packaging --test suite_co
 
 The original outer/owned combined selector also selects **1** test and stays
 CI-selected. New owned outcome is **UNRUN**; root owns the guarded Cargo lane.
-Formatting and diff checks pass; no production repair is present.
+Formatting and diff checks pass; no semantic production repair is present.
+A separate diagnostic-only change preserves all certificate decisions and adds
+bounded first-mismatch context: domain point ordinal, operation position/kind,
+output destination/width, and (for PureCall) issued owner ids and the first
+differing input ordinal. It never dumps a typed body, dependency graph, or
+expanded register list. The original combined selector produces the diagnostic;
+no new execution is claimed before root runs it.
 
 The refusing owner is `lower/events/structured.rs::derive_affine_program_certificate`:
 compact scalar programs must have equal lengths; Const and LoadY/P/Seed changes

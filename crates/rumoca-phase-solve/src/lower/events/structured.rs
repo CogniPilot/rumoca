@@ -559,8 +559,20 @@ pub(in crate::lower) fn derive_affine_program_certificate(
     span: Span,
 ) -> Result<AffineProgramCertificate, LowerError> {
     let base = &programs[0];
-    if programs.iter().any(|program| program.len() != base.len()) {
-        return Err(non_affine_structured_program(span));
+    if let Some((point, program)) = programs
+        .iter()
+        .enumerate()
+        .find(|(_, program)| program.len() != base.len())
+    {
+        return Err(LowerError::non_computable(
+            format!(
+                "structured B.1c body does not have one proven affine scalar program: \
+                 point {point} has {} operations; base has {}",
+                program.len(),
+                base.len()
+            ),
+            span,
+        ));
     }
     let offsets = points
         .iter()
@@ -585,11 +597,18 @@ pub(in crate::lower) fn derive_affine_program_certificate(
             if !terms.is_empty() {
                 const_strides.push(solve::AffineStencilConstStride { op_position, terms });
             }
-        } else if programs
+        } else if let Some((point, program)) = programs
             .iter()
-            .any(|program| program[op_position] != *base_op)
+            .enumerate()
+            .find(|(_, program)| program[op_position] != *base_op)
         {
-            return Err(non_affine_structured_program(span));
+            return Err(non_affine_structured_operation(
+                point,
+                op_position,
+                base_op,
+                &program[op_position],
+                span,
+            ));
         }
     }
     Ok((base.clone(), load_strides, const_strides))
@@ -776,6 +795,58 @@ fn infer_const_terms(
             (stride != 0.0).then_some(solve::AffineStencilConstStrideTerm { dimension, stride })
         })
         .collect())
+}
+
+fn non_affine_structured_operation(
+    point: usize,
+    position: usize,
+    base: &solve::LinearOp,
+    actual: &solve::LinearOp,
+    span: Span,
+) -> LowerError {
+    let detail = match (base, actual) {
+        (
+            solve::LinearOp::PureCall {
+                input_starts: base_inputs,
+                site: base_site,
+                ..
+            },
+            solve::LinearOp::PureCall {
+                input_starts: actual_inputs,
+                site: actual_site,
+                ..
+            },
+        ) => format!(
+            "call owners {:?}/{:?}, input counts {}/{}, first differing input {:?}",
+            base_site.owner(),
+            actual_site.owner(),
+            base_inputs.len(),
+            actual_inputs.len(),
+            base_inputs
+                .iter()
+                .zip(actual_inputs)
+                .position(|(base, actual)| base != actual)
+        ),
+        (
+            solve::LinearOp::StoreOutput { src: base },
+            solve::LinearOp::StoreOutput { src: actual },
+        ) => format!("output registers {base}/{actual}"),
+        _ => String::new(),
+    };
+    LowerError::non_computable(
+        format!(
+            "structured B.1c body does not have one proven affine scalar program: \
+             point {point}, operation {position}: {}/{}, destinations {:?}/{:?}, \
+             widths {}/{}; {detail}",
+            base.kind_name(),
+            actual.kind_name(),
+            base.dst_register(),
+            actual.dst_register(),
+            base.dst_register_count(),
+            actual.dst_register_count(),
+        ),
+        span,
+    )
 }
 
 fn non_affine_structured_program(span: Span) -> LowerError {
