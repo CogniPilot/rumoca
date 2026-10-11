@@ -2401,7 +2401,7 @@ jobs:
             # exports. JAX is unavailable on some wheel-matrix platforms.
             export_args=()
             if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
-              python -m pip install jax==0.9.2 casadi==3.7.2 numpy==2.4.3
+              python -m pip install jax==0.9.2 casadi==3.7.2 numpy==2.4.3 matplotlib==3.10.8
               export_args=(--require-backend jax --require-backend casadi)
             fi
             python crates/rumoca-bind-python/tests/smoke_test.py
@@ -2409,6 +2409,9 @@ jobs:
             python crates/rumoca-bind-python/tests/api_test.py
             python crates/rumoca-bind-python/tests/magic_test.py
             python crates/rumoca-bind-python/tests/export_test.py "${export_args[@]}"
+            if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
+              python crates/rumoca-bind-python/tests/guide_test.py
+            fi
           '
 
       - name: Smoke test installed wheel (Windows)
