@@ -308,3 +308,56 @@ end StructuredQuotientExport;"#;
         "{error:?}"
     );
 }
+
+#[test]
+fn real_quotient_inactive_arm_does_not_evaluate_an_undefined_ratio() {
+    // MLS §3.3 if-expression selection and §8.5 event construction must retain
+    // the source activation: this arm never executes on the requested horizon.
+    // The exact public model failed root evaluation at t=0 on source 4b3e7c22.
+    for numerator in ["1/(time+1)", "1/time"] {
+        let source = format!(
+            "model InactiveQuotient output Real y; Real x(start=0,fixed=true); equation y=if time<0.5 then 1 else mod({numerator},7.0); der(x)=y; end InactiveQuotient;"
+        );
+        let compiled = compile(&source, "InactiveQuotient");
+        for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+            let mut opts = options(policy);
+            opts.t_end = 0.1;
+            opts.dt = Some(0.01);
+            let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+                .unwrap_or_else(|error| panic!("inactive {numerator}, {policy:?}: {error:?}"));
+            for sample in 0..=10 {
+                let time = f64::from(sample) / 100.0;
+                if sample != 0 {
+                    session
+                        .advance_to(time)
+                        .expect("inactive arm remains protected");
+                }
+                let state = session.state().unwrap();
+                assert_eq!(state.time, time);
+                assert_eq!(state.values["y"], 1.0);
+                let actual = state.values["x"];
+                assert!(
+                    actual.is_finite()
+                        && (actual - time).abs() <= 20.0 * (opts.atol + opts.rtol * time.abs()),
+                    "{policy:?}: x({time})={actual}, expected {time}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn real_quotient_selected_undefined_ratio_remains_a_fault() {
+    let compiled = compile(
+        "model SelectedQuotient output Real y; Real x(start=0,fixed=true); equation y=if time<0.5 then mod(1/time,7.0) else 1; der(x)=y; end SelectedQuotient;",
+        "SelectedQuotient",
+    );
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let error = simulate_dae(&compiled.dae, &options(policy))
+            .expect_err("an active undefined quotient must retain its evaluation fault");
+        assert!(
+            error.to_string().contains("non-finite"),
+            "{policy:?}: {error:?}"
+        );
+    }
+}
