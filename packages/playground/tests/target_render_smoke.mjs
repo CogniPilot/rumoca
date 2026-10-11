@@ -161,7 +161,7 @@ template = "source.jinja"
   assertRefusal(() => customAlgorithm("Counter.alg", "{{ model_name }}", false), /unsupported-feature:events/, "custom target capability admission");
   assertRefusal(() => customAlgorithm("manifest.xml", "{{ model_name }}"), /source files/, "metadata-only source preview");
   for (const fact of ["generated_at", "generation_tool", "identities", "checksums"]) {
-    assertRefusal(() => customAlgorithm("Counter.alg", `{{ artifact.${fact} }}`), /artifact/, `unavailable artifact fact ${fact}`);
+    assertRefusal(() => customAlgorithm("Counter.alg", `{{ artifact.${fact} }}`), /template render error: undefined value/, `unavailable artifact fact ${fact}`);
   }
   console.log("[wasm-smoke] actual targets, workshop sources, workspace ownership, and source preview refusals passed");
 }
