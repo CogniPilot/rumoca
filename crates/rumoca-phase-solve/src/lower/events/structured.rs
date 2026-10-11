@@ -824,7 +824,7 @@ fn non_affine_structured_operation(
             actual_inputs.len(),
             base_inputs
                 .iter()
-                .zip(actual_inputs)
+                .zip(actual_inputs.iter())
                 .position(|(base, actual)| base != actual)
         ),
         (
