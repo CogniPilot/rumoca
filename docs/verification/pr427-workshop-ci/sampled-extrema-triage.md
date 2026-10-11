@@ -70,13 +70,24 @@ The after CLI, SHA-256
 completes the unchanged original MSL example through 1.5 seconds at output
 interval 0.00001 and absolute/relative tolerance 0.000001. Its finite,
 rectangular trace has 165001 rows, all 150001 regular output coordinates,
-and 18 channels. The four final extrema timestamps match the OMC reference
-coordinates. This is completion and a raw trace witness; it is not an
-all-channel comparison result. Sixteen channels are common, two internal
-amplitude/frequency channels occur only in Rumoca, and `der(sine.phi)` occurs
-only in OMC. The metadata-bearing strict comparator, canary delta, and fresh
-complete 566-model comparison remain pending. This report does not yet close
-the full-model counterexample.
+and 18 channels. A separate sealed native worker from the same source also
+completes under the canonical 10-second Solve and 12-second solver budgets:
+Solve takes 0.003119188 seconds, backend preparation 0.019161915 seconds,
+and the solver 1.864257443 seconds. Its metadata-bearing trace contains
+165001 rows and 18 variable descriptions, with finite samples throughout.
+
+The unchanged canonical OMC comparator then compares the original cached
+reference against that worker trace: one model compared, zero skipped and
+zero missing, all 16 shared channels strict-high, zero deviation channels,
+and all 16 initial channels high. The comparison has 6408000 paired samples.
+Two internal amplitude/frequency channels occur only in Rumoca;
+`der(sine.phi)` occurs only in OMC and is not compared. State-selection
+agreement was not measured. Source manifests match before/after and the OMC
+reference bytes are unchanged. The [portable qualification receipt](sampled-extrema-original-qualification.json)
+records the exact source, sealed ELF/artifact hashes, worker result and
+comparator counts. This is a focused full-original-model comparison,
+not cohort parity. The fixed canary delta and fresh complete 566-model
+comparison remain pending; this repaired model must remain in that sweep.
 
 The original-model guardian receipt is retained: elapsed 15.809 seconds
 including CLI startup/compilation, peak aggregate resident-plus-swap 1809124
