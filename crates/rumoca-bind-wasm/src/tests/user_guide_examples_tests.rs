@@ -4,6 +4,7 @@
 //! the CPU path offered when WebGPU is unavailable.
 #![cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 
+use super::user_guide_samples::{finite_sample_grid, finite_vector};
 use super::*;
 use std::path::PathBuf;
 
@@ -66,6 +67,30 @@ fn prepare_guide_gpu_payload(example: &GuideGpuExample, source: &str) -> serde_j
         "{} must expose integrated states to the GPU driver",
         example.model
     );
+    for (vector, extent) in [("y0", "y_len"), ("p0", "p_len")] {
+        let len = payload["layout"][extent]
+            .as_u64()
+            .and_then(|len| usize::try_from(len).ok())
+            .expect("the checked shader layout issues a physical vector extent");
+        finite_vector(&payload[vector], len)
+            .unwrap_or_else(|error| panic!("{} {vector}: {error}", example.model));
+    }
+    let state_count = payload["n_states"].as_u64().unwrap();
+    assert_eq!(
+        payload["state_names"].as_array().unwrap().len() as u64,
+        state_count
+    );
+    assert!(state_count <= payload["layout"]["y_len"].as_u64().unwrap());
+    for setting in ["t_start", "t_end", "dt", "internal_dt"] {
+        assert!(
+            payload[setting].as_f64().is_some_and(f64::is_finite),
+            "{} finite {setting}",
+            example.model
+        );
+    }
+    assert!(payload["t_end"].as_f64().unwrap() > payload["t_start"].as_f64().unwrap());
+    assert!(payload["dt"].as_f64().unwrap() > 0.0);
+    assert!(payload["internal_dt"].as_f64().unwrap() > 0.0);
     payload
 }
 
@@ -124,15 +149,8 @@ fn user_guide_gpu_examples_simulate_on_the_cpu_path() {
             });
         let simulation: serde_json::Value =
             serde_json::from_str(&json).expect("simulation payload should be valid JSON");
-        let times = simulation
-            .pointer("/payload/allData/0")
-            .and_then(serde_json::Value::as_array)
-            .expect("simulation payload should include sampled times");
-        assert!(
-            times.len() >= 2,
-            "{} must produce samples on the CPU path",
-            example.model
-        );
+        finite_sample_grid(&simulation, &[0.0, 0.01, 0.02])
+            .unwrap_or_else(|error| panic!("{} CPU samples: {error}", example.model));
     }
 
     clear_source_root_cache().expect("clear source-root cache");

@@ -1,6 +1,7 @@
 //! Standalone inline guide models use the reader's actual binding front door.
 #![cfg(feature = "sim-rk45")]
 
+use super::user_guide_samples::finite_vector;
 use super::user_guide_sources::{GuideFence, guide_fences};
 use super::*;
 
@@ -117,12 +118,8 @@ fn user_guide_inline_cpu_samples_are_finite() {
                         values.len() >= 3,
                         "{model} must reach the requested endpoint"
                     );
-                    assert!(
-                        values
-                            .iter()
-                            .all(|value| value.as_f64().is_some_and(f64::is_finite)),
-                        "{model} finite samples"
-                    );
+                    finite_vector(column, values.len())
+                        .unwrap_or_else(|error| panic!("{model} CPU samples: {error}"));
                 }
                 assert_eq!(
                     columns[0].as_array().unwrap().last().unwrap(),
