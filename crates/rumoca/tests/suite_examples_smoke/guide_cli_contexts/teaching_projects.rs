@@ -37,13 +37,25 @@ pub(super) fn selected(entry: &Entry) -> bool {
             | "simulation/inspect.md"
             | "language/support-status.md"
             | "tools/fmt-lint.md"
-    ) || (entry.page == "tools/cli.md" && [76, 101, 111].contains(&entry.line))
-        || (entry.page == "codegen/targets.md" && entry.line == 12)
+    ) || (entry.page == "tools/cli.md"
+        && entry.argv.iter().all(|argv| {
+            matches!(
+                argv.first().map(String::as_str),
+                Some("compile" | "cache" | "completions")
+            )
+        }))
+        || (entry.page == "codegen/targets.md" && entry.argv == vec![vec!["targets".to_owned()]])
 }
 
 pub(super) fn execute(entries: &[Entry]) {
     let mut executed = 0;
     for entry in entries.iter().filter(|entry| selected(entry)) {
+        assert!(
+            !entry.argv.is_empty(),
+            "teaching context contains no CLI command: {}:{}",
+            entry.page,
+            entry.line
+        );
         let dir = tempfile::tempdir().expect("disposable teaching project");
         fixtures(dir.path());
         for argv in &entry.argv {
@@ -93,13 +105,14 @@ pub(super) fn first_model() {
 }
 
 fn verify_artifacts(entry: &Entry, root: &Path) {
-    if entry.page == "codegen/custom-targets.md" && entry.line == 11 {
+    let has_argument = |argument: &str| entry.argv.iter().flatten().any(|value| value == argument);
+    if entry.page == "codegen/custom-targets.md" && has_argument("my_template.jinja") {
         assert_eq!(
             std::fs::read_to_string(root.join("out.txt")).unwrap(),
             "caller-owned flat template: Model\n"
         );
     }
-    if entry.page == "codegen/custom-targets.md" && entry.line == 30 {
+    if entry.page == "codegen/custom-targets.md" && has_argument("path/to/my_target") {
         let report = std::fs::read_to_string(root.join("out/Model_checked_dae.txt")).unwrap();
         assert!(
             report.contains("model Model")
@@ -108,12 +121,12 @@ fn verify_artifacts(entry: &Entry, root: &Path) {
             "{report}"
         );
     }
-    if entry.page == "simulation/inspect.md" && entry.line == 19 {
+    if entry.page == "simulation/inspect.md" && has_argument("m.json") {
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("m.json")).unwrap()).unwrap();
         assert!(json.get("schema_version").is_some(), "{json}");
     }
-    if entry.page == "tools/cli.md" && entry.line == 76 {
+    if entry.page == "tools/cli.md" && has_argument("out.json") {
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("out.json")).unwrap()).unwrap();
         assert!(json.is_object(), "{json}");
