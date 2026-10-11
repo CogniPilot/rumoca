@@ -288,40 +288,91 @@ fn assert_roundtrip(example: &Example, target: &str, reference: &OmcResult, actu
     }
 }
 
+fn assert_export_roundtrips(example: &Example, source: &str) {
+    let compiled = Compiler::new()
+        .model(example.name)
+        .compile_str(source, &format!("{}.mo", example.name))
+        .unwrap_or_else(|error| panic!("compile actual {}: {error:#}", example.name));
+    let reference = run_omc(example, source, "original");
+    assert_physical_controls(example, "original", &reference);
+    for &(name, expected) in example.initial {
+        assert_close(
+            observable(&reference.settled_trace()[0], name),
+            expected,
+            &format!("original/{} initial {name}", example.name),
+        );
+    }
+    eprintln!("OMC original/{} controls passed", example.name);
+    for target in ["base-modelica", "flat-modelica", "dae-modelica"] {
+        let mut files = render_target_files(&compiled, example.name, target, None)
+            .unwrap_or_else(|error| panic!("render {target}/{}: {error:#}", example.name));
+        assert_eq!(files.len(), 1, "one complete Modelica document");
+        let file = files.remove(0);
+        Compiler::new()
+            .model(&example.name.replace('.', "_"))
+            .compile_str(&file.content, &file.path)
+            .unwrap_or_else(|error| panic!("Rumoca reload {target}/{}: {error:#}", example.name));
+        let actual = run_omc(example, &file.content, target);
+        assert_physical_controls(example, target, &actual);
+        assert_roundtrip(example, target, &reference, &actual);
+        eprintln!("OMC {target}/{} controls passed", example.name);
+    }
+}
+
 #[test]
 fn actual_workshop_exports_preserve_omc_structure_initialization_and_short_trace() {
     if !omc_is_available() {
         return;
     }
     for example in EXAMPLES {
-        let source = example_source(example);
-        let compiled = Compiler::new()
-            .model(example.name)
-            .compile_str(&source, &format!("{}.mo", example.name))
-            .unwrap_or_else(|error| panic!("compile actual {}: {error:#}", example.name));
-        let reference = run_omc(example, &source, "original");
-        assert_physical_controls(example, "original", &reference);
-        for &(name, expected) in example.initial {
-            assert_close(
-                observable(&reference.settled_trace()[0], name),
-                expected,
-                &format!("original/{} initial {name}", example.name),
-            );
-        }
-        for target in ["base-modelica", "flat-modelica", "dae-modelica"] {
-            let mut files = render_target_files(&compiled, example.name, target, None)
-                .unwrap_or_else(|error| panic!("render {target}/{}: {error:#}", example.name));
-            assert_eq!(files.len(), 1, "one complete Modelica document");
-            let file = files.remove(0);
-            Compiler::new()
-                .model(&example.name.replace('.', "_"))
-                .compile_str(&file.content, &file.path)
-                .unwrap_or_else(|error| {
-                    panic!("Rumoca reload {target}/{}: {error:#}", example.name)
-                });
-            let actual = run_omc(example, &file.content, target);
-            assert_physical_controls(example, target, &actual);
-            assert_roundtrip(example, target, &reference, &actual);
-        }
+        assert_export_roundtrips(example, &example_source(example));
     }
+}
+
+#[test]
+fn derivative_coordinate_projections_preserve_vector_matrix_and_record_member_traces() {
+    if !omc_is_available() {
+        return;
+    }
+    // MLS 3.7 §3.7: der(array) denotes elementwise derivatives. Selecting a
+    // derivative retains the same state's checked index and declaration owner.
+    let source = r#"
+model DerivativeCoordinateProjection
+  record Pair
+    Real position[2](start = {5, 6}, each fixed = true);
+  end Pair;
+  Pair pair;
+  Real vector[2](start = {1, 2}, each fixed = true);
+  Real matrix[2, 2](start = {{1, 2}, {3, 4}}, each fixed = true);
+equation
+  der(vector[1]) = -vector[1];
+  der(vector[2]) = -2 * vector[2];
+  for i in 1:2 loop
+    for j in 1:2 loop
+      der(matrix[i, j]) = -(i + j) * matrix[i, j];
+    end for;
+    der(pair.position[i]) = -i * pair.position[i];
+  end for;
+end DerivativeCoordinateProjection;
+"#;
+    let example = Example {
+        name: "DerivativeCoordinateProjection",
+        observables: &[
+            "vector[1]",
+            "vector[2]",
+            "matrix[1,1]",
+            "matrix[2,2]",
+            "pair.position[1]",
+            "pair.position[2]",
+        ],
+        initial: &[
+            ("vector[1]", 1.0),
+            ("vector[2]", 2.0),
+            ("matrix[1,1]", 1.0),
+            ("matrix[2,2]", 4.0),
+            ("pair.position[1]", 5.0),
+            ("pair.position[2]", 6.0),
+        ],
+    };
+    assert_export_roundtrips(&example, source);
 }
