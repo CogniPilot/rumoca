@@ -41,6 +41,7 @@ struct PreparedNative {
     prepares: Cell<usize>,
     calls: Cell<usize>,
     fail: bool,
+    preparation_fail: bool,
 }
 
 struct Compiler(Rc<PreparedNative>);
@@ -53,6 +54,9 @@ impl CompiledSolveJacobianExpression for Compiler {
         self.0
             .prepares
             .set(self.0.prepares.get() + applications.len());
+        if self.0.preparation_fail {
+            return Err("required projection preparation failed".into());
+        }
         Ok(applications
             .iter()
             .map(|_| Some(self.0.clone() as Rc<dyn CompiledSolveProjectionJacobian>))
@@ -238,4 +242,150 @@ fn prepared_projection_rejects_a_replaced_canonical_primal_source() {
         matches!(result, Err(EvalSolveError::InvalidRow { message, .. })
         if message.contains("different canonical primal source"))
     );
+}
+
+// The constructor receives a backend whose projection preparation is observable
+// and can fail. Other optional compiled entries explicitly decline.
+impl SolveExecutionBackend for Compiler {
+    fn compile_expression(
+        &self,
+        _block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        Err("demand fixture uses interpreted values".into())
+    }
+
+    fn compile_jacobian_expression(
+        &self,
+        _block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        Ok(Rc::new(Compiler(self.0.clone())))
+    }
+
+    fn compile_assignment_schedule(
+        &self,
+        _source: &solve::ComputeBlock,
+        _owners: &solve::ContinuousRefreshOwners,
+        _schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        Err("demand fixture uses interpreted assignments".into())
+    }
+
+    fn compile_event_transaction(
+        &self,
+        _program: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+        Err("demand fixture has no event transactions".into())
+    }
+}
+
+fn causal_grouped_model() -> solve::SolveModel {
+    use solve::{BinaryOp as B, LinearOp as L};
+    let mut model = grouped_projection_jvp::coupled_model();
+    model.problem.continuous.implicit_rhs =
+        solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![
+                L::LoadY { dst: 0, index: 0 },
+                L::LoadY { dst: 1, index: 1 },
+                L::Const { dst: 2, value: 2.0 },
+                L::Const { dst: 3, value: 1.0 },
+                L::Binary {
+                    dst: 4,
+                    op: B::Sub,
+                    lhs: 0,
+                    rhs: 2,
+                },
+                L::Binary {
+                    dst: 5,
+                    op: B::Sub,
+                    lhs: 1,
+                    rhs: 3,
+                },
+                L::StoreOutputRange {
+                    start: 4,
+                    count: 2,
+                    stride: 1,
+                },
+            ]],
+            "causal_grouped.mo",
+        ));
+    model.problem.continuous.implicit_row_targets =
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    set_test_implicit_jvp(
+        &mut model,
+        vec![vec![
+            L::LoadSeed { dst: 0, index: 0 },
+            L::LoadSeed { dst: 1, index: 1 },
+            L::StoreOutputRange {
+                start: 0,
+                count: 2,
+                stride: 1,
+            },
+        ]],
+        "causal_grouped_jvp.mo",
+    );
+    set_causal_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
+    model
+}
+
+fn runtime_with_preparation_backend(
+    mut model: solve::SolveModel,
+    native: Rc<PreparedNative>,
+) -> Result<SolveRuntime, EvalSolveError> {
+    model.problem.continuous.refresh_owners =
+        solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem)?;
+    SolveRuntime::new_with_execution_backend(&model, Some(Rc::new(Compiler(native))))
+}
+
+#[test]
+fn projection_demand_causal_certificate_omits_native_applications() {
+    let native = Rc::new(PreparedNative {
+        preparation_fail: true,
+        ..Default::default()
+    });
+    let runtime = runtime_with_preparation_backend(causal_grouped_model(), native.clone())
+        .expect("a certified value schedule never invokes projection preparation");
+    assert!(runtime.algebraic_refresh.causal_solution_certified);
+    let structures = runtime.continuous_structural.algebraic_projection();
+    assert_eq!(structures.len(), 2);
+    assert!(
+        structures
+            .iter()
+            .all(|structure| structure.jacobian_application().is_some())
+    );
+    assert!(
+        !runtime
+            .implicit_scalar_rhs
+            .reverse_row_y_gradient_supported(0)
+    );
+    assert_eq!(native.prepares.get(), 0);
+    assert!(
+        runtime
+            .compiled_algebraic_jacobians
+            .iter()
+            .all(Option::is_none)
+    );
+    let mut y = [8.0, -5.0];
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut y, &[2.0], 1e-10, 4)
+        .unwrap();
+    assert_eq!(y, [2.0, 1.0]);
+}
+
+#[test]
+fn projection_demand_uncertified_preparation_failure_remains_an_error() {
+    let native = Rc::new(PreparedNative {
+        preparation_fail: true,
+        ..Default::default()
+    });
+    let error =
+        runtime_with_preparation_backend(grouped_projection_jvp::coupled_model(), native.clone())
+            .err()
+            .expect("a required native application failure must propagate");
+    assert!(
+        error
+            .to_string()
+            .contains("required projection preparation failed")
+    );
+    assert_eq!(native.prepares.get(), 1);
 }
