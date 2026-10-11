@@ -59,15 +59,18 @@ cargo test --locked --offline --jobs 4 -p rumoca-compile --lib \
   reported_bug_regressions:: -- --nocapture
 
 # One original B export: import, JIT, forward AD and reverse AD.
-cargo test --locked --jobs 4 -p rumoca --test suite_template_runtime \
+cargo test --locked --jobs 4 -p rumoca --no-default-features \
+  --features template-runtime-tests --test suite_template_runtime \
   jax_ode_target_handles_reported_explicit_algebraic_assignments -- --nocapture
 
 # Two independent static-PIE test executables, one exact test each.
 bash .github/scripts/qualify-issue422-static-pie.sh "$OWNED_EVIDENCE_DIRECTORY"
 ```
 
-The runtime command uses default features, including the actual CLI/native
-path. The original B JAX test directly starts Python and requires installed JAX;
+The ten-test runtime command uses default features, including the actual
+CLI/native path. The original B JAX command uses the existing JAX CI feature
+profile and required test-target feature `template-runtime-tests`. The test
+directly starts Python and requires installed JAX;
 its mandatory PR JAX workflow selects it through
 `cargo xtask verify template-runtimes --backend jax --require-external-tools`.
 That strict option belongs to xtask, not a Cargo feature. The static-PIE script is
