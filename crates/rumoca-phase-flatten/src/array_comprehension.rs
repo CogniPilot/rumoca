@@ -6,7 +6,9 @@ use crate::pipeline::{
 };
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 use crate::{Context, FlattenError, ast_lower, variables};
-use rumoca_eval_flat::phase_constant::infer_array_dimensions;
+use rumoca_eval_flat::phase_constant::{
+    infer_array_dimensions, infer_array_dimensions_full_with_functions,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -124,7 +126,10 @@ pub(crate) fn expand_array_comprehension_bindings(
         // Preserve structured comprehensions when dimensions are inferable from
         // symbolic ranges/body shape; avoid eager scalar expansion.
         if let Some(binding) = &flat_var.binding
-            && let Some(inferred_dims) = infer_array_dimensions(binding)
+            && let Some(inferred_dims) = infer_array_dimensions_full_with_functions(
+                binding,
+                &ctx.param_eval_context(Some(var_name.as_str())),
+            )
         {
             complete_unknown_extents(&mut flat_var.dims, &inferred_dims);
             ctx.array_dimensions

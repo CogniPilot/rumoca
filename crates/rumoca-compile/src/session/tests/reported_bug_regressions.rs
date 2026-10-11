@@ -111,9 +111,14 @@ fn assert_checked_constructor_values(
     dimensions: &[i64],
     expected: &[f64],
 ) {
-    assert_eq!(
-        compiled.flat.variables[&rumoca_core::VarName::new(name)].dims,
-        dimensions
+    let variable = &compiled.flat.variables[&rumoca_core::VarName::new(name)];
+    assert_eq!(variable.dims, dimensions);
+    assert!(
+        matches!(
+            variable.binding.as_ref(),
+            Some(rumoca_core::Expression::ArrayComprehension { .. })
+        ),
+        "parameter-evaluable constructor retains its compact owner"
     );
     let values = compiled.dae.inspect(|view| {
         let (_, declaration) = view
@@ -187,10 +192,12 @@ fn issue_424_reported_boolean_binding_accepts_conforming_parameter_dimensions() 
          equation der(y)=if solid[1,1] then -y else -2*y; end C3BooleanBinding;",
         "C3BooleanBinding",
     );
-    assert_eq!(
-        compiled.flat.variables[&rumoca_core::VarName::new("solid")].dims,
-        vec![3, 4]
-    );
+    let variable = &compiled.flat.variables[&rumoca_core::VarName::new("solid")];
+    assert_eq!(variable.dims, vec![3, 4]);
+    assert!(matches!(
+        variable.binding.as_ref(),
+        Some(rumoca_core::Expression::ArrayComprehension { .. })
+    ));
 }
 
 #[test]
