@@ -1099,6 +1099,13 @@ fn checked_discrete_real_activation_clock<'dae>(
     match (activation, owner) {
         (None, None) => Ok(None),
         (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
+        (Some(activation), None)
+            if condition_memory::synchronous_condition_clock_owner(view, guard).is_none() =>
+        {
+            // A checked Boolean periodic task is an MLS §8.5 schedule;
+            // it does not mint MLS §16 synchronous variable ownership.
+            Ok(Some(activation))
+        }
         (Some(_), None) => Err(LowerError::non_computable(
             "clock-activated discrete Real definition has no matching target clock owner",
             span,

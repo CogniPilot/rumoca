@@ -28,7 +28,6 @@ pub(super) struct ClockedAssignments {
 }
 
 mod periodic_real;
-mod periodic_trigger;
 mod shared_calls;
 
 use shared_calls::{
@@ -1245,7 +1244,11 @@ fn require_periodic_trigger<'dae>(
     expected: dae::ClockId<'dae>,
     span: Span,
 ) -> Result<(), GalecTargetError> {
-    if periodic_trigger::condition_requires_clock(view, root, expected) {
+    if view
+        .condition(root)
+        .expect("checked periodic trigger")
+        .requires_clock(expected)
+    {
         return Ok(());
     }
     Err(unsupported(

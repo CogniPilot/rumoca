@@ -1,3 +1,6 @@
+mod clock_projection;
+use clock_projection::ClockProjection;
+
 use std::marker::PhantomData;
 
 use crate::model::{Storage, check_provenance, checked_u32, duplicate, unknown};
@@ -31,6 +34,8 @@ pub(crate) struct RelationEntry {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConditionEntry {
     pub(crate) node: Option<ConditionNode>,
+    #[serde(skip)]
+    pub(crate) clock_projection: ClockProjection,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -99,11 +104,30 @@ pub enum ConditionOperation<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConditionView<'dae> {
+    pub(crate) clock_projection: ClockProjection,
     pub(crate) operation: ConditionOperation<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
 impl<'dae> ConditionView<'dae> {
+    /// The checked Boolean condition cannot be true outside this clock's task.
+    pub fn requires_clock(self, clock: ClockId<'dae>) -> bool {
+        self.clock_projection.requires_clock(clock.index())
+    }
+
+    /// The checked Boolean condition is true on every tick of this clock.
+    pub fn is_true_on_clock_tick(self, clock: ClockId<'dae>) -> bool {
+        self.clock_projection.true_on_tick(clock.index())
+    }
+
+    /// A unique Boolean task selected by this condition, independently of
+    /// synchronous variable ownership. Consumers check its admitted clock kind.
+    pub fn projected_task_clock(self) -> Option<ClockId<'dae>> {
+        self.clock_projection
+            .selected_clock()
+            .map(ClockId::from_raw)
+    }
+
     pub const fn operation(self) -> ConditionOperation<'dae> {
         self.operation
     }
@@ -213,6 +237,7 @@ impl<'dae> Conditions<'_, 'dae> {
         let raw = checked_u32(self.storage.conditions.len(), "condition arena", provenance)?;
         self.storage.conditions.push(ConditionEntry {
             node: None,
+            clock_projection: ClockProjection::default(),
             provenance,
         });
         self.storage.condition_owner_clocks.push(None);
@@ -229,6 +254,7 @@ impl<'dae> Conditions<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         let node = self.checked_node(input, provenance)?;
         let owner_clock = owner_clock_for_node(self.storage, node, provenance)?;
+        let clock_projection = ClockProjection::issue(node, self.storage);
         let Some(entry) = self.storage.conditions.get_mut(condition.index() as usize) else {
             return Err(unknown("condition", condition.index(), provenance));
         };
@@ -236,6 +262,7 @@ impl<'dae> Conditions<'_, 'dae> {
             return Err(duplicate("condition", condition.index(), provenance));
         }
         entry.node = Some(node);
+        entry.clock_projection = clock_projection;
         self.storage.condition_owner_clocks[condition.index() as usize] = owner_clock;
         self.storage.unfilled_conditions -= 1;
         Ok(())

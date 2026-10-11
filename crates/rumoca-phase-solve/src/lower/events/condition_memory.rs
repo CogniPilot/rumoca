@@ -302,6 +302,20 @@ pub(super) fn condition_clock_owner<'dae>(
     view: dae::DaeView<'dae>,
     condition: dae::ConditionId<'dae>,
 ) -> Option<dae::ClockId<'dae>> {
+    synchronous_condition_clock_owner(view, condition).or_else(|| {
+        let clock = view.condition(condition)?.projected_task_clock()?;
+        matches!(
+            view.clock(clock)?.operation(),
+            dae::ClockOperation::Periodic(_)
+        )
+        .then_some(clock)
+    })
+}
+
+pub(super) fn synchronous_condition_clock_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionId<'dae>,
+) -> Option<dae::ClockId<'dae>> {
     let condition = view
         .condition(condition)
         .expect("checked condition identity resolves");
@@ -309,14 +323,14 @@ pub(super) fn condition_clock_owner<'dae>(
         dae::ConditionOperation::Initial => None,
         dae::ConditionOperation::Clock(clock) => Some(clock),
         dae::ConditionOperation::And(lhs, rhs) => merge_condition_clocks(
-            condition_clock_owner(view, lhs),
-            condition_clock_owner(view, rhs),
+            synchronous_condition_clock_owner(view, lhs),
+            synchronous_condition_clock_owner(view, rhs),
             false,
         ),
         dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
             merge_condition_clocks(
-                condition_clock_owner(view, lhs),
-                condition_clock_owner(view, rhs),
+                synchronous_condition_clock_owner(view, lhs),
+                synchronous_condition_clock_owner(view, rhs),
                 true,
             )
         }

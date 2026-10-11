@@ -1146,7 +1146,9 @@ fn condition_is_domain_clock_only<'dae>(
     condition: dae::ConditionId<'dae>,
     clock: dae::ClockId<'dae>,
 ) -> bool {
-    periodic_trigger::condition_true_on_tick(view, condition, clock)
+    view.condition(condition)
+        .expect("checked sharing guard")
+        .is_true_on_clock_tick(clock)
 }
 
 /// Count the eager call occurrences of one clock-domain value, following the

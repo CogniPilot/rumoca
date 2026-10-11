@@ -103,6 +103,7 @@ fn condition_view(entry: &ConditionEntry) -> ConditionView<'_> {
         }
     };
     ConditionView {
+        clock_projection: entry.clock_projection,
         operation,
         provenance: entry.provenance,
     }

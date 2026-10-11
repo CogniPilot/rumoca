@@ -2003,35 +2003,25 @@ fn periodic_guard_totality_reuses_the_checked_boolean_activation() {
     model.inspect(|view| {
         let clock = view.clock_id(0).unwrap();
         let conditions = view.conditions().map(|(id, _)| id).collect::<Vec<_>>();
-        assert!(periodic_trigger::condition_true_on_tick(
-            view,
-            conditions[3],
-            clock
-        ));
-        assert!(periodic_trigger::condition_requires_clock(
-            view,
-            conditions[3],
-            clock
-        ));
-        assert!(!periodic_trigger::condition_true_on_tick(
-            view,
-            conditions[5],
-            clock
-        ));
-        assert!(periodic_trigger::condition_requires_clock(
-            view,
-            conditions[5],
-            clock
-        ));
-        assert!(!periodic_trigger::condition_requires_clock(
-            view,
-            conditions[7],
-            clock
-        ));
-        assert!(!periodic_trigger::condition_true_on_tick(
-            view,
-            conditions[6],
-            clock
-        ));
+        assert!(
+            view.condition(conditions[3])
+                .unwrap()
+                .is_true_on_clock_tick(clock)
+        );
+        assert!(view.condition(conditions[3]).unwrap().requires_clock(clock));
+        assert!(
+            !view
+                .condition(conditions[5])
+                .unwrap()
+                .is_true_on_clock_tick(clock)
+        );
+        assert!(view.condition(conditions[5]).unwrap().requires_clock(clock));
+        assert!(!view.condition(conditions[7]).unwrap().requires_clock(clock));
+        assert!(
+            !view
+                .condition(conditions[6])
+                .unwrap()
+                .is_true_on_clock_tick(clock)
+        );
     });
 }
