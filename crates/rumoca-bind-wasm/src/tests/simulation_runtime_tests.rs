@@ -19,19 +19,7 @@ fn interactive_scenario_parameters_match_the_authored_curve_and_reset() {
                 &options,
             )
             .unwrap();
-            for _ in 0..2 {
-                assert_eq!(session.time(), 0.0);
-                assert_eq!(session.get("x").unwrap(), Some(1.0));
-                for time in [0.05, 0.1] {
-                    session.advance_to(time).unwrap();
-                    let actual = session.get("x").unwrap().unwrap();
-                    assert!(
-                        (actual - (-gain * time).exp()).abs() < 1e-7,
-                        "{policy}: k={gain}, x({time})={actual}"
-                    );
-                }
-                session.reset().unwrap();
-            }
+            check_decay_steps_and_reset(&mut session, gain, policy);
         }
     }
     let error = crate::WasmSimulationSession::with_interactive_configuration(
@@ -43,6 +31,27 @@ fn interactive_scenario_parameters_match_the_authored_curve_and_reset() {
     .expect("canonical parameter owner rejects an unknown name");
     assert!(error.message().contains("missing"), "{error}");
     clear_source_root_cache().unwrap();
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+fn check_decay_steps_and_reset(
+    session: &mut crate::WasmSimulationSession,
+    gain: f64,
+    policy: &str,
+) {
+    for _ in 0..2 {
+        assert_eq!(session.time(), 0.0);
+        assert_eq!(session.get("x").unwrap(), Some(1.0));
+        for time in [0.05, 0.1] {
+            session.advance_to(time).unwrap();
+            let actual = session.get("x").unwrap().unwrap();
+            assert!(
+                (actual - (-gain * time).exp()).abs() < 1e-7,
+                "{policy}: k={gain}, x({time})={actual}"
+            );
+        }
+        session.reset().unwrap();
+    }
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]

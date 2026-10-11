@@ -32,9 +32,9 @@ fn profile_owner(profile: &Value, language: &str, page: &str) -> Result<&'static
             "{language}/{class} requires {allowed}, got {owner}"
         ));
     }
-    if !profile["scope"]
+    if profile["scope"]
         .as_str()
-        .is_some_and(|scope| !scope.is_empty())
+        .is_none_or(|scope| scope.is_empty())
     {
         return Err("missing proof scope".to_owned());
     }

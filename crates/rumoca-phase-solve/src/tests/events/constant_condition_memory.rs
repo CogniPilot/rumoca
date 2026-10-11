@@ -34,19 +34,8 @@ fn internal_false_condition_omits_only_its_redundant_memory_row() {
             ])
         })?;
         model.conditions(|conditions| {
-            let mut current = conditions.reserve(internal_at)?;
-            conditions.define(current, dae::ConditionInput::Always, internal_at)?;
-            omitted.push(current.index() as usize);
-            for depth in 1..=3 {
-                let next = conditions.reserve(internal_at)?;
-                conditions.define(next, dae::ConditionInput::Not(current), internal_at)?;
-                if depth % 2 == 1 {
-                    omitted.push(next.index() as usize);
-                } else {
-                    retained.push(next.index() as usize);
-                }
-                current = next;
-            }
+            let current =
+                internal_condition_chain(conditions, internal_at, &mut omitted, &mut retained)?;
             for (literal, at) in literals.into_iter().zip([true_at, false_at]) {
                 let condition = conditions.reserve(at)?;
                 conditions.define(condition, dae::ConditionInput::Discrete(literal), at)?;
@@ -83,6 +72,28 @@ fn internal_false_condition_omits_only_its_redundant_memory_row() {
         );
     }
     assert_eq!(targets.len(), 5);
+}
+
+fn internal_condition_chain<'dae>(
+    conditions: &mut dae::Conditions<'_, 'dae>,
+    at: dae::DaeProvenance,
+    omitted: &mut Vec<usize>,
+    retained: &mut Vec<usize>,
+) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
+    let mut current = conditions.reserve(at)?;
+    conditions.define(current, dae::ConditionInput::Always, at)?;
+    omitted.push(current.index() as usize);
+    for depth in 1..=3 {
+        let next = conditions.reserve(at)?;
+        conditions.define(next, dae::ConditionInput::Not(current), at)?;
+        if depth % 2 == 1 {
+            omitted.push(next.index() as usize);
+        } else {
+            retained.push(next.index() as usize);
+        }
+        current = next;
+    }
+    Ok(current)
 }
 
 fn stationary_state(
