@@ -223,15 +223,7 @@ fn user_guide_predator_width_313_uses_the_full_authored_source() {
     let source = original.replacen(declaration, "parameter Integer nHidden(min = 3) = 313", 1);
     let started = std::time::Instant::now();
     compile_balanced(&source, "NeuralPredatorPrey");
-    let metadata = model_parameter_metadata(&source, "NeuralPredatorPrey").unwrap();
-    let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
-    let count = metadata
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|parameter| parameter["name"] == "trainableParams")
-        .unwrap();
-    assert_eq!(count["defaultValue"], 100162);
+    assert_predator_parameter_cardinality(&source);
     let mut session = WasmSimulationSession::with_interactive_options(
         &source,
         "NeuralPredatorPrey",
@@ -259,4 +251,43 @@ fn user_guide_predator_width_313_uses_the_full_authored_source() {
         started.elapsed().as_secs_f64()
     );
     clear_source_root_cache().unwrap();
+}
+
+fn assert_predator_parameter_cardinality(source: &str) {
+    crate::with_singleton_session(|session| {
+        session.update_document("input.mo", source);
+        let requested = crate::qualify_input_model_name(session, "NeuralPredatorPrey");
+        let compilation = crate::compile_requested_model(session, &requested)?;
+        compilation.dae.inspect(|view| {
+            let mut scalar_count = 0;
+            for (name, dimensions) in [
+                ("W1", &[313, 3][..]),
+                ("b1", &[313][..]),
+                ("Wmid", &[313, 313][..]),
+                ("bmid", &[313][..]),
+                ("W2", &[2, 313][..]),
+                ("b2", &[2][..]),
+            ] {
+                let (_, parameter) = view
+                    .variables()
+                    .find(|(_, variable)| variable.name().as_str() == name)
+                    .unwrap_or_else(|| panic!("missing authored network parameter {name}"));
+                assert_eq!(
+                    parameter.role(),
+                    rumoca_compile::compile::VariableRole::Parameter,
+                    "{name}"
+                );
+                assert_eq!(
+                    serde_json::to_value(parameter.value_type().scalar_type()).unwrap(),
+                    "real",
+                    "{name}"
+                );
+                assert_eq!(parameter.value_type().dimensions(), dimensions, "{name}");
+                scalar_count += parameter.scalar_count();
+            }
+            assert_eq!(scalar_count, 100162);
+        });
+        Ok(())
+    })
+    .unwrap();
 }
