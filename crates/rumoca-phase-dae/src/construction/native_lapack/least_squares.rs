@@ -756,7 +756,7 @@ impl<'dae> LapackBuilder<'_, '_, 'dae> {
     }
 
     /// `dtrsm`: solve the leading upper-triangular `rank` block in place.
-    fn back_substitute(
+    pub(super) fn back_substitute(
         &mut self,
         rows: &[Vec<dae::ExprId<'dae>>],
         rank: usize,
