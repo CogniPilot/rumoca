@@ -15,8 +15,8 @@ try {
   const page = await browser.newPage();
   // This focused public-runtime proof uses the authored repository bytes.
   // It does not claim that the current compiler or complete book is qualified.
-  const response = await page.goto(`${base}/examples/models/SympyDecay.mo`, { waitUntil: "domcontentloaded" });
-  assert.ok(response.ok(), "the exact repository model must be served");
+  const response = await page.goto(`${base}/packages/playground/index.html`, { waitUntil: "domcontentloaded" });
+  assert.ok(response.ok(), "the actual browser application must be served");
   const traces = await page.evaluate(async () => {
     const wasm = await import("/packages/rumoca/dist/release-full-web/rumoca_bind_wasm.js");
     await wasm.default();
