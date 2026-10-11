@@ -164,6 +164,23 @@ fn nested_model_arm_first_creates_a_shared_global_function() {
     assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
     let json = serde_json::to_value(&dae).unwrap();
     serde_json::from_value::<Dae>(json.clone()).expect("JSON reissues the same boundaries");
+    let end = json["storage"]["functions"][0]["construction_end"]
+        .as_u64()
+        .unwrap();
+    for wrong_end in [end - 1, end + 1] {
+        let mut wrong = json.clone();
+        wrong["storage"]["functions"][0]["construction_end"] = serde_json::json!(wrong_end);
+        assert!(
+            serde_json::from_value::<Dae>(wrong).is_err(),
+            "the global suspension must cover exactly its body, including its dead tail"
+        );
+    }
+    let mut missing_end = json.clone();
+    missing_end["storage"]["functions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("construction_end");
+    assert!(serde_json::from_value::<Dae>(missing_end).is_err());
     let mut earlier = json;
     earlier["storage"]["functions"][0]["construction_start"] = serde_json::json!(0);
     assert!(
