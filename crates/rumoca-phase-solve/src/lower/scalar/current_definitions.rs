@@ -1,6 +1,7 @@
 //! Current algebraic reads project the structural engine's exact definition.
 
 use super::*;
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 mod tests;

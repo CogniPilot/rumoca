@@ -127,7 +127,11 @@ fn inactive_current_alias_with_unproven_subscript_remains_lazy() {
         };
         assert!(!compiler.conditional_is_total(operands));
         let ops = compiler.program(selected, 0).unwrap();
-        let block = solve::ScalarProgramBlock::with_source_span(vec![ops], span).unwrap();
+        let block = solve::ScalarProgramBlock::with_source_span(
+            vec![ops],
+            span.require_provenance("selected alias fixture").unwrap(),
+        )
+        .unwrap();
         let mut actual = [f64::NAN];
         rumoca_eval_solve::eval_scalar_program_block(
             &block,

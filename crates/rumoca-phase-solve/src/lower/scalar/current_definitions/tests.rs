@@ -114,7 +114,11 @@ fn same_expression_entry_current_entry_reads_keep_distinct_registers() {
         let owner = compiler.same_tick_definitions.as_ref().unwrap();
         assert_eq!(owner.facts.borrow().len(), 1);
         assert!(Rc::ptr_eq(&owner.facts, &owner.clone().facts));
-        let block = solve::ScalarProgramBlock::with_source_span(vec![compiler.ops], span).unwrap();
+        let block = solve::ScalarProgramBlock::with_source_span(
+            vec![compiler.ops],
+            span.require_provenance("current alias fixture").unwrap(),
+        )
+        .unwrap();
         let mut actual = [0.0; 3];
         rumoca_eval_solve::eval_scalar_program_block(
             &block,

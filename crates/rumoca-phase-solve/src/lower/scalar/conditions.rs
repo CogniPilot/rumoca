@@ -2,7 +2,7 @@ use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{ActivationCondition, ActivationGuard, ScalarCompiler};
+use super::{ActivationCondition, ActivationGuard, ScalarCompiler, ScalarContextFrame};
 use crate::LowerError;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
