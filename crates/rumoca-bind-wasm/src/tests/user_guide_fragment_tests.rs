@@ -155,3 +155,54 @@ fn user_guide_tank_composition_uses_the_documented_connector_and_modifications()
     }
     clear_source_root_cache().unwrap();
 }
+
+#[test]
+fn user_guide_latent_width_variants_use_the_full_authored_source() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let page = std::fs::read_to_string(
+        repository_root().join("docs/user-guide/src/language/neural-odes.md"),
+    )
+    .unwrap();
+    let original = model_source("NeuralLatentOscillator");
+    let declaration = "parameter Integer nHidden(min = nFeature) = 128";
+    assert_eq!(original.matches(declaration).count(), 1);
+    for (width, count) in [(256, 71435), (512, 273931)] {
+        assert!(page.contains(&format!("`nHidden = {width}`")));
+        assert!(page.contains(&format!("`{count}`")));
+        let source = original.replacen(
+            declaration,
+            &format!("parameter Integer nHidden(min = nFeature) = {width}"),
+            1,
+        );
+        let started = std::time::Instant::now();
+        compile_balanced(&source, "NeuralLatentOscillator");
+        let mut session = WasmSimulationSession::with_interactive_options(
+            &source,
+            "NeuralLatentOscillator",
+            0.01,
+            "rk-like",
+            1e-8,
+            1e-8,
+            "[]",
+        )
+        .unwrap();
+        for time in [0.0, 0.01, 0.02] {
+            session.advance_to(time).unwrap();
+            for index in 1..=8 {
+                assert!(
+                    session
+                        .get(&format!("latent[{index}]"))
+                        .unwrap()
+                        .unwrap()
+                        .is_finite()
+                );
+            }
+        }
+        eprintln!(
+            "[guide-prose-width] {width} {count}parameters {:.6}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    clear_source_root_cache().unwrap();
+}
