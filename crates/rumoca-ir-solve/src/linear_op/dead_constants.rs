@@ -93,7 +93,7 @@ mod tests {
                 base: 0,
                 stride: 1,
                 dimensions: Box::new([1]),
-                indices: Box::new([1]),
+                indices: Box::new([TensorIndex::Runtime(1)]),
             },
             LinearOp::StoreOutput { src: 2 },
         ];
