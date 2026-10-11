@@ -1,7 +1,7 @@
 # Native nested-fold false-arm before probe
 
-This test-only source retains the original native emission. No production
-repair or test execution is included. It depends on the #411 source candidate
+The original test-only source retained the native emission without repair.
+Its qualification depends on the #411 source candidate
 e4693ec3e and the parent test-type correction 718d131d5 (picked as 5208ef103).
 
 `enter_nested_fold_guard` compares a scalar condition with zero, then emits
@@ -72,3 +72,44 @@ Exact additional selector, expected **1**:
 cargo test --locked --offline -p rumoca-exec-cranelift --lib \
   emit::fold_tests::known_runtime_access::known_runtime_index_preserves_selected_fault_and_inactive_protection
 ```
+
+## Bounded native-owner repair candidate
+
+The native false-arm guard now compares its I8 condition flag with zero.
+Known-invalid offsets return the existing native index-fault status. Live
+offsets pass that same status check before projection loads. Register, carried,
+and captured projections reuse one private checked-offset wrapper and one
+private constant-invalid emitter; the latter's dummy continuation value is
+unreachable after the unconditional failure return, never a successful output.
+Invalid floating coordinates use saturating conversion during address
+calculation so they reach the status check without a conversion trap. The shared
+offset query still supplies its separate scalar-update consumer with the
+original `(offset, valid)` contract; this change makes no new update-policy claim.
+
+Checked constructors remain responsible for rank, nonempty extents, register and
+tuple coverage, stride, and constant coordinate admission. The repair changes the
+machine-code consumer of those same checked owners, not their representation or
+admission. No tensor expansion, public API, input/output admission, or native
+pointer contract changes are introduced.
+
+Two supplementary registered native tests exercise all three projection storage
+owners. Each checks index 1 against the independent value 10, indices 0/2 against
+exact canonical axis/index/extent faults, and fractional/NaN/infinite coordinates
+against the canonical invalid-Integer index fault. Native calls must return the
+existing index-fault status and leave the output sentinel untouched. The known
+and live cases separately retain explicit JIT call counts. Native status 1 does
+not carry the canonical fault's axis/index payload; no diagnostic parity beyond
+its existing status contract is claimed.
+
+Exact supplementary selector, expected **2**:
+
+```sh
+cargo test --locked --offline -p rumoca-exec-cranelift --lib \
+  emit::fold_tests::projection_faults::
+```
+
+The two unchanged selected original tests plus these two new controls total
+**4** tests under the three exact selectors above. After execution is **UNRUN**:
+the root agent owns the guarded Cargo lane. Source formatting and `git diff
+--check` passed. This is a checked-constructor/native-kernel profile; public
+Modelica source reachability of the nested-fold guard defect remains unproven.

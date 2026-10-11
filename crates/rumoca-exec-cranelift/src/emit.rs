@@ -3888,7 +3888,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let use_nested = if nested_when_true {
             condition
         } else {
-            self.fb.ins().bnot(condition)
+            self.fb.ins().icmp_imm(IntCC::Equal, condition, 0)
         };
         let nested = self.fb.create_block();
         let continuation = self.fb.create_block();
@@ -5543,7 +5543,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     stride,
                     "constant tensor projection source",
                 )?)?,
-                None => self.fb.ins().f64const(f64::NAN),
+                None => self.invalid_tensor_projection(),
             };
             return self.insert(dst, value);
         }
@@ -5576,16 +5576,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.ins().stack_store(value, slot, byte_offset);
         }
 
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
         let byte_offset = self
             .fb
             .ins()
             .imul_imm(flat, std::mem::size_of::<f64>() as i64);
         let stack = self.fb.ins().stack_addr(types::I64, slot, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
     }
 
@@ -5609,7 +5607,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             let value = self.constant_fold_carried_value(carried, base, stride, offset)?;
             return self.insert(dst, value);
         }
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
         let stride = i64::try_from(stride).map_err(|_| {
             CompileError::Backend("function-fold tensor stride exceeds i64".to_string())
         })?;
@@ -5624,9 +5622,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .imul_imm(element_offset, std::mem::size_of::<f64>() as i64);
         let stack = self.fb.ins().stack_addr(types::I64, carried, 0);
         let address = self.fb.ins().iadd(stack, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
     }
 
@@ -5638,7 +5634,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         offset: Option<usize>,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
         let Some(offset) = offset else {
-            return Ok(self.fb.ins().f64const(f64::NAN));
+            return Ok(self.invalid_tensor_projection());
         };
         let offset = offset
             .checked_mul(stride)
@@ -5677,7 +5673,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                             "constant function-fold capture projection is out of range".to_string(),
                         )
                     })?,
-                None => self.fb.ins().f64const(f64::NAN),
+                None => self.invalid_tensor_projection(),
             };
             return self.insert(dst, value);
         }
@@ -5686,7 +5682,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 "indexed function-fold capture has no addressable capture tuple".to_string(),
             )
         })?;
-        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        let flat = self.checked_tensor_projection_offset(dimensions, indices)?;
         let element = self.fb.ins().imul_imm(
             flat,
             i64::try_from(stride).map_err(|_| {
@@ -5701,10 +5697,25 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         );
         let byte_offset = self.fb.ins().imul_imm(element, 8);
         let address = self.fb.ins().iadd(captures_ptr, byte_offset);
-        let projected = self.fb.ins().load(types::F64, self.flags, address, 0);
-        let out_of_range = self.fb.ins().f64const(f64::NAN);
-        let value = self.fb.ins().select(valid, projected, out_of_range);
+        let value = self.fb.ins().load(types::F64, self.flags, address, 0);
         self.insert(dst, value)
+    }
+
+    fn invalid_tensor_projection(&mut self) -> cranelift_codegen::ir::Value {
+        let invalid = self.fb.ins().iconst(types::I8, 0);
+        status::require_index(self.fb, invalid);
+        // The failure returns before this unreachable, builder-typed continuation.
+        self.fb.ins().f64const(0.0)
+    }
+
+    fn checked_tensor_projection_offset(
+        &mut self,
+        dimensions: &[u32],
+        indices: &[rumoca_ir_solve::TensorIndex],
+    ) -> Result<cranelift_codegen::ir::Value, CompileError> {
+        let (flat, valid) = self.lower_tensor_offset(dimensions, indices)?;
+        status::require_index(self.fb, valid);
+        Ok(flat)
     }
 
     /// Resolve binder-derived tensor projections while a tiny fixed fold is
@@ -5780,7 +5791,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                     valid = self.fb.ins().band(valid, axis_valid);
                     let clamped = self.fb.ins().fmax(rounded, one);
                     let clamped = self.fb.ins().fmin(clamped, upper);
-                    let one_based = self.fb.ins().fcvt_to_sint(types::I64, clamped);
+                    // Invalid coordinates must reach the caller's explicit status
+                    // check instead of trapping during address calculation.
+                    let one_based = self.fb.ins().fcvt_to_sint_sat(types::I64, clamped);
                     self.fb.ins().iadd_imm(one_based, -1)
                 }
             };
