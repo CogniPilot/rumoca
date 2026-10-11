@@ -31,6 +31,8 @@ mod source_root_api_tests;
 mod user_guide_config_fragment_tests;
 mod user_guide_examples_tests;
 mod user_guide_inline_tests;
+#[cfg(feature = "native-assignments")]
+mod user_guide_inventory;
 #[cfg(feature = "sim-rk45")]
 mod user_guide_fragment_tests;
 #[cfg(all(not(target_arch = "wasm32"), feature = "sim-rk45"))]

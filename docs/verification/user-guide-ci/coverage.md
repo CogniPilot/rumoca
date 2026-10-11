@@ -4,7 +4,8 @@ The published21d guide contained44 Modelica fences:15 complete inline models,
 21 scenario references to16 distinct configurations, and8 teaching fragments.
 The connector explanation now supplies the previously undefined Tank definition,
 adding one complete fence. The inventory therefore requires45 fences,
-16 standalone models and8 fragments. Every fence must be classified; additions
+16 standalone models and8 fragments. Seventeen fences contain a top-level
+model declaration because the TwoTanks composition is one of those8 fragments. Every fence must be classified; additions
 fail the inventory until their context and expectations are reviewed.
 
 The single fixture owner is `rumoca-bind-wasm/src/tests/user_guide_sources.rs`.
@@ -18,8 +19,9 @@ cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --noc
 ```
 
 The original expanded filter selected13 tests. The current source additionally
-selects the original thermostat counterexample and the full Latent256/512 prose
-variants plus TOML-context and other-language inventory tests:17 tests, with no ignored tests. Completed and resource-stopped receipts
+selects the corrected thermostat cycle test and the full Latent256/512 prose
+variants plus TOML-context and two other-language inventory tests:18 tests,
+with no ignored tests. Completed and resource-stopped receipts
 remain distinct from the complete current gate. The same source fixtures enter the actual
 binding compilation/simulation front door rather than a separate snippet parser.
 
@@ -57,11 +59,25 @@ The exact unchanged32-wide tensor model provides the context and actual
 
 
 All other fenced examples are hash-bound in
-[non-modelica-inventory.json](non-modelica-inventory.json):100 code fences and15
+[non-modelica-inventory.json](non-modelica-inventory.json):102 code fences and15
 explanatory outputs. The inventory records each exact page/line/language,
-classification, owner and proof scope. It deliberately records pending gates:
-a named owner or syntax check is not an execution receipt. New/changed snippets
+exact body line count, classification, finite execution owner and proof scope.
+The inventory rejects unknown owners, language/classification mismatches, missing
+source spans, and absent required test or CI registrations. Source registration
+is distinct from actual completion:
+a registered owner or syntax check is not an execution receipt. Some required
+owners are not yet integrated into this source, so its inventory gate must fail
+until those concrete routes are present. New/changed snippets
 fail the mandatory FullWeb inventory test until the inventory is reviewed.
 Sixteen TOML excerpts enter the actual scenario/workspace configuration parser;
 application paths and external-process placeholders are not claimed as runnable
 models. Four visualization snippets require actual browser runtime context.
+
+The frozen14-test gate at656013a6fa0f25aea9d507b14e929daed03a6a81
+actually passed all14 tests (93.15s test execution), including all16 scenario
+compilations with the corrected periodic equation scheduler. Its raw log SHA256
+is50da8178c8158bf89530b7f9ac98b9b6daa7c9dc07aaa60e918a420328a175dc.
+That receipt includes the original thermostat counterexample, which proves
+heat0.02 never switches. The heat0.05 correction and independent repeated
+hysteresis-cycle after-test are unmeasured here, as are the future18-test suite,
+Latent256/512, configuration contexts, and stronger owner registry.

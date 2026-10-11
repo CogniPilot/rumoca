@@ -3,68 +3,73 @@
   "profiles": {
     "project-template-bash": {
       "classification": "project-template",
-      "owner": "CLI grammar tests",
+      "owner": "cli-context",
       "scope": "Explicit caller-supplied model/target/path placeholder; guide supplies no source under this filename. Generic syntax coverage is distinct from actual linked-model runs."
     },
     "explanatory-output-text": {
       "classification": "explanatory-output",
-      "owner": "inventory",
+      "owner": "displayed-output",
       "scope": "Displayed output, notation or directory layout; not executable source."
     },
     "executable-command-bash": {
       "classification": "executable-command",
-      "owner": "guide CLI/scenario validation",
+      "owner": "cli-context",
       "scope": "Actual command/configuration context identified by its surrounding page; native binding compilation is not CLI execution. Exact CLI gate pending."
     },
     "configuration-context-toml": {
       "classification": "configuration-context",
-      "owner": "user_guide_toml_fragments_parse_in_their_documented_configuration_context",
+      "owner": "guide-toml",
       "scope": "Checked config parser context; source-derived selector, actual gate pending."
     },
     "environment-setup-bash": {
       "classification": "environment-setup",
-      "owner": "installer/package CI",
+      "owner": "package-install",
       "scope": "Installation/setup instructions; not a model compilation or application input. Do not run external installer or mutate user shell during guide tests."
     },
     "executable-visualizer-js": {
       "classification": "executable-visualizer",
-      "owner": "actual book browser smoke",
+      "owner": "book-browser",
       "scope": "Runtime-provided viz/data/container context; native model proof does not execute this JS. Browser gate pending."
     },
     "executable-context-rust": {
       "classification": "executable-context",
-      "owner": "rumoca-opt::tests::user_guide_rhs_fit_uses_the_authored_neural_model",
+      "owner": "opt-rhs",
       "scope": "Source-derived mandatory workspace selector; current actual gate pending."
     },
     "executable-benchmark-bash": {
       "classification": "executable-benchmark",
-      "owner": "manual original neural parity benchmark",
+      "owner": "cli-context",
       "scope": "Exact CLI/JAX benchmark gate pending; default100k dimensions are not substituted."
     },
     "explanatory-output-xml": {
       "classification": "explanatory-output",
-      "owner": "FMI metadata export tests",
+      "owner": "metadata-output",
       "scope": "Illustrates generated FMI annotation inside modelDescription.xml; not a standalone input document."
     },
     "explanatory-output-json": {
       "classification": "explanatory-output",
-      "owner": "stdio protocol",
+      "owner": "protocol-output",
       "scope": "Expected hello response, not a command or source; exact CLI protocol replay pending."
     },
     "executable-context-python": {
       "classification": "executable-context",
-      "owner": "installed-wheel Python guide gate",
+      "owner": "python-guide",
       "scope": "Exact guide execution pending Python owner candidate and receipt."
     },
     "executable-tool-bash": {
       "classification": "executable-tool",
-      "owner": "CLI formatter/linter guide controls",
+      "owner": "cli-context",
       "scope": "Requires disposable authored source context; existing formatter/linter tests are not exact guide-command receipts."
     },
     "project-template-cmake": {
-      "classification": "project-template",
-      "owner": "inventory",
+      "classification": "executable-context",
+      "owner": "python-guide",
       "scope": "Application template requires user model.mo/rumoca-scenario.toml and project CMake source/build directory; no supplied standalone project."
+    },
+    "executable-stdio-python": {
+      "classification": "executable-context",
+      "owner": "cli-stdio",
+      "scope": "Exact documented Python controller executed against the native CLI stdio session."
     }
   },
   "entries": [
@@ -159,7 +164,7 @@
     {"page": "simulation/stdio-session.md", "line": 12, "language": "bash", "source_sha256": "67d27cbe7b838e8db3f0cb8f2112115d5efc64d2293e416b5dd686db66b05d1c", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "simulation/stdio-session.md", "line": 33, "language": "json", "source_sha256": "f96d4c53d2df140df303e1660182f24029fbbdf99d9ec2a1f876168858791d62", "profile": "explanatory-output-json", "source_line_count": 1},
     {"page": "simulation/stdio-session.md", "line": 107, "language": "text", "source_sha256": "d6d19d30bcc6dd7bd07a5e7d74da39dd09912275a5366b907b536a07d7e13e4c", "profile": "explanatory-output-text", "source_line_count": 8},
-    {"page": "simulation/stdio-session.md", "line": 135, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-context-python", "source_line_count": 20},
+    {"page": "simulation/stdio-session.md", "line": 135, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-stdio-python", "source_line_count": 20},
     {"page": "tools/cli.md", "line": 7, "language": "text", "source_sha256": "f39f5d6301ae4395854d50478f18b6a66c05268070424360083333c3fe0aa88a", "profile": "explanatory-output-text", "source_line_count": 10},
     {"page": "tools/cli.md", "line": 27, "language": "bash", "source_sha256": "98d4bc5032e46e0adf0b3beb355fd951b80c9cb9160fcc4922bba42aa6dadfe9", "profile": "project-template-bash", "source_line_count": 1},
     {"page": "tools/cli.md", "line": 33, "language": "bash", "source_sha256": "620a0f5d0573993e5d37311acdcb31a1f9f03c4e0924c3831b52924a968e0d0a", "profile": "project-template-bash", "source_line_count": 1},
@@ -170,18 +175,20 @@
     {"page": "tools/fmt-lint.md", "line": 23, "language": "bash", "source_sha256": "c488940f02f9b881df4ac600f6a9b71ddb86b9333b72bcb5712809f553400007", "profile": "executable-tool-bash", "source_line_count": 1},
     {"page": "tools/fmt-lint.md", "line": 42, "language": "bash", "source_sha256": "4b98df8431fb3e137a2489551746916c4fb28fccadcc777b8500e22571386cdc", "profile": "executable-tool-bash", "source_line_count": 5},
     {"page": "tools/playground.md", "line": 8, "language": "text", "source_sha256": "fd4db4536f72f1811e0c5d812653ad49d4a866ce7c82a89921129e3e7210a650", "profile": "explanatory-output-text", "source_line_count": 1},
-    {"page": "tools/python.md", "line": 9, "language": "bash", "source_sha256": "e95f3ae6852cc1807fe9c13c22069858493e785cef92fd5a193d0c31337d85c7", "profile": "environment-setup-bash", "source_line_count": 5},
-    {"page": "tools/python.md", "line": 23, "language": "python", "source_sha256": "ccd06af087b9ef7417eeb6ef6ad105128cb922a89a97993018d93157a35e8d65", "profile": "executable-context-python", "source_line_count": 12},
-    {"page": "tools/python.md", "line": 44, "language": "python", "source_sha256": "c75dd81980b118a0edc19d903db044fc0e512940f164de60986761b586297053", "profile": "executable-context-python", "source_line_count": 2},
-    {"page": "tools/python.md", "line": 52, "language": "python", "source_sha256": "2a7ae03564ceb9d945eea0d0888ecfd685681eaea6b37aaa65a1ce0143d25c21", "profile": "executable-context-python", "source_line_count": 6},
-    {"page": "tools/python.md", "line": 63, "language": "python", "source_sha256": "c2ed9a4968e47cb36e1c2dff36f3b96bdc3a504ff4b5b5e1ed17d91617d65ef3", "profile": "executable-context-python", "source_line_count": 5},
-    {"page": "tools/python.md", "line": 88, "language": "python", "source_sha256": "e80182a28faa20954a59ed20bdee384dd5a27e63137682e48e85e486259922d2", "profile": "executable-context-python", "source_line_count": 3},
-    {"page": "tools/python.md", "line": 103, "language": "python", "source_sha256": "b9c70efa21bcc6d698fcdd223d6a56a09fee804ed58db98af5f072c3041e7cb7", "profile": "executable-context-python", "source_line_count": 2},
-    {"page": "tools/python.md", "line": 114, "language": "python", "source_sha256": "54d344ae6e80a998196b00bbf3a75ee855c3c96aa16e22274c8ee5ecbcc1116f", "profile": "executable-context-python", "source_line_count": 2},
-    {"page": "tools/python.md", "line": 125, "language": "python", "source_sha256": "8bd96e83fd83b059a6443bfe3faff875d834942ab33b2960d3bbc9730ef09f5e", "profile": "executable-context-python", "source_line_count": 7},
-    {"page": "tools/python.md", "line": 141, "language": "cmake", "source_sha256": "c2114867f9d83d9b706f23aca3168c69ba8facf16d1f593676ae869e72630447", "profile": "project-template-cmake", "source_line_count": 13},
-    {"page": "tools/python.md", "line": 159, "language": "cmake", "source_sha256": "197d3a7d616eafcd1dfd85e53747de0de7a514746cd71875eefc4f69cae96eec", "profile": "project-template-cmake", "source_line_count": 5},
-    {"page": "tools/python.md", "line": 176, "language": "text", "source_sha256": "9a4675c83281dcb9507cb3bfe0f0889588db66fb540a1ac7abe13049ea6ab1eb", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 9, "language": "bash", "source_sha256": "46743c95939f4019ce7b8ed31b1b60020bb2406c1be2aa512609428344df369b", "profile": "environment-setup-bash", "source_line_count": 6},
+    {"page": "tools/python.md", "line": 28, "language": "python", "source_sha256": "100532c8a67e8e5803eefca51a07ccc556ac09acc03e03bb50a14459782e126e", "profile": "executable-context-python", "source_line_count": 13},
+    {"page": "tools/python.md", "line": 50, "language": "python", "source_sha256": "a1a8f45ccc6ec984a8793ba7124889c5c99752aff4b2c642530981bf63092c1d", "profile": "executable-context-python", "source_line_count": 3},
+    {"page": "tools/python.md", "line": 59, "language": "python", "source_sha256": "713c2c4cd0f10599c306d25d8a0a4a2308eb86484d22adb56a77d0e702934b56", "profile": "executable-context-python", "source_line_count": 6},
+    {"page": "tools/python.md", "line": 70, "language": "python", "source_sha256": "237af8456bcb458695570515f29408edc6357212ec95ed6e4a1c6f5295f0d0aa", "profile": "executable-context-python", "source_line_count": 5},
+    {"page": "tools/python.md", "line": 98, "language": "python", "source_sha256": "c1bc014ac160b4e63dde3e7fe77a4eafcf1f7a2a270c0d724eeb06aa0d09323c", "profile": "executable-context-python", "source_line_count": 3},
+    {"page": "tools/python.md", "line": 112, "language": "python", "source_sha256": "bbc79a3a2c2bf13a858a41994ae3b92ac33986216c39384dcf5aeeb43ac09881", "profile": "executable-context-python", "source_line_count": 13},
+    {"page": "tools/python.md", "line": 134, "language": "python", "source_sha256": "1193da9e5fe3ecdf8051fdb7e6d35a65e25874e7da7f3de8d20ff9cba5cd89b7", "profile": "executable-context-python", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 143, "language": "python", "source_sha256": "c039f9197304af0cb95ea8d9f40218faf2517e3ce244cb4e764e121f684efe16", "profile": "executable-context-python", "source_line_count": 1},
+    {"page": "tools/python.md", "line": 149, "language": "python", "source_sha256": "a7ca7ed04816a01251e92feac7c57ade53eed07e21504595a2abd3987fee8d19", "profile": "executable-context-python", "source_line_count": 7},
+    {"page": "tools/python.md", "line": 169, "language": "cmake", "source_sha256": "04ef8edd8a78afd2a37aab4d0b7aeafdfdcc2aa9b06c8f67c3df12aa1959ff75", "profile": "project-template-cmake", "source_line_count": 17},
+    {"page": "tools/python.md", "line": 192, "language": "cmake", "source_sha256": "aaa5744bc1327489cb37fe1ef2b45ccc8438c7e66b918373dfd4485871a51186", "profile": "project-template-cmake", "source_line_count": 5},
+    {"page": "tools/python.md", "line": 209, "language": "text", "source_sha256": "9a4675c83281dcb9507cb3bfe0f0889588db66fb540a1ac7abe13049ea6ab1eb", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 225, "language": "python", "source_sha256": "bc1861f0e9c3567a213dd04113650cdc76519c4a2c2e59563fadafbc596a7d8b", "profile": "executable-context-python", "source_line_count": 2},
     {"page": "tools/vscode.md", "line": 22, "language": "toml", "source_sha256": "047a3344a41395fbed0eeb44fa3dc5489360cb1de5a7d9aa5f36960dbec8d214", "profile": "configuration-context-toml", "source_line_count": 4}
   ]
 }
