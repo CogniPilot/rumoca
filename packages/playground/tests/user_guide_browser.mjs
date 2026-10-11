@@ -34,6 +34,13 @@ const packageBase = path.join(root, "packages/rumoca/dist/release-full-web");
 const manifest = JSON.parse(await readFile(path.join(packageBase, "package.json"), "utf8"));
 assert.equal(manifest.name, "@cognipilot/rumoca", "the shipped FullWeb npm package must exist");
 assert.ok(manifest.files.includes("rumoca_interactive.js"), "the actual package includes interactive sessions");
+// The package build stages these local assets; a retained dist/ alone is not
+// enough to run the real guide. Fail before compiling the docs if incomplete.
+for (const asset of ["packages/rumoca-web/vendor/monaco/vs/loader.js",
+  "packages/playground/vendor/monaco/vs/loader.js", "packages/rumoca-web/vendor/three_viewer.js"]) {
+  assert.ok((await readFile(path.join(root, asset))).length > 0,
+    `missing staged ${asset}; build the current FullWeb package with packages/rumoca/build.mjs`);
+}
 await run("cargo", ["xtask", "repo", "modelica-deps", "ensure"]);
 await run("cargo", ["xtask", "docs", "build", "--book", "user"]);
 const roots = JSON.parse(await readFile(path.join(root,
