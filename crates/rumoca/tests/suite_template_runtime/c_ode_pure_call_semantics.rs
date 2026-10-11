@@ -66,7 +66,7 @@ end Probe;
         r#"
 double y[RUMOCA_PROBE_Y_LEN] = {1.0};
 double out[RUMOCA_PROBE_DERIVATIVE_LEN] = {0};
-if (Probe_derivative_rhs(0.0, y, Probe_default_p, out) != 0) return 1;
+if (Probe_derivative_rhs(0.0, y, NULL, out) != 0) return 1;
 return out[0] == 6.0 ? 0 : 2;
 "#,
     );
