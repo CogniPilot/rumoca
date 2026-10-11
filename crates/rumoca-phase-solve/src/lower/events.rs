@@ -57,12 +57,12 @@ pub(super) fn lower_discrete_and_events<'dae>(
     lower_quotient_memory(view, layout, &mut discrete)?;
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
     lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
-    let mut event_clock_targets = std::mem::take(&mut discrete.event_clock_targets);
+    let mut equation_targets = std::mem::take(&mut discrete.guarded_equation_targets);
     lower_guarded_targets(
         view,
         layout,
         &mut discrete,
-        &mut event_clock_targets,
+        &mut equation_targets,
         solve::DiscreteRowRole::Equation,
     )?;
     let mut event_actions = Vec::new();
@@ -284,9 +284,9 @@ struct DiscreteRows<'dae> {
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
     same_tick_definitions: rumoca_phase_structural::SameTickDefinitions<'dae>,
-    /// The guarded targets of every MLS §16.3 event clock, lowered together
-    /// so the same-tick order spans all of an event partition's owners.
-    event_clock_targets: Vec<GuardedTarget<'dae>>,
+    /// Every guarded equation target, retained until B.1b and B.1c have both
+    /// contributed their owners. SOLVE-C58 order spans source value kinds.
+    guarded_equation_targets: Vec<GuardedTarget<'dae>>,
     /// Clock-owned producers pending SOLVE-C57 same-tick order issuance.
     clocked_producers: Vec<PendingClockedProducer<'dae>>,
     /// The issued clock-partition schedule (SOLVE-C57), filled by
@@ -1081,15 +1081,10 @@ fn lower_discrete_real_equations<'dae>(
         lower_unconditional_discrete_real(view, layout, clocks, rows, variable, &units, span)?;
     }
     let event_clock_targets = guarded_targets_of(view, layout, clocks, &event_clocked)?;
-    rows.event_clock_targets.extend(event_clock_targets);
-    lower_guarded_updates(
-        view,
-        layout,
-        clocks,
-        rows,
-        &conditional,
-        solve::DiscreteRowRole::Equation,
-    )
+    rows.guarded_equation_targets.extend(event_clock_targets);
+    let conditional_targets = guarded_targets_of(view, layout, clocks, &conditional)?;
+    rows.guarded_equation_targets.extend(conditional_targets);
+    Ok(())
 }
 
 fn checked_discrete_real_activation_clock<'dae>(

@@ -900,13 +900,8 @@ fn lower_conditional_discrete_value_owner<'dae>(
             )?;
         }
     }
-    lower_guarded_targets(
-        view,
-        layout,
-        rows,
-        &mut lowered,
-        solve::DiscreteRowRole::Equation,
-    )
+    rows.guarded_equation_targets.extend(lowered);
+    Ok(())
 }
 
 /// Lowers an always-active B.1c owner of an MLS §16.3 event clock: its
@@ -964,7 +959,7 @@ fn lower_triggered_discrete_value_owner<'dae>(
             None,
         )?;
     }
-    rows.event_clock_targets.extend(lowered);
+    rows.guarded_equation_targets.extend(lowered);
     Ok(())
 }
 
