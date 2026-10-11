@@ -323,6 +323,27 @@ fn inverse_refuses_pivots_outside_the_proven_matrix_extent() {
 }
 
 #[test]
+fn constant_invalid_inverse_pivots_are_refused_before_execution() {
+    // Preserve the original literal-input fixture separately: its assertion
+    // is reached by constant evaluation, before a runtime call can be issued.
+    for pivot in [0, 3] {
+        let compiled = compile(
+            "Real inverse[2,2]; Integer info;",
+            &format!("(inverse,info) = dgetri([1,0;0,1], {{{pivot},2}});"),
+        );
+        let error = simulate_dae(&compiled.dae, &SimOptions::default())
+            .expect_err("invalid constant pivots cannot issue an executable inverse");
+        let message = error.to_string();
+        assert!(message.contains("[EL005]"), "{message}");
+        assert!(
+            message.contains("constant call of `dgetri` cannot be evaluated"),
+            "{message}"
+        );
+        assert!(message.contains("function assertion failed"), "{message}");
+    }
+}
+
+#[test]
 fn inverse_does_not_consume_the_unused_final_pivot() {
     for pivots in ["{1,1}", "{1,0}"] {
         let result = run(
