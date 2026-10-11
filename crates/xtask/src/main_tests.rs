@@ -676,12 +676,10 @@ fn cli_parses_required_installed_wheel_guide_checks() {
         "--require-guide",
     ])
     .expect("parse the mandatory CI wheel verification command");
-    assert!(matches!(
-        cli.command,
-        Commands::Python(PythonArgs {
-            command: PythonCommand::Test(_),
-        })
-    ));
+    match cli.command {
+        Commands::Python(args) => assert!(matches!(args.command, PythonCommand::Test(_))),
+        other => panic!("expected python test command, got {other:?}"),
+    }
 }
 
 #[test]
