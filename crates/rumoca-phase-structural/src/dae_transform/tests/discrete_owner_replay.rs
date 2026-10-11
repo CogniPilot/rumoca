@@ -72,12 +72,10 @@ fn fixture(structured: bool) -> dae::Dae {
                 .binary(dae::BinaryOperator::Greater, lhs, rhs)
         })?;
         model.b1c([target], |topology| {
-            let append =
-                |owner: &mut dae::DiscreteValueOwner<'_, '_>| owner.always(at, [(value, at)]);
             match active {
                 Some(active) => {
                     assert!(matches!(
-                        topology.owner(at, [target], append),
+                        topology.owner(at, [target], |owner| owner.always(at, [(value, at)])),
                         Err(dae::DaeConstructionError::InvalidBinderScope {
                             expected_domain: None,
                             ..
@@ -89,7 +87,7 @@ fn fixture(structured: bool) -> dae::Dae {
                             foreign.unwrap(),
                             rumoca_core::ComprehensionScalarView::BinderSubstitution,
                             [target],
-                            append
+                            |owner| owner.always(at, [(value, at)])
                         ),
                         Err(dae::DaeConstructionError::InvalidBinderScope {
                             expected_domain: Some(_),
@@ -101,11 +99,12 @@ fn fixture(structured: bool) -> dae::Dae {
                         active,
                         rumoca_core::ComprehensionScalarView::BinderSubstitution,
                         [target],
-                        append,
+                        |owner| owner.always(at, [(value, at)]),
                     )?;
                 }
                 None => {
-                    topology.observed_owner(at, [target], append)?;
+                    topology
+                        .observed_owner(at, [target], |owner| owner.always(at, [(value, at)]))?;
                 }
             }
             Ok(())
