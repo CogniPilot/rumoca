@@ -167,3 +167,86 @@ fn ordinary_conditional_still_settles_to_its_selected_value() {
         )));
     });
 }
+
+#[test]
+fn nested_model_conditional_quotient_survives_state_differentiation() {
+    let text = "parameter Boolean c; Real x; Real y; Real a; x=if c then if c then y/(1+y) else y*y else y; der(y)=a; der(x)=1;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("conditional_derivative.mo", text);
+    let at = source_provenance(source, text, text);
+    let original = dae::Dae::construct(sources, |model| {
+        let (real, boolean) = model.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at)?,
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), at)?,
+            ))
+        })?;
+        let (x, y, a, c) = model.variables(|v| {
+            Ok((
+                v.state(
+                    VarName::new("x"),
+                    real,
+                    at,
+                    dae::VariableAttributes {
+                        state_select: rumoca_core::StateSelect::Never,
+                        ..Default::default()
+                    },
+                )?,
+                v.state(VarName::new("y"), real, at, Default::default())?,
+                v.algebraic(VarName::new("a"), real, at, Default::default())?,
+                v.parameter(VarName::new("c"), boolean, at, Default::default())?,
+            ))
+        })?;
+        let guard =
+            model.expressions(|e| e.at(at).coordinate(dae::CoordinateInput::Parameter(c)))?;
+        let outer = model.begin_model_conditional(guard, at)?;
+        let first = model.model_conditional_arm(&outer, true, |model| {
+            let inner = model.begin_model_conditional(guard, at)?;
+            let quotient = model.model_conditional_arm(&inner, true, |model| {
+                model.expressions(|e| {
+                    let y = e.at(at).coordinate(dae::CoordinateInput::State(y))?;
+                    let one = e.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+                    let denominator = e.at(at).binary(dae::BinaryOperator::Add, one, y)?;
+                    e.at(at).binary(dae::BinaryOperator::Divide, y, denominator)
+                })
+            })?;
+            let square = model.model_conditional_arm(&inner, false, |model| {
+                model.expressions(|e| {
+                    let y = e.at(at).coordinate(dae::CoordinateInput::State(y))?;
+                    e.at(at).binary(dae::BinaryOperator::Multiply, y, y)
+                })
+            })?;
+            model.finish_model_conditional(inner, [quotient, square])
+        })?;
+        let fallback = model.model_conditional_arm(&outer, false, |model| {
+            model.expressions(|e| e.at(at).coordinate(dae::CoordinateInput::State(y)))
+        })?;
+        let value = model.finish_model_conditional(outer, [first, fallback])?;
+        let residuals = model.expressions(|e| {
+            let xval = e.at(at).coordinate(dae::CoordinateInput::State(x))?;
+            let dx = e.at(at).coordinate(dae::CoordinateInput::Derivative(x))?;
+            let dy = e.at(at).coordinate(dae::CoordinateInput::Derivative(y))?;
+            let a = e.at(at).coordinate(dae::CoordinateInput::Algebraic(a))?;
+            let one = e.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+            Ok([
+                e.at(at)
+                    .binary(dae::BinaryOperator::Subtract, xval, value)?,
+                e.at(at).binary(dae::BinaryOperator::Subtract, dy, a)?,
+                e.at(at).binary(dae::BinaryOperator::Subtract, dx, one)?,
+            ])
+        })?;
+        model.continuous(|equations| {
+            for residual in residuals {
+                equations.value_equation(at, residual)?;
+            }
+            Ok(())
+        })
+    })
+    .expect("checked nested source branches");
+    let reduced =
+        prepare_for_solve(&original).expect("derivative arithmetic stays inside the issued branch");
+    let wire = serde_json::to_vec(reduced.as_dae()).unwrap();
+    let replay: dae::Dae = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(serde_json::to_vec(&replay).unwrap(), wire);
+    assert!(replay.inspect(|view| view.model_conditional_count()) >= 2);
+}
