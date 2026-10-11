@@ -23,7 +23,7 @@ end vectorRoot;
 model Probe
   Real x(start=1,fixed=true);
 equation
-  der(x)=sum(vectorRoot({x,4*x},x <> 0))/3;
+  der(x)=sum(vectorRoot({x,4*x},noEvent(x < 0 or x > 0)))/3;
 end Probe;
 "#;
 
@@ -75,6 +75,17 @@ int main(void) {
         if (out[0] != 1.0 || fetestexcept(FE_INVALID)) return 3;
     }
     return 0;
+}
+
+#[test]
+fn c_ode_selected_regions_reject_real_equality_outside_functions() {
+    // Retain the original illegal trigger as a language-admission control.
+    let source = SOURCE.replace("noEvent(x < 0 or x > 0)", "x <> 0");
+    let failure = Compiler::new()
+        .model("Probe")
+        .compile_str(&source, "selected_vector_real_equality.mo")
+        .expect_err("MLS §3.5 forbids Real equality outside functions");
+    assert!(failure.to_string().contains("ER029"), "{failure}");
 }
 "#,
     )
