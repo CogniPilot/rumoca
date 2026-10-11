@@ -1049,10 +1049,21 @@ pub fn collect_condition_same_instant_reads<'dae>(
     root: dae::ConditionId<'dae>,
     reads: &mut BTreeSet<u32>,
 ) {
+    collect_condition_same_instant_reads_except(view, root, &BTreeSet::new(), reads);
+}
+
+/// Collect body-guard reads, omitting source activation subtrees by identity.
+/// A coordinate read by both a trigger and a body guard stays a body read.
+pub fn collect_condition_same_instant_reads_except<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ConditionId<'dae>,
+    excluded: &BTreeSet<dae::ConditionId<'dae>>,
+    reads: &mut BTreeSet<u32>,
+) {
     let mut pending = vec![root];
     let mut seen = BTreeSet::new();
     while let Some(condition) = pending.pop() {
-        if !seen.insert(condition.index()) {
+        if excluded.contains(&condition) || !seen.insert(condition.index()) {
             continue;
         }
         match view

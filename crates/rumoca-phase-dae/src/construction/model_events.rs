@@ -861,32 +861,15 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     /// In a clocked body the condition is a clocked Boolean value of the
     /// partition (MLS §16.2.1): it reads the partition's `previous` and
     /// clocked coordinates and is evaluated once at the tick, so it is lowered
-    /// in the partition's clock scope and owns no event of its own. An
-    /// unclocked body keeps the ordinary event condition.
+    /// in the partition's clock scope. MLS §8.5 gives every when body
+    /// implicit `noEvent`, so its condition owns no activation relation.
     fn lower_body_condition(
         &mut self,
         parent: EventGuard<'dae>,
         condition: &Expression,
         span: Span,
     ) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
-        let Some(clock) = parent.owner_clock else {
-            let (condition, _) = lower_condition(
-                self.construction,
-                self.request.coordinates,
-                self.request.functions,
-                self.request.sample_lattices,
-                condition,
-            )?;
-            return Ok(condition);
-        };
-        let value = lower_clocked_expression(
-            self.construction,
-            self.request.coordinates,
-            self.request.functions,
-            clock,
-            condition,
-            None,
-        )?;
+        let value = self.lower_body_value(parent, condition)?;
         let provenance = dae::DaeProvenance::source(span)?;
         let lowered = self
             .construction

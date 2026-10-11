@@ -277,7 +277,7 @@ pub(super) struct SameTickExchangeMember {
     pub(super) targets: Vec<u32>,
     pub(super) reads: BTreeSet<u32>,
     /// Coordinates this member reads at the event-iteration entry: the
-    /// trigger and guard conditions of an unclocked `when`. Their producers
+    /// source trigger conditions of an unclocked `when`. Their producers
     /// are issued after this member, so it never observes an update of the
     /// same iteration.
     pub(super) entry_reads: BTreeSet<u32>,
@@ -346,6 +346,9 @@ impl SameTickExchange {
         let members = targets
             .iter()
             .map(|target| {
+                if target.clock.is_none() && target.event_clock.is_none() {
+                    return unclocked_member(view, definitions, target);
+                }
                 let (value_reads, condition_reads) =
                     guarded_group_same_tick_reads(std::slice::from_ref(target));
                 if target.event_clock.is_some() {
@@ -357,23 +360,10 @@ impl SameTickExchange {
                         |variable| event_clocked.contains(&variable),
                     );
                 }
-                // MLS §8.5: an unclocked `when` fires on its conditions at the
-                // event-iteration entry, and the next iteration re-evaluates
-                // them; only its values observe the instant's other
-                // equations. A clocked partition's conditions are values of
-                // the tick like any other.
-                if target.clock.is_none() {
-                    SameTickExchangeMember {
-                        targets: vec![target.variable.index()],
-                        reads: definitions.read_closure(view, &value_reads, &[]),
-                        entry_reads: definitions.read_closure(view, &[], &condition_reads),
-                    }
-                } else {
-                    SameTickExchangeMember {
-                        targets: vec![target.variable.index()],
-                        reads: definitions.read_closure(view, &value_reads, &condition_reads),
-                        entry_reads: BTreeSet::new(),
-                    }
+                SameTickExchangeMember {
+                    targets: vec![target.variable.index()],
+                    reads: definitions.read_closure(view, &value_reads, &condition_reads),
+                    entry_reads: BTreeSet::new(),
                 }
             })
             .collect::<Vec<_>>();
@@ -423,6 +413,36 @@ impl SameTickExchange {
     /// Whether every member of the set may share one program.
     pub(super) fn all_fusable(&self) -> bool {
         self.observes.iter().all(BTreeSet::is_empty)
+    }
+}
+
+/// Source activations read entry values; when-body conditions read the active
+/// equations' same-instant values (MLS §8.5 / SOLVE-C58).
+fn unclocked_member<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
+    target: &GuardedTarget<'dae>,
+) -> SameTickExchangeMember {
+    let triggers = target
+        .branches
+        .iter()
+        .map(|branch| branch.0)
+        .collect::<Vec<_>>();
+    let excluded = triggers.iter().copied().collect();
+    let mut direct = BTreeSet::new();
+    for &(_, guard, value, _) in &target.branches {
+        rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
+        rumoca_phase_structural::collect_condition_same_instant_reads_except(
+            view,
+            guard,
+            &excluded,
+            &mut direct,
+        );
+    }
+    SameTickExchangeMember {
+        targets: vec![target.variable.index()],
+        reads: definitions.variable_read_closure(view, direct),
+        entry_reads: definitions.read_closure(view, &[], &triggers),
     }
 }
 
