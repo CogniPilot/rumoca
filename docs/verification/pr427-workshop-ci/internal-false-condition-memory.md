@@ -14,7 +14,7 @@ synchronous value partition. `lower_condition_memory` omits the internal
 negation is false at every instant and every initialization pass. Its already
 zeroed memory slot represents the same truth without a refresh row.
 
-The candidate fixes that schedule owner. An iterative checked-node query
+The candidate fixes that schedule owner. A per-lowering memoized iterative checked-node query
 accepts only a chain of `Not` nodes ending in the internal `Always`, and omits
 the row only for an odd number of negations. It reads no source expression,
 initial flag, relation or clock. It leaves the checked layout and memory slot
@@ -61,3 +61,18 @@ Actual BEFORE bindings, all SHA256, under attempt
 The preceding unconditional time suite passed all 32 tests on the same
 source; neither that result nor source review qualifies this candidate's
 new refresh schedule. No runtime or cohort success is claimed for it.
+
+The followup caches both proved Boolean constants and unknown nodes in a
+private deterministic map. Each reachable internal chain node is inspected
+once per lowering, with O(n log n) map work and O(n) scratch storage; condition
+IDs need not be topological. The construction owner requires defined operands
+and defines each node once, so the issued graph is acyclic. A direct 1024-edge
+shared-chain control reserves IDs first and defines them in reverse index
+order, checks every parity result and checks reuse of the same proof entries.
+It also retains an authored literal as unknown. This control is **unrun**.
+
+The initial constructor control failed before row assertions because its DAE
+contained no variables or equations. The separate test-only correction adds
+an actual checked `Real x; equation der(x) = 0;` continuous model; all condition
+identities and the five retained refresh-target assertions remain unchanged.
+That fixture correction and the memoized candidate require fresh execution.

@@ -9,6 +9,7 @@ pub(super) fn lower_condition_memory<'dae>(
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     let vector_elements = unowned_vector_elements(view);
+    let mut internal_constants = BTreeMap::new();
     for (condition, condition_view) in view.conditions() {
         // A clock-owned condition is the activation of its partition and needs
         // no edge buffer, unless it is an element `bi` of a vector `when` that
@@ -33,7 +34,7 @@ pub(super) fn lower_condition_memory<'dae>(
         // memory slot already represents that truth, so no refresh row is
         // needed. Source literal conditions are Discrete nodes and retain
         // their initialization/edge buffers, including source `when true`.
-        if internal_false_condition(view, condition) {
+        if internal_false_condition(view, condition, &mut internal_constants) {
             continue;
         }
         let span = condition_view.provenance().span();
@@ -92,22 +93,32 @@ pub(super) fn lower_condition_memory<'dae>(
 fn internal_false_condition<'dae>(
     view: dae::DaeView<'dae>,
     mut condition: dae::ConditionId<'dae>,
+    constants: &mut BTreeMap<dae::ConditionId<'dae>, Option<bool>>,
 ) -> bool {
-    let mut negated = false;
-    loop {
+    let mut pending = Vec::new();
+    let mut value = loop {
+        if let Some(value) = constants.get(&condition) {
+            break *value;
+        }
         match view
             .condition(condition)
             .expect("checked condition identity resolves")
             .operation()
         {
-            dae::ConditionOperation::Always => return negated,
             dae::ConditionOperation::Not(operand) => {
-                negated = !negated;
+                pending.push(condition);
                 condition = operand;
             }
-            _ => return false,
+            dae::ConditionOperation::Always => break Some(true),
+            _ => break None,
         }
+    };
+    constants.insert(condition, value);
+    while let Some(condition) = pending.pop() {
+        value = value.map(|value| !value);
+        constants.insert(condition, value);
     }
+    value == Some(false)
 }
 
 /// Whether a relation or discrete operand of `condition` reads a `previous`
@@ -338,4 +349,69 @@ pub(in crate::lower) fn condition_memory(
         .get(condition.index() as usize)
         .copied()
         .ok_or_else(|| LowerError::contract("condition has no Solve memory slot", span))
+}
+
+#[cfg(test)]
+mod internal_constant_tests {
+    use super::*;
+
+    #[test]
+    fn shared_negation_chain_is_memoized_without_index_order_assumptions() {
+        let mut source_map = rumoca_core::SourceMap::new();
+        let source = source_map.add("constant.mo", "true");
+        let authored = dae::DaeProvenance::source(Span::from_offsets(source, 0, 4)).unwrap();
+        let internal =
+            dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, authored.span())
+                .unwrap();
+        let model = dae::Dae::construct(source_map, |model| {
+            let literal = model.expressions(|expressions| {
+                expressions
+                    .at(authored)
+                    .literal(dae::DaeLiteral::Boolean(true))
+            })?;
+            model.conditions(|conditions| {
+                let ids = (0..=1024)
+                    .map(|_| conditions.reserve(internal))
+                    .collect::<Result<Vec<_>, _>>()?;
+                conditions.define(ids[1024], dae::ConditionInput::Always, internal)?;
+                for index in (0..1024).rev() {
+                    conditions.define(
+                        ids[index],
+                        dae::ConditionInput::Not(ids[index + 1]),
+                        internal,
+                    )?;
+                }
+                let unknown = conditions.reserve(authored)?;
+                conditions.define(unknown, dae::ConditionInput::Discrete(literal), authored)
+            })
+        })
+        .expect("defined operands permit reserved IDs in reverse order");
+        model.inspect(|view| {
+            let mut constants = BTreeMap::new();
+            let conditions = view.conditions().map(|(id, _)| id).collect::<Vec<_>>();
+            assert!(!internal_false_condition(
+                view,
+                conditions[0],
+                &mut constants
+            ));
+            assert_eq!(
+                constants.len(),
+                1025,
+                "each shared chain node is issued once"
+            );
+            for (index, condition) in conditions[..1025].iter().copied().enumerate() {
+                assert_eq!(
+                    internal_false_condition(view, condition, &mut constants),
+                    index % 2 == 1
+                );
+                assert_eq!(constants.len(), 1025, "queries reuse the chain proof");
+            }
+            assert!(!internal_false_condition(
+                view,
+                conditions[1025],
+                &mut constants
+            ));
+            assert_eq!(constants.get(&conditions[1025]), Some(&None));
+        });
+    }
 }
