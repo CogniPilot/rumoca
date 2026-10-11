@@ -1,8 +1,29 @@
 //! A structured B.1c binder remains symbolic inside selected-arm captures.
 use super::*;
 
+#[derive(Clone, Copy)]
+enum Projection {
+    Binder,
+    Columns,
+    RepeatedColumn,
+}
+
 fn model() -> dae::Dae {
-    let text = "parameter Boolean choose; input Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation for i in 1:3 loop flags[i]=if choose then table[row,i]>0 else false; end for;";
+    projected_model(Projection::Binder)
+}
+
+fn projected_model(projection: Projection) -> dae::Dae {
+    let text = match projection {
+        Projection::Columns => {
+            "parameter Boolean choose; input Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation flags=if choose then {table[row,1]>0,table[row,2]>0,table[row,3]>0} else {false,false,false};"
+        }
+        Projection::RepeatedColumn => {
+            "parameter Boolean choose; input Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation flags=if choose then {table[row,1]>0,table[row,2]>0,table[row,2]>0} else {false,false,false};"
+        }
+        Projection::Binder => {
+            "parameter Boolean choose; input Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation for i in 1:3 loop flags[i]=if choose then table[row,i]>0 else false; end for;"
+        }
+    };
     let source = TestSource::new(text);
     let at = source.at(0, text.len());
     dae::Dae::construct(source.map, |model| {
@@ -54,29 +75,20 @@ fn model() -> dae::Dae {
                 let row = expressions
                     .at(at)
                     .coordinate(dae::CoordinateInput::DiscreteValue(row))?;
-                let index = expressions.at(at).binder(binder)?;
-                let value = expressions.at(at).index(
-                    table,
-                    [
-                        dae::Subscript::Index {
-                            expression: row,
-                            provenance: at,
-                        },
-                        dae::Subscript::Index {
-                            expression: index,
-                            provenance: at,
-                        },
-                    ],
-                )?;
-                let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
-                expressions
-                    .at(at)
-                    .binary(dae::BinaryOperator::Greater, value, zero)
+                selected_values(expressions, table, row, binder, projection, at)
             })
         })?;
         let fallback = model.model_conditional_arm(&owner, false, |model| {
             model.expressions(|expressions| {
-                expressions.at(at).literal(dae::DaeLiteral::Boolean(false))
+                let value = expressions
+                    .at(at)
+                    .literal(dae::DaeLiteral::Boolean(false))?;
+                match projection {
+                    Projection::Binder => Ok(value),
+                    Projection::Columns | Projection::RepeatedColumn => {
+                        expressions.at(at).array([value; 3])
+                    }
+                }
             })
         })?;
         let value = model.finish_model_conditional(owner, [selected, fallback])?;
@@ -84,7 +96,12 @@ fn model() -> dae::Dae {
             topology.structured_owner(
                 at,
                 domain,
-                rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                match projection {
+                    Projection::Binder => rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                    Projection::Columns | Projection::RepeatedColumn => {
+                        rumoca_core::ComprehensionScalarView::RowMajorProjection
+                    }
+                },
                 [flags],
                 |owner| owner.always(at, [(value, at)]),
             )?;
@@ -92,6 +109,56 @@ fn model() -> dae::Dae {
         })
     })
     .unwrap()
+}
+
+fn selected_values<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    table: dae::ExprId<'dae>,
+    row: dae::ExprId<'dae>,
+    binder: dae::DomainBinderId<'dae>,
+    projection: Projection,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let columns = match projection {
+        Projection::Binder => vec![expressions.at(at).binder(binder)?],
+        Projection::Columns | Projection::RepeatedColumn => {
+            let columns = match projection {
+                Projection::RepeatedColumn => [1, 2, 2],
+                _ => [1, 2, 3],
+            };
+            columns
+                .into_iter()
+                .map(|value| expressions.at(at).literal(dae::DaeLiteral::Integer(value)))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    let values = columns
+        .into_iter()
+        .map(|column| {
+            let value = expressions.at(at).index(
+                table,
+                [
+                    dae::Subscript::Index {
+                        expression: row,
+                        provenance: at,
+                    },
+                    dae::Subscript::Index {
+                        expression: column,
+                        provenance: at,
+                    },
+                ],
+            )?;
+            let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(at)
+                .binary(dae::BinaryOperator::Greater, value, zero)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() == 1 {
+        Ok(values[0])
+    } else {
+        expressions.at(at).array(values)
+    }
 }
 
 fn types<'dae>(
@@ -197,4 +264,33 @@ fn structured_selected_indices_keep_invalid_active_rows_faulting_and_inactive_ro
             ..
         })
     ));
+}
+
+#[test]
+fn structured_selected_indices_row_major_projection_preserves_each_column() {
+    let problem = lower_solve_problem(&projected_model(Projection::Columns)).unwrap();
+    assert_eq!(problem.discrete.structured_rhs.nodes.len(), 1);
+    assert_eq!(evaluate(&problem, true, 1.0).unwrap(), [0.0, 1.0, 0.0]);
+    assert_eq!(evaluate(&problem, true, 2.0).unwrap(), [1.0, 0.0, 1.0]);
+}
+
+#[test]
+fn structured_selected_indices_row_major_projection_keeps_lazy_faults() {
+    let problem = lower_solve_problem(&projected_model(Projection::Columns)).unwrap();
+    assert_eq!(evaluate(&problem, false, 99.0).unwrap(), [0.0; 3]);
+    assert!(matches!(
+        evaluate(&problem, true, 99.0),
+        Err(rumoca_eval_solve::EvalSolveError::TensorIndexOutOfBounds {
+            axis: 1,
+            index: 99,
+            extent: 2,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn structured_selected_indices_two_point_agreement_cannot_admit_a_non_affine_family() {
+    let error = lower_solve_problem(&projected_model(Projection::RepeatedColumn)).unwrap_err();
+    assert!(matches!(error, LowerError::NonComputable { reason, .. } if reason.contains("affine")));
 }
