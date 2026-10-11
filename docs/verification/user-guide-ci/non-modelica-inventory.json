@@ -189,7 +189,7 @@
     {"page": "tools/cli.md", "line": 111, "language": "bash", "source_sha256": "03b182e758701cd4088412dae71210d09dd47c3a5ff32f70d802b2436d5c7fcd", "profile": "executable-command-bash", "source_line_count": 1},
     {"page": "tools/fmt-lint.md", "line": 10, "language": "bash", "source_sha256": "a93fe4f8c1f5bcea06bfeec90706863ff8c02274f5cebfc92b0b2a03c8799559", "profile": "project-template-bash", "source_line_count": 3},
     {"page": "tools/fmt-lint.md", "line": 23, "language": "bash", "source_sha256": "c488940f02f9b881df4ac600f6a9b71ddb86b9333b72bcb5712809f553400007", "profile": "executable-tool-bash", "source_line_count": 1},
-    {"page": "tools/fmt-lint.md", "line": 42, "language": "bash", "source_sha256": "4b98df8431fb3e137a2489551746916c4fb28fccadcc777b8500e22571386cdc", "profile": "executable-tool-bash", "source_line_count": 5},
+    {"page": "tools/fmt-lint.md", "line": 42, "language": "bash", "source_sha256": "85519f6b520eb81f18b8b24b5d2d472c7436be273ebb7eb0f26c8e0f44b16350", "profile": "executable-tool-bash", "source_line_count": 5},
     {"page": "tools/playground.md", "line": 8, "language": "text", "source_sha256": "fd4db4536f72f1811e0c5d812653ad49d4a866ce7c82a89921129e3e7210a650", "profile": "explanatory-output-text", "source_line_count": 1},
     {"page": "tools/python.md", "line": 9, "language": "bash", "source_sha256": "46743c95939f4019ce7b8ed31b1b60020bb2406c1be2aa512609428344df369b", "profile": "environment-setup-bash", "source_line_count": 6},
     {"page": "tools/python.md", "line": 28, "language": "python", "source_sha256": "100532c8a67e8e5803eefca51a07ccc556ac09acc03e03bb50a14459782e126e", "profile": "executable-context-python", "source_line_count": 13},
