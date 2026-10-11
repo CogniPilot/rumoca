@@ -28,6 +28,7 @@ mod session_recovery_tests;
 mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
+mod user_guide_config_fragment_tests;
 mod user_guide_examples_tests;
 mod user_guide_inline_tests;
 #[cfg(feature = "sim-rk45")]

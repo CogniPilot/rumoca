@@ -8,7 +8,7 @@ adding one complete fence. The inventory therefore requires45 fences,
 fail the inventory until their context and expectations are reviewed.
 
 The single fixture owner is `rumoca-bind-wasm/src/tests/user_guide_sources.rs`.
-The existing mandatory Playground gate, `cargo xtask verify playground`, first
+The existing mandatory Playground gate, `cargo xtask playground test`, first
 stages the pinned MSL and CMM dependencies, then runs bind-wasm with all features.
 The focused native command is:
 
@@ -17,8 +17,10 @@ cargo xtask repo modelica-deps ensure
 cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --nocapture
 ```
 
-It selects13 tests, with no ignored tests. This count is source-derived until
-the complete new gate executes. The same source fixtures enter the actual
+The original expanded filter selected13 tests. The current source additionally
+selects the original thermostat counterexample and the full Latent256/512 prose
+variants plus TOML-context and other-language inventory tests:17 tests, with no ignored tests. Completed and resource-stopped receipts
+remain distinct from the complete current gate. The same source fixtures enter the actual
 binding compilation/simulation front door rather than a separate snippet parser.
 
 | Sources | Mandatory checks | Numerical scope |
@@ -44,3 +46,22 @@ ReusableBoosterLanding scenario failed checked clock ownership. Its compiler
 repair and this expanded13-test gate require replay on their exact combined
 source. Historical pre-consolidation9PASS receipts do not validate the rejected
 cross-crate module topology.
+
+
+The sole Rust excerpt is included from
+`rumoca-opt::tests::user_guide_rhs_fit_uses_the_authored_neural_model`, which is
+selected by ordinary workspace unit tests. Its focused command is
+`cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` (one test).
+The exact unchanged32-wide tensor model provides the context and actual
+`W1[1,1]` / `b1[1]` trainables; this is separate from generated JAX/CasADi proof.
+
+
+All other fenced examples are hash-bound in
+[non-modelica-inventory.json](non-modelica-inventory.json):100 code fences and15
+explanatory outputs. The inventory records each exact page/line/language,
+classification, owner and proof scope. It deliberately records pending gates:
+a named owner or syntax check is not an execution receipt. New/changed snippets
+fail the mandatory FullWeb inventory test until the inventory is reviewed.
+Sixteen TOML excerpts enter the actual scenario/workspace configuration parser;
+application paths and external-process placeholders are not claimed as runnable
+models. Four visualization snippets require actual browser runtime context.

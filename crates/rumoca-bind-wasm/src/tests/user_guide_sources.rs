@@ -6,6 +6,7 @@ pub(super) struct GuideFence {
     pub page: PathBuf,
     pub line: usize,
     pub source: String,
+    pub language: String,
     flags: Vec<String>,
 }
 
@@ -61,7 +62,7 @@ fn markdown_pages(dir: &Path, pages: &mut Vec<PathBuf>) {
     }
 }
 
-pub(super) fn guide_fences() -> Vec<GuideFence> {
+pub(super) fn markdown_fences() -> Vec<GuideFence> {
     let mut pages = Vec::new();
     markdown_pages(&repository_root().join("docs/user-guide/src"), &mut pages);
     let mut fences = Vec::new();
@@ -70,7 +71,7 @@ pub(super) fn guide_fences() -> Vec<GuideFence> {
             .unwrap_or_else(|error| panic!("read {}: {error}", page.display()));
         let mut lines = text.lines().enumerate();
         while let Some((start, line)) = lines.next() {
-            let Some(info) = line.strip_prefix("```modelica") else {
+            let Some(info) = line.strip_prefix("```") else {
                 continue;
             };
             let body: Vec<_> = lines
@@ -82,11 +83,19 @@ pub(super) fn guide_fences() -> Vec<GuideFence> {
                 page: page.clone(),
                 line: start + 2,
                 source: body.join("\n") + "\n",
+                language: info.split(',').next().unwrap().to_owned(),
                 flags: info.split(',').map(|flag| flag.trim().to_owned()).collect(),
             });
         }
     }
     fences
+}
+
+pub(super) fn guide_fences() -> Vec<GuideFence> {
+    markdown_fences()
+        .into_iter()
+        .filter(|fence| fence.language == "modelica")
+        .collect()
 }
 
 #[test]
@@ -146,5 +155,41 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         );
         assert!(fence.line > 0, "{}", fence.page.display());
         assert!(fence.source.ends_with('\n'));
+    }
+}
+
+#[cfg(feature = "native-assignments")]
+#[test]
+fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples() {
+    use sha2::{Digest, Sha256};
+    let inventory = std::fs::read_to_string(
+        repository_root().join("docs/verification/user-guide-ci/non-modelica-inventory.json"),
+    )
+    .unwrap();
+    let inventory: serde_json::Value = serde_json::from_str(&inventory).unwrap();
+    assert_eq!(inventory["schema"], 1);
+    let entries = inventory["entries"].as_array().unwrap();
+    let fences: Vec<_> = markdown_fences()
+        .into_iter()
+        .filter(|fence| fence.language != "modelica")
+        .collect();
+    assert_eq!(fences.len(), 115);
+    assert_eq!(entries.len(), fences.len());
+    for (fence, entry) in fences.into_iter().zip(entries) {
+        let source_root = repository_root().join("docs/user-guide/src");
+        let page = fence
+            .page
+            .strip_prefix(&source_root)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(entry["page"], page);
+        assert_eq!(entry["line"], fence.line);
+        assert_eq!(entry["language"], fence.language);
+        let digest = format!("{:x}", Sha256::digest(fence.source.as_bytes()));
+        assert_eq!(entry["source_sha256"], digest, "{page}:{}", fence.line);
+        for field in ["classification", "owner", "scope"] {
+            assert!(entry[field].as_str().is_some_and(|value| !value.is_empty()));
+        }
     }
 }
