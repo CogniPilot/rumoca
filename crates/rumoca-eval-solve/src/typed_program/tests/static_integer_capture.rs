@@ -65,8 +65,18 @@ fn literal_integer_capture_preserves_value_and_move_time() {
                 .unwrap();
         for block in [original, projected] {
             let mut output = [f64::NAN];
-            crate::eval_scalar_program_block(&block, &[], &[], 0.0, Some(&table), &mut output)
-                .unwrap();
+            crate::eval_scalar_program_block_with_context(
+                &block,
+                &[],
+                &[],
+                0.0,
+                crate::RowEvalContext {
+                    pure_calls: Some(&table),
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap();
             assert_eq!(
                 output,
                 [expected],
@@ -90,8 +100,18 @@ fn overwritten_literal_integer_capture_remains_runtime_refusal() {
     assert!(crate::lower_scalar_ops(&original.programs()[0], Some(&table)).is_none());
     for (input, expected) in [(-2.0, 0.0), (1.0, 1.0)] {
         let mut output = [f64::NAN];
-        crate::eval_scalar_program_block(&original, &[input], &[], 0.0, Some(&table), &mut output)
-            .unwrap();
+        crate::eval_scalar_program_block_with_context(
+            &original,
+            &[input],
+            &[],
+            0.0,
+            crate::RowEvalContext {
+                pure_calls: Some(&table),
+                ..Default::default()
+            },
+            &mut output,
+        )
+        .unwrap();
         assert_eq!(output, [expected]);
     }
 }
@@ -104,8 +124,18 @@ fn invalid_literal_integer_capture_preserves_checked_domain_refusal() {
         assert!(crate::lower_scalar_ops(&original.programs()[0], Some(&table)).is_none());
         let mut output = [f64::NAN];
         assert!(
-            crate::eval_scalar_program_block(&original, &[], &[], 0.0, Some(&table), &mut output)
-                .is_err()
+            crate::eval_scalar_program_block_with_context(
+                &original,
+                &[],
+                &[],
+                0.0,
+                crate::RowEvalContext {
+                    pure_calls: Some(&table),
+                    ..Default::default()
+                },
+                &mut output
+            )
+            .is_err()
         );
     }
 }
