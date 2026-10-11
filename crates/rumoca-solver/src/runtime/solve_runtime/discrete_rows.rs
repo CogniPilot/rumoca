@@ -155,9 +155,10 @@ impl SolveRuntime {
             .iter()
             .filter(|row| matches!(row.role, solve::DiscreteRowRole::QuotientMemory { .. }))
             .any(|row| {
-                self.structured_discrete_rows.rhs.block().programs()[row.source_row]
-                    .iter()
-                    .any(|op| super::initial_projection::reads_algebraic_slot(op, state_count))
+                super::initial_projection::program_reads_algebraic_slots(
+                    &self.structured_discrete_rows.rhs.block().programs()[row.source_row],
+                    state_count,
+                )
             })
     }
 

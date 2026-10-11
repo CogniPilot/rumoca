@@ -981,11 +981,42 @@ fn updates_read_algebraic_slots(model: &solve::SolveModel) -> bool {
         .update_rhs()
         .programs()
         .iter()
-        .flatten()
-        .any(|op| reads_algebraic_slot(op, state_count))
+        .any(|ops| program_reads_algebraic_slots(ops, state_count))
 }
 
-pub(super) fn reads_algebraic_slot(op: &solve::LinearOp, state_count: usize) -> bool {
+/// Nested regions read the same solver vector as their enclosing program.
+/// Reuse the canonical Solve walker for scalar and compact Map update queries.
+pub(super) fn program_reads_algebraic_slots(ops: &[solve::LinearOp], state_count: usize) -> bool {
+    struct Reads {
+        state_count: usize,
+        found: bool,
+    }
+    impl solve::visitor::SolveVisitor for Reads {
+        type Error = std::convert::Infallible;
+
+        fn visit_linear_op(
+            &mut self,
+            _kind: solve::visitor::LinearOpSliceKind,
+            _index: usize,
+            op: &solve::LinearOp,
+        ) -> Result<(), Self::Error> {
+            self.found |= reads_algebraic_slot(op, self.state_count);
+            Ok(())
+        }
+    }
+    let mut reads = Reads {
+        state_count,
+        found: false,
+    };
+    let kind = solve::visitor::LinearOpSliceKind::ScalarProgram {
+        program_index: 0,
+        span: None,
+    };
+    let Ok(()) = solve::visitor::walk_linear_op_slice(&mut reads, kind, ops);
+    reads.found
+}
+
+fn reads_algebraic_slot(op: &solve::LinearOp, state_count: usize) -> bool {
     match op {
         solve::LinearOp::LoadY { index, .. } => *index >= state_count,
         solve::LinearOp::TensorLoad {
