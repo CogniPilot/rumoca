@@ -6,6 +6,9 @@
 //! from the in-memory result, which also carries the Flat model and avoids
 //! re-encoding the DAE through JavaScript numbers.
 
+#[cfg(test)]
+mod source_preview_tests;
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
