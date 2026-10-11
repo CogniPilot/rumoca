@@ -2,7 +2,7 @@
 use super::*;
 
 fn model() -> dae::Dae {
-    let text = "parameter Boolean choose; parameter Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation for i in 1:3 loop flags[i]=if choose then table[row,i]>0 else false; end for;";
+    let text = "parameter Boolean choose; input Integer row; parameter Real table[2,3]; discrete Boolean flags[3]; equation for i in 1:3 loop flags[i]=if choose then table[row,i]>0 else false; end for;";
     let source = TestSource::new(text);
     let at = source.at(0, text.len());
     dae::Dae::construct(source.map, |model| {
@@ -10,7 +10,16 @@ fn model() -> dae::Dae {
         let (choose, row, table, flags) = model.variables(|variables| {
             Ok((
                 variables.parameter(VarName::new("choose"), boolean, at, Default::default())?,
-                variables.parameter(VarName::new("row"), integer, at, Default::default())?,
+                variables.discrete_value(
+                    VarName::new("row"),
+                    integer,
+                    at,
+                    dae::VariableAttributes {
+                        causality: dae::VariableCausality::Input,
+                        declared_causality: dae::DeclaredCausality::Input,
+                        ..Default::default()
+                    },
+                )?,
                 variables.parameter(VarName::new("table"), matrix, at, Default::default())?,
                 variables.discrete_value(VarName::new("flags"), targets, at, Default::default())?,
             ))
@@ -44,7 +53,7 @@ fn model() -> dae::Dae {
                     .coordinate(dae::CoordinateInput::Parameter(table))?;
                 let row = expressions
                     .at(at)
-                    .coordinate(dae::CoordinateInput::Parameter(row))?;
+                    .coordinate(dae::CoordinateInput::DiscreteValue(row))?;
                 let index = expressions.at(at).binder(binder)?;
                 let value = expressions.at(at).index(
                     table,
@@ -179,5 +188,13 @@ fn structured_selected_indices_preserve_one_compact_owner_and_each_column() {
 fn structured_selected_indices_keep_invalid_active_rows_faulting_and_inactive_rows_lazy() {
     let problem = lower_solve_problem(&model()).expect("selected regions retain runtime indexing");
     assert_eq!(evaluate(&problem, false, 99.0).unwrap(), [0.0; 3]);
-    assert!(evaluate(&problem, true, 99.0).is_err());
+    assert!(matches!(
+        evaluate(&problem, true, 99.0),
+        Err(rumoca_eval_solve::EvalSolveError::TensorIndexOutOfBounds {
+            axis: 0,
+            index: 99,
+            extent: 2,
+            ..
+        })
+    ));
 }
