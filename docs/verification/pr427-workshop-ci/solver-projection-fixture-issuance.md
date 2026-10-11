@@ -1,0 +1,9 @@
+# Projection fixture structural ownership
+
+The first full solver run at `9aec6edc9fd68ef422566ba9b83462916402987e` executed 601 tests: 555 passed, 46 failed, none were ignored. Forty-five failures reached the same preparation refusal: `projection demand is outside its continuous structural owner`. The remaining periodic visibility failure is separate. This is an actual failing run, not a comparison against a measured full-suite baseline. Raw source, log and guardian hashes are retained in [the receipt](solver-projection-fixture-before.json).
+
+The manual fixtures declared algebraic projection blocks but omitted their derived structural artifacts. The runtime guard correctly rejects that mismatch, including interpreter preparation. Positive fixture construction now calls the existing canonical `rumoca_eval_solve::derive_solve_structural_artifacts` after completing its sources, layout and plan. Explicit analytic Jacobian programs fill missing fixture derivatives; no sparsity hint or parallel automatic differentiator is introduced. Test-only shared issuance has one normal module owner. Native positive fixtures that subsequently replace their programs reissue at their final construction point.
+
+Production preparation and its demand guard remain unchanged. Deliberately replaced primal/Jacobian negative controls retain stale metadata and must still fail. An additional positive/negative control clears the structural artifact of an otherwise valid model and requires the interpreter to reject it. This raises the expected full solver count to 602. The source fixes and peer fixture batch remain unqualified until an actual subsequent run; this note makes no CI or all-tests-passed claim.
+
+This follows SPEC_0007 / SOLVE-C17: structural sparsity is derived with Solve artifacts. It also uses SPEC_0029's existing single helper owner and SPEC_0021's normal test-module decomposition.

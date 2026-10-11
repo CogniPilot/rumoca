@@ -1,0 +1,55 @@
+{
+  "source": "9aec6edc9fd68ef422566ba9b83462916402987e",
+  "scope": "first full solver run after projection-demand preparation; no full-solver BEFORE baseline was run",
+  "command": [
+    "nix",
+    "develop",
+    ".#full",
+    "--command",
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--jobs",
+    "4",
+    "-p",
+    "rumoca-solver",
+    "--lib",
+    "--",
+    "--nocapture"
+  ],
+  "tests": {
+    "passed": 555,
+    "failed": 46,
+    "ignored": 0,
+    "projection_owner_failures": 45,
+    "other_failure": "runtime::solve_runtime::tests::visibility::phase_zero_unowned_sample_waits_for_its_single_post_initial_tick"
+  },
+  "resource": {
+    "elapsedMs": 58438.234802,
+    "peakRssKiB": 1601340,
+    "minimumAvailableKiB": 53957784,
+    "minimumScratchFreeBytes": 76125814784,
+    "peakCacheBytes": 8099971072,
+    "cacheLimitMiB": 8192,
+    "rssLimitMiB": 4096,
+    "availableFloorMiB": 16384,
+    "secondsLimit": 600,
+    "exitCode": 101
+  },
+  "raw_attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-periodic-owners-combined-after-20261012",
+  "raw_sha256": {
+    "recipe.json": "b3581ca9012a1d2c6656be28385cda2e76f1ddcec1d77433bbed50ad78e6a58d",
+    "solver-all-six-hundred-one.guardian.json": "d830ded2e936738d160a446998d02a1495a6b3d5b0caf133db32565814ceb736",
+    "solver-all-six-hundred-one.log": "0ef610a251dd664efcb05a4a1ea90f0a3f6aca1b60e44a10c708bfe554a177b8",
+    "parallel-terminal.json": "ff8afe527ae8b9986d2364619f5d3dc6edeed7ca1efce2912128e950c6b80575"
+  },
+  "repair_source": [
+    "5d63925aa80cc39975a487fc6d53d5f77d179a36",
+    "2af715bfca0a9d9e623fed4600edc10239d0bd96",
+    "820ad442720f9e296d5da600ee8ad441a4dc2b9a",
+    "f17177948546fcc0f4a5b6729ae2b7be7440edc3"
+  ],
+  "after_status": "UNRUN",
+  "expected_after_solver_count": 602
+}
