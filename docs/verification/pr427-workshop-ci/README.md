@@ -14,6 +14,7 @@ Manual PR claims are not CI evidence.
 | `SympyDecay.mo`, `FmiTensorDecay.mo` | Same reload and independent short OMC trace; preserve scalar/tensor starts and coordinate count. | Same Modelica lane |
 | `NeuralODETensor.mo`, `NeuralPredatorPrey.mo`, `NeuralODEBackprop.mo` | Same independent OMC checks on actual default dimensions; preserve arrays, matrices, comprehensions, loops, elementwise expressions, and fixed starts. Compare states and algebraic outputs, including neural loss/derivatives. | Same Modelica lane |
 | All five TOMLs in `examples/codegen/` | Request `getScenarioConfig`, verify actual model/target/output directory, use the referenced `.mo`, invoke `rumoca.workspace.renderTarget` with scenario URI, require successful complete artifacts. Custom directory/raw template resolve relative to the scenario; negative controls fail beside the model source. TOML is never injected as a Modelica document. | Workspace tests, `cargo test -p rumoca-tool-lsp workshop_codegen_tests::` |
+| Actual playground default workspace | Fetch actual tracked codegen files through the loader and require every tracked scenario to appear with its complete original content. Prevents the renamed JAX demo disappearing from the browser workspace. | Playground CI, existing `default_workspace_smoke.mjs` within `cargo xtask playground test` |
 | Actual `Ball.mo`, independent direct `jax-ode` request | Require `unsupported-feature:events` and no success artifacts. Ball retains its event semantics; the configured JAX demo now uses existing event-free SympyDecay. | Same LSP workspace tests |
 | Actual `SympyDecay.mo`, direct CasADi command | Require checked callable and initialization surface. This is an additional request regression, not a sixth tracked scenario. | Same LSP tests; independent numerical CasADi proof belongs to companion backend tests |
 | Actual `FmiTensorDecay.mo`, direct FMI2/FMI3 commands | Require every manifest-declared source project file, ME/CS metadata, scalar FMI2 vs tensor FMI3 dimensions/starts, build description, and valid minted identity. These are source previews, not built or executed FMUs. | Same LSP tests; FMI runtime/conformance remains in its existing lane |
@@ -91,7 +92,10 @@ The first LSP run found a harness expectation bug (`Real` versus canonical
 found a CSV collection type-inference error before OMC. After its correction,
 the actual original Circuit OMC check/simulation succeeded, then the required
 `src.v` column check failed because OMC omitted its constant alias. The physical
-channel correction above is not yet executed. No generated Modelica roundtrip,
+channel correction above is not yet executed. A source review also found stale
+Ball/JAX filenames in the user guide and playground seed roster; both now point
+to SympyDecay/JAX, with an added actual-file loader check that is still unrun.
+No generated Modelica roundtrip,
 workspace/clippy, fixed MSL canary, or broader gate is claimed green.
 
 Raw bounded attempts are retained below

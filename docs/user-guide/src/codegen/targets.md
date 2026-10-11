@@ -57,7 +57,7 @@ Like simulations, generation jobs worth repeating belong in a `rumoca-scenario.t
 with `task = "codegen"`. Runnable examples live under `examples/codegen/`
 and write into `examples/codegen/gen/` (git-ignored):
 
-- `examples/codegen/rumoca-scenario.ball_jax_ode.toml` — checked ODE RHS JAX target
+- `examples/codegen/rumoca-scenario.sympy_decay_jax_ode.toml` — checked ODE RHS JAX target
 - `examples/codegen/rumoca-scenario.sympy_decay_c_ode.toml` — checked ODE RHS C target
 - `examples/codegen/rumoca-scenario.sympy_decay_checked_dae_report.toml` —
   custom checked-DAE report target

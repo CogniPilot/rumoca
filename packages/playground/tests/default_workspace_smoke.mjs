@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
 
 import { loadDefaultWorkspaceEntries } from "../src/modules/default_workspace.js";
 
@@ -46,6 +47,44 @@ const REQUIRED_CMM_FILES = [
   "target/cmm/CMM-a642c381/LieGroups/SO3/Quat/wedge.mo",
   "target/cmm/CMM-a642c381/RigidBody/package.mo",
 ];
+
+test("default workspace seeds every tracked codegen scenario from repository files", async () => {
+  const directory = new URL("../../../examples/codegen/", import.meta.url);
+  const expected = (await readdir(directory))
+    .filter((name) => name.startsWith("rumoca-scenario.") && name.endsWith(".toml"))
+    .map((name) => `examples/codegen/${name}`)
+    .sort();
+  assert.ok(expected.length > 0, "tracked workshop codegen scenarios");
+  const originalFetch = globalThis.fetch;
+  const originalRepoAssetBase = globalThis.rumocaRepoAssetBase;
+  delete globalThis.rumocaRepoAssetBase;
+  globalThis.fetch = async (url) => {
+    const file = String(url).replace(/^\.\.\/\.\.\//, "").replace(/^\//, "");
+    if (!file.startsWith("examples/codegen/")) return fakeFetchResponse(file);
+    try {
+      const content = await readFile(new URL(file.slice("examples/codegen/".length), directory), "utf8");
+      return { ok: true, async text() { return content; } };
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return { ok: false };
+    }
+  };
+  try {
+    const entries = await loadDefaultWorkspaceEntries();
+    const actual = entries.filter((entry) => expected.includes(entry.path));
+    assert.deepEqual(actual.map((entry) => entry.path).sort(), expected,
+      "every actual scenario must be available in the seeded editor workspace");
+    for (const entry of actual) {
+      assert.equal(entry.content,
+        await readFile(new URL(entry.path.slice("examples/codegen/".length), directory), "utf8"),
+        "seeded configuration must preserve the actual tracked file");
+      assert.ok(entry.content.includes('task = "codegen"'), "actual codegen configuration");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.rumocaRepoAssetBase = originalRepoAssetBase;
+  }
+});
 
 test("default workspace requests only required CMM package files", async () => {
   const originalFetch = globalThis.fetch;
