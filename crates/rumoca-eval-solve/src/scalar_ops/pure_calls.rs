@@ -21,7 +21,17 @@
 //! makes the whole call unexpandable, so the caller refuses the model at the
 //! capability gate instead of emitting a different function.
 
+use super::ExpansionBudget;
+use crate::typed_program::element_matches_type;
+use rumoca_core::Span;
 use rumoca_ir_solve as solve;
+use std::sync::Arc;
+mod admission;
+use admission::program_work;
+mod number;
+mod shape;
+use number::{binary_op, binders, compare_op, constant, identity_element, unary_op};
+use shape::{concatenate, coordinates, row_major_offset, transpose};
 use solve::{
     BinaryOp, CompareOp, LinearOp, Reg, SolveBinaryOperator, SolveCompareOperator,
     SolveConversionOperator, SolveOperation, SolveProgramRegion, SolvePureCallOutputKind,
@@ -29,28 +39,28 @@ use solve::{
     SolveUnaryOperator, SolveValueKind, TypedProgram, UnaryOp,
 };
 
-/// Ops one model's inlined calls may emit before the expansion is refused.
-const OP_BUDGET: usize = 4_000_000;
 /// Nested call depth before a (recursive) call is refused.
 const CALL_DEPTH: usize = 64;
 
 #[derive(Clone, Copy)]
 enum Elem {
     Reg(Reg),
-    Num(f64),
+    Const(SolveValueKind),
 }
 
 #[derive(Clone)]
 struct Val {
-    dims: Vec<u32>,
-    elems: Vec<Elem>,
+    scalar: solve::SolveScalarType,
+    dims: Arc<Vec<u32>>,
+    elems: Arc<Vec<Elem>>,
 }
 
 impl Val {
-    fn scalar(elem: Elem) -> Self {
+    fn scalar(scalar: solve::SolveScalarType, elem: Elem) -> Self {
         Self {
-            dims: Vec::new(),
-            elems: vec![elem],
+            scalar,
+            dims: Arc::new(Vec::new()),
+            elems: Arc::new(vec![elem]),
         }
     }
 
@@ -60,6 +70,11 @@ impl Val {
             _ => None,
         }
     }
+    fn matches(&self, value_type: &solve::SolveValueType) -> bool {
+        self.scalar == value_type.element_type()
+            && self.dims.as_slice() == value_type.dimensions()
+            && self.elems.len() == value_type.scalar_count() as usize
+    }
 }
 
 pub(super) struct Inliner<'a> {
@@ -67,9 +82,8 @@ pub(super) struct Inliner<'a> {
     out: &'a mut Vec<LinearOp>,
     next: &'a mut Reg,
     depth: usize,
-    /// Inside a branch of a runtime conditional, where an out-of-range
-    /// constant subscript is a value the select discards, not a fault.
-    speculative: bool,
+    budget: &'a mut ExpansionBudget,
+    provenance: Option<Span>,
 }
 
 impl<'a> Inliner<'a> {
@@ -77,13 +91,15 @@ impl<'a> Inliner<'a> {
         table: &'a solve::SolvePureCallTable,
         out: &'a mut Vec<LinearOp>,
         next: &'a mut Reg,
+        budget: &'a mut ExpansionBudget,
     ) -> Self {
         Self {
             table,
             out,
             next,
             depth: 0,
-            speculative: false,
+            budget,
+            provenance: None,
         }
     }
 
@@ -96,10 +112,25 @@ impl<'a> Inliner<'a> {
         input_starts: &[Reg],
         site: &solve::SolvePureCallSite,
     ) -> Option<()> {
+        if !self.table.matches_site(site)
+            || self.table.arithmetic().real_format() != solve::SolveRealFormat::Binary64
+        {
+            return None;
+        }
         let owner = self.table.owner(site.owner())?;
         if input_starts.len() != owner.inputs().len() {
             return None;
         }
+        self.budget
+            .reserve(owner.inputs().iter().try_fold(0usize, |total, value| {
+                if matches!(value.element_type(), solve::SolveScalarType::Integer(_)) {
+                    return None;
+                }
+                total
+                    .checked_add(value.scalar_count() as usize)?
+                    .checked_add(value.dimensions().len())?
+                    .checked_add(1)
+            })?)?;
         let arguments = owner
             .inputs()
             .iter()
@@ -109,8 +140,9 @@ impl<'a> Inliner<'a> {
                     .map(|offset| start.checked_add(offset).map(Elem::Reg))
                     .collect::<Option<Vec<_>>>()?;
                 Some(Val {
-                    dims: value_type.dimensions().to_vec(),
-                    elems,
+                    scalar: value_type.element_type(),
+                    dims: Arc::new(value_type.dimensions().to_vec()),
+                    elems: Arc::new(elems),
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -155,17 +187,29 @@ impl<'a> Inliner<'a> {
         arguments: Vec<Val>,
         output_count: usize,
     ) -> Option<Vec<Val>> {
+        if program.arithmetic().real_format() != solve::SolveRealFormat::Binary64 {
+            return None;
+        }
+        self.budget.reserve(program_work(program)?)?;
         let input_count = arguments.len();
         let mut frame = Frame {
             program,
             slots: vec![None; program.slots().len()],
             registers: vec![None; program.register_types().len()],
         };
-        for (slot, value) in frame.slots.iter_mut().zip(arguments) {
+        for ((slot, declaration), value) in
+            frame.slots.iter_mut().zip(program.slots()).zip(arguments)
+        {
+            if !value.matches(declaration.value_type()) {
+                return None;
+            }
             *slot = Some(value);
         }
         for operation in program.operations() {
-            self.operation(&mut frame, operation.operation())?;
+            let previous = self.provenance.replace(operation.provenance());
+            let result = self.operation(&mut frame, operation.operation());
+            self.provenance = previous;
+            result?;
         }
         (input_count..input_count.checked_add(output_count)?)
             .map(|slot| frame.slots.get_mut(slot)?.take())
@@ -209,20 +253,37 @@ impl Frame<'_> {
         if count != elems.len() {
             return None;
         }
-        *self.registers.get_mut(register.index())? = Some(Val { dims, elems });
+        let scalar = self
+            .program
+            .register_types()
+            .get(register.index())?
+            .element_type();
+        if elems.iter().any(|elem| match elem {
+            Elem::Const(value) => !element_matches_type(*value, scalar),
+            Elem::Reg(_) => matches!(scalar, solve::SolveScalarType::Integer(_)),
+        }) {
+            return None;
+        }
+        *self.registers.get_mut(register.index())? = Some(Val {
+            scalar,
+            dims: Arc::new(dims),
+            elems: Arc::new(elems),
+        });
         Some(())
     }
 
     fn write_val(&mut self, register: SolveRegisterId, value: Val) -> Option<()> {
-        self.write(register, value.elems)
+        if !value.matches(self.program.register_types().get(register.index())?) {
+            return None;
+        }
+        *self.registers.get_mut(register.index())? = Some(value);
+        Some(())
     }
 }
 
 impl Inliner<'_> {
     fn push(&mut self, op: LinearOp) -> Option<()> {
-        if self.out.len() >= OP_BUDGET {
-            return None;
-        }
+        self.budget.reserve(1)?;
         self.out.push(op);
         Some(())
     }
@@ -231,100 +292,6 @@ impl Inliner<'_> {
         let reg = *self.next;
         *self.next = reg.checked_add(1)?;
         Some(reg)
-    }
-
-    fn materialize(&mut self, elem: Elem) -> Option<Reg> {
-        match elem {
-            Elem::Reg(reg) => Some(reg),
-            Elem::Num(value) => {
-                let dst = self.fresh()?;
-                self.push(LinearOp::Const { dst, value })?;
-                Some(dst)
-            }
-        }
-    }
-
-    fn unary(&mut self, op: UnaryOp, arg: Elem) -> Option<Elem> {
-        if let Elem::Num(value) = arg
-            && let Some(folded) = fold_unary(op, value)
-        {
-            return Some(Elem::Num(folded));
-        }
-        let arg = self.materialize(arg)?;
-        let dst = self.fresh()?;
-        self.push(LinearOp::Unary { dst, op, arg })?;
-        Some(Elem::Reg(dst))
-    }
-
-    fn binary(&mut self, op: BinaryOp, lhs: Elem, rhs: Elem) -> Option<Elem> {
-        if let (Elem::Num(lhs), Elem::Num(rhs)) = (lhs, rhs)
-            && let Some(folded) = fold_binary(op, lhs, rhs)
-        {
-            return Some(Elem::Num(folded));
-        }
-        let lhs = self.materialize(lhs)?;
-        let rhs = self.materialize(rhs)?;
-        let dst = self.fresh()?;
-        self.push(LinearOp::Binary { dst, op, lhs, rhs })?;
-        Some(Elem::Reg(dst))
-    }
-
-    fn compare(&mut self, op: CompareOp, lhs: Elem, rhs: Elem) -> Option<Elem> {
-        if let (Elem::Num(lhs), Elem::Num(rhs)) = (lhs, rhs) {
-            return Some(Elem::Num(f64::from(u8::from(op.compare(lhs, rhs)))));
-        }
-        let lhs = self.materialize(lhs)?;
-        let rhs = self.materialize(rhs)?;
-        let dst = self.fresh()?;
-        self.push(LinearOp::Compare { dst, op, lhs, rhs })?;
-        Some(Elem::Reg(dst))
-    }
-
-    fn select(&mut self, cond: Elem, if_true: Elem, if_false: Elem) -> Option<Elem> {
-        if let Elem::Num(cond) = cond {
-            return Some(if cond != 0.0 { if_true } else { if_false });
-        }
-        let cond = self.materialize(cond)?;
-        let if_true = self.materialize(if_true)?;
-        let if_false = self.materialize(if_false)?;
-        let dst = self.fresh()?;
-        self.push(LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        })?;
-        Some(Elem::Reg(dst))
-    }
-
-    /// MLS `div` / `mod` / `rem` and every other typed binary operator.
-    fn typed_binary(&mut self, op: SolveBinaryOperator, lhs: Elem, rhs: Elem) -> Option<Elem> {
-        let quotient = |inliner: &mut Self, round: UnaryOp| {
-            let ratio = inliner.binary(BinaryOp::Div, lhs, rhs)?;
-            inliner.unary(round, ratio)
-        };
-        let remainder = |inliner: &mut Self, round: UnaryOp| {
-            let rounded = quotient(inliner, round)?;
-            let multiple = inliner.binary(BinaryOp::Mul, rounded, rhs)?;
-            inliner.binary(BinaryOp::Sub, lhs, multiple)
-        };
-        match op {
-            SolveBinaryOperator::IntegerQuotient => quotient(self, UnaryOp::Trunc),
-            SolveBinaryOperator::IntegerModulo => remainder(self, UnaryOp::Floor),
-            SolveBinaryOperator::IntegerRemainder => remainder(self, UnaryOp::Trunc),
-            op => self.binary(binary_op(op), lhs, rhs),
-        }
-    }
-
-    fn zip_binary(&mut self, op: SolveBinaryOperator, lhs: &Val, rhs: &Val) -> Option<Vec<Elem>> {
-        if lhs.elems.len() != rhs.elems.len() {
-            return None;
-        }
-        lhs.elems
-            .iter()
-            .zip(&rhs.elems)
-            .map(|(lhs, rhs)| self.typed_binary(op, *lhs, *rhs))
-            .collect()
     }
 
     fn sum(&mut self, terms: impl IntoIterator<Item = Elem>) -> Option<Elem> {
@@ -337,186 +304,18 @@ impl Inliner<'_> {
     }
 }
 
-/// Fold only index-like arithmetic, whose result is exact in every target.
-fn fold_unary(op: UnaryOp, value: f64) -> Option<f64> {
-    Some(match op {
-        UnaryOp::Neg => -value,
-        UnaryOp::Not => f64::from(u8::from(value == 0.0)),
-        UnaryOp::Abs => value.abs(),
-        UnaryOp::Floor => value.floor(),
-        UnaryOp::Ceil => value.ceil(),
-        UnaryOp::Trunc => value.trunc(),
-        _ => return None,
-    })
-}
-
-fn fold_binary(op: BinaryOp, lhs: f64, rhs: f64) -> Option<f64> {
-    let exact_integers = lhs.fract() == 0.0 && rhs.fract() == 0.0;
-    Some(match op {
-        BinaryOp::Add if exact_integers => lhs + rhs,
-        BinaryOp::Sub if exact_integers => lhs - rhs,
-        BinaryOp::Mul if exact_integers => lhs * rhs,
-        BinaryOp::Div if exact_integers && rhs != 0.0 => lhs / rhs,
-        BinaryOp::And => f64::from(u8::from(lhs != 0.0 && rhs != 0.0)),
-        BinaryOp::Or => f64::from(u8::from(lhs != 0.0 || rhs != 0.0)),
-        BinaryOp::Min => solve::real_extremum(lhs, rhs, true),
-        BinaryOp::Max => solve::real_extremum(lhs, rhs, false),
-        _ => return None,
-    })
-}
-
-fn unary_op(op: SolveUnaryOperator) -> UnaryOp {
-    match op {
-        SolveUnaryOperator::Negate => UnaryOp::Neg,
-        SolveUnaryOperator::Not => UnaryOp::Not,
-        SolveUnaryOperator::Abs => UnaryOp::Abs,
-        SolveUnaryOperator::Sign => UnaryOp::Sign,
-        SolveUnaryOperator::Sqrt => UnaryOp::Sqrt,
-        SolveUnaryOperator::Floor => UnaryOp::Floor,
-        SolveUnaryOperator::Ceiling => UnaryOp::Ceil,
-        SolveUnaryOperator::Truncate => UnaryOp::Trunc,
-        SolveUnaryOperator::Sin => UnaryOp::Sin,
-        SolveUnaryOperator::Cos => UnaryOp::Cos,
-        SolveUnaryOperator::Tan => UnaryOp::Tan,
-        SolveUnaryOperator::Asin => UnaryOp::Asin,
-        SolveUnaryOperator::Acos => UnaryOp::Acos,
-        SolveUnaryOperator::Atan => UnaryOp::Atan,
-        SolveUnaryOperator::Sinh => UnaryOp::Sinh,
-        SolveUnaryOperator::Cosh => UnaryOp::Cosh,
-        SolveUnaryOperator::Tanh => UnaryOp::Tanh,
-        SolveUnaryOperator::Exp => UnaryOp::Exp,
-        SolveUnaryOperator::Log => UnaryOp::Log,
-        SolveUnaryOperator::Log10 => UnaryOp::Log10,
-    }
-}
-
-/// Every typed binary operator except the Integer quotient family, which
-/// [`Inliner::typed_binary`] expands.
-fn binary_op(op: SolveBinaryOperator) -> BinaryOp {
-    match op {
-        SolveBinaryOperator::Add => BinaryOp::Add,
-        SolveBinaryOperator::Subtract => BinaryOp::Sub,
-        SolveBinaryOperator::Multiply => BinaryOp::Mul,
-        SolveBinaryOperator::Divide
-        | SolveBinaryOperator::IntegerQuotient
-        | SolveBinaryOperator::IntegerModulo
-        | SolveBinaryOperator::IntegerRemainder => BinaryOp::Div,
-        SolveBinaryOperator::Power => BinaryOp::Pow,
-        SolveBinaryOperator::And => BinaryOp::And,
-        SolveBinaryOperator::Or => BinaryOp::Or,
-        SolveBinaryOperator::Atan2 => BinaryOp::Atan2,
-        SolveBinaryOperator::Min => BinaryOp::Min,
-        SolveBinaryOperator::Max => BinaryOp::Max,
-    }
-}
-
-fn compare_op(op: SolveCompareOperator) -> CompareOp {
-    match op {
-        SolveCompareOperator::Equal => CompareOp::Eq,
-        SolveCompareOperator::NotEqual => CompareOp::Ne,
-        SolveCompareOperator::Less => CompareOp::Lt,
-        SolveCompareOperator::LessEqual => CompareOp::Le,
-        SolveCompareOperator::Greater => CompareOp::Gt,
-        SolveCompareOperator::GreaterEqual => CompareOp::Ge,
-    }
-}
-
-fn constant(kind: SolveValueKind) -> f64 {
-    match kind {
-        SolveValueKind::Real32(bits) => f64::from(f32::from_bits(bits)),
-        SolveValueKind::Real64(bits) => f64::from_bits(bits),
-        // Integer values in a typed program are bounded far below 2^53.
-        #[allow(clippy::cast_precision_loss)]
-        SolveValueKind::Integer(value) => value as f64,
-        SolveValueKind::Boolean(value) => f64::from(u8::from(value)),
-    }
-}
-
-fn row_major_offset(dims: &[u32], coordinate: &[u32]) -> Option<usize> {
-    if dims.len() != coordinate.len() {
-        return None;
-    }
-    dims.iter()
-        .zip(coordinate)
-        .try_fold(0usize, |offset, (extent, index)| {
-            (index < extent).then(|| offset * *extent as usize + *index as usize)
-        })
-}
-
-/// Every row-major coordinate of `dims`, in order.
-fn coordinates(dims: &[u32]) -> impl Iterator<Item = Vec<u32>> + '_ {
-    let count = dims
-        .iter()
-        .map(|extent| *extent as usize)
-        .product::<usize>();
-    let mut coordinate = vec![0u32; dims.len()];
-    (0..count).map(move |ordinal| {
-        if ordinal > 0 {
-            advance(&mut coordinate, dims);
-        }
-        coordinate.clone()
-    })
-}
-
-/// The next row-major coordinate of `dims`.
-fn advance(coordinate: &mut [u32], dims: &[u32]) {
-    for axis in (0..coordinate.len()).rev() {
-        coordinate[axis] += 1;
-        if coordinate[axis] < dims[axis] {
-            return;
-        }
-        coordinate[axis] = 0;
-    }
-}
-
-/// MLS transpose of the first two axes, retaining every trailing axis.
-fn transpose(operand: &Val) -> Option<Vec<Elem>> {
-    let [rows, columns, trailing @ ..] = operand.dims.as_slice() else {
-        return None;
-    };
-    let (rows, columns) = (*rows as usize, *columns as usize);
-    let width = trailing
-        .iter()
-        .map(|extent| *extent as usize)
-        .product::<usize>();
-    (0..columns)
-        .flat_map(|column| (0..rows).map(move |row| (row * columns + column) * width))
-        .map(|start| operand.elems.get(start..start + width))
-        .collect::<Option<Vec<_>>>()
-        .map(|blocks| blocks.concat())
-}
-
-/// Axis concatenation of compact same-rank operands into `dims`.
-fn concatenate(dims: &[u32], axis: usize, operands: &[Val]) -> Option<Vec<Elem>> {
-    let extent = |dims: &[u32]| dims.iter().map(|e| *e as usize).product::<usize>();
-    let inner = extent(dims.get(axis + 1..)?);
-    let outer = extent(dims.get(..axis)?);
-    (0..outer)
-        .flat_map(|block| operands.iter().map(move |operand| (block, operand)))
-        .map(|(block, operand)| {
-            let width = *operand.dims.get(axis).unwrap_or(&1) as usize * inner;
-            operand.elems.get(block * width..(block + 1) * width)
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(|blocks| blocks.concat())
-}
-
 impl Inliner<'_> {
     /// A one-based Modelica subscript known at expansion time, as a zero-based
     /// coordinate.
     fn static_index(frame: &Frame<'_>, register: SolveRegisterId) -> Option<i64> {
         match frame.read(register)?.one()? {
-            Elem::Num(value) if value.fract() == 0.0 =>
-            {
-                #[allow(clippy::cast_possible_truncation)]
-                Some(value as i64 - 1)
-            }
+            Elem::Const(SolveValueKind::Integer(value)) => value.checked_sub(1),
             _ => None,
         }
     }
 
-    /// Element at `coordinate` of `value`; outside the extents it is a fault,
-    /// except speculatively, where a discarded NaN stands in.
+    /// A scalar select cannot preserve a conditional bounds fault. Refuse
+    /// every potentially active invalid access rather than inventing a value.
     fn element(&self, value: &Val, coordinate: &[i64]) -> Option<Elem> {
         let coordinate = coordinate
             .iter()
@@ -524,7 +323,6 @@ impl Inliner<'_> {
             .collect::<Option<Vec<_>>>();
         match coordinate.and_then(|coordinate| row_major_offset(&value.dims, &coordinate)) {
             Some(offset) => value.elems.get(offset).copied(),
-            None if self.speculative => Some(Elem::Num(f64::NAN)),
             None => None,
         }
     }
@@ -565,7 +363,7 @@ impl Inliner<'_> {
     fn operation(&mut self, frame: &mut Frame<'_>, operation: &SolveOperation) -> Option<()> {
         match operation {
             SolveOperation::Constant { destination, value } => {
-                frame.write(*destination, vec![Elem::Num(constant(value.kind()))])
+                frame.write(*destination, vec![constant(value.kind())])
             }
             SolveOperation::Load { destination, slot } => {
                 let value = frame.slots.get(slot.index())?.clone()?;
@@ -612,7 +410,7 @@ impl Inliner<'_> {
                 let elems = lhs
                     .elems
                     .iter()
-                    .zip(&rhs.elems)
+                    .zip(rhs.elems.iter())
                     .map(|(lhs, rhs)| self.compare(compare_op(*operator), *lhs, *rhs))
                     .collect::<Option<Vec<_>>>()?;
                 frame.write(*destination, elems)
@@ -626,14 +424,16 @@ impl Inliner<'_> {
                 let elems = operand
                     .elems
                     .iter()
-                    .map(|elem| match operator {
-                        SolveConversionOperator::IntegerToReal => Some(*elem),
-                        SolveConversionOperator::RealToIntegerTowardZero => {
-                            self.unary(UnaryOp::Trunc, *elem)
-                        }
-                        SolveConversionOperator::RealToIntegerTowardNegativeInfinity => {
-                            self.unary(UnaryOp::Floor, *elem)
-                        }
+                    .map(|elem| {
+                        self.convert(
+                            *operator,
+                            *elem,
+                            frame
+                                .program
+                                .register_types()
+                                .get(destination.index())?
+                                .element_type(),
+                        )
                     })
                     .collect::<Option<Vec<_>>>()?;
                 frame.write(*destination, elems)
@@ -655,7 +455,7 @@ impl Inliner<'_> {
                 let elems = if_true
                     .elems
                     .iter()
-                    .zip(&if_false.elems)
+                    .zip(if_false.elems.iter())
                     .map(|(if_true, if_false)| self.select(condition, *if_true, *if_false))
                     .collect::<Option<Vec<_>>>()?;
                 frame.write(*destination, elems)
@@ -681,11 +481,14 @@ impl Inliner<'_> {
             } => {
                 let captures = frame.reads(captures)?;
                 let mut elems = Vec::new();
+                self.check_domain(domain, body.body())?;
                 for tuple in domain.index_tuple_iter().ok()? {
+                    self.budget
+                        .reserve(captures.len().checked_add(tuple.len().checked_mul(3)?)?)?;
                     let mut arguments = captures.clone();
-                    arguments.extend(binders(&tuple));
+                    arguments.extend(binders(&tuple, self.table.arithmetic())?);
                     let [output] = <[Val; 1]>::try_from(self.region(body, arguments)?).ok()?;
-                    elems.extend(output.elems);
+                    elems.extend(output.elems.iter().copied());
                 }
                 frame.write(*destination, elems)
             }
@@ -767,8 +570,8 @@ impl Inliner<'_> {
                 rhs,
             } => {
                 let (lhs, rhs) = (frame.read(*lhs)?.clone(), frame.read(*rhs)?.clone());
-                let [a0, a1, a2] = <[Elem; 3]>::try_from(lhs.elems).ok()?;
-                let [b0, b1, b2] = <[Elem; 3]>::try_from(rhs.elems).ok()?;
+                let [a0, a1, a2] = <[Elem; 3]>::try_from(lhs.elems.as_slice()).ok()?;
+                let [b0, b1, b2] = <[Elem; 3]>::try_from(rhs.elems.as_slice()).ok()?;
                 let mut component = |p: Elem, q: Elem, r: Elem, s: Elem| {
                     let positive = self.binary(BinaryOp::Mul, p, q)?;
                     let negative = self.binary(BinaryOp::Mul, r, s)?;
@@ -794,7 +597,7 @@ impl Inliner<'_> {
                     SolveReductionOperator::Maximum => BinaryOp::Max,
                     SolveReductionOperator::All => BinaryOp::And,
                 };
-                let mut elems = operand.elems.into_iter();
+                let mut elems = operand.elems.iter().copied();
                 let mut value = elems.next()?;
                 for elem in elems {
                     value = self.binary(op, value, elem)?;
@@ -808,8 +611,12 @@ impl Inliner<'_> {
                 };
                 let elems = (0..*rows)
                     .flat_map(|row| {
-                        (0..*columns)
-                            .map(move |column| Elem::Num(f64::from(u8::from(row == column))))
+                        (0..*columns).map(move |column| {
+                            identity_element(
+                                frame.program.register_types()[destination.index()].element_type(),
+                                row == column,
+                            )
+                        })
                     })
                     .collect();
                 frame.write(*destination, elems)
@@ -820,8 +627,14 @@ impl Inliner<'_> {
             } => {
                 let operand = frame.read(*operand)?.clone();
                 let extent = operand.elems.len();
-                let mut elems = vec![Elem::Num(0.0); extent * extent];
-                for (ordinal, elem) in operand.elems.into_iter().enumerate() {
+                let mut elems = vec![
+                    identity_element(
+                        frame.program.register_types()[destination.index()].element_type(),
+                        false
+                    );
+                    extent.checked_mul(extent)?
+                ];
+                for (ordinal, elem) in operand.elems.iter().copied().enumerate() {
                     elems[ordinal * extent + ordinal] = elem;
                 }
                 frame.write(*destination, elems)
@@ -848,11 +661,10 @@ impl Inliner<'_> {
                 destination,
                 elements,
             } => {
-                let elems = frame
-                    .reads(elements)?
-                    .into_iter()
-                    .flat_map(|value| value.elems)
-                    .collect();
+                let mut elems = Vec::new();
+                for value in frame.reads(elements)? {
+                    elems.extend(value.elems.iter().copied());
+                }
                 frame.write(*destination, elems)
             }
             SolveOperation::ProjectElement {
@@ -1015,15 +827,22 @@ impl Inliner<'_> {
         transition: &SolveProgramRegion,
         continuation: Option<&SolveProgramRegion>,
     ) -> Option<Vec<Val>> {
+        self.check_domain(domain, transition.body())?;
         for tuple in domain.index_tuple_iter().ok()? {
             if let Some(continuation) = continuation
                 && !self.continues(continuation, &carried, captures)?
             {
                 break;
             }
+            self.budget.reserve(
+                carried
+                    .len()
+                    .checked_add(captures.len())?
+                    .checked_add(tuple.len().checked_mul(3)?)?,
+            )?;
             let mut arguments = carried;
             arguments.extend(captures.iter().cloned());
-            arguments.extend(binders(&tuple));
+            arguments.extend(binders(&tuple, self.table.arithmetic())?);
             carried = self.region(transition, arguments)?;
         }
         Some(carried)
@@ -1035,11 +854,14 @@ impl Inliner<'_> {
         carried: &[Val],
         captures: &[Val],
     ) -> Option<bool> {
+        self.budget
+            .reserve(carried.len().checked_add(captures.len())?)?;
         let mut arguments = carried.to_vec();
         arguments.extend(captures.iter().cloned());
         let [predicate] = <[Val; 1]>::try_from(self.region(continuation, arguments)?).ok()?;
         match predicate.one()? {
-            Elem::Num(value) => Some(value != 0.0),
+            Elem::Const(SolveValueKind::Boolean(value)) => Some(value),
+            Elem::Const(_) => None,
             Elem::Reg(_) => None,
         }
     }
@@ -1052,11 +874,9 @@ impl Inliner<'_> {
             .and_then(|coordinate| row_major_offset(&aggregate.dims, &coordinate));
         match offset {
             Some(offset) => {
-                *aggregate.elems.get_mut(offset)? = value;
+                *Arc::make_mut(&mut aggregate.elems).get_mut(offset)? = value;
                 Some(())
             }
-            // A speculative branch's out-of-range write is discarded with it.
-            None if self.speculative => Some(()),
             None => None,
         }
     }
@@ -1071,6 +891,10 @@ impl Inliner<'_> {
             ([r, n], [m, c]) if n == m => (*r as usize, *n as usize, *c as usize),
             _ => return None,
         };
+        self.budget.reserve(
+            rows.checked_mul(columns)?
+                .checked_mul(inner.checked_mul(2)?)?,
+        )?;
         (0..rows)
             .flat_map(|row| (0..columns).map(move |column| (row, column)))
             .map(|(row, column)| {
@@ -1101,7 +925,7 @@ impl Inliner<'_> {
     }
 
     /// A lazy structured conditional: a condition known at expansion time
-    /// selects one region; otherwise both regions are expanded speculatively
+    /// selects one region; otherwise both regions are checked and expanded
     /// and every result element is selected at run time.
     fn conditional(
         &mut self,
@@ -1114,14 +938,14 @@ impl Inliner<'_> {
         let condition = frame.read(condition)?.one()?;
         let captures = frame.reads(captures)?;
         let outputs = match condition {
-            Elem::Num(value) => {
-                self.region(if value != 0.0 { if_true } else { if_false }, captures)?
+            Elem::Const(SolveValueKind::Boolean(value)) => {
+                self.region(if value { if_true } else { if_false }, captures)?
             }
+            Elem::Const(_) => return None,
             Elem::Reg(_) => {
-                let speculative = std::mem::replace(&mut self.speculative, true);
+                self.budget.reserve(captures.len())?;
                 let taken = self.region(if_true, captures.clone());
                 let other = self.region(if_false, captures);
-                self.speculative = speculative;
                 let (taken, other) = (taken?, other?);
                 if taken.len() != other.len() {
                     return None;
@@ -1146,26 +970,22 @@ impl Inliner<'_> {
 impl Inliner<'_> {
     /// `condition ? taken : other`, element by element.
     fn select_value(&mut self, condition: Elem, taken: Val, other: &Val) -> Option<Val> {
-        if taken.elems.len() != other.elems.len() {
+        if taken.scalar != other.scalar
+            || taken.dims != other.dims
+            || matches!(taken.scalar, solve::SolveScalarType::Integer(_))
+        {
             return None;
         }
         let elems = taken
             .elems
             .iter()
-            .zip(&other.elems)
+            .zip(other.elems.iter())
             .map(|(taken, other)| self.select(condition, *taken, *other))
             .collect::<Option<Vec<_>>>()?;
         Some(Val {
+            scalar: taken.scalar,
             dims: taken.dims,
-            elems,
+            elems: Arc::new(elems),
         })
     }
-}
-
-/// One Integer scalar per loop binder, in domain order.
-fn binders(tuple: &[i64]) -> impl Iterator<Item = Val> + '_ {
-    #[allow(clippy::cast_precision_loss)]
-    tuple
-        .iter()
-        .map(|value| Val::scalar(Elem::Num(*value as f64)))
 }

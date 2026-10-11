@@ -33,9 +33,10 @@ pub(super) struct WhenChainsRequest<'input, 'shape, 'dae> {
     sample_lattices: &'input [(Span, PeriodicClockSchedule)],
     clocks: &'input LoweredClocks<'dae>,
     chains: &'input [flat::WhenChain],
+    flat: &'input flat::Model,
     topology: &'input DiscreteValueTopologyPlan,
     when_owners: &'input HashMap<WhenBranchKey, ClockPlan>,
-    function_calls: &'input HashMap<Span, ModelEventFunctionCallPlan>,
+    function_calls: &'input HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 }
 
 impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
@@ -43,7 +44,7 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
         coordinates: &'input HashMap<VarName, Coordinate<'dae>>,
         functions: &'input FunctionRegistry<'shape, 'dae>,
         clocks: &'input LoweredClocks<'dae>,
-        chains: &'input [flat::WhenChain],
+        flat: &'input flat::Model,
         analysis: &'input Analysis,
     ) -> Self {
         Self {
@@ -51,7 +52,8 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
             functions,
             sample_lattices: &analysis.sample_lattices,
             clocks,
-            chains,
+            chains: &flat.when_chains,
+            flat,
             topology: &analysis.discrete_value_topology,
             when_owners: &analysis.clocked_when_owners,
             function_calls: &analysis.when_function_calls,
@@ -163,11 +165,12 @@ pub(super) fn lower_when_chains<'dae>(
 fn when_chain_discrete_value_targets<'dae>(
     chain: &flat::WhenChain,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    function_calls: &HashMap<Span, ModelEventFunctionCallPlan>,
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    flat: &flat::Model,
 ) -> Vec<VarName> {
     let mut targets = HashSet::new();
     for branch in chain.branches() {
-        collect_when_targets(&branch.equations, function_calls, &mut targets);
+        collect_when_targets(&branch.equations, function_calls, &mut targets, flat);
     }
     let mut targets = targets
         .into_iter()
@@ -182,8 +185,9 @@ fn when_chain_discrete_value_targets<'dae>(
 
 fn collect_when_targets(
     equations: &[flat::WhenEquation],
-    function_calls: &HashMap<Span, ModelEventFunctionCallPlan>,
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     targets: &mut HashSet<VarName>,
+    flat: &flat::Model,
 ) {
     for equation in equations {
         match equation {
@@ -199,9 +203,18 @@ fn collect_when_targets(
                 else_branch.as_deref(),
                 function_calls,
                 targets,
+                flat,
             ),
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
-                let outputs = function_calls[span].outputs.iter().flatten();
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs: receivers,
+                span,
+                ..
+            } => {
+                let outputs = function_calls[&when_function_call_key(flat, receivers, *span)
+                    .expect("analysis checked the receiver InstanceIds")]
+                    .outputs
+                    .iter()
+                    .flatten();
                 targets.extend(
                     outputs
                         .flat_map(ModelEventFunctionOutputPlan::receivers)
@@ -218,14 +231,15 @@ fn collect_when_targets(
 fn collect_conditional_targets(
     branches: &[(Expression, Vec<flat::WhenEquation>)],
     else_branch: Option<&[flat::WhenEquation]>,
-    function_calls: &HashMap<Span, ModelEventFunctionCallPlan>,
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     targets: &mut HashSet<VarName>,
+    flat: &flat::Model,
 ) {
     for (_, equations) in branches {
-        collect_when_targets(equations, function_calls, targets);
+        collect_when_targets(equations, function_calls, targets, flat);
     }
     if let Some(equations) = else_branch {
-        collect_when_targets(equations, function_calls, targets);
+        collect_when_targets(equations, function_calls, targets, flat);
     }
 }
 
@@ -242,6 +256,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 chain,
                 self.request.coordinates,
                 self.request.function_calls,
+                self.request.flat,
             ),
             self.request.coordinates,
             self.request.topology,
@@ -369,12 +384,22 @@ fn own_clocked_targets<'dae>(
             flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. } => {}
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs: receivers,
+                span,
+                ..
+            } => {
                 own_clocked_function_outputs(
                     construction,
                     coordinates,
                     clock,
-                    &request.function_calls[span].outputs,
+                    &request.function_calls[&when_function_call_key(
+                        request.flat,
+                        receivers,
+                        *span,
+                    )
+                    .expect("analysis checked the receiver InstanceIds")]
+                        .outputs,
                     *span,
                 )?;
             }
@@ -497,9 +522,12 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 else_branch.as_deref(),
                 equation.span(),
             ),
-            flat::WhenEquation::FunctionCallOutputs { function, span, .. } => {
-                self.lower_function_call_outputs(owners, guard, function, *span)
-            }
+            flat::WhenEquation::FunctionCallOutputs {
+                function,
+                outputs,
+                span,
+                origin: _,
+            } => self.lower_function_call_outputs(owners, guard, function, outputs, *span),
         }
     }
 
@@ -567,12 +595,15 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         owners: WhenSemanticOwners,
         guard: EventGuard<'dae>,
         function: &Expression,
+        outputs: &[VarName],
         span: Span,
     ) -> Result<(), dae::DaeConstructionError> {
         let Expression::FunctionCall { name, args, .. } = function else {
             unreachable!("analysis proves when function-call outputs call one function")
         };
-        let plan = &self.request.function_calls[&span];
+        let key = when_function_call_key(self.request.flat, outputs, span)
+            .expect("analysis checked the receiver InstanceIds");
+        let plan = &self.request.function_calls[&key];
         let selected = self.request.functions.select(
             name,
             args,

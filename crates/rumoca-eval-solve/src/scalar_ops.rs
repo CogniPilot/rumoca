@@ -9,7 +9,7 @@
 //! reductions use fresh registers above every register the program defines.
 //!
 //! A `PureCall` is inlined from its owner body when the caller supplies the
-//! model's pure-call table (`pure_call_inlining`).
+//! model's pure-call table (`pure_calls`).
 //!
 //! Only primal (`lanes == 1`) ops are lowered. Any other op that a scalar
 //! template cannot render (AD lanes, concatenation, patches, tables, random
@@ -17,6 +17,71 @@
 //! model at the capability gate instead of failing inside a template.
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, TensorInputKind};
+
+mod pure_calls;
+
+const EXPANSION_LIMIT: usize = 4_000_000;
+
+/// One projection's cumulative emitted operations, scalar allocations and work.
+struct ExpansionBudget {
+    used: usize,
+}
+
+impl ExpansionBudget {
+    fn check(&self, cost: usize) -> Option<()> {
+        (self.used.checked_add(cost)? <= EXPANSION_LIMIT).then_some(())
+    }
+
+    fn reserve(&mut self, cost: usize) -> Option<()> {
+        self.check(cost)?;
+        self.used += cost;
+        Some(())
+    }
+}
+
+fn dot_cost(count: usize) -> Option<usize> {
+    if count == 0 {
+        Some(1)
+    } else {
+        count.checked_mul(2)?.checked_sub(1)
+    }
+}
+
+/// Check the complete direct tensor expansion before allocating its output.
+fn expansion_cost(op: &LinearOp) -> Option<usize> {
+    match op {
+        _ if is_scalar_op(op) => Some(1),
+        LinearOp::TensorLoad {
+            lanes: 1, count, ..
+        }
+        | LinearOp::TensorBinary {
+            lanes: 1, count, ..
+        }
+        | LinearOp::TensorFill {
+            lanes: 1, count, ..
+        } => Some(*count),
+        LinearOp::DotProduct { count, .. } => dot_cost(*count),
+        LinearOp::MatrixMultiply {
+            lanes: 1,
+            rows,
+            inner,
+            columns,
+            ..
+        } => rows.checked_mul(*columns)?.checked_mul(dot_cost(*inner)?),
+        LinearOp::TensorIdentity { lanes: 1, size, .. } => size.checked_mul(*size),
+        LinearOp::TensorTranspose {
+            lanes: 1,
+            rows,
+            columns,
+            element_width,
+            ..
+        } => rows.checked_mul(*columns)?.checked_mul(*element_width),
+        LinearOp::TensorCross { lanes: 1, .. } => Some(9),
+        // Typed bodies reserve their scalar storage and domain work separately.
+        LinearOp::PureCall { .. } => Some(0),
+        _ => None,
+    }
+}
 
 /// Ops every scalar ODE template renders directly.
 fn is_scalar_op(op: &LinearOp) -> bool {
@@ -40,6 +105,7 @@ fn is_scalar_op(op: &LinearOp) -> bool {
 
 struct Lowering<'a> {
     out: Vec<LinearOp>,
+    budget: ExpansionBudget,
     next: Reg,
     pure_calls: Option<&'a rumoca_ir_solve::SolvePureCallTable>,
 }
@@ -298,10 +364,11 @@ impl Lowering<'_> {
                 dst_start,
                 input_starts,
                 site,
-            } => super::pure_call_inlining::Inliner::new(
+            } => pure_calls::Inliner::new(
                 self.pure_calls?,
                 &mut self.out,
                 &mut self.next,
+                &mut self.budget,
             )
             .call_site(*dst_start, input_starts, site)?,
             _ => return None,
@@ -314,24 +381,31 @@ impl Lowering<'_> {
 /// scalar template can render.
 ///
 /// Each `PureCall` is inlined from `pure_calls`; without a table, a program
-/// holding one is unlowerable.
-pub(super) fn lower_tensor_ops(
+/// holding one is unlowerable. The checked typed arithmetic profile must be
+/// representable by the binary64 scalar ABI; unsupported checked faults are
+/// refused. Expansion is bounded before scalar allocations and tensor loops.
+pub fn lower_scalar_ops(
     program: &[LinearOp],
     pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
 ) -> Option<Vec<LinearOp>> {
+    let mut budget = ExpansionBudget { used: 0 };
+    let cost = program.iter().try_fold(program.len(), |total, op| {
+        total.checked_add(expansion_cost(op)?)
+    })?;
+    budget.reserve(cost)?;
     if program.iter().all(is_scalar_op) {
         return Some(program.to_vec());
     }
-    let next = program
-        .iter()
-        .filter_map(|op| {
-            let start = op.dst_register()?;
-            start.checked_add(Reg::try_from(op.dst_register_count()).ok()?)
-        })
-        .max()
-        .unwrap_or(0);
+    let next = program.iter().try_fold(0, |highest, op| {
+        let Some(start) = op.dst_register() else {
+            return Some(highest);
+        };
+        let end = start.checked_add(Reg::try_from(op.dst_register_count()).ok()?)?;
+        Some(highest.max(end))
+    })?;
     let mut lowering = Lowering {
         out: Vec::with_capacity(program.len()),
+        budget,
         next,
         pure_calls,
     };
@@ -344,6 +418,31 @@ pub(super) fn lower_tensor_ops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_tensor_expansion_is_refused_before_allocating_millions_of_ops() {
+        let program = [LinearOp::TensorFill {
+            dst_start: 1,
+            value_start: 0,
+            count: 4_000_001,
+            lanes: 1,
+        }];
+        assert!(lower_scalar_ops(&program, None).is_none());
+    }
+
+    #[test]
+    fn overflowing_matrix_expansion_is_refused_before_entering_its_domain() {
+        let program = [LinearOp::MatrixMultiply {
+            dst_start: 2,
+            lhs_start: 0,
+            rhs_start: 1,
+            rows: usize::MAX,
+            inner: 2,
+            columns: 2,
+            lanes: 1,
+        }];
+        assert!(lower_scalar_ops(&program, None).is_none());
+    }
 
     #[test]
     fn matrix_multiply_lowers_to_row_dot_products() {
@@ -367,7 +466,7 @@ mod tests {
             LinearOp::StoreOutput { src: 6 },
             LinearOp::StoreOutput { src: 7 },
         ];
-        let lowered = lower_tensor_ops(&program, None).expect("primal matmul lowers");
+        let lowered = lower_scalar_ops(&program, None).expect("primal matmul lowers");
         assert!(lowered.iter().all(is_scalar_op));
         let mut regs = std::collections::HashMap::new();
         let mut outputs = Vec::new();
@@ -403,6 +502,6 @@ mod tests {
             seed_start: None,
             lanes: 2,
         }];
-        assert!(lower_tensor_ops(&program, None).is_none());
+        assert!(lower_scalar_ops(&program, None).is_none());
     }
 }

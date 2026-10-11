@@ -41,8 +41,10 @@ mod pure_call_execution;
 mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
+mod scalar_ops;
 #[cfg(test)]
 mod scalar_program_contract_tests;
+pub use scalar_ops::lower_scalar_ops;
 mod sparsity;
 mod table_runtime;
 mod tangent_lanes;

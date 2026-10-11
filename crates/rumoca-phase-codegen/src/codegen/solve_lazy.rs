@@ -485,6 +485,11 @@ pub fn explicit_algebraic_assignment_complete_with_calls(
     problem: &solve::SolveProblem,
     pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> bool {
+    algebraic_assignment_ownership_complete(problem)
+        && materialized_assignment_programs(problem, pure_calls).is_some()
+}
+
+fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> bool {
     if problem.validate().is_err() {
         return false;
     }
@@ -547,9 +552,7 @@ pub fn explicit_algebraic_assignment_complete_with_calls(
         }
         rows.extend(program.row_owners().iter().copied());
     }
-    assigned == expected_targets
-        && rows.len() == continuous.algebraic_projection_plan.blocks.len()
-        && materialized_assignment_programs(problem, pure_calls).is_some()
+    assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
 }
 
 /// Every ordered exact assignment program, materialized and lowered to scalar
@@ -580,7 +583,7 @@ fn materialized_assignment_programs(
             return None;
         };
         let span = block.program_span(0)?;
-        let lowered = super::tensor_lowering::lower_tensor_ops(ops, pure_calls)?;
+        let lowered = rumoca_eval_solve::lower_scalar_ops(ops, pure_calls)?;
         programs.push((lowered, span, program.target_indices().to_vec()));
     }
     Some(programs)
@@ -618,7 +621,7 @@ fn scalar_lowered_node(
     let lowered = programs
         .programs()
         .iter()
-        .map(|program| super::tensor_lowering::lower_tensor_ops(program, pure_calls))
+        .map(|program| rumoca_eval_solve::lower_scalar_ops(program, pure_calls))
         .collect::<Option<Vec<_>>>()?;
     Some(
         solve::ScalarProgramBlock::with_output_indices(
@@ -655,7 +658,7 @@ pub fn explicit_initialization_renderable_with_calls(
             .iter()
             .all(|program| {
                 solve::ScalarProgramBlock::program_output_count(program) == 1
-                    && super::tensor_lowering::lower_tensor_ops(program, pure_calls).is_some()
+                    && rumoca_eval_solve::lower_scalar_ops(program, pure_calls).is_some()
             })
 }
 
@@ -672,10 +675,14 @@ pub(super) fn explicit_algebraic_assignment_block(
     problem: &solve::SolveProblem,
     pure_calls: Option<&solve::SolvePureCallTable>,
 ) -> Result<Option<solve::ComputeBlock>, CodegenError> {
-    (problem.solve_layout.algebraic_scalar_count() != 0
-        && explicit_algebraic_assignment_complete_with_calls(problem, pure_calls))
-    .then(|| materialize_algebraic_assignments(problem, pure_calls))
-    .transpose()
+    if problem.solve_layout.algebraic_scalar_count() == 0
+        || !algebraic_assignment_ownership_complete(problem)
+    {
+        return Ok(None);
+    }
+    materialized_assignment_programs(problem, pure_calls)
+        .map(materialize_algebraic_assignments)
+        .transpose()
 }
 
 /// Which slots an explicit-initialization block assigns.
@@ -724,7 +731,7 @@ fn initialization_assignments(
             _ => continue,
         };
         let lowered =
-            super::tensor_lowering::lower_tensor_ops(program, pure_calls).ok_or_else(|| {
+            rumoca_eval_solve::lower_scalar_ops(program, pure_calls).ok_or_else(|| {
                 CodegenError::template(
                     "explicit initialization is not scalar-renderable".to_string(),
                 )
@@ -748,12 +755,8 @@ fn initialization_assignments(
 
 /// Build one scalar block whose outputs are the assigned `y` slots.
 fn materialize_algebraic_assignments(
-    problem: &solve::SolveProblem,
-    pure_calls: Option<&solve::SolvePureCallTable>,
+    programs: Vec<MaterializedAssignment>,
 ) -> Result<solve::ComputeBlock, CodegenError> {
-    let programs = materialized_assignment_programs(problem, pure_calls).ok_or_else(|| {
-        CodegenError::template("exact algebraic assignments are not scalar-renderable".to_string())
-    })?;
     let mut ops = Vec::new();
     let mut spans = Vec::new();
     let mut output_indices = Vec::new();
@@ -780,7 +783,7 @@ fn materialize_algebraic_assignments(
 /// construction-constant coefficient must be a usable divisor.
 ///
 /// `TensorAffine` materializes into tensor register ops (`TensorFill`, ...);
-/// those are lowered to scalar ops (`tensor_lowering`), and a program that
+/// those are lowered to scalar ops (`rumoca_eval_solve::lower_scalar_ops`), and a program that
 /// cannot be lowered fails `materialized_assignment_programs`.
 fn supported_explicit_assignment_shape(shape: &solve::TargetAssignmentShape) -> bool {
     match shape {

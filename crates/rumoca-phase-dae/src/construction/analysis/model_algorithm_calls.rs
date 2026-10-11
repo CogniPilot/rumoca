@@ -68,8 +68,47 @@ pub(super) fn analyze_event_function_calls(
     analyze_event_function_call_statements(&context, statements, plans)
 }
 
+/// A span records provenance, while receiver InstanceIds distinguish
+/// component instances that replay the same declaration and source location.
+#[derive(Hash, PartialEq, Eq)]
+pub(in crate::construction) struct WhenFunctionCallKey {
+    source: Span,
+    receivers: Box<[InstanceId]>,
+}
+
+pub(in crate::construction) fn when_function_call_key(
+    flat: &flat::Model,
+    outputs: &[VarName],
+    span: Span,
+) -> Result<WhenFunctionCallKey, ToDaeError> {
+    let receivers = outputs
+        .iter()
+        .map(|target| {
+            flat.variables
+                .get(target)
+                .map(|variable| variable.instance_id)
+                .or_else(|| {
+                    flat.record_instances
+                        .get(target)
+                        .map(|record| record.instance_id)
+                })
+                .ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "when function-call outputs",
+                        "a receiver must retain its resolved instance identity",
+                        span,
+                    )
+                })
+        })
+        .collect::<Result<Box<[_]>, _>>()?;
+    Ok(WhenFunctionCallKey {
+        source: span,
+        receivers,
+    })
+}
+
 /// The checked owner of every MLS §8.3.5 `(a, b) = f(x)` inside a `when`
-/// body, keyed by the equation's span.
+/// body, identified by its checked receivers and source provenance.
 ///
 /// A when equation's receivers are proven exactly like an event algorithm's:
 /// each is one whole discrete coordinate or record whose resolved type and
@@ -79,7 +118,7 @@ pub(super) fn analyze_when_function_calls(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     shapes: &FunctionShapeAnalysis,
-) -> Result<HashMap<Span, ModelEventFunctionCallPlan>, ToDaeError> {
+) -> Result<HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>, ToDaeError> {
     let context = ModelEventCallContext {
         flat,
         roles,
@@ -98,7 +137,7 @@ pub(super) fn analyze_when_function_calls(
 fn analyze_when_function_call_equations(
     context: &ModelEventCallContext<'_>,
     equations: &[flat::WhenEquation],
-    plans: &mut HashMap<Span, ModelEventFunctionCallPlan>,
+    plans: &mut HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         match equation {
@@ -126,7 +165,14 @@ fn analyze_when_function_call_equations(
                     .map(|output| Some(EventCallReceiver::Name(output)))
                     .collect::<Vec<_>>();
                 let plan = analyze_event_function_call(context, name, args, &receivers, *span)?;
-                insert_call_plan(plans, *span, plan)?;
+                let key = when_function_call_key(context.flat, outputs, *span)?;
+                if plans.insert(key, plan).is_some() {
+                    return Err(ToDaeError::unsupported_flat(
+                        "when function-call outputs",
+                        "event function calls require distinct semantic owners",
+                        *span,
+                    ));
+                }
             }
             flat::WhenEquation::Conditional {
                 branches,

@@ -1,6 +1,6 @@
 mod linear_solve;
 mod native;
-mod number;
+pub(crate) mod number;
 mod payload;
 mod tensor;
 #[cfg(test)]
@@ -1329,7 +1329,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     }
 }
 
-fn element_matches_type(value: SolveValueKind, scalar: SolveScalarType) -> bool {
+pub(crate) fn element_matches_type(value: SolveValueKind, scalar: SolveScalarType) -> bool {
     match (value, scalar) {
         (
             SolveValueKind::Real32(_),

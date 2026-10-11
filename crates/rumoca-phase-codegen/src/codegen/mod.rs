@@ -35,7 +35,6 @@ mod me_projection;
 #[cfg(test)]
 mod native_scalar_laziness_tests;
 mod pure_call_families;
-mod pure_call_inlining;
 mod real_extremum;
 mod render_expr;
 mod render_solve;
@@ -58,7 +57,6 @@ mod stencil_codegen_tests;
 mod symbol_alloc;
 #[cfg(test)]
 mod template_function_tests;
-mod tensor_lowering;
 #[cfg(test)]
 mod wgsl_ode_tests;
 

@@ -30,8 +30,9 @@ end divMod;
 
 #[test]
 fn component_instances_have_distinct_when_call_owners() {
-    let source = format!(
-        r#"{FUNCTION}
+    let result = simulate(
+        "SharedSourceCalls",
+        r#"
 model Cell
   parameter Real offset = 1;
   discrete Real s(start = 0, fixed = true);
@@ -45,12 +46,19 @@ model SharedSourceCalls
   Cell first(offset = 1);
   Cell second(offset = 2);
 end SharedSourceCalls;
-"#
+"#,
     );
-    Compiler::new()
-        .model("SharedSourceCalls")
-        .compile_str(&source, "SharedSourceCalls.mo")
-        .expect("instances of one declaration must retain distinct semantic call owners");
+    for (name, expected) in [
+        ("first.s", 1.2),
+        ("first.p", 0.2),
+        ("second.s", 2.2),
+        ("second.p", 0.4),
+    ] {
+        assert!(
+            (value_at(&result, name, 0.25) - expected).abs() < 1e-9,
+            "{name} retains its own call outputs"
+        );
+    }
 }
 
 fn simulate(model: &str, body: &str) -> SimResult {
