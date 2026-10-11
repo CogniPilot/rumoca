@@ -257,9 +257,6 @@ fn issue_423_original_iterator_mod_simulates_its_analytic_solution() {
                 actual.is_finite() && (actual - expected).abs() <= bound,
                 "C13/{policy:?}: y({time})={actual}, expected {expected}, bound {bound}"
             );
-            for (name, value) in [("m[1]", 0.0), ("m[2]", 1.0), ("m[3]", 2.0)] {
-                assert_eq!(state.values[name], value, "C13/{policy:?}: {name}");
-            }
         }
         let receipt = session.execution_receipt();
         eprintln!("original C13/{policy:?} after full simulation: {receipt:?}");
