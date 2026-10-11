@@ -67,6 +67,7 @@ impl rumoca_core::ExpressionRewriter for IteratorValueRewriter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::construction::analysis::function_ranges::static_integer_expression;
 
     fn expression(binder: rumoca_core::IndexBinderProvenance) -> Expression {
         let span = Span::from_offsets(

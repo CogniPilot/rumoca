@@ -87,17 +87,16 @@ end C3ReverseOrder;
     assert_eq!(compiled.balance_detail.equations_unknowns(), (1, 1));
     let parameter = &compiled.flat.variables[&rumoca_core::VarName::new("m")];
     assert_eq!(parameter.dims, vec![3, 2]);
-    let value = rumoca_eval_flat::constant::eval_expr(
-        parameter.binding.as_ref().expect("constructor binding"),
-        &rumoca_eval_flat::constant::EvalContext::new(),
-    )
-    .expect("checked source constructor evaluates");
-    let rows = value.as_array().expect("matrix");
-    let values: Vec<_> = rows
-        .iter()
-        .flat_map(|row| row.as_array().expect("row"))
-        .map(|value| value.as_real().expect("numeric element"))
-        .collect();
+    let values = compiled.dae.inspect(|view| {
+        let (_, declaration) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "m")
+            .expect("checked matrix parameter");
+        let binding = declaration.binding().expect("checked constructor binding");
+        rumoca_eval_dae::NumericEvaluator::new(view)
+            .expression(binding)
+            .expect("checked matrix constructor evaluates")
+    });
     assert_eq!(values, vec![11.0, 21.0, 12.0, 22.0, 13.0, 23.0]);
 }
 

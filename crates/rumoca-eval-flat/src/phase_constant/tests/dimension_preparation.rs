@@ -167,8 +167,12 @@ fn prepared_dimension_values_preserve_scope_and_index_shadowing() {
         let scope = DimensionScope::new(&context);
         assert_eq!(scope.integer(&var("n")), Some(expected));
         let mut nested = scope.clone();
-        nested.bind_index("n");
-        assert_eq!(nested.integer(&var("n")), None);
+        nested.bind_index(&rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
+            name: "n".to_owned(),
+            range: int(1),
+        });
+        assert_eq!(nested.integer(&generated_var("n")), None);
         assert_eq!(scope.integer(&var("n")), Some(expected));
     }
 }
