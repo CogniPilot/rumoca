@@ -148,14 +148,25 @@ fn host_call(
         signature.returns.push(AbiParam::new(result));
     }
     let signature = builder.import_signature(signature);
-    let pointer_type = builder.func.dfg.value_type(parameter(builder));
+    // Every private host callback receives its live arena first. Entry has not
+    // inserted an instruction yet, so its block may not be in the layout.
+    let arena = *arguments
+        .first()
+        .expect("native host call receives its arena");
+    let pointer_type = builder.func.dfg.value_type(arena);
     let address = builder.ins().iconst(pointer_type, address as i64);
     let call = builder.ins().call_indirect(signature, address, arguments);
     result.map(|_| builder.inst_results(call)[0])
 }
 
 pub(super) fn enter(builder: &mut FunctionBuilder<'_>) {
-    let arena = parameter(builder);
+    // Only entry acquisition uses the construction block. All later accesses
+    // use parameter() and therefore retain the actual layout entry identity.
+    let entry = builder.current_block().expect("native entry is selected");
+    let arena = *builder
+        .block_params(entry)
+        .last()
+        .expect("native entry has its scratch parameter");
     let result = host_call(
         builder,
         enter_native as *const () as usize,

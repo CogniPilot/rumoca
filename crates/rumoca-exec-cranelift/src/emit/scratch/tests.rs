@@ -81,7 +81,12 @@ fn materialized_tensor_extents_only_allocate_pointer_sized_stack_handles() {
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
     builder.seal_block(entry);
+    let arena = builder.block_params(entry)[0];
+    assert!(builder.func.layout.entry_block().is_none());
     enter(&mut builder);
+    assert_eq!(builder.func.layout.entry_block(), Some(entry));
+    assert_ne!(builder.current_block(), Some(entry));
+    assert_eq!(parameter(&builder), arena);
     create_slot(&mut builder, 512 * 512 * 8).unwrap();
     create_slot(&mut builder, 8).unwrap();
     assert!(create_slot(&mut builder, 7).is_err());
