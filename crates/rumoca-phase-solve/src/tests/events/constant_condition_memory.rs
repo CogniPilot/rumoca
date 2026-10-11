@@ -22,33 +22,7 @@ fn internal_false_condition_omits_only_its_redundant_memory_row() {
     let mut omitted = Vec::new();
     let mut retained = Vec::new();
     let model = dae::Dae::construct(source.map, |model| {
-        let real = model.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                dae::ValueType::scalar(dae::ScalarType::Real),
-                declaration,
-            )
-        })?;
-        let state = model.variables(|variables| {
-            variables.state(
-                VarName::new("x"),
-                real,
-                declaration,
-                dae::VariableAttributes::default(),
-            )
-        })?;
-        let residual = model.expressions(|expressions| {
-            let derivative = expressions
-                .at(equation)
-                .coordinate(dae::CoordinateInput::Derivative(state))?;
-            let zero = expressions
-                .at(equation)
-                .literal(dae::DaeLiteral::Real(0.0))?;
-            expressions
-                .at(equation)
-                .binary(dae::BinaryOperator::Subtract, derivative, zero)
-        })?;
-        model.continuous(|continuous| continuous.value_equation(equation, residual))?;
+        stationary_state(model, declaration, equation)?;
         let literals = model.expressions(|expressions| {
             Ok([
                 expressions
@@ -109,4 +83,39 @@ fn internal_false_condition_omits_only_its_redundant_memory_row() {
         );
     }
     assert_eq!(targets.len(), 5);
+}
+
+fn stationary_state(
+    model: &mut dae::DaeConstruction<'_>,
+    declaration: dae::DaeProvenance,
+    equation: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let real = model.types(|types| {
+        types.intern(
+            TypeId::new(0),
+            dae::ValueType::scalar(dae::ScalarType::Real),
+            declaration,
+        )
+    })?;
+    let state = model.variables(|variables| {
+        variables.state(
+            VarName::new("x"),
+            real,
+            declaration,
+            dae::VariableAttributes::default(),
+        )
+    })?;
+    let residual = model.expressions(|expressions| {
+        let derivative = expressions
+            .at(equation)
+            .coordinate(dae::CoordinateInput::Derivative(state))?;
+        let zero = expressions
+            .at(equation)
+            .literal(dae::DaeLiteral::Real(0.0))?;
+        expressions
+            .at(equation)
+            .binary(dae::BinaryOperator::Subtract, derivative, zero)
+    })?;
+    model.continuous(|continuous| continuous.value_equation(equation, residual))?;
+    Ok(())
 }
