@@ -5,8 +5,9 @@
 //! (`TensorLoad`, `MatrixMultiply`, ...). The scalar ODE right-hand-side
 //! templates render only scalar ops, so these programs are expanded here into
 //! the equivalent scalar sequence. Every aggregate occupies a contiguous
-//! register range, so expansion writes the same registers the aggregate would;
-//! reductions use fresh registers above every register the program defines.
+//! register range. Overlapping operands are preserved until all results have
+//! been computed; temporary results and reductions use fresh registers above
+//! every register the program defines.
 //!
 //! A `PureCall` is inlined from its owner body when the caller supplies the
 //! model's pure-call table (`pure_calls`).
@@ -19,6 +20,9 @@
 #[cfg(test)]
 mod budget_tests;
 mod pure_calls;
+#[cfg(test)]
+mod snapshot_tests;
+mod snapshots;
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, TensorInputKind};
 
@@ -412,7 +416,9 @@ pub fn lower_scalar_ops(
 ) -> Option<Vec<LinearOp>> {
     let mut budget = ExpansionBudget { used: 0 };
     let cost = program.iter().try_fold(program.len(), |total, op| {
-        total.checked_add(expansion_cost(op)?)
+        total
+            .checked_add(expansion_cost(op)?)?
+            .checked_add(snapshots::result_count(op)?.checked_mul(2)?)
     })?;
     budget.reserve(cost)?;
     if program.iter().all(is_scalar_op) {
@@ -432,7 +438,7 @@ pub fn lower_scalar_ops(
         pure_calls,
     };
     for op in program {
-        lowering.lower(op)?;
+        lowering.lower_with_snapshot(op)?;
     }
     Some(lowering.out)
 }
