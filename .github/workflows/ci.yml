@@ -2411,6 +2411,7 @@ jobs:
             python crates/rumoca-bind-python/tests/export_test.py "${export_args[@]}"
             if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
               python crates/rumoca-bind-python/tests/guide_test.py
+              python crates/rumoca-bind-python/tests/guide_scenario_test.py
             fi
           '
 

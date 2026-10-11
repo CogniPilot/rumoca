@@ -1,7 +1,7 @@
 """Execute the Python guide's repository examples through an installed wheel.
 
 Run from any directory with the data, plot, notebook, JAX and CasADi extras.
-The two CMake project templates are documented separately from runnable fences.
+The companion scenario test also executes the guide's CMake build steps.
 """
 
 from contextlib import chdir

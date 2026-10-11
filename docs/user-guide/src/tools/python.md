@@ -161,32 +161,37 @@ CMake needs an executable build step, but downstream projects should not invent
 a second Rumoca CLI. Use the Python interpreter as the executable and call the
 stable API:
 
-The CMake snippets below are project templates: provide your project's
-`model.mo`, `MyModel`, and library directory, or substitute the tracked
-`GalecCounter` paths from the Python example above.
+Save the following as `CMakeLists.txt` in the repository root, then configure
+and build it with a Python interpreter that has Rumoca installed. It uses the
+same tracked `GalecCounter` example as the Python code above:
 
 ```cmake
+cmake_minimum_required(VERSION 3.20)
+project(RumocaExamples NONE)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_custom_command(
   OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp"
   COMMAND "${Python3_EXECUTABLE}" -c
           "import pathlib, rumoca as rm; \
-session = rm.Session(roots=[r'${CMAKE_CURRENT_SOURCE_DIR}/libs/Modelica']); \
-session.codegen_file(r'${CMAKE_CURRENT_SOURCE_DIR}/model.mo', 'MyModel', \
+session = rm.Session(); \
+session.codegen_file(r'${CMAKE_CURRENT_SOURCE_DIR}/examples/models/GalecCounter.mo', 'GalecCounter', \
 'galec-production', r'${CMAKE_CURRENT_BINARY_DIR}/generated/galec'); \
 pathlib.Path(r'${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp').write_text('ok\\n')"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/model.mo"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/examples/models/GalecCounter.mo"
   VERBATIM
 )
+add_custom_target(generate_rumoca ALL
+  DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp")
 ```
 
-Scenario-driven build or test steps use the same pattern:
+Append this target to run the tracked simulation scenario with
+`cmake --build <build-directory> --target run_rumoca_scenario`:
 
 ```cmake
 add_custom_target(run_rumoca_scenario
   COMMAND "${Python3_EXECUTABLE}" -c
-          "import rumoca as rm; rm.Session().run_scenario(r'${CMAKE_CURRENT_SOURCE_DIR}/rumoca-scenario.toml')"
+          "import rumoca as rm; rm.Session().run_scenario(r'${CMAKE_CURRENT_SOURCE_DIR}/examples/simulation/rumoca-scenario.sympy_decay.toml')"
   VERBATIM
 )
 ```

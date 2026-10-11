@@ -454,6 +454,7 @@
         devShells.ci-python-wheel = mkDevShell [
           pkgs.maturin
           pkgs.python312
+          pkgs.cmake
           # `zig` lets `maturin build --zig` cross-link the Linux wheels
           # against an older glibc, so they carry a real manylinux platform
           # tag that PyPI accepts instead of a bare `linux_*` tag.
