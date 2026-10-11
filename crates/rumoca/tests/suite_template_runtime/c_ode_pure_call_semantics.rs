@@ -9,7 +9,12 @@ fn run_rhs(source: &str, probes: &str) {
     let files = rumoca::render_target_files(&compiled, "Probe", "c-ode", None)
         .expect("the scalar target preserves the function");
     let content = |path: &str| {
-        files.iter().find(|file| file.path == path).unwrap().content.as_str()
+        files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap()
+            .content
+            .as_str()
     };
     let header = content("Probe_ode.h");
     let implementation = content("Probe_ode.c").replace("#include \"Probe_ode.h\"", "");
@@ -20,15 +25,29 @@ fn run_rhs(source: &str, probes: &str) {
     fs::write(&input, driver).unwrap();
     let compilation = Command::new("cc")
         .args(["-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-Werror"])
-        .arg(&input).arg("-lm").arg("-o").arg(&binary).output().unwrap();
-    assert!(compilation.status.success(), "{}", String::from_utf8_lossy(&compilation.stderr));
+        .arg(&input)
+        .arg("-lm")
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        compilation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
     let execution = Command::new(binary).output().unwrap();
-    assert!(execution.status.success(), "RHS semantic probe returned {:?}", execution.status.code());
+    assert!(
+        execution.status.success(),
+        "RHS semantic probe returned {:?}",
+        execution.status.code()
+    );
 }
 
 #[test]
 fn exact_integer_arithmetic_survives_a_runtime_real_call() {
-    run_rhs(r#"
+    run_rhs(
+        r#"
 function exactOffset
   input Real u;
   output Real y;
@@ -43,12 +62,14 @@ model Probe
 equation
   der(x) = exactOffset(x);
 end Probe;
-"#, r#"
+"#,
+        r#"
 double y[RUMOCA_PROBE_Y_LEN] = {1.0};
 double out[RUMOCA_PROBE_DERIVATIVE_LEN] = {0};
 if (Probe_derivative_rhs(0.0, y, Probe_default_p, out) != 0) return 1;
 return out[0] == 6.0 ? 0 : 2;
-"#);
+"#,
+    );
 }
 
 #[test]
@@ -74,11 +95,23 @@ equation
   der(x) = guardedWrite(x);
 end Probe;
 "#;
-    let compiled = Compiler::new().model("Probe").compile_str(source, "Probe.mo")
+    let compiled = Compiler::new()
+        .model("Probe")
+        .compile_str(source, "Probe.mo")
         .expect("the compiler retains the runtime-guarded write");
-    for target in ["c-ode", "rust-ode", "rust-fixed-ode", "jax-ode", "casadi-ode", "cuda-ode"] {
+    for target in [
+        "c-ode",
+        "rust-ode",
+        "rust-fixed-ode",
+        "jax-ode",
+        "casadi-ode",
+        "cuda-ode",
+    ] {
         let error = rumoca::render_target_files(&compiled, "Probe", target, None)
             .expect_err("scalar expansion cannot erase the active out-of-range write");
-        assert!(error.to_string().contains("unsupported-feature:"), "{target}: {error:#}");
+        assert!(
+            error.to_string().contains("unsupported-feature:"),
+            "{target}: {error:#}"
+        );
     }
 }
