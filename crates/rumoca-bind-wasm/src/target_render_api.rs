@@ -311,9 +311,7 @@ fn render_algorithm_code_source_files(
                 .join("; ")
         )
     })?;
-    // No session source map reaches this entry point. Retain honest hash/byte
-    // provenance using the same convention as the existing package renderer.
-    let renderer = AlgorithmCodeTemplateRenderer::new(&package, &rumoca_core::SourceMap::new())?;
+    let renderer = AlgorithmCodeTemplateRenderer::new(&package, dae.source_map())?;
     let mut files = Vec::new();
     for file in &manifest.files {
         let extension = std::path::Path::new(&file.path)

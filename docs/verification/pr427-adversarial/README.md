@@ -73,3 +73,10 @@ are compiled for wasm32, their pure Rust helpers remain native-tested, and
 `cargo xtask playground test` now runs the actual exported target smoke against
 its existing FullWeb build. Source syntax checks pass; after execution remains
 pending. No coverage baseline, suppression or assertion was weakened.
+
+A followup retains the source map owned by the checked DAE instead of passing
+an empty map to this renderer. Its source and inherited-workspace fixtures
+assert the original declaration's filename and equation line/column in the
+actual model C file, rather than assigning an inherited equation the extending
+model's location. The followup has source proof and awaits execution; it does
+not change the frozen `d623d84f9` qualification source.
