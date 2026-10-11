@@ -15,8 +15,11 @@ captured scalar condition and either polarity. The canonical evaluator must
 retain initial value 3 on the inactive arm and expose the selected typed
 axis-1/index-2/extent-1 fault. Native execution must do the same. The existing
 true-arm controls execute first, then the false-arm selected-fault control,
-then the formerly untested false-arm inactive control. Explicit JIT call
-counts distinguish native calls from canonical reference evaluation.
+then the formerly untested false-arm inactive control. The probe admits the same input/output slices as the production wrapper and
+invokes the issued kernel through its existing native call wrapper. This
+avoids the test-mode interpreter precheck masking an active native fault.
+Explicit JIT call counts distinguish native calls from independent canonical
+reference evaluation.
 
 Expected before outcome: one failing test at false-arm inactive execution;
 all preceding canonical and native controls reached. Actual outcome: **UNRUN**.

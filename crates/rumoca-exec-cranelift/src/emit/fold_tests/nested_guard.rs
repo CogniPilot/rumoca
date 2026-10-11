@@ -68,6 +68,40 @@ fn guarded_row(nested_when_true: bool) -> Vec<LinearOp> {
     ]
 }
 
+// The normal test call runs an interpreter precheck, which can refuse an active
+// access before reaching native code. Invoke the issued native kernel directly
+// after the same input/output admission, keeping the independent reference above.
+fn call_native(
+    compiled: &CompiledResidualRows,
+    condition: f64,
+    out: &mut [f64],
+) -> Result<(), CompileError> {
+    let p = [condition];
+    validate_input_requirements(compiled.input_requirements, &[], &p, None)?;
+    let [jit] = compiled.jits.as_slice() else {
+        panic!("one compact source row has one issued native kernel");
+    };
+    validate_output_len(out, jit.output_count)?;
+    assert_eq!(jit.output_start, 0);
+    let mut registers = Vec::new();
+    // SAFETY: the original checked row was compiled by the production issuer;
+    // its exact input and output slices were admitted above. The retained module
+    // owns this kernel, and the production wrapper allocates its register tape.
+    let result = unsafe {
+        call_residual_jit(
+            &jit.jit,
+            jit.register_count,
+            &mut registers,
+            &[],
+            &p,
+            0.0,
+            out,
+        )
+    };
+    compiled.record_jit_call();
+    status::check(result)
+}
+
 #[test]
 fn nested_fold_guard_preserves_both_polarities_and_selected_access_faults() {
     for nested_when_true in [true, false] {
@@ -96,15 +130,13 @@ fn nested_fold_guard_preserves_both_polarities_and_selected_access_faults() {
             "{reference:?}"
         );
         let mut out = [-123.0];
-        let error = compiled
-            .call(&[], &[active], 0.0, &mut out)
+        let error = call_native(&compiled, active, &mut out)
             .expect_err("native selected access preserves its fault");
         assert!(
             error.to_string().contains("index is out of bounds"),
             "{error:?}"
         );
-        compiled
-            .call(&[], &[inactive], 0.0, &mut out)
+        call_native(&compiled, inactive, &mut out)
             .expect("native inactive arm must never access the invalid element");
         assert_eq!(out, [3.0], "nested_when_true={nested_when_true}");
         assert_eq!(compiled.jit_call_count(), 2);
