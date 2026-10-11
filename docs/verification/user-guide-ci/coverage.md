@@ -28,7 +28,7 @@ binding compilation/simulation front door rather than a separate snippet parser.
 | Sources | Mandatory checks | Numerical scope |
 |---|---|---|
 | All16 complete inline fences | Inventory and balanced checked compilation | CPU samples at0,.01,.02 for non-GPU models; three GPU examples also exercise CPU execution and live-source preparation |
-| All21 scenario references /16 configurations | Actual scenario parser, model/file/settings and balanced compilation with pinned source-root binary loader | Rover supplied-input bicycle curve; other configurations have compilation coverage here |
+| All21 scenario references /16 configurations | Actual scenario parser, model/file/settings and balanced compilation with pinned source-root binary loader; mandatory browser runtime roster checked by the same guide parser | Rover supplied-input bicycle curve; browser roster requires14 simulation cells and2 complete GALEC production export cells, with runtime receipts pending |
 | Coffee and Plant | Original inline model and host input initialization/update | Full Coffee1800s exponential curve; Plant1s step curve |
 | Neural equations, population, decoder and dynamics fragments | Exact unchanged excerpt lines in complete Tensor, PredatorPrey and LatentOscillator source; compile and actual stepping | Finite state samples at0,.01,.02 |
 | Hidden-width314 fragment | Exact documented declaration replaces only the width declaration in full NeuralODETensor | Full100482-parameter model compile and finite state samples; no smaller dimensions |
@@ -55,7 +55,8 @@ The sole Rust excerpt is included from
 selected by ordinary workspace unit tests. Its focused command is
 `cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` (one test).
 The exact unchanged32-wide tensor model provides the context and actual
-`W1[1,1]` / `b1[1]` trainables; this is separate from generated JAX/CasADi proof.
+`b1[1]` / `bmid[1]` trainables, with a retained `W1[1,1]` refusal control;
+this is separate from generated JAX/CasADi proof.
 
 
 All other fenced examples are hash-bound in
@@ -101,7 +102,22 @@ registrations make the inventory test fail.
 | Rust fitting excerpt | `cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` | One test, using the exact anchored snippet and unchanged Tensor32 model |
 | CLI and shell contexts | `cargo xtask verify examples`; focused `cargo test --locked -p rumoca --test suite_examples_smoke --features examples-smoke-tests guide_cli_contexts:: -- --nocapture` | Three tests: all 66 Bash snippets, declared command contexts, and the exact sampled stdio controller |
 | Installed-wheel Python and CMake | `cargo xtask python test --require-guide` (also selected by `cargo xtask verify full`) | The shared wheel roster requires all 10 Python fences, the notebook cell, both CMake fences and four authored codegen configurations on Linux x86_64 |
-| Browser visualizations and controls | `node packages/playground/tests/user_guide_browser.mjs` in the mandatory PR `build-wasm` job | The shipped FullWeb artifact, actual local guide, four authored visualizers and FixedWing keyboard controls |
+| Browser visualizations and controls | `node packages/playground/tests/user_guide_browser.mjs` in the mandatory PR `build-wasm` job | The shipped FullWeb artifact, actual local guide, four authored visualizers, FixedWing keyboard controls and all16 linked scenario runtime/export cells |
+
+The linked scenario roster is `linked-scenarios.json`. The sole Rust fence
+parser checks its exact set against all21 authored references, so a new linked
+scenario cannot silently remain outside the browser runtime gate. The browser
+uses the public checked scenario configuration unchanged. Interactive cases
+initialize and advance through `createInteractiveSimulation`, including its
+actual configured input routing, parameters, tolerances, scene and solver.
+Result-only cases use `simulateModelWithRuntime`: an explicit authored output
+interval receives a short three-interval check, while an absent interval stays
+zero so the canonical runtime selects the annotation/default interval and
+retains the authored horizon. Each receipt records both authored and sampled
+horizons, with nonempty finite ordered rectangular batch traces or initialized
+finite session states followed by actual updates. These source-registered cells
+are unrun until a named shipped-artifact browser receipt is retained; compilation
+receipts do not qualify them.
 
 The schema-2 `contexts` table also identifies the exact authored Plant and
 HangingMass source spans for the CLI owner. It supplies locations and hashes,

@@ -1,0 +1,168 @@
+// Runtime cells for every scenario issued by the sole Rust guide fence owner.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chromium } from "playwright-core";
+import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+
+function argument(name, fallback) {
+  const index = process.argv.indexOf(name);
+  return index < 0 ? fallback : process.argv[index + 1];
+}
+const base = argument("--base-url", "http://127.0.0.1:8731");
+const roster = JSON.parse(await readFile("docs/verification/user-guide-ci/linked-scenarios.json", "utf8"));
+assert.equal(roster.length, 16);
+assert.equal(new Set(roster).size, 16);
+const browser = await chromium.launch({
+  executablePath: argument("--browser-binary", "google-chrome"),
+  headless: true,
+  args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
+});
+try {
+  const page = await browser.newPage();
+  const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js",
+    "rumoca_runtime.js", "rumoca_bind_wasm_galec.js", "rumoca_bind_wasm_galec_bg.wasm"]);
+  await page.goto(`${base}/packages/playground/index.html`, { waitUntil: "domcontentloaded" });
+  const receipts = [];
+  const failures = [];
+  for (const path of roster) {
+    try {
+      const receipt = await page.evaluate(async (path) => {
+        const pkgBase = "/packages/rumoca/dist/release-full-web/";
+        const wasm = await import(pkgBase + "rumoca_bind_wasm.js");
+        await wasm.default();
+        const runtime = await import(pkgBase + "rumoca_runtime.js");
+        const interactive = await import(pkgBase + "rumoca_interactive.js");
+        const THREE = await import("/packages/rumoca-web/vendor/three_viewer.js");
+        const root = new URL("/docs/user-guide/book/repo-examples/", location.href);
+        const scenarioUrl = new URL(path.slice("examples/".length), root);
+        async function text(url) {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+          return response.text();
+        }
+        async function sha(source) {
+          const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source)));
+          return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+        }
+        const scenarioText = await text(scenarioUrl);
+        const parsed = JSON.parse(wasm.scenario_get_scenario_config_full(
+          JSON.stringify({ [path]: scenarioText }), path));
+        if (!parsed.ok) throw new Error(JSON.stringify(parsed));
+        const config = parsed.config;
+        const sourceUrl = new URL(config.model.file, scenarioUrl);
+        const source = await text(sourceUrl);
+        const cache = runtime.createSourceRootCacheResolver({ manifestUrl: new URL("source-roots/manifest.json", root).href });
+        const sourceRootCacheUrl = await cache.cacheUrlFor(config.source_roots ?? []);
+        const common = { path, model: config.model.name, sourcePath: "examples/" + sourceUrl.href.slice(root.href.length),
+          scenarioSha256: await sha(scenarioText), sourceSha256: await sha(source),
+          authoredHorizon: config.sim?.t_end ?? null, authoredDt: config.sim?.dt ?? null,
+          solver: config.sim?.solver ?? "auto" };
+        if (config.rumoca.task === "codegen") {
+          const files = await runtime.renderGalecFilesWithRuntime({ pkgBase,
+            workspaceSources: JSON.stringify({ [common.sourcePath]: source }),
+            modelName: config.model.name, target: config.codegen.target });
+          if (!Array.isArray(files) || files.length !== 3
+            || files.some((file) => !file.path || !file.content?.trim())) throw new Error("incomplete GALEC production files");
+          return { ...common, kind: "codegen", files: files.map((file) => ({ path: file.path, bytes: file.content.length })) };
+        }
+        if (config.rumoca.task !== "simulate") throw new Error("unhandled authored scenario task");
+        if (config.sim?.solver === "gpu" || config.sim?.gpu) throw new Error("GPU scenario requires its actual GPU execution owner");
+        function snapshot(session) {
+          const state = JSON.parse(session.state_json());
+          const values = Object.values(state.values);
+          if (!Number.isFinite(state.time) || !values.length || !values.every(Number.isFinite)) throw new Error("nonfinite/empty session state");
+          return state;
+        }
+        if (interactive.scenarioUsesInputRuntime(config)) {
+          if (!(config.sim?.dt > 0)) throw new Error("interactive scenario lacks an authored positive interval");
+          const host = document.createElement("div");
+          host.style.cssText = "width:600px;height:400px";
+          document.body.append(host);
+          const construct = wasm.WasmSimulationSession.withInteractiveConfiguration;
+          let session;
+          wasm.WasmSimulationSession.withInteractiveConfiguration = (...args) => {
+            session = construct(...args);
+            return session;
+          };
+          let controller;
+          let timer;
+          let rejectRuntime;
+          const samples = [];
+          try {
+            const scriptText = config.transport?.http?.scene
+              ? await text(new URL(config.transport.http.scene, scenarioUrl)) : "";
+            controller = await interactive.createInteractiveSimulation({ wasm, THREE, source,
+              modelName: config.model.name, config, container: host, scriptText, sourceRootCacheUrl,
+              assetBaseUrl: config.transport?.http?.asset_dir ? new URL(config.transport.http.asset_dir + "/", scenarioUrl).href : "",
+              onError: (error) => rejectRuntime?.(error) });
+            if (!session) throw new Error("canonical configured session not constructed");
+            samples.push(snapshot(session));
+            await new Promise((resolve, reject) => {
+              rejectRuntime = reject;
+              const step = session.step.bind(session);
+              session.step = (dt) => {
+                step(dt);
+                samples.push(snapshot(session));
+                if (samples.length >= 4) resolve();
+              };
+              timer = setTimeout(() => reject(new Error("authored scenario did not advance three intervals")), 30000);
+              controller.start();
+            });
+            controller.stop();
+            return { ...common, kind: "interactive", samples };
+          } finally {
+            clearTimeout(timer);
+            controller?.dispose();
+            session?.free();
+            host.remove();
+            wasm.WasmSimulationSession.withInteractiveConfiguration = construct;
+          }
+        }
+        // Explicit output intervals get a short three-interval runtime check.
+        // Otherwise retain the authored/annotation horizon and default interval.
+        const dt = config.sim?.dt ?? 0;
+        const tEnd = dt > 0 ? Math.min(config.sim?.t_end ?? 3 * dt, 3 * dt) : config.sim?.t_end ?? 0;
+        const result = await runtime.simulateModelWithRuntime({ wasm, pkgBase, source,
+          modelName: config.model.name, sourceRootCacheUrl, parameterOverrides: config.parameters ?? {},
+          solver: config.sim?.solver ?? "auto", dt, tEnd });
+        const payload = result.payload ?? result;
+        return { ...common, kind: "batch", payload };
+      }, path);
+      const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+      assert.equal(receipt.scenarioSha256, sha(await readFile(path)), `authored configuration bytes: ${path}`);
+      assert.equal(receipt.sourceSha256, sha(await readFile(receipt.sourcePath)), `authored model bytes: ${path}`);
+      if (receipt.kind === "batch") {
+        const { names, allData } = receipt.payload;
+        assert(Array.isArray(names) && names.length > 0);
+        assert.equal(new Set(names).size, names.length);
+        assert.equal(allData.length, names.length + 1);
+        assert(allData[0].length >= 2, "initialization and updates required");
+        for (const column of allData) {
+          assert.equal(column.length, allData[0].length, "rectangular trace");
+          assert(column.every(Number.isFinite), "finite trace");
+        }
+        assert(allData[0].every((time, index, times) => index === 0 || time > times[index - 1]), "ordered trace");
+        receipt.sampledHorizon = [allData[0][0], allData[0].at(-1)];
+        receipt.samples = allData[0].length;
+        delete receipt.payload;
+      } else if (receipt.kind === "interactive") {
+        assert(receipt.samples.length >= 4);
+        assert(receipt.samples.every((sample, index, samples) => index === 0 || sample.time > samples[index - 1].time));
+        receipt.sampledHorizon = [receipt.samples[0].time, receipt.samples.at(-1).time];
+        receipt.samples = receipt.samples.length;
+      }
+      receipts.push(receipt);
+      console.log("PASS guide-scenario", JSON.stringify(receipt));
+    } catch (error) {
+      failures.push(`${path}: ${error.stack ?? error}`);
+      console.error("FAIL guide-scenario", path, error);
+    }
+  }
+  assert.equal(failures.length, 0, failures.join("\n"));
+  assert.equal(receipts.filter((cell) => cell.kind === "codegen").length, 2);
+  assert.equal(receipts.filter((cell) => cell.kind !== "codegen").length, 14);
+  await verifyArtifact();
+} finally {
+  await browser.close();
+}

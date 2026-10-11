@@ -72,7 +72,7 @@ try {
   }
   assert.ok(ready, "the owned canonical docs server must become ready");
   for (const script of ["book_live_smoke.mjs", "fixedwing_book_smoke.mjs",
-    "interactive_scenario_parameters_smoke.mjs"]) {
+    "interactive_scenario_parameters_smoke.mjs", "user_guide_scenarios_smoke.mjs"]) {
     await run(process.execPath, [path.join("packages/playground/tests", script),
       "--base-url", base, "--browser-binary", browser]);
   }

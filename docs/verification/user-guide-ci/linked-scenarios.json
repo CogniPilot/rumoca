@@ -1,0 +1,18 @@
+[
+  "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+  "examples/interactive/fixedwing/rumoca-scenario.toml",
+  "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
+  "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
+  "examples/interactive/reusable_booster/rumoca-scenario.toml",
+  "examples/interactive/rover/rumoca-scenario.toml",
+  "examples/simulation/rumoca-scenario.ball.toml",
+  "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
+  "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",
+  "examples/simulation/rumoca-scenario.neural_ode_backprop.toml",
+  "examples/simulation/rumoca-scenario.neural_ode_tensor.toml",
+  "examples/simulation/rumoca-scenario.neural_predator_prey.toml",
+  "examples/simulation/rumoca-scenario.pidmsl.toml",
+  "examples/simulation/rumoca-scenario.switched_rlc.toml",
+  "examples/simulation/rumoca-scenario.switched_rlc_msl.toml",
+  "examples/simulation/rumoca-scenario.sympy_decay.toml"
+]

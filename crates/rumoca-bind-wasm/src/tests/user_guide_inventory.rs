@@ -142,6 +142,14 @@ fn require_execution_owner(owner: &str) {
         }
         "book-browser" => {
             require_source(
+                "packages/playground/tests/user_guide_scenarios_smoke.mjs",
+                "linked-scenarios.json",
+            );
+            require_source(
+                "packages/playground/tests/user_guide_browser.mjs",
+                "\"user_guide_scenarios_smoke.mjs\"",
+            );
+            require_source(
                 "packages/playground/tests/book_live_smoke.mjs",
                 "All book live-example checks passed",
             );
