@@ -2,7 +2,7 @@
 use super::super::*;
 
 fn indexed_alias() -> (dae::Dae, Span) {
-    let text = "Real alias, result; Integer producer; alias={10.0,20.0}[producer]; result=if false then alias else 42.0;";
+    let text = "Real alias, result; Integer producer; alias={10.0,20.0}[producer]; result=if producer<0 then alias else 42.0;";
     let mut sources = rumoca_core::SourceMap::new();
     let source = sources.add("indexed_alias.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
@@ -65,9 +65,10 @@ fn indexed_alias() -> (dae::Dae, Span) {
             let alias_row = expressions
                 .at(at)
                 .binary(dae::BinaryOperator::Subtract, a, indexed)?;
+            let zero = expressions.at(at).literal(dae::DaeLiteral::Integer(0))?;
             let condition = expressions
                 .at(at)
-                .literal(dae::DaeLiteral::Boolean(false))?;
+                .binary(dae::BinaryOperator::Less, p, zero)?;
             let forty_two = expressions.at(at).literal(dae::DaeLiteral::Real(42.0))?;
             let selected = expressions
                 .at(at)
