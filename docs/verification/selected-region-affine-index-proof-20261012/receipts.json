@@ -15,10 +15,83 @@
     "time_end": 2.0,
     "output_points": 4569,
     "trace_channels": 402,
-    "finite_rectangular_trace": true
+    "finite_rectangular_trace": true,
+    "omc_comparison": {
+      "comparator_source": "117b2490b79a081fd21e87e028f19a29e5636296",
+      "models_compared": 1,
+      "agreement_bands": {
+        "high_agreement": 1,
+        "minor_agreement": 0,
+        "deviation": 0
+      },
+      "summary": {
+        "min_model_bounded_normalized_l1": 2.675764309674647e-07,
+        "mean_model_bounded_normalized_l1": 2.675764309674647e-07,
+        "median_model_bounded_normalized_l1": 2.675764309674647e-07,
+        "max_model_bounded_normalized_l1": 2.675764309674647e-07,
+        "worst_model_bounded_normalized_l1": 2.675764309674647e-07,
+        "mean_model_mean_channel_bounded_normalized_l1": 1.1217989693760777e-05,
+        "max_model_max_channel_bounded_normalized_l1": 0.001411865674747083,
+        "global_max_channel_bounded_normalized_l1": 0.001411865674747083,
+        "total_channels_compared": 298,
+        "bad_channels_total": 0,
+        "bad_channels_percent": 0.0,
+        "severe_channels_total": 0,
+        "severe_channels_percent": 0.0,
+        "models_with_bad_channel": 0,
+        "models_with_severe_channel": 0,
+        "models_with_any_channel_deviation": 0,
+        "models_with_any_channel_deviation_percent": 0.0,
+        "models_with_no_severe_channel": 1,
+        "models_with_no_severe_channel_percent": 100.0,
+        "violation_mass_total": 0.0,
+        "violation_mass_mean_per_model": 0.0,
+        "violation_mass_mean_per_channel": 0.0,
+        "initial_condition": {
+          "models_compared": 1,
+          "models_with_accurate_initial_conditions": 1,
+          "models_with_initial_condition_deviation": 0,
+          "models_with_unmeasured_initial_conditions": 0,
+          "accurate_initial_conditions_percent": 100.0,
+          "models_with_initial_condition_deviation_percent": 0.0,
+          "models_with_unmeasured_initial_conditions_percent": 0.0,
+          "total_channels_compared": 297,
+          "high_channels_total": 297,
+          "near_channels_total": 0,
+          "deviation_channels_total": 0,
+          "severe_channels_total": 0,
+          "high_channels_percent": 100.0,
+          "near_channels_percent": 0.0,
+          "deviation_channels_percent": 0.0,
+          "severe_channels_percent": 0.0,
+          "violation_mass_total": 0.0,
+          "violation_mass_mean_per_model": 0.0,
+          "violation_mass_mean_per_channel": 0.0,
+          "mean_channel_bounded_normalized_error": 6.667130390041655e-17,
+          "max_channel_bounded_normalized_error": 4.5236919807089615e-15
+        },
+        "state_selection": {
+          "models_compared": 1,
+          "exact_state_set_match_models": 1,
+          "state_count_match_models": 1,
+          "exact_state_set_match_percent": 100.0,
+          "state_count_match_percent": 100.0,
+          "total_rumoca_states": 7,
+          "total_omc_states": 7,
+          "total_matching_states": 7,
+          "total_rumoca_only_states": 0,
+          "total_omc_only_states": 0,
+          "max_model_state_set_difference": 0
+        },
+        "total_rumoca_sim_wall_seconds": 10.113047886,
+        "total_rumoca_sim_build_seconds": 5.184121522,
+        "total_rumoca_sim_seconds": 4.889554642,
+        "total_omc_sim_system_seconds": 0.969242372,
+        "omc_sim_over_rumoca_sim_speedup_ratio": 0.19822712761494893
+      }
+    }
   },
   "pending": [
-    "OMC trace comparison",
     "combined root head qualification",
     "remaining seven structural singularity models"
   ],
@@ -197,6 +270,71 @@
       "path": "pwm-worker-qualification-canonical.rs",
       "bytes": 1492,
       "sha256": "e7276b12ffa57d54e7ba3c76181d76fef4c1b858c29d863a00122aa9c6b60db7"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison-recipe.json",
+      "bytes": 1156,
+      "sha256": "463650d9c4725fef176eab8fdf48f8f8b0103e9508fc6f65a6604119e6b0735e"
+    },
+    {
+      "path": "run-pwm-all-channel-omc-comparison.sh",
+      "bytes": 744,
+      "sha256": "d2fa2c4e678a166a2a0c37ab7d5287599c2d5a4b9b70fb79b0761ca0d52c56bc"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison.log",
+      "bytes": 2313,
+      "sha256": "ddd1c140e839e2b7910a6d425c39c8f97e30b53fb89bbe1306788ef804e458d2"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison-cached.log",
+      "bytes": 2217,
+      "sha256": "bbe04cb5bc66658f1165613d7a44ab84abeab3b2ff33c8b2fcc021c0d38b5ae6"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison-cached.guardian.json",
+      "bytes": 1493,
+      "sha256": "f95fc15292981a5b140c086fa0140ddb56e3aae21dd140fb7508cf564f27f124"
+    },
+    {
+      "path": "pwm-all-channel-omc-first-result/sim_trace_comparison.json",
+      "bytes": 22545,
+      "sha256": "0eb9fe4f759a64f8a6a653433cedce2d464f09b2fd8afe7c2ab3fa9b7e07e999"
+    },
+    {
+      "path": "pwm-all-channel-omc-first-result/omc_simulation_reference.json",
+      "bytes": 9766,
+      "sha256": "b494633fd8837512f15adebc7f62a6608d756ca4d47a1da05dc673669d20e7d5"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/msl_results.json",
+      "bytes": 2749,
+      "sha256": "a1769ee87b82d00bf1a60c36102ff79f0255913bc21c4d071ef3efb42463c55e"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/targets.json",
+      "bytes": 95,
+      "sha256": "45eff4c8c1042c087cfc6856090ef93493635fb913c496d79e7df1374418bee4"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/sim_trace_comparison.json",
+      "bytes": 22545,
+      "sha256": "88dde9fe9f4a7b48d668d1e0692ae3da9bfef11a394254bb4b8d3b8fed53d0b3"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/omc_simulation_reference.json",
+      "bytes": 9488,
+      "sha256": "82ad82ac7011412d00ec558c620ccb2f4b2f06098b2ef4804862f23c77ebf0a2"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/omc_sim_work/Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM_res.csv",
+      "bytes": 21779121,
+      "sha256": "e97bb0025d3fd63d133bfe2ba0f58c366947843609fdabca3dc191f4d5a55a1f"
+    },
+    {
+      "path": "pwm-all-channel-omc-comparison/sim_traces/omc/Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM.json",
+      "bytes": 32504096,
+      "sha256": "4c1ffa3bf2c6a2f0a4b4ffc41cb59fc0e1f0a5e25c8cfd88bcc55c2fb8fb567b"
     }
   ]
 }
