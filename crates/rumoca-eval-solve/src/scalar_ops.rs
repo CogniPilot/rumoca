@@ -421,8 +421,15 @@ pub fn lower_scalar_ops(
 ) -> Option<Vec<LinearOp>> {
     let mut budget = ExpansionBudget { used: 0 };
     let cost = program.iter().try_fold(program.len(), |total, op| {
+        let expansion = expansion_cost(op)?;
+        if expansion == 0 && !is_scalar_op(op) && !matches!(op, LinearOp::PureCall { .. }) {
+            // An empty structured domain is distinct from a malformed direct
+            // tensor op. Reuse its authoritative dimension admission before
+            // an empty expansion could erase that construction refusal.
+            rumoca_ir_solve::ScalarProgramRegisterFlow::derive(std::slice::from_ref(op)).ok()?;
+        }
         total
-            .checked_add(expansion_cost(op)?)?
+            .checked_add(expansion)?
             .checked_add(snapshots::result_count(op)?.checked_mul(2)?)
     })?;
     budget.reserve(cost)?;
@@ -547,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_direct_tensor_views_do_not_traverse_unused_huge_axes() {
+    fn malformed_empty_direct_tensors_preserve_construction_refusal() {
         for (rows, columns) in [(usize::MAX, 0), (0, usize::MAX)] {
             let program = [
                 LinearOp::MatrixMultiply {
@@ -568,11 +575,13 @@ mod tests {
                     lanes: 1,
                 },
             ];
-            assert!(
-                lower_scalar_ops(&program, None)
-                    .expect("empty view is valid")
-                    .is_empty()
-            );
+            for op in &program {
+                assert!(
+                    rumoca_ir_solve::ScalarProgramRegisterFlow::derive(std::slice::from_ref(op))
+                        .is_err()
+                );
+                assert!(lower_scalar_ops(std::slice::from_ref(op), None).is_none());
+            }
         }
         let program = [LinearOp::TensorTranspose {
             dst_start: 0,
@@ -582,11 +591,8 @@ mod tests {
             element_width: 0,
             lanes: 1,
         }];
-        assert!(
-            lower_scalar_ops(&program, None)
-                .expect("empty element blocks")
-                .is_empty()
-        );
+        assert!(rumoca_ir_solve::ScalarProgramRegisterFlow::derive(&program).is_err());
+        assert!(lower_scalar_ops(&program, None).is_none());
     }
 
     #[test]
