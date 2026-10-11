@@ -63,6 +63,67 @@ fn builtin_algorithm_preview_emits_the_actual_checked_model() {
 }
 
 #[test]
+fn browser_production_source_retains_checked_source_locations() {
+    let mut session = rumoca_compile::Session::default();
+    let files = render_target_in_session(
+        &mut session,
+        SOURCE,
+        "BrowserPreviewCounter",
+        "embedded-c-galec",
+        "",
+        "{}",
+    )
+    .expect("the checked counter has a Production C source preview");
+    let implementation = files
+        .iter()
+        .find(|file| file.path == "BrowserPreviewCounter.c")
+        .expect("Production C source is present");
+    assert!(
+        implementation
+            .content
+            .contains("Modelica trace: input.mo:8:5"),
+        "the y update must retain its actual source line/column: {}",
+        implementation.content
+    );
+}
+
+#[test]
+fn browser_workspace_preview_retains_declaration_source_identity() {
+    let mut session = rumoca_compile::Session::default();
+    let counter = SOURCE.replace("BrowserPreviewCounter", "Counter");
+    let workspace = format!("within ;\npackage Workshop\n{counter}\nend Workshop;");
+    session.update_document("Workshop/package.mo", &workspace);
+    let source = "model BrowserPreviewCounter extends Workshop.Counter; end BrowserPreviewCounter;";
+    let files = render_target_in_session(
+        &mut session,
+        source,
+        "BrowserPreviewCounter",
+        "embedded-c-galec",
+        "",
+        "{}",
+    )
+    .expect("workspace declarations are compiled in the same checked session");
+    let implementation = files
+        .iter()
+        .find(|file| file.path == "BrowserPreviewCounter.c")
+        .expect("Production C source is present");
+    // The two package header lines move the inherited y update to line 10.
+    assert!(
+        implementation
+            .content
+            .contains("Modelica trace: package.mo:10:5"),
+        "the inherited equation must retain its declaration source: {}",
+        implementation.content
+    );
+    assert!(
+        !implementation
+            .content
+            .contains("Modelica trace: input.mo:10:5"),
+        "the extending model must not acquire its inherited equation's location"
+    );
+}
+
+#[test]
 fn algorithm_preview_honors_declared_event_capability() {
     let error = custom_preview("Counter.alg", "{{ model_name }}", false)
         .expect_err("a preview cannot bypass the custom target's event refusal");
