@@ -8,6 +8,9 @@ use std::cell::Cell;
 
 use super::{CompileError, to_backend_err};
 
+#[cfg(test)]
+mod tests;
+
 /// Whether Cranelift's IR verifier runs on every function a JIT module
 /// defines. The verifier checks IR well-formedness and never changes the
 /// emitted code; debug builds (and so the test suite) run it on every
