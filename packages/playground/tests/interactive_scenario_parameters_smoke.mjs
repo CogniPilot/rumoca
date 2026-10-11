@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+import { createBrowserFailureCollector } from "./browser_failures.mjs";
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
   return index < 0 ? fallback : process.argv[index + 1];
@@ -10,6 +11,8 @@ const base = argument("--base-url", "http://127.0.0.1:8731");
 const browser = await launchGuideBrowser(argument("--browser-binary"));
 try {
   const page = await browser.newPage();
+  const browserFailures = createBrowserFailureCollector();
+  browserFailures.watch(page);
   const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);
   // This focused public-runtime proof uses the authored repository bytes.
   // It does not claim that the current compiler or complete book is qualified.
@@ -82,6 +85,7 @@ try {
   }
   console.log("PASS: actual authored scenario, configured parameter, independent analytic and checked batch controls");
   await verifyArtifact();
+  await browserFailures.check();
 } finally {
   await browser.close();
 }

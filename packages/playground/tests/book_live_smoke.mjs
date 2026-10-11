@@ -11,6 +11,7 @@
 // explicit skip; CPU compilation and GPU preparation remain mandatory native tests.
 import { launchGuideBrowser, hardwareWebGpuAdmission } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
 function argValue(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -28,6 +29,8 @@ const check = (ok, label) => {
 
 try {
   const page = await browser.newPage();
+  const browserFailures = createBrowserFailureCollector();
+  browserFailures.watch(page);
   const verifyArtifact = await observeShippedArtifact(page, ["rumoca_gpu.js"]);
   await page.addInitScript(() => {
     window.guideGpuReceipt = { submissions: 0, computeDispatches: 0, readbacks: 0, sampledValues: 0, nonfiniteValues: 0 };
@@ -56,7 +59,6 @@ try {
       return result;
     };
   });
-  page.on("pageerror", (e) => console.error("[pageerror]", e.message));
 
   async function completedGpuRun(widget, name, before) {
     const status = widget.locator(".rumoca-live-toolbar > .rumoca-live-status");
@@ -70,6 +72,7 @@ try {
     check(receipt.readbacks > before.readbacks && receipt.sampledValues > before.sampledValues,
       `${name} read actual computed state samples`);
     check(receipt.nonfiniteValues === before.nonfiniteValues, `${name} GPU state samples are finite`);
+    await browserFailures.check();
     console.log("Hardware-admitted WebGPU API receipt (actual device type unmeasured; no performance claim)",
       name, JSON.stringify(receipt));
   }
@@ -164,6 +167,7 @@ try {
   check(models.some((source) => source.includes("model Wave2D")), "authored Wave2D source present");
   check(models.some((source) => source.includes("model AirfoilFlow")), "authored AirfoilFlow source present");
   const admission = await hardwareWebGpuAdmission(page);
+  if (admission.admitted) await browserFailures.admitGpu(page);
   if (!admission.admitted) {
     // Live widgets load this helper lazily when GPU execution starts. Hardware
     // absence skips compute, while the published helper's byte identity stays
@@ -198,6 +202,7 @@ try {
   }
 
   await verifyArtifact();
+  await browserFailures.check();
 } finally {
   await browser.close();
 }

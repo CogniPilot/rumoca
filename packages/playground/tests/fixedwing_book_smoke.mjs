@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -17,11 +18,12 @@ const browser = await launchGuideBrowser(argument("--browser-binary"), { ignoreD
 const context = await browser.newContext();
 const page = await context.newPage();
 const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);
-page.on("pageerror", (error) => console.error("pageerror:", error.message));
+const browserFailures = createBrowserFailureCollector();
+browserFailures.watch(page);
 let viewer = page;
 context.on("page", (opened) => {
   viewer = opened;
-  opened.on("pageerror", (error) => console.error("viewer error:", error.message));
+  browserFailures.watch(opened);
 });
 
 async function waitForModel(predicate) {
@@ -104,6 +106,7 @@ try {
   assert.equal(await capture.getAttribute("aria-pressed"), "false");
   await widget.getByRole("button", { name: "Stop", exact: true }).click();
   await verifyArtifact();
+  await browserFailures.check();
 } catch (error) {
   console.error(await page.locator(".rumoca-live-status").allTextContents());
   console.error(await page.locator(".rumoca-live-error").allTextContents());

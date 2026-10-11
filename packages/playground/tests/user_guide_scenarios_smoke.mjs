@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -16,6 +17,8 @@ assert.equal(new Set(roster).size, 16);
 const browser = await launchGuideBrowser(argument("--browser-binary"));
 try {
   const page = await browser.newPage();
+  const browserFailures = createBrowserFailureCollector();
+  browserFailures.watch(page);
   const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js",
     "rumoca_runtime.js", "rumoca_bind_wasm_galec.js", "rumoca_bind_wasm_galec_bg.wasm"]);
   await page.goto(`${base}/packages/playground/index.html`, { waitUntil: "domcontentloaded" });
@@ -183,6 +186,7 @@ try {
   assert.equal(receipts.filter((cell) => cell.kind === "codegen").length, 2);
   assert.equal(receipts.filter((cell) => cell.kind !== "codegen").length, 14);
   await verifyArtifact();
+  await browserFailures.check();
 } finally {
   await browser.close();
 }
