@@ -367,7 +367,12 @@ fn assert_guard_identity(guard: &Expression, binder: rumoca_core::IndexBinderPro
 
 #[test]
 fn membership_guard_constructor_preserves_generated_and_refuses_reserved_source_id() {
-    let range = integer_range(1, 3, span());
+    let range_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("membership_guard.mo"),
+        2,
+        6,
+    );
+    let range = integer_range(1, 3, range_span);
     let guard = range_membership_guard(
         rumoca_core::IndexBinderProvenance::Generated,
         "j",
@@ -386,7 +391,7 @@ fn membership_guard_constructor_preserves_generated_and_refuses_reserved_source_
     )
     .unwrap_err();
     assert!(
-        matches!(error, ToDaeError::UnsupportedFlatSemantics { feature, detail, span: actual } if feature == "function loop iterator" && detail.contains("reserved unresolved DefId(0)") && actual == span())
+        matches!(error, ToDaeError::UnsupportedFlatSemantics { feature, detail, span: actual } if feature == "function loop iterator" && detail.contains("reserved unresolved DefId(0)") && actual == range_span)
     );
 }
 

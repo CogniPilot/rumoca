@@ -461,17 +461,20 @@ fn range_membership_guard(
             span,
         ));
     };
-    let binder = binder.reference(display_name, span).map_err(|error| {
-        ToDaeError::unsupported_flat(
-            "function loop iterator",
-            format!("invalid issued iterator identity: {error}"),
-            span,
-        )
-    })?;
+    let range_span = expression_span(range)?;
+    let binder = binder
+        .reference(display_name, range_span)
+        .map_err(|error| {
+            ToDaeError::unsupported_flat(
+                "function loop iterator",
+                format!("invalid issued iterator identity: {error}"),
+                range_span,
+            )
+        })?;
     let binder = || Expression::VarRef {
         name: binder.clone(),
         subscripts: Vec::new(),
-        span,
+        span: range_span,
     };
     let lower = Expression::Binary {
         op: if stride > 0 {
