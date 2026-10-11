@@ -687,7 +687,7 @@ fn unowned_sample_counter_program() -> Vec<solve::LinearOp> {
         solve::LinearOp::Unary {
             dst: 5,
             op: solve::UnaryOp::Not,
-            src: 4,
+            arg: 4,
         },
         solve::LinearOp::Binary {
             dst: 6,
