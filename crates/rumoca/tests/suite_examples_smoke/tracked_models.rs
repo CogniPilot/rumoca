@@ -66,7 +66,7 @@ fn compile(name: &str) -> Result<CompilationResult, String> {
     assert!(path.is_file(), "required tracked source {}", path.display());
     compiler
         .compile_file(path.to_str().expect("tracked model path is UTF-8"))
-        .map_err(|error| format!("{name}: {error:?}"))
+        .map_err(|error| format!("{name}: {error}"))
 }
 
 #[test]
