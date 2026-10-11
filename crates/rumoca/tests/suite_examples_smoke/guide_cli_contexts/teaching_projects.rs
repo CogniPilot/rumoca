@@ -15,6 +15,7 @@ fn write(root: &Path, path: &str, source: &str) {
 
 fn fixtures(root: &Path) {
     write(root, "Model.mo", MODEL);
+    write(root, "MyModel.mo", &MODEL.replace("Model", "MyModel"));
     write(root, "src/Model.mo", MODEL);
     for name in ["my.jinja", "my_template.jinja"] {
         write(root, name, "caller-owned flat template: {{ model_name }}\n");
