@@ -1,7 +1,7 @@
 //! KinematicPTP2's indexed Boolean equation retains its compact B.1c owner
 //! through STRUCT-T10 parameter reconstruction (SPEC_0032 §§1,4).
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
 
 const SOURCE: &str = r#"
 model StructuredBooleanReplay
@@ -59,25 +59,29 @@ fn parameter_reconstruction_preserves_indexed_boolean_equations() {
         );
     }
     for (name, expected) in [("x", 2), ("moving[1]", 1), ("moving[2]", 0)] {
-        let index = result
-            .names
-            .iter()
-            .position(|candidate| candidate == name)
-            .expect("complete trace");
-        let values = &result.data[index];
-        assert_eq!(values.len(), result.times.len());
-        for (&time, &actual) in result.times.iter().zip(values) {
-            assert!(time.is_finite() && actual.is_finite());
-            if expected == 2 {
-                assert!((actual - time).abs() < 1e-7, "x({time})={actual}");
-            } else if (time - 0.5).abs() > 1e-9 {
-                let value = if expected == 1 && time < 0.5 {
-                    1.0
-                } else {
-                    0.0
-                };
-                assert_eq!(actual, value, "{name}({time})");
-            }
+        assert_replayed_channel(&result, name, expected);
+    }
+}
+
+fn assert_replayed_channel(result: &SimResult, name: &str, expected: u8) {
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .expect("complete trace");
+    let values = &result.data[index];
+    assert_eq!(values.len(), result.times.len());
+    for (&time, &actual) in result.times.iter().zip(values) {
+        assert!(time.is_finite() && actual.is_finite());
+        if expected == 2 {
+            assert!((actual - time).abs() < 1e-7, "x({time})={actual}");
+        } else if (time - 0.5).abs() > 1e-9 {
+            let value = if expected == 1 && time < 0.5 {
+                1.0
+            } else {
+                0.0
+            };
+            assert_eq!(actual, value, "{name}({time})");
         }
     }
 }

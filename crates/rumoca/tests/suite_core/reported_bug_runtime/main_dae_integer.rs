@@ -259,33 +259,7 @@ fn structured_real_quotient_initializes_the_same_producer_in_both_domain_directi
         );
         let compiled = compile(&source, "InitializedStructuredQuotient");
         for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
-            let opts = options(policy);
-            let mut session = SimulationSession::new(&compiled.dae, opts.clone()).unwrap();
-            for sample in 0..=10 {
-                let time = f64::from(sample) / 10.0;
-                if sample != 0 {
-                    session.advance_to(time).unwrap();
-                }
-                let state = session.state().unwrap();
-                assert_eq!(state.time, time);
-                for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
-                    let expected_output = (8.0 * time + axis) % 7.0;
-                    let crossing = (7.0 - axis) / 8.0;
-                    let expected_integral =
-                        4.0 * time * time + axis * time - 7.0 * (time - crossing).max(0.0);
-                    for (name, expected) in
-                        [(output, expected_output), (integral, expected_integral)]
-                    {
-                        let actual = state.values[name];
-                        assert!(
-                            actual.is_finite()
-                                && (actual - expected).abs()
-                                    <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
-                            "{policy:?} range={range} {name}({time})={actual}, expected={expected}"
-                        );
-                    }
-                }
-            }
+            check_initialized_structured_policy(&compiled, policy, range);
         }
     }
 }
@@ -321,28 +295,7 @@ fn real_quotient_inactive_arm_does_not_evaluate_an_undefined_ratio() {
         );
         let compiled = compile(&source, "InactiveQuotient");
         for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
-            let mut opts = options(policy);
-            opts.t_end = 0.1;
-            opts.dt = Some(0.01);
-            let mut session = SimulationSession::new(&compiled.dae, opts.clone())
-                .unwrap_or_else(|error| panic!("inactive {numerator}, {policy:?}: {error:?}"));
-            for sample in 0..=10 {
-                let time = f64::from(sample) / 100.0;
-                if sample != 0 {
-                    session
-                        .advance_to(time)
-                        .expect("inactive arm remains protected");
-                }
-                let state = session.state().unwrap();
-                assert_eq!(state.time, time);
-                assert_eq!(state.values["y"], 1.0);
-                let actual = state.values["x"];
-                assert!(
-                    actual.is_finite()
-                        && (actual - time).abs() <= 20.0 * (opts.atol + opts.rtol * time.abs()),
-                    "{policy:?}: x({time})={actual}, expected {time}"
-                );
-            }
+            check_inactive_quotient_policy(&compiled, policy, numerator);
         }
     }
 }
@@ -389,30 +342,7 @@ fn real_quotient_structured_inactive_points_keep_their_own_step() {
     let source = "model GuardedStructuredQuotient output Real y[2]; Real x[2](each start=0,each fixed=true); equation for i in 1:2 loop y[i]=if time<0.5 then mod(14*i+8*time+i,7.0) else i; end for; der(x)=y; end GuardedStructuredQuotient;";
     let compiled = compile(source, "GuardedStructuredQuotient");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
-        let opts = options(policy);
-        let mut session = SimulationSession::new(&compiled.dae, opts.clone())
-            .expect("point-specific nonzero initial steps");
-        for sample in 0..=10 {
-            let time = sample as f64 / 10.0;
-            if sample != 0 {
-                session.advance_to(time).unwrap();
-            }
-            let state = session.state().unwrap();
-            assert_eq!(state.time, time);
-            for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
-                let expected = if time < 0.5 { 8.0 * time + axis } else { axis };
-                let expected_integral = 4.0 * time.min(0.5).powi(2) + axis * time;
-                for (name, expected) in [(output, expected), (integral, expected_integral)] {
-                    let actual = state.values[name];
-                    assert!(
-                        actual.is_finite()
-                            && (actual - expected).abs()
-                                <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
-                        "{policy:?} {name}({time})={actual}, expected {expected}"
-                    );
-                }
-            }
-        }
+        check_guarded_structured_policy(&compiled, policy);
     }
 }
 
@@ -475,7 +405,7 @@ fn model_arm_relation_protects_inactive_arithmetic_without_a_quotient() {
             // The event observation itself may report a left or right limit;
             // on either open interval the selected source branch is exact.
             if !sample_time_match_with_tol(time, 0.5) {
-                assert_eq!(outputs[ordinal], if time < 0.5 { 1.0 } else { 2.0 });
+                assert_eq!(outputs[ordinal], guarded_relation_output(time));
             }
         }
     }
@@ -522,4 +452,96 @@ fn compact_model_arm_relations_keep_each_domain_point_activation() {
             }
         }
     }
+}
+
+fn check_initialized_structured_policy(
+    compiled: &CompilationResult,
+    policy: SimExecutionPolicy,
+    range: &str,
+) {
+    let opts = options(policy);
+    let mut session = SimulationSession::new(&compiled.dae, opts.clone()).unwrap();
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 10.0;
+        if sample != 0 {
+            session.advance_to(time).unwrap();
+        }
+        let state = session.state().unwrap();
+        assert_eq!(state.time, time);
+        for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
+            let expected_output = (8.0 * time + axis) % 7.0;
+            let crossing = (7.0 - axis) / 8.0;
+            let expected_integral =
+                4.0 * time * time + axis * time - 7.0 * (time - crossing).max(0.0);
+            for (name, expected) in [(output, expected_output), (integral, expected_integral)] {
+                let actual = state.values[name];
+                assert!(
+                    actual.is_finite()
+                        && (actual - expected).abs()
+                            <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                    "{policy:?} range={range} {name}({time})={actual}, expected={expected}"
+                );
+            }
+        }
+    }
+}
+
+fn check_inactive_quotient_policy(
+    compiled: &CompilationResult,
+    policy: SimExecutionPolicy,
+    numerator: &str,
+) {
+    let mut opts = options(policy);
+    opts.t_end = 0.1;
+    opts.dt = Some(0.01);
+    let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+        .unwrap_or_else(|error| panic!("inactive {numerator}, {policy:?}: {error:?}"));
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 100.0;
+        if sample != 0 {
+            session
+                .advance_to(time)
+                .expect("inactive arm remains protected");
+        }
+        let state = session.state().unwrap();
+        assert_eq!(state.time, time);
+        assert_eq!(state.values["y"], 1.0);
+        let actual = state.values["x"];
+        assert!(
+            actual.is_finite()
+                && (actual - time).abs() <= 20.0 * (opts.atol + opts.rtol * time.abs()),
+            "{policy:?}: x({time})={actual}, expected {time}"
+        );
+    }
+}
+
+fn check_guarded_structured_policy(compiled: &CompilationResult, policy: SimExecutionPolicy) {
+    let opts = options(policy);
+    let mut session = SimulationSession::new(&compiled.dae, opts.clone())
+        .expect("point-specific nonzero initial steps");
+    for sample in 0..=10 {
+        let time = sample as f64 / 10.0;
+        if sample != 0 {
+            session.advance_to(time).unwrap();
+        }
+        let state = session.state().unwrap();
+        assert_eq!(state.time, time);
+        for (axis, output, integral) in [(1.0, "y[1]", "x[1]"), (2.0, "y[2]", "x[2]")] {
+            let expected = if time < 0.5 { 8.0 * time + axis } else { axis };
+            let expected_integral = 4.0 * time.min(0.5).powi(2) + axis * time;
+            for (name, expected) in [(output, expected), (integral, expected_integral)] {
+                let actual = state.values[name];
+                assert!(
+                    actual.is_finite()
+                        && (actual - expected).abs()
+                            <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                    "{policy:?} {name}({time})={actual}, expected {expected}"
+                );
+            }
+        }
+    }
+}
+
+fn guarded_relation_output(time: f64) -> f64 {
+    if time < 0.5 { 1.0 } else { 2.0 }
 }
