@@ -36,7 +36,7 @@ observation through the existing owners, under accepted SPEC0007 / DAE-C22,
 SPEC0032 compact-domain rules, and SPEC0029 shared-owner boundaries. SPEC0036
 and SPEC0037 remain DRAFT and are not asserted as accepted requirements.
 
-Pending exact qualification commands (ordinary CI-selected suites):
+Initial focused qualification commands (ordinary CI-selected suites):
 
 ```sh
 cargo test --locked --offline -p rumoca-phase-structural --lib dae_transform::tests::model_conditionals:: -- --nocapture
@@ -54,7 +54,7 @@ root. Its full integral is `min(t,0.5) + 2*max(t-0.5,0)`; it must protect the
 negative square root while inactive and activate the later branch at its
 boundary. It is supplementary coverage, not a rewrite of the original failure.
 
-Guard dependency followup (source-only, AFTER unrun): the canonical model owner
+Guard dependency followup (source description): the canonical model owner
 projects the relation and its exact activation guard together. Scalar relation
 admission checks both roots for closed coordinates. B.1c construction checks
 both roots against the same issued producer prefix. Clock ownership, continuous
@@ -73,7 +73,7 @@ tests, with the binder control passing and the producer-prefix control failing;
 the clock test failed because Previous escaped its clock schedule. The binder
 control already fails closed because expression insertion merges the active
 guard's binder domain into each arm expression. It is retained protection, not
-a newly established missing proof. AFTER execution remains pending.
+a newly established missing proof. Integrated AFTER results are recorded below.
 
 | BEFORE log | SHA256 | Outcome |
 |---|---|---|
@@ -108,10 +108,37 @@ At `9a47e85b0ef58263b1a3070b58a40008d176f67d`, the unchanged mixed-clock
 control executed and failed: lowering reported `previous coordinate escaped
 its owning clock schedule`, rather than rejecting both clocks at the condition
 ownership proof. This establishes the first-owner masking defect separately
-from the earlier compile failure. AFTER remains unqualified here.
+from the earlier compile failure. Integrated AFTER results are recorded below.
 
 [The exact BEFORE receipt](arm-relation-guard-before.json) binds all four
 attempts to their source commits, counted recipes, raw log and guardian hashes,
 commands, observed Rust summaries and resource measurements. The executed
 BEFORE results are IR 1 pass / 1 fail, clock 0 pass / 1 fail, and mixed clock
 0 pass / 1 fail. The compile-only failure has no observed test summary.
+
+At integrated source `379f3d56ad90e1f6046275c3af752672cdc42706`, ROOT
+executed the full IR DAE library (218), full phase-Solve library (185), full
+structural library (266), and four unchanged public quotient activation tests.
+All 673 tests passed with zero ignored tests. The next, supplementary square
+root test failed at its 11-row assertion because the actual trace contained
+12 rows. That source did not print timestamps or values, and the failure
+preceded numerical assertions and the second execution policy. The final
+20-test guide gate was not executed in this fail-fast attempt.
+[The integrated AFTER receipt](arm-relation-guard-after.json) binds these five
+executed gates and the unrun gate to their exact source, commands, raw logs,
+count receipts and unchanged resource guards. This is no whole-guide or remote
+CI qualification.
+
+The square root test correction retains the original model and tolerances,
+prints the actual trace, requires every original grid point, and checks all
+recorded integrals and nonboundary branch outputs. Extra observations must
+match the source event at 0.5 under the canonical timestamp predicate; extras
+at any other grid point are refused. The actual publication path is
+`rumoca_sim::diffsol::simulate_prepared` → the common FMI-ME session. Its
+`apply_located_root` publishes the checked event-left observation and then the
+settled observation. `MeTraceRecorder::decide` retains distinct timestamp bits;
+its exact-coordinate role policy controls replacement. The similarly named
+`timeline::merge_output_times_with_event_observations` has no production caller
+in this source. This explains the applicable publication contract, and does
+not establish the actual twelfth row's legitimacy. The corrected trace test
+remains UNRUN until its timestamps and values are independently checked.
