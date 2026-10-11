@@ -94,15 +94,15 @@ fn finite_prefix_breaks_preserve_observable_execution_in_both_directions() {
         (1, -1, 2),
     ] {
         for operator in &operators {
-            for threshold in -10..=10 {
-                for reverse in [false, true] {
-                    rewritten += usize::from(compare_execution(
-                        (lower, step, upper),
-                        operator,
-                        threshold,
-                        reverse,
-                    ));
-                }
+            for (threshold, reverse) in
+                (-10..=10).flat_map(|threshold| [false, true].map(|reverse| (threshold, reverse)))
+            {
+                rewritten += usize::from(compare_execution(
+                    (lower, step, upper),
+                    operator,
+                    threshold,
+                    reverse,
+                ));
             }
         }
     }

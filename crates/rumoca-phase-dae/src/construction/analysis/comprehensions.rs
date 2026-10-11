@@ -590,19 +590,19 @@ mod tests {
         let Expression::Range { end, .. } = &mut indices[0].range else {
             unreachable!()
         };
-        *end = Box::new(Expression::VarRef {
+        **end = Expression::VarRef {
             name: rumoca_core::IndexBinderProvenance::Source(outer_id)
                 .reference("i", span)
                 .unwrap(),
             subscripts: Vec::new(),
             span,
-        });
+        };
         let mut outer = comprehension(3, span);
         let Expression::ArrayComprehension { expr, indices, .. } = &mut outer else {
             unreachable!()
         };
         indices[0].binder = rumoca_core::IndexBinderProvenance::Source(outer_id);
-        *expr = Box::new(inner);
+        **expr = inner;
         let mut constants = EvalContext::new();
         constants.add_parameter("i", rumoca_eval_flat::constant::Value::Integer(9));
         let error = analyze_comprehensions([&outer], &constants).unwrap_err();
