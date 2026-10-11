@@ -440,6 +440,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overlapping_cross_destination_preserves_snapshot_inputs() {
+        let mut program = (0..6)
+            .map(|dst| LinearOp::Const {
+                dst,
+                value: f64::from(dst + 1),
+            })
+            .collect::<Vec<_>>();
+        program.push(LinearOp::TensorCross {
+            dst_start: 0,
+            lhs_start: 0,
+            rhs_start: 3,
+            lanes: 1,
+        });
+        program.extend((0..3).map(|src| LinearOp::StoreOutput { src }));
+        let lowered = lower_scalar_ops(&program, None).expect("bounded primal cross projection");
+        // {1,2,3} x {4,5,6} = {-3,6,-3}; both operands are read before
+        // writing the overlapping destination aggregate.
+        for (label, ops) in [
+            ("canonical snapshot", program),
+            ("scalar projection", lowered),
+        ] {
+            let span = rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("overlapping_cross.mo"),
+                0,
+                1,
+            );
+            let block = rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+                vec![ops],
+                vec![span],
+                vec![0, 1, 2],
+            )
+            .expect("the checked constructor admits overlapping aggregate destinations");
+            let mut actual = [f64::NAN; 3];
+            crate::eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut actual)
+                .expect("the admitted program must evaluate");
+            assert_eq!(actual, [-3.0, 6.0, -3.0], "{label}");
+        }
+    }
+
+    #[test]
     fn scalar_tensor_views_match_checked_reference_evaluation_and_independent_values() {
         let mut program = (0..12)
             .map(|dst| LinearOp::Const {
