@@ -21,7 +21,8 @@ use wasm_bindgen::prelude::*;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
     builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest,
-    render_dae_target_files, validate_dae_target_capabilities, validate_flat_target_capabilities,
+    render_dae_target_files, safe_target_join, validate_dae_target_capabilities,
+    validate_flat_target_capabilities,
 };
 use rumoca_compile::codegen::{AlgorithmCodeTemplateRenderer, render_flat_template_with_name};
 use rumoca_compile::compile::{Dae, FlatModel};
@@ -314,13 +315,15 @@ fn render_algorithm_code_source_files(
     let renderer = AlgorithmCodeTemplateRenderer::new(&package, dae.source_map())?;
     let mut files = Vec::new();
     for file in &manifest.files {
-        let extension = std::path::Path::new(&file.path)
+        let path = renderer.render_with_name(&file.path, &model_id)?;
+        let path = path.trim();
+        safe_target_join(std::path::Path::new("."), path)?;
+        let extension = std::path::Path::new(path)
             .extension()
             .and_then(|value| value.to_str());
         if !matches!(extension, Some("alg" | "h" | "c")) {
             continue;
         }
-        let path = renderer.render_with_name(&file.path, &model_id)?;
         let template = templates.template_source(&file.template)?;
         let content = renderer.render_with_name(template.as_ref(), &model_id)?;
         files.push(RenderedTargetFile {

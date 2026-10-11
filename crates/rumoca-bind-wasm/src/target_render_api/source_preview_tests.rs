@@ -171,3 +171,15 @@ fn algorithm_preview_classifies_the_rendered_output_path() {
         .expect_err("a rendered metadata filename cannot become a source preview");
     assert!(error.message().contains("source files"), "{error:?}");
 }
+
+#[test]
+fn algorithm_preview_requires_a_safe_rendered_relative_path() {
+    for path in ["{{ '../Counter.c' }}", "{{ '/Counter.c' }}", "{{ '' }}"] {
+        let error = custom_preview(path, "{{ model_name }}", true)
+            .expect_err("the actual rendered filename must remain within the target root");
+        assert!(
+            error.message().contains("Target manifest path"),
+            "{path}: {error:?}"
+        );
+    }
+}
