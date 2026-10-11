@@ -31,6 +31,7 @@ mod strict_compile_diagnostic_tests;
 mod tool_config_tests;
 mod utf16_range_tests;
 mod workspace_query_tests;
+mod workshop_codegen_tests;
 
 static SESSION_STATS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static ASYNC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

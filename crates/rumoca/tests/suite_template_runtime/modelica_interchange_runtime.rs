@@ -1,5 +1,7 @@
 //! Runtime acceptance checks for the Modelica interchange targets.
 
+mod workshop_examples;
+
 use std::fs;
 use std::process::Command;
 
