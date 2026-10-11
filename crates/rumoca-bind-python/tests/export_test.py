@@ -1,6 +1,10 @@
 """Live exports from the valid-by-construction Solve representation."""
 
 from pathlib import Path
+import argparse
+import builtins
+import importlib
+from unittest.mock import patch
 
 import rumoca as rm
 
@@ -31,14 +35,19 @@ def test_to_casadi() -> None:
     assert exported.state_names == ["x"]
     assert exported.parameter_names == ["gain"]
     assert isinstance(exported.rhs, ca.Function)
-    xdot = exported.rhs(0.0, ca.DM([1.0]), ca.DM.zeros(0), ca.DM([2.0]))
-    assert float(xdot) == -2.0
-    sensitivity = ca.Function(
-        "sensitivity",
-        exported.rhs.sx_in(),
-        [ca.jacobian(exported.rhs.sx_out(0), exported.rhs.sx_in(3))],
-    )
-    assert sensitivity.size_out(0) == (1, 1)
+    arguments = exported.rhs.sx_in()
+    expression = exported.rhs(*arguments)
+    sensitivity = ca.Function("sensitivity", arguments, [
+        ca.jacobian(expression, arguments[1]),
+        ca.jacobian(expression, arguments[3]),
+    ])
+    assert sensitivity.size_out(0) == sensitivity.size_out(1) == (1, 1)
+    for state, gain in [(1.0, 2.0), (3.0, 4.0)]:
+        inputs = (0.0, ca.DM([state]), ca.DM.zeros(0), ca.DM([gain]))
+        assert float(exported.rhs(*inputs)) == -gain * state
+        state_jacobian, parameter_jacobian = sensitivity(*inputs)
+        assert float(state_jacobian) == -gain
+        assert float(parameter_jacobian) == -state
 
 
 def test_to_jax() -> None:
@@ -53,14 +62,16 @@ def test_to_jax() -> None:
     assert exported.target == "jax-ode"
     assert exported.state_names == ["x"]
     assert exported.parameter_names == ["gain"]
-    xdot = jax.jit(exported.rhs)(
-        0.0, jnp.array([1.0]), jnp.zeros(0), jnp.array([2.0])
-    )
-    assert float(xdot[0]) == -2.0
-    sensitivity = jax.jacfwd(exported.rhs, argnums=3)(
-        0.0, jnp.array([1.0]), jnp.zeros(0), jnp.array([2.0])
-    )
-    assert sensitivity.shape == (1, 1)
+    for state, gain in [(1.0, 2.0), (3.0, 4.0)]:
+        inputs = (0.0, jnp.array([state]), jnp.zeros(0), jnp.array([gain]))
+        assert float(jax.jit(exported.rhs)(*inputs)[0]) == -gain * state
+        for differentiate in [jax.jacfwd, jax.jacrev]:
+            state_jacobian, parameter_jacobian = differentiate(
+                exported.rhs, argnums=(1, 3)
+            )(*inputs)
+            assert state_jacobian.shape == parameter_jacobian.shape == (1, 1)
+            assert float(state_jacobian[0, 0]) == -gain
+            assert float(parameter_jacobian[0, 0]) == -state
 
 
 def test_magic_export_returns_checked_solve_object() -> None:
@@ -85,19 +96,29 @@ def test_missing_dependency_raises_importerror() -> None:
     ]
     model = _model()
     for dependency, export in checks:
-        if _have(dependency):
-            continue
-        try:
-            export(model)
-        except ImportError:
-            pass
-        else:
-            raise AssertionError(
-                f"{dependency} export should raise ImportError when absent"
-            )
+        def without_dependency(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == dependency or name.startswith(dependency + "."):
+                raise ImportError(f"{dependency} deliberately unavailable")
+            return builtins_import(name, globals, locals, fromlist, level)
+
+        builtins_import = builtins.__import__
+        with patch("builtins.__import__", without_dependency):
+            try:
+                export(model)
+            except ImportError as error:
+                assert dependency in str(error)
+            else:
+                raise AssertionError(
+                    f"{dependency} export should raise ImportError when absent"
+                )
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-backend", choices=("jax", "casadi"), action="append", default=[])
+    for backend in parser.parse_args().require_backend:
+        dependency = importlib.import_module(backend)
+        print(f"required {backend}: {dependency.__version__}")
     test_to_casadi()
     test_to_jax()
     test_magic_export_returns_checked_solve_object()

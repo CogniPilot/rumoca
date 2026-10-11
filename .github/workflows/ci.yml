@@ -2397,11 +2397,18 @@ jobs:
             python -m pip install --upgrade pip
             WHEEL=$(ls dist/*.whl | head -1)
             python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
+            # The existing supported Linux wheel lane must exercise both live
+            # exports. JAX is unavailable on some wheel-matrix platforms.
+            export_args=()
+            if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
+              python -m pip install jax==0.9.2 casadi==3.7.2 numpy==2.4.3
+              export_args=(--require-backend jax --require-backend casadi)
+            fi
             python crates/rumoca-bind-python/tests/smoke_test.py
             python crates/rumoca-bind-python/tests/fmi_codegen_test.py
             python crates/rumoca-bind-python/tests/api_test.py
             python crates/rumoca-bind-python/tests/magic_test.py
-            python crates/rumoca-bind-python/tests/export_test.py
+            python crates/rumoca-bind-python/tests/export_test.py "${export_args[@]}"
           '
 
       - name: Smoke test installed wheel (Windows)
