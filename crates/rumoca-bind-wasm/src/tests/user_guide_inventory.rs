@@ -127,6 +127,33 @@ fn require_execution_owner(owner: &str) {
     }
 }
 
+fn check_model_contexts(inventory: &Value) {
+    let contexts = inventory["contexts"]
+        .as_object()
+        .expect("authored CLI contexts");
+    assert_eq!(contexts.len(), 2, "review new teaching model contexts");
+    let fences = markdown_fences();
+    for (key, model) in [
+        ("stdio-plant", "Plant"),
+        ("first-hanging-mass", "HangingMass"),
+    ] {
+        let entry = &contexts[key];
+        let page = entry["page"].as_str().unwrap();
+        let fence = fences
+            .iter()
+            .find(|fence| {
+                fence.page == repository_root().join("docs/user-guide/src").join(page)
+                    && entry["line"].as_u64() == Some(fence.line as u64)
+            })
+            .expect("authored model context must identify an actual fence");
+        assert_eq!(fence.language, "modelica");
+        assert_eq!(fence.model_name().as_deref(), Some(model));
+        assert_eq!(entry["source_line_count"], fence.source_line_count);
+        let digest = format!("{:x}", Sha256::digest(fence.source.as_bytes()));
+        assert_eq!(entry["source_sha256"], digest);
+    }
+}
+
 #[test]
 fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples() {
     let inventory = std::fs::read_to_string(
@@ -135,6 +162,7 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
     .unwrap();
     let inventory: Value = serde_json::from_str(&inventory).unwrap();
     assert_eq!(inventory["schema"], 2);
+    check_model_contexts(&inventory);
     let entries = inventory["entries"].as_array().unwrap();
     let fences: Vec<_> = markdown_fences()
         .into_iter()

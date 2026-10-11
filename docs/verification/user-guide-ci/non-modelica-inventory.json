@@ -39,7 +39,7 @@
     "executable-benchmark-bash": {
       "classification": "executable-benchmark",
       "owner": "cli-context",
-      "scope": "Exact CLI/JAX benchmark gate pending; default100k dimensions are not substituted."
+      "scope": "The exact documented NeuralODEBackprop CLI/JAX benchmark uses the script-defined model and dimensions; larger neural width examples have separate controls."
     },
     "explanatory-output-xml": {
       "classification": "explanatory-output",
@@ -70,6 +70,22 @@
       "classification": "executable-context",
       "owner": "cli-stdio",
       "scope": "Exact documented Python controller executed against the native CLI stdio session."
+    }
+  },
+  "contexts": {
+    "stdio-plant": {
+      "page": "simulation/stdio-session.md",
+      "line": 122,
+      "source_line_count": 6,
+      "language": "modelica",
+      "source_sha256": "41189b0bca2ad03befe01f7eb08cc948a328a3d4b830dccc186c78548a272a3d"
+    },
+    "first-hanging-mass": {
+      "page": "getting-started/first-model.md",
+      "line": 50,
+      "source_line_count": 14,
+      "language": "modelica",
+      "source_sha256": "b245e013107b793382ff9797781b472f796bfd6a687567b3c016b1ff349eb74c"
     }
   },
   "entries": [
