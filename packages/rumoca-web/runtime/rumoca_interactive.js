@@ -979,14 +979,17 @@ async function createInteractiveSession(options, input, onStatus) {
     },
   };
   const initialInputs = buildModelInputs(config, input, initialModel, input.runtimeFields(0, 0));
-  return wasm.WasmSimulationSession.withInteractiveOptions(
+  return wasm.WasmSimulationSession.withInteractiveConfiguration(
     source,
     modelName,
-    finiteNumber(simConfig.dt, 0),
-    trimMaybeString(simConfig.solver),
-    finiteNumber(simConfig.atol, 0),
-    finiteNumber(simConfig.rtol, 0),
-    JSON.stringify(initialInputs),
+    JSON.stringify({
+      dt: finiteNumber(simConfig.dt, 0),
+      solver: trimMaybeString(simConfig.solver),
+      atol: finiteNumber(simConfig.atol, 0),
+      rtol: finiteNumber(simConfig.rtol, 0),
+      initial_inputs: initialInputs,
+      parameters: config?.parameters ?? {},
+    }),
   );
 }
 
