@@ -191,23 +191,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         }
         iteration_lanes.extend(lanes);
     }
-    let pulse_rows = discrete
-        .row_roles
-        .iter()
-        .enumerate()
-        .filter_map(|(row, role)| (*role == DiscreteRowRole::PulseConditionMemory).then_some(row))
-        .collect::<Vec<_>>();
-    let pulse_programs = pulse_rows
-        .iter()
-        .map(|row| {
-            discrete
-                .rhs
-                .program_index_for_output(*row)
-                .ok_or("a pulse condition memory has no checked producing program")
-        })
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
-        .into_iter()
-        .collect();
+    let (pulse_rows, pulse_programs) = pulse_producers(discrete)?;
     Ok(ScalarEventProfile {
         roots,
         pre_bindings,
@@ -236,6 +220,29 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         root_neighborhoods: crate::root_neighborhoods(&events.root_conditions)
             .map_err(|_| "a root condition's coordinate reads cannot be derived")?,
     })
+}
+
+fn pulse_producers(
+    discrete: &crate::DiscreteSolveSystem,
+) -> Result<(Vec<usize>, Vec<usize>), &'static str> {
+    let pulse_rows = discrete
+        .row_roles
+        .iter()
+        .enumerate()
+        .filter_map(|(row, role)| (*role == DiscreteRowRole::PulseConditionMemory).then_some(row))
+        .collect::<Vec<_>>();
+    let pulse_programs = pulse_rows
+        .iter()
+        .map(|row| {
+            discrete
+                .rhs
+                .program_index_for_output(*row)
+                .ok_or("a pulse condition memory has no checked producing program")
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+        .into_iter()
+        .collect();
+    Ok((pulse_rows, pulse_programs))
 }
 
 fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
