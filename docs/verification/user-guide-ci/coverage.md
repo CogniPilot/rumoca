@@ -20,7 +20,8 @@ cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --noc
 
 The original expanded filter selected13 tests. The current source additionally
 selects the corrected thermostat cycle test and the full Latent256/512 prose
-variants, full PredatorPrey313, plus TOML-context and two other-language inventory tests:19 tests,
+variants, full PredatorPrey313, plus TOML-context, two other-language inventory tests, and the numerical
+observer negative control: 20 tests,
 with no ignored tests. Completed and resource-stopped receipts
 remain distinct from the complete current gate. The same source fixtures enter the actual
 binding compilation/simulation front door rather than a separate snippet parser.
@@ -115,7 +116,7 @@ registrations make the inventory test fail.
 
 | Owner | Required command or selector | Scope |
 |---|---|---|
-| Modelica and configuration contexts | `cargo xtask playground test`; focused `cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --nocapture` | 19 native tests on the current source, including both inventory checks |
+| Modelica and configuration contexts | `cargo xtask playground test`; focused `cargo test --locked -p rumoca-bind-wasm --features full-web user_guide_ -- --nocapture` | 20 native tests on the current source, including both inventory checks and the numerical observer negative control |
 | Rust fitting excerpt | `cargo test --locked -p rumoca-opt user_guide_rhs_fit_ -- --nocapture` | One test, using the exact anchored snippet and unchanged Tensor32 model |
 | CLI and shell contexts | `cargo xtask verify examples`; focused `cargo test --locked -p rumoca --test suite_examples_smoke --features examples-smoke-tests guide_cli_contexts:: -- --nocapture` | Three tests: all 66 Bash snippets, declared command contexts, and the exact sampled stdio controller |
 | Installed-wheel Python and CMake | `cargo xtask python test --require-guide` (also selected by `cargo xtask verify full`) | The shared wheel roster requires all 10 Python fences, the notebook cell, both CMake fences and four authored codegen configurations on Linux x86_64 |

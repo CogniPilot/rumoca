@@ -7,8 +7,8 @@ merged fix.
 | Source | Gate | Actual result |
 |---|---|---|
 | `18a7e6bdb6b64557e7736566718687f6db75b3cd` | `projection_demand_` before (2 selected) | 1 passed, 1 failed, 0 ignored |
-| `87c16773ef1be4c03f8c61f78e0aed387b2058f8` | `projection_demand_` after (4 selected) | Pending |
-| same 87c | `prepared_projection_jacobian::` after (10 selected) | Pending; includes the four above |
+| `87c16773ef1be4c03f8c61f78e0aed387b2058f8` | `projection_demand_` after (4 selected) | 4 passed, 0 failed/ignored |
+| same 87c | `prepared_projection_jacobian::` after (10 selected) | 10 passed, 0 failed/ignored; includes the four above |
 | d65 | original Euler38 2 GiB memory gate (1 selected) | 0 passed, 1 failed; actual allocation abort |
 | d65 | independent original Euler38 state gate | Timeout, exit 124; no samples or completed Rust summary |
 | 87c | rebound original Euler38 memory gate (1 required) | Unrun |
@@ -40,17 +40,33 @@ Raw before evidence under
 | `projection-demand-before-2.log` | `c6b682148928b85e3236df3a1125b47b12c78c2f382ff84740d1e963f40cf9ba` |
 | `projection-demand-before-2.guardian.json` | `1495ec4811766e2214a3fc99e23abe5cd2e86a9ff0314b6b6d7892a439fdd358` |
 
-The pending ROOT after attempt is `pr427-projection-demand-after-root87c-20261011`,
+The completed ROOT after attempt is `pr427-projection-demand-after-root87c-20261011`,
 recipe SHA256 `2da78604c8c764011cedddccbbbf709081816ea583fd14fd39114e985a37d5d1`.
-Its actual result must be added from terminal raw logs/count receipts, rather
-than inferred from source review.
+Both child exits are zero and both counted last-summary receipts are accepted.
+The focused four tests completed in 70.127 seconds including compilation; the
+complete ten-test owner gate completed in 5.190 seconds. Both guardians report
+no resource stop. These are ten unique tests, not fourteen. The original Euler
+rebound gates remain unrun in this receipt.
 
-The independent original-model after recipes bind an owned clean 87c snapshot:
+| After file | SHA256 |
+|---|---|
+| `projection-demand-after-4.log` | `c666ca5c4790b03af4b72eb0c226391b58d6df3bedc492697dca92db0b4c1e02` |
+| `projection-demand-after-4.guardian.json` | `7bc07053d619460e5db742037e779da3d356fa279a720f64c847c5c4720b278f` |
+| `projection-demand-after-4.test-count.json` | `a1d79ddd9ee57415158625d5ea95a1d5352dca292696dcad5cde9091c5ee29da` |
+| `prepared-projection-owner-after-10.log` | `067b91d8aadcb0dc2e6847163b4d795c30faafdb05e1542d192169e7c8be88a7` |
+| `prepared-projection-owner-after-10.guardian.json` | `a06bbd4967857dd269b5a46df5efe187198bf8aa188ebba6ee57beac01e19abd` |
+| `prepared-projection-owner-after-10.test-count.json` | `2bd59e6493d28140da1df19f1a8364f8309f28a816fabead49399abc9934c128` |
+
+The independent original-model after recipes bind ROOT's unchanged clean 87c checkout:
 
 | Attempt | Recipe SHA256 | Required count |
 |---|---|---|
-| `pr427-original-euler38-memory-after-root87c-20261011` | `b290a622b93286af7997caca0a28131473bd1c9b6c7215c28263b8e3ba4d8908` | 1 |
-| `pr427-original-euler38-states-after-root87c-20261011` | `a95d05c073881aba0e3f9e3f5a5b48b45e7868796671b13ae1873464d1ab08b2` | 1 |
+| `pr427-original-euler38-memory-after-root87c-shared-20261011` | `6c065b8b9a495e8b59fed51814b478a16306464ba1c9c49aac61aa50c8efcb0d` | 1 |
+| `pr427-original-euler38-states-after-root87c-shared-20261011` | `edcf8ebda58bb458f5e8e6483075020476e05d216c78a151411f8850ceaf2a94` | 1 |
+
+The previous owned-snapshot recipes remain frozen and unrun. The shared-checkout
+rebinding preserves every source hash and gate, avoiding a rebuild caused solely
+by changing source directory paths.
 
 Both retain the original fixture SHA256
 `dccdafed12d656db2c6758b6e0e5f7ca5d85accb89847d6715c4c6f5f5c4b89d`
