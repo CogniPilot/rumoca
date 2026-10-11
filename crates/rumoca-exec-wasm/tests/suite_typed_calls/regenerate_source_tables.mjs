@@ -27,7 +27,14 @@ if (git('status', '--porcelain', '--untracked-files=normal').trim()) {
 }
 const revision = git('rev-parse', 'HEAD').trim();
 const tracked = git('ls-files', '-z').split('\0').filter(Boolean);
-const sourceManifest = () => tracked.map((file) => `${fileHash(path.join(repository, file))}  ${file}\n`).join('');
+const sourceManifestFormat = 'git ls-files order; sha256(raw regular-file bytes or raw symlink-target bytes), two spaces, path, newline';
+const trackedBytes = (file) => {
+  const stat = fs.lstatSync(file);
+  if (stat.isSymbolicLink()) return fs.readlinkSync(file, { encoding: 'buffer' });
+  if (stat.isFile()) return fs.readFileSync(file);
+  throw new Error(`unsupported tracked source entry type: ${file}`);
+};
+const sourceManifest = () => tracked.map((file) => `${sha256(trackedBytes(path.join(repository, file)))}  ${file}\n`).join('');
 const before = sourceManifest();
 const compilerSourceSha256 = sha256(before);
 fs.mkdirSync(output); // Require a new evidence directory; never overwrite a receipt.
@@ -105,7 +112,7 @@ if (sourceManifest() !== before || fileHash(executable) !== producerBinarySha256
 }
 fs.writeFileSync(path.join(output, 'issuance.json'), JSON.stringify({
   compilerRevision: revision, compilerSourceSha256, producerBinarySha256,
-  sourceManifestFormat: 'git ls-files order; sha256(raw tracked bytes), two spaces, path, newline',
+  sourceManifestFormat,
   executable, buildCommand,
   buildEnvironment: Object.fromEntries([
     'CARGO_TARGET_DIR', 'CARGO_HOME', 'CARGO_BUILD_JOBS', 'CARGO_INCREMENTAL',

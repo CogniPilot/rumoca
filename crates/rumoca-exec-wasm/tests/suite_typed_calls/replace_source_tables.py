@@ -6,9 +6,16 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+
+
+SOURCE_MANIFEST_FORMAT = (
+    "git ls-files order; sha256(raw regular-file bytes or raw symlink-target bytes), "
+    "two spaces, path, newline"
+)
 
 
 def digest(data):
@@ -72,7 +79,8 @@ def verify_snapshot(repository, evidence, receipt, executable):
     require(not git(repository, "status", "--porcelain", "--untracked-files=normal").strip(), "checkout must be clean")
     require(git(repository, "rev-parse", "HEAD").strip() == receipt["compilerRevision"], "issuer source revision mismatch")
     tracked = git(repository, "ls-files", "-z").split("\0")[:-1]
-    manifest = "".join(f"{digest((repository / name).read_bytes())}  {name}\n" for name in tracked).encode()
+    require(receipt["sourceManifestFormat"] == SOURCE_MANIFEST_FORMAT, "source manifest format mismatch")
+    manifest = "".join(f"{digest(tracked_bytes(repository / name))}  {name}\n" for name in tracked).encode()
     require(manifest == (evidence / "compiler-source.sha256").read_bytes(), "tracked source manifest mismatch")
     require(digest(manifest) == receipt["compilerSourceSha256"], "compiler source digest mismatch")
     require(digest(executable.read_bytes()) == receipt["producerBinarySha256"], "actual producer executable digest mismatch")
@@ -82,6 +90,15 @@ def verify_snapshot(repository, evidence, receipt, executable):
         require(match is not None, f"missing {name} schema owner")
         versions.append(int(match[1]))
     return versions
+
+
+def tracked_bytes(path):
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        return os.fsencode(os.readlink(path))
+    if stat.S_ISREG(mode):
+        return path.read_bytes()
+    raise ValueError(f"unsupported tracked source entry type: {path}")
 
 
 def verify_binders(value):

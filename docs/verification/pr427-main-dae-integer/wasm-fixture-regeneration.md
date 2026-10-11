@@ -12,6 +12,17 @@ added. It replaces the external review producer for this refresh, leaving
 `slam_web/dev/rumoca-native-source-producer.rs` untouched. The portable wrapper
 is `crates/rumoca-exec-wasm/tests/suite_typed_calls/regenerate_source_tables.mjs`.
 
+`compiler-source.sha256` follows the original `git ls-files -z` order. Each
+line is `sha256`, two spaces, the tracked path, and a newline. Regular entries
+hash their raw file bytes; symbolic links hash their raw target bytes without
+following the link, including links to directories. Other entry types fail
+before the build. `issuance.json.sourceManifestFormat` records this exact
+format, and the replacement verifier requires it and recomputes identical
+bytes with `lstat` and `os.fsencode(os.readlink(...))`. Git revision, tracked
+order, compiler binary and authored model identities remain independently
+checked. Historical receipts retain their original format and are not reused
+as current issuance receipts.
+
 Under the root's exclusive guarded lane, with the standard Cargo/RSS/disk
 limits and owned cache environment already set, run:
 
