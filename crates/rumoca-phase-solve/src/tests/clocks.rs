@@ -6,9 +6,11 @@
 
 use super::*;
 
-fn relation_with_previous_guard_model(mixed_clocks: bool) -> dae::Dae {
+fn relation_with_previous_guard_model(mixed_clocks: bool, time_relation: bool) -> dae::Dae {
     let text = if mixed_clocks {
         "discrete Integer counterA, counterB; Clock cA=Clock(0.1), cB=Clock(0.2); if previous(counterA)<5 and previous(counterB)<5 then 1.0>0.0 else false;"
+    } else if time_relation {
+        "discrete Integer counter; Clock c=Clock(0.1); if previous(counter)<5 then time>0.45 else false;"
     } else {
         "discrete Integer counter; Clock c=Clock(0.1); if previous(counter)<5 then 1.0>0.0 else false;"
     };
@@ -58,8 +60,16 @@ fn relation_with_previous_guard_model(mixed_clocks: bool) -> dae::Dae {
         let owner = model.begin_model_conditional(guard, at)?;
         let expression = model.model_conditional_arm(&owner, true, |model| {
             model.expressions(|e| {
-                let one = e.at(at).literal(dae::DaeLiteral::Real(1.0))?;
-                let zero = e.at(at).literal(dae::DaeLiteral::Real(0.0))?;
+                let one = if time_relation {
+                    e.at(at).coordinate(dae::CoordinateInput::Time)?
+                } else {
+                    e.at(at).literal(dae::DaeLiteral::Real(1.0))?
+                };
+                let zero = e.at(at).literal(dae::DaeLiteral::Real(if time_relation {
+                    0.45
+                } else {
+                    0.0
+                }))?;
                 e.at(at).binary(dae::BinaryOperator::Greater, one, zero)
             })
         })?;
@@ -87,7 +97,7 @@ fn relation_with_previous_guard_model(mixed_clocks: bool) -> dae::Dae {
 
 #[test]
 fn arm_relation_previous_guard_owns_its_condition_memory_clock() {
-    let model = relation_with_previous_guard_model(false);
+    let model = relation_with_previous_guard_model(false, false);
     let problem = lower_solve_problem(&model)
         .expect("the relation's guard must lower inside its Previous clock");
     assert_eq!(problem.events.root_conditions.row_count(), 0);
@@ -110,7 +120,7 @@ fn arm_relation_previous_guard_owns_its_condition_memory_clock() {
 
 #[test]
 fn arm_relation_previous_guard_refuses_mixed_condition_memory_clocks() {
-    let model = relation_with_previous_guard_model(true);
+    let model = relation_with_previous_guard_model(true, false);
     let error = lower_solve_problem(&model)
         .expect_err("two guard clocks cannot issue one condition-memory schedule");
     let LowerError::NonComputable { reason, span } = error else {
@@ -124,6 +134,21 @@ fn arm_relation_previous_guard_refuses_mixed_condition_memory_clocks() {
         !span.is_dummy(),
         "the refusal retains the source condition span"
     );
+}
+
+#[test]
+fn guarded_time_relation_refuses_a_previous_coordinate_outside_its_clock() {
+    let model = relation_with_previous_guard_model(false, true);
+    let error = lower_solve_problem(&model)
+        .expect_err("a continuous time root cannot evaluate Previous outside its issued clock");
+    let LowerError::NonComputable { reason, span } = error else {
+        panic!("the clock coordinate boundary must refuse the root: {error:?}");
+    };
+    assert_eq!(
+        reason,
+        "previous coordinate escaped its owning clock schedule"
+    );
+    assert!(!span.is_dummy());
 }
 
 #[test]
