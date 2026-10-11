@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "sourceBefore": "e5388bd4bf2c08e4c20d29751bd3fedb95cb8fb6",
+  "candidate": "cedf2e6c7318ec6c8049bb0b1394069dd1595aef",
+  "candidateStatus": "UNRUN; source-only formatting and review",
+  "before": {
+    "tests": 2,
+    "passed": 0,
+    "failed": 2,
+    "ignored": 0,
+    "firstDivergence": "ToDae ED019: dgetrf protected initialized m has no checked native owner",
+    "numericExecution": "unreached",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca",
+      "--no-default-features",
+      "--features",
+      "fmu-packaging",
+      "--test",
+      "suite_core",
+      "native_lu_inverse::",
+      "--",
+      "--nocapture"
+    ],
+    "guards": {
+      "seconds": 600,
+      "rssMiB": 4096,
+      "availableMiB": 16384,
+      "cacheMiB": 8192,
+      "scratchFreeFloorBytes": 8589934592,
+      "ownedSwapBytes": 0
+    },
+    "exitCode": 101,
+    "elapsedMs": 4755.593185,
+    "testSeconds": 0.01,
+    "peakRssKiB": 544852,
+    "peakCacheBytes": 7116247040,
+    "minimumScratchFreeBytes": 10514329600,
+    "artifacts": [
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-lu-inverse-before-e538-20261011/recipe.json",
+        "bytes": 515508,
+        "sha256": "ebd6e33d0ba32a2b436ac1b67dc2678c98d6e818ad4b7b776e5e7d208c6deddc"
+      },
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-lu-inverse-before-e538-20261011/lu-inverse-before-2.log",
+        "bytes": 1609,
+        "sha256": "787b3221ea0171663afef023cee58d437d11ff7dc09f2f98e67a254acc00dec6"
+      },
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-lu-inverse-before-e538-20261011/lu-inverse-before-2.guardian.json",
+        "bytes": 1002,
+        "sha256": "3a3b4f6853e98c84d5098aee6c86b450a66f0fd219a042f6565e96d3e84ae92b"
+      }
+    ]
+  },
+  "authoredWorkshopBefore": {
+    "source": "ca4962550e4bc9be1077f0ad633471866b956312",
+    "tests": 7,
+    "passed": 5,
+    "failed": 2,
+    "compiledModels": 14,
+    "declaredModels": 15,
+    "failures": [
+      "Kalman compilation roster cell",
+      "Kalman numeric initialization test"
+    ],
+    "firstDivergence": "the same dgetrf m ED019",
+    "artifacts": [
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-tracked-examples-after-ca496-20261011/recipe.json",
+        "bytes": 513435,
+        "sha256": "e789bbf77561117fa01f7bcb450a9afb0f0d0211c1e658ffe3df6cb961931350"
+      },
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-tracked-examples-after-ca496-20261011/actual-tracked-example-suite-7.log",
+        "bytes": 34274911,
+        "sha256": "6712fc04f11392c313aa6f1606d4a150ac1c92129f0b6da162b300aba1587e0e"
+      },
+      {
+        "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-tracked-examples-after-ca496-20261011/actual-tracked-example-suite-7.guardian.json",
+        "bytes": 880,
+        "sha256": "c437a3cd5c1ff3c5b711a9aaab15dd5d07abbd36c87d0a53040c7cc75feb82c8"
+      }
+    ]
+  },
+  "pinnedMsl": {
+    "path": "$HOME/scratch/rumoca/worktrees/pr427-reviewed-semantic-fixes-20261011/target/msl/ModelicaStandardLibrary-4.1.0/Modelica 4.1.0/Math/package.mo",
+    "bytes": 422251,
+    "sha256": "febcfbbb2f6d2bc8478e4d2f3706eb02240b001c1acba674d69fadf68fbfbf97"
+  },
+  "selectors": {
+    "focused": "native_lu_inverse::",
+    "focusedCount": 10,
+    "workshop": "cargo xtask verify examples",
+    "workshopCount": 7
+  },
+  "limits": [
+    "Neither standalone algebraic Auto nor the source audit proves native engine execution.",
+    "The actual unchanged Kalman continuous source has Interpreter/Auto session controls with receipts, but this candidate has not run.",
+    "The profile rejects empty matrices, unknown or implicit purity, nonmatching output binding, padded stride, and unmatched external interfaces.",
+    "This is no full-MSL, full-CI, WASM, coverage, OMC parity, performance or release qualification."
+  ]
+}
