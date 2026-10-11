@@ -17,7 +17,13 @@ pub(super) fn validate_integer_reduction(
     ) {
         return validate_while_sum(function, context).map(Some);
     }
-    if contains_break(&function.body) {
+    if contains_break(&function.body)
+        && matches!(function.body.as_slice(), [
+            rumoca_core::Statement::Assignment { .. },
+            rumoca_core::Statement::For { indices, .. },
+        ] if matches!(indices.as_slice(), [index]
+            if is_unit_runtime_range(&index.range, function, context.flat)))
+    {
         return validate_capped_for_sum(function, context).map(Some);
     }
     Ok(None)

@@ -27,6 +27,7 @@ mod liveness_join_tests;
 #[cfg(test)]
 mod loop_carry_tests;
 mod loop_local_substitution;
+mod prefix_breaks;
 /// The executable preservation theorem for this pass.
 ///
 /// [`preservation_differential_tests`] runs every corpus program twice, once as
@@ -105,7 +106,8 @@ pub(super) fn compact_function_loops(
         })
         .cloned()
         .collect::<HashSet<_>>();
-    let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(statements);
+    let statements = prefix_breaks::truncate_prefix_breaks(statements);
+    let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(&statements);
     let settled = inline_settled_shape_integer_locals(
         &affine_slices,
         static_integers,

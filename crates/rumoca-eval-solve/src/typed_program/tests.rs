@@ -43,6 +43,59 @@ fn real_kind(format: SolveRealFormat, value: f64) -> SolveValueKind {
     }
 }
 
+fn assert_scalar_call_projection(
+    table: &SolvePureCallTable,
+    owner: usize,
+    inputs: &[f64],
+    expected: &[f64],
+) {
+    let mut program = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, _)| LinearOp::LoadY {
+            dst: u32::try_from(index).unwrap(),
+            index,
+        })
+        .collect::<Vec<_>>();
+    let first = u32::try_from(inputs.len()).unwrap();
+    program.push(LinearOp::PureCall {
+        dst_start: first,
+        input_starts: (0..first).collect::<Vec<_>>().into_boxed_slice(),
+        site: table.owners()[owner].call_site(),
+    });
+    program.extend(
+        expected
+            .iter()
+            .enumerate()
+            .map(|(index, _)| LinearOp::StoreOutput {
+                src: first + u32::try_from(index).unwrap(),
+            }),
+    );
+    let projected = crate::lower_scalar_ops(&program, Some(table))
+        .expect("the bounded primal profile has a scalar template projection");
+    for (label, program) in [
+        ("canonical checked call", program),
+        ("scalar template projection", projected),
+    ] {
+        let block = ScalarProgramBlock::with_program_spans(vec![program], vec![span(1200)])
+            .expect("the projected program retains a checked scalar contract");
+        let mut actual = vec![f64::NAN; expected.len()];
+        crate::eval_scalar_program_block_with_context(
+            &block,
+            inputs,
+            &[],
+            0.0,
+            crate::RowEvalContext {
+                pure_calls: Some(table),
+                ..Default::default()
+            },
+            &mut actual,
+        )
+        .expect("the admitted primal program executes");
+        assert_eq!(actual, expected, "{label}");
+    }
+}
+
 fn conditional_call<'program>(
     builder: &mut TypedProgramBuilder<'program>,
     condition: ProgramRegister<'program>,
@@ -329,6 +382,8 @@ fn conditional_projections_select_lazily_between_identical_calls() {
         inactive[0].elements(),
         [real_kind(SolveRealFormat::Binary64, 6.0)]
     );
+    assert_scalar_call_projection(&table, 1, &[1.0, 3.0], &[12.0]);
+    assert_scalar_call_projection(&table, 1, &[0.0, 3.0], &[6.0]);
 }
 
 #[test]
@@ -792,6 +847,7 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
     // 0, 1, 3, 6, 10: the fifth predicate is false.
     let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
     assert_eq!(output[0].elements(), [SolveValueKind::Integer(10)]);
+    assert_scalar_call_projection(&table, 0, &[], &[10.0]);
 }
 
 #[test]
@@ -799,6 +855,9 @@ fn directional_fold_differentiates_only_the_selected_structured_region() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
     let table = directional_fold_table(arithmetic, &real);
+    for (input, expected) in [(-2.0, -24.0), (0.0, 0.0), (1.5, 18.0)] {
+        assert_scalar_call_projection(&table, 0, &[input], &[expected]);
+    }
     let value = |number| {
         TypedValue::construct(
             real.clone(),

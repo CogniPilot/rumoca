@@ -1163,7 +1163,7 @@ fn lower_builtin_call<'dae>(
         });
     }
     let source_arguments = arguments;
-    let arguments = arguments
+    let mut arguments = arguments
         .iter()
         .enumerate()
         .map(|(index, argument)| {
@@ -1182,6 +1182,11 @@ fn lower_builtin_call<'dae>(
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if matches!(function, BuiltinFunction::Cross | BuiltinFunction::Skew) {
+        for argument in &mut arguments {
+            *argument = promote_integer_value_to_real(construction, *argument, provenance)?;
+        }
+    }
     let builtin = pure_builtin(function);
     // MLS §3.7.2 div/mod/rem generate events at quotient changes. The static
     // path folds a fully static call; a call the static proof refuses as a
