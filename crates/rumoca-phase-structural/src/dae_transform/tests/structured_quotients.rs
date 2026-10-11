@@ -34,13 +34,12 @@ fn structured_quotient_reconstruction_preserves_issued_domain_and_boundary() {
                 at,
             )
         })?;
+        let binder = model.domains(|domains| domains.binder(domain, 0, at))?;
         let operands = model.expressions(|expressions| {
             let n = expressions
                 .at(at)
                 .coordinate(dae::CoordinateInput::Input(n))?;
-            let i = expressions
-                .at(at)
-                .binder(dae::DomainBinderId::from_raw(domain.index(), 0))?;
+            let i = expressions.at(at).binder(binder)?;
             let lhs = expressions.at(at).binary(dae::BinaryOperator::Add, n, i)?;
             let rhs = expressions.at(at).literal(dae::DaeLiteral::Integer(7))?;
             Ok([lhs, rhs])
