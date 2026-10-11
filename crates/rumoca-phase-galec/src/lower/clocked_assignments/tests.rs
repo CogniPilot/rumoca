@@ -2001,7 +2001,7 @@ fn periodic_guard_totality_reuses_the_checked_boolean_activation() {
     })
     .unwrap();
     model.inspect(|view| {
-        let clock = view.clocks().next().unwrap().0;
+        let clock = view.clock_id(0).unwrap();
         let conditions = view.conditions().map(|(id, _)| id).collect::<Vec<_>>();
         assert!(periodic_trigger::condition_true_on_tick(
             view,
