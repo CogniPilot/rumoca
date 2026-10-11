@@ -67,7 +67,13 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
             inner,
             columns,
             ..
-        } => rows.checked_mul(*columns)?.checked_mul(dot_cost(*inner)?),
+        } => {
+            if *rows == 0 || *columns == 0 {
+                Some(0)
+            } else {
+                rows.checked_mul(*columns)?.checked_mul(dot_cost(*inner)?)
+            }
+        }
         LinearOp::TensorIdentity { lanes: 1, size, .. } => size.checked_mul(*size),
         LinearOp::TensorTranspose {
             lanes: 1,
@@ -75,7 +81,13 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
             columns,
             element_width,
             ..
-        } => rows.checked_mul(*columns)?.checked_mul(*element_width),
+        } => {
+            if *rows == 0 || *columns == 0 || *element_width == 0 {
+                Some(0)
+            } else {
+                rows.checked_mul(*columns)?.checked_mul(*element_width)
+            }
+        }
         LinearOp::TensorCross { lanes: 1, .. } => Some(9),
         // Typed bodies reserve their scalar storage and domain work separately.
         LinearOp::PureCall { .. } => Some(0),
@@ -182,6 +194,9 @@ impl Lowering<'_> {
         shape: (usize, usize, usize),
     ) -> Option<()> {
         let (rows, inner, columns) = shape;
+        if rows == 0 || columns == 0 {
+            return Some(());
+        }
         for (i, j) in (0..rows).flat_map(|i| (0..columns).map(move |j| (i, j))) {
             let out = Self::reg(dst, i.checked_mul(columns)?.checked_add(j)?)?;
             let row = Self::reg(lhs, i.checked_mul(inner)?)?;
@@ -203,6 +218,9 @@ impl Lowering<'_> {
     /// Output rows x columns (x width) from a columns x rows source.
     fn transpose(&mut self, dst: Reg, src: Reg, shape: (usize, usize, usize)) -> Option<()> {
         let (rows, columns, width) = shape;
+        if rows == 0 || columns == 0 || width == 0 {
+            return Some(());
+        }
         let points = (0..rows)
             .flat_map(|i| (0..columns).flat_map(move |j| (0..width).map(move |e| (i, j, e))));
         for (i, j, e) in points {
@@ -418,6 +436,65 @@ pub fn lower_scalar_ops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_direct_tensor_views_do_not_traverse_unused_huge_axes() {
+        for (rows, columns) in [(usize::MAX, 0), (0, usize::MAX)] {
+            let program = [
+                LinearOp::MatrixMultiply {
+                    dst_start: 0,
+                    lhs_start: 0,
+                    rhs_start: 0,
+                    rows,
+                    inner: usize::MAX,
+                    columns,
+                    lanes: 1,
+                },
+                LinearOp::TensorTranspose {
+                    dst_start: 0,
+                    src_start: 0,
+                    rows,
+                    columns,
+                    element_width: usize::MAX,
+                    lanes: 1,
+                },
+            ];
+            assert!(
+                lower_scalar_ops(&program, None)
+                    .expect("empty view is valid")
+                    .is_empty()
+            );
+        }
+        let program = [LinearOp::TensorTranspose {
+            dst_start: 0,
+            src_start: 0,
+            rows: usize::MAX,
+            columns: usize::MAX,
+            element_width: 0,
+            lanes: 1,
+        }];
+        assert!(
+            lower_scalar_ops(&program, None)
+                .expect("empty element blocks")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn typed_tensor_constructors_exclude_empty_and_overflowing_subshape_products() {
+        use rumoca_ir_solve::{SolveScalarType, SolveValueType};
+        for dimensions in [
+            vec![0],
+            vec![u32::MAX, u32::MAX, u32::MAX, 0],
+            vec![0, u32::MAX, u32::MAX, u32::MAX],
+        ] {
+            assert!(SolveValueType::tensor(SolveScalarType::Boolean, dimensions).is_err());
+        }
+        let value_type = SolveValueType::tensor(SolveScalarType::Boolean, vec![2, 3, 4]).unwrap();
+        assert_eq!(value_type.scalar_count(), 24);
+        let largest = SolveValueType::tensor(SolveScalarType::Boolean, vec![u32::MAX]).unwrap();
+        assert_eq!(largest.scalar_count(), u32::MAX);
+    }
 
     #[test]
     fn compact_tensor_expansion_is_refused_before_allocating_millions_of_ops() {
