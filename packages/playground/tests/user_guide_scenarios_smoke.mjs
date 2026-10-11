@@ -121,13 +121,16 @@ try {
         }
         // Explicit output intervals get a short three-interval runtime check.
         // Otherwise retain the authored/annotation horizon and default interval.
+        if (["atol", "rtol", "t_start"].some((key) => config.sim?.[key] !== undefined)) {
+          throw new Error("canonical batch browser API does not admit these authored settings");
+        }
         const dt = config.sim?.dt ?? 0;
         const tEnd = dt > 0 ? Math.min(config.sim?.t_end ?? 3 * dt, 3 * dt) : config.sim?.t_end ?? 0;
         const result = await runtime.simulateModelWithRuntime({ wasm, pkgBase, source,
           modelName: config.model.name, sourceRootCacheUrl, parameterOverrides: config.parameters ?? {},
           solver: config.sim?.solver ?? "auto", dt, tEnd });
         const payload = result.payload ?? result;
-        return { ...common, kind: "batch", payload };
+        return { ...common, kind: "batch", requestedHorizon: tEnd, requestedDt: dt, payload };
       }, path);
       const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
       assert.equal(receipt.scenarioSha256, sha(await readFile(path)), `authored configuration bytes: ${path}`);
@@ -143,12 +146,33 @@ try {
           assert(column.every(Number.isFinite), "finite trace");
         }
         assert(allData[0].every((time, index, times) => index === 0 || time > times[index - 1]), "ordered trace");
+        const requested = receipt.payload.simDetails.requested;
+        const close = (actual, expected) => Math.abs(actual - expected) <= 1e-10 * Math.max(1, Math.abs(expected));
+        assert.equal(requested.t_start, 0, "authored scenario initializes at zero");
+        assert(Number.isFinite(requested.t_end) && requested.t_end > requested.t_start);
+        assert(close(allData[0][0], requested.t_start), "trace includes initialization");
+        assert(close(allData[0].at(-1), requested.t_end), "trace completes requested horizon");
+        if (receipt.requestedHorizon > 0) assert(close(requested.t_end, receipt.requestedHorizon));
+        if (receipt.requestedDt > 0) assert(close(requested.dt, receipt.requestedDt));
+        assert(requested.dt === null || (Number.isFinite(requested.dt) && requested.dt > 0), "valid issued output interval");
+        if (requested.dt > 0) {
+          assert(Math.ceil(requested.t_end / requested.dt) <= allData[0].length, "complete grid size");
+          let observed = 0;
+          for (let index = 0; index * requested.dt < requested.t_end; index++) {
+            const expected = requested.t_start + index * requested.dt;
+            while (observed < allData[0].length && allData[0][observed] < expected && !close(allData[0][observed], expected)) observed++;
+            assert(observed < allData[0].length && close(allData[0][observed], expected), `requested output grid at ${expected}`);
+          }
+        }
         receipt.sampledHorizon = [allData[0][0], allData[0].at(-1)];
         receipt.samples = allData[0].length;
         delete receipt.payload;
       } else if (receipt.kind === "interactive") {
         assert(receipt.samples.length >= 4);
+        assert.equal(receipt.samples[0].time, 0, "interactive initialization");
         assert(receipt.samples.every((sample, index, samples) => index === 0 || sample.time > samples[index - 1].time));
+        assert(receipt.samples.every((sample, index) => Math.abs(sample.time - index * receipt.authoredDt) <= 1e-10),
+          "controller uses every authored interval");
         receipt.sampledHorizon = [receipt.samples[0].time, receipt.samples.at(-1).time];
         receipt.samples = receipt.samples.length;
       }
