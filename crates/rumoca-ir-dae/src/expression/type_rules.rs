@@ -96,11 +96,10 @@ pub(super) fn validate_runtime_quotient(
 }
 
 /// MLS §3.7.2: `div`, `mod`, and `rem` trigger events where their result
-/// changes discontinuously during continuous integration. Operands of constant
-/// variability, such as the binders of a structured domain, never change, so
-/// the quotient needs no event owner. A statically proven zero divisor is still
-/// an undefined domain. Parameter-variability operands keep their checked
-/// runtime owner, which proves the divisor for the parameter values in use.
+/// changes discontinuously during continuous integration. Constant and parameter
+/// operands, including structured-domain binders, never change during integration,
+/// so their quotient needs no event owner. A statically proven zero divisor is
+/// still undefined; other invalid divisors retain the ordinary evaluation fault.
 fn validate_time_invariant_quotient(
     storage: &Storage,
     operator: &'static str,
@@ -110,9 +109,7 @@ fn validate_time_invariant_quotient(
     for operand in [lhs, rhs] {
         if matches!(
             storage.expr_variability(operand, at)?,
-            ExpressionVariability::Parameter
-                | ExpressionVariability::Discrete
-                | ExpressionVariability::Continuous
+            ExpressionVariability::Discrete | ExpressionVariability::Continuous
         ) {
             return Err(DaeConstructionError::NonStaticDiscontinuity {
                 operator,
