@@ -1,3 +1,5 @@
+mod selected_indices;
+
 use super::*;
 use std::collections::HashMap;
 
@@ -524,6 +526,9 @@ fn structured_map_program(
             None => compiler.program(input.value, scalar)?,
         });
     }
+    // The complete family comes from this exact issued source value/domain/view.
+    // Capture plumbing exposes index leaves; the unchanged certificate checks every point.
+    selected_indices::expose_selected_indices(&mut programs, input.span)?;
     derive_affine_program_certificate(input.domain, base_point, &points, &programs, input.span)
 }
 
