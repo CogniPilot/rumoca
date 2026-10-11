@@ -164,6 +164,14 @@ try {
   check(models.some((source) => source.includes("model Wave2D")), "authored Wave2D source present");
   check(models.some((source) => source.includes("model AirfoilFlow")), "authored AirfoilFlow source present");
   const admission = await hardwareWebGpuAdmission(page);
+  if (!admission.admitted) {
+    // Live widgets load this helper lazily when GPU execution starts. Hardware
+    // absence skips compute, while the published helper's byte identity stays
+    // required by the artifact observer; importing it performs no GPU solve.
+    await page.evaluate(async () => {
+      await import("/packages/rumoca/dist/release-full-web/rumoca_gpu.js");
+    });
+  }
   for (const [index, name, canvasSelector] of [[1, "Wave2D", ".rumoca-live-surface canvas"],
     [2, "AirfoilFlow", "canvas"]]) {
     const widget = page.locator(".rumoca-live").nth(index);
