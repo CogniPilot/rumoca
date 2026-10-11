@@ -280,6 +280,31 @@ end RecordAssignment;
             "both leaves must share one call owner"
         );
     });
+
+    // DAE-C21/SOLVE-C55: the mixed Real/Boolean result publishes one complete
+    // update per sample. Check execution as well as the shared checked owner.
+    let simulation = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("the shared record call executes at each scheduled sample");
+    for (time, expected) in [(0.0, 1.0), (0.1, 2.0), (0.2, 3.0)] {
+        for (name, expected) in [("estimate.value", expected), ("estimate.valid", 1.0)] {
+            assert_eq!(
+                super::clocked_sample_regression::settled_trace_value_at_time(
+                    &simulation,
+                    name,
+                    time,
+                ),
+                expected,
+                "the entire record must be published at {time}"
+            );
+        }
+    }
 }
 
 #[test]
