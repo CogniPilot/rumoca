@@ -2,7 +2,7 @@
 use super::super::*;
 
 fn indexed_alias() -> (dae::Dae, Span) {
-    let text = "Real alias, result; Integer producer; alias={10.0,20.0}[producer]; result=if producer<0 then alias else 42.0;";
+    let text = "Real alias, result; Integer producer; producer=3; alias={10.0,20.0}[producer]; result=if producer<0 then alias else 42.0;";
     let mut sources = rumoca_core::SourceMap::new();
     let source = sources.add("indexed_alias.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
@@ -82,10 +82,24 @@ fn indexed_alias() -> (dae::Dae, Span) {
         model.continuous(|continuous| {
             continuous.value_equation(at, alias_row)?;
             continuous.value_equation(at, selected_row)
-        })
+        })?;
+        define_producer(model, producer, at)
     })
     .unwrap();
     (model, span)
+}
+
+fn define_producer<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    producer: dae::DiscreteValueId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let three =
+        model.expressions(|expressions| expressions.at(at).literal(dae::DaeLiteral::Integer(3)))?;
+    model.b1c([producer], |topology| {
+        topology.owner(at, [producer], |owner| owner.always(at, [(three, at)]))?;
+        Ok(())
+    })
 }
 
 #[test]
