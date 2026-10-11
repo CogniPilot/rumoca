@@ -1038,6 +1038,7 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 #[cfg(test)]
 mod tests {
     mod affinity;
+    mod aggregate_logarithms;
     mod block_split;
     mod broadcast_division;
     mod dependencies;
