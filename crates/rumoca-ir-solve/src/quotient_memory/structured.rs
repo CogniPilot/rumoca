@@ -256,8 +256,7 @@ fn project_constant<'a>(
             .filter(|stride| stride.op_position == position)
             .flat_map(|stride| &stride.terms)
             .filter(|term| term.dimension == dimension)
-            .map(|term| term.stride)
-            .sum::<f64>();
+            .fold(0.0, |coefficient, term| coefficient + term.stride);
         projected += f64::from(coordinates[dimension]) * coefficient;
     }
     Some(Cow::Owned(LinearOp::Const {

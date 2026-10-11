@@ -207,3 +207,54 @@ fn structured_quotient_certificate_rejects_foreign_root_event_policy() {
     problem.events.root_relation_refresh_roles.clear();
     assert!(problem.validate().is_err());
 }
+
+#[test]
+fn structured_quotient_current_wire_rejects_overlap_between_complete_maps() {
+    let mut problem = fixture(false);
+    problem.layout = VarLayout::from_parts(Default::default(), 0, 4);
+    problem.solve_layout.parameter_count = 4;
+    problem.solve_layout.compiled_parameter_len = 4;
+    let mut node = problem.discrete.structured_rhs.nodes[0].clone();
+    let ComputeNode::Map {
+        domain, output_map, ..
+    } = &mut node
+    else {
+        unreachable!()
+    };
+    *output_map = TensorOutputMap::dense_contiguous(2, domain).unwrap();
+    problem.discrete.structured_rhs.nodes.push(node);
+    let mut update = problem.discrete.structured_updates[0].clone();
+    update.node_index = 1;
+    update.target.base = scalar_slot_p(2);
+    update.role = DiscreteRowRole::QuotientMemory {
+        step: UnaryOp::Floor,
+        root_index: 2,
+    };
+    problem.discrete.structured_updates.push(update);
+    let roots = problem.events.root_conditions.programs().to_vec();
+    let spans = problem.events.root_conditions.program_spans().to_vec();
+    problem.events.root_conditions = ScalarProgramBlock::with_program_spans(
+        roots.iter().chain(&roots).cloned().collect(),
+        spans.iter().chain(&spans).copied().collect(),
+    )
+    .unwrap();
+    problem.events.root_relation_memory_targets = vec![None; 4];
+    problem.events.root_zero_domains = vec![RootZeroDomain::NonPositive; 4];
+    problem.events.root_relation_refresh_roles = vec![RootRelationRefreshRole::Frozen; 4];
+    problem
+        .validate()
+        .expect("two complete disjoint numeric Map owners");
+    let wire = serde_json::to_vec(&problem).unwrap();
+    let replay: SolveProblem = serde_json::from_slice(&wire).unwrap();
+    replay.validate().unwrap();
+    problem.discrete.structured_updates[1].target.base = scalar_slot_p(0);
+    assert!(matches!(
+        problem.validate(),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "discrete.structured_updates.target",
+            ..
+        })
+    ));
+    let tampered = serde_json::to_vec(&problem).unwrap();
+    assert!(serde_json::from_slice::<SolveProblem>(&tampered).is_err());
+}

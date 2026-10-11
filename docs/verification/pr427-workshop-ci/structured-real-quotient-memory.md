@@ -64,7 +64,7 @@ Focused qualification commands, using the ordinary CI-selected Cargo suites:
 
 ```sh
 cargo test --locked --offline -p rumoca-ir-solve --lib quotient_memory:: -- --nocapture
-# 9 tests: existing scalar certificate4 + structured certificate5
+# 10 tests: existing scalar certificate4 + structured certificate6
 cargo test --locked --offline -p rumoca --test suite_core structured_real_quotient -- --nocapture
 # 3 tests: unchanged original trace, shifted initial-step/direction control,
 # and explicit generated-target refusal
@@ -72,7 +72,19 @@ cargo test --locked --offline -p rumoca --test suite_core structured_real_quotie
 
 The structured certificate tests cover current-wire replay, both directions,
 wrong root order, duplicate stride tampering, forged initialization ownership,
-reserved pre storage, incomplete root range, observation refresh, foreign zero
+reserved pre storage, two complete disjoint Map owners and overlapping current-wire tampering,
+incomplete root range, observation refresh, foreign zero
 policy and missing refresh metadata. Assertions and numerical tolerances of the
 original trace are unchanged. After receipts, broader affected suites, new fixture
 issuance and exact-head CI are pending ROOT qualification.
+
+The shared `validate_structured_discrete_shape` constructor in ir-solve proves
+scalar/structured and inter-structured target exclusivity, including ordinary
+B.1c Maps. The numeric certificate does not add a second ownership checker.
+A complete two-Map positive control and overlapping-current-wire negative
+control exercise that existing authority. Constant-stride coefficients use an
+explicit zero-start left fold in original metadata order, then dimension-order
+`value += coordinate * coefficient`, matching both existing Map evaluator
+plans. This avoids relying on the floating-point iterator Sum identity.
+The producer functions live in the ordinary `events::quotient_memory` module;
+`events.rs` stays below the active 2,000-line architecture ceiling.
