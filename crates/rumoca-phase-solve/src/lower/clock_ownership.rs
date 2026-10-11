@@ -17,19 +17,15 @@ pub(crate) fn for_each_dependency<'dae>(
     while !expressions.is_empty() || !conditions.is_empty() {
         if !expressions.is_empty() {
             let roots = std::mem::take(&mut expressions);
-            traversal.visit_pruned(view, roots, |id, node| {
-                if !seen_expressions.insert(id) {
-                    return false;
-                }
-                visit(node);
-                expressions.extend(view.model_activation_guard(id));
-                if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Condition(id)) =
-                    node.operation()
-                {
-                    conditions.push(id);
-                }
-                true
-            });
+            visit_dependency_expressions(
+                view,
+                &mut traversal,
+                roots,
+                &mut seen_expressions,
+                &mut expressions,
+                &mut conditions,
+                &mut visit,
+            );
         }
         while let Some(id) = conditions.pop() {
             if !seen_conditions.insert(id) {
@@ -55,6 +51,30 @@ pub(crate) fn for_each_dependency<'dae>(
             }
         }
     }
+}
+
+fn visit_dependency_expressions<'dae>(
+    view: dae::DaeView<'dae>,
+    traversal: &mut dae::ExpressionTraversal<'dae>,
+    roots: Vec<dae::ExprId<'dae>>,
+    seen: &mut BTreeSet<dae::ExprId<'dae>>,
+    expressions: &mut Vec<dae::ExprId<'dae>>,
+    conditions: &mut Vec<dae::ConditionId<'dae>>,
+    visit: &mut impl FnMut(dae::ExpressionView<'dae>),
+) {
+    traversal.visit_pruned(view, roots, |id, node| {
+        if !seen.insert(id) {
+            return false;
+        }
+        visit(node);
+        expressions.extend(view.model_activation_guard(id));
+        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Condition(id)) =
+            node.operation()
+        {
+            conditions.push(id);
+        }
+        true
+    });
 }
 
 pub(crate) fn for_each_expression_clock_owner<'dae>(

@@ -26,25 +26,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let step = if let Some(guard) = memory.activation_guard {
             let position = self.ops.len();
             let held = self.load_slot(solve::scalar_slot_p(memory.parameter), span)?;
-            let strides = domain
-                .ordinal_strides()
-                .map_err(|error| LowerError::contract(format!("{error:?}"), span))?;
-            let terms = strides
-                .into_iter()
-                .enumerate()
-                .map(|(dimension, stride)| {
-                    Ok(solve::AffineStencilIndexStrideTerm {
-                        dimension,
-                        stride: isize::try_from(stride).map_err(|_| {
-                            LowerError::contract("quotient memory stride overflows", span)
-                        })?,
-                    })
-                })
-                .collect::<Result<Vec<_>, LowerError>>()?;
-            load_strides.push(solve::AffineStencilLoadStride {
-                op_position: position,
-                terms,
-            });
+            load_strides.push(held_load_stride(&domain, position, span)?);
             self.guarded_quotient_step(memory, guard, held, span)?
         } else {
             let ratio = self.expression(memory.ratio, 0)?;
@@ -186,6 +168,28 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         });
         Ok(dst)
     }
+}
+
+fn held_load_stride(
+    domain: &rumoca_core::StructuredIndexDomain,
+    op_position: usize,
+    span: Span,
+) -> Result<solve::AffineStencilLoadStride, LowerError> {
+    let strides = domain
+        .ordinal_strides()
+        .map_err(|error| LowerError::contract(format!("{error:?}"), span))?;
+    let terms = strides
+        .into_iter()
+        .enumerate()
+        .map(|(dimension, stride)| {
+            Ok(solve::AffineStencilIndexStrideTerm {
+                dimension,
+                stride: isize::try_from(stride)
+                    .map_err(|_| LowerError::contract("quotient memory stride overflows", span))?,
+            })
+        })
+        .collect::<Result<Vec<_>, LowerError>>()?;
+    Ok(solve::AffineStencilLoadStride { op_position, terms })
 }
 
 fn prove_exact_index_progression(

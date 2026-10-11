@@ -50,43 +50,29 @@ impl<'dae> BufferedQuotients<'dae> {
             let owner = view
                 .runtime_quotient_owner_at(index)
                 .expect("dense quotient owner");
-            let (generated, root_index, domain, count) = match owner.kind() {
+            let Some((generated, root_index, domain, count)) = (match owner.kind() {
                 dae::RuntimeQuotientOwnerKind::ModelEvent {
                     generated, root, ..
-                } => {
-                    // A clock-owned relation has no continuous quotient buffer.
-                    let Some(root_index) = relations.root_ordinal(root) else {
-                        continue;
-                    };
-                    (generated, root_index, None, 1)
-                }
+                } => relations
+                    .root_ordinal(root)
+                    .map(|root_index| (generated, root_index, None, 1)),
                 dae::RuntimeQuotientOwnerKind::StructuredModelEvent {
                     generated,
                     domain,
                     root,
                 } => {
-                    let count = view
-                        .domain(domain)
-                        .expect("checked quotient domain")
-                        .structured()
-                        .scalar_count()
-                        .map_err(|error| {
-                            LowerError::contract(
-                                error.to_string(),
-                                view.expression(owner.quotient())
-                                    .expect("checked quotient")
-                                    .provenance()
-                                    .span(),
-                            )
-                        })?;
-                    (
+                    let count = structured_quotient_count(view, domain, owner.quotient())?;
+                    Some((
                         generated,
                         structured_roots[root.index() as usize],
                         Some(domain),
                         count,
-                    )
+                    ))
                 }
-                dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => continue,
+                dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => None,
+            }) else {
+                // Function and clock-owned relations have no continuous buffer.
+                continue;
             };
             let expression = view
                 .expression(owner.quotient())
@@ -137,6 +123,26 @@ impl<'dae> BufferedQuotients<'dae> {
     pub(super) const fn end(&self) -> usize {
         self.end
     }
+}
+
+fn structured_quotient_count<'dae>(
+    view: dae::DaeView<'dae>,
+    domain: dae::DomainId<'dae>,
+    quotient: dae::ExprId<'dae>,
+) -> Result<usize, LowerError> {
+    view.domain(domain)
+        .expect("checked quotient domain")
+        .structured()
+        .scalar_count()
+        .map_err(|error| {
+            LowerError::contract(
+                error.to_string(),
+                view.expression(quotient)
+                    .expect("checked quotient")
+                    .provenance()
+                    .span(),
+            )
+        })
 }
 
 fn structured_root_ordinals(
