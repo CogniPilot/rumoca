@@ -16,5 +16,9 @@ contract without generating giant output or relying on a timeout.
 
 Additional controls cover the scalar-only shortcut, arithmetic overflow, and
 exact cap preservation. Formatting and diff checks passed. The root-owned
-original before gate is terminal with exit101; its detailed receipt and all
-after runtime qualification remain to be attached by the heavy executor.
+original before gate ran both tests: the two-element native/projection control
+passed and the 200-element refusal failed at `budget_tests.rs:80`, with gate
+exit101. Its retained Guardian receipt is
+`pr427-grouped-dense-budget-before-20261011/dense-budget-before.guardian.json`
+under the root-owned cycle directory. No giant template was rendered and no
+timeout was claimed. All candidate runtime qualification remains pending.
