@@ -1,8 +1,12 @@
 # Workshop CI selection and strict fixtures
 
-Source audit based on `a64ea2d60574433584c8dd1d816b501bb3a24c7a`.
-The capture/fixture policy followup is source-only: Cargo and new OMC gates
-have not run. Historical receipts remain bound to their original revisions.
+Source audit based on `db0e68b9cd0470f5466e1e2874350505115362c6`;
+the historical filename is retained. Remote PR 427 was
+`32f75cfa310ac2f1a4b12c874093038203de1b0c`, against base
+`0b249f0f725431613c25bb56e40fbbe0df54c4d2`, when inspected.
+This is a read-only reachability audit, not an executed test receipt.
+Historical and subsequent execution receipts remain bound to their own
+revisions and raw logs.
 
 The existing mandatory `test` job in `.github/workflows/ci.yml` runs
 `cargo xtask verify examples` on Linux, macOS and Windows. The xtask stages
@@ -57,9 +61,59 @@ Other workshop CI owners are already mandatory; no duplicate job is added:
 | Existing job / command | Actual source-selected checks |
 |---|---|
 | Template Runtime (c/jax/casadi), `cargo xtask verify template-runtimes --backend <backend> --require-external-tools` | C filters `c_ode_` and `ode_targets_`, plus JAX/CasADi filters `jax_`/`casadi_`, reach actual numerical-example initialization/RHS/AD tests; backend failures are not optional local success |
-| Template Runtime (modelica), same strict command with `--backend modelica` | Exact `modelica_interchange_runtime::` filter reaches two tests: six actual originals plus three exports each, and a derivative aggregate fixture plus its three exports; 28 OMC cells total |
+| Template Runtime (modelica), same strict command with `--backend modelica` | Exact `modelica_interchange_runtime::` filter reaches **four tests total**: two smoke tests and two workshop tests. The workshop pair simulates six actual originals plus three exports each, and a derivative aggregate fixture plus its three exports: **28 retained OMC cells**. The separate smoke OMC test checks three exports; it does not contribute to those 28 simulation cells |
 | Three-OS workspace test job | Four ordinary LSP workshop tests render all five configured codegen scenarios through actual execute-command handling, check relative custom paths, retain Ball/JAX event refusal, and check actual CasADi and complete FMI source projects |
 | Playground, `cargo xtask playground test` | Discovers all `*.test.mjs`, including three `default_workspace.test.mjs` checks; actual FullWeb runtime smoke is a separate stage of the same command |
+
+At this source, the exact mandatory runtime filters and source-derived
+selected test counts are:
+
+| Backend / exact filters | Tests selected | Count derivation |
+|---|---:|---|
+| C: `c_ode_`, `ode_targets_` | 11 | Seven tests in `c_ode_pure_call_semantics`, one selected-region test, one scalar smoke, one five-model workshop test, and one compacted-family-call test |
+| JAX: `jax_` | 6 | Two selected-sqrt tests, one vector/capture selected-region test, scalar smoke, original issue 418, and the five-model workshop test |
+| CasADi: `casadi_` | 3 | Selected-region test, scalar smoke, and five-model workshop test |
+| Modelica: `modelica_interchange_runtime::` | 4 | Two smoke tests and the two workshop tests described above |
+| Render: `codegen_example_regression::` | 6 | Direct custom-template inventory and five checked-report/source-root/unit controls |
+
+These counts enumerate `#[test]` functions and their declared module paths
+under `tests/suite_template_runtime`; they are not libtest execution counts.
+The owning table is `TEMPLATE_RUNTIME_GROUPS` in `xtask/src/verify_cmd.rs`.
+C/JAX/CasADi/Modelica select `--no-default-features --features
+template-runtime-tests`; Render additionally selects `fmu-packaging`.
+The three five-model numerical tests use actual SympyDecay, NeuralODETensor,
+NeuralPredatorPrey, NeuralLatentOscillator and NeuralODEBackprop sources.
+They compare initialized defaults and two RHS points against the checked
+runtime; JAX checks JIT, a forward directional derivative and reverse gradient,
+and CasADi checks the corresponding Jacobian column. This is not a full
+simulation trace or an independent analytic oracle for each neural model.
+Missing C/Python/backend tools fail those tests. The CI Modelica lane's strict
+marker makes its otherwise optional local OMC/timeout prerequisite failure
+mandatory.
+
+The four LSP workshop tests are unconditionally included by the default
+`server` feature. Workspace CI uses `nextest run --workspace` with
+`rumoca/msl-sim-tests`, excluding Python/WASM bindings for their dedicated
+jobs. The actual FullWeb smoke is selected by `playground_cmd.rs` after its
+single-threaded release build; it is not an undiscovered `*.mjs` test.
+
+Remaining source-level coverage limits:
+
+- Micah's Python FMI feature repair (`c7d3ab509`) has no direct binding
+  regression for `Model.codegen("fmi2")`, `"fmi3"` or `"fmi-ls-wasm"`.
+  Installed-wheel smoke/API helpers render C, magic renders DAE Modelica,
+  and the binding's Rust dispatch tests render two GALEC targets. CLI/LSP
+  FMI tests do not exercise that Python entrypoint.
+- Installed-wheel `export_test.py` may skip JAX/CasADi live-object exports
+  when those optional dependencies are absent. Strict generated-target
+  runtime jobs cover a different entrypoint.
+- FullWeb's actual `target_render_smoke.mjs` renders base/DAE Modelica,
+  C/JAX/CasADi for SympyDecay and GALEC for GalecCounter, plus custom
+  workspace/refusal controls. It does not render `flat-modelica` through
+  the WASM entrypoint. FMI packaging is deliberately refused in the browser.
+- The PR's manual 32-model/246-cell report is not a mandatory automated
+  matrix. Larger neural variants and MSL-backed PID/switched-RLC examples
+  have the compilation roster above, not all-target numeric export proof.
 
 OMC cells now always retain their actual source, script, stdout, stderr, status
 and any real CSV in a fresh process-owned TempDir under standard `TMPDIR`.
