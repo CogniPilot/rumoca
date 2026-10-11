@@ -72,6 +72,46 @@ fn fixture(builtin: PureBuiltin, scalar: ScalarType, extent: i64) -> Dae {
     .expect("the boundary owns its exact compact domain")
 }
 
+fn assert_structured_boundary(dae: &Dae, builtin: PureBuiltin) -> usize {
+    dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0);
+        assert_eq!(view.relation_count(), 0);
+        assert_eq!(view.condition_count(), 0);
+        assert_eq!(view.structured_root_count(), 1);
+        assert_eq!(view.runtime_quotient_owner_count(), 1);
+        let owner = view.runtime_quotient_owner_at(0).unwrap();
+        let RuntimeQuotientOwnerKind::StructuredModelEvent {
+            generated,
+            domain,
+            root,
+        } = owner.kind()
+        else {
+            panic!("one structured boundary")
+        };
+        assert_eq!(owner.builtin(), builtin);
+        assert_eq!(domain.index(), 0);
+        let root = view.structured_root(root).unwrap();
+        assert_eq!(root.domain(), domain);
+        assert_eq!(root.expression(), generated[5]);
+        assert_eq!(
+            view.expression(owner.quotient()).unwrap().binder_domain(),
+            Some(domain)
+        );
+        view.expression_count()
+    })
+}
+
+fn assert_exact_wire_roundtrips(dae: &Dae) {
+    let encoded = serde_json::to_vec(dae).unwrap();
+    let replayed: Dae = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(serde_json::to_vec(&replayed).unwrap(), encoded);
+    let encoded = bincode::serialize(dae).unwrap();
+    let mut input = std::io::Cursor::new(encoded.as_slice());
+    let replayed: Dae = bincode::deserialize_from(&mut input).unwrap();
+    assert_eq!(input.position(), encoded.len() as u64);
+    assert_eq!(bincode::serialize(&replayed).unwrap(), encoded);
+}
+
 #[test]
 fn structured_quotient_roundtrips_retain_one_compact_owner_for_real_and_integer() {
     for builtin in [PureBuiltin::Div, PureBuiltin::Mod, PureBuiltin::Rem] {
@@ -79,40 +119,8 @@ fn structured_quotient_roundtrips_retain_one_compact_owner_for_real_and_integer(
             let mut counts = Vec::new();
             for extent in [0, 2, 1000] {
                 let dae = fixture(builtin, scalar, extent);
-                dae.inspect(|view| {
-                    assert_eq!(view.root_count(), 0);
-                    assert_eq!(view.relation_count(), 0);
-                    assert_eq!(view.condition_count(), 0);
-                    assert_eq!(view.structured_root_count(), 1);
-                    assert_eq!(view.runtime_quotient_owner_count(), 1);
-                    let owner = view.runtime_quotient_owner_at(0).unwrap();
-                    let RuntimeQuotientOwnerKind::StructuredModelEvent {
-                        generated,
-                        domain,
-                        root,
-                    } = owner.kind()
-                    else {
-                        panic!("one structured boundary")
-                    };
-                    assert_eq!(owner.builtin(), builtin);
-                    assert_eq!(domain.index(), 0);
-                    let root = view.structured_root(root).unwrap();
-                    assert_eq!(root.domain(), domain);
-                    assert_eq!(root.expression(), generated[5]);
-                    assert_eq!(
-                        view.expression(owner.quotient()).unwrap().binder_domain(),
-                        Some(domain)
-                    );
-                    counts.push(view.expression_count());
-                });
-                let encoded = serde_json::to_vec(&dae).unwrap();
-                let replayed: Dae = serde_json::from_slice(&encoded).unwrap();
-                assert_eq!(serde_json::to_vec(&replayed).unwrap(), encoded);
-                let encoded = bincode::serialize(&dae).unwrap();
-                let mut input = std::io::Cursor::new(encoded.as_slice());
-                let replayed: Dae = bincode::deserialize_from(&mut input).unwrap();
-                assert_eq!(input.position(), encoded.len() as u64);
-                assert_eq!(bincode::serialize(&replayed).unwrap(), encoded);
+                counts.push(assert_structured_boundary(&dae, builtin));
+                assert_exact_wire_roundtrips(&dae);
             }
             assert!(
                 counts.iter().all(|count| *count == counts[0]),
