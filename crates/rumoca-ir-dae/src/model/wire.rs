@@ -5,6 +5,7 @@ mod function_replay;
 mod helpers;
 mod quotient_projection;
 mod records;
+mod structured_quotients;
 
 use serde::ser::{SerializeStruct, SerializeStructVariant};
 use serde::{Deserialize, Serialize};
@@ -134,7 +135,13 @@ impl Serialize for FrozenStorage {
                 markers: &projection.root_markers,
             },
         )?;
-        state.serialize_field("structured_roots", &self.structured_roots)?;
+        state.serialize_field(
+            "structured_roots",
+            &structured_quotients::StructuredRootsOutput {
+                roots: &self.structured_roots,
+                markers: &projection.structured_root_markers,
+            },
+        )?;
         state.serialize_field("time_events", &self.time_events)?;
         state.serialize_field("event_actions", &self.event_actions)?;
         state.serialize_field("clocks", &self.clocks)?;
@@ -281,7 +288,7 @@ enum PendingOwnerSlot<'dae> {
 
 struct PendingQuotientReplay<'dae> {
     token: Option<QuotientReplayToken<'dae>>,
-    activation: u32,
+    activation: Option<u32>,
 }
 
 fn mapped_expression<'dae>(
@@ -329,8 +336,8 @@ fn reconstruct<'dae>(
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &mut ids)?;
     reconstruct_roots(wire, dae, &mut ids)?;
+    reconstruct_structured_roots(wire, dae, &mut ids)?;
     finish_quotient_replays(dae, &mut ids)?;
-    reconstruct_structured_roots(wire, dae, &ids)?;
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
     reconstruct_initial_discrete_values(wire, dae, &ids)?;
@@ -730,7 +737,21 @@ fn reconstruct_next_expression<'dae>(
             return replay_model_quotient_owner(
                 dae,
                 ids,
-                (*builtin, *lhs, *rhs, *activation),
+                (*builtin, *lhs, *rhs, Some(*activation), None),
+                provenance,
+            )
+            .map(|()| true);
+        }
+        ExprNodeWire::RuntimeQuotientOwner {
+            kind: QuotientOwnerKindWire::StructuredModel { domain },
+            builtin,
+            lhs,
+            rhs,
+        } => {
+            return replay_model_quotient_owner(
+                dae,
+                ids,
+                (*builtin, *lhs, *rhs, None, Some(*domain)),
                 provenance,
             )
             .map(|()| true);
@@ -764,18 +785,26 @@ fn reconstruct_next_expression<'dae>(
 fn replay_model_quotient_owner<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    record: (PureBuiltin, u32, u32, u32),
+    record: (PureBuiltin, u32, u32, Option<u32>, Option<u32>),
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    let (builtin, lhs, rhs, activation) = record;
+    let (builtin, lhs, rhs, activation, domain) = record;
     let lhs = mapped(&ids.expressions, lhs, "expression", provenance)?;
     let rhs = mapped(&ids.expressions, rhs, "expression", provenance)?;
     // The reservation ordinal is semantic input; its definition is consumed
     // later by this owner's activation marker.
-    if activation as usize >= ids.conditions.len() {
+    if activation.is_some_and(|activation| activation as usize >= ids.conditions.len()) {
         return Err(malformed("expressions.nodes.quotient_owner_activation"));
     }
     let token = dae.begin_quotient_replay(builtin, [lhs, rhs], provenance)?;
+    let claimed_domain = domain
+        .map(|raw| mapped(&ids.domains, raw, "domain", provenance))
+        .transpose()?;
+    let actual_domain =
+        dae.expressions(|expressions| expressions.binder_domain(token.quotient(), provenance))?;
+    if actual_domain != claimed_domain || activation.is_some() == claimed_domain.is_some() {
+        return Err(malformed("expressions.nodes.quotient_owner_scope"));
+    }
     for id in std::iter::once(token.quotient()).chain(token.generated()) {
         if id.index() as usize != ids.expressions.len() {
             return Err(malformed("expressions.nodes.quotient_owner_batch"));
@@ -1431,7 +1460,7 @@ fn define_conditions<'dae>(
             // owner record named as its semantic input.
             let activation = ids.conditions[index];
             let owner_activation = match ids.quotient_replays.get(owner as usize) {
-                Some(PendingOwnerSlot::Model(pending)) => Some(pending.activation),
+                Some(PendingOwnerSlot::Model(pending)) => pending.activation,
                 _ => None,
             };
             if owner_activation != Some(index as u32) {
@@ -1551,20 +1580,34 @@ fn reconstruct_roots<'dae>(
 fn reconstruct_structured_roots<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
     for (index, root) in wire.structured_roots.iter().enumerate() {
-        let domain = mapped(&ids.domains, root.domain, "domain", root.provenance)?;
-        let expression = mapped(
-            &ids.expressions,
-            root.expression,
-            "expression",
-            root.provenance,
-        )?;
-        let id = dae.conditions(|conditions| {
-            conditions.structured_root(domain, expression, root.provenance)
-        })?;
-        expect_ordinal("structured root", index, id.index(), root.provenance)?;
+        let (id, at) = match *root {
+            StructuredRootEntryWire::Root {
+                domain,
+                expression,
+                provenance,
+            } => {
+                let domain = mapped(&ids.domains, domain, "domain", provenance)?;
+                let expression = mapped(&ids.expressions, expression, "expression", provenance)?;
+                (
+                    dae.conditions(|conditions| {
+                        conditions.structured_root(domain, expression, provenance)
+                    })?,
+                    provenance,
+                )
+            }
+            StructuredRootEntryWire::QuotientOwner { owner } => {
+                let token = pending_quotient_replay(ids, owner)?;
+                let at = token.provenance();
+                let domain = dae
+                    .expressions(|expressions| expressions.binder_domain(token.quotient(), at))?
+                    .ok_or_else(|| malformed("structured_roots.quotient_owner"))?;
+                (dae.replay_quotient_structured_root(token, domain)?, at)
+            }
+        };
+        expect_ordinal("structured root", index, id.index(), at)?;
     }
     Ok(())
 }

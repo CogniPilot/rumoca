@@ -23,6 +23,7 @@ mod scalar_auxiliary_blocks;
 mod scalar_state_offsets;
 mod shared_differentiation;
 mod state_invariant_balances;
+mod structured_quotients;
 mod tensor_linear_map;
 mod tensor_state_blocks;
 mod value_identities;

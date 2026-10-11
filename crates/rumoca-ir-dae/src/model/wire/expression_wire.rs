@@ -50,6 +50,7 @@ pub(super) struct OwnerNodeProjection {
 pub(super) enum OwnerNodeKind {
     Model { activation: u32 },
     Function { function: u32 },
+    StructuredModel { domain: u32 },
 }
 
 /// Per-arena omission plan, computed once from the verified registry.
@@ -66,6 +67,7 @@ pub(super) struct OwnerProjection {
     pub(super) activation_markers: rustc_hash::FxHashMap<u32, u32>,
     /// Root ordinal → owner ordinal marker.
     pub(super) root_markers: rustc_hash::FxHashMap<u32, u32>,
+    pub(super) structured_root_markers: rustc_hash::FxHashMap<u32, u32>,
 }
 
 pub(super) struct ExpressionArenaOutput<'storage> {
@@ -217,6 +219,16 @@ impl Serialize for QuotientOwnerKindOutput<'_> {
                 let mut state =
                     serializer.serialize_struct_variant("QuotientOwnerKindWire", 0, "model", 1)?;
                 state.serialize_field("activation", activation)?;
+                state.end()
+            }
+            OwnerNodeKind::StructuredModel { domain } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "QuotientOwnerKindWire",
+                    2,
+                    "structured_model",
+                    1,
+                )?;
+                state.serialize_field("domain", domain)?;
                 state.end()
             }
             OwnerNodeKind::Function { function } => {
@@ -444,6 +456,9 @@ pub(super) enum QuotientOwnerKindWire {
     },
     Function {
         function: u32,
+    },
+    StructuredModel {
+        domain: u32,
     },
 }
 

@@ -40,6 +40,7 @@ pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerPr
         relation_markers: rustc_hash::FxHashMap::default(),
         activation_markers: rustc_hash::FxHashMap::default(),
         root_markers: rustc_hash::FxHashMap::default(),
+        structured_root_markers: rustc_hash::FxHashMap::default(),
     };
     for (ordinal, entry) in sorted.iter().enumerate() {
         let (quotient_range, [lhs, rhs]) = verified_quotient_operands(storage, entry)?;
@@ -60,6 +61,36 @@ pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerPr
                 OwnerNodeKind::Function {
                     function: *function,
                 }
+            }
+            QuotientOwnerKind::StructuredModelEvent {
+                generated,
+                domain,
+                root,
+            } => {
+                let indicator_range = verify_model_owner_batch(
+                    storage,
+                    entry.quotient,
+                    quotient_range,
+                    [lhs, rhs],
+                    generated,
+                )?;
+                structured_quotients::verify_surface(
+                    storage,
+                    entry.quotient,
+                    *generated,
+                    *domain,
+                    *root,
+                )?;
+                projection.skip_nodes.extend(*generated);
+                projection.skip_operands.extend(indicator_range.indices());
+                if projection
+                    .structured_root_markers
+                    .insert(*root, ordinal as u32)
+                    .is_some()
+                {
+                    return Err("two structured owners claim one event artifact".into());
+                }
+                OwnerNodeKind::StructuredModel { domain: *domain }
             }
             QuotientOwnerKind::ModelEvent {
                 generated,

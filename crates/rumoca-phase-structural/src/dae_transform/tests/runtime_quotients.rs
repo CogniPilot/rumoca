@@ -172,6 +172,10 @@ fn owner_snapshot(view: dae::DaeView<'_>) -> OwnerSnapshot {
         .map(|owner| {
             let kind = match owner.kind() {
                 dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => "function",
+                dae::RuntimeQuotientOwnerKind::StructuredModelEvent { generated, .. } => {
+                    assert_eq!(generated.len(), 6);
+                    "structured model"
+                }
                 dae::RuntimeQuotientOwnerKind::ModelEvent { generated, .. } => {
                     assert_eq!(generated.len(), 6);
                     "model"
@@ -184,7 +188,10 @@ fn owner_snapshot(view: dae::DaeView<'_>) -> OwnerSnapshot {
         .into_iter()
         .map(|owner| {
             let mut count = 1;
-            if let dae::RuntimeQuotientOwnerKind::ModelEvent { generated, .. } = owner.kind() {
+            if let dae::RuntimeQuotientOwnerKind::ModelEvent { generated, .. }
+            | dae::RuntimeQuotientOwnerKind::StructuredModelEvent { generated, .. } =
+                owner.kind()
+            {
                 count += generated.len();
             }
             count

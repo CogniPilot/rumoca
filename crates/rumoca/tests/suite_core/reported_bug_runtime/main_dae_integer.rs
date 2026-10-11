@@ -200,3 +200,40 @@ fn main_dae_integer_quotients_owned_comprehension_executes_independently() {
         }
     }
 }
+
+#[test]
+fn structured_real_quotient_keeps_each_domain_point_boundary_and_trace() {
+    // MLS §3.7.2/§8.5: crossings at t=5/8 and 6/8 belong to distinct
+    // points of the one compact two-element family (SPEC_0032 §§1–3).
+    let compiled = compile(
+        "model StructuredRealQuotient output Real y[2]; equation for i in 1:2 loop y[i]=mod(8*time+i,7); end for; end StructuredRealQuotient;",
+        "StructuredRealQuotient",
+    );
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.runtime_quotient_owner_count(), 1);
+        assert_eq!(view.structured_root_count(), 1);
+        assert_eq!(view.root_count(), 0);
+    });
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let opts = options(policy);
+        let mut session = SimulationSession::new(&compiled.dae, opts.clone()).unwrap();
+        for sample in 0..=10 {
+            let time = f64::from(sample) / 10.0;
+            if sample != 0 {
+                session.advance_to(time).unwrap();
+            }
+            let state = session.state().unwrap();
+            assert_eq!(state.time, time);
+            for (axis, name) in [(1.0, "y[1]"), (2.0, "y[2]")] {
+                let expected = (8.0 * time + axis) % 7.0;
+                let actual = state.values[name];
+                assert!(
+                    actual.is_finite()
+                        && (actual - expected).abs()
+                            <= 20.0 * (opts.atol + opts.rtol * expected.abs()),
+                    "{policy:?} {name}({time})={actual}, expected={expected}"
+                );
+            }
+        }
+    }
+}

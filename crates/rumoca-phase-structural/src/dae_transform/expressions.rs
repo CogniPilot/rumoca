@@ -231,7 +231,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 .provenance();
             return Err(dae::DaeConstructionError::IncompleteDefinition {
                 kind: match owner.kind() {
-                    dae::RuntimeQuotientOwnerKind::ModelEvent { .. } => {
+                    dae::RuntimeQuotientOwnerKind::ModelEvent { .. }
+                    | dae::RuntimeQuotientOwnerKind::StructuredModelEvent { .. } => {
                         "runtime quotient model owner replay"
                     }
                     dae::RuntimeQuotientOwnerKind::FunctionBody { .. } => {

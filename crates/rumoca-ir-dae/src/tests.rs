@@ -15,6 +15,7 @@ mod range_wire;
 mod runtime_owner_replay;
 mod runtime_owners;
 mod string_conversion;
+mod structured_quotients;
 mod temporal_wire;
 mod type_arena;
 mod wire_buffers;

@@ -50,6 +50,12 @@ pub enum RuntimeQuotientOwnerKind<'dae> {
         activation: ConditionId<'dae>,
         root: RootId<'dae>,
     },
+    /// A compact model boundary over exactly the quotient's checked domain.
+    StructuredModelEvent {
+        generated: [ExprId<'dae>; 6],
+        domain: DomainId<'dae>,
+        root: StructuredRootId<'dae>,
+    },
     /// An MLS §3.7.2 event-free quotient owned by its exact function body.
     FunctionBody { function: FunctionId<'dae> },
 }
@@ -85,6 +91,15 @@ fn runtime_quotient_owner_view(
                 relation: RelationId::from_raw(*relation),
                 activation: ConditionId::from_raw(*activation),
                 root: RootId::from_raw(*root),
+            },
+            runtime_quotients::QuotientOwnerKind::StructuredModelEvent {
+                generated,
+                domain,
+                root,
+            } => RuntimeQuotientOwnerKind::StructuredModelEvent {
+                generated: generated.map(ExprId::from_raw),
+                domain: DomainId::from_raw(*domain),
+                root: StructuredRootId::from_raw(*root),
             },
             runtime_quotients::QuotientOwnerKind::FunctionBody { function } => {
                 RuntimeQuotientOwnerKind::FunctionBody {

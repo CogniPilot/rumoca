@@ -167,7 +167,8 @@ pub(crate) use construction_checks::{
 /// 44 adds an optional continuation predicate to compact function folds: a
 /// bounded `while` loop is one fold that ends at its first false predicate.
 /// 45 requires source/generated provenance on every structured domain binder.
-pub const DAE_SCHEMA_VERSION: u16 = 45;
+/// 46 replays compact quotient boundaries through structured owner markers.
+pub const DAE_SCHEMA_VERSION: u16 = 46;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

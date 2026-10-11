@@ -169,7 +169,8 @@ fn operand_count(node: &ExprNodeWire) -> u32 {
 fn source_width(node: &ExprNodeWire) -> u32 {
     match node {
         ExprNodeWire::RuntimeQuotientOwner {
-            kind: QuotientOwnerKindWire::Model { .. },
+            kind:
+                QuotientOwnerKindWire::Model { .. } | QuotientOwnerKindWire::StructuredModel { .. },
             ..
         } => 7,
         _ => 1,
@@ -273,7 +274,8 @@ fn expression_scopes(
         }
         match node {
             ExprNodeWire::RuntimeQuotientOwner {
-                kind: QuotientOwnerKindWire::Model { .. },
+                kind:
+                    QuotientOwnerKindWire::Model { .. } | QuotientOwnerKindWire::StructuredModel { .. },
                 ..
             } => {
                 if scope.is_some() {
