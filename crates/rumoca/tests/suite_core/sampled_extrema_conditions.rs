@@ -4,6 +4,7 @@
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae};
 use rumoca_solver::SimExecutionPolicy;
+use rumoca_solver::fmi_me::{MeError, session::MeSessionError};
 
 const SOURCE: &str =
     include_str!("../../../../docs/verification/pr427-workshop-ci/sampled-extrema-reproduction.mo");
@@ -75,13 +76,16 @@ fn a_when_body_assertion_still_fails_at_its_first_selected_tick() {
             },
         )
         .unwrap_err();
-        match error.kind() {
-            rumoca_sim::SimError::AssertionFailed { time, message } => {
-                assert!((time - 0.1).abs() < 1e-10, "{execution_policy:?}: {time}");
-                assert_eq!(message, "BODY_ASSERT_TICK");
-            }
-            error => panic!("{execution_policy:?}: expected a selected assertion, got {error}"),
-        }
+        let rumoca_sim::SimError::ModelExchangeSession(MeSessionError::Component(component)) =
+            error.kind()
+        else {
+            panic!("{execution_policy:?}: expected a component assertion, got {error:?}");
+        };
+        let MeError::Assertion { time, message } = component.kind() else {
+            panic!("{execution_policy:?}: expected a selected assertion, got {component:?}");
+        };
+        assert!((time - 0.1).abs() < 1e-10, "{execution_policy:?}: {time}");
+        assert_eq!(message, "BODY_ASSERT_TICK");
     }
 }
 
