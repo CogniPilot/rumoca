@@ -64,7 +64,7 @@ The retained attempt is `pr427-native-heap-and-read-after-c7b55-20261011`.
 The gate exited101 after61.978 seconds, with peakRSS2,645,508KiB and no resource
 stop. Later native ABI, whole-crate and full Latent guide gates did not run.
 
-Focused qualification commands (scratch rerun and remaining gates pending):
+Focused qualification commands (now executed on the integrated source below):
 
 ```bash
 cargo test -p rumoca-exec-cranelift --lib emit::scratch::tests:: -- --nocapture
@@ -79,7 +79,26 @@ pointer-sized physical stack handles. The next two tests preserve full512-square
 physical extents and independently check exact output bits, including wide
 Integer cells, signed zero, cache hits and checked Integer failure cleanup. The
 final existing guide test retains both full authored width variants and native
-initialization/steps. Whole native crate tests are needed afterward to cover
-existing nested Fold, selected conditional, recursive and projection callers.
-Rustfmt and `git diff --check` pass on the followup. No repaired JIT execution,
-full-width guide outcome or complete-guide success is claimed yet.
+initialization/steps.
+
+The actual integrated AFTER at d65f1f659e1c5b8cf4f107b5ae901eb05b8006b1 passed
+scratch4, full512-squared native ABI1, full512-squared exact Integer1, and all138
+Cranelift unit tests. The filtered controls overlap the full unit suite, so those
+counts are not144 unique tests. The original guide width test separately passed
+both256 and512 on the unchanged default stack, using the unchanged model with
+only its guide-documented width declaration substituted. It initialized and
+advanced to0/0.01/0.02, checking all eight public latent states for finite values.
+This is a short runtime interval, not the full authored experiment horizon.
+
+The model test timers were29.576781 seconds for256 and118.118849 seconds for512;
+the complete guide test reported148.25 seconds after3m07 Cargo compilation. Its
+guardian elapsed336.266 seconds, peakRSS3,548,748KiB, exit0 with no resource stop.
+The log's parameter counts come from the documented fixed width/count roster;
+they are not a newly measured runtime storage-cardinality query. These timings
+are not cold-build benchmarks or a measured speedup. The private ABI tests do
+not issue a public signature/WIT identity claim.
+
+The [portable AFTER receipt](native-heap-after-d65f1.json) binds the exact source,
+commands, log/guardian hashes and resources. Full guide, shipped browser artifact
+and original Euler38 constructor-memory qualification remain independent; none
+follows from these native storage results.
