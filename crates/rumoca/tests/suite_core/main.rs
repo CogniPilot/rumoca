@@ -283,6 +283,7 @@ mod semi_linear_zero_flow;
 mod sign_integer_result;
 mod state_coordinate_sources;
 mod state_select_priorities;
+mod structured_discrete_replay;
 mod structured_initialization_family;
 mod supplied_derivative_record_fields;
 mod switched_integral_accuracy;

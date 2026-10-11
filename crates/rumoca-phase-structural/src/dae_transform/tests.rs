@@ -3,6 +3,7 @@ mod defining_equations;
 mod demotion_bounds;
 mod demotion_owners;
 mod derivative_chains;
+mod discrete_owner_replay;
 mod equalities;
 mod forwarding_equalities;
 mod function_zeros;
