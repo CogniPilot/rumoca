@@ -92,19 +92,13 @@ trainables, objective, gradient method, and optimizer.
 The first supported API shape is RHS fitting, which is the core Neural ODE
 vector-field training problem:
 
+The following code uses `compiled` from compiling the unchanged
+`NeuralODETensor.mo` model and a two-element `target_derivatives` vector.
+It selects the actual first-layer weight and bias names in that model.
+The excerpt is included directly from its executable Rust test:
+
 ```rust
-let mut model = rumoca_opt::DifferentiableModel::from_dae_default(
-    &compiled.dae,
-    &rumoca_solver::SimOptions::default(),
-)?;
-let trainables = rumoca_opt::TrainableSet::by_names(&model, &["W[1,1]", "b[1]"])?;
-let objective = rumoca_opt::RhsMseObjective::new(0.0, target_derivatives);
-let gradient = rumoca_opt::rhs_mse_value_and_gradient(
-    &model,
-    &objective,
-    &trainables,
-    rumoca_opt::GradientMode::Auto,
-)?;
+{{#include ../../../../crates/rumoca-opt/src/tests.rs:guide-rhs-fit}}
 ```
 
 `GradientMode::Auto` uses reverse-mode VJP for pure ODE models and falls back

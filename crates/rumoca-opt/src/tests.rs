@@ -296,3 +296,38 @@ fn trajectory_fit_rejects_a_non_positive_learning_rate() {
         .expect_err("a fit with no measurement has no objective");
     assert!(matches!(error, OptError::Trajectory(_)));
 }
+
+#[test]
+fn user_guide_rhs_fit_uses_the_authored_neural_model() {
+    use crate as rumoca_opt;
+    let compiled = Compiler::new()
+        .model("NeuralODETensor")
+        .compile_str(
+            include_str!("../../../examples/models/NeuralODETensor.mo"),
+            "NeuralODETensor.mo",
+        )
+        .expect("the documented neural model compiles");
+    let target_derivatives = vec![0.0, 0.0];
+    // ANCHOR: guide-rhs-fit
+    let model = rumoca_opt::DifferentiableModel::from_dae_default(
+        &compiled.dae,
+        &rumoca_solver::SimOptions::default(),
+    )
+    .expect("prepare the compiled neural model");
+    let trainables = rumoca_opt::TrainableSet::by_names(&model, &["W1[1,1]", "b1[1]"])
+        .expect("select the documented network weights");
+    let objective = rumoca_opt::RhsMseObjective::new(0.0, target_derivatives);
+    let gradient = rumoca_opt::rhs_mse_value_and_gradient(
+        &model,
+        &objective,
+        &trainables,
+        rumoca_opt::GradientMode::Auto,
+    )
+    .expect("differentiate the neural RHS fitting objective");
+    // ANCHOR_END: guide-rhs-fit
+    assert_eq!(gradient.gradients.len(), 2);
+    assert_eq!(gradient.trainable_names, ["W1[1,1]", "b1[1]"]);
+    assert!(gradient.loss.is_finite());
+    assert!(gradient.gradients.iter().all(|value| value.is_finite()));
+    assert!(gradient.gradients.iter().any(|value| value.abs() > 1e-12));
+}
