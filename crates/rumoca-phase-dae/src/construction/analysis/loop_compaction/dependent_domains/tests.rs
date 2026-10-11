@@ -296,3 +296,71 @@ fn generated_stride_difference_requires_checked_integer_bounds() {
         "an overflowing generated difference cannot gain an owner"
     );
 }
+
+#[test]
+fn membership_guard_uses_issued_source_id_with_unused_or_shadowed_body() {
+    let issued = rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(42));
+    let inner = rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(43));
+    let nested = rumoca_core::Statement::For {
+        indices: vec![rumoca_core::ForIndex {
+            binder: inner,
+            ident: "j".into(),
+            range: integer_range(1, 2, span()),
+        }],
+        equations: vec![assign(
+            "y",
+            Expression::VarRef {
+                name: inner.reference("j", span()).unwrap(),
+                subscripts: Vec::new(),
+                span: span(),
+            },
+        )],
+        span: span(),
+    };
+    for body in [vec![assign("y", real(7.0))], vec![nested]] {
+        let mut statement = dynamic_loop(integer(1), None, var("k"), body);
+        let rumoca_core::Statement::For { indices, .. } = &mut statement else {
+            unreachable!()
+        };
+        indices[0].binder = issued;
+        let mut shapes = ShapeEnvironment::default();
+        shapes.bind_integer_bounds(VarName::new("k"), 1, 3);
+        let compacted = rectangularize_dependent_loops(
+            &[statement],
+            &HashMap::new(),
+            &shapes,
+            &ValueKinds::default(),
+        )
+        .unwrap();
+        let rumoca_core::Statement::For { equations, .. } = &compacted[0] else {
+            panic!("compact loop")
+        };
+        let rumoca_core::Statement::If { cond_blocks, .. } = &equations[0] else {
+            panic!("membership guard")
+        };
+        assert_guard_identity(&cond_blocks[0].cond, issued);
+    }
+}
+
+fn assert_guard_identity(guard: &Expression, binder: rumoca_core::IndexBinderProvenance) {
+    struct References(Vec<Reference>);
+    impl rumoca_core::ExpressionVisitor for References {
+        fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
+            if reference.as_str() == "j" {
+                self.0.push(reference.clone());
+            }
+            self.walk_var_ref(reference, subscripts);
+        }
+    }
+    let mut references = References(Vec::new());
+    rumoca_core::ExpressionVisitor::visit_expression(&mut references, guard);
+    assert!(!references.0.is_empty());
+    for reference in references.0 {
+        match binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => {
+                assert_eq!(reference.target_def_id(), Some(id))
+            }
+            rumoca_core::IndexBinderProvenance::Generated => assert!(reference.is_generated()),
+        }
+    }
+}
