@@ -1,5 +1,6 @@
 //! Public original Bug reproductions, beyond compiler admission.
 
+mod guarded_time_deadlines;
 mod integer_call_comparison;
 mod integer_quotient_comparison;
 mod main_dae_integer;
