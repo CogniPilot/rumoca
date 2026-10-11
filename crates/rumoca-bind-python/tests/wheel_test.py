@@ -33,7 +33,7 @@ def main():
         print(f"wheel_test: required {backend} {dependency.__version__}", flush=True)
     tests = list(TESTS)
     if args.require_guide:
-        tests.extend(["guide_test.py", "guide_scenario_test.py"])
+        tests.extend(["guide_test.py", "guide_scenario_test.py", "benchmark_test.py"])
     root = Path(__file__).resolve().parent
     for name in tests:
         command = [sys.executable, str(root / name)]

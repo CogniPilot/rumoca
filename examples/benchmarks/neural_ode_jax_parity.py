@@ -5,7 +5,7 @@ The script checks three things:
 
 1. Rumoca prepare/hot simulation timings from `rumoca sim bench`.
 2. JAX JIT compile-plus-first-execute and hot execution timings.
-3. Numeric parity for initial loss/gradient values and final integrated values.
+3. Numeric parity for native output observables and JAX manual/reverse gradients.
 
 It intentionally keeps the JAX implementation in this file so the formulas can
 be audited against examples/models/NeuralODEBackprop.mo.
@@ -94,10 +94,19 @@ def run_command(command: list[str], *, cwd: pathlib.Path) -> str:
 
 
 def parse_last_json(stdout: str) -> dict[str, Any]:
-    start = stdout.rfind("{")
-    if start < 0:
-        raise RuntimeError(f"command did not print a JSON object:\n{stdout}")
-    return json.loads(stdout[start:])
+    decoder = json.JSONDecoder()
+    # Cargo diagnostics may precede the report. Only a complete trailing object
+    # is the report; a nested object's opening brace is not its start.
+    for start, character in enumerate(stdout):
+        if character != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(stdout, start)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and not stdout[end:].strip():
+            return value
+    raise RuntimeError("command did not print a complete trailing JSON object")
 
 
 def run_rumoca(args: argparse.Namespace) -> dict[str, Any]:
@@ -157,20 +166,37 @@ def run_rumoca(args: argparse.Namespace) -> dict[str, Any]:
     )
     return {
         "bench": bench,
-        "csv": str(output_path.relative_to(REPO_ROOT)),
+        "csv": str(output_path),
     }
 
 
-def load_rumoca_rows(csv_path: pathlib.Path) -> tuple[dict[str, float], dict[str, float]]:
+def load_rumoca_rows(
+    csv_path: pathlib.Path, args: argparse.Namespace
+) -> list[dict[str, float]]:
     with csv_path.open(newline="") as handle:
-        rows = list(csv.DictReader(handle))
-    if not rows:
-        raise RuntimeError(f"no samples found in {csv_path}")
-    return row_to_float_map(rows[0]), row_to_float_map(rows[-1])
+        reader = csv.DictReader(handle)
+        names = reader.fieldnames
+        if names is None or len(names) != len(set(names)):
+            raise RuntimeError("native CSV requires unique channel names")
+        rows = [row_to_float_map(row) for row in reader]
+    expected = np.linspace(0.0, args.t_end, int(round(args.t_end / args.dt)) + 1)
+    times = np.asarray([row["time"] for row in rows])
+    if times.shape != expected.shape:
+        raise RuntimeError("native CSV sample count does not match the requested grid")
+    np.testing.assert_allclose(times, expected, rtol=0, atol=1e-12)
+    for row in rows:
+        require_observables(row)
+    return rows
 
 
 def row_to_float_map(row: dict[str, str]) -> dict[str, float]:
     return {name: float(value) for name, value in row.items()}
+
+
+def require_observables(row: dict[str, float]) -> None:
+    for name in ["time", *observable_names()]:
+        if name not in row or not math.isfinite(row[name]):
+            raise RuntimeError(f"native CSV missing or nonfinite required channel {name}")
 
 
 def initial_state_np(cfg: ModelConfig) -> np.ndarray:
@@ -218,52 +244,6 @@ def pack_np(parts: tuple[np.ndarray, ...]) -> np.ndarray:
     return np.concatenate([part.reshape(-1) for part in parts])
 
 
-def state_names(cfg: ModelConfig) -> list[str]:
-    names: list[str] = []
-    names.extend(
-        f"W1[{i},{j}]"
-        for i in range(1, cfg.hidden + 1)
-        for j in range(1, cfg.state + 1)
-    )
-    names.extend(f"b1[{i}]" for i in range(1, cfg.hidden + 1))
-    names.extend(
-        f"Wmid[{i},{j}]"
-        for i in range(1, cfg.hidden + 1)
-        for j in range(1, cfg.hidden + 1)
-    )
-    names.extend(f"bmid[{i}]" for i in range(1, cfg.hidden + 1))
-    names.extend(
-        f"W2[{i},{j}]"
-        for i in range(1, cfg.state + 1)
-        for j in range(1, cfg.hidden + 1)
-    )
-    names.extend(f"b2[{i}]" for i in range(1, cfg.state + 1))
-    return names
-
-
-def grad_names(cfg: ModelConfig) -> list[str]:
-    names: list[str] = []
-    names.extend(
-        f"gradW1[{i},{j}]"
-        for i in range(1, cfg.hidden + 1)
-        for j in range(1, cfg.state + 1)
-    )
-    names.extend(f"gradb1[{i}]" for i in range(1, cfg.hidden + 1))
-    names.extend(
-        f"gradWmid[{i},{j}]"
-        for i in range(1, cfg.hidden + 1)
-        for j in range(1, cfg.hidden + 1)
-    )
-    names.extend(f"gradbmid[{i}]" for i in range(1, cfg.hidden + 1))
-    names.extend(
-        f"gradW2[{i},{j}]"
-        for i in range(1, cfg.state + 1)
-        for j in range(1, cfg.hidden + 1)
-    )
-    names.extend(f"gradb2[{i}]" for i in range(1, cfg.state + 1))
-    return names
-
-
 def observable_names() -> list[str]:
     return [
         "loss",
@@ -282,8 +262,10 @@ def max_abs_diff_from_row(
     max_abs = 0.0
     for name, actual in zip(names, values, strict=True):
         if name not in row:
-            continue
+            raise RuntimeError(f"native CSV missing required channel {name}")
         expected = row[name]
+        if not math.isfinite(expected) or not math.isfinite(float(actual)):
+            raise RuntimeError(f"nonfinite parity channel {name}")
         abs_error = abs(expected - float(actual))
         max_abs = max(max_abs, abs_error)
         diffs.append(
@@ -550,10 +532,26 @@ def run_jax(
     )
 
     observables, manual_grad_flat, reverse_grad_flat = diagnostic_result
-    final_y, _trajectory = integrate_result
+    final_y, trajectory = integrate_result
+    sample_times = np.linspace(0.0, args.t_end, int(round(args.t_end / args.dt)) + 1)
+    if np.asarray(trajectory).shape != (len(sample_times) - 1, cfg.trainable_params):
+        raise RuntimeError("JAX trajectory shape does not match the authored model and grid")
+    if not np.all(np.isfinite(np.asarray(trajectory))):
+        raise RuntimeError("JAX trajectory contains nonfinite values")
+    observable_trajectory = [np.asarray(observables).tolist()]
+    for at, y in zip(sample_times[1:], trajectory, strict=True):
+        sample_observables, _manual, _reverse = block_until_ready(
+            jit_diagnostics(y, jnp.asarray(at, dtype=jnp.float64)))
+        observable_trajectory.append(np.asarray(sample_observables).tolist())
     final_observables, final_manual_grad_flat, _final_reverse_grad_flat = block_until_ready(
         jit_diagnostics(final_y, jnp.asarray(args.t_end, dtype=jnp.float64))
     )
+    for gradients in (manual_grad_flat, reverse_grad_flat,
+                      final_manual_grad_flat, _final_reverse_grad_flat):
+        if np.asarray(gradients).shape != (cfg.trainable_params,):
+            raise RuntimeError("JAX gradient shape does not match the authored model")
+        if not np.all(np.isfinite(np.asarray(gradients))):
+            raise RuntimeError("JAX gradients contain nonfinite values")
     manual_reverse_error = float(
         np.max(np.abs(np.asarray(manual_grad_flat) - np.asarray(reverse_grad_flat)))
     )
@@ -578,6 +576,9 @@ def run_jax(
         "initial_reverse_gradients": np.asarray(reverse_grad_flat).tolist(),
         "final_observables": np.asarray(final_observables).tolist(),
         "final_state": np.asarray(final_y).tolist(),
+        "gradient_count": int(np.asarray(manual_grad_flat).size),
+        "sample_times": sample_times.tolist(),
+        "observable_trajectory": observable_trajectory,
         "manual_vs_reverse_grad_max_abs_error": manual_reverse_error,
         "final_manual_vs_reverse_grad_max_abs_error": final_manual_reverse_error,
     }
@@ -606,45 +607,30 @@ def time_hot_loop(func, warmups: int, iterations: int) -> dict[str, float]:
 
 def build_accuracy_report(
     cfg: ModelConfig,
-    initial_state: np.ndarray,
     rumoca_initial: dict[str, float],
     rumoca_final: dict[str, float],
     jax_report: dict[str, Any],
 ) -> dict[str, Any]:
-    state_error, state_diffs = max_abs_diff_from_row(
-        rumoca_initial, state_names(cfg), initial_state
-    )
     observable_error, observable_diffs = max_abs_diff_from_row(
         rumoca_initial,
         observable_names(),
         np.asarray(jax_report["initial_observables"], dtype=np.float64),
-    )
-    grad_error, grad_diffs = max_abs_diff_from_row(
-        rumoca_initial,
-        grad_names(cfg),
-        np.asarray(jax_report["initial_manual_gradients"], dtype=np.float64),
     )
     final_observable_error, final_observable_diffs = max_abs_diff_from_row(
         rumoca_final,
         observable_names(),
         np.asarray(jax_report["final_observables"], dtype=np.float64),
     )
-    final_state_error, final_state_diffs = max_abs_diff_from_row(
-        rumoca_final,
-        state_names(cfg),
-        np.asarray(jax_report["final_state"], dtype=np.float64),
-    )
+    if jax_report["gradient_count"] != cfg.trainable_params:
+        raise RuntimeError("JAX gradient shape does not match the authored model")
     return {
-        "initial_state_max_abs_error": state_error,
-        "initial_state_worst": state_diffs,
+        "rumoca_observable_count": len(observable_names()),
+        "jax_gradient_count": cfg.trainable_params,
+        "rumoca_internal_state_gradient_parity": "unavailable in the visible-output CSV",
         "initial_observable_max_abs_error": observable_error,
         "initial_observable_worst": observable_diffs,
-        "initial_gradient_max_abs_error": grad_error,
-        "initial_gradient_worst": grad_diffs,
         "final_observable_max_abs_error": final_observable_error,
         "final_observable_worst": final_observable_diffs,
-        "final_state_max_abs_error": final_state_error,
-        "final_state_worst": final_state_diffs,
         "jax_manual_vs_reverse_grad_max_abs_error": jax_report[
             "manual_vs_reverse_grad_max_abs_error"
         ],
@@ -678,10 +664,7 @@ def build_comparison_report(
     rumoca_hot = float(bench["hot_average_seconds"])
     jax_hot = float(jax_report["integrate_hot_average_seconds"])
     accuracy_keys = [
-        "initial_state_max_abs_error",
         "initial_observable_max_abs_error",
-        "initial_gradient_max_abs_error",
-        "final_state_max_abs_error",
         "final_observable_max_abs_error",
         "jax_manual_vs_reverse_grad_max_abs_error",
         "jax_final_manual_vs_reverse_grad_max_abs_error",
@@ -738,9 +721,9 @@ def main() -> int:
         report["jax"] = slim_jax_report(jax_report)
 
     if rumoca_report is not None and jax_report is not None:
-        initial_row, final_row = load_rumoca_rows(REPO_ROOT / rumoca_report["csv"])
+        rows = load_rumoca_rows(REPO_ROOT / rumoca_report["csv"], args)
         accuracy_report = build_accuracy_report(
-            cfg, initial_state, initial_row, final_row, jax_report
+            cfg, rows[0], rows[-1], jax_report
         )
         report["accuracy"] = accuracy_report
         report["comparison"] = build_comparison_report(

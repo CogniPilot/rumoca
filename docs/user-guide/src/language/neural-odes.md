@@ -137,14 +137,19 @@ enabled. It reports:
   diagnostics, and full integration.
 - A `comparison` block with Rumoca ready time versus JAX integrated compile
   time, hot-loop ratio, structural-prepare fraction, and max parity error.
-- Accuracy checks for initial parameters, observables, gradients, final
-  parameters, and JAX manual gradients versus `jax.value_and_grad`.
+- Accuracy comparisons for the six Rumoca output observables at the initial
+  and final times, plus all 1082 JAX manual gradients versus
+  `jax.value_and_grad`. The visible-output CSV does not expose internal
+  trainable states or gradients, so the report explicitly leaves their
+  cross-backend parity unavailable.
 
 Use Rumoca `ready_seconds` versus JAX `integrate_compile_seconds` when you care
 about first-run wait time. The benchmark also makes clear which Rumoca path is
-being measured: the native Solve IR CPU simulator executes the Modelica
+being measured: the Solve IR CPU simulator executes the Modelica
 backpropagation equations, while the JAX side uses `jax.value_and_grad` for the
-same RHS.
+same RHS. Mandatory Linux wheel CI and `cargo xtask python test --require-guide`
+also check all eleven output samples against the independent JAX trajectory.
+Timings remain measurements; numerical assertions determine correctness.
 
 ## Using Trained Weights
 
