@@ -188,8 +188,14 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
         assert_eq!(entry["language"], fence.language);
         let digest = format!("{:x}", Sha256::digest(fence.source.as_bytes()));
         assert_eq!(entry["source_sha256"], digest, "{page}:{}", fence.line);
+        let profile_key = entry["profile"].as_str().expect("classified example");
+        let profile = &inventory["profiles"][profile_key];
         for field in ["classification", "owner", "scope"] {
-            assert!(entry[field].as_str().is_some_and(|value| !value.is_empty()));
+            assert!(
+                profile[field]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
         }
     }
 }
