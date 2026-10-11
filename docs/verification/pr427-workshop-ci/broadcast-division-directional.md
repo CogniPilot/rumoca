@@ -37,6 +37,12 @@ and NaNs. At singular points the derivative retains the existing finite-local-
 partial kink rule; it does not change primal domain admission. Incorrect tangent
 shapes remain typed errors.
 
+The generated index domain is checked by the existing Map-domain constructor
+against the owner's Integer profile before advertising the derivative. A shape
+whose ordinal indices do not fit that profile retains its admitted primal owner
+and has no directional relation. A constructor regression covers both supported
+and unsupported extents, a profile excluding index 1, and an empty aggregate.
+
 Two ordinary `rumoca-phase-solve` tests reuse the source-backed division fixture:
 independent central differences for scalar-only, tensor-only and mixed tangents
 in both orientations and three ranks; plus singular, signed-zero primal-bit and
@@ -45,10 +51,11 @@ invalid-shape controls. The original direct-division test remains unchanged.
 ```sh
 cargo test -p rumoca-phase-solve --lib broadcast_division_directional_ -- --nocapture
 cargo test -p rumoca-phase-solve --lib plain_and_elementwise_tensor_division_preserve_direct_binary64_results -- --nocapture
+cargo test -p rumoca-ir-solve --lib broadcast_division_directional_preserves_narrow_integer_profile_primal_owner -- --nocapture
 cargo test -p rumoca --features msl-sim-tests --test suite_core msl_glycol_viscosity_uses_its_checked_coefficient_interface -- --nocapture
 ```
 
-Expected counts are 2, 1 and 1 respectively. Workspace CI selects the first two
+Expected counts are 2, 1, 1 and 1 respectively. Workspace CI selects the first three
 without a feature gate; the original MSL test uses its existing mandatory
 `msl-sim-tests` fixture owner. This candidate has passed rustfmt and diff checks
 only. Compilation, unit execution, the original MSL numerical oracle and backend

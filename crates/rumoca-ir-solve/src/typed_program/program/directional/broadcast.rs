@@ -12,21 +12,7 @@ pub(super) fn quotient_tangent<'program>(
     value_type: &SolveValueType,
     provenance: Span,
 ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-    let domain = StructuredIndexDomain {
-        binders: value_type
-            .dimensions()
-            .iter()
-            .enumerate()
-            .map(|(id, extent)| StructuredIndexBinder {
-                provenance: IndexBinderProvenance::Generated,
-                id,
-                display_name: format!("axis{id}"),
-                lower: 1,
-                upper: i64::from(*extent),
-                step: 1,
-            })
-            .collect(),
-    };
+    let domain = quotient_domain(value_type, builder.arithmetic, provenance)?;
     builder.map(
         domain,
         &[aggregate.primal, tangents[0], scalar.primal, tangents[1]],
@@ -54,4 +40,28 @@ pub(super) fn quotient_tangent<'program>(
             builder.store(output, tangent, provenance)
         },
     )
+}
+
+pub(super) fn quotient_domain(
+    value_type: &SolveValueType,
+    arithmetic: SolveArithmeticProfile,
+    provenance: Span,
+) -> Result<StructuredIndexDomain, SolveProgramConstructionError> {
+    let domain = StructuredIndexDomain {
+        binders: value_type
+            .dimensions()
+            .iter()
+            .enumerate()
+            .map(|(id, extent)| StructuredIndexBinder {
+                provenance: IndexBinderProvenance::Generated,
+                id,
+                display_name: format!("axis{id}"),
+                lower: 1,
+                upper: i64::from(*extent),
+                step: 1,
+            })
+            .collect(),
+    };
+    require_map_domain(&domain, arithmetic, provenance)?;
+    Ok(domain)
 }

@@ -113,6 +113,21 @@ fn program_supports_directional(
                 program_supports_directional(body.body(), available)
             }
             SolveOperation::BroadcastBinary {
+                destination,
+                operator: SolveBinaryOperator::Divide,
+                ..
+            } => program
+                .register_types()
+                .get(destination.index())
+                .is_some_and(|value_type| {
+                    broadcast::quotient_domain(
+                        value_type,
+                        program.arithmetic(),
+                        operation.provenance(),
+                    )
+                    .is_ok()
+                }),
+            SolveOperation::BroadcastBinary {
                 operator:
                     SolveBinaryOperator::IntegerQuotient
                     | SolveBinaryOperator::Power
@@ -233,10 +248,6 @@ fn program_supports_directional(
                     SolveBinaryOperator::Add
                     | SolveBinaryOperator::Subtract
                     | SolveBinaryOperator::Multiply,
-                ..
-            }
-            | SolveOperation::BroadcastBinary {
-                operator: SolveBinaryOperator::Divide,
                 ..
             }
             | SolveOperation::Reduce {
