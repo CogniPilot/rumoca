@@ -24,23 +24,11 @@ impl<'dae> ModelConditionalView<'dae> {
     /// The source condition may settle; its issued negation and parent guards
     /// retain their operation identities when a whole DAE is reconstructed.
     pub fn guard_operations(self) -> impl Iterator<Item = ExprId<'dae>> {
-        let [taken, fallback] = self.guards();
-        let operations = if self.parent_arm().is_none() {
-            [Some(fallback), None, None]
-        } else {
-            let negated = match self
-                .view
-                .expression(fallback)
-                .expect("checked model guard")
-                .operation()
-            {
-                ExpressionOperation::Conditional(operands) => operands.get(1),
-                _ => None,
-            }
-            .expect("checked model owner proves negated guard operand");
-            [Some(negated), Some(taken), Some(fallback)]
-        };
-        operations.into_iter().flatten()
+        self.entry()
+            .guard_operations
+            .into_iter()
+            .flatten()
+            .map(ExprId::from_raw)
     }
     pub fn parent_arm(self) -> Option<ModelArm<'dae>> {
         self.view.dae.storage.model_arms[self.entry().arms[0] as usize]
@@ -57,16 +45,12 @@ impl<'dae> ModelConditionalView<'dae> {
         }
     }
     pub fn expression(self) -> ExprId<'dae> {
-        ExprId::from_raw(
-            self.entry()
-                .expression
-                .expect("frozen conditional is closed"),
-        )
+        ExprId::from_raw(self.entry().expression)
     }
     pub fn provenance(self) -> DaeProvenance {
         self.entry().provenance
     }
-    fn entry(self) -> &'dae crate::model::model_conditionals::ModelConditionalEntry {
+    fn entry(self) -> &'dae crate::model::model_conditionals::ClosedModelConditional {
         &self.view.dae.storage.model_conditionals[self.owner as usize]
     }
 }

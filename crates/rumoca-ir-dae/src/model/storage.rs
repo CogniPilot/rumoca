@@ -36,9 +36,12 @@ impl DeclaredEntry for ConditionEntry {
 }
 
 impl Storage {
-    pub(super) fn freeze(self) -> FrozenStorage {
+    pub(super) fn freeze(
+        self,
+        model_conditionals: Box<[model_conditionals::ClosedModelConditional]>,
+    ) -> FrozenStorage {
         FrozenStorage {
-            model_conditionals: self.model_conditionals.into_boxed_slice(),
+            model_conditionals,
             model_arms: self.model_arms.into_boxed_slice(),
             predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
@@ -750,7 +753,9 @@ impl Storage {
             + self.discrete_real_equations.len()
     }
 
-    pub(super) fn finish_construction(&self) -> Result<(), DaeConstructionError> {
+    pub(super) fn finish_construction(
+        &self,
+    ) -> Result<Box<[model_conditionals::ClosedModelConditional]>, DaeConstructionError> {
         let active_owner = self
             .active_model_arm
             .or_else(|| self.active_model_ancestors.iter().copied().min())
@@ -764,14 +769,17 @@ impl Storage {
                 span: provenance.span(),
             });
         }
-        if let Some((index, entry)) = self
+        let model_conditionals = self
             .model_conditionals
             .iter()
             .enumerate()
-            .find(|(_, entry)| entry.expression.is_none())
-        {
-            return Err(incomplete("model conditional", index, entry.provenance));
-        }
+            .map(|(index, entry)| {
+                entry
+                    .closed
+                    .clone()
+                    .ok_or_else(|| incomplete("model conditional", index, entry.provenance))
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
         if self.unfilled_variables != 0 {
             return Err(self.incomplete_arena("variable", &self.variables));
         }
@@ -815,7 +823,7 @@ impl Storage {
                 span: declaration.span(),
             });
         }
-        Ok(())
+        Ok(model_conditionals)
     }
 
     fn incomplete_arena<T: DeclaredEntry>(

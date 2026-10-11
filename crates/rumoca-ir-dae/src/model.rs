@@ -605,7 +605,7 @@ pub(crate) struct Storage {
 
 #[derive(Debug, PartialEq)]
 struct FrozenStorage {
-    model_conditionals: Box<[model_conditionals::ModelConditionalEntry]>,
+    model_conditionals: Box<[model_conditionals::ClosedModelConditional]>,
     model_arms: Box<[model_conditionals::ModelArmEntry]>,
     predefined_string_declaration: Option<rumoca_core::DefId>,
     value_types: Box<[ValueType]>,
@@ -682,8 +682,8 @@ impl Dae {
             };
             build(&mut construction)?;
         }
-        storage.finish_construction()?;
-        let storage = storage.freeze();
+        let model_conditionals = storage.finish_construction()?;
+        let storage = storage.freeze(model_conditionals);
         let active_discrete_scalar_count = active_discrete_scalar_count(&storage);
         Ok(Self {
             schema_version: DAE_SCHEMA_VERSION,

@@ -34,9 +34,7 @@ impl Serialize for ModelConditionalsOutput<'_> {
                 condition: entry.condition,
                 guards: arms.map(|arm| arm.guard),
                 parent: arms[0].parent,
-                expression: entry
-                    .expression
-                    .ok_or_else(|| serde::ser::Error::custom("model conditional is not closed"))?,
+                expression: entry.expression,
                 provenance: entry.provenance,
             })?;
         }

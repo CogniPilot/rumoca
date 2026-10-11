@@ -6,12 +6,23 @@
 use super::*;
 use crate::UnaryOperator;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ModelConditionalEntry {
     pub(crate) condition: u32,
     pub(crate) arms: [u32; 2],
-    pub(crate) expression: Option<u32>,
+    pub(super) closed: Option<ClosedModelConditional>,
     pub(crate) provenance: DaeProvenance,
+    guard_operations: [Option<u32>; 3],
+}
+
+/// Private proof issued by the checked close, consumed by the frozen view.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ClosedModelConditional {
+    pub(super) condition: u32,
+    pub(super) arms: [u32; 2],
+    pub(super) expression: u32,
+    pub(super) provenance: DaeProvenance,
+    pub(super) guard_operations: [Option<u32>; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -164,7 +175,8 @@ impl<'dae> DaeConstruction<'dae> {
         provenance: DaeProvenance,
     ) -> Result<ModelConditional<'dae>, DaeConstructionError> {
         self.validate_model_condition(condition, provenance)?;
-        self.storage
+        let guard_operations = self
+            .storage
             .validate_model_guards(condition, guards, parent, provenance)?;
         let owner = checked_u32(
             self.storage.model_conditionals.len(),
@@ -182,8 +194,9 @@ impl<'dae> DaeConstruction<'dae> {
         self.storage.model_conditionals.push(ModelConditionalEntry {
             condition: condition.index(),
             arms: [first, second],
-            expression: None,
+            closed: None,
             provenance,
+            guard_operations,
         });
         self.storage
             .model_arms
@@ -237,7 +250,7 @@ impl<'dae> DaeConstruction<'dae> {
                 .get(next as usize)
                 .ok_or_else(|| unknown("model arm", next, provenance))?;
             if self.storage.model_conditionals[entry.owner as usize]
-                .expression
+                .closed
                 .is_some()
             {
                 return Err(DaeConstructionError::InvalidModelActivationScope {
@@ -282,7 +295,7 @@ impl<'dae> DaeConstruction<'dae> {
                 span: provenance.span(),
             });
         }
-        if entry.expression.is_some() {
+        if entry.closed.is_some() {
             return Err(duplicate(
                 "closed model conditional",
                 owner.owner,
@@ -316,7 +329,7 @@ impl<'dae> DaeConstruction<'dae> {
                 span: entry.provenance.span(),
             });
         }
-        if entry.expression.is_some() {
+        if entry.closed.is_some() {
             return Err(duplicate(
                 "model conditional",
                 owner.owner,
@@ -347,7 +360,14 @@ impl<'dae> DaeConstruction<'dae> {
         });
         self.storage.closing_model_conditional = None;
         let result = result?;
-        self.storage.model_conditionals[owner.owner as usize].expression = Some(result.index());
+        self.storage.model_conditionals[owner.owner as usize].closed =
+            Some(ClosedModelConditional {
+                condition: entry.condition,
+                arms: entry.arms,
+                expression: result.index(),
+                provenance: entry.provenance,
+                guard_operations: entry.guard_operations,
+            });
         Ok(result)
     }
 }
@@ -359,7 +379,7 @@ impl Storage {
         guards: [ExprId<'dae>; 2],
         parent: Option<u32>,
         at: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
+    ) -> Result<[Option<u32>; 3], DaeConstructionError> {
         if parent != self.active_model_arm {
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
@@ -371,31 +391,39 @@ impl Storage {
         let conditional_guard = |raw, negated| {
             let Some(ExprNode::Conditional { operands }) = self.expressions.nodes.get(raw as usize)
             else {
-                return false;
+                return None;
             };
-            let values = &self.expressions.operands[operands.indices()];
-            values.len() == 3
-                && parent.is_some_and(|parent| values[0] == self.model_arms[parent as usize].guard)
+            let [parent_guard, selected, fallback] = &self.expressions.operands[operands.indices()]
+            else {
+                return None;
+            };
+            let valid = parent
+                .is_some_and(|parent| *parent_guard == self.model_arms[parent as usize].guard)
                 && (if negated {
-                    not_condition(values[1])
+                    not_condition(*selected)
                 } else {
-                    values[1] == condition.index()
+                    *selected == condition.index()
                 })
                 && matches!(
-                    self.expressions.nodes.get(values[2] as usize),
+                    self.expressions.nodes.get(*fallback as usize),
                     Some(ExprNode::Literal(DaeLiteral::Boolean(false)))
-                )
+                );
+            valid.then_some(*selected)
         };
-        let valid = if parent.is_none() {
-            guards[0] == condition && not_condition(guards[1].index())
-        } else {
-            conditional_guard(guards[0].index(), false)
-                && conditional_guard(guards[1].index(), true)
-        };
-        if !valid {
-            return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
+        let invalid = || DaeConstructionError::InvalidModelActivationScope { span: at.span() };
+        if parent.is_none() {
+            if guards[0] != condition || !not_condition(guards[1].index()) {
+                return Err(invalid());
+            }
+            return Ok([Some(guards[1].index()), None, None]);
         }
-        Ok(())
+        conditional_guard(guards[0].index(), false).ok_or_else(invalid)?;
+        let negated = conditional_guard(guards[1].index(), true).ok_or_else(invalid)?;
+        Ok([
+            Some(negated),
+            Some(guards[0].index()),
+            Some(guards[1].index()),
+        ])
     }
     pub(crate) fn model_expression_roots(&self, expression: u32) -> impl Iterator<Item = u32> {
         expression_roots(
@@ -430,7 +458,7 @@ impl Storage {
             return self.expect_model_arm_visible(expression.index(), at);
         }
         let owner = self.model_arms[scope as usize].owner;
-        if self.model_conditionals[owner as usize].expression.is_none() {
+        if self.model_conditionals[owner as usize].closed.is_none() {
             return Err(DaeConstructionError::InvalidModelActivationScope { span: at.span() });
         }
         Ok(())

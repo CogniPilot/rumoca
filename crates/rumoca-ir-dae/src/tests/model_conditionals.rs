@@ -22,8 +22,43 @@ fn conditional_fixture() -> Dae {
     .expect("checked arms close once")
 }
 
+fn assert_closed_guard_operations(dae: &Dae) {
+    dae.inspect(|view| {
+        for index in 0..view.model_conditional_count() {
+            let owner = view.model_conditional_at(index).unwrap();
+            let operations: Vec<_> = owner.guard_operations().collect();
+            assert!(
+                matches!(view.expression(operations[0]).unwrap().operation(),
+                ExpressionOperation::Unary { operator: UnaryOperator::Not, operand }
+                    if operand == owner.condition())
+            );
+            let expected_tail = if owner.parent_arm().is_some() {
+                owner.guards().to_vec()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(&operations[1..], expected_tail.as_slice());
+            assert!(matches!(
+                view.expression(owner.expression()).unwrap().operation(),
+                ExpressionOperation::Conditional(_)
+            ));
+        }
+    });
+}
+
 #[test]
 fn unfinished_active_model_arm_reports_its_issued_source() {
+    let source = TestSource::new("if c then 1 else 2");
+    let at = source.source("if c then 1 else 2", 0);
+    let unfinished = Dae::construct(source.map, |dae| {
+        let condition = dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(true)))?;
+        dae.begin_model_conditional(condition, at)?;
+        Ok(())
+    });
+    assert!(matches!(unfinished,
+        Err(DaeConstructionError::IncompleteDefinition { kind: "model conditional", index: 0, span })
+            if span == at.span()));
+
     let source = TestSource::new("if c then 1 else 2");
     let at = source.source("if c then 1 else 2", 0);
     let result = Dae::construct(source.map, |dae| {
@@ -143,9 +178,12 @@ fn replay_model_conditional_preserves_every_entry_invariant() {
 #[test]
 fn model_conditional_wire_reissues_authority_and_rejects_context_tampering() {
     let original = conditional_fixture();
+    assert_closed_guard_operations(&original);
     let value = serde_json::to_value(&original).expect("serialize checked DAE");
     let decoded: Dae = serde_json::from_value(value.clone()).expect("current operations replay");
     decoded.inspect(|view| assert_eq!(view.model_conditional_count(), 1));
+    assert_closed_guard_operations(&decoded);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
     let last = value["storage"]["expressions"]["nodes"]
         .as_array()
         .unwrap()
@@ -238,10 +276,12 @@ fn nested_model_arm_first_creates_a_shared_global_function() {
         Ok(())
     })
     .expect("one global function, two arm-local and global occurrences");
+    assert_closed_guard_operations(&dae);
     let binary = bincode::serialize(&dae).expect("serialize nested construction operations");
     let decoded: Dae =
         bincode::deserialize(&binary).expect("function suspension and exact arms replay");
     assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+    assert_closed_guard_operations(&decoded);
     let json = serde_json::to_value(&dae).unwrap();
     serde_json::from_value::<Dae>(json.clone()).expect("JSON reissues the same boundaries");
     let end = json["storage"]["functions"][0]["construction_end"]
