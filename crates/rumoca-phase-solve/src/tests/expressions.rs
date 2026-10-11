@@ -1013,21 +1013,22 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
     })
     .unwrap();
 
-    let solve = lower_solve_problem(&model).unwrap();
+    let package = lower_solve_package(&model).unwrap();
+    let solve = &package.problem;
     solve
         .validate()
         .expect("constructor-certified quotients produce computable Solve IR");
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
-    assert_static_quotient_program(&rows.programs()[0], &solve.pure_calls);
+    assert_static_quotient_program(&rows.programs()[0], &package.pure_calls);
     // Pin the value independently of the exact Integer owner's opcode mix:
     // MLS 3.7 §3.7.2 gives
     // `div(-7,3) = -2`, `mod(-7,3) = 2`, `rem(-7,3) = -1`, so the residual
     // `y - (div - mod + rem)` at `y = 0` is `5`.
     for y in [-3.0, 0.0, 11.0] {
         assert_eq!(
-            eval_residual_rows_with_pure_calls(rows, &solve.pure_calls, &[y], &[]),
+            eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[y], &[]),
             [y + 5.0]
         );
     }
