@@ -1,0 +1,122 @@
+{
+  "source_after": "2e092cb428f9c33623a2815e408c196171f769a1",
+  "source_before": "84459f6e4",
+  "before": "0 passed, 1 failed at the literal-plan consumer assertion",
+  "after": "4 focused passed (subset of 267 structural tests), all 267 passed; scoped all-target Clippy passed",
+  "original_seven": "7 completed, 0 sim_ok, 7 structural singularity failures; no model or tolerance changes",
+  "bindings": [
+    {
+      "file": "closed-conditional-literal-before.log",
+      "sha256": "a5f8486938280ca6d0f8f3887ff8f906d36e0be342c9d39481b5ee9a080ef12f"
+    },
+    {
+      "file": "closed-conditional-literal-before.guardian.json",
+      "sha256": "ed5fb355e7e964f55c8ba220d28d3b72f1c17483960d2833d6fd48df51f770ab"
+    },
+    {
+      "file": "closed-conditional-literal-before-recipe.json",
+      "sha256": "b8dafd958df40b8d67e3c42237a15df26cc44af8164afc716329747f9f2ad496"
+    },
+    {
+      "file": "closed-conditional-literal-final-after.log",
+      "sha256": "b6fc185c761393a14745c803aa96a76b92ea83021886c2ac46508edbad07067f"
+    },
+    {
+      "file": "closed-conditional-literal-final-after.guardian.json",
+      "sha256": "04a4bc78bf4accfc8c0fbb1f0040634ad77edbbaa156bb597c3c19497eafc411"
+    },
+    {
+      "file": "closed-conditional-literal-final-after-recipe.json",
+      "sha256": "828b79c9f358d346367f6fb31055bb1722646def29534c748e227ef3664f4427"
+    },
+    {
+      "file": "closed-literal-original-seven.log",
+      "sha256": "3ada8560692192d157f1fc9bddf48fc8207ddcd5cc8d2d106f5dd431ae0fd7c5"
+    },
+    {
+      "file": "closed-literal-original-seven.guardian.json",
+      "sha256": "8d7a4112ace9442513e4cf188fa6845e17adf16ea771cb365bdefc185097c74a"
+    },
+    {
+      "file": "closed-literal-original-seven-recipe.json",
+      "sha256": "dfe625bdc29d8167ca9b8ef201488965e566c6b5f8a021d0443c07e8fccd61b6"
+    },
+    {
+      "file": "artifacts/rumoca-worker-2e092",
+      "sha256": "912d46b2a687f0237a308543cb7ba14a51cf87c8e8ee0a99b0ae723e0ef569eb"
+    },
+    {
+      "file": "artifacts/structural-original-seven-2e092",
+      "sha256": "d231042b86822a80e92e5da02ae10683b0e7963e98940628b338b961c36425c8"
+    },
+    {
+      "file": "structural_original_seven.rs",
+      "sha256": "fef1f03c907bc023c705fe467de0df45c2b20c3f56c6f822a1d2abd839d29ed3"
+    }
+  ],
+  "models": [
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks/result.json",
+        "sha256": "beb4d1cdcbf5dc60b87f95c791686980abd46f50142f1b52ce78430c3e56967e"
+      }
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 51 matched out of 53 equations and 53 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.Continuous/result.json",
+        "sha256": "1016999d807ce41d02ed6792d1bf8dd095e32dbc562f5c88705b52cab36dfaba"
+      }
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked/result.json",
+        "sha256": "8c5d4b54a8746d0f4699dc453ebdb7695432bdedfae3ea7d5d73ce1ad7794657"
+      }
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled/result.json",
+        "sha256": "05fa9d97b05ad685ace52594e026982b693e58303881dcc124f30fb9a1c8b1d0"
+      }
+    },
+    {
+      "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 391 matched out of 404 equations and 404 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad/result.json",
+        "sha256": "24a0b6322ee98bb0a5ece89c356e0d74174b3c449ec75d0eddbb3408e10dac68"
+      }
+    },
+    {
+      "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 77 matched out of 79 equations and 79 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap/result.json",
+        "sha256": "f68539fce55d11ba8ac121efc9881b266b42eeed67983bedf74f78684382b42b"
+      }
+    },
+    {
+      "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
+      "status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 77 matched out of 79 equations and 79 unknowns",
+      "result": {
+        "file": "closed-literal-original-seven/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection/result.json",
+        "sha256": "a1c5fd885bbb18e806cf1666f49ceabe0459675941a2e1833145580107a454b3"
+      }
+    }
+  ]
+}
