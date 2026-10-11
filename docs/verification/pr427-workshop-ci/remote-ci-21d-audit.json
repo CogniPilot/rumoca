@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "remoteHead": "21d64ecaa9d205b671598991ee8c4d2f556fed6c",
+  "runId": 38142398769,
+  "runUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769",
+  "localSourceAudit": "224fbf99490e0154aae3aca74034bb35540cf48a",
+  "queryExtraction": "d30b1d5a570872f0d92cbb73ad5e26e0fc1ef9c2",
+  "remoteFailedJobs": 13,
+  "expectedStaleWireFailures": [],
+  "freshCombinedQualification": "UNRUN in this receipt",
+  "artifacts": [
+    {
+      "jobId": 114478762968,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478762968",
+      "log": "$HOME/scratch/rumoca/workshop427-exports/attempts/remote-ci-audit-21d-20261011/lint.log",
+      "sha256": "61e93e1ea1a308993329d2facf84a9675d8bdbc0872e343dd227206265253ac7",
+      "bytes": 140823
+    },
+    {
+      "jobId": 114478762986,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478762986",
+      "log": "$HOME/scratch/rumoca/workshop427-exports/attempts/remote-ci-audit-21d-20261011/windows.log",
+      "sha256": "d3f9a0d3ad85e4e23ec154970483ba6bd93a8ce364037424113c7f99b5ae7526",
+      "bytes": 398387
+    },
+    {
+      "jobId": 114478763130,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763130",
+      "log": "$HOME/scratch/rumoca/workshop427-exports/attempts/remote-ci-audit-21d-20261011/playground.log",
+      "sha256": "2a3b674e2e6f6d24412b5be3241b60bdbc6473766636df6ca5a286beb000eab4",
+      "bytes": 903798
+    },
+    {
+      "jobId": 114478763061,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763061",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/ubuntu.log",
+      "sha256": "ab6da7e1efd9d1faaecdf0037e25d381e2782385f05be1f351de388ed52c729a",
+      "bytes": 650990
+    },
+    {
+      "jobId": 114478762951,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478762951",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/macos.log",
+      "sha256": "7ba324117338f81d9a0fb9b5d601aa18545b86c7bb704658df6c6683c6f95f61",
+      "bytes": 298230
+    },
+    {
+      "jobId": 114478763036,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763036",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/coverage.log",
+      "sha256": "70f5090ae9c41a20469bd9688bfcae2264285bbccca3bdf88004ae466fdc0ba1",
+      "bytes": 503563
+    },
+    {
+      "jobId": 114478763145,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763145",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/template-c.log",
+      "sha256": "8beaa302f74837a4d4c49da34d87ba75942960406360b11ef7a16441a3073002",
+      "bytes": 624443
+    },
+    {
+      "jobId": 114478763153,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763153",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/template-rust.log",
+      "sha256": "5c9d059c52717dd1c62d27d0e71a9c335bd851b32df8f6f3b4281712684df275",
+      "bytes": 631856
+    },
+    {
+      "jobId": 114478763152,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763152",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/jax.log",
+      "sha256": "5f0d50001ce9248de046c4355ed177986ab93fdf1cde528c39bc4327acbbf8fe",
+      "bytes": 733442
+    },
+    {
+      "jobId": 114478763039,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763039",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/casadi.log",
+      "sha256": "3370b9e42bdf8eb1f26886f356c0b139137a98e2fc87c9549ab5fc16a0c816da",
+      "bytes": 741391
+    },
+    {
+      "jobId": 114478763223,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114478763223",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/wasm.log",
+      "sha256": "813abcdbbd2a1062c466ee5bcee597dde11c92ab0694dbacd610b720ff9789c9",
+      "bytes": 677401
+    },
+    {
+      "jobId": 114482654232,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114482654232",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/modelica-models.log",
+      "sha256": "bced684aa7931f26699ede56af4f0edeebb188fe1eb2359afe8cb1dea6520367",
+      "bytes": 120634
+    },
+    {
+      "jobId": 114486205383,
+      "jobUrl": "https://github.com/CogniPilot/rumoca/actions/runs/38142398769/job/114486205383",
+      "log": "$HOME/scratch/rumoca/workshop427-ci/evidence/remote-21d/msl-merged.log",
+      "sha256": "d843d6c5ded9beb65c4d435d795f09964403335afd226761310b9fe72001ff16",
+      "bytes": 192493
+    }
+  ]
+}
