@@ -297,7 +297,7 @@ fn configured_worker_jobs(
         .to_str()
         .context("CARGO_BUILD_JOBS must contain a UTF-8 job count")?;
     if configured == "default" {
-        return Ok(budget.jobs.clamp(1, maximum));
+        return Ok(budget.logical_cpus.clamp(1, maximum));
     }
     let jobs = configured
         .parse::<isize>()
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_jobs_default_reuses_the_host_memory_budget() {
+    fn worker_jobs_default_resets_to_cargo_logical_cpu_count() {
         let budget = RustJobBudget::for_host(
             32,
             16,
@@ -405,12 +405,11 @@ mod tests {
             }),
         );
         assert_eq!(budget.jobs, 2);
-        for configured in [None, Some("default".as_ref())] {
-            assert_eq!(
-                configured_worker_jobs(None, configured, budget, 6).unwrap(),
-                2
-            );
-        }
+        assert_eq!(configured_worker_jobs(None, None, budget, 6).unwrap(), 2);
+        assert_eq!(
+            configured_worker_jobs(None, Some("default".as_ref()), budget, 6).unwrap(),
+            6
+        );
     }
 
     #[test]

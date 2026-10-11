@@ -505,7 +505,15 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     // it runs before lower-risk heavyweight surfaces.
     VerifyStep {
         label: "MSL parity",
-        args: &["verify", "msl-parity", "--no-remote-quality-baseline"],
+        args: &[
+            "verify",
+            "msl-parity",
+            "--no-remote-quality-baseline",
+            "--stage-parallelism",
+            "4",
+            "--sim-parallelism",
+            "4",
+        ],
         include_in_full: true,
         include_in_quick: true,
     },

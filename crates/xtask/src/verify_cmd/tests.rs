@@ -54,7 +54,15 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         steps,
         vec![
             vec!["verify", "lint"],
-            vec!["verify", "msl-parity", "--no-remote-quality-baseline"],
+            vec![
+                "verify",
+                "msl-parity",
+                "--no-remote-quality-baseline",
+                "--stage-parallelism",
+                "4",
+                "--sim-parallelism",
+                "4",
+            ],
             vec!["verify", "corpus-pin"],
             vec!["verify", "architecture"],
             vec!["verify", "workspace"],
@@ -78,7 +86,11 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         Some(&vec![
             "verify",
             "msl-parity",
-            "--no-remote-quality-baseline"
+            "--no-remote-quality-baseline",
+            "--stage-parallelism",
+            "4",
+            "--sim-parallelism",
+            "4",
         ])
     );
     assert!(steps.contains(&vec!["verify", "architecture"]));
@@ -93,7 +105,11 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     assert!(steps.contains(&vec![
         "verify",
         "msl-parity",
-        "--no-remote-quality-baseline"
+        "--no-remote-quality-baseline",
+        "--stage-parallelism",
+        "4",
+        "--sim-parallelism",
+        "4",
     ]));
 }
 
