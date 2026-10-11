@@ -40,11 +40,11 @@ const compilerSourceSha256 = sha256(before);
 fs.mkdirSync(output); // Require a new evidence directory; never overwrite a receipt.
 fs.writeFileSync(path.join(output, 'compiler-source.sha256'), before);
 
-const run = (command, args, log, env = process.env) => {
+const run = (command, args, log) => {
   const fd = fs.openSync(log, 'wx');
   try {
     const result = spawnSync(command, args, {
-      cwd: repository, env, stdio: ['ignore', fd, fd],
+      cwd: repository, env: process.env, stdio: ['ignore', fd, fd],
     });
     if (result.error) throw result.error;
     if (result.status !== 0) {
@@ -91,14 +91,12 @@ for (const [filename, model, destination, variants] of roster) {
     const artifactPath = path.join(directory, 'issued.json');
     fs.writeFileSync(sourcePath, source);
     const sourceSha256 = sha256(Buffer.from(source));
-    const env = {
-      ...process.env,
-      RUMOCA_PRODUCER_REVISION: revision,
-      RUMOCA_PRODUCER_SOURCE_SHA256: compilerSourceSha256,
-      RUMOCA_PRODUCER_BINARY_SHA256: producerBinarySha256,
-      RUMOCA_MODEL_SOURCE_SHA256: sourceSha256,
-    };
-    run(executable, [sourcePath, model, variant, artifactPath], path.join(directory, 'producer.log'), env);
+    run(executable, [sourcePath, model, variant, artifactPath,
+      '--source-sha256', sourceSha256,
+      '--compiler-revision', revision,
+      '--compiler-source-sha256', compilerSourceSha256,
+      '--producer-binary-sha256', producerBinarySha256,
+    ], path.join(directory, 'producer.log'));
     artifacts.push({
       source: path.relative(output, sourcePath), sourceSha256,
       artifact: path.relative(output, artifactPath), artifactSha256: fileHash(artifactPath),

@@ -41,7 +41,12 @@ cargo build --locked --offline -p rumoca --no-default-features --example issue_w
 
 It then invokes the built example six times, with the exact source/model/variant
 roster in [the migration record](structured-binder-provenance-after.md).
-Each invocation is `SOURCE MODEL VARIANT OUTPUT_JSON`. Source filenames remain
+The example's four positional arguments remain `SOURCE MODEL VARIANT OUTPUT_JSON`.
+Its discoverable clap interface additionally requires `--source-sha256`,
+`--compiler-revision`, `--compiler-source-sha256`, and
+`--producer-binary-sha256`. The wrapper passes those actual measured values as
+individual argv entries. No metadata environment variables or default identities
+are read; `--help` describes each required field. Source filenames remain
 the original `.mo` filename inside separate variant directories, preserving
 the document name used for source provenance. Variant transformations exactly
 match the existing test oracles and require one declared replacement site.
@@ -82,3 +87,14 @@ Integer, alias, fault, recursion and control-flow coverage as well.
 No build, generation, replay or executor run has happened on this candidate.
 Only formatting, Node syntax and diff checks are eligible for source-only
 verification. This is a separate helper commit, not a fixture metadata refresh.
+
+The metadata CLI followup is based on
+`b4e38503723816d0529168c46ac1b027ca1ea73d`. Its
+[tracked-source environment audit](../pr427-workshop-ci/issuer-cli-env-audit.json)
+scans all 3,035 tracked first-party Rust/TS/JS source files using the existing
+registry's extension, directory and sentinel rules. It finds no configuration
+literal offenders after replacing the four issuer reads. Nine architecture
+banlist literals remain excluded by the existing test policy. This bounded
+source audit does not inspect untracked files or replace execution of
+`test_rumoca_env_vars_are_registered`; discoverable CLI parsing and actual
+source issuance still require qualification on the new source.
