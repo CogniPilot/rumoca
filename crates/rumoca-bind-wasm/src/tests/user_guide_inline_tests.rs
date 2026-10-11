@@ -225,3 +225,41 @@ fn user_guide_rover_host_step_matches_the_authored_bicycle_model() {
     }
     clear_source_root_cache().unwrap();
 }
+
+#[test]
+fn user_guide_thermostat_original_authority_never_reaches_switching_band() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().unwrap();
+    let example = inline_examples()
+        .into_iter()
+        .find(|example| example.model_name().as_deref() == Some("Thermostat"))
+        .unwrap();
+    assert!(example.source.contains("parameter Real heat = 0.02"));
+    let mut session = WasmSimulationSession::with_interactive_options(
+        &example.source,
+        "Thermostat",
+        30.0,
+        "rk-like",
+        1e-10,
+        1e-10,
+        "[]",
+    )
+    .unwrap();
+    for step in 0..=240 {
+        let time = f64::from(step) * 30.0;
+        session.advance_to(time).unwrap();
+        let actual = session.get("T").unwrap().unwrap();
+        // On-state equilibrium: T_amb + tau * heat = 5 + 600 * 0.02 = 17.
+        let expected = 17.0 - 2.0 * (-time / 600.0).exp();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "T({time})={actual}, expected {expected}"
+        );
+        assert!(
+            actual < 20.0,
+            "original heater cannot reach the switching band"
+        );
+        assert_eq!(session.get("on").unwrap(), Some(1.0), "on({time})");
+    }
+    clear_source_root_cache().unwrap();
+}
