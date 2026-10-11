@@ -1475,6 +1475,12 @@ fn lower_guarded_targets<'dae>(
         SameTickExchange::derive(view, &rows.same_tick_definitions, targets).producer_order();
     apply_permutation(targets, &order);
     let exchange = SameTickExchange::derive(view, &rows.same_tick_definitions, targets);
+    let definition_targets = std::rc::Rc::new(
+        targets
+            .iter()
+            .map(|target| target.variable.index())
+            .collect::<BTreeSet<_>>(),
+    );
     let mut first = 0;
     while first < targets.len() {
         let clock = targets[first].clock;
@@ -1507,7 +1513,10 @@ fn lower_guarded_targets<'dae>(
         let conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
         let program = ScalarCompiler::new(view, layout, None)
             .with_function_conditional_owners(&conditional_owners)
-            .with_same_tick_definitions(std::rc::Rc::clone(&rows.same_tick_definitions))
+            .with_same_tick_definitions(
+                std::rc::Rc::clone(&rows.same_tick_definitions),
+                std::rc::Rc::clone(&definition_targets),
+            )
             .guarded_assignment_group_program(
                 clock.map(|(clock, _)| clock).or(event_clock),
                 group,

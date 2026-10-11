@@ -3,11 +3,15 @@
 use super::*;
 
 #[derive(Clone)]
-pub(super) struct DefinitionOwner<'dae>(Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>);
+pub(super) struct DefinitionOwner<'dae> {
+    definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
+    targets: Rc<BTreeSet<u32>>,
+}
 
 impl PartialEq for DefinitionOwner<'_> {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        Rc::ptr_eq(&self.definitions, &other.definitions)
+            && Rc::ptr_eq(&self.targets, &other.targets)
     }
 }
 impl Eq for DefinitionOwner<'_> {}
@@ -16,8 +20,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(in crate::lower) fn with_same_tick_definitions(
         mut self,
         definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
+        targets: Rc<BTreeSet<u32>>,
     ) -> Self {
-        self.same_tick_definitions = Some(DefinitionOwner(definitions));
+        self.same_tick_definitions = Some(DefinitionOwner {
+            definitions,
+            targets,
+        });
         self
     }
 
