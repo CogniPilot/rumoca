@@ -7,8 +7,9 @@ runtime quotient certificates and public guide model diagnostics.
 
 The generated domain is construction-issued. Its binder appears only in the
 model conditional's guard (`i>0`), while the primitive relation is `time>0`.
-After the conditional closes, ordinary root publication must retain that exact
-issued guard and domain. Extents 2 and 1,000,000 must issue the same expression
+Ordinary root publication is tested both while its own arm is live (the
+ToDAE producer path) and after the conditional closes. Both paths must retain
+that exact issued guard and domain. Extents 2 and 1,000,000 must issue the same expression
 count and one structured root, with no scalar roots or quotient owners.
 JSON and binary replay must reproduce exact bytes and the same guard/domain
 relationship; the binary reader must consume the entire input.

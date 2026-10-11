@@ -1,5 +1,5 @@
 //! SPEC0032 §1: ordinary arm relations retain one issued domain and guard.
-use super::guard_dependencies::arm_relation;
+use super::guard_dependencies::{arm_relation, arm_relation_with};
 use super::*;
 
 fn domain<'dae>(
@@ -24,29 +24,45 @@ fn domain<'dae>(
     })
 }
 
-fn guarded_relation<'dae>(
+fn guard<'dae>(
     dae: &mut DaeConstruction<'dae>,
     domain: DomainId<'dae>,
     at: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let guard = dae.expressions(|e| {
+    dae.expressions(|e| {
         let index = e
             .at(at)
             .binder(DomainBinderId::from_raw(domain.index(), 0))?;
         let zero = e.at(at).literal(DaeLiteral::Integer(0))?;
         e.at(at).binary(BinaryOperator::Greater, index, zero)
-    })?;
+    })
+}
+
+fn guarded_relation<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    domain: DomainId<'dae>,
+    at: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let guard = guard(dae, domain, at)?;
     arm_relation(dae, guard, at)
 }
 
-fn fixture(extent: i64) -> Dae {
+fn fixture(extent: i64, live_arm: bool) -> Dae {
     let source = TestSource::new("for i in 1:2 loop if i>0 then time>0 else false; end for;");
     let at = source.source("if i>0 then time>0 else false", 0);
     Dae::construct(source.map, |dae| {
         let owned = domain(dae, at, extent)?;
         domain(dae, at, extent)?;
-        let expression = guarded_relation(dae, owned, at)?;
-        dae.conditions(|c| c.structured_root(owned, expression, at))?;
+        if live_arm {
+            let guard = guard(dae, owned, at)?;
+            arm_relation_with(dae, guard, at, |dae, expression| {
+                dae.conditions(|c| c.structured_root(owned, expression, at))?;
+                Ok(())
+            })?;
+        } else {
+            let expression = guarded_relation(dae, owned, at)?;
+            dae.conditions(|c| c.structured_root(owned, expression, at))?;
+        }
         Ok(())
     })
     .expect("one ordinary structured relation retains its closed arm guard")
@@ -73,8 +89,8 @@ fn assert_owner(model: &Dae) -> usize {
 #[test]
 fn ordinary_structured_arm_relation_replays_one_compact_guarded_owner() {
     let mut counts = Vec::new();
-    for extent in [2, 1_000_000] {
-        let model = fixture(extent);
+    for (extent, live_arm) in [(2, false), (2, true), (1_000_000, false), (1_000_000, true)] {
+        let model = fixture(extent, live_arm);
         counts.push(assert_owner(&model));
         let json = serde_json::to_vec(&model).unwrap();
         let replayed: Dae = serde_json::from_slice(&json).unwrap();
@@ -88,7 +104,8 @@ fn ordinary_structured_arm_relation_replays_one_compact_guarded_owner() {
         assert_eq!(bincode::serialize(&replayed).unwrap(), bytes);
     }
     assert_eq!(
-        counts[0], counts[1],
+        counts,
+        vec![counts[0]; counts.len()],
         "extent cannot create per-point owners"
     );
 }
@@ -128,7 +145,7 @@ fn ordinary_structured_arm_relation_refuses_foreign_domain_arm_and_function() {
 
 #[test]
 fn ordinary_structured_arm_relation_wire_refuses_foreign_domain() {
-    let mut wire = serde_json::to_value(fixture(2)).unwrap();
+    let mut wire = serde_json::to_value(fixture(2, false)).unwrap();
     wire["storage"]["structured_roots"][0]["root"]["domain"] = 1.into();
     let error = serde_json::from_value::<Dae>(wire)
         .expect_err("identical domain geometry is not the issued binder identity");

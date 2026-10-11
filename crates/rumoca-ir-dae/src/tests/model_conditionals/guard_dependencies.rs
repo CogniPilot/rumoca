@@ -6,13 +6,24 @@ pub(super) fn arm_relation<'dae>(
     guard: ExprId<'dae>,
     at: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    arm_relation_with(dae, guard, at, |_, _| Ok(()))
+}
+
+pub(super) fn arm_relation_with<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    guard: ExprId<'dae>,
+    at: DaeProvenance,
+    publish: impl FnOnce(&mut DaeConstruction<'dae>, ExprId<'dae>) -> Result<(), DaeConstructionError>,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
     let owner = dae.begin_model_conditional(guard, at)?;
     let first = dae.model_conditional_arm(&owner, true, |dae| {
-        dae.expressions(|e| {
+        let relation = dae.expressions(|e| {
             let time = e.at(at).coordinate(CoordinateInput::Time)?;
             let zero = e.at(at).literal(DaeLiteral::Real(0.0))?;
             e.at(at).binary(BinaryOperator::Greater, time, zero)
-        })
+        })?;
+        publish(dae, relation)?;
+        Ok(relation)
     })?;
     let second = dae.model_conditional_arm(&owner, false, |dae| {
         dae.expressions(|e| e.at(at).literal(DaeLiteral::Boolean(false)))
