@@ -120,7 +120,7 @@ fn validate_root_family(
             event_iteration_contract(row, "numeric memory root family is incomplete")
         })?;
         crate::linear_op::check_same_output_transformed(
-            &expected,
+            expected,
             0,
             found,
             output,
@@ -284,14 +284,14 @@ fn project_constant<'a>(
         return None;
     };
     let mut projected = value;
-    for dimension in 0..coordinates.len() {
+    for (dimension, &coordinate) in coordinates.iter().enumerate() {
         let coefficient = strides
             .iter()
             .filter(|stride| stride.op_position == position)
             .flat_map(|stride| &stride.terms)
             .filter(|term| term.dimension == dimension)
             .fold(0.0, |coefficient, term| coefficient + term.stride);
-        projected += f64::from(coordinates[dimension]) * coefficient;
+        projected += f64::from(coordinate) * coefficient;
     }
     Some(Cow::Owned(LinearOp::Const {
         dst,

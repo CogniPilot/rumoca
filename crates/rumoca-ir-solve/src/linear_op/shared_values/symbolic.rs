@@ -226,6 +226,43 @@ impl SymbolicSlots {
         Some(outputs)
     }
 
+    fn evaluate_conditional(
+        &self,
+        terms: &mut Terms,
+        program: &FunctionConditionalProgram,
+        capture_start: Reg,
+        registers: &RegisterTable<Term>,
+    ) -> Option<Vec<Term>> {
+        let captures = (0..program.capture_count)
+            .map(|offset| registers.get(capture_start.checked_add(Reg::try_from(offset).ok()?)?))
+            .collect::<Option<Vec<_>>>()?;
+        let evaluate = |terms: &mut Terms, ops: &[LinearOp]| {
+            self.evaluate_regions(terms, ops, &captures, &mut |_, op| {
+                Some(std::borrow::Cow::Borrowed(op))
+            })
+        };
+        let mut result = evaluate(terms, &program.fallback)?;
+        if result.len() != program.result_count {
+            return None;
+        }
+        for arm in program.arms.iter().rev() {
+            let condition = evaluate(terms, &arm.condition)?;
+            let selected = evaluate(terms, &arm.result)?;
+            if condition.len() != 1 || selected.len() != result.len() {
+                return None;
+            }
+            for (found, selected) in result.iter_mut().zip(selected) {
+                let key = terms.key(
+                    "checked conditional result",
+                    vec![(0, condition[0]), (1, selected), (2, *found)],
+                    1,
+                );
+                *found = Terms::value(&key, 0)?;
+            }
+        }
+        Some(result)
+    }
+
     fn step(
         &self,
         terms: &mut Terms,
@@ -245,35 +282,7 @@ impl SymbolicSlots {
                 capture_start,
                 ref program,
             } if self.recursive_conditionals && program.owner.is_none() => {
-                let captures = (0..program.capture_count)
-                    .map(|offset| {
-                        registers.get(capture_start.checked_add(Reg::try_from(offset).ok()?)?)
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                let evaluate = |terms: &mut Terms, ops: &[LinearOp]| {
-                    self.evaluate_regions(terms, ops, &captures, &mut |_, op| {
-                        Some(std::borrow::Cow::Borrowed(op))
-                    })
-                };
-                let mut result = evaluate(terms, &program.fallback)?;
-                if result.len() != program.result_count {
-                    return None;
-                }
-                for arm in program.arms.iter().rev() {
-                    let condition = evaluate(terms, &arm.condition)?;
-                    let selected = evaluate(terms, &arm.result)?;
-                    if condition.len() != 1 || selected.len() != result.len() {
-                        return None;
-                    }
-                    for (found, selected) in result.iter_mut().zip(selected) {
-                        let key = terms.key(
-                            "checked conditional result",
-                            vec![(0, condition[0]), (1, selected), (2, *found)],
-                            1,
-                        );
-                        *found = Terms::value(&key, 0)?;
-                    }
-                }
+                let result = self.evaluate_conditional(terms, program, capture_start, registers)?;
                 for (offset, value) in result.into_iter().enumerate() {
                     registers.insert(dst_start.checked_add(Reg::try_from(offset).ok()?)?, value);
                 }

@@ -19,10 +19,11 @@ pub(super) fn indicator(
         LinearOp::Unary { dst, op, arg },
         LinearOp::StoreOutput { src },
     ] = program
+        && matches!(step, UnaryOp::Floor | UnaryOp::Trunc)
+        && *op == step
+        && dst == src
     {
-        if matches!(step, UnaryOp::Floor | UnaryOp::Trunc) && *op == step && dst == src {
-            return ratio_indicator(prefix, *arg).ok_or_else(|| failure(row));
-        }
+        return ratio_indicator(prefix, *arg).ok_or_else(|| failure(row));
     }
     let [
         prefix @ ..,

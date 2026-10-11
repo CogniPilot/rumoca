@@ -252,10 +252,10 @@ impl<'dae> DaeConstruction<'dae> {
                 span: provenance.span(),
             });
         }
-        if let Some(current) = current {
-            if parent(next) != Some(current) {
-                self.storage.active_model_ancestors.remove(&current);
-            }
+        if let Some(current) = current
+            && parent(next) != Some(current)
+        {
+            self.storage.active_model_ancestors.remove(&current);
         }
         if let Some(next) = next {
             self.storage.active_model_ancestors.insert(next);

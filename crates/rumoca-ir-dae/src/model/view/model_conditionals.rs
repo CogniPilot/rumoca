@@ -76,7 +76,7 @@ impl<'dae> DaeView<'dae> {
         self.dae.storage.model_conditionals.len()
     }
     pub fn model_conditional_at(self, owner: usize) -> Option<ModelConditionalView<'dae>> {
-        (owner < self.model_conditional_count()).then(|| ModelConditionalView {
+        (owner < self.model_conditional_count()).then_some(ModelConditionalView {
             view: self,
             owner: owner as u32,
         })
