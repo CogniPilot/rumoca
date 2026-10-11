@@ -417,13 +417,23 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     {
         let expression = &branch.condition;
         let Some((clock, span)) = self.branch_clock(branch, key)? else {
-            return lower_condition(
+            let (condition, periodic) = lower_condition(
                 self.construction,
                 self.request.coordinates,
                 self.request.functions,
                 self.request.sample_lattices,
                 expression,
-            );
+            )?;
+            // MLS §3.7.5/§8.3.5 Boolean sample when-equations retain their
+            // exact ticks without imposing a §16 value partition. Source
+            // Clock branches take the separately certified path below;
+            // DAE-C21 algorithm transactions keep their scheduled owner.
+            let condition = if periodic.is_some() {
+                unowned_tick_activation(self.construction, condition, branch.span)?
+            } else {
+                condition
+            };
+            return Ok((condition, None));
         };
         let provenance = dae::DaeProvenance::source(span)?;
         let condition = self

@@ -23,23 +23,16 @@ pub(super) fn lower_condition<'dae>(
     for relation in relations {
         construction.conditions(|conditions| conditions.root(relation, condition, provenance))?;
     }
-    // This entry lowers Boolean event conditions. MLS §3.7.5 sample(start,
-    // interval) schedules ordinary events, without imposing a §16 partition
-    // on values read or written there. Explicit Clock when-conditions enter
-    // through the separately certified branch-clock owner in model_events.
-    let condition = if owner_clock.is_some() {
-        unowned_tick_activation(construction, condition, provenance.span())?
-    } else {
-        condition
-    };
-    Ok((condition, None))
+    Ok((condition, owner_clock))
 }
 
-/// Verify the periodic occurrence certificates of a Boolean event condition.
+/// Recover the exact periodic owner already certified for an event condition.
 ///
-/// MLS §3.7.5 Boolean sample events own no §16 clocked algorithm targets.
-/// This mirrors the admission of [`lower_condition_tree`] without minting
-/// condition nodes; each sample still consumes its exact occurrence proof.
+/// Clocked algorithm targets are claimed before any algorithm body is lowered,
+/// so construction cannot depend on whether a producer or consumer appeared
+/// first in Flat order. This mirrors [`lower_condition_tree`] without minting
+/// condition nodes: sample occurrences consume their occurrence-keyed analysis
+/// certificate, and compound conditions use the same clock merge contract.
 pub(super) fn condition_owner_clock<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     expression: &Expression,
@@ -53,7 +46,7 @@ pub(super) fn condition_owner_clock<'dae>(
             function: BuiltinFunction::Sample,
             args,
             ..
-        } => lower_sample_condition(functions, args, provenance).map(|_| None),
+        } => lower_sample_condition(functions, args, provenance).map(|(_, _, clock)| clock),
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty()
@@ -61,7 +54,8 @@ pub(super) fn condition_owner_clock<'dae>(
                 .sample_alias_schedules
                 .contains_key(name.var_name()) =>
         {
-            lower_sample_alias_condition(functions, name.var_name(), provenance).map(|_| None)
+            lower_sample_alias_condition(functions, name.var_name(), provenance)
+                .map(|(_, _, clock)| clock)
         }
         Expression::Unary {
             op: OpUnary::Not, ..
