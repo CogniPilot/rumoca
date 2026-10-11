@@ -2071,7 +2071,7 @@ jobs:
     name: Playground contract
     # Relocated out of build-wasm so PRs keep the playground/WASM contract test
     # without the heavy release build. Self-contained: builds the FullWeb wasm
-    # bundle and runs the native + Node smoke harnesses (no MSL/browser/GPU).
+    # bundle and runs the native + Node smoke harnesses with pinned guide libraries (no browser/GPU).
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:

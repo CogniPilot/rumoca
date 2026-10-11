@@ -5,7 +5,7 @@
 #![cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 
 use super::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One fenced ```` ```modelica,…,gpu ```` block of the user guide.
 struct GuideGpuExample {
@@ -15,68 +15,19 @@ struct GuideGpuExample {
     interactive: bool,
 }
 
-fn user_guide_src() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user-guide/src")
-}
-
-fn markdown_pages(dir: &Path, pages: &mut Vec<PathBuf>) {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
-        .map(|entry| entry.expect("guide directory entry").path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            markdown_pages(&path, pages);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            pages.push(path);
-        }
-    }
-}
-
-fn top_level_model_name(source: &str) -> Option<String> {
-    source.lines().rev().find_map(|line| {
-        let rest = line.strip_prefix("model ")?;
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        (!name.is_empty()).then_some(name)
-    })
-}
-
 fn guide_gpu_examples() -> Vec<GuideGpuExample> {
-    let mut pages = Vec::new();
-    markdown_pages(&user_guide_src(), &mut pages);
-    let mut examples = Vec::new();
-    for page in pages {
-        let text = std::fs::read_to_string(&page)
-            .unwrap_or_else(|error| panic!("read {}: {error}", page.display()));
-        let mut lines = text.lines();
-        while let Some(line) = lines.next() {
-            let Some(info) = line.strip_prefix("```modelica") else {
-                continue;
-            };
-            let flags: Vec<&str> = info.split(',').map(str::trim).collect();
-            let body: Vec<&str> = lines
-                .by_ref()
-                .take_while(|l| !l.starts_with("```"))
-                .collect();
-            if !flags.contains(&"gpu") {
-                continue;
-            }
-            let source = body.join("\n") + "\n";
-            let model = top_level_model_name(&source)
-                .unwrap_or_else(|| panic!("GPU example in {} names no model", page.display()));
-            examples.push(GuideGpuExample {
-                page: page.clone(),
-                model,
-                source,
-                interactive: flags.contains(&"interactive"),
-            });
-        }
-    }
-    examples
+    super::user_guide_sources::guide_fences()
+        .into_iter()
+        .filter(|fence| fence.has_flag("gpu"))
+        .map(|fence| GuideGpuExample {
+            model: fence.model_name().unwrap_or_else(|| {
+                panic!("GPU example in {} names no model", fence.page.display())
+            }),
+            interactive: fence.has_flag("interactive"),
+            page: fence.page,
+            source: fence.source,
+        })
+        .collect()
 }
 
 /// The Interactive toggle of the live runner flips the structural

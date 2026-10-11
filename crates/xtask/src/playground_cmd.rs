@@ -22,6 +22,7 @@ pub(crate) fn stage_playground_vendor_assets(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_playground_test_suite(root: &Path) -> Result<()> {
+    crate::modelica_dependency_cache::ensure_example_libraries(root, false)?;
     let mut wasm_tests = Command::new("cargo");
     wasm_tests
         .arg("test")

@@ -111,7 +111,10 @@ Modelica organizes code in classes:
 Classes compose by *instantiation* (declaring a component of another class)
 and *inheritance* (`extends`). Modifications customize an instance in place:
 
-```modelica
+The following composition fragment assumes an existing `Tank` model with
+`inlet` and `outlet` connectors; it is not a standalone simulation.
+
+```modelica,fragment
 model TwoTanks
   Tank tank1(area = 2.0);
   Tank tank2(area = 0.5, h(start = 1.0));
