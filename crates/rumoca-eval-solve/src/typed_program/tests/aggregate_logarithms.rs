@@ -43,6 +43,22 @@ fn numbers(value: &TypedValue) -> Vec<f64> {
         .collect()
 }
 
+fn reference_logarithm(operator: SolveUnaryOperator, x: f64) -> f64 {
+    if operator == SolveUnaryOperator::Log {
+        x.ln()
+    } else {
+        x.log10()
+    }
+}
+
+fn logarithm_derivative_scale(operator: SolveUnaryOperator) -> f64 {
+    if operator == SolveUnaryOperator::Log {
+        1.0
+    } else {
+        std::f64::consts::LN_10
+    }
+}
+
 #[test]
 fn aggregate_logarithm_directional_matches_ranked_finite_differences() {
     let values = [1.5, 2.5, 4.5, 8.5];
@@ -69,22 +85,10 @@ fn aggregate_logarithm_directional_matches_ranked_finite_differences() {
             }
             let primal = numbers(&result[0]);
             let derivative = numbers(&result[1]);
-            let logarithm = |x: f64| {
-                if operator == SolveUnaryOperator::Log {
-                    x.ln()
-                } else {
-                    x.log10()
-                }
-            };
+            let logarithm = |x: f64| reference_logarithm(operator, x);
             for index in 0..4 {
                 assert_eq!(primal[index], logarithm(values[index]));
-                let expected = seeds[index]
-                    / values[index]
-                    / if operator == SolveUnaryOperator::Log {
-                        1.0
-                    } else {
-                        std::f64::consts::LN_10
-                    };
+                let expected = seeds[index] / values[index] / logarithm_derivative_scale(operator);
                 let finite_difference = (logarithm(values[index] + h * seeds[index])
                     - logarithm(values[index] - h * seeds[index]))
                     / (2.0 * h);
@@ -120,12 +124,7 @@ fn aggregate_logarithm_directional_retains_scalar_nonfinite_partial_policy() {
         assert_eq!(primal[2], f64::INFINITY);
         assert!(primal[3].is_nan() && primal[4].is_nan());
         assert_eq!(&tangents[..4], &[0.0; 4]);
-        let expected = -2.5
-            / if operator == SolveUnaryOperator::Log {
-                1.0
-            } else {
-                std::f64::consts::LN_10
-            };
+        let expected = -2.5 / logarithm_derivative_scale(operator);
         assert!((tangents[4] - expected).abs() < 1e-14);
     }
 }
