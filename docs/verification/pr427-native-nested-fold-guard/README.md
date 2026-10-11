@@ -22,8 +22,20 @@ avoids the test-mode interpreter precheck masking an active native fault.
 Explicit JIT call counts distinguish native calls from independent canonical
 reference evaluation.
 
-Expected before outcome: one failing test at false-arm inactive execution;
-all preceding canonical and native controls reached. Actual outcome: **UNRUN**.
+The first executed before source, `4171d7953`, failed at the true-arm selected
+native access: it returned success instead of a bounds fault. The false-arm
+control was not reached. That source still held the inner index in a constant,
+despite the earlier live-index description. The root qualification retains its
+exact source seal and raw receipt separately from this revised source.
+
+This revised test-only probe first executes four valid-index controls with
+independently tabulated results: true-arm conditions 0/1 yield 3/13; false-arm
+conditions 0/1 yield 13/3. Both canonical evaluation and actual native execution
+must agree. It then retains the selected-invalid/inactive controls, now loading
+the inner index from the existing live capture. No production repair is included.
+Expected before: the false-arm condition-1 valid-index control returns 13 instead
+of 3, independently of the separate invalid-index fault defect. Actual revised
+outcome: **UNRUN**.
 Public Modelica source reachability is unproven; this witness tests the actual
 checked compact Solve owner and its native consumer, without claiming a
 broader compiler source profile.
