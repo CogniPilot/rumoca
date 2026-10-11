@@ -141,3 +141,11 @@ hardware performance measurements. The native
 `user_guide_gpu_examples_simulate_on_the_cpu_path` tests remain mandatory even
 when browser GPU execution is skipped. Browser source registration and syntax
 checks do not establish an executed browser receipt.
+
+The direct launcher probe on source `2a4a56219820490e402d70736dca91c8464008bb`
+actually passed on Chromium 154.0.8037.92 in 2.40 seconds: CPU SwiftShader WebGL2
+cleared and read the independently expected pixel `[64,128,191,255]` with no GL
+error. The real WebGPU adapter reported `info.isFallbackAdapter=true`, so its
+hardware compute scope was explicitly skipped. Exact source/probe/raw hashes
+are retained in `cpu-browser-2a4-receipt.json`; this probe did not load the
+shipped WASM or execute guide models, and does not qualify those pending gates.
