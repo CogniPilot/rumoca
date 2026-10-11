@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn domain(id: u32, name: &str) -> rumoca_core::StructuredIndexDomain {
+pub(super) fn domain(id: usize, name: &str) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
             id,
