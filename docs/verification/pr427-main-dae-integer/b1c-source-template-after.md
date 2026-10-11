@@ -1,5 +1,9 @@
 # B1c source-template coverage repair
 
+This records the unqualified 817 candidate. Its binder-authority claim was
+incomplete; [the provenance followup](structured-binder-provenance-after.md)
+supersedes that admission claim and the four-test count below.
+
 Actual BEFORE source `4907c9b5a`: original OuterInteger fails SolveLowering EL005
 at point 1, operation 1, PureCall/PureCall, destinations Some(1)/Some(1), widths
 1/1, owners 0/1, input counts 1/1, no differing input ordinal. Root receipt:
