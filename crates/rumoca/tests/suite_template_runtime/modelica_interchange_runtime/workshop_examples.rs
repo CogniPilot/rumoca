@@ -13,6 +13,7 @@ struct Example {
     name: &'static str,
     observables: &'static [&'static str],
     initial: &'static [(&'static str, f64)],
+    export_columns: &'static [(&'static str, &'static str)],
 }
 
 const EXAMPLES: &[Example] = &[
@@ -20,21 +21,25 @@ const EXAMPLES: &[Example] = &[
         name: "Circuit.Test",
         observables: &["cap.v", "res.v"],
         initial: &[("cap.v", 0.0), ("res.v", 5.0)],
+        export_columns: &[],
     },
     Example {
         name: "SympyDecay",
         observables: &["x"],
         initial: &[("x", 1.0)],
+        export_columns: &[],
     },
     Example {
         name: "FmiTensorDecay",
         observables: &["x[1]", "x[2]"],
         initial: &[("x[1]", 1.0), ("x[2]", 1.0)],
+        export_columns: &[],
     },
     Example {
         name: "NeuralODETensor",
         observables: &["x[1]", "x[2]", "dx[1]", "dx[2]", "radius"],
         initial: &[("x[1]", 1.0), ("x[2]", 0.0), ("radius", 1.0)],
+        export_columns: &[],
     },
     Example {
         name: "NeuralPredatorPrey",
@@ -46,6 +51,7 @@ const EXAMPLES: &[Example] = &[
             "interactionIndex",
         ],
         initial: &[("population[1]", 1.35), ("population[2]", 0.72)],
+        export_columns: &[],
     },
     Example {
         name: "NeuralODEBackprop",
@@ -58,6 +64,7 @@ const EXAMPLES: &[Example] = &[
             "targetFirst[1]",
         ],
         initial: &[("b2[1]", 0.0), ("targetFirst[1]", -0.18)],
+        export_columns: &[],
     },
 ];
 
@@ -233,6 +240,22 @@ fn observable(sample: &BTreeMap<String, f64>, name: &str) -> f64 {
         .unwrap_or_else(|| panic!("missing observable {name}; columns: {:?}", sample.keys()))
 }
 
+fn exported_observable(example: &Example, sample: &BTreeMap<String, f64>, name: &str) -> f64 {
+    if let Some((_, column)) = example
+        .export_columns
+        .iter()
+        .find(|(original, _)| *original == name)
+    {
+        return *sample.get(*column).unwrap_or_else(|| {
+            panic!(
+                "missing export observable {column}; columns: {:?}",
+                sample.keys()
+            )
+        });
+    }
+    observable(sample, name)
+}
+
 fn assert_physical_controls(example: &Example, target: &str, result: &OmcResult) {
     if example.name == "Circuit.Test" {
         // Source `src.v = src.V` is an algebraic alias of parameter V=5.
@@ -263,7 +286,7 @@ fn assert_roundtrip(example: &Example, target: &str, reference: &OmcResult, actu
     let actual_trace = actual.settled_trace();
     for &(name, expected) in example.initial {
         assert_close(
-            observable(&actual_trace[0], name),
+            exported_observable(example, &actual_trace[0], name),
             expected,
             &format!("{target}/{} initial {name}", example.name),
         );
@@ -280,7 +303,7 @@ fn assert_roundtrip(example: &Example, target: &str, reference: &OmcResult, actu
         );
         for &name in example.observables {
             assert_close(
-                observable(actual, name),
+                exported_observable(example, actual, name),
                 observable(expected, name),
                 &format!("{target}/{} {name} at {}", example.name, actual["time"]),
             );
@@ -355,6 +378,15 @@ equation
   end for;
 end DerivativeCoordinateProjection;
 "#;
+    // Validate the declaration identity and shape behind the exact CSV mapping;
+    // the exported identifier quotes the owner, not the indexed physical path.
+    let compiled = Compiler::new()
+        .model("DerivativeCoordinateProjection")
+        .compile_str(source, "DerivativeCoordinateProjection.mo")
+        .expect("compile record-member declaration metadata");
+    let owner = rumoca_core::VarName::new("pair.position");
+    assert_eq!(compiled.flat.variables[&owner].dims, [2]);
+    assert_eq!(compiled.flat.variable_type_names[&owner], "Real");
     let example = Example {
         name: "DerivativeCoordinateProjection",
         observables: &[
@@ -372,6 +404,10 @@ end DerivativeCoordinateProjection;
             ("matrix[2,2]", 4.0),
             ("pair.position[1]", 5.0),
             ("pair.position[2]", 6.0),
+        ],
+        export_columns: &[
+            ("pair.position[1]", "'pair.position'[1]"),
+            ("pair.position[2]", "'pair.position'[2]"),
         ],
     };
     assert_export_roundtrips(&example, source);

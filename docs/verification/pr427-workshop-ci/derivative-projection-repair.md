@@ -47,8 +47,10 @@ comparison. It is an extra fixture, not a seventh workshop model or substitute
 for NeuralPredatorPrey/NeuralODEBackprop. Passed controls emit progress lines so
 partial execution counts can be read directly.
 
-Source-only validation: rustfmt and `git diff --check`. The repair and focused
-fixture have not been built or executed. Qualification must rerun the original
-six-model gate unchanged (six originals plus eighteen exports), the additional
-fixture, and Node scenario seeding under a fresh frozen source recipe. Broader
-workspace/lint/canary/cohort gates are not claimed.
+The [4659 qualification attempt](qualification-4659-20261011.md) compiled and
+executed the repair: NeuralPredatorPrey DAE now passes OMC, along with all three
+exports of the other four reached models. Two subsequent failures remain in
+that receipt. Full qualification must still rerun all six originals plus
+eighteen exports, the additional fixture and Node scenario seeding under a
+fresh frozen source recipe. Broader workspace/lint/canary/cohort gates are not
+claimed.

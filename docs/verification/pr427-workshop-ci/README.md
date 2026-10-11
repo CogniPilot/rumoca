@@ -95,8 +95,14 @@ the actual original Circuit OMC check/simulation succeeded, then the required
 `26f474b15`, the physical-channel correction passed and the Node workspace
 gate passed all three tests. Five originals and fourteen export controls passed
 before OMC rejected the DAE NeuralPredatorPrey derivative projection syntax;
-NeuralODEBackprop was not reached. See the exact
-[qualification receipt](qualification-26f-20261011.md). No six-model roundtrip,
+NeuralODEBackprop was not reached. The derivative repair at `4659ef1d5` then
+passed all fifteen exports for those five models, before OMC rejected the
+authored Backprop array `fixed = true` modifiers. The actual example now uses
+`each fixed = true`, retaining the intended fixed starts; this correction is
+not yet executed. The extra record-member fixture now declares exact original
+and exported CSV column names and checks its flat Real declaration/shape.
+See the exact [first receipt](qualification-26f-20261011.md) and
+[derivative repair attempt](qualification-4659-20261011.md). No six-model roundtrip,
 workspace/clippy, fixed MSL canary, or broader gate is claimed green.
 
 Raw bounded attempts are retained below
