@@ -769,6 +769,9 @@ fn rebuild_expression_segment<'source, 'target>(
             rebuilt,
         )?;
         if quotients.close_model_expression(context.source, index, target, rebuilt)? {
+            if !quotients.owns_model_guard(source_id) {
+                rebuild_closed_literal(context, target, source_id, rebuilt)?;
+            }
             continue;
         }
         target.expressions(|expressions| {
@@ -794,6 +797,32 @@ fn rebuild_expression_segment<'source, 'target>(
             Ok(())
         })?;
     }
+    Ok(())
+}
+
+fn rebuild_closed_literal<'source, 'target>(
+    context: RebuildContext<'source, '_, 'target>,
+    target: &mut dae::DaeConstruction<'target>,
+    source: dae::ExprId<'source>,
+    rebuilt: &mut [Option<dae::ExprId<'target>>],
+) -> Result<(), dae::DaeConstructionError> {
+    let index = source.index() as usize;
+    let Some(value) = context
+        .literal_expressions
+        .get(index)
+        .and_then(Option::as_deref)
+    else {
+        return Ok(());
+    };
+    let provenance = context
+        .source
+        .expression(source)
+        .expect("checked closed value")
+        .provenance();
+    let literal = target.expressions(|expressions| {
+        super::evaluable_parameters::folded_literal(expressions, value, provenance)
+    })?;
+    rebuilt[index] = Some(literal);
     Ok(())
 }
 
