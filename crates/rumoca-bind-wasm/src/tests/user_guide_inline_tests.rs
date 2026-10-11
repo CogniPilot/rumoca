@@ -226,15 +226,36 @@ fn user_guide_rover_host_step_matches_the_authored_bicycle_model() {
     clear_source_root_cache().unwrap();
 }
 
+fn thermostat_solution(mut time: f64) -> (f64, bool, usize) {
+    let mut temperature: f64 = 15.0;
+    let mut on = true;
+    let mut switches = 0;
+    loop {
+        let (equilibrium, threshold): (f64, f64) = if on { (35.0, 22.0) } else { (5.0, 20.0) };
+        let duration = 600.0 * ((temperature - equilibrium) / (threshold - equilibrium)).ln();
+        if time < duration {
+            return (
+                equilibrium + (temperature - equilibrium) * (-time / 600.0).exp(),
+                on,
+                switches,
+            );
+        }
+        time -= duration;
+        temperature = threshold;
+        on = !on;
+        switches += 1;
+    }
+}
+
 #[test]
-fn user_guide_thermostat_original_authority_never_reaches_switching_band() {
+fn user_guide_thermostat_heats_and_cools_through_independent_hysteresis_cycles() {
     let _guard = session_test_guard();
     clear_source_root_cache().unwrap();
     let example = inline_examples()
         .into_iter()
         .find(|example| example.model_name().as_deref() == Some("Thermostat"))
         .unwrap();
-    assert!(example.source.contains("parameter Real heat = 0.02"));
+    assert!(example.source.contains("parameter Real heat = 0.05"));
     let mut session = WasmSimulationSession::with_interactive_options(
         &example.source,
         "Thermostat",
@@ -245,21 +266,26 @@ fn user_guide_thermostat_original_authority_never_reaches_switching_band() {
         "[]",
     )
     .unwrap();
+    let mut maximum_switches = 0;
     for step in 0..=240 {
         let time = f64::from(step) * 30.0;
         session.advance_to(time).unwrap();
         let actual = session.get("T").unwrap().unwrap();
-        // On-state equilibrium: T_amb + tau * heat = 5 + 600 * 0.02 = 17.
-        let expected = 17.0 - 2.0 * (-time / 600.0).exp();
+        let (expected, on, switches) = thermostat_solution(time);
+        maximum_switches = maximum_switches.max(switches);
         assert!(
-            (actual - expected).abs() < 1e-6,
+            (actual - expected).abs() < 1e-5,
             "T({time})={actual}, expected {expected}"
         );
-        assert!(
-            actual < 20.0,
-            "original heater cannot reach the switching band"
+        assert_eq!(
+            session.get("on").unwrap(),
+            Some(f64::from(on)),
+            "on({time})"
         );
-        assert_eq!(session.get("on").unwrap(), Some(1.0), "on({time})");
     }
+    assert!(
+        maximum_switches > 20,
+        "the authored horizon covers repeated cycles"
+    );
     clear_source_root_cache().unwrap();
 }
