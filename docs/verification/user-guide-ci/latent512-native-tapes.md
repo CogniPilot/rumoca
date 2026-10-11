@@ -41,7 +41,30 @@ ABI, and the invocation wrapper checks balanced frame release before dropping
 all storage. The existing complete-coordinate result cache retains its owner
 and exact input/result bits.
 
-Focused qualification commands (all currently unrun):
+The first actual integrated qualification at
+c7b55f8a64539bfb46991a400b0cab6506e9c836 compiled the native crate and ran all
+four scratch controls: three passed, while the pointer-sized handle control
+panicked because entry acquisition requested the layout entry before Cranelift
+had inserted its first instruction. The unchanged entry construction used by
+production callers has the same ordering. This was a construction failure,
+not an allocation, resource, or JIT execution failure.
+
+Followup d1b16e8216d47b56712a4a1822637b7caef2c9ce obtains the entry arena from
+the selected construction entry's appended parameters, and derives host-call
+pointer type from that explicit arena argument. Subsequent accesses continue to
+read the established layout entry. The same control now also checks that the
+layout is absent before acquisition and that its parameter remains correct after
+switching to the body block. The followup is runtime-unmeasured.
+
+The retained attempt is `pr427-native-heap-and-read-after-c7b55-20261011`.
+`heap-scratch-four.log` SHA256 is
+`4cf429a90db5b079f603fac10f94779ab533fedc308540c80f76debdd6bcd35f`;
+`heap-scratch-four.guardian.json` SHA256 is
+`86abe7c8f27753aa4afcd5b37e21d506088d5c3443b1be61ee168d2144f81f4b`.
+The gate exited101 after61.978 seconds, with peakRSS2,645,508KiB and no resource
+stop. Later native ABI, whole-crate and full Latent guide gates did not run.
+
+Focused qualification commands (scratch rerun and remaining gates pending):
 
 ```bash
 cargo test -p rumoca-exec-cranelift --lib emit::scratch::tests:: -- --nocapture
@@ -58,5 +81,5 @@ Integer cells, signed zero, cache hits and checked Integer failure cleanup. The
 final existing guide test retains both full authored width variants and native
 initialization/steps. Whole native crate tests are needed afterward to cover
 existing nested Fold, selected conditional, recursive and projection callers.
-Only rustfmt and `git diff --check` have passed on the candidate. No repaired
-runtime outcome or complete-guide success is claimed yet.
+Rustfmt and `git diff --check` pass on the followup. No repaired JIT execution,
+full-width guide outcome or complete-guide success is claimed yet.
