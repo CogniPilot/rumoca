@@ -28,6 +28,39 @@ algorithm
 end divMod;
 "#;
 
+#[test]
+fn component_instances_have_distinct_when_call_owners() {
+    let result = simulate(
+        "SharedSourceCalls",
+        r#"
+model Cell
+  parameter Real offset = 1;
+  discrete Real s(start = 0, fixed = true);
+  discrete Real p(start = 0, fixed = true);
+equation
+  when sample(0, 0.1) then
+    (s, p) = sumAndProduct(offset, time);
+  end when;
+end Cell;
+model SharedSourceCalls
+  Cell first(offset = 1);
+  Cell second(offset = 2);
+end SharedSourceCalls;
+"#,
+    );
+    for (name, expected) in [
+        ("first.s", 1.2),
+        ("first.p", 0.2),
+        ("second.s", 2.2),
+        ("second.p", 0.4),
+    ] {
+        assert!(
+            (value_at(&result, name, 0.25) - expected).abs() < 1e-9,
+            "{name} retains its own call outputs"
+        );
+    }
+}
+
 fn simulate(model: &str, body: &str) -> SimResult {
     let source = format!("{FUNCTION}\n{body}");
     let compiled = Compiler::new()

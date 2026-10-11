@@ -6,28 +6,31 @@
 //! from the in-memory result, which also carries the Flat model and avoids
 //! re-encoding the DAE through JavaScript numbers.
 
+#[cfg(test)]
+mod source_preview_tests;
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use anyhow::{Context, bail};
+#[cfg(target_arch = "wasm32")]
 use serde::Serialize;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
     builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, parse_target_manifest,
-    render_dae_target_files, validate_flat_target_capabilities,
+    render_dae_target_files, validate_dae_target_capabilities, validate_flat_target_capabilities,
 };
-use rumoca_compile::codegen::{
-    render_algorithm_code_template_with_artifact, render_flat_template_with_name,
-};
+use rumoca_compile::codegen::{AlgorithmCodeTemplateRenderer, render_flat_template_with_name};
 use rumoca_compile::compile::{Dae, FlatModel};
 
+#[cfg(target_arch = "wasm32")]
 use crate::source_root_api::load_workspace_sources_in_session;
-use crate::{
-    WasmError, compile_requested_model, qualify_input_model_name, serialize_js_value,
-    with_singleton_session,
-};
+use crate::{WasmError, compile_requested_model, qualify_input_model_name};
+#[cfg(target_arch = "wasm32")]
+use crate::{serialize_js_value, with_singleton_session};
 
 /// Solve lowering ships with the simulation runtime; light builds without it
 /// cannot render Solve targets.
@@ -38,19 +41,12 @@ const SOLVE_TARGETS_AVAILABLE: bool = cfg!(any(
     feature = "native-assignments"
 ));
 
+#[cfg(target_arch = "wasm32")]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WasmRenderedTarget {
     ok: bool,
     files: Vec<RenderedTargetFile>,
-}
-
-#[derive(Serialize)]
-struct WasmSourceArtifactFacts {
-    generated_at: &'static str,
-    generation_tool: &'static str,
-    identities: BTreeMap<String, String>,
-    checksums: BTreeMap<String, String>,
 }
 
 enum TargetTemplates {
@@ -105,6 +101,7 @@ fn browser_builtin_target_descriptors()
 }
 
 /// Get the built-in codegen targets this WASM build can render.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn get_builtin_targets() -> Result<JsValue, WasmError> {
     serialize_js_value(
@@ -213,9 +210,7 @@ fn render_solve_target_files(
     model_name: &str,
 ) -> anyhow::Result<Vec<RenderedTargetFile>> {
     use rumoca_compile::codegen::SolveTemplateRenderer;
-    use rumoca_compile::codegen::targets::{
-        validate_dae_target_capabilities, validate_solve_target_capabilities_with_calls,
-    };
+    use rumoca_compile::codegen::targets::validate_solve_target_capabilities_with_calls;
 
     let capabilities = manifest
         .capabilities
@@ -249,6 +244,9 @@ fn render_solve_target_files(
             dae,
         )?
     };
+    if capabilities.scalar_fallback == Some(true) {
+        renderer.require_scalar_derivative_programs()?;
+    }
     render_manifest_files(templates, manifest, |template| {
         Ok(renderer.render_with_name(template, model_name)?)
     })
@@ -292,6 +290,12 @@ fn render_algorithm_code_source_files(
     dae: &Dae,
     model_name: &str,
 ) -> anyhow::Result<Vec<RenderedTargetFile>> {
+    let capabilities = manifest
+        .capabilities
+        .as_ref()
+        .context("Algorithm Code target manifest must declare a [capabilities] table")?;
+    validate_dae_target_capabilities(dae, manifest, capabilities)?;
+    ensure_target_has_rendered_files(manifest)?;
     let model_id = model_name.replace('.', "_");
     let package = rumoca_phase_galec::lower_to_algorithm_code(
         &rumoca_phase_galec::GalecInput::new(dae, &model_id),
@@ -307,12 +311,9 @@ fn render_algorithm_code_source_files(
                 .join("; ")
         )
     })?;
-    let artifact = WasmSourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca wasm source preview",
-        identities: BTreeMap::new(),
-        checksums: BTreeMap::new(),
-    };
+    // No session source map reaches this entry point. Retain honest hash/byte
+    // provenance using the same convention as the existing package renderer.
+    let renderer = AlgorithmCodeTemplateRenderer::new(&package, &rumoca_core::SourceMap::new())?;
     let mut files = Vec::new();
     for file in &manifest.files {
         let extension = std::path::Path::new(&file.path)
@@ -321,24 +322,21 @@ fn render_algorithm_code_source_files(
         if !matches!(extension, Some("alg" | "h" | "c")) {
             continue;
         }
-        let path = render_algorithm_code_template_with_artifact(
-            &package, &artifact, &file.path, &model_id,
-        )?;
+        let path = renderer.render_with_name(&file.path, &model_id)?;
         let template = templates.template_source(&file.template)?;
-        let content = render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            template.as_ref(),
-            &model_id,
-        )?;
+        let content = renderer.render_with_name(template.as_ref(), &model_id)?;
         files.push(RenderedTargetFile {
             path: path.trim().to_owned(),
             content,
         });
     }
+    if files.is_empty() {
+        bail!("Algorithm Code source preview contains no source files (.alg, .h or .c)");
+    }
     Ok(files)
 }
 
+#[cfg(target_arch = "wasm32")]
 fn rendered_target_js_value(
     files: anyhow::Result<Vec<RenderedTargetFile>>,
 ) -> Result<JsValue, WasmError> {
@@ -349,6 +347,7 @@ fn rendered_target_js_value(
 
 /// Render a target from a checked DAE serialized by `compile`. Flat targets
 /// need the model source; use [`render_target_for_source`] for those.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn render_target(
     dae_json: &str,
@@ -392,6 +391,7 @@ pub(crate) fn render_target_in_session(
 }
 
 /// Compile `model_name` from `source` and render a target from the result.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn render_target_for_source(
     source: &str,
@@ -415,6 +415,7 @@ pub fn render_target_for_source(
 
 /// Like [`render_target_for_source`], resolving against the given workspace
 /// sources (the same map `compile_with_workspace_sources` takes).
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn render_target_with_workspace_sources(
     source: &str,

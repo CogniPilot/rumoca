@@ -15,6 +15,7 @@ use super::{
 #[derive(Debug)]
 pub struct SolveTemplateRenderer {
     context: Value,
+    scalar_derivative_programs: bool,
 }
 
 impl SolveTemplateRenderer {
@@ -23,9 +24,7 @@ impl SolveTemplateRenderer {
         artifacts: &solve::SolveArtifacts,
         model_name: &str,
     ) -> Result<Self, CodegenError> {
-        Ok(Self {
-            context: solve_render_context_value(problem, artifacts, Some(model_name))?,
-        })
+        solve_render_context_value_with_dae(problem, artifacts, Some(model_name), Value::default())
     }
 
     /// Renderer over typed inputs that also exposes the (scalarized) DAE to
@@ -37,9 +36,7 @@ impl SolveTemplateRenderer {
         dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
         let dae_entry = checked_dae_template_value(dae_model)?;
-        Ok(Self {
-            context: solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)?,
-        })
+        solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)
     }
 
     /// Build a renderer by taking ownership of the lowered Solve IR and the
@@ -59,9 +56,7 @@ impl SolveTemplateRenderer {
             std::sync::Arc::new(artifacts),
             std::sync::Arc::new(pure_calls),
         );
-        Ok(Self {
-            context: solve_render_context_value_with_handles(handle, None, dae_entry)?,
-        })
+        solve_render_context_value_with_handles(handle, None, dae_entry)
     }
 
     /// [`Self::new`] with the model's pure-call owners (see
@@ -77,13 +72,7 @@ impl SolveTemplateRenderer {
             std::sync::Arc::new(artifacts),
             std::sync::Arc::new(pure_calls),
         );
-        Ok(Self {
-            context: solve_render_context_value_with_handles(
-                handle,
-                Some(model_name),
-                Value::default(),
-            )?,
-        })
+        solve_render_context_value_with_handles(handle, Some(model_name), Value::default())
     }
 
     /// Renderer for one checked FMI component. The FMI entry is the opaque
@@ -131,10 +120,9 @@ impl SolveTemplateRenderer {
         let fmi = handle.fmi_value();
         require_dense_value_references(&fmi)?;
         let text_starts = super::fmi_c_assertions::text_starts(&fmi)?;
-        let context = solve_render_context_value_with_handles(handle, None, Value::default())?;
-        Ok(Self {
-            context: minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..context },
-        })
+        let mut renderer = solve_render_context_value_with_handles(handle, None, Value::default())?;
+        renderer.context = minijinja::context! { uses_real_extremum => uses_real_extremum, typed_pure_calls => pure_calls.owners_value(), typed_directional_calls => pure_calls.directional_value(), pure_call_symbols => pure_calls.symbols_value(), fmi_assertion_messages => assertion_messages, fmi_assertion_message_rows => assertion_message_rows, fmi_text_starts => text_starts, me_refresh => me_refresh, ..renderer.context };
+        Ok(renderer)
     }
 
     pub fn render(&self, template: &str) -> Result<String, CodegenError> {
@@ -142,6 +130,19 @@ impl SolveTemplateRenderer {
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
         Ok(tmpl.render(&self.context)?)
+    }
+
+    /// Admit the derivative programs for a target that requests scalar fallback.
+    /// The same checked scalar view is retained in this renderer and consumed
+    /// by its templates; admission performs no second expansion.
+    pub fn require_scalar_derivative_programs(&self) -> Result<(), CodegenError> {
+        if !self.scalar_derivative_programs {
+            return Err(CodegenError::template(
+                "unsupported-feature:scalar.derivative_rhs: checked derivative programs \
+                 cannot be represented faithfully within the scalar projection budget",
+            ));
+        }
+        Ok(())
     }
 
     pub fn render_with_name(
@@ -238,6 +239,7 @@ pub(super) fn solve_render_context_value(
     model_name: Option<&str>,
 ) -> Result<Value, CodegenError> {
     solve_render_context_value_with_dae(solve_problem, artifacts, model_name, Value::default())
+        .map(|renderer| renderer.context)
 }
 
 fn solve_render_context_value_with_dae(
@@ -245,7 +247,7 @@ fn solve_render_context_value_with_dae(
     artifacts: &solve::SolveArtifacts,
     model_name: Option<&str>,
     dae_entry: Value,
-) -> Result<Value, CodegenError> {
+) -> Result<SolveTemplateRenderer, CodegenError> {
     solve_render_context_value_with_handles(
         super::solve_lazy::SolveRenderHandle::standalone(
             std::sync::Arc::new(solve_problem.clone()),
@@ -317,7 +319,7 @@ fn solve_render_context_value_with_handles(
     handle: super::solve_lazy::SolveRenderHandle,
     model_name: Option<&str>,
     dae_entry: Value,
-) -> Result<Value, CodegenError> {
+) -> Result<SolveTemplateRenderer, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
     // ~150k-op model costs O(one program) here instead of ~5 GB of eager `Value`
@@ -327,8 +329,10 @@ fn solve_render_context_value_with_handles(
     let artifacts = handle.artifacts();
     let solve_value = super::solve_lazy::solve_value(handle.clone())?;
     let artifacts_value = super::solve_lazy::artifacts_value(handle.clone())?;
-    let solve_blocks =
+    let prepared_blocks =
         solve_template_blocks_value(solve_problem, artifacts, handle.inlined_pure_calls())?;
+    let scalar_derivative_programs = prepared_blocks.scalar_derivative_programs;
+    let solve_blocks = prepared_blocks.value;
     let derivative_nodes = Value::from_object(LazyDerivativeNodesValue::new(
         solve_problem.continuous.derivative_rhs.clone(),
     ));
@@ -364,7 +368,7 @@ fn solve_render_context_value_with_handles(
         super::real_extremum::used_by(solve_problem, artifacts, handle.inlined_pure_calls());
     let parameter_defaults = Value::from(parameter_defaults(solve_problem, &dae_entry));
     let parameter_names = Value::from(parameter_names(solve_problem));
-    Ok(match model_name {
+    let context = match model_name {
         Some(name) => minijinja::context! {
             solve_parameter_defaults => parameter_defaults.clone(),
             solve_parameter_names => parameter_names.clone(),
@@ -398,6 +402,10 @@ fn solve_render_context_value_with_handles(
             solve_full_jacobian_rows => full_jacobian_rows,
             uses_real_extremum => uses_real_extremum,
         },
+    };
+    Ok(SolveTemplateRenderer {
+        context,
+        scalar_derivative_programs,
     })
 }
 

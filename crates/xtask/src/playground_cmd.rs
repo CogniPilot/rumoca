@@ -210,13 +210,19 @@ fn run_wasm_simulation_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
 }
 
 fn run_wasm_source_root_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
-    let mut wasm_smoke = Command::new("node");
-    wasm_smoke
-        .arg("packages/playground/tests/source_root_smoke.mjs")
-        .arg("--pkg-subdir")
-        .arg(pkg_subdir)
-        .current_dir(root);
-    run_status(wasm_smoke)
+    for script in [
+        "packages/playground/tests/source_root_smoke.mjs",
+        "packages/playground/tests/target_render_smoke.mjs",
+    ] {
+        let mut wasm_smoke = Command::new("node");
+        wasm_smoke
+            .arg(script)
+            .arg("--pkg-subdir")
+            .arg(pkg_subdir)
+            .current_dir(root);
+        run_status(wasm_smoke)?;
+    }
+    Ok(())
 }
 
 fn ensure_any_file_contains(root: &Path, files: &[&str], needle: &str) -> Result<()> {

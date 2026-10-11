@@ -138,14 +138,3 @@ pub fn solve_initialization_is_explicit(problem: &SolveProblem) -> bool {
                 _ => false,
             })
 }
-
-/// Whether the initialization is explicit and assigns only parameters.
-#[must_use]
-pub fn solve_initialization_is_parameter_only(problem: &SolveProblem) -> bool {
-    solve_initialization_is_explicit(problem)
-        && problem
-            .initialization
-            .update_targets()
-            .iter()
-            .all(|target| matches!(target, crate::ScalarSlot::P { .. }))
-}

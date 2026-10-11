@@ -27,6 +27,7 @@ mod simulation_api;
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_session_api;
 pub mod source_root_api;
+#[cfg(any(target_arch = "wasm32", test))]
 mod target_render_api;
 mod workspace_config_api;
 
@@ -1185,6 +1186,7 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, WasmError> {
 // Code Generation (see target_render_api)
 // ==========================================================================
 
+#[cfg(target_arch = "wasm32")]
 pub use crate::target_render_api::{
     get_builtin_targets, render_target, render_target_for_source,
     render_target_with_workspace_sources,

@@ -136,7 +136,7 @@ pub mod workspace {
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_to_template_json,
+        AlgorithmCodeTemplateRenderer, CodegenError, SolveTemplateRenderer, dae_to_template_json,
         render_algorithm_code_template_with_artifact, render_ast_template_with_name,
         render_dae_template, render_dae_template_with_name, render_flat_template_with_name,
         render_solve_template_with_name,
@@ -232,3 +232,6 @@ pub mod compile {
 
 // Root exports intentionally kept minimal to avoid a "god facade".
 pub use compile::{Session, SessionConfig};
+
+#[cfg(test)]
+mod adversarial_when_call_tests;
