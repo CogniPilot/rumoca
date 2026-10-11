@@ -34,6 +34,10 @@ pub(super) struct ScalarEventProfile {
     /// Per discrete output: whether it is a condition memory, the rows
     /// initialization seeds with `pre` following the current value.
     condition_memory_rows: Vec<bool>,
+    /// Pulse-memory outputs and their checked producing programs. Only these
+    /// programs are evaluated when the event releases its clock pulses.
+    pulse_rows: Vec<usize>,
+    pulse_programs: Vec<usize>,
     /// Per discrete output: whether a public observation recomputes it from
     /// the observed coordinate (an unread B.1c owner, SPEC_0022 EXPR-012).
     observation_rows: Vec<bool>,
@@ -139,7 +143,9 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
     if discrete.row_roles.iter().any(|role| {
         !matches!(
             role,
-            DiscreteRowRole::Equation | DiscreteRowRole::ConditionMemory
+            DiscreteRowRole::Equation
+                | DiscreteRowRole::ConditionMemory
+                | DiscreteRowRole::PulseConditionMemory
         )
     }) {
         return Err("the C profile executes only discrete equations and condition memories");
@@ -185,6 +191,23 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         }
         iteration_lanes.extend(lanes);
     }
+    let pulse_rows = discrete
+        .row_roles
+        .iter()
+        .enumerate()
+        .filter_map(|(row, role)| (*role == DiscreteRowRole::PulseConditionMemory).then_some(row))
+        .collect::<Vec<_>>();
+    let pulse_programs = pulse_rows
+        .iter()
+        .map(|row| {
+            discrete
+                .rhs
+                .program_index_for_output(*row)
+                .ok_or("a pulse condition memory has no checked producing program")
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+        .into_iter()
+        .collect();
     Ok(ScalarEventProfile {
         roots,
         pre_bindings,
@@ -192,8 +215,10 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         condition_memory_rows: discrete
             .row_roles
             .iter()
-            .map(|role| *role == DiscreteRowRole::ConditionMemory)
+            .map(|role| role.is_condition_memory())
             .collect(),
+        pulse_rows,
+        pulse_programs,
         discrete_targets,
         observation_rows: discrete.observation_refresh.clone(),
         observation_reads_y: discrete.observation_refresh_reads_y,

@@ -9,6 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod pulse_lifecycle;
+
 const SOURCE: &str = r#"
 model RelationSwitch
   Real x(start = 1.0, fixed = true);
@@ -73,6 +75,11 @@ fn render(work: &Path, model: &str, target: &str) -> (PathBuf, Vec<PathBuf>) {
     let root = work.join(format!("{model}-{target}"));
     let sources = root.join("sources");
     std::fs::create_dir_all(&sources).expect("create the sources directory");
+    let xml = files
+        .iter()
+        .find(|file| file.path == "modelDescription.xml")
+        .expect("FMI metadata is rendered");
+    std::fs::write(root.join("modelDescription.xml"), &xml.content).expect("write metadata");
     let mut units = Vec::new();
     for file in files
         .iter()
