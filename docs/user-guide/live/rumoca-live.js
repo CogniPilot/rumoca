@@ -538,13 +538,11 @@ self.onmessage = async (event) => {
                     throw new Error('The book widget supports built-in codegen targets only.');
                 }
                 await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
-                if (typeof rumoca.compile !== 'function' || typeof rumoca.render_target !== 'function') {
+                if (typeof rumoca.render_target_for_source !== 'function') {
                     throw new Error('code generation APIs are missing in this WASM build');
                 }
-                const compiled = JSON.parse(rumoca.compile(args.source || '', args.model || 'Model'));
-                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
-                const rendered = rumoca.render_target(
-                    daeJson,
+                const rendered = rumoca.render_target_for_source(
+                    args.source || '',
                     args.model || 'Model',
                     target,
                     '',
@@ -3473,9 +3471,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                     throw new Error('The book widget supports built-in codegen targets only.');
                 }
                 await runtime.ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
-                const compiled = JSON.parse(wasm.compile(source, model));
-                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
-                const rendered = wasm.render_target(daeJson, model, target, '', '{}');
+                const rendered = wasm.render_target_for_source(source, model, target, '', '{}');
                 return JSON.stringify(Array.isArray(rendered?.files) ? rendered.files : []);
             }, signal);
             throwIfAborted(signal);

@@ -158,10 +158,7 @@ export async function renderDaeTextWithRuntime({
   sourceRootCacheUrl = '',
 }) {
   await ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
-  const compiled = wasm.compile(source, modelName);
-  const envelope = JSON.parse(compiled);
-  const daeJson = JSON.stringify(envelope.dae_native || envelope.dae);
-  const rendered = wasm.render_target(daeJson, modelName, 'dae-modelica', '', '{}');
+  const rendered = wasm.render_target_for_source(source, modelName, 'dae-modelica', '', '{}');
   const files = Array.isArray(rendered?.files) ? rendered.files : [];
   return files.map((file) => file.content || '').join('\n');
 }
