@@ -83,9 +83,9 @@ impl<'target> ModelConditionalReplay<'target> {
         source_id: dae::ExprId<'source>,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &mut [Option<dae::ExprId<'target>>],
-    ) -> Result<bool, dae::DaeConstructionError> {
+    ) -> Result<Option<dae::DaeProvenance>, dae::DaeConstructionError> {
         let Some(owner) = source.model_conditional_of(source_id) else {
-            return Ok(false);
+            return Ok(None);
         };
         let expression = source
             .expression(source_id)
@@ -113,7 +113,7 @@ impl<'target> ModelConditionalReplay<'target> {
             },
         )?;
         rebuilt[source_id.index() as usize] = Some(target.finish_model_conditional(token, values)?);
-        Ok(true)
+        Ok(Some(owner.provenance()))
     }
 
     fn mapped_arm(

@@ -94,7 +94,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         index: usize,
         target: &mut dae::DaeConstruction<'target>,
         rebuilt: &mut [Option<dae::ExprId<'target>>],
-    ) -> Result<bool, dae::DaeConstructionError> {
+    ) -> Result<Option<dae::DaeProvenance>, dae::DaeConstructionError> {
         let id = source.expression_id(index).expect("checked source ordinal");
         self.conditionals.close(source, id, target, rebuilt)
     }

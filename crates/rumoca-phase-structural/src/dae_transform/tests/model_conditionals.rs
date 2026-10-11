@@ -291,12 +291,12 @@ fn closed_model_conditional_honors_its_checked_literal_replacement() {
     let plan = source.inspect(|view| {
         let mut plan = vec![None; view.expression_count()];
         let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
-        for ordinal in 0..view.expression_count() {
+        for (ordinal, replacement) in plan.iter_mut().enumerate() {
             let id = view.expression_id(ordinal).unwrap();
             if view.model_conditional_of(id).is_some() {
                 let values = evaluator.expression(id).unwrap();
                 assert_eq!(values.as_slice(), &[3.0]);
-                plan[ordinal] = Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
+                *replacement = Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
                     scalar: dae::ScalarType::Real,
                     dimensions: Box::new([]),
                     values: values.into(),
