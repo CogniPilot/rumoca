@@ -1327,19 +1327,27 @@ mod tests {
                         .binary(dae::BinaryOperator::Greater, previous, zero)?,
                 ])
             })?;
-            dae.conditions(|conditions| {
-                let mut ids = Vec::new();
-                for value in values {
-                    let id = conditions.reserve(at)?;
-                    conditions.define(id, dae::ConditionInput::Discrete(value), at)?;
-                    ids.push(id);
-                }
-                for body in [ids[1], ids[2]] {
-                    let guard = conditions.reserve(at)?;
-                    conditions.define(guard, dae::ConditionInput::And(ids[0], body), at)?;
-                }
-                Ok(())
-            })
+            define_trigger_body_conditions(dae, values, at)
+        })
+    }
+
+    fn define_trigger_body_conditions<'dae>(
+        dae: &mut dae::DaeConstruction<'dae>,
+        values: [dae::ExprId<'dae>; 3],
+        at: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        dae.conditions(|conditions| {
+            let mut ids = Vec::new();
+            for value in values {
+                let id = conditions.reserve(at)?;
+                conditions.define(id, dae::ConditionInput::Discrete(value), at)?;
+                ids.push(id);
+            }
+            for body in [ids[1], ids[2]] {
+                let guard = conditions.reserve(at)?;
+                conditions.define(guard, dae::ConditionInput::And(ids[0], body), at)?;
+            }
+            Ok(())
         })
     }
 

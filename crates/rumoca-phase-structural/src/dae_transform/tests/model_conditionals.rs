@@ -202,20 +202,10 @@ fn nested_model_conditional_quotient_survives_state_differentiation() {
         let outer = model.begin_model_conditional(guard, at)?;
         let first = model.model_conditional_arm(&outer, true, |model| {
             let inner = model.begin_model_conditional(guard, at)?;
-            let quotient = model.model_conditional_arm(&inner, true, |model| {
-                model.expressions(|e| {
-                    let y = e.at(at).coordinate(dae::CoordinateInput::State(y))?;
-                    let one = e.at(at).literal(dae::DaeLiteral::Real(1.0))?;
-                    let denominator = e.at(at).binary(dae::BinaryOperator::Add, one, y)?;
-                    e.at(at).binary(dae::BinaryOperator::Divide, y, denominator)
-                })
-            })?;
-            let square = model.model_conditional_arm(&inner, false, |model| {
-                model.expressions(|e| {
-                    let y = e.at(at).coordinate(dae::CoordinateInput::State(y))?;
-                    e.at(at).binary(dae::BinaryOperator::Multiply, y, y)
-                })
-            })?;
+            let quotient =
+                model.model_conditional_arm(&inner, true, |model| quotient_branch(model, y, at))?;
+            let square =
+                model.model_conditional_arm(&inner, false, |model| square_branch(model, y, at))?;
             model.finish_model_conditional(inner, [quotient, square])
         })?;
         let fallback = model.model_conditional_arm(&outer, false, |model| {
@@ -249,4 +239,27 @@ fn nested_model_conditional_quotient_survives_state_differentiation() {
     let replay: dae::Dae = serde_json::from_slice(&wire).unwrap();
     assert_eq!(serde_json::to_vec(&replay).unwrap(), wire);
     assert!(replay.inspect(|view| view.model_conditional_count()) >= 2);
+}
+
+fn quotient_branch<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    state: dae::StateId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    model.expressions(|e| {
+        let y = e.at(at).coordinate(dae::CoordinateInput::State(state))?;
+        let one = e.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+        let denominator = e.at(at).binary(dae::BinaryOperator::Add, one, y)?;
+        e.at(at).binary(dae::BinaryOperator::Divide, y, denominator)
+    })
+}
+fn square_branch<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    state: dae::StateId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    model.expressions(|e| {
+        let y = e.at(at).coordinate(dae::CoordinateInput::State(state))?;
+        e.at(at).binary(dae::BinaryOperator::Multiply, y, y)
+    })
 }
