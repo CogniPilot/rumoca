@@ -59,19 +59,7 @@ fn relation_with_previous_guard_model(mixed_clocks: bool, time_relation: bool) -
         };
         let owner = model.begin_model_conditional(guard, at)?;
         let expression = model.model_conditional_arm(&owner, true, |model| {
-            model.expressions(|e| {
-                let one = if time_relation {
-                    e.at(at).coordinate(dae::CoordinateInput::Time)?
-                } else {
-                    e.at(at).literal(dae::DaeLiteral::Real(1.0))?
-                };
-                let zero = e.at(at).literal(dae::DaeLiteral::Real(if time_relation {
-                    0.45
-                } else {
-                    0.0
-                }))?;
-                e.at(at).binary(dae::BinaryOperator::Greater, one, zero)
-            })
+            model.expressions(|e| guarded_relation_expression(e, time_relation, at))
         })?;
         let fallback = model.model_conditional_arm(&owner, false, |model| {
             model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Boolean(false)))
@@ -93,6 +81,28 @@ fn relation_with_previous_guard_model(mixed_clocks: bool, time_relation: bool) -
         Ok(())
     })
     .expect("the arm guard retains its exact issued Previous clocks")
+}
+
+fn guarded_relation_expression<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    time_relation: bool,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let one = if time_relation {
+        expressions.at(at).coordinate(dae::CoordinateInput::Time)?
+    } else {
+        expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?
+    };
+    let zero = expressions
+        .at(at)
+        .literal(dae::DaeLiteral::Real(if time_relation {
+            0.45
+        } else {
+            0.0
+        }))?;
+    expressions
+        .at(at)
+        .binary(dae::BinaryOperator::Greater, one, zero)
 }
 
 #[test]

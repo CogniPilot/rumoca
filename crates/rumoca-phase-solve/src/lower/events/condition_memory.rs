@@ -355,6 +355,24 @@ pub(in crate::lower) fn condition_memory(
 mod internal_constant_tests {
     use super::*;
 
+    fn define_negation_chain(
+        conditions: &mut dae::Conditions<'_, '_>,
+        internal: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let ids = (0..=1024)
+            .map(|_| conditions.reserve(internal))
+            .collect::<Result<Vec<_>, _>>()?;
+        conditions.define(ids[1024], dae::ConditionInput::Always, internal)?;
+        for index in (0..1024).rev() {
+            conditions.define(
+                ids[index],
+                dae::ConditionInput::Not(ids[index + 1]),
+                internal,
+            )?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn shared_negation_chain_is_memoized_without_index_order_assumptions() {
         let mut source_map = rumoca_core::SourceMap::new();
@@ -370,17 +388,7 @@ mod internal_constant_tests {
                     .literal(dae::DaeLiteral::Boolean(true))
             })?;
             model.conditions(|conditions| {
-                let ids = (0..=1024)
-                    .map(|_| conditions.reserve(internal))
-                    .collect::<Result<Vec<_>, _>>()?;
-                conditions.define(ids[1024], dae::ConditionInput::Always, internal)?;
-                for index in (0..1024).rev() {
-                    conditions.define(
-                        ids[index],
-                        dae::ConditionInput::Not(ids[index + 1]),
-                        internal,
-                    )?;
-                }
+                define_negation_chain(conditions, internal)?;
                 let unknown = conditions.reserve(authored)?;
                 conditions.define(unknown, dae::ConditionInput::Discrete(literal), authored)
             })
