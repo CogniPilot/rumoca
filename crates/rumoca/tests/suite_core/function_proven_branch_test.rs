@@ -459,7 +459,7 @@ function triangular
   input Integer m;
   output Real y;
 algorithm
-  y := sum({1.0*i*j for i in 1:m, j in 1:i});
+  y := sum({1.0*i*j for j in 1:i, i in 1:m});
 end triangular;
 model TriangularComprehension
   Real z;
