@@ -978,6 +978,24 @@ fn lower_variable_reference<'dae>(
             provenance,
         );
     }
+    lower_declared_coordinate_reference(
+        construction,
+        symbols,
+        binders,
+        name,
+        subscripts,
+        provenance,
+    )
+}
+
+fn lower_declared_coordinate_reference<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    name: &rumoca_core::Reference,
+    subscripts: &[Subscript],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let coordinate = symbols
         .coordinates
         .get(name.var_name())

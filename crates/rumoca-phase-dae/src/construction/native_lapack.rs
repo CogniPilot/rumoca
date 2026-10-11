@@ -323,11 +323,11 @@ impl<'dae> LapackBuilder<'_, '_, 'dae> {
         let pivot = self.at_index(pivot_row, column)?;
         let one = self.literal(dae::DaeLiteral::Real(1.0))?;
         let denominator = self.conditional(is_zero, one, pivot)?;
-        for offset in 1..rows.len() {
-            let leading = self.at_index(rows[offset], column)?;
+        for row in rows.iter_mut().skip(1) {
+            let leading = self.at_index(*row, column)?;
             let factor = self.op(dae::BinaryOperator::Divide, leading, denominator)?;
             let scaled = self.op(dae::BinaryOperator::Multiply, factor, pivot_row)?;
-            rows[offset] = self.op(dae::BinaryOperator::Subtract, rows[offset], scaled)?;
+            *row = self.op(dae::BinaryOperator::Subtract, *row, scaled)?;
         }
         rows[0] = pivot_row;
         Ok(())

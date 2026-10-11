@@ -54,11 +54,9 @@ impl Inliner<'_> {
         .ok()?;
         let capture_start = *self.next;
         self.capture(condition)?;
-        for value in &captures {
-            for elem in value.elems.iter() {
-                if let Elem::Reg(source) = elem {
-                    self.capture(*source)?;
-                }
+        for elem in captures.iter().flat_map(|value| value.elems.iter()) {
+            if let Elem::Reg(source) = elem {
+                self.capture(*source)?;
             }
         }
         let dst_start = *self.next;

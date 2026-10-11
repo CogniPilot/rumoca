@@ -54,10 +54,10 @@ fn truncate_loop(mut statement: Statement) -> Option<Statement> {
     let Expression::Range { end, span, .. } = &mut index.range else {
         unreachable!("prefix proof requires an Integer range")
     };
-    *end = Box::new(Expression::Literal {
+    **end = Expression::Literal {
         value: Literal::Integer(last),
         span: *span,
-    });
+    };
     equations.remove(0);
     Some(statement)
 }

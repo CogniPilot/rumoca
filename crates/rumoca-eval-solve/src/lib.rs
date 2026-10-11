@@ -871,12 +871,10 @@ impl PreparedLazyRowPlan {
                 // Demand scheduling requires one authoritative definition per
                 // register. Ordered aliases remain legal and use the native
                 // sequential evaluator with its aggregate snapshot witness.
-                if definitions[start..end]
+                definitions[start..end]
                     .iter()
-                    .any(|definition| *definition != usize::MAX)
-                {
-                    return None;
-                }
+                    .all(|definition| *definition == usize::MAX)
+                    .then_some(())?;
                 definitions[start..end].fill(op_index);
             }
             if let LinearOp::StoreOutput { src } = *op {
