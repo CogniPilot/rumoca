@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 19,000 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
-| `dae-wire-loc` | 3,250 | 6,000 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 24,750 | Both items above; total follows their sum |
+| `dae-core-loc` | 11,000 | 19,750 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-wire-loc` | 3,250 | 6,250 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
+| `dae-total-loc` | 14,250 | 25,750 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -156,6 +156,8 @@ core and wire ceilings, and totality-debt ceilings are unchanged.
 
 **2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification is pending in `docs/verification/pr427-main-dae-integer/structured-quotient-owner.md`.
 
+
+**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The [module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md) accounts for checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
 
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
