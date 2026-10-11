@@ -120,12 +120,38 @@ fn region(
             .map(|program| &program[position])
             .collect::<Vec<_>>();
         match base[position] {
+            solve::LinearOp::Const { .. } if capture_base.is_some() => {
+                literal(&ops, &mut output)?;
+            }
             solve::LinearOp::LoadIndexedRegister { .. } => indexed(&ops, &mut output)?,
             solve::LinearOp::FunctionConditional { .. } => conditional(&ops, &mut output)?,
             _ => output.append(ops.into_iter().cloned()),
         }
     }
     Ok(output.family)
+}
+
+fn literal(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerError> {
+    if ops.iter().all(|op| *op == ops[0]) {
+        output.append(ops.iter().map(|op| (*op).clone()));
+        return Ok(());
+    }
+    let solve::LinearOp::Const { dst, .. } = ops[0] else {
+        unreachable!()
+    };
+    let values = ops
+        .iter()
+        .map(|op| match op {
+            solve::LinearOp::Const { dst: actual, value } if actual == dst => Ok(*value),
+            _ => Err(non_affine_structured_program(output.span)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let src = output.value(values)?;
+    output.append(std::iter::repeat_n(
+        solve::LinearOp::Move { dst: *dst, src },
+        ops.len(),
+    ));
+    Ok(())
 }
 
 fn indexed(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerError> {
