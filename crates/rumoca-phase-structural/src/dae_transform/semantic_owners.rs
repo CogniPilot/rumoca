@@ -81,6 +81,7 @@ pub(super) fn rebuild_semantic_owners<'target>(
         expressions,
         identities.variables,
         identities.conditions,
+        identities.domains,
     )
 }
 
@@ -257,6 +258,7 @@ fn rebuild_discrete_value_owners<'target>(
     expressions: &[dae::ExprId<'target>],
     variables: &[ReservedVariable<'target>],
     conditions: &[dae::ConditionId<'target>],
+    domains: &[RebuiltDomain<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     let source_owners = (0..source.discrete_value_owner_count())
         .map(|index| {
@@ -282,9 +284,25 @@ fn rebuild_discrete_value_owners<'target>(
                 .iter()
                 .map(|source_target| rebuilt_discrete_value(variables, source_target))
                 .collect::<Vec<_>>();
-            topology.owner(source_owner.provenance(), targets, |target_owner| {
+            let append = |target_owner: &mut dae::DiscreteValueOwner<'_, 'target>| {
                 rebuild_discrete_value_branches(target_owner, source_owner, expressions, conditions)
-            })?;
+            };
+            // STRUCT-T10 reconstruction retains SPEC_0032's issued compact
+            // scope and EXPR-012's output-sampling classification. Replaying
+            // either through the scalar discrete owner loses that authority.
+            match source_owner.structure() {
+                Some(structure) => topology.structured_owner(
+                    source_owner.provenance(),
+                    domains[structure.domain().index() as usize].id,
+                    structure.scalar_view(),
+                    targets,
+                    append,
+                )?,
+                None if source_owner.observed() => {
+                    topology.observed_owner(source_owner.provenance(), targets, append)?
+                }
+                None => topology.owner(source_owner.provenance(), targets, append)?,
+            };
         }
         Ok(())
     })
