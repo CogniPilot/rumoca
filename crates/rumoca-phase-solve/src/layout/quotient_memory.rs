@@ -33,7 +33,11 @@ pub(crate) struct BufferedQuotients<'dae> {
 }
 
 impl<'dae> BufferedQuotients<'dae> {
-    pub(super) fn construct(view: dae::DaeView<'dae>, base: usize) -> Result<Self, LowerError> {
+    pub(super) fn construct(
+        view: dae::DaeView<'dae>,
+        base: usize,
+        relations: &super::relation_memory::BufferedRelations<'dae>,
+    ) -> Result<Self, LowerError> {
         let mut entries = Vec::new();
         let mut by_expression = vec![None; view.expression_count()];
         let mut end = base;
@@ -41,9 +45,19 @@ impl<'dae> BufferedQuotients<'dae> {
             let owner = view
                 .runtime_quotient_owner_at(index)
                 .expect("dense quotient owner");
-            let dae::RuntimeQuotientOwnerKind::ModelEvent { generated, .. } = owner.kind() else {
+            let dae::RuntimeQuotientOwnerKind::ModelEvent {
+                generated,
+                relation,
+                ..
+            } = owner.kind()
+            else {
                 continue;
             };
+            // Reuse the selected continuous-root plan. Clock-owned relations
+            // are evaluated on their tick and have no continuous buffer.
+            if relations.target(relation).is_none() {
+                continue;
+            }
             let expression = view
                 .expression(owner.quotient())
                 .expect("checked quotient expression");

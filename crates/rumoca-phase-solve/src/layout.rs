@@ -263,7 +263,8 @@ fn append_runtime_layout<'dae>(
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     let (delay_values, after_delays) = append_delay_values(view, after_clocks)?;
     let buffered_relations = BufferedRelations::construct(view, after_delays)?;
-    let buffered_quotients = BufferedQuotients::construct(view, buffered_relations.end())?;
+    let buffered_quotients =
+        BufferedQuotients::construct(view, buffered_relations.end(), &buffered_relations)?;
     let flags = append_runtime_flags(view, buffered_quotients.end())?;
     Ok(RuntimeLayout {
         condition_memory,
