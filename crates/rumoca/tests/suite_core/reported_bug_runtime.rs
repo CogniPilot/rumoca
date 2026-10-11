@@ -155,15 +155,20 @@ fn issue_411_main_dae_integer_div_retains_wide_literal() {
     let source = INTEGER.replace("mod(", "div(");
     let compiled = compile(&source, "IntegerPrecision");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
-        let mut opts = options(policy);
-        opts.initial_inputs = vec![("n".into(), 0.0)];
-        let result = simulate_dae(&compiled.dae, &opts)
-            .unwrap_or_else(|error| panic!("Integer division {policy:?}: {error:?}"));
-        assert_eq!(
-            last(&result, "y"),
-            (9_007_199_254_740_993_i64 / 7) as f64,
-            "{policy:?}"
-        );
+        // n=2 crosses a quotient boundary that rounding the wide literal to
+        // Real before addition would miss; n=0 retains the original control.
+        for input in [0_i64, 2] {
+            let mut opts = options(policy);
+            opts.initial_inputs = vec![("n".into(), input as f64)];
+            let result = simulate_dae(&compiled.dae, &opts).unwrap_or_else(|error| {
+                panic!("Integer division {policy:?}, n={input}: {error:?}")
+            });
+            assert_eq!(
+                last(&result, "y"),
+                ((9_007_199_254_740_993_i64 + input) / 7) as f64,
+                "{policy:?}, n={input}"
+            );
+        }
     }
 }
 
