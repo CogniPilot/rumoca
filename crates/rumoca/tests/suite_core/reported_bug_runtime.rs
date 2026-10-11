@@ -36,13 +36,17 @@ fn options(execution_policy: SimExecutionPolicy) -> SimOptions {
     }
 }
 
-fn last(result: &SimResult, name: &str) -> f64 {
+fn series<'a>(result: &'a SimResult, name: &str) -> &'a [f64] {
     let column = result
         .names
         .iter()
         .position(|value| value == name)
         .unwrap_or_else(|| panic!("trace contains {name}: {:?}", result.names));
-    *result.data[column].last().expect("nonempty trace")
+    &result.data[column]
+}
+
+fn last(result: &SimResult, name: &str) -> f64 {
+    *series(result, name).last().expect("nonempty trace")
 }
 
 #[test]
@@ -190,17 +194,41 @@ fn issue_426_original_inactive_neighbor_simulates_its_analytic_solution() {
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         let result = simulate_dae(&compiled.dae, &options(policy))
             .unwrap_or_else(|error| panic!("inactive neighbor {policy:?}: {error:?}"));
-        for (name, polynomial) in [
-            ("u[1]", 1.0),
-            ("u[2]", 2.0),
-            ("u[3]", 2.5),
-            ("u[4]", 8.0 / 3.0),
-        ] {
-            let expected = (-1.0_f64).exp() * polynomial;
+        assert_eq!(result.times.first().copied(), Some(0.0), "{policy:?}");
+        assert_eq!(result.times.last().copied(), Some(1.0), "{policy:?}");
+        assert_eq!(
+            result.times.len(),
+            11,
+            "{policy:?}: complete 0.1 output grid"
+        );
+        for (sample, &time) in result.times.iter().enumerate() {
+            let expected = sample as f64 / 10.0;
             assert!(
-                (last(&result, name) - expected).abs() < 1e-7,
-                "{policy:?}: {name}"
+                (time - expected).abs() <= f64::EPSILON,
+                "{policy:?}: sample {sample} time {time}, expected {expected}"
             );
+        }
+        for (channel, name) in ["u[1]", "u[2]", "u[3]", "u[4]"].into_iter().enumerate() {
+            assert_eq!(
+                result.names.iter().filter(|value| *value == name).count(),
+                1
+            );
+            let values = series(&result, name);
+            assert_eq!(values.len(), result.times.len(), "{policy:?}: {name}");
+            for (&time, &actual) in result.times.iter().zip(values) {
+                // The unchanged cascade has u_i(t) = exp(-t) sum(t^k/k!), k=0..i-1.
+                let polynomials = [
+                    1.0,
+                    1.0 + time,
+                    1.0 + time + time * time / 2.0,
+                    1.0 + time + time * time / 2.0 + time * time * time / 6.0,
+                ];
+                let expected = (-time).exp() * polynomials[channel];
+                assert!(
+                    (actual - expected).abs() < 1e-7,
+                    "{policy:?}: {name} at {time}: {actual}, expected {expected}"
+                );
+            }
         }
     }
 }
