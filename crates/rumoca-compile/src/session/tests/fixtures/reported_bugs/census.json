@@ -5,7 +5,7 @@
   "baseline_scope": "Historical compiler-only source reproductions 423/424/426 at fb7c8217f: 426 passes; 423/424 fail. No simulation or fixed-20 canary claim.",
   "combined_source": "Historical published PR421 f84a4304e plus PR427 cfe53b91d assembly, qualified with the integration adapter at 206599d0f: original compiler tests 1 PASS, 2 FAIL. This is not the current workshop candidate.",
   "current_gate_source": "17a5cdaa9a924d08d9f1917a370d543598ccc5cb: workshop candidate plus four test-only fixture commits; includes published PR427, not a complete PR421 composition.",
-  "current_gate_scope": "Pending original runtime 8, original B JAX execution/AD 1, and original compiler 3. Runtime policies are Interpreter and Auto, not forced Cranelift/WASM coverage. No current after-pass is claimed; issue 425 memory remains separately unmeasured.",
+  "current_gate_scope": "Pending original runtime 8, original B JAX execution/AD 1, and original compiler 3. Runtime policies are Interpreter and Auto, not forced Cranelift/WASM coverage. No current after-pass is claimed; issue 425 memory remains separately unmeasured. Actual compiler gate on 17a ran 3 tests: 426 PASS, 423 FAIL, and the invalid positive 424 oracle FAIL. The corrected rejection oracle and new conforming control are unrun.",
   "issues": [
     {
       "number": 403,
@@ -135,25 +135,25 @@
     {
       "number": 424,
       "model": "C3",
-      "baseline": "Exact original source FAILED at fb7c8217f with ED020: expression shape mismatch.",
+      "baseline": "Original model is dimensionally invalid: MLS 10.4.1.2 and actual pinned OMC at 2a0cbb0fd give constructor dimensions [2,3], while the source declares [3,2]. Historical ED020 shape rejection was correct; its positive test oracle was wrong. Four distinct Resolve iterator-scope controls fail by wrong DefId at 2a0cbb0fd and have a separate repair pending.",
       "controls": [
-        "multi-iterator [3,2] values 11,21,12,22,13,23",
-        "reversed iterator order declares [2,3]",
-        "nested constructor has identical scalar ordering",
-        "parameter extents and Boolean mask",
-        "wrong declared dimensions remain refused"
+        "preserved original [3,2] declaration must retain typed shape rejection",
+        "conforming [2,3] constructor values 11,12,13,21,22,23",
+        "explicit nested {{i+10*j for j in 1:2} for i in 1:3} has dimensions [3,2]",
+        "range reads enclosing same-name declaration before introducing its iterator",
+        "last textual outer iterator scopes an inner dependent range; nested shadowing retains distinct DefIds"
       ],
       "required": [
-        "source compiler reproduction",
-        "compact two-axis DAE owner/value inspection",
-        "OMC semantic comparison",
-        "full original simulation"
+        "precise typed rejection of original source",
+        "conforming constructor compact dimensions and values",
+        "actual OMC comparison retained at pr427-native-copies-after-and-original-comprehension-omc-20261011",
+        "four reproduced Resolve declaration-identity controls before/after"
       ],
       "url": "https://github.com/CogniPilot/rumoca/issues/424",
       "source_origin": "Modelica listing from the issue body, preserved verbatim.",
       "source_file": "issue_424.mo",
       "issue_type": "Bug",
-      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification."
+      "closure": "Original dimension report is not a demonstrated compiler defect. Do not claim the separate scope repair or historical compiler failure proves original runtime correctness; current conforming compiler/semantics gates remain pending."
     },
     {
       "number": 425,
