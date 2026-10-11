@@ -87,9 +87,22 @@ fn guarded_dynamic_deadline_reschedules_after_a_discrete_reset() {
 
 #[test]
 fn guarded_dynamic_deadline_does_not_evaluate_inactive_arithmetic() {
-    let source = "model GuardedDeadline input Real divisor(start=0); \
-        Real x(start=0,fixed=true); output Real y; discrete Real deadline(start=0.45,fixed=true); \
-        equation y=if divisor>0 then (if time>deadline/divisor then 1 else 0) else 0; \
+    let source = "model GuardedDeadline Real x(start=0,fixed=true); \
+        output Real y; discrete Real deadline(start=0.45,fixed=true); \
+        equation y=if time>=2 then (if time>sqrt(deadline-1) then 1 else 0) else 0; \
         der(x)=y; when time>=2 then deadline=pre(deadline); end when; end GuardedDeadline;";
     check_curve(source, |_| 0.0);
+    let selected = source.replacen("if time>=2", "if time>=0", 1);
+    let compiled = compile(&selected, "GuardedDeadline");
+    for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
+        let error = simulate_dae(&compiled.dae, &options(policy))
+            .expect_err("selected undefined deadline arithmetic must still fault");
+        let diagnostic = format!("{error:?}").to_lowercase();
+        assert!(
+            diagnostic.contains("finite")
+                || diagnostic.contains("domain")
+                || diagnostic.contains("nan"),
+            "{policy:?}: {diagnostic}"
+        );
+    }
 }
