@@ -79,8 +79,9 @@ fn same_expression_entry_current_entry_reads_keep_distinct_registers() {
             view, &plan,
         ));
         let layout = crate::layout::lower_layout(view).unwrap();
-        let mut compiler = ScalarCompiler::new(view, &layout, None)
-            .with_same_tick_definitions(definitions, Rc::new(BTreeSet::from([producer])));
+        let mut compiler = ScalarCompiler::new(view, &layout, None).with_current_definitions(
+            DefinitionOwner::new(definitions, Rc::new(BTreeSet::from([producer]))),
+        );
         let entry = compiler.expression(alias, 0).unwrap();
         compiler
             .ops
@@ -101,6 +102,18 @@ fn same_expression_entry_current_entry_reads_keep_distinct_registers() {
         compiler
             .ops
             .push(solve::LinearOp::StoreOutput { src: next_entry });
+        for incoming in [false, true] {
+            compiler.project_current_definitions = incoming;
+            let context = compiler.context_id;
+            compiler
+                .with_entry_definition_reads(ActivationCondition::Expression(alias), span)
+                .unwrap();
+            assert_eq!(compiler.project_current_definitions, incoming);
+            assert_eq!(compiler.context_id, context);
+        }
+        let owner = compiler.same_tick_definitions.as_ref().unwrap();
+        assert_eq!(owner.facts.borrow().len(), 1);
+        assert!(Rc::ptr_eq(&owner.facts, &owner.clone().facts));
         let block = solve::ScalarProgramBlock::with_source_span(vec![compiler.ops], span).unwrap();
         let mut actual = [0.0; 3];
         rumoca_eval_solve::eval_scalar_program_block(

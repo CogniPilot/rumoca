@@ -1481,6 +1481,10 @@ fn lower_guarded_targets<'dae>(
             .map(|target| target.variable.index())
             .collect::<BTreeSet<_>>(),
     );
+    let definition_owner = super::scalar::DefinitionOwner::new(
+        std::rc::Rc::clone(&rows.same_tick_definitions),
+        definition_targets,
+    );
     let mut first = 0;
     while first < targets.len() {
         let clock = targets[first].clock;
@@ -1513,10 +1517,7 @@ fn lower_guarded_targets<'dae>(
         let conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
         let program = ScalarCompiler::new(view, layout, None)
             .with_function_conditional_owners(&conditional_owners)
-            .with_same_tick_definitions(
-                std::rc::Rc::clone(&rows.same_tick_definitions),
-                std::rc::Rc::clone(&definition_targets),
-            )
+            .with_current_definitions(definition_owner.clone())
             .guarded_assignment_group_program(
                 clock.map(|(clock, _)| clock).or(event_clock),
                 group,

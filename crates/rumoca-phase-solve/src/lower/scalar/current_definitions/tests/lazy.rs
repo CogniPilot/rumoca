@@ -112,8 +112,9 @@ fn inactive_current_alias_with_unproven_subscript_remains_lazy() {
             view, &plan,
         ));
         let layout = crate::layout::lower_layout(view).unwrap();
-        let mut compiler = ScalarCompiler::new(view, &layout, None)
-            .with_same_tick_definitions(definitions, Rc::new(BTreeSet::from([producer])));
+        let mut compiler = ScalarCompiler::new(view, &layout, None).with_current_definitions(
+            DefinitionOwner::new(definitions, Rc::new(BTreeSet::from([producer]))),
+        );
         compiler.project_current_definitions = true;
         compiler.enter_context(ScalarContextFrame::CurrentDefinitions {
             parent: compiler.context_id,

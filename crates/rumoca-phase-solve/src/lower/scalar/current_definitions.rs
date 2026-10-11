@@ -6,9 +6,10 @@ use super::*;
 mod tests;
 
 #[derive(Clone)]
-pub(super) struct DefinitionOwner<'dae> {
+pub(in crate::lower) struct DefinitionOwner<'dae> {
     definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
     targets: Rc<BTreeSet<u32>>,
+    facts: Rc<RefCell<BTreeMap<u32, (bool, bool)>>>,
 }
 
 impl PartialEq for DefinitionOwner<'_> {
@@ -19,16 +20,43 @@ impl PartialEq for DefinitionOwner<'_> {
 }
 impl Eq for DefinitionOwner<'_> {}
 
-impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
-    pub(in crate::lower) fn with_same_tick_definitions(
-        mut self,
+impl<'dae> DefinitionOwner<'dae> {
+    pub(in crate::lower) fn new(
         definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
         targets: Rc<BTreeSet<u32>>,
     ) -> Self {
-        self.same_tick_definitions = Some(DefinitionOwner {
+        Self {
             definitions,
             targets,
-        });
+            facts: Rc::new(RefCell::new(BTreeMap::new())),
+        }
+    }
+
+    fn facts(
+        &self,
+        view: dae::DaeView<'dae>,
+        variable: u32,
+        definition: dae::ExprId<'dae>,
+    ) -> (bool, bool) {
+        if let Some(facts) = self.facts.borrow().get(&variable) {
+            return *facts;
+        }
+        let reads = self.definitions.read_closure(view, &[definition], &[]);
+        let facts = (
+            !reads.is_disjoint(&self.targets),
+            !reads.contains(&variable),
+        );
+        self.facts.borrow_mut().insert(variable, facts);
+        facts
+    }
+}
+
+impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    pub(in crate::lower) fn with_current_definitions(
+        mut self,
+        owner: DefinitionOwner<'dae>,
+    ) -> Self {
+        self.same_tick_definitions = Some(owner);
         self
     }
 
@@ -51,10 +79,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let variable = dae::VariableId::from(variable).index();
         let owner = self.same_tick_definitions.as_ref()?;
         let definition = owner.definitions.definition(variable)?;
-        let reads = owner
-            .definitions
-            .variable_read_closure(self.view, BTreeSet::from([variable]));
-        if reads.is_disjoint(&owner.targets) {
+        if !owner.facts(self.view, variable, definition).0 {
             return None;
         }
         Some((variable, definition))
@@ -76,12 +101,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         variable: u32,
         definition: dae::ExprId<'dae>,
     ) -> bool {
-        self.same_tick_definitions.as_ref().is_some_and(|owner| {
-            !owner
-                .definitions
-                .read_closure(self.view, &[definition], &[])
-                .contains(&variable)
-        })
+        self.same_tick_definitions
+            .as_ref()
+            .is_some_and(|owner| owner.facts(self.view, variable, definition).1)
     }
 
     pub(super) fn current_definition_value(
@@ -115,13 +137,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         owner: ActivationCondition<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        self.project_current_definitions = false;
+        let previous_mode = std::mem::replace(&mut self.project_current_definitions, false);
         self.enter_context(ScalarContextFrame::EntryDefinitions {
             parent: self.context_id,
         });
         let value = self.materialize_activation_condition(owner, span);
         self.leave_context();
-        self.project_current_definitions = true;
+        self.project_current_definitions = previous_mode;
         value
     }
 }

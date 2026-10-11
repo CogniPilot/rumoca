@@ -8,6 +8,7 @@ mod conditions;
 mod constants;
 mod coordinates;
 mod current_definitions;
+pub(in crate::lower) use current_definitions::DefinitionOwner;
 mod family_calls;
 mod functions;
 mod integer_quotient;
