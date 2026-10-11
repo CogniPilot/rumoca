@@ -317,10 +317,10 @@ impl<'dae> DaeConstruction<'dae> {
 }
 
 impl Storage {
-    fn validate_model_guards(
+    fn validate_model_guards<'dae>(
         &self,
-        condition: ExprId<'_>,
-        guards: [ExprId<'_>; 2],
+        condition: ExprId<'dae>,
+        guards: [ExprId<'dae>; 2],
         parent: Option<u32>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
