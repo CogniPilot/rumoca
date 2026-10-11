@@ -457,7 +457,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.quotient_result(builtin, lhs, rhs, quotient, span)
     }
 
-    fn quotient_step(
+    pub(super) fn quotient_step(
         &mut self,
         builtin: dae::PureBuiltin,
         ratio: solve::Reg,
