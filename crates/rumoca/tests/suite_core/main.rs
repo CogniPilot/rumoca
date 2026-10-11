@@ -25,10 +25,10 @@
 //! bare test name still works, and `<file_stem>::` selects one member file.
 
 mod history_operator_checked;
-mod reported_bug_runtime;
-mod solve_renderer_without_dae;
 mod initial_boolean_parameter;
 mod periodic_clock_session;
+mod reported_bug_runtime;
+mod solve_renderer_without_dae;
 
 mod actual_stream_product_events;
 mod additive_torque;

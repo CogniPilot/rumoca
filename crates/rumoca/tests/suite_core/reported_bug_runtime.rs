@@ -1,7 +1,7 @@
 //! Public original Bug reproductions, beyond compiler admission.
 
-mod integer_quotient_comparison;
 mod integer_call_comparison;
+mod integer_quotient_comparison;
 mod main_dae_integer;
 
 use rumoca::{CompilationResult, Compiler};

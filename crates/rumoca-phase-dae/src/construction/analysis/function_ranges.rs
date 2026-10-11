@@ -261,7 +261,9 @@ fn checked_static_integer_binary(operator: &OpBinary, lhs: i64, rhs: i64) -> Opt
         OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
         OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
         OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
-        OpBinary::Div | OpBinary::DivElem if lhs.checked_rem(rhs) == Some(0) => lhs.checked_div(rhs),
+        OpBinary::Div | OpBinary::DivElem if lhs.checked_rem(rhs) == Some(0) => {
+            lhs.checked_div(rhs)
+        }
         _ => None,
     }
 }

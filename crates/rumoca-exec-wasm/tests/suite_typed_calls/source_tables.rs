@@ -25,11 +25,7 @@ pub(super) fn issued_current(json: &str, source: &str) -> solve::SolvePureCallTa
         wire["producerBinarySha256"],
         "7376abd34d6a040fe81b0e4f50a26652d23a5b92dd7b06e8ace2f9c919afef0d"
     );
-    issued_revision(
-        json,
-        source,
-        "db0e68b9cd0470f5466e1e2874350505115362c6",
-    )
+    issued_revision(json, source, "db0e68b9cd0470f5466e1e2874350505115362c6")
 }
 
 fn legacy_wire_is_refused(json: &str, source: &str) {
