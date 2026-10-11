@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct GuideFence {
     pub page: PathBuf,
     pub line: usize,
+    pub source_line_count: usize,
     pub source: String,
     pub language: String,
     flags: Vec<String>,
@@ -82,6 +83,7 @@ pub(super) fn markdown_fences() -> Vec<GuideFence> {
             fences.push(GuideFence {
                 page: page.clone(),
                 line: start + 2,
+                source_line_count: body.len(),
                 source: body.join("\n") + "\n",
                 language: info.split(',').next().unwrap().to_owned(),
                 flags: info.split(',').map(|flag| flag.trim().to_owned()).collect(),
@@ -167,7 +169,7 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
     )
     .unwrap();
     let inventory: serde_json::Value = serde_json::from_str(&inventory).unwrap();
-    assert_eq!(inventory["schema"], 1);
+    assert_eq!(inventory["schema"], 2);
     let entries = inventory["entries"].as_array().unwrap();
     let fences: Vec<_> = markdown_fences()
         .into_iter()
@@ -185,6 +187,7 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
             .unwrap();
         assert_eq!(entry["page"], page);
         assert_eq!(entry["line"], fence.line);
+        assert_eq!(entry["source_line_count"], fence.source_line_count);
         assert_eq!(entry["language"], fence.language);
         let digest = format!("{:x}", Sha256::digest(fence.source.as_bytes()));
         assert_eq!(entry["source_sha256"], digest, "{page}:{}", fence.line);
