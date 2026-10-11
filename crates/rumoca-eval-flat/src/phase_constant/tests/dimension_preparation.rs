@@ -120,8 +120,13 @@ fn matrix_shape_walk_borrows_parameter_inventory() {
 #[test]
 fn comprehension_shape_walks_share_only_the_immutable_parameter_inventory() {
     let comprehension = |index: &str| rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(binary(rumoca_core::OpBinary::Add, var("p5"), var(index))),
+        expr: Box::new(binary(
+            rumoca_core::OpBinary::Add,
+            var("p5"),
+            generated_var(index),
+        )),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: index.to_owned(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),

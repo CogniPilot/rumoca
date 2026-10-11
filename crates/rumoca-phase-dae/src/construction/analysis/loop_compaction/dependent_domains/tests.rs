@@ -12,6 +12,7 @@ fn dynamic_loop(
 ) -> rumoca_core::Statement {
     rumoca_core::Statement::For {
         indices: vec![rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: "j".to_string(),
             range: Expression::Range {
                 start: Box::new(start),
@@ -172,6 +173,7 @@ fn full14400_parent_domain_does_not_expand_statement_storage() {
 fn nonlinear_range_start_keeps_interior_points_in_its_conservative_envelope() {
     let outer = rumoca_core::Statement::For {
         indices: vec![rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(integer(-3)),

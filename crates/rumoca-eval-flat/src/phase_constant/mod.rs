@@ -465,13 +465,13 @@ fn infer_array_comprehension_dimensions_with_context(
     }
     let mut local = ctx.clone();
     let mut dims = Vec::with_capacity(indices.len().saturating_add(1));
-    for index in indices {
+    for index in indices.iter().rev() {
         let range_dims = infer_dimensions_scoped(&index.range, &local)?;
         let [extent] = range_dims.as_slice() else {
             return None;
         };
         dims.push(*extent);
-        local.bind_index(&index.name);
+        local.bind_index(index);
     }
     let inner = infer_dimensions_scoped(expr, &local)
         .or_else(|| matches!(expr, rumoca_core::Expression::Literal { .. }).then(Vec::new))?;

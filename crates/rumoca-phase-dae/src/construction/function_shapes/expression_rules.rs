@@ -55,6 +55,9 @@ fn reference_shape(
     values: &ShapeEnvironment,
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
+    if values.is_source_comprehension_binder(name) {
+        return Ok(Vec::new());
+    }
     if values.is_enumeration_literal_name(name.var_name()) {
         return values
             .is_enumeration_literal(name)
@@ -398,8 +401,8 @@ fn comprehension_expression_shape(
         })?);
     }
     let mut scoped = values.clone();
-    for index in indices {
-        scoped.insert(VarName::new(&index.name), Vec::new());
+    for index in indices.iter().rev() {
+        scoped.bind_comprehension_index(index);
     }
     shape.extend(expression_shape(body, &scoped, function_result)?);
     Ok(shape)
@@ -641,7 +644,7 @@ fn reduction_operand_shape(
         return expression_shape(argument, values, function_result);
     };
     let mut scoped = values.clone();
-    for index in indices {
+    for index in indices.iter().rev() {
         let Expression::Range {
             start, step, end, ..
         } = &index.range
@@ -653,7 +656,12 @@ fn reduction_operand_shape(
             expression_shape(step, &scoped, function_result)?;
         }
         expression_shape(end, &scoped, function_result)?;
-        scoped.bind_range_binder(VarName::new(&index.name), &index.range);
+        match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(_) => scoped.bind_comprehension_index(index),
+            rumoca_core::IndexBinderProvenance::Generated => {
+                scoped.bind_range_binder(VarName::new(&index.name), &index.range)
+            }
+        }
     }
     if let Some(filter) = filter {
         expression_shape(filter, &scoped, function_result)?;

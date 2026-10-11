@@ -48,6 +48,7 @@ pub(super) fn lower<'dae>(
                 function_body: None,
                 values: None,
                 owner_clock: None,
+                source_comprehension_binders: None,
             };
             stored_bodies.push(lower_structured_body(
                 construction,

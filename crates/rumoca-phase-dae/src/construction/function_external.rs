@@ -35,6 +35,7 @@ pub(super) fn define_external_function<'dae>(
                         function_body: None,
                         values: None,
                         owner_clock: None,
+                        source_comprehension_binders: None,
                     },
                     &HashMap::new(),
                     source,

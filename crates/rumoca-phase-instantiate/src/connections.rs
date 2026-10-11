@@ -624,6 +624,7 @@ fn substitute_index_in_for_indices(
                 substitute_index_in_expr(&idx.range, var_name, value)
             };
             rumoca_ir_ast::ForIndex {
+                binder: idx.binder,
                 ident: idx.ident.clone(),
                 range,
             }
@@ -800,6 +801,7 @@ fn substitute_index_in_equation(eq: &ast::Equation, var_name: &str, value: i64) 
                         substitute_index_in_expr(&idx.range, var_name, value)
                     };
                     rumoca_ir_ast::ForIndex {
+                        binder: idx.binder,
                         ident: idx.ident.clone(),
                         range,
                     }
@@ -1720,6 +1722,7 @@ mod tests {
     fn test_extract_connections_skips_non_connection_for_equation_range() {
         let eq = ast::Equation::For {
             indices: vec![rumoca_ir_ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: make_token("i"),
                 range: ast::Expression::ComponentReference(make_comp_ref(&["nout"])),
             }],
@@ -1741,6 +1744,7 @@ mod tests {
     fn test_extract_regular_for_connection_preserves_one_symbolic_family() {
         let eq = ast::Equation::For {
             indices: vec![rumoca_ir_ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: make_token("i"),
                 range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("3")),
             }],
@@ -1804,10 +1808,12 @@ mod tests {
 
     fn nested_dependent_for_connection_eq() -> ast::Equation {
         let outer_idx = rumoca_ir_ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Generated),
             ident: make_token("j"),
             range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
         };
         let inner_idx = rumoca_ir_ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Generated),
             ident: make_token("i"),
             range: make_range_expr(j_plus_one_expr(), make_integer_terminal("3")),
         };
@@ -1825,10 +1831,12 @@ mod tests {
 
     fn multi_index_dependent_for_connection_eq() -> ast::Equation {
         let prior_idx = rumoca_ir_ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Generated),
             ident: make_token("i"),
             range: make_range_expr(make_integer_terminal("1"), make_integer_terminal("2")),
         };
         let dependent_idx = rumoca_ir_ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Generated),
             ident: make_token("j"),
             range: make_range_expr(i_plus_one_expr(), make_integer_terminal("3")),
         };

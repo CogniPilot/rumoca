@@ -545,8 +545,15 @@ fn for_index_from_ast_with_context(
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::ForIndex> {
     Ok(rumoca_core::ForIndex {
+        binder: required_index_binder(index)?,
         ident: index.ident.text.to_string(),
         range: expression_from_ast_with_context(&index.range, context)?,
+    })
+}
+
+fn required_index_binder(index: &ast::ForIndex) -> LowerResult<rumoca_core::IndexBinderProvenance> {
+    index.binder.filter(|binder| !matches!(binder, rumoca_core::IndexBinderProvenance::Source(id) if id.index() == 0)).ok_or_else(|| {
+        FlattenError::missing_flat_variable_identity(index.ident.text.as_ref(), index.range.span())
     })
 }
 
@@ -1229,6 +1236,7 @@ fn convert_comprehension_indices(
         .iter()
         .map(|index| {
             Ok(rumoca_core::ComprehensionIndex {
+                binder: required_index_binder(index)?,
                 name: index.ident.text.to_string(),
                 range: expression_from_ast_with_context(&index.range, context)?,
             })

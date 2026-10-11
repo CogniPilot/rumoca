@@ -80,6 +80,7 @@ pub(super) fn lower_function_record_value<'dae>(
                 function_body: Some(body),
                 values: Some(&staged_values),
                 owner_clock: None,
+                source_comprehension_binders: None,
             },
             binders,
             &value,

@@ -32,6 +32,7 @@ pub(super) fn lower_expression<'dae>(
         function_body: None,
         values: None,
         owner_clock: None,
+        source_comprehension_binders: None,
     };
     lower_expression_scoped(
         construction,
@@ -42,6 +43,12 @@ pub(super) fn lower_expression<'dae>(
     )
 }
 
+#[derive(Clone, Default)]
+pub(super) struct ComprehensionBindings<'dae> {
+    source: HashMap<rumoca_core::DefId, dae::DomainBinderId<'dae>>,
+    generated: HashMap<VarName, dae::DomainBinderId<'dae>>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
@@ -50,6 +57,7 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
     pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
     pub(super) owner_clock: Option<dae::ClockId<'dae>>,
+    pub(super) source_comprehension_binders: Option<&'symbols ComprehensionBindings<'dae>>,
 }
 
 pub(super) fn lower_clocked_expression<'dae>(
@@ -69,6 +77,7 @@ pub(super) fn lower_clocked_expression<'dae>(
             function_body: None,
             values: None,
             owner_clock: Some(owner_clock),
+            source_comprehension_binders: None,
         },
         &HashMap::new(),
         expression,
@@ -131,6 +140,7 @@ pub(super) fn lower_scoped_model_algorithm_expression<'dae>(
             function_body: None,
             values: Some(values),
             owner_clock,
+            source_comprehension_binders: None,
         },
         binders,
         expression,
@@ -175,6 +185,7 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             function_body: Some(body),
             values: None,
             owner_clock: None,
+            source_comprehension_binders: None,
         },
         binders,
         expression,
@@ -894,6 +905,36 @@ fn lower_variable_reference<'dae>(
                 .at(provenance)
                 .coordinate(dae::CoordinateInput::Time)
         });
+    }
+    if let Some(id) = name.target_def_id()
+        && let Some(binder) = symbols
+            .source_comprehension_binders
+            .and_then(|scope| scope.source.get(&id))
+            .copied()
+        && subscripts.is_empty()
+    {
+        return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
+    }
+    if let Some(id) = name.target_def_id()
+        && symbols
+            .functions
+            .comprehension_plans
+            .is_source_declaration(id)
+    {
+        return Err(dae::DaeConstructionError::UnknownId {
+            kind: "Flat comprehension source binder",
+            index: id.index() as usize,
+            span: provenance.span(),
+        });
+    }
+    if name.is_generated()
+        && let Some(binder) = symbols
+            .source_comprehension_binders
+            .and_then(|scope| scope.generated.get(name.var_name()))
+            .copied()
+        && subscripts.is_empty()
+    {
+        return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
     }
     if let Some(binder) = binders.get(name.var_name()).copied()
         && subscripts.is_empty()
@@ -1701,19 +1742,52 @@ fn lower_array_comprehension<'dae>(
     };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(
-            enclosing_binders.values().copied(),
+            enclosing_binders.values().copied().chain(
+                symbols
+                    .source_comprehension_binders
+                    .into_iter()
+                    .flat_map(|scope| {
+                        scope
+                            .source
+                            .values()
+                            .chain(scope.generated.values())
+                            .copied()
+                    }),
+            ),
             plan.domain.clone(),
             provenance,
         )
     })?;
-    let mut binders = enclosing_binders.clone();
-    for (ordinal, (index, span)) in indices.iter().zip(&plan.binder_spans).enumerate() {
+    let binders = enclosing_binders.clone();
+    let mut source_binders = symbols
+        .source_comprehension_binders
+        .cloned()
+        .unwrap_or_default();
+    for (ordinal, (index, span)) in indices.iter().rev().zip(&plan.binder_spans).enumerate() {
         let binder_provenance = dae::DaeProvenance::source(*span)?;
         let binder =
             construction.domains(|domains| domains.binder(domain, ordinal, binder_provenance))?;
-        binders.insert(VarName::new(&index.name), binder);
+        match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => {
+                source_binders.source.insert(id, binder);
+            }
+            rumoca_core::IndexBinderProvenance::Generated => {
+                source_binders
+                    .generated
+                    .insert(VarName::new(&index.name), binder);
+            }
+        }
     }
-    let body = lower_expression_scoped(construction, symbols, &binders, body, None)?;
+    let body = lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            source_comprehension_binders: Some(&source_binders),
+            ..symbols
+        },
+        &binders,
+        body,
+        None,
+    )?;
     construction.expressions(|expressions| expressions.at(provenance).comprehension(domain, body))
 }
 

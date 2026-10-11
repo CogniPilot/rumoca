@@ -139,6 +139,7 @@ pub(super) fn lower_algorithm_assignment<'dae>(
                 function_body: None,
                 values: Some(context.values),
                 owner_clock: guard.owner_clock,
+                source_comprehension_binders: None,
             };
             lower_array_update(
                 construction,

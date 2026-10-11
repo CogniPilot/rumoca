@@ -6,6 +6,8 @@ struct ExpressionValidator<'a> {
     roles: &'a HashMap<VarName, PlannedRole>,
     states: &'a HashSet<VarName>,
     binders: &'a HashSet<VarName>,
+    source_comprehension_binders: Option<&'a HashSet<rumoca_core::DefId>>,
+    generated_comprehension_binders: Option<&'a HashSet<VarName>>,
     record_array_fields: Option<&'a RecordArrayFieldPlans>,
     /// Exact literal-name and enumeration-declaration evidence for scopes that
     /// validate expressions retained outside the ordinary Flat equation rows.
@@ -84,6 +86,8 @@ pub(super) fn validate_when_expression(
     // bound such as `1:n` over a settled parameter is proven the same way.
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -122,6 +126,8 @@ pub(super) fn validate_expression_in_context_with_literals(
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -146,6 +152,8 @@ pub(super) fn validate_specialized_expression(
     let binders = HashSet::new();
     let states = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states: &states,
         binders: &binders,
@@ -168,6 +176,8 @@ pub(super) fn validate_model_algorithm_expression(
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -194,6 +204,8 @@ pub(super) fn validate_model_algorithm_range(
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -214,6 +226,8 @@ pub(super) fn validate_specialized_subscripts(
     let binders = HashSet::new();
     let states = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states: &states,
         binders: &binders,
@@ -234,6 +248,8 @@ pub(super) fn validate_expression_with_record_array_fields(
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -254,6 +270,8 @@ pub(super) fn validate_model_expression_with_record_array_fields(
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders: &binders,
@@ -274,6 +292,8 @@ pub(super) fn validate_expression_scoped_with_record_array_fields(
     model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders,
@@ -354,9 +374,18 @@ impl<'a> ExpressionValidator<'a> {
         subscripts: &[Subscript],
         span: Span,
     ) -> Result<(), ToDaeError> {
+        let is_source_binder = name.target_def_id().is_some_and(|id| {
+            self.source_comprehension_binders
+                .is_some_and(|scope| scope.contains(&id))
+        });
+        let is_generated_binder = name.is_generated()
+            && self
+                .generated_comprehension_binders
+                .is_some_and(|scope| scope.contains(name.var_name()));
+        let is_binder =
+            is_source_binder || is_generated_binder || self.binders.contains(name.var_name());
         let role = self.roles.get(name.var_name());
-        let unresolved =
-            name.as_str() != "time" && role.is_none() && !self.binders.contains(name.var_name());
+        let unresolved = name.as_str() != "time" && role.is_none() && !is_binder;
         let forged_enumeration_literal = matches!(role, Some(PlannedRole::EnumerationLiteral))
             && self
                 .enumeration_literals
@@ -364,7 +393,7 @@ impl<'a> ExpressionValidator<'a> {
         if unresolved || forged_enumeration_literal {
             return Err(ToDaeError::unresolved_reference(name.as_str(), span));
         }
-        if self.binders.contains(name.var_name()) && !subscripts.is_empty() {
+        if is_binder && !subscripts.is_empty() {
             return Err(ToDaeError::unsupported_flat(
                 "structured-domain binder",
                 "a domain binder is a scalar Integer coordinate and cannot be subscripted",
@@ -927,6 +956,8 @@ pub(super) fn validate_subscripts_scoped(
     binders: &HashSet<VarName>,
 ) -> Result<(), ToDaeError> {
     ExpressionValidator {
+        source_comprehension_binders: None,
+        generated_comprehension_binders: None,
         roles,
         states,
         binders,
@@ -1017,21 +1048,40 @@ impl ExpressionValidator<'_> {
         // comprehension, so it shadows any enclosing coordinate of the same flat
         // name. The proven-value scope is narrowed with the binder set, or a
         // bound written over an index would fold the shadowed coordinate's value.
-        let mut binders = (*self.binders).clone();
+        let binders = (*self.binders).clone();
         let mut values = self.values.cloned();
-        for index in indices {
+        let mut generated_binders = self
+            .generated_comprehension_binders
+            .cloned()
+            .unwrap_or_default();
+        let mut source_binders = self
+            .source_comprehension_binders
+            .cloned()
+            .unwrap_or_default();
+        for index in indices.iter().rev() {
             ExpressionValidator {
+                source_comprehension_binders: Some(&source_binders),
+                generated_comprehension_binders: Some(&generated_binders),
                 binders: &binders,
                 values: values.as_ref(),
                 ..self
             }
             .validate_comprehension_range(&index.range)?;
-            binders.insert(VarName::new(&index.name));
+            match index.binder {
+                rumoca_core::IndexBinderProvenance::Source(id) => {
+                    source_binders.insert(id);
+                }
+                rumoca_core::IndexBinderProvenance::Generated => {
+                    generated_binders.insert(VarName::new(&index.name));
+                }
+            }
             if let Some(values) = values.as_mut() {
-                values.insert(VarName::new(&index.name), Vec::new());
+                values.bind_comprehension_index(index);
             }
         }
         ExpressionValidator {
+            source_comprehension_binders: Some(&source_binders),
+            generated_comprehension_binders: Some(&generated_binders),
             binders: &binders,
             values: values.as_ref(),
             ..self

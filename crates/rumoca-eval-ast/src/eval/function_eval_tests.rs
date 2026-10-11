@@ -494,6 +494,7 @@ fn eval_for_stmt_break_exits_only_inner_loop() {
     let mut ctx = TypeCheckEvalContext::new();
     let statements = vec![Statement::For {
         indices: vec![ForIndex {
+            binder: None,
             ident: token("i"),
             range: Expression::Range {
                 start: Arc::new(int_expr(1)),
@@ -543,6 +544,7 @@ fn eval_multi_index_for_stmt_fails_evaluation() {
     let statements = vec![Statement::For {
         indices: vec![
             ForIndex {
+                binder: None,
                 ident: token("i"),
                 range: Expression::Range {
                     start: Arc::new(int_expr(1)),
@@ -552,6 +554,7 @@ fn eval_multi_index_for_stmt_fails_evaluation() {
                 },
             },
             ForIndex {
+                binder: None,
                 ident: token("j"),
                 range: Expression::Range {
                     start: Arc::new(int_expr(1)),

@@ -38,6 +38,14 @@ fn var(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn generated_var(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::generated(name),
+        subscripts: vec![],
+        span: test_span(),
+    }
+}
+
 fn indexed_var(name: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -1058,8 +1066,9 @@ fn infer_array_dims_from_comprehension_range_and_body() {
     known_ints.insert("n".to_string(), 4);
 
     let expr = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(var("i")),
+        expr: Box::new(generated_var("i")),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1091,8 +1100,9 @@ fn infer_array_dims_with_context_resolves_scoped_if_matrix_columns() {
 
     let table_column = var("table");
     let generated_column = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(var("i")),
+        expr: Box::new(generated_var("i")),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1164,8 +1174,9 @@ fn infer_array_dims_with_context_preserves_vector_column_rows() {
     array_dims.insert("booleanTable.table".to_string(), vec![7]);
 
     let generated_column = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(var("i")),
+        expr: Box::new(generated_var("i")),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1216,9 +1227,10 @@ fn infer_array_dims_with_context_resolves_boolean_table_binding() {
     let generated_column = rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(call(
             rumoca_core::BuiltinFunction::Mod,
-            vec![var("i"), real(2.0)],
+            vec![generated_var("i"), real(2.0)],
         )),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1279,11 +1291,12 @@ fn infer_array_dims_with_context_resolves_boolean_table_binding() {
 fn infer_array_dims_from_nested_comprehension_body_shape() {
     let expr = rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(rumoca_core::Expression::Array {
-            elements: vec![var("i"), var("i")],
+            elements: vec![generated_var("i"), generated_var("i")],
             kind: rumoca_core::ArrayConstructor::Array,
             span: rumoca_core::Span::DUMMY,
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1317,7 +1330,10 @@ fn infer_array_dims_from_nested_comprehension_body_shape() {
         unreachable!()
     };
     let varying = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(call(rumoca_core::BuiltinFunction::Zeros, vec![var("i")])),
+        expr: Box::new(call(
+            rumoca_core::BuiltinFunction::Zeros,
+            vec![generated_var("i")],
+        )),
         indices,
         filter: None,
         span: rumoca_core::Span::DUMMY,
@@ -1404,6 +1420,7 @@ fn comprehension_index_does_not_shadow_a_resolved_component_identity() {
     let expr = rumoca_core::Expression::ArrayComprehension {
         expr: Box::new(component),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_owned(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1437,12 +1454,13 @@ fn comprehension_index_selects_a_scalar_without_a_compile_time_value() {
             name: rumoca_core::Reference::new("data")
                 .with_instance_id(rumoca_core::InstanceId::new(18)),
             subscripts: vec![rumoca_core::Subscript::Expr {
-                expr: Box::new(var("i")),
+                expr: Box::new(generated_var("i")),
                 span: rumoca_core::Span::DUMMY,
             }],
             span: rumoca_core::Span::DUMMY,
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_owned(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1472,8 +1490,9 @@ fn comprehension_index_selects_a_scalar_without_a_compile_time_value() {
 #[test]
 fn infer_array_dims_from_comprehension_returns_none_with_filter() {
     let expr = rumoca_core::Expression::ArrayComprehension {
-        expr: Box::new(var("i")),
+        expr: Box::new(generated_var("i")),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: rumoca_core::Expression::Range {
                 start: Box::new(int(1)),
@@ -1484,7 +1503,7 @@ fn infer_array_dims_from_comprehension_returns_none_with_filter() {
         }],
         filter: Some(Box::new(rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Gt,
-            lhs: Box::new(var("i")),
+            lhs: Box::new(generated_var("i")),
             rhs: Box::new(int(1)),
             span: rumoca_core::Span::DUMMY,
         })),

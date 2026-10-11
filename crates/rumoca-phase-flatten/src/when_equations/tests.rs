@@ -85,6 +85,7 @@ fn var_expr_with_span(name: &str, span: rumoca_core::Span) -> ast::Expression {
 
 fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
     ast::ForIndex {
+        binder: Some(rumoca_core::IndexBinderProvenance::Generated),
         ident: token(name),
         range: range_expr(start, end),
     }

@@ -405,7 +405,9 @@ fn repeat_element_bindings_over_parent_dims(
         let indices = parent
             .iter()
             .enumerate()
+            .rev()
             .map(|(dimension, size)| rumoca_core::ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: format!("$parentIndex{}", dimension + 1),
                 range: Expression::Range {
                     start: Box::new(Expression::Literal {

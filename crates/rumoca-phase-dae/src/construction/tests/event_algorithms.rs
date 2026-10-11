@@ -400,6 +400,7 @@ fn model_event_algorithm_total_element_loop_stays_one_tensor_map() {
                 },
                 stmts: vec![rumoca_core::Statement::For {
                     indices: vec![rumoca_core::ForIndex {
+                        binder: rumoca_core::IndexBinderProvenance::Generated,
                         ident: "i".to_string(),
                         range: Expression::Range {
                             start: Box::new(Expression::Literal {
@@ -534,6 +535,7 @@ fn function_call_loop_algorithm(source: &TestSource) -> flat::Algorithm {
                 },
                 stmts: vec![rumoca_core::Statement::For {
                     indices: vec![rumoca_core::ForIndex {
+                        binder: rumoca_core::IndexBinderProvenance::Generated,
                         ident: "i".to_string(),
                         range: Expression::Range {
                             start: Box::new(Expression::Literal {
@@ -895,6 +897,7 @@ fn two_stage_tensor_loop(source: &TestSource, second_index: Expression) -> flat:
                 },
                 stmts: vec![rumoca_core::Statement::For {
                     indices: vec![rumoca_core::ForIndex {
+                        binder: rumoca_core::IndexBinderProvenance::Generated,
                         ident: "i".to_string(),
                         range: Expression::Range {
                             start: Box::new(Expression::Literal {

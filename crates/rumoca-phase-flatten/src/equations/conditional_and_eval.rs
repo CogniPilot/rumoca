@@ -973,10 +973,54 @@ fn try_eval_max_min(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum IndexSubstitution<'a> {
+    Source(rumoca_core::DefId),
+    Generated(&'a str),
+}
+
+impl<'a> IndexSubstitution<'a> {
+    pub(crate) fn from_index(index: &'a ForIndex) -> Result<Self, FlattenError> {
+        match index.binder {
+            Some(rumoca_core::IndexBinderProvenance::Source(id)) => Ok(Self::Source(id)),
+            Some(rumoca_core::IndexBinderProvenance::Generated) => {
+                Ok(Self::Generated(index.ident.text.as_ref()))
+            }
+            None => Err(FlattenError::missing_flat_variable_identity(
+                index.ident.text.as_ref(),
+                index.range.span(),
+            )),
+        }
+    }
+
+    fn matches_reference(self, reference: &ast::ComponentReference) -> bool {
+        match self {
+            Self::Source(id) => reference.target_def_id() == Some(id),
+            Self::Generated(name) => {
+                reference.target_def_id().is_none()
+                    && reference.parts.len() == 1
+                    && reference.parts[0].ident.text.as_ref() == name
+            }
+        }
+    }
+
+    fn is_shadowed_by(self, index: &ForIndex) -> bool {
+        match self {
+            Self::Source(id) => {
+                index.binder == Some(rumoca_core::IndexBinderProvenance::Source(id))
+            }
+            Self::Generated(name) => {
+                index.binder == Some(rumoca_core::IndexBinderProvenance::Generated)
+                    && index.ident.text.as_ref() == name
+            }
+        }
+    }
+}
+
 /// Substitute an index variable with a concrete value in an equation.
 pub(crate) fn substitute_index_in_equation(
     eq: &ast::Equation,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Equation {
     let sub_eq = |e: &ast::Equation| substitute_index_in_equation(e, var_name, value);
@@ -991,6 +1035,7 @@ pub(crate) fn substitute_index_in_equation(
             indices: indices
                 .iter()
                 .map(|idx| ForIndex {
+                    binder: idx.binder,
                     ident: idx.ident.clone(),
                     range: sub_expr(&idx.range),
                 })
@@ -1046,7 +1091,7 @@ pub(crate) fn substitute_index_in_equation(
 /// Substitute an index variable with a concrete value in a component reference.
 fn substitute_index_in_component_ref(
     cr: &ComponentReference,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ComponentReference {
     ComponentReference {
@@ -1072,7 +1117,7 @@ fn substitute_index_in_component_ref(
 /// Substitute an index variable with a concrete value in an expression.
 fn substitute_index_in_operator_expression(
     expr: &ast::Expression,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> Option<ast::Expression> {
     match expr {
@@ -1096,7 +1141,7 @@ fn substitute_index_in_operator_expression(
 
 fn substitute_index_in_structural_expression(
     expr: &ast::Expression,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> Option<ast::Expression> {
     match expr {
@@ -1155,7 +1200,7 @@ fn substitute_index_in_structural_expression(
 
 pub(crate) fn substitute_index_in_expression(
     expr: &ast::Expression,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     if let Some(substituted) = substitute_index_in_operator_expression(expr, var_name, value) {
@@ -1236,7 +1281,7 @@ fn substitute_index_in_function_call_expression(
     args: &[ast::Expression],
     is_partial_application: bool,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::FunctionCall {
@@ -1251,7 +1296,7 @@ fn substitute_index_in_class_modification_expression(
     target: &ComponentReference,
     modifications: &[ast::Expression],
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::ClassModification {
@@ -1268,7 +1313,7 @@ fn substitute_index_in_named_argument_expression(
     name: &rumoca_core::Token,
     arg: &ast::Expression,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::NamedArgument {
@@ -1282,7 +1327,7 @@ fn substitute_index_in_modification_expression(
     target: &ComponentReference,
     modification: &ast::Expression,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Modification {
@@ -1299,7 +1344,7 @@ fn substitute_index_in_modification_expression(
 fn substitute_index_in_tuple_expression(
     elements: &[ast::Expression],
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Tuple {
@@ -1311,7 +1356,7 @@ fn substitute_index_in_tuple_expression(
 fn substitute_index_in_parenthesized_expression(
     inner: &ast::Expression,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Parenthesized {
@@ -1324,7 +1369,7 @@ fn substitute_index_in_array_expression(
     elements: &[ast::Expression],
     kind: rumoca_core::ArrayConstructor,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Array {
@@ -1338,7 +1383,7 @@ fn substitute_index_in_array_index_expression(
     base: &ast::Expression,
     subscripts: &[ast::Subscript],
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::ArrayIndex {
@@ -1356,7 +1401,7 @@ fn substitute_index_in_field_access_expression(
     field: &str,
     field_def_id: Option<rumoca_core::DefId>,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::FieldAccess {
@@ -1369,10 +1414,10 @@ fn substitute_index_in_field_access_expression(
 
 fn substitute_index_component_reference_expression(
     cr: &ast::ComponentReference,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
-    if cr.parts.len() == 1 && &*cr.parts[0].ident.text == var_name && cr.parts[0].subs.is_none() {
+    if cr.parts.len() == 1 && var_name.matches_reference(cr) && cr.parts[0].subs.is_none() {
         return ast::Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token: Token {
@@ -1387,7 +1432,7 @@ fn substitute_index_component_reference_expression(
 
 fn substitute_index_in_expression_list(
     expressions: &[ast::Expression],
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> Vec<ast::Expression> {
     expressions
@@ -1400,7 +1445,7 @@ fn substitute_index_in_if_expression(
     branches: &[(ast::Expression, ast::Expression)],
     else_branch: &ast::Expression,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::If {
@@ -1423,14 +1468,16 @@ fn substitute_index_in_array_comprehension(
     indices: &[ForIndex],
     filter: Option<&ast::Expression>,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     let mut shadowed = false;
-    let indices = indices
+    let mut indices: Vec<_> = indices
         .iter()
+        .rev()
         .map(|idx| substitute_index_in_for_index(idx, &mut shadowed, var_name, value))
         .collect();
+    indices.reverse();
     ast::Expression::ArrayComprehension {
         expr: substitute_index_in_comprehension_body(expr, shadowed, var_name, value),
         indices,
@@ -1442,7 +1489,7 @@ fn substitute_index_in_array_comprehension(
 fn substitute_index_in_for_index(
     idx: &ForIndex,
     shadowed: &mut bool,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ForIndex {
     let range = if *shadowed {
@@ -1450,10 +1497,11 @@ fn substitute_index_in_for_index(
     } else {
         substitute_index_in_expression(&idx.range, var_name, value)
     };
-    if idx.ident.text.as_ref() == var_name {
+    if var_name.is_shadowed_by(idx) {
         *shadowed = true;
     }
     ForIndex {
+        binder: idx.binder,
         ident: idx.ident.clone(),
         range,
     }
@@ -1462,7 +1510,7 @@ fn substitute_index_in_for_index(
 fn substitute_index_in_comprehension_body(
     expr: &Arc<ast::Expression>,
     shadowed: bool,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> Arc<ast::Expression> {
     if shadowed {
@@ -1475,7 +1523,7 @@ fn substitute_index_in_comprehension_body(
 fn substitute_index_in_comprehension_filter(
     filter: Option<&ast::Expression>,
     shadowed: bool,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> Option<Arc<ast::Expression>> {
     if shadowed {
@@ -1490,7 +1538,7 @@ fn substitute_index_in_range_expression(
     step: Option<&ast::Expression>,
     end: &ast::Expression,
     span: rumoca_core::Span,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Range {
@@ -1504,7 +1552,7 @@ fn substitute_index_in_range_expression(
 /// Substitute index variable in a subscript.
 fn substitute_index_in_subscript(
     sub: &rumoca_ir_ast::Subscript,
-    var_name: &str,
+    var_name: IndexSubstitution<'_>,
     value: i64,
 ) -> rumoca_ir_ast::Subscript {
     match sub {

@@ -1180,6 +1180,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 }),
                 indices: vec![rumoca_core::ComprehensionIndex {
+                    binder: rumoca_core::IndexBinderProvenance::Generated,
                     name: "i".to_string(),
                     range: rumoca_core::Expression::Range {
                         start: Box::new(integer(start)),

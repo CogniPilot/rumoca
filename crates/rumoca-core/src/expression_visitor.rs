@@ -3,6 +3,7 @@ use crate::{
     StringConversionFormat, Subscript,
 };
 
+#[derive(Clone, Copy)]
 pub enum ExpressionScope<'a> {
     ArrayComprehension(&'a [ComprehensionIndex]),
 }
@@ -161,15 +162,18 @@ pub trait ExpressionVisitor {
         indices: &[ComprehensionIndex],
         filter: Option<&Expression>,
     ) {
-        for index in indices {
+        if let Some((index, remaining)) = indices.split_last() {
             self.visit_expression(&index.range);
+            let scope = ExpressionScope::ArrayComprehension(std::slice::from_ref(index));
+            self.enter_scope(scope);
+            self.visit_array_comprehension(expr, remaining, filter);
+            self.exit_scope(scope);
+        } else {
+            self.visit_expression(expr);
+            if let Some(filter) = filter {
+                self.visit_expression(filter);
+            }
         }
-        self.enter_scope(ExpressionScope::ArrayComprehension(indices));
-        self.visit_expression(expr);
-        if let Some(filter) = filter {
-            self.visit_expression(filter);
-        }
-        self.exit_scope(ExpressionScope::ArrayComprehension(indices));
     }
 
     fn enter_scope(&mut self, _scope: ExpressionScope<'_>) {}
@@ -359,20 +363,21 @@ pub trait FallibleExpressionVisitor {
         indices: &[ComprehensionIndex],
         filter: Option<&Expression>,
     ) -> Result<(), Self::Error> {
-        for index in indices {
+        if let Some((index, remaining)) = indices.split_last() {
             self.visit_expression(&index.range)?;
-        }
-        self.enter_scope(ExpressionScope::ArrayComprehension(indices))?;
-        let body_result = (|| {
+            let scope = ExpressionScope::ArrayComprehension(std::slice::from_ref(index));
+            self.enter_scope(scope)?;
+            let body_result = self.visit_array_comprehension(expr, remaining, filter);
+            let exit_result = self.exit_scope(scope);
+            body_result?;
+            exit_result
+        } else {
             self.visit_expression(expr)?;
             if let Some(filter) = filter {
                 self.visit_expression(filter)?;
             }
             Ok(())
-        })();
-        let exit_result = self.exit_scope(ExpressionScope::ArrayComprehension(indices));
-        body_result?;
-        exit_result
+        }
     }
 
     fn enter_scope(&mut self, _scope: ExpressionScope<'_>) -> Result<(), Self::Error> {

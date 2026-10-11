@@ -192,6 +192,7 @@ fn test_early_termination() {
 
     let eq = Equation::For {
         indices: vec![ForIndex {
+            binder: None,
             ident: Token {
                 text: std::sync::Arc::from("i"),
                 ..Default::default()

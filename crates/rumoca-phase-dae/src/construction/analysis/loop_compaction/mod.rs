@@ -227,6 +227,7 @@ impl ExpressionRewriter for BoundedReductionComprehensions<'_> {
             args: vec![Expression::ArrayComprehension {
                 expr: Box::new(term),
                 indices: vec![rumoca_core::ComprehensionIndex {
+                    binder: index.binder,
                     name: index.name.clone(),
                     range,
                 }],
@@ -282,8 +283,9 @@ fn bounded_reduction_comprehension(
         }),
         span: *range_span,
     };
+    let binder_reference = index.binder.reference(&index.name, span).ok()?;
     let binder = || Expression::VarRef {
-        name: Reference::new(&index.name),
+        name: binder_reference.clone(),
         subscripts: Vec::new(),
         span,
     };
@@ -535,6 +537,7 @@ fn bounded_slice_assignment(
         value: Expression::ArrayComprehension {
             expr: Box::new(element),
             indices: vec![rumoca_core::ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: binder_name.to_owned(),
                 range: fixed_range,
             }],

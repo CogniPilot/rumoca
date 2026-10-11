@@ -189,7 +189,10 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
             hash_expression_semantics(expr, hasher);
             indices.len().hash(hasher);
             for index in indices {
-                hash_unowned_text_len(&index.name, hasher);
+                index.binder.hash(hasher);
+                if index.binder == IndexBinderProvenance::Generated {
+                    hash_unowned_text_len(&index.name, hasher);
+                }
                 hash_expression_semantics(&index.range, hasher);
             }
             filter.is_some().hash(hasher);
@@ -558,7 +561,9 @@ fn array_comprehensions_semantically_equal(lhs: &Expression, rhs: &Expression) -
     expressions_semantically_equal(lhs_expr, rhs_expr)
         && lhs_indices.len() == rhs_indices.len()
         && lhs_indices.iter().zip(rhs_indices).all(|(lhs, rhs)| {
-            lhs.name == rhs.name && expressions_semantically_equal(&lhs.range, &rhs.range)
+            lhs.binder == rhs.binder
+                && (lhs.binder != IndexBinderProvenance::Generated || lhs.name == rhs.name)
+                && expressions_semantically_equal(&lhs.range, &rhs.range)
         })
         && optional_expressions_semantically_equal(lhs_filter.as_deref(), rhs_filter.as_deref())
 }

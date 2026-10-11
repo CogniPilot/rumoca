@@ -220,6 +220,7 @@ pub trait ExpressionTransformer {
     /// Transform a for-loop index.
     fn transform_for_index(&mut self, idx: ForIndex) -> ForIndex {
         ForIndex {
+            binder: idx.binder,
             ident: idx.ident,
             range: self.transform_expression(idx.range),
         }

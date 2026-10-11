@@ -199,6 +199,7 @@ fn compact_one_accumulator(
     let reduction = tensor_accumulator_reduction(
         term,
         rumoca_core::ComprehensionIndex {
+            binder: index.binder,
             name: index.ident.clone(),
             range,
         },
@@ -262,6 +263,7 @@ fn tensor_accumulator_reduction(
     for (axis, extent) in target_shape.iter().enumerate() {
         let name = rumoca_core::tensor_reduction_binder_name(span.start.0, axis);
         indices.push(rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: name.clone(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {
@@ -300,6 +302,7 @@ fn tensor_accumulator_reduction(
         }],
         span,
     };
+    indices.reverse();
     Expression::ArrayComprehension {
         expr: Box::new(reduction),
         indices,
@@ -517,6 +520,7 @@ fn lower_first_match_accumulator(proof: FirstMatchAccumulator) -> rumoca_core::S
     let candidates = Expression::ArrayComprehension {
         expr: Box::new(candidate_or_sentinel),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: binder,
             range,
         }],

@@ -50,6 +50,7 @@ fn boolean(value: bool, at: Span) -> Expression {
 fn for_loop(binder: &str, body: Vec<Statement>, at: Span) -> Statement {
     Statement::For {
         indices: vec![ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: binder.into(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {

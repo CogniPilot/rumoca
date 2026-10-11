@@ -1111,18 +1111,20 @@ fn qualify_for_indices_inner(
     let mut active_locals = locals.clone();
     let mut qualified_indices = Vec::with_capacity(indices.len());
 
-    // MLS §10.4.1: range expressions are evaluated in lexical order where each
-    // index introduces a new local name visible to subsequent ranges.
-    for index in indices {
+    // MLS §10.4.1.2: the last textual iterator is outermost. A range
+    // reads its enclosing scope before introducing its own iterator.
+    for index in indices.iter().rev() {
         let qualified_range =
             qualify_expr_inner(&index.range, prefix, opts, &active_locals, imports);
         qualified_indices.push(ForIndex {
+            binder: index.binder,
             ident: index.ident.clone(),
             range: qualified_range,
         });
         active_locals.insert(index.ident.text.to_string());
     }
 
+    qualified_indices.reverse();
     qualified_indices
 }
 

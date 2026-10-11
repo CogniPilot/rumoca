@@ -128,6 +128,7 @@ fn rectangularize_statement(
             range_span,
         )?);
         rectangular.push(rumoca_core::ForIndex {
+            binder: index.binder,
             ident: index.ident.clone(),
             range: oriented_integer_range(
                 envelope.lower,
@@ -315,7 +316,7 @@ impl ExpressionRewriter for MaskedComprehensionRewriter<'_> {
         if envelope.step != 1 {
             return self.walk_expression(expression);
         }
-        let Some(reference) = first_expression_binder_reference(expr, &index.name) else {
+        let Some(reference) = first_expression_binder_reference(expr, index) else {
             return self.walk_expression(expression);
         };
         let guard = match range_membership_guard(reference, &index.range, envelope.step, *span) {
@@ -335,6 +336,7 @@ impl ExpressionRewriter for MaskedComprehensionRewriter<'_> {
                 span: *span,
             }),
             indices: vec![rumoca_core::ComprehensionIndex {
+                binder: index.binder,
                 name: index.name.clone(),
                 range: integer_range(envelope.lower, envelope.upper, *span),
             }],
@@ -415,14 +417,22 @@ fn first_binder_reference(
     binder: &str,
 ) -> Option<Reference> {
     struct Finder<'a> {
-        binder: &'a str,
+        binder: &'a rumoca_core::ComprehensionIndex,
         found: Option<Reference>,
     }
     impl rumoca_core::ExpressionVisitor for Finder<'_> {
         fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
             if self.found.is_none()
                 && subscripts.is_empty()
-                && reference.var_name() == &VarName::new(self.binder)
+                && match self.binder.binder {
+                    rumoca_core::IndexBinderProvenance::Source(id) => {
+                        reference.target_def_id() == Some(id)
+                    }
+                    rumoca_core::IndexBinderProvenance::Generated => {
+                        reference.is_generated()
+                            && reference.var_name() == &VarName::new(&self.binder.name)
+                    }
+                }
             {
                 self.found = Some(reference.clone());
             }
@@ -443,16 +453,27 @@ fn first_binder_reference(
     finder.found
 }
 
-fn first_expression_binder_reference(expression: &Expression, binder: &str) -> Option<Reference> {
+fn first_expression_binder_reference(
+    expression: &Expression,
+    binder: &rumoca_core::ComprehensionIndex,
+) -> Option<Reference> {
     struct Finder<'a> {
-        binder: &'a str,
+        binder: &'a rumoca_core::ComprehensionIndex,
         found: Option<Reference>,
     }
     impl rumoca_core::ExpressionVisitor for Finder<'_> {
         fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
             if self.found.is_none()
                 && subscripts.is_empty()
-                && reference.var_name() == &VarName::new(self.binder)
+                && match self.binder.binder {
+                    rumoca_core::IndexBinderProvenance::Source(id) => {
+                        reference.target_def_id() == Some(id)
+                    }
+                    rumoca_core::IndexBinderProvenance::Generated => {
+                        reference.is_generated()
+                            && reference.var_name() == &VarName::new(&self.binder.name)
+                    }
+                }
             {
                 self.found = Some(reference.clone());
             }

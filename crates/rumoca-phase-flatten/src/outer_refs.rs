@@ -354,6 +354,7 @@ mod tests {
         let mut expr = rumoca_core::Expression::ArrayComprehension {
             expr: Box::new(var_ref("outerBus.value")),
             indices: vec![ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: "i".to_string(),
                 range: var_ref("outerBus.range"),
             }],

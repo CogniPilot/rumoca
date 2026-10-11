@@ -12,6 +12,23 @@ use crate::translation_reads::ResourceRoots;
 pub trait EvalEnvironment {
     /// Look up a value using the inventory's current lexical scope.
     fn get_value(&self, name: &str) -> Option<Cow<'_, Value>>;
+    /// Whether a declaration has a lexical binding, even without a settled value.
+    fn declaration_is_lexical(&self, _id: rumoca_core::DefId) -> bool {
+        false
+    }
+    /// Read a lexical source iterator by its Resolve-issued declaration identity.
+    fn get_declaration_value(&self, _id: rumoca_core::DefId) -> Option<Cow<'_, Value>> {
+        None
+    }
+    fn get_reference_value(&self, reference: &rumoca_core::Reference) -> Option<Cow<'_, Value>> {
+        if let Some(id) = reference.target_def_id()
+            && self.declaration_is_lexical(id)
+        {
+            self.get_declaration_value(id)
+        } else {
+            self.get_value(reference.as_str())
+        }
+    }
     /// Look up an explicitly registered enumeration literal.
     fn get_enum(&self, name: &str) -> Option<&(String, String)>;
     /// Find a function definition under a registered call name.

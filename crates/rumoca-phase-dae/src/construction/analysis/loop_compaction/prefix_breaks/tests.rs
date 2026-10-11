@@ -6,6 +6,7 @@ use super::*;
 fn loop_source(lower: i64, step: i64, upper: i64, body: Vec<Statement>) -> Vec<Statement> {
     vec![Statement::For {
         indices: vec![rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: "i".into(),
             range: Expression::Range {
                 start: Box::new(integer(lower)),

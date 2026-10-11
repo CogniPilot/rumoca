@@ -225,6 +225,7 @@ struct FunctionEnv {
     outputs: IndexMap<String, Value>,
     /// Local/protected variables.
     locals: IndexMap<String, Value>,
+    source_iterators: Vec<(rumoca_core::IndexBinderProvenance, String, Value)>,
 }
 
 /// Function-call argument after expression evaluation.
@@ -258,6 +259,7 @@ impl FunctionEnv {
             inputs,
             outputs: IndexMap::new(),
             locals: IndexMap::new(),
+            source_iterators: Vec::new(),
         };
         env.bind_omitted_input_defaults(func, eval)?;
         env.declare_all(func, eval)?;
@@ -1286,10 +1288,25 @@ fn eval_var_ref(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let name = reference.as_str();
+    if let Some((_, _, value)) = env
+        .source_iterators
+        .iter()
+        .rev()
+        .find(|(binder, spelling, _)| match binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => {
+                reference.target_def_id() == Some(*id)
+            }
+            rumoca_core::IndexBinderProvenance::Generated => {
+                reference.is_generated() && reference.as_str() == spelling
+            }
+        })
+    {
+        return apply_subscripts_flat(value, subscripts, env, eval);
+    }
     if let Some(val) = env.get(name) {
         return apply_subscripts_flat(val, subscripts, env, eval);
     }
-    if let Some(val) = eval.ctx.get_value(name) {
+    if let Some(val) = eval.ctx.get_reference_value(reference) {
         return Ok(val.into_owned());
     }
     if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
@@ -1476,6 +1493,7 @@ fn eval_array_comprehension(
         inputs: env.inputs.clone(),
         outputs: env.outputs.clone(),
         locals: env.locals.clone(),
+        source_iterators: env.source_iterators.clone(),
     };
 
     eval_comprehension_recursive(expr, indices, filter, &mut local_env, eval)
@@ -1504,20 +1522,24 @@ fn eval_comprehension_recursive(
         return eval_expr_in_function(expr, env, eval);
     }
 
-    let index = &indices[0];
+    let (index, remaining) = indices
+        .split_last()
+        .expect("nonempty indices handled above");
     let var_name = index.name.to_string();
     let range_values = eval_range_expr(&index.range, env, eval)?;
-    let remaining = &indices[1..];
 
     let mut results = Vec::new();
 
     // Save original value if it exists
-    let original = env.locals.get(&var_name).cloned();
+    let source_depth = env.source_iterators.len();
 
     for val in range_values {
-        env.locals.insert(var_name.clone(), val);
+        env.source_iterators
+            .push((index.binder, var_name.clone(), val));
 
-        let result = eval_comprehension_recursive(expr, remaining, filter, env, eval)?;
+        let result = eval_comprehension_recursive(expr, remaining, filter, env, eval);
+        env.source_iterators.truncate(source_depth);
+        let result = result?;
 
         // Handle filtered results (empty arrays indicate filtered-out elements)
         match &result {
@@ -1528,13 +1550,6 @@ fn eval_comprehension_recursive(
                 results.push(result);
             }
         }
-    }
-
-    // Restore original value
-    if let Some(orig) = original {
-        env.locals.insert(var_name, orig);
-    } else {
-        env.locals.swap_remove(&var_name);
     }
 
     Ok(Value::Array(results))

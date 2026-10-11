@@ -261,6 +261,7 @@ fn test_infer_expr_dims_handles_array_comprehension() {
             span: test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {
@@ -293,6 +294,7 @@ fn test_infer_expr_dims_array_comprehension_with_filter_returns_none() {
             span: test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {

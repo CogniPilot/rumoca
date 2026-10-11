@@ -260,6 +260,7 @@ fn comprehension_lowering_preserves_structure_and_owner_provenance() {
     let expression = ast::Expression::ArrayComprehension {
         expr: Arc::new(ast_var_with_span("x", body_span)),
         indices: vec![ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Source(DefId::new(89))),
             ident: rumoca_core::Token {
                 text: Arc::from("i"),
                 ..rumoca_core::Token::default()
@@ -850,4 +851,17 @@ fn structured_subscript_base_carries_exact_final_target_for_flat_projection() {
 
     assert_eq!(name.as_str(), "source.medium.fluidConstants");
     assert_eq!(name.target_def_id(), Some(fluid_constants_def_id));
+}
+
+#[test]
+fn comprehension_index_lowering_refuses_absent_source_identity() {
+    let index = ast::ForIndex {
+        binder: None,
+        ident: rumoca_core::Token {
+            text: Arc::from("i"),
+            ..Default::default()
+        },
+        range: integer(1, test_span()),
+    };
+    assert!(convert_comprehension_indices(&[index], LoweringContext::default()).is_err());
 }

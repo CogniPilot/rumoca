@@ -67,6 +67,7 @@ fn make_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
 
 fn make_for_index(name: &str, start: i64, end: i64) -> ForIndex {
     ForIndex {
+        binder: Some(rumoca_core::IndexBinderProvenance::Generated),
         ident: Token {
             text: Arc::from(name.to_string()),
             ..Token::default()
@@ -540,7 +541,7 @@ fn test_substitute_index_descends_into_array_comprehension_body() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let substituted = substitute_index_in_expression(&expr, "j", 2);
+    let substituted = substitute_index_in_expression(&expr, IndexSubstitution::Generated("j"), 2);
 
     let ast::Expression::ArrayComprehension { expr, indices, .. } = substituted else {
         panic!("expected array comprehension");
@@ -567,7 +568,7 @@ fn test_substitute_index_respects_array_comprehension_shadowing() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let substituted = substitute_index_in_expression(&expr, "j", 2);
+    let substituted = substitute_index_in_expression(&expr, IndexSubstitution::Generated("j"), 2);
 
     let ast::Expression::ArrayComprehension { expr, filter, .. } = substituted else {
         panic!("expected array comprehension");

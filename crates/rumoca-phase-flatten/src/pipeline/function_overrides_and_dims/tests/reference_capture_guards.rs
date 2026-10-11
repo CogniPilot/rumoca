@@ -256,6 +256,7 @@ fn comprehension_binder_is_not_captured_by_active_override() {
     let mut expr = Expression::ArrayComprehension {
         expr: Box::new(core_var(&[("i", DefId::new(4))])),
         indices: vec![rumoca_core::ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {

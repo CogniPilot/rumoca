@@ -53,11 +53,19 @@ impl ShapeEnvironment {
             } => IntegerInterval::exact(*value),
             Expression::VarRef {
                 name, subscripts, ..
-            } if subscripts.is_empty() => self
-                .integer_bounds
-                .get(name.var_name())
-                .copied()
-                .unwrap_or(IntegerInterval::UNBOUNDED),
+            } if subscripts.is_empty() => {
+                if name
+                    .target_def_id()
+                    .is_some_and(|id| self.source_comprehension_binders.contains(&id))
+                {
+                    IntegerInterval::UNBOUNDED
+                } else {
+                    self.integer_bounds
+                        .get(name.var_name())
+                        .copied()
+                        .unwrap_or(IntegerInterval::UNBOUNDED)
+                }
+            }
             Expression::Unary { op, rhs, .. } => match op {
                 OpUnary::Plus => self.proven_integer_interval(rhs),
                 OpUnary::Minus => self.proven_integer_interval(rhs).negate(),

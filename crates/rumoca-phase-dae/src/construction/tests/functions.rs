@@ -971,6 +971,7 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
         },
         rumoca_core::Statement::For {
             indices: vec![rumoca_core::ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "k".to_string(),
                 range: Expression::Range {
                     start: Box::new(Expression::Literal {
@@ -1134,6 +1135,7 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
         },
         rumoca_core::Statement::For {
             indices: vec![rumoca_core::ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "k".to_string(),
                 range: Expression::Range {
                     start: Box::new(Expression::Literal {
@@ -1238,6 +1240,7 @@ fn reachable_function_loop_over_a_proven_input_retains_source_ordered_fold() {
         },
         rumoca_core::Statement::For {
             indices: vec![rumoca_core::ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "k".to_string(),
                 range: Expression::Range {
                     start: Box::new(Expression::Literal {

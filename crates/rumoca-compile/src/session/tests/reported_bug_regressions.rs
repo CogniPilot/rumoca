@@ -70,3 +70,49 @@ end C3Conforming;
     );
     assert_eq!(compiled.balance_detail.equations_unknowns(), (1, 1));
 }
+
+#[test]
+fn issue_424_reported_reverse_order_constructor_has_conforming_dimensions_and_values() {
+    let compiled = compile(
+        r#"
+model C3ReverseOrder
+  parameter Real m[3,2] = {i+10*j for j in 1:2, i in 1:3};
+  Real y(start=1, fixed=true);
+equation
+  der(y) = -m[3,2]*y;
+end C3ReverseOrder;
+"#,
+        "C3ReverseOrder",
+    );
+    assert_eq!(compiled.balance_detail.equations_unknowns(), (1, 1));
+    let parameter = &compiled.flat.variables[&rumoca_core::VarName::new("m")];
+    assert_eq!(parameter.dims, vec![3, 2]);
+    let value = rumoca_eval_flat::constant::eval_expr(
+        parameter.binding.as_ref().expect("constructor binding"),
+        &rumoca_eval_flat::constant::EvalContext::new(),
+    )
+    .expect("checked source constructor evaluates");
+    let rows = value.as_array().expect("matrix");
+    let values: Vec<_> = rows
+        .iter()
+        .flat_map(|row| row.as_array().expect("row"))
+        .map(|value| value.as_real().expect("numeric element"))
+        .collect();
+    assert_eq!(values, vec![11.0, 21.0, 12.0, 22.0, 13.0, 23.0]);
+}
+
+#[test]
+fn issue_424_partially_unknown_declaration_keeps_mismatched_known_axis() {
+    let mut session = Session::default();
+    session.add_document("Mixed.mo", "model Mixed parameter Real m[3,:]={i+10*j for i in 1:3,j in 1:2}; Real y(start=1,fixed=true); equation der(y)=-m[1,1]*y; end Mixed;").expect("source parses");
+    match session.compile_model_phases("Mixed").expect("phase result") {
+        PhaseResult::Failed { phase, error, .. } => {
+            assert!(matches!(phase, FailedPhase::Typecheck | FailedPhase::ToDae));
+            assert!(
+                error.contains("shape mismatch") || error.contains("dimension"),
+                "{error}"
+            );
+        }
+        other => panic!("known first axis must not be reauthored: {other:?}"),
+    }
+}

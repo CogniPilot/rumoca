@@ -156,6 +156,7 @@ fn guarded_for(block: StatementBlock, bound: i64, span: Span) -> rumoca_core::St
     };
     rumoca_core::Statement::For {
         indices: vec![ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: format!("__rumoca_while_{}", span.start.0),
             range: Expression::Range {
                 start: Box::new(literal(1)),
