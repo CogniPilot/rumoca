@@ -140,5 +140,11 @@ settled observation. `MeTraceRecorder::decide` retains distinct timestamp bits;
 its exact-coordinate role policy controls replacement. The similarly named
 `timeline::merge_output_times_with_event_observations` has no production caller
 in this source. This explains the applicable publication contract, and does
-not establish the actual twelfth row's legitimacy. The corrected trace test
-remains UNRUN until its timestamps and values are independently checked.
+not establish the actual twelfth row's legitimacy. ROOT then executed the corrected test at `1117563e41982a014bbd733b9d1cbbf64c557b23`: one Rust test
+passed under both Interpreter and Auto. Both actual traces contained the same
+12 finite ordered observations, including `0.49999999999999994` and `0.5`,
+with `y=1` on the former and `y=2` on the latter. Every recorded `x` satisfied
+the unchanged independent integral tolerance, every requested grid point was
+present, and all nonboundary branch outputs matched. The supplemental receipt
+records the exact arrays and raw evidence hashes; this qualifies this test,
+not the separately pending guide scenarios or remote CI.
