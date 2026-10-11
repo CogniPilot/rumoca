@@ -105,6 +105,94 @@ end C3ReverseOrder;
     assert_eq!(values, vec![11.0, 21.0, 12.0, 22.0, 13.0, 23.0]);
 }
 
+fn assert_checked_constructor_values(
+    compiled: &CompilationResult,
+    name: &str,
+    dimensions: &[i64],
+    expected: &[f64],
+) {
+    assert_eq!(
+        compiled.flat.variables[&rumoca_core::VarName::new(name)].dims,
+        dimensions
+    );
+    let values = compiled.dae.inspect(|view| {
+        let (_, declaration) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .expect("checked constructor declaration");
+        let binding = declaration.binding().expect("checked constructor binding");
+        rumoca_eval_dae::NumericEvaluator::new(view)
+            .expression(binding)
+            .expect("checked constructor evaluates")
+    });
+    assert_eq!(values, expected);
+}
+
+#[test]
+fn issue_424_parameter_extents_preserve_both_constructor_axis_orders() {
+    for (declaration, dimensions, expected) in [
+        (
+            "parameter Real m[nr,nx]={i+10*j for i in 1:nx,j in 1:nr};",
+            [2, 3],
+            [11.0, 12.0, 13.0, 21.0, 22.0, 23.0],
+        ),
+        (
+            "parameter Real m[nx,nr]={i+10*j for j in 1:nr,i in 1:nx};",
+            [3, 2],
+            [11.0, 21.0, 12.0, 22.0, 13.0, 23.0],
+        ),
+    ] {
+        let source = format!(
+            "model C3ParameterExtents parameter Integer nx=3; parameter Integer nr=2; \
+             {declaration} Real y(start=1,fixed=true); \
+             equation der(y)=-m[1,1]*y; end C3ParameterExtents;"
+        );
+        let compiled = compile(&source, "C3ParameterExtents");
+        assert_checked_constructor_values(&compiled, "m", &dimensions, &expected);
+    }
+}
+
+#[test]
+fn issue_424_boolean_parameter_masks_preserve_axis_order_and_exact_values() {
+    for (declaration, dimensions, expected) in [
+        (
+            "parameter Boolean solid[nr,nx]={xc[i]<0.3 and j>2 for i in 1:nx,j in 1:nr};",
+            [4, 3],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        ),
+        (
+            "parameter Boolean solid[nx,nr]={xc[i]<0.3 and j>2 for j in 1:nr,i in 1:nx};",
+            [3, 4],
+            [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+        ),
+    ] {
+        let source = format!(
+            "model C3BooleanParameters parameter Integer nx=3; parameter Integer nr=4; \
+             parameter Real xc[nx]={{0.1,0.4,0.2}}; {declaration} \
+             Real y(start=1,fixed=true); \
+             equation der(y)=if solid[1,1] then -y else -2*y; end C3BooleanParameters;"
+        );
+        let compiled = compile(&source, "C3BooleanParameters");
+        assert_checked_constructor_values(&compiled, "solid", &dimensions, &expected);
+    }
+}
+
+#[test]
+fn issue_424_reported_boolean_binding_accepts_conforming_parameter_dimensions() {
+    let compiled = compile(
+        "model C3BooleanBinding parameter Integer nx=3; parameter Integer nr=4; \
+         parameter Real xc[nx]={0.1,0.4,0.2}; \
+         Boolean solid[nx,nr]={xc[i]<0.3 and j>2 for j in 1:nr,i in 1:nx}; \
+         Real y(start=1,fixed=true); \
+         equation der(y)=if solid[1,1] then -y else -2*y; end C3BooleanBinding;",
+        "C3BooleanBinding",
+    );
+    assert_eq!(
+        compiled.flat.variables[&rumoca_core::VarName::new("solid")].dims,
+        vec![3, 4]
+    );
+}
+
 #[test]
 fn issue_424_partially_unknown_declaration_keeps_mismatched_known_axis() {
     let mut session = Session::default();
