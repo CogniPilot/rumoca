@@ -92,12 +92,25 @@ async function run() {
 
   const decay = await readFile(new URL("../../../examples/models/SympyDecay.mo", import.meta.url), "utf8");
   let flatFiles;
-  for (const target of ["base-modelica", "flat-modelica", "dae-modelica", "c-ode", "jax-ode", "casadi-ode"]) {
+  const expectedPaths = new Map([
+    ["base-modelica", ["SympyDecay_base.mo"]],
+    ["flat-modelica", ["SympyDecay_flat.mo"]],
+    ["dae-modelica", ["SympyDecay_dae.mo"]],
+    ["c-ode", ["SympyDecay_ode.h", "SympyDecay_ode.c"]],
+    ["jax-ode", ["SympyDecay_jax_ode.py"]],
+    ["casadi-ode", ["SympyDecay_casadi_ode.py"]],
+  ]);
+  for (const [target, paths] of expectedPaths) {
     const files = assertFiles(
       wasm.render_target_for_source(decay, "SympyDecay", target, "", "{}"),
       `actual SympyDecay/${target}`,
     );
-    assert(files.some((file) => file.content.includes("SympyDecay")), `${target}: model identity lost`);
+    assert.deepEqual(files.map((file) => file.path), paths, `${target}: model artifact identity lost`);
+    const manifest = await readFile(new URL(
+      `../../../crates/rumoca-phase-codegen/src/templates/${target}/target.toml`, import.meta.url,
+    ), "utf8");
+    assert.equal(targets.find((entry) => entry.id === target).manifest, manifest,
+      `${target}: exported metadata must match the tracked manifest`);
     if (target === "flat-modelica") flatFiles = files;
   }
   const compiled = JSON.parse(wasm.compile(decay, "SympyDecay"));
