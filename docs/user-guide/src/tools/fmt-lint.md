@@ -42,7 +42,7 @@ rules cover, without writing changes.
 rumoca lint                       # lint the current directory
 rumoca lint --min-level warning   # filter: help | note | warning | error
 rumoca lint --warnings-as-errors  # CI gating
-rumoca lint --disable-rule <id>   # repeatable
+rumoca lint --disable-rule naming-convention  # repeat for other rule names
 rumoca lint --max-messages 50
 ```
 
