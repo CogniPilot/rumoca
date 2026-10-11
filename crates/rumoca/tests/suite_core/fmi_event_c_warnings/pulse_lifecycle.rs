@@ -49,15 +49,19 @@ fn generated_fmi_c_rearms_pulses_without_repeating_other_events() {
     let xml =
         std::fs::read_to_string(sources.parent().unwrap().join("modelDescription.xml")).unwrap();
     let guid = xml_attribute(&xml, b"fmiModelDescription", b"guid", None);
+    let identifier = xml_attribute(&xml, b"CoSimulation", b"modelIdentifier", None);
     let references = ["n", "m", "ticks"].map(|name| {
         xml_attribute(&xml, b"ScalarVariable", b"valueReference", Some(name))
             .parse::<u32>()
             .unwrap()
     });
-    let driver = DRIVER.replace("@GUID@", &guid).replace(
-        "@REFERENCES@",
-        &references.map(|v| v.to_string()).join(", "),
-    );
+    let driver = DRIVER
+        .replace("@GUID@", &guid)
+        .replace("@IDENTIFIER@", &identifier)
+        .replace(
+            "@REFERENCES@",
+            &references.map(|v| v.to_string()).join(", "),
+        );
     let source = work.path().join("pulse.c");
     let executable = work.path().join("pulse");
     std::fs::write(&source, driver).unwrap();
@@ -89,6 +93,7 @@ fn generated_fmi_c_rearms_pulses_without_repeating_other_events() {
 const DRIVER: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
+#define FMI2_FUNCTION_PREFIX @IDENTIFIER@_
 #include "fmi2Functions.h"
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 int main(void) {
