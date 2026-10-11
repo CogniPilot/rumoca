@@ -26,6 +26,7 @@
 
 mod history_operator_checked;
 mod initial_boolean_parameter;
+mod initialization_parameter_conditionals;
 mod periodic_clock_session;
 mod reported_bug_runtime;
 mod solve_renderer_without_dae;
