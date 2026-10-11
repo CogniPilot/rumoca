@@ -21,10 +21,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("quotient domain is not issued by this DAE", span))?
             .structured()
             .clone();
+        let extents = domain
+            .extents()
+            .map_err(|error| LowerError::contract(error.to_string(), span))?;
         let mut values = Vec::with_capacity(domain.binders.len());
         let mut const_strides = Vec::with_capacity(domain.binders.len());
-        for (dimension, binder) in domain.binders.iter().enumerate() {
-            prove_exact_index_progression(binder, span)?;
+        for (dimension, (binder, count)) in domain.binders.iter().zip(extents).enumerate() {
+            prove_exact_index_progression(binder, count, span)?;
             let dst = self.register(span)?;
             let op_position = self.ops.len();
             // This is a symbolic value, not the base-point literal. Recording
@@ -118,11 +121,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
 fn prove_exact_index_progression(
     binder: &rumoca_core::StructuredIndexBinder,
+    count: usize,
     span: Span,
 ) -> Result<(), LowerError> {
-    let count = binder
-        .value_count()
-        .map_err(|error| LowerError::contract(format!("{error:?}"), span))?;
     let delta = i128::from(binder.step) * count.saturating_sub(1) as i128;
     let last = i128::from(binder.lower) + delta;
     let exact = 1_i128 << 53;
