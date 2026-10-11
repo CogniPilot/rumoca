@@ -204,6 +204,7 @@ fn runtime(backend: Rc<Backend>) -> SolveRuntime {
     };
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
+    derive_test_structural_artifacts(&mut model);
     SolveRuntime::new_with_execution_backend(&model, Some(backend)).unwrap()
 }
 

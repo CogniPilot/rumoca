@@ -142,6 +142,7 @@ fn selected_projection_uses_the_jvp_program_mapping_and_aggregate_output_offset(
         let mut model = warm_start_test_model();
         model.artifacts.continuous.implicit_jacobian_v_scalar = block;
         mirror_scalar_implicit_jvp(&mut model);
+        derive_test_structural_artifacts(&mut model);
         let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
         let native = Rc::new(SelectedJacobian {
             calls: Cell::new(0),
