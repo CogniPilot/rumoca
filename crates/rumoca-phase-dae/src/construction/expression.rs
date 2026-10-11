@@ -1502,13 +1502,16 @@ fn call_shape_scope<'dae>(
         return Ok(None);
     }
     let mut shapes = symbols.shapes.clone();
-    for (name, binder) in binders
-        .iter()
-        .chain(comprehension.into_iter().flat_map(|scope| &scope.generated))
-    {
+    for (name, binder) in binders {
         let (lower, upper) =
             construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
         shapes.bind_slice_binder(name.clone(), lower, upper);
+    }
+    for name in comprehension
+        .into_iter()
+        .flat_map(|scope| scope.generated.keys())
+    {
+        shapes.insert(name.clone(), Vec::new());
     }
     for id in comprehension
         .into_iter()
