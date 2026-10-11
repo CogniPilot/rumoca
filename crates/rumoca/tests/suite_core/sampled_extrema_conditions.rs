@@ -75,7 +75,7 @@ fn a_when_body_assertion_still_fails_at_its_first_selected_tick() {
             },
         )
         .unwrap_err();
-        match error {
+        match error.kind() {
             rumoca_sim::SimError::AssertionFailed { time, message } => {
                 assert!((time - 0.1).abs() < 1e-10, "{execution_policy:?}: {time}");
                 assert_eq!(message, "BODY_ASSERT_TICK");
