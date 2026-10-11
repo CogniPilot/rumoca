@@ -1,3 +1,5 @@
+mod nested_guard;
+
 use super::*;
 
 #[test]
