@@ -238,6 +238,7 @@ mod nanosecond_bdf_steps;
 mod native_foreign_bodies;
 mod native_least_squares;
 mod native_linear_solve;
+mod native_lu_inverse;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
 mod nested_loop_conditional;
