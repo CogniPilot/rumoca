@@ -4,6 +4,7 @@ mod integer_call_comparison;
 mod integer_quotient_comparison;
 mod main_dae_integer;
 mod scalar_modulo_integral;
+mod static_integer_capture;
 
 use rumoca::{CompilationResult, Compiler};
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, SimulationSession, simulate_dae};

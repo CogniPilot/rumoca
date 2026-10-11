@@ -12,6 +12,40 @@ use super::*;
 const MAXIMUM_DEPTH: usize = 64;
 
 impl<'dae> ScalarCompiler<'_, 'dae> {
+    /// Integer call captures cross the scalar ABI exactly. Evaluate only source
+    /// constants with the existing checked Integer owner; runtime parameters and
+    /// explicit Integer-to-Real conversions keep their ordinary lowering.
+    pub(super) fn pack_literal_integer_argument(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        let node = self.node(expression);
+        if node.value_type().scalar_type() != dae::ScalarType::Integer
+            || (node.variability() != dae::ExpressionVariability::Constant
+                && !matches!(
+                    node.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_))
+                ))
+        {
+            return Ok(None);
+        }
+        let span = node.provenance().span();
+        let mut registers = Vec::new();
+        for scalar in 0..scalar_count(self.view, expression) {
+            let value = match self.integer(expression, scalar) {
+                Ok(value) => value,
+                Err(LowerError::NonComputable { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let value = rumoca_eval_solve::checked_scalar_payload_value(
+                solve::SolveValueKind::Integer(value),
+            )
+            .map_err(|error| LowerError::unsupported(error.to_string(), span))?;
+            registers.push(self.constant(value, span)?);
+        }
+        self.pack_registers(&registers, span).map(Some)
+    }
+
     /// The exact value of scalar `scalar` of a literal-only `expression`.
     pub(super) fn exact_literal(
         &self,
