@@ -109,7 +109,7 @@ stays usable. `code` is a stable diagnostic code:
 -> {"command":"step","dt":0.001}
 <- {"event":"ok","time":0.001}
 -> {"command":"state"}
-<- {"event":"state","time":0.001,"values":{"u":1.0,"y":0.0029,"x":0.0029}}
+<- {"event":"state","time":0.001,"values":{"u":1.0,"y":0.003996}}
 -> {"command":"close"}
 <- {"event":"closed","time":0.001}
 ```
