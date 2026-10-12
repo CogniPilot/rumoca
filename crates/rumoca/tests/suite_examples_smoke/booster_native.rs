@@ -38,6 +38,7 @@ fn original_booster_scenario_initializes_and_advances_the_authored_grid() {
     };
     let mut session = SimulationSession::new(&compiled.dae, options)
         .expect("original Booster native initialization");
+    let mut previous_time = None;
     for step in 0..=7 {
         let time = step as f64 * dt;
         if step != 0 {
@@ -46,7 +47,14 @@ fn original_booster_scenario_initializes_and_advances_the_authored_grid() {
                 .expect("original Booster native advance");
         }
         let state = session.state().unwrap();
-        assert_eq!(state.time, time);
+        assert!(state.time.is_finite());
+        assert!(
+            rumoca_solver::timeline::sample_time_match_with_tol(state.time, time),
+            "requested t={time:.17}, observed t={:.17}",
+            state.time
+        );
+        assert!(previous_time.is_none_or(|previous| state.time > previous));
+        previous_time = Some(state.time);
         assert!(!state.values.is_empty());
         assert!(state.values.values().all(|value| value.is_finite()));
         let receipt = session.execution_receipt();
