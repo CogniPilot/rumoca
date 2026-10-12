@@ -7,6 +7,9 @@ fn config(value: serde_json::Value) -> MslParityConfig {
 
 #[test]
 fn bare_and_empty_full_config_select_the_ci_envelope() {
+    let baseline: serde_json::Value =
+        serde_json::from_str(include_str!("../../msl_tests/msl_quality_baseline.json"))
+            .expect("checked measurement envelope");
     for config in [
         MslParityConfig::default(),
         config(json!({})),
@@ -15,6 +18,11 @@ fn bare_and_empty_full_config_select_the_ci_envelope() {
     ] {
         assert!(!config.is_partial_run());
         assert_eq!(config.wall_budgets(), (20.0, 45.0));
+        assert_eq!(
+            baseline["model_attempt_timeout_seconds"],
+            config.wall_budgets().0
+        );
+        assert_eq!(baseline["sim_timeout_seconds"], config.wall_budgets().1);
         assert_eq!(config.simulation_timeout_override(), Some(45.0));
         config
             .validate_budget_options()
