@@ -3,19 +3,36 @@
 use super::*;
 use rumoca_core::{IndexBinderProvenance, StructuredIndexBinder};
 
-pub(super) fn quotient_tangent<'program>(
+pub(super) struct BroadcastTangent<T> {
+    pub(super) aggregate: Directional<T>,
+    pub(super) scalar: Directional<T>,
+    pub(super) tangents: [T; 2],
+    pub(super) primal: T,
+    pub(super) operator: SolveBinaryOperator,
+    pub(super) scalar_on_lhs: bool,
+}
+
+pub(super) fn binary_tangent<'program>(
     builder: &mut TypedProgramBuilder<'program>,
-    aggregate: Directional<ProgramRegister<'program>>,
-    scalar: Directional<ProgramRegister<'program>>,
-    tangents: [ProgramRegister<'program>; 2],
-    scalar_on_lhs: bool,
+    arguments: BroadcastTangent<ProgramRegister<'program>>,
     value_type: &SolveValueType,
     provenance: Span,
 ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
     let domain = pointwise_domain(value_type, builder.arithmetic, provenance)?;
+    let has_aggregate_tangent = arguments.aggregate.tangent.is_some();
+    let has_scalar_tangent = arguments.scalar.tangent.is_some();
+    let mut inputs = vec![
+        arguments.aggregate.primal,
+        arguments.tangents[0],
+        arguments.scalar.primal,
+        arguments.tangents[1],
+    ];
+    if arguments.operator == SolveBinaryOperator::Power {
+        inputs.push(arguments.primal);
+    }
     builder.map(
         domain,
-        &[aggregate.primal, tangents[0], scalar.primal, tangents[1]],
+        &inputs,
         SolveValueType::scalar(value_type.element_type()),
         provenance,
         |builder, captures, binders, output| {
@@ -30,13 +47,38 @@ pub(super) fn quotient_tangent<'program>(
                 builder.project_element_dynamic(aggregate_tangent, &coordinates, provenance)?;
             let scalar = builder.load(captures[2], provenance)?;
             let scalar_tangent = builder.load(captures[3], provenance)?;
-            let (primals, tangents) = if scalar_on_lhs {
+            let aggregate = Directional {
+                primal: aggregate,
+                tangent: has_aggregate_tangent.then_some(aggregate_tangent),
+            };
+            let scalar = Directional {
+                primal: scalar,
+                tangent: has_scalar_tangent.then_some(scalar_tangent),
+            };
+            let (values, tangents) = if arguments.scalar_on_lhs {
                 ([scalar, aggregate], [scalar_tangent, aggregate_tangent])
             } else {
                 ([aggregate, scalar], [aggregate_tangent, scalar_tangent])
             };
             let zero = builder.constant(SolveValue::real(builder.arithmetic, 0.0), provenance)?;
-            let tangent = partials::quotient_tangent(builder, primals, tangents, zero, provenance)?;
+            let tangent = match arguments.operator {
+                SolveBinaryOperator::Divide => partials::quotient_tangent(
+                    builder,
+                    [values[0].primal, values[1].primal],
+                    tangents,
+                    zero,
+                    provenance,
+                )?,
+                SolveBinaryOperator::Power => {
+                    let primal = builder.load(captures[4], provenance)?;
+                    let primal =
+                        builder.project_element_dynamic(primal, &coordinates, provenance)?;
+                    partials::power_tangent(builder, values, primal, tangents, zero, provenance)?
+                }
+                _ => {
+                    return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
+                }
+            };
             builder.store(output, tangent, provenance)
         },
     )

@@ -95,3 +95,59 @@ pub(super) fn extremum_tangent<'program>(
     let condition = builder.compare(comparison, lhs, rhs, provenance)?;
     builder.select(condition, lhs_tangent, rhs_tangent, provenance)
 }
+
+/// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial
+/// `r·l^(r-1)` when finite, the exponent partial `l^r·ln(l)` only for
+/// `l > 0` and when finite, each a function of the primal operands alone.
+pub(super) fn power_tangent<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    [lhs, rhs]: [Directional<ProgramRegister<'program>>; 2],
+    primal: ProgramRegister<'program>,
+    [lhs_tangent, rhs_tangent]: [ProgramRegister<'program>; 2],
+    zero: ProgramRegister<'program>,
+    provenance: Span,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let base = match lhs.tangent {
+        None => None,
+        Some(_) => {
+            let one = builder.constant(SolveValue::real(builder.arithmetic, 1.0), provenance)?;
+            let exponent =
+                builder.binary(SolveBinaryOperator::Subtract, rhs.primal, one, provenance)?;
+            let power =
+                builder.binary(SolveBinaryOperator::Power, lhs.primal, exponent, provenance)?;
+            let partial =
+                builder.binary(SolveBinaryOperator::Multiply, rhs.primal, power, provenance)?;
+            Some(scale_by_finite_partial(
+                builder,
+                lhs_tangent,
+                partial,
+                zero,
+                provenance,
+            )?)
+        }
+    };
+    let exponent = match rhs.tangent {
+        None => None,
+        Some(_) => {
+            let log = builder.unary(SolveUnaryOperator::Log, lhs.primal, provenance)?;
+            let partial = builder.binary(SolveBinaryOperator::Multiply, primal, log, provenance)?;
+            let finite = finite_or_zero(builder, partial, zero, provenance)?;
+            let lhs_positive =
+                builder.compare(SolveCompareOperator::Greater, lhs.primal, zero, provenance)?;
+            let partial = builder.select(lhs_positive, finite, zero, provenance)?;
+            Some(builder.binary(
+                SolveBinaryOperator::Multiply,
+                rhs_tangent,
+                partial,
+                provenance,
+            )?)
+        }
+    };
+    match (base, exponent) {
+        (Some(base), Some(exponent)) => {
+            builder.binary(SolveBinaryOperator::Add, base, exponent, provenance)
+        }
+        (Some(term), None) | (None, Some(term)) => Ok(term),
+        (None, None) => Ok(zero),
+    }
+}

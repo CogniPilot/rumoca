@@ -115,7 +115,7 @@ fn program_supports_directional(
             }
             SolveOperation::BroadcastBinary {
                 destination,
-                operator: SolveBinaryOperator::Divide,
+                operator: SolveBinaryOperator::Divide | SolveBinaryOperator::Power,
                 ..
             } => program
                 .register_types()
@@ -130,8 +130,7 @@ fn program_supports_directional(
                 }),
             SolveOperation::BroadcastBinary {
                 operator:
-                    SolveBinaryOperator::Power
-                    | SolveBinaryOperator::Atan2
+                    SolveBinaryOperator::Atan2
                     | SolveBinaryOperator::Min
                     | SolveBinaryOperator::Max,
                 ..
@@ -1042,12 +1041,12 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 zero,
                 provenance,
             )?,
-            SolveBinaryOperator::Power => self.derive_power(
-                lhs,
-                rhs,
+            SolveBinaryOperator::Power => partials::power_tangent(
+                self.builder,
+                [lhs, rhs],
                 primal,
                 [lhs_tangent, rhs_tangent],
-                (value_type, zero),
+                zero,
                 provenance,
             )?,
             SolveBinaryOperator::Atan2 => {
@@ -1137,80 +1136,6 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         )
     }
 
-    /// The `pow` kink rule of `rumoca_eval_solve::reverse`: the base partial
-    /// `r·l^(r-1)` when finite, the exponent partial `l^r·ln(l)` only for
-    /// `l > 0` and when finite, each a function of the primal operands alone.
-    fn derive_power(
-        &mut self,
-        lhs: Directional<ProgramRegister<'program>>,
-        rhs: Directional<ProgramRegister<'program>>,
-        primal: ProgramRegister<'program>,
-        [lhs_tangent, rhs_tangent]: [ProgramRegister<'program>; 2],
-        (value_type, zero): (&SolveValueType, ProgramRegister<'program>),
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        let base = match lhs.tangent {
-            None => None,
-            Some(_) => {
-                let one = self.constant_like(value_type, 1.0, provenance)?;
-                let exponent = self.builder.binary(
-                    SolveBinaryOperator::Subtract,
-                    rhs.primal,
-                    one,
-                    provenance,
-                )?;
-                let power = self.builder.binary(
-                    SolveBinaryOperator::Power,
-                    lhs.primal,
-                    exponent,
-                    provenance,
-                )?;
-                let partial = self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    rhs.primal,
-                    power,
-                    provenance,
-                )?;
-                Some(self.scale_by_finite_partial(lhs_tangent, partial, zero, provenance)?)
-            }
-        };
-        let exponent = match rhs.tangent {
-            None => None,
-            Some(_) => {
-                let log = self
-                    .builder
-                    .unary(SolveUnaryOperator::Log, lhs.primal, provenance)?;
-                let partial =
-                    self.builder
-                        .binary(SolveBinaryOperator::Multiply, primal, log, provenance)?;
-                let finite = self.finite_or_zero(partial, zero, provenance)?;
-                let lhs_positive = self.builder.compare(
-                    SolveCompareOperator::Greater,
-                    lhs.primal,
-                    zero,
-                    provenance,
-                )?;
-                let partial = self
-                    .builder
-                    .select(lhs_positive, finite, zero, provenance)?;
-                Some(self.builder.binary(
-                    SolveBinaryOperator::Multiply,
-                    rhs_tangent,
-                    partial,
-                    provenance,
-                )?)
-            }
-        };
-        match (base, exponent) {
-            (Some(base), Some(exponent)) => {
-                self.builder
-                    .binary(SolveBinaryOperator::Add, base, exponent, provenance)
-            }
-            (Some(term), None) | (None, Some(term)) => Ok(term),
-            (None, None) => Ok(zero),
-        }
-    }
-
     /// `tangent · partial` when the local partial is finite, and zero where it
     /// does not exist (the `rumoca_eval_solve::reverse` kink rules).
     fn scale_by_finite_partial(
@@ -1221,17 +1146,6 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         partials::scale_by_finite_partial(self.builder, tangent, partial, zero, provenance)
-    }
-
-    /// `value` when finite, else zero: `value - value` is `0` exactly for every
-    /// finite value and NaN for an infinite or NaN one.
-    fn finite_or_zero(
-        &mut self,
-        value: ProgramRegister<'program>,
-        zero: ProgramRegister<'program>,
-        provenance: Span,
-    ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
-        partials::finite_or_zero(self.builder, value, zero, provenance)
     }
 
     fn expanded_registers(
@@ -1432,12 +1346,16 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 self.builder
                     .binary(SolveBinaryOperator::Add, first, second, provenance)?
             }
-            SolveBinaryOperator::Divide => pointwise::quotient_tangent(
+            SolveBinaryOperator::Divide | SolveBinaryOperator::Power => pointwise::binary_tangent(
                 self.builder,
-                aggregate,
-                scalar,
-                [aggregate_tangent, scalar_tangent],
-                scalar_on_lhs,
+                pointwise::BroadcastTangent {
+                    aggregate,
+                    scalar,
+                    tangents: [aggregate_tangent, scalar_tangent],
+                    primal,
+                    operator,
+                    scalar_on_lhs,
+                },
                 &value_type,
                 provenance,
             )?,
