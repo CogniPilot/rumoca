@@ -401,37 +401,34 @@ fn issued_storage_leaves_do_not_poison_later_projection_queries() {
         })
         .unwrap();
         assert!(!reference.is_empty());
-        let mut stored = Vec::new();
-        for_each_scalar_coordinate_pruned(
-            view,
-            root,
-            0,
-            None,
-            &std::collections::BTreeSet::from([actual]),
-            |coordinate, scalar| stored.push((coordinate, scalar)),
-        )
-        .unwrap();
-        assert!(stored.is_empty());
-        let mut restored = Vec::new();
-        for_each_scalar_coordinate_pruned(
-            view,
-            root,
-            0,
-            None,
-            &std::collections::BTreeSet::new(),
-            |coordinate, scalar| restored.push((coordinate, scalar)),
-        )
-        .unwrap();
-        assert_eq!(restored, reference);
+        let omitted_actual = |id| id == actual;
+        let omitted_root = |id| id == root;
+        let mut actual_query = PrunedScalarCoordinateProjection::new(view, &omitted_actual);
+        let mut root_query = PrunedScalarCoordinateProjection::new(view, &omitted_root);
+        let mut normal_query = PrunedScalarCoordinateProjection::new(view, &|_| false);
+        for _ in 0..3 {
+            let mut stored = Vec::new();
+            actual_query
+                .project(root, 0, None, |coordinate, scalar| {
+                    stored.push((coordinate, scalar))
+                })
+                .unwrap();
+            assert!(stored.is_empty());
+            root_query
+                .project(root, 0, None, |_, _| {
+                    panic!("stored root has no executable reads")
+                })
+                .unwrap();
+            let mut restored = Vec::new();
+            normal_query
+                .project(root, 0, None, |coordinate, scalar| {
+                    restored.push((coordinate, scalar))
+                })
+                .unwrap();
+            assert_eq!(restored, reference);
+        }
         assert!(matches!(
-            for_each_scalar_coordinate_pruned(
-                view,
-                roots[2],
-                0,
-                None,
-                &std::collections::BTreeSet::new(),
-                |_, _| {}
-            ),
+            normal_query.project(roots[2], 0, None, |_, _| {}),
             Err(ProjectionError::IndexOutOfBounds { index: 4, .. })
         ));
     });

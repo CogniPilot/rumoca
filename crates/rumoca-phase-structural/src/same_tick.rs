@@ -156,6 +156,8 @@ pub enum SameTickOrderError {
     Projection(#[from] rumoca_eval_dae::ProjectionError),
     #[error("derivative dependency has no structurally matched scalar source row")]
     MissingDerivative { span: Span },
+    #[error("same-tick derivative dependency requires a non-record scalar view")]
+    UnsupportedDerivativeValue { span: Span },
     #[error("same-tick producer clock domains are not a nonempty canonical set")]
     InvalidClockDomains { span: Span },
     #[error(
@@ -178,6 +180,7 @@ impl SameTickOrderError {
         match self {
             Self::Projection(error) => error.span(),
             Self::MissingDerivative { span }
+            | Self::UnsupportedDerivativeValue { span }
             | Self::InvalidClockDomains { span }
             | Self::Cycle { span, .. }
             | Self::DuplicateOwner { span, .. }
@@ -405,7 +408,7 @@ fn record_definition<'dae>(
     let entry = writers.entry(target).or_default();
     entry.count += 1;
     entry.definition = (entry.count == 1).then_some(value);
-    reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut entry.reads)?;
+    reads::collect_expression_reads(view, value, sources, &|_| false, &mut entry.reads)?;
     Ok(())
 }
 
@@ -476,7 +479,7 @@ fn collect_discrete_real_writers<'dae>(
                     view,
                     oriented.value(),
                     sources,
-                    &mut |_| false,
+                    &|_| false,
                     &mut reads,
                 )?;
                 record_opaque_writer(writers, target, &reads);
@@ -531,7 +534,7 @@ fn collect_discrete_value_writers<'dae>(
         let mut reads = BTreeSet::new();
         for branch in branches.iter() {
             for (value, _) in branch.values().iter() {
-                reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut reads)?;
+                reads::collect_expression_reads(view, value, sources, &|_| false, &mut reads)?;
             }
         }
         for target in owner.targets().iter() {

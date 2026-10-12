@@ -13,13 +13,13 @@ pub fn collect_same_instant_reads<'dae>(
     expression: dae::ExprId<'dae>,
     reads: &mut BTreeSet<u32>,
 ) {
-    collect_raw_reads(view, expression, &mut |_| false, reads);
+    collect_raw_reads(view, expression, &|_| false, reads);
 }
 
 fn collect_raw_reads<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
-    projected: &mut impl FnMut(dae::ExprId<'dae>) -> bool,
+    projected: &impl Fn(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) {
     dae::ExpressionTraversal::new().visit_pruned(view, [expression], |id, node| {
@@ -53,27 +53,23 @@ pub(super) fn collect_expression_reads<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     sources: &DerivativeSources<'dae>,
-    projected: &mut impl FnMut(dae::ExprId<'dae>) -> bool,
+    projected: &impl Fn(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) -> Result<(), SameTickOrderError> {
-    if sources.is_empty() {
+    if sources.is_empty() || !has_derivative_demand(view, expression, projected) {
         collect_raw_reads(view, expression, projected, reads);
         return Ok(());
     }
-    let mut omitted = BTreeSet::new();
-    dae::ExpressionTraversal::new().visit_pruned(view, [expression], |id, _| {
-        if projected(id) {
-            omitted.insert(id);
-            return false;
-        }
-        true
-    });
-    let count = view
+    let node = view
         .expression(expression)
-        .expect("checked expression resolves")
-        .value_type()
-        .scalar_count()
-        .expect("checked expression scalar capacity");
+        .expect("checked expression resolves");
+    let count =
+        node.value_type()
+            .scalar_count()
+            .ok_or(SameTickOrderError::UnsupportedDerivativeValue {
+                span: node.provenance().span(),
+            })?;
+    let mut projection = rumoca_eval_dae::PrunedScalarCoordinateProjection::new(view, projected);
     let mut pending = (0..count)
         .map(|scalar| (expression, scalar, None))
         .collect::<Vec<_>>();
@@ -83,8 +79,7 @@ pub(super) fn collect_expression_reads<'dae>(
             continue;
         }
         let mut derivatives = Vec::new();
-        rumoca_eval_dae::for_each_scalar_coordinate_pruned(
-            view,
+        projection.project(
             root,
             scalar,
             point
@@ -92,7 +87,6 @@ pub(super) fn collect_expression_reads<'dae>(
                 .map(|(domain, indices): &(dae::DomainId<'dae>, Vec<i64>)| {
                     (*domain, indices.as_slice())
                 }),
-            &omitted,
             |coordinate, scalar| {
                 if let dae::CoordinateView::Derivative(state) = coordinate {
                     derivatives.push((state.index(), scalar));
@@ -124,6 +118,25 @@ pub(super) fn collect_expression_reads<'dae>(
     Ok(())
 }
 
+fn has_derivative_demand<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    projected: &impl Fn(dae::ExprId<'dae>) -> bool,
+) -> bool {
+    let mut demanded = false;
+    dae::ExpressionTraversal::new().visit_pruned(view, [expression], |id, node| {
+        if projected(id) {
+            return false;
+        }
+        demanded |= matches!(
+            node.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(_))
+        );
+        true
+    });
+    demanded
+}
+
 /// Collect the same-instant reads of one condition DAG.
 pub fn collect_condition_same_instant_reads<'dae>(
     view: dae::DaeView<'dae>,
@@ -151,11 +164,11 @@ pub fn collect_condition_same_instant_reads_pruned<'dae>(
     view: dae::DaeView<'dae>,
     root: dae::ConditionId<'dae>,
     excluded: &BTreeSet<dae::ConditionId<'dae>>,
-    mut projected: impl FnMut(dae::ExprId<'dae>) -> bool,
+    projected: impl Fn(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) {
     visit_condition_expressions(view, root, excluded, |expression| {
-        collect_raw_reads(view, expression, &mut projected, reads);
+        collect_raw_reads(view, expression, &projected, reads);
         Ok::<(), std::convert::Infallible>(())
     })
     .unwrap_or_else(|error| match error {});
@@ -166,7 +179,7 @@ fn collect_condition_reads<'dae>(
     root: dae::ConditionId<'dae>,
     excluded: &BTreeSet<dae::ConditionId<'dae>>,
     sources: &DerivativeSources<'dae>,
-    projected: &mut impl FnMut(dae::ExprId<'dae>) -> bool,
+    projected: &impl Fn(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) -> Result<(), SameTickOrderError> {
     visit_condition_expressions(view, root, excluded, |expression| {
@@ -253,7 +266,7 @@ impl<'dae> SameTickDefinitions<'dae> {
             view,
             expression,
             &self.derivative_sources,
-            &mut |_| false,
+            &|_| false,
             reads,
         )
     }
@@ -264,7 +277,7 @@ impl<'dae> SameTickDefinitions<'dae> {
         view: dae::DaeView<'dae>,
         root: dae::ConditionId<'dae>,
         excluded: &BTreeSet<dae::ConditionId<'dae>>,
-        mut projected: impl FnMut(dae::ExprId<'dae>) -> bool,
+        projected: impl Fn(dae::ExprId<'dae>) -> bool,
         reads: &mut BTreeSet<u32>,
     ) -> Result<(), SameTickOrderError> {
         collect_condition_reads(
@@ -272,7 +285,7 @@ impl<'dae> SameTickDefinitions<'dae> {
             root,
             excluded,
             &self.derivative_sources,
-            &mut projected,
+            &projected,
             reads,
         )
     }

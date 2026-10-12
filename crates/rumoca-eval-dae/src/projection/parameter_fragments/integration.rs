@@ -103,7 +103,7 @@ impl<'dae> Projection<'_, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
-        if self.omitted.is_some_and(|ids| ids.contains(&expression)) {
+        if self.omitted.is_some_and(|omitted| omitted(expression)) {
             return Ok(());
         }
         let fragment = self.begin_parameter_fragment(expression, None, scalar_index);

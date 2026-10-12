@@ -20,6 +20,7 @@ impl From<rumoca_phase_structural::SameTickOrderError> for LowerError {
             SameTickOrderError::DuplicateOwner { .. }
             | SameTickOrderError::InvalidClockDomains { .. }
             | SameTickOrderError::MissingDerivative { .. }
+            | SameTickOrderError::UnsupportedDerivativeValue { .. }
             | SameTickOrderError::Projection(_) => Self::contract(error.to_string(), error.span()),
         }
     }
@@ -384,8 +385,13 @@ impl SameTickExchange {
     }
 
     /// Whether `candidate` may join the family already spanning `first..candidate`.
-    pub(super) fn fusable_with_range(&self, first: usize, candidate: usize) -> bool {
-        (first..candidate).all(|member| self.fusable(member, candidate))
+    pub(super) fn fusable_with_range(
+        &self,
+        order: &[usize],
+        first: usize,
+        candidate: usize,
+    ) -> bool {
+        (first..candidate).all(|member| self.fusable(order[member], order[candidate]))
     }
 
     /// A stable producer-before-reader order of the members: each member is

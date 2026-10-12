@@ -1484,10 +1484,9 @@ fn lower_guarded_targets<'dae>(
                 .extend(target.branches.iter().map(|branch| branch.0));
         }
     }
-    let order = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)?
-        .producer_order();
-    apply_permutation(targets, &order);
     let exchange = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)?;
+    let order = exchange.producer_order();
+    apply_permutation(targets, &order);
     let definition_targets = std::rc::Rc::new(
         targets
             .iter()
@@ -1517,7 +1516,7 @@ fn lower_guarded_targets<'dae>(
             && targets[end].event_clock == event_clock
             && targets[end].pre_mode == pre_mode
             && same_guarded_control(&targets[first], &targets[end])
-            && exchange.fusable_with_range(first, end)
+            && exchange.fusable_with_range(&order, first, end)
         {
             end += 1;
         }

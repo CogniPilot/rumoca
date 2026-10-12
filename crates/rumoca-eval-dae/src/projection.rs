@@ -258,35 +258,55 @@ pub fn for_each_scalar_coordinate_filtered_cached<'dae>(
     )
 }
 
-/// Project a scalar while treating issued stored-expression identities as leaves.
-/// The fresh cache belongs to this exact omission set; summaries cannot leak
-/// between different executable storage contexts.
-pub fn for_each_scalar_coordinate_pruned<'dae>(
+/// One dependency walk bound to its immutable issued-storage predicate.
+/// Its private cache cannot be reused under another executable storage context.
+pub struct PrunedScalarCoordinateProjection<'query, 'dae> {
     view: dae::DaeView<'dae>,
-    root: dae::ExprId<'dae>,
-    scalar_index: usize,
-    domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
-    omitted: &std::collections::BTreeSet<dae::ExprId<'dae>>,
-    mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
-) -> Result<(), ProjectionError> {
-    project_coordinates(
-        view,
-        root,
-        scalar_index,
-        domain_point,
-        &mut ScalarCoordinateProjectionCache::default(),
-        ProjectionQuery {
-            relevant: None,
-            omitted: Some(omitted),
-        },
-        &mut visit,
-    )
+    omitted: &'query dyn Fn(dae::ExprId<'dae>) -> bool,
+    cache: ScalarCoordinateProjectionCache<'dae>,
+}
+
+impl<'query, 'dae> PrunedScalarCoordinateProjection<'query, 'dae> {
+    /// Bind one finalized DAE and one storage-leaf query for the complete walk.
+    #[must_use]
+    pub fn new(
+        view: dae::DaeView<'dae>,
+        omitted: &'query dyn Fn(dae::ExprId<'dae>) -> bool,
+    ) -> Self {
+        Self {
+            view,
+            omitted,
+            cache: ScalarCoordinateProjectionCache::default(),
+        }
+    }
+
+    /// Visit a scalar using the cache owned by this exact query.
+    pub fn project(
+        &mut self,
+        root: dae::ExprId<'dae>,
+        scalar_index: usize,
+        domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
+        mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
+    ) -> Result<(), ProjectionError> {
+        project_coordinates(
+            self.view,
+            root,
+            scalar_index,
+            domain_point,
+            &mut self.cache,
+            ProjectionQuery {
+                relevant: None,
+                omitted: Some(self.omitted),
+            },
+            &mut visit,
+        )
+    }
 }
 
 #[derive(Default)]
 struct ProjectionQuery<'visit, 'dae> {
     relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
-    omitted: Option<&'visit std::collections::BTreeSet<dae::ExprId<'dae>>>,
+    omitted: Option<&'visit dyn Fn(dae::ExprId<'dae>) -> bool>,
 }
 
 fn project_coordinates<'dae>(
@@ -364,7 +384,7 @@ struct Projection<'visit, 'dae> {
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
     relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
-    omitted: Option<&'visit std::collections::BTreeSet<dae::ExprId<'dae>>>,
+    omitted: Option<&'visit dyn Fn(dae::ExprId<'dae>) -> bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
