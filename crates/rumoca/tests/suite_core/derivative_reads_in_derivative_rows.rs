@@ -121,6 +121,18 @@ fn independent_tensor_derivatives_do_not_issue_a_false_same_tick_cycle() {
     check_same_tick_values(source, [("a", [10.0; 3]), ("b", [11.0; 3])]);
 }
 
+#[test]
+fn a_tensor_derivative_alias_keeps_its_selected_scalar_dependency() {
+    let source = "model SameTickDerivative Real x[2](each start=0,each fixed=true); Real rhs[2]; discrete Real a(start=0,fixed=true); discrete Real b(start=0,fixed=true); equation rhs={10,b}; der(x)=rhs; when sample(0,0.1) then b=a+1; a=der(x[1]); end when; end SameTickDerivative;";
+    check_same_tick_values(source, [("a", [10.0; 3]), ("b", [11.0; 3])]);
+}
+
+#[test]
+fn a_tensor_derivative_alias_retains_the_dependent_scalar_producer() {
+    let source = "model SameTickDerivative Real x[2](each start=0,each fixed=true); Real rhs[2]; discrete Real a(start=0,fixed=true); discrete Real b(start=1,fixed=true); equation rhs={10,b}; der(x)=rhs; when sample(0,0.1) then a=der(x[2]); b=pre(b)+1; end when; end SameTickDerivative;";
+    check_same_tick_values(source, [("a", [2.0, 3.0, 4.0]), ("b", [2.0, 3.0, 4.0])]);
+}
+
 fn check_same_tick_values(source: &str, expected_values: [(&str, [f64; 3]); 2]) {
     let compiled = Compiler::new()
         .model("SameTickDerivative")
