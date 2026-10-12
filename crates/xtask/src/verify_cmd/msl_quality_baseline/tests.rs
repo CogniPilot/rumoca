@@ -24,6 +24,7 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
         partial_classification_migration: Some(partial_classification_migration()),
         compiler_contract_migration: None,
         promoted_baseline_bridge: None,
+        budget_metadata_correction: None,
         simulatable_attempted: 566,
         parse_models: 566,
         flatten_models: 565,

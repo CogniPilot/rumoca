@@ -25,18 +25,76 @@ pub(super) struct TimingMarginEntry {
 
 /// The phase budgets of the evidence run: every worker phase has the model
 /// attempt budget except the simulation run, which the solver bounds.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PhaseBudgetWire", into = "PhaseBudgetWire")]
 pub(super) struct PhaseBudgets {
-    pub(super) model_attempt_seconds: f64,
-    pub(super) simulation_seconds: f64,
+    model_attempt_seconds: f64,
+    simulation_seconds: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PhaseBudgetWire {
+    model_attempt_timeout_seconds: f64,
+    sim_timeout_seconds: f64,
+}
+
+impl TryFrom<PhaseBudgetWire> for PhaseBudgets {
+    type Error = String;
+
+    fn try_from(wire: PhaseBudgetWire) -> Result<Self, Self::Error> {
+        Self::new(wire.model_attempt_timeout_seconds, wire.sim_timeout_seconds)
+    }
+}
+
+impl From<PhaseBudgets> for PhaseBudgetWire {
+    fn from(budgets: PhaseBudgets) -> Self {
+        Self {
+            model_attempt_timeout_seconds: budgets.model_attempt_seconds,
+            sim_timeout_seconds: budgets.simulation_seconds,
+        }
+    }
 }
 
 impl PhaseBudgets {
-    pub(super) fn configured() -> Self {
-        Self {
-            model_attempt_seconds: model_attempt_timeout_secs(),
-            simulation_seconds: sim_timeout_secs(),
+    pub(super) fn new(model_attempt_seconds: f64, simulation_seconds: f64) -> Result<Self, String> {
+        for (field, value) in [
+            ("model_attempt_timeout_seconds", model_attempt_seconds),
+            ("sim_timeout_seconds", simulation_seconds),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(format!("{field} must be finite and positive, got {value}"));
+            }
         }
+        Ok(Self {
+            model_attempt_seconds,
+            simulation_seconds,
+        })
+    }
+
+    pub(super) fn configured() -> Result<Self, String> {
+        Self::new(model_attempt_timeout_secs(), sim_timeout_secs())
+    }
+
+    pub(super) fn mismatch_reason(self, current: Self) -> Option<String> {
+        for (field, baseline, actual) in [
+            (
+                "model_attempt_timeout_seconds",
+                self.model_attempt_seconds,
+                current.model_attempt_seconds,
+            ),
+            (
+                "sim_timeout_seconds",
+                self.simulation_seconds,
+                current.simulation_seconds,
+            ),
+        ] {
+            if baseline != actual {
+                return Some(format!(
+                    "{field} differs (baseline={baseline}, current={actual})"
+                ));
+            }
+        }
+        None
     }
 
     /// The phase of `result` that used the largest share of its budget.

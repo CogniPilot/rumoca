@@ -1,6 +1,7 @@
 use super::*;
 
 mod gate_hole;
+mod phase_budgets;
 mod timing_margin;
 use serde_json::Value;
 use serde_json::json;
@@ -106,6 +107,10 @@ fn panic_message(payload: &Box<dyn Any + Send>) -> String {
     "<non-string panic payload>".to_string()
 }
 
+fn configured_phase_budgets() -> PhaseBudgets {
+    PhaseBudgets::configured().expect("valid configured budgets")
+}
+
 fn baseline_quality_template() -> MslQualityBaseline {
     MslQualityBaseline {
         quality_gate_version: MSL_QUALITY_GATE_VERSION,
@@ -113,7 +118,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
         git_commit: "baseline".to_string(),
         msl_version: "v4.1.0".to_string(),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
-        sim_timeout_seconds: SIM_TIMEOUT_SECS,
+        phase_budgets: configured_phase_budgets(),
         simulatable_attempted: 10,
         parse_models: 10,
         flatten_models: 10,
@@ -259,7 +264,7 @@ fn full_quality_gate_rejects_zero_simulation_attempts() {
 #[test]
 fn current_quality_snapshot_marks_only_partial_runs() {
     let summary = valid_summary_template();
-    let full = current_msl_quality_snapshot_json(&summary, None, false)
+    let full = current_msl_quality_snapshot_json(&summary, None, false, configured_phase_budgets())
         .expect("full snapshot should serialize");
     assert_eq!(
         full.get("quality_gate_version").and_then(Value::as_u64),
@@ -274,8 +279,9 @@ fn current_quality_snapshot_marks_only_partial_runs() {
         "full baseline snapshots should omit the partial marker"
     );
 
-    let partial = current_msl_quality_snapshot_json(&summary, None, true)
-        .expect("partial snapshot should serialize");
+    let partial =
+        current_msl_quality_snapshot_json(&summary, None, true, configured_phase_budgets())
+            .expect("partial snapshot should serialize");
     assert_eq!(
         partial.get("run_scope").and_then(Value::as_str),
         Some(MSL_QUALITY_RUN_SCOPE_PARTIAL)
@@ -297,8 +303,13 @@ fn current_quality_snapshot_records_parity_omc_version() {
         omc_assertion_failure_examples: Vec::new(),
     };
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
-        .expect("snapshot should serialize");
+    let snapshot = current_msl_quality_snapshot_json(
+        &summary,
+        Some(&parity),
+        false,
+        configured_phase_budgets(),
+    )
+    .expect("snapshot should serialize");
     assert_eq!(
         snapshot.get("omc_version").and_then(Value::as_str),
         Some("OpenModelica 1.26.1")
@@ -323,8 +334,13 @@ fn current_quality_snapshot_separates_reviewed_exceptions_from_unclassified_debt
         omc_assertion_failure_examples: Vec::new(),
     };
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
-        .expect("snapshot should serialize");
+    let snapshot = current_msl_quality_snapshot_json(
+        &summary,
+        Some(&parity),
+        false,
+        configured_phase_budgets(),
+    )
+    .expect("snapshot should serialize");
     assert_eq!(
         snapshot
             .pointer("/pipeline_progress/certified_simulations_strict_high")
@@ -368,8 +384,13 @@ fn current_quality_snapshot_records_runtime_ratio_stats() {
         omc_assertion_failure_examples: Vec::new(),
     };
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, Some(&parity), false)
-        .expect("snapshot should serialize");
+    let snapshot = current_msl_quality_snapshot_json(
+        &summary,
+        Some(&parity),
+        false,
+        configured_phase_budgets(),
+    )
+    .expect("snapshot should serialize");
     assert_eq!(
         snapshot
             .pointer("/runtime_context/workers_used")
@@ -472,8 +493,9 @@ fn current_quality_snapshot_includes_pipeline_progression() {
         vec!["Modelica.NotAStandaloneRoot".to_string()],
     );
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
-        .expect("snapshot should serialize");
+    let snapshot =
+        current_msl_quality_snapshot_json(&summary, None, false, configured_phase_budgets())
+            .expect("snapshot should serialize");
     let pipeline = snapshot
         .get("pipeline_progress")
         .and_then(Value::as_object)
@@ -558,8 +580,9 @@ fn current_quality_snapshot_includes_mls_contract_category_coverage() {
     );
     summary.model_results = vec![array_result, connector_result];
 
-    let snapshot = current_msl_quality_snapshot_json(&summary, None, false)
-        .expect("snapshot should serialize");
+    let snapshot =
+        current_msl_quality_snapshot_json(&summary, None, false, configured_phase_budgets())
+            .expect("snapshot should serialize");
     let coverage = snapshot
         .get("mls_contract_coverage")
         .and_then(Value::as_object)
@@ -1675,7 +1698,10 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     )
     .expect("load checked baseline");
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
-    assert_eq!(baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS);
+    assert_eq!(
+        baseline.phase_budgets,
+        PhaseBudgets::new(20.0, 45.0).expect("immutable CI evidence budgets")
+    );
     assert_eq!(baseline.flatten_models, 542);
     assert_eq!(baseline.partial_models, 13);
     assert_eq!(baseline.partial_model_names, reviewed_partial_model_names());
