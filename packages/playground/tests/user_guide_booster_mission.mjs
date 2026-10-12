@@ -27,7 +27,9 @@ function checkWind(sample, expected) {
 }
 
 function checkNominalMission(trace, dt) {
-  const phases = [...new Set(trace.map((sample) => sample.mission_phase))];
+  requireValue(trace.every((sample) => Number.isInteger(sample.mission_phase)), "mission phase must be an integer");
+  const phases = trace.map((sample) => sample.mission_phase)
+    .filter((phase, index, values) => index === 0 || phase !== values[index - 1]);
   requireValue(JSON.stringify(phases) === JSON.stringify([0, 1, 2, 3, 4]), `nominal mission phases ${phases}`);
   const ascent = trace.find((sample) => sample.mission_phase === 1);
   const coast = trace.find((sample) => sample.mission_phase === 2);
@@ -44,15 +46,16 @@ function checkNominalMission(trace, dt) {
   return { phases, ascent, coast, landing, landed };
 }
 
-export async function observeBoosterMission({ controller, session, host, snapshot, dt, setRuntimeReject }) {
+export async function observeBoosterMission({ controller, session, host, snapshot, dt, setRuntimeReject, getSession }) {
   requireValue(dt === 0.05, "retain the authored Booster output interval");
+  requireValue(getSession() === session, "observe the actual configured session");
   const initial = missionSample(snapshot(session));
   requireValue(initial.time === 0 && initial.mission_phase === 0, "mission must start waiting at zero");
   const step = session.step.bind(session);
   const reset = session.reset.bind(session);
   const trace = [];
   const bridge = { stage: "ready", initial, latest: initial, resetState: null, resetNext: null,
-    controller, host, nominal: false, wind: null,
+    controller, host, nominal: false, wind: null, resetCalls: 0, postResetSteps: 0,
     beginNominal() { trace.push(bridge.latest); bridge.nominal = true; } };
   let timer;
   let resolveMission;
@@ -63,19 +66,26 @@ export async function observeBoosterMission({ controller, session, host, snapsho
     timer = setTimeout(() => bridge.fail("Booster mission exceeded the existing 30s cell watchdog"), 30000);
   });
   session.reset = () => {
+    requireValue(getSession() === session, "controller replaced the observed session before reset");
     reset();
+    requireValue(getSession() === session, "reset replaced the observed JavaScript session");
+    bridge.resetCalls++;
     bridge.resetState = missionSample(snapshot(session));
     bridge.stage = "reset";
   };
   session.step = (interval) => {
     try {
+      requireValue(getSession() === session, "controller replaced the observed session before stepping");
       requireValue(interval === dt, "mission pacing changed the physical output interval");
       const before = session.time();
       step(interval);
       const sample = missionSample(snapshot(session));
       requireValue(Math.abs(sample.time - before - dt) < 1e-9, "mission skipped an authored interval");
       bridge.latest = sample;
-      if (bridge.resetState && !bridge.resetNext) bridge.resetNext = sample;
+      if (bridge.resetState) {
+        bridge.postResetSteps++;
+        if (!bridge.resetNext) bridge.resetNext = sample;
+      }
       if (bridge.nominal) {
         trace.push(sample);
         if (sample.mission_phase === 5) bridge.fail("nominal mission entered the authored crash phase");
@@ -91,9 +101,10 @@ export async function observeBoosterMission({ controller, session, host, snapsho
   try {
     await finished;
     controller.stop();
+    requireValue(bridge.resetCalls === 1 && bridge.postResetSteps > 0, "observe exactly one R reset and its subsequent steps");
     const nominal = checkNominalMission(trace, dt);
     return { initial, wind: bridge.wind, reset: bridge.resetState, resetNext: bridge.resetNext,
-      nominal, intervals: trace.length - 1, trace };
+      resetCalls: bridge.resetCalls, postResetSteps: bridge.postResetSteps, nominal, intervals: trace.length - 1, trace };
   } finally {
     clearTimeout(timer);
     delete globalThis[observerKey];

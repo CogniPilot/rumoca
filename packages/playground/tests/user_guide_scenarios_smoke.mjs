@@ -83,7 +83,9 @@ try {
           document.body.append(host);
           const construct = wasm.WasmSimulationSession.withInteractiveConfiguration;
           let session;
+          let configuredSessions = 0;
           wasm.WasmSimulationSession.withInteractiveConfiguration = (...args) => {
+            configuredSessions++;
             session = construct(...args);
             return session;
           };
@@ -103,8 +105,12 @@ try {
             if (boosterMission) {
               const { observeBoosterMission } = await import("/packages/playground/tests/user_guide_booster_mission.mjs");
               const mission = await observeBoosterMission({ controller, session, host, snapshot,
+                getSession: () => {
+                  if (configuredSessions !== 1) throw new Error("Booster controller reconstructed its configured session");
+                  return session;
+                },
                 dt: config.sim.dt, setRuntimeReject: (reject) => { rejectRuntime = reject; } });
-              return { ...common, kind: "interactive", boosterMission: mission, samples };
+              return { ...common, kind: "interactive", sessionConstructions: configuredSessions, boosterMission: mission, samples };
             }
             await new Promise((resolve, reject) => {
               rejectRuntime = reject;
@@ -187,6 +193,9 @@ try {
         receipt.samples = allData[0].length;
         delete receipt.payload;
       } else if (receipt.boosterMission) {
+        assert.equal(receipt.sessionConstructions, 1);
+        assert.equal(receipt.boosterMission.resetCalls, 1);
+        assert(receipt.boosterMission.postResetSteps > 0);
         assert.deepEqual(receipt.boosterMission.nominal.phases, [0, 1, 2, 3, 4]);
         const trace = receipt.boosterMission.trace;
         assert(trace.length > 4, "full authored mission, not startup only");
