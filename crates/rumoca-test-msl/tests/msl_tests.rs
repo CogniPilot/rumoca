@@ -12,15 +12,14 @@
 //!
 //! Every model attempt runs under six declared per-model ceilings. Each is
 //! raise-only from the parity config (a config may buy a bigger budget for a
-//! diagnostic lane; it can never shrink one below the value the committed
-//! baseline was measured with), and each overrun is loud, carries a typed
+//! diagnostic lane; it cannot shrink the focused harness floors), and each overrun is loud, carries a typed
 //! [`rumoca_worker::ModelFailureBucket`] with a named owner, and cannot hang:
 //!
 //! | ceiling | default | override | overrun bucket |
 //! |---|---|---|---|
-//! | per-phase compile wall | 10 s | `model_attempt_timeout_secs` | `Timeout` |
-//! | simulation parent watchdog | 14 s | derived from solver budget + grace | `Timeout` |
-//! | simulation/solver wall | 12 s | `sim_timeout_secs` | `Timeout` |
+//! | per-phase compile wall | full: 20 s; focused: 10 s | `model_attempt_timeout_secs` | `Timeout` |
+//! | simulation parent watchdog | full: 47 s; focused: 14 s | derived from solver budget + grace | `Timeout` |
+//! | simulation/solver wall | full: 45 s; focused: 12 s | `sim_timeout_secs` | `Timeout` |
 //! | worker resident+swap | 6 GiB | `model_worker_memory_mb` | `MemoryLimit` |
 //! | total compile wall | 40 s | `model_compile_wall_limit_secs` | `ResourceBudget` |
 //! | Solve-IR serialized size | 32 MB | `solve_ir_size_limit_mb` | `ResourceBudget` |

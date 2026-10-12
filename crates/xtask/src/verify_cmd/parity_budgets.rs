@@ -16,9 +16,9 @@ enum MslParityBudgetProfile {
 }
 
 impl MslParityBudgetProfile {
-    fn wall_budgets(self) -> (u64, u64) {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::Ci => (45, 20),
+            Self::Ci => "ci",
         }
     }
 }
@@ -60,17 +60,16 @@ impl MslParityBudgetArgs {
 
     /// Write the selected profile or explicit budgets into the harness config map.
     pub(crate) fn insert_into(&self, config: &mut Map<String, Value>) {
-        let (sim_timeout_secs, model_attempt_timeout_secs) = self.budget_profile.map_or(
-            (self.sim_timeout_secs, self.model_attempt_timeout_secs),
-            |profile| {
-                let (sim, model) = profile.wall_budgets();
-                (Some(sim), Some(model))
-            },
-        );
+        if let Some(profile) = self.budget_profile {
+            config.insert("budget_profile".into(), profile.as_str().into());
+        }
         for (key, value) in [
-            ("sim_timeout_secs", sim_timeout_secs),
+            ("sim_timeout_secs", self.sim_timeout_secs),
             ("ir_solve_timeout_secs", self.ir_solve_timeout_secs),
-            ("model_attempt_timeout_secs", model_attempt_timeout_secs),
+            (
+                "model_attempt_timeout_secs",
+                self.model_attempt_timeout_secs,
+            ),
         ] {
             if let Some(secs) = value {
                 config.insert(key.into(), (secs as f64).into());
@@ -124,11 +123,10 @@ mod tests {
     }
 
     #[test]
-    fn ci_profile_writes_the_shared_measurement_budgets() {
+    fn ci_profile_writes_the_shared_measurement_profile() {
         let config = config_for(&["verify-msl-parity", "--budget-profile", "ci"]);
-        assert_eq!(config["sim_timeout_secs"], Value::from(45.0));
-        assert_eq!(config["model_attempt_timeout_secs"], Value::from(20.0));
-        assert_eq!(config.len(), 2);
+        assert_eq!(config["budget_profile"], Value::from("ci"));
+        assert_eq!(config.len(), 1);
     }
 
     #[test]

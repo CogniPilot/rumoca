@@ -14,6 +14,23 @@
 use super::*;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+mod budget_tests;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum MslParityBudgetProfile {
+    Ci,
+}
+
+impl MslParityBudgetProfile {
+    fn wall_budgets(self) -> (f64, f64) {
+        match self {
+            Self::Ci => (20.0, 45.0),
+        }
+    }
+}
+
 /// The `rumoca-test-msl` crate directory, resolved at RUNTIME.
 ///
 /// Every path the harness reads or writes (the parity config, sim-target JSONs,
@@ -64,6 +81,8 @@ pub(crate) fn parity_config_path() -> PathBuf {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct MslParityConfig {
+    /// Explicit measurement profile; full root cohorts select CI by default.
+    budget_profile: Option<MslParityBudgetProfile>,
     /// Results directory for JSON, markdown, trace, and debug artifacts. Relative
     /// paths are resolved from the workspace root.
     pub results_dir: Option<PathBuf>,
@@ -118,8 +137,7 @@ pub(crate) struct MslParityConfig {
     pub merge_shards_dir: Option<PathBuf>,
     /// Per-model solver wall budget in seconds. Clamped to at least
     /// [`rumoca_worker::MSL_SIM_TIMEOUT_SECS`]: a config may only *raise* the
-    /// budget, so a mis-written file can never make the gate easier by giving
-    /// models less time than the committed baseline was measured with.
+    /// focused floor; full-cohort defaults use the CI measurement profile.
     pub sim_timeout_secs: Option<f64>,
     /// Per-model Solve-IR lowering wall budget in seconds. Raise-only, as above.
     pub ir_solve_timeout_secs: Option<f64>,
@@ -135,14 +153,101 @@ pub(crate) struct MslParityConfig {
     /// [`rumoca_test_msl::resource_budget::MODEL_COMPILE_WALL_LIMIT_SECS_DEFAULT`]
     /// and is raise-only.
     pub model_compile_wall_limit_secs: Option<f64>,
-    /// Per-model, per-phase wall budget in seconds. Defaults to the shared MSL
-    /// simulation budget and is raise-only. Each model receives exactly one
-    /// attempt.
+    /// Per-model, per-phase wall budget in seconds. Full cohorts default to the
+    /// CI profile; focused runs retain the raise-only floor. Each model receives
+    /// exactly one attempt.
     pub model_attempt_timeout_secs: Option<f64>,
     /// Build the OMC reference for every simulation target instead of only the
     /// models rumoca already simulates. Needed by the long-budget event-cohort
     /// lane, where the point is to compare models that are *not* yet `sim_ok`.
     pub all_omc_targets: Option<bool>,
+}
+
+impl MslParityConfig {
+    fn from_json(raw: &str) -> Result<Self, String> {
+        let config: Self = serde_json::from_str(raw).map_err(|error| error.to_string())?;
+        config.validate_budget_options().map_err(str::to_owned)?;
+        Ok(config)
+    }
+
+    pub(super) fn simulation_timeout_override(&self) -> Option<f64> {
+        raise_only_timeout(self.sim_timeout_secs, SIM_TIMEOUT_SECS).or_else(|| {
+            (self.budget_profile.is_some() || !self.is_partial_run()).then(|| self.wall_budgets().1)
+        })
+    }
+
+    pub(super) fn target_scope(&self) -> MslTargetScope {
+        match self.target_scope.as_deref() {
+            None | Some("root-examples") => MslTargetScope::RootExamples,
+            Some("default-simulation-targets") => MslTargetScope::DefaultSimulationTargets,
+            Some(other) => panic!(
+                "invalid target_scope '{other}' in MSL parity config (expected 'root-examples' or 'default-simulation-targets')"
+            ),
+        }
+    }
+
+    pub(super) fn sim_set_mode(&self) -> SimSetMode {
+        match self.sim_set.as_deref() {
+            None | Some("full") => SimSetMode::Full,
+            Some("short") => SimSetMode::Short,
+            Some("long") => SimSetMode::Long,
+            Some(other) => panic!(
+                "invalid sim_set '{other}' in MSL parity config (expected 'full', 'short', or 'long')"
+            ),
+        }
+    }
+
+    pub(super) fn shard(&self) -> Option<(usize, usize)> {
+        match (self.shard_index, self.shard_count) {
+            (Some(index), Some(count)) if count >= 1 && index >= 1 && index <= count => {
+                Some((index, count))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn is_partial_run(&self) -> bool {
+        self.target_scope() != MslTargetScope::RootExamples
+            || self.sim_targets_file.is_some()
+            || self.sim_match.as_ref().is_some_and(|patterns| !patterns.is_empty())
+            || self.sim_limit.is_some()
+            || self.sim_set_mode() != SimSetMode::Full
+            // Shards are partial; merge_shards_dir is a full-cohort fan-in.
+            || self.shard().is_some()
+    }
+
+    fn validate_budget_options(&self) -> Result<(), &'static str> {
+        if self.budget_profile.is_some()
+            && (self.sim_timeout_secs.is_some()
+                || self.model_attempt_timeout_secs.is_some()
+                || self.ir_solve_timeout_secs.is_some())
+        {
+            return Err("budget_profile conflicts with explicit timeout fields");
+        }
+        Ok(())
+    }
+
+    pub(super) fn wall_budgets(&self) -> (f64, f64) {
+        let defaults = self
+            .budget_profile
+            .or_else(|| (!self.is_partial_run()).then_some(MslParityBudgetProfile::Ci))
+            .map_or(
+                (MODEL_ATTEMPT_TIMEOUT_SECS, SIM_TIMEOUT_SECS),
+                MslParityBudgetProfile::wall_budgets,
+            );
+        (
+            raise_only_timeout(self.model_attempt_timeout_secs, MODEL_ATTEMPT_TIMEOUT_SECS)
+                .unwrap_or(defaults.0),
+            raise_only_timeout(self.sim_timeout_secs, SIM_TIMEOUT_SECS).unwrap_or(defaults.1),
+        )
+    }
+}
+
+/// Clamp explicit diagnostic overrides to the existing focused harness floors.
+fn raise_only_timeout(configured: Option<f64>, floor: f64) -> Option<f64> {
+    configured
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.max(floor))
 }
 
 /// Load (once) the MSL parity configuration from [`parity_config_path`]. A
@@ -159,7 +264,7 @@ pub(crate) fn parity_config() -> &'static MslParityConfig {
         if raw.trim().is_empty() {
             return MslParityConfig::default();
         }
-        match serde_json::from_str(&raw) {
+        match MslParityConfig::from_json(&raw) {
             Ok(config) => {
                 println!("MSL parity config loaded from {}", path.display());
                 config

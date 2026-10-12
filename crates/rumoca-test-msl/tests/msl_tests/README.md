@@ -23,7 +23,7 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 | Simulation workers (4-worker automatic cap) | `--sim-parallelism N` | `sim_parallelism` |
 | Solver wall budget | `--sim-timeout-secs SECS` | `sim_timeout_secs` |
 | Solve-IR lowering budget | `--ir-solve-timeout-secs SECS` | `ir_solve_timeout_secs` |
-| Base model-worker phase budget (10s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
+| Base model-worker phase budget (full 20s; focused 10s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
 | Total compile wall ceiling (40s default) | — (config only) | `model_compile_wall_limit_secs` |
 | Solve-IR serialized-size ceiling (32 MB default) | — (config only) | `solve_ir_size_limit_mb` |
 | OMC baseline for every target | `--all-omc-targets` | `all_omc_targets` |
@@ -251,9 +251,9 @@ grows the list; never lower it to make a red gate green.
   - no unbound fixed-parameter scalars (zero-sized parameters are allowed)
 - Worker timeout semantics are layered:
   - DAE-to-Solve-IR lowering budget: `IR_SOLVE_TIMEOUT_SECS` (currently 10s)
-  - solver budget: `SIM_TIMEOUT_SECS` (currently 12s)
+  - solver budget: full-cohort CI profile 45s; unprofiled focused floor `SIM_TIMEOUT_SECS` (12s)
   - outer model-worker phase budget: solver budget +
-    `SIM_WORKER_TIMEOUT_GRACE_SECS` (currently 14s total)
+    `SIM_WORKER_TIMEOUT_GRACE_SECS` (2s; full profile 47s total, focused default 14s)
   - isolated simulation-worker process budget: lowering budget + solver budget +
     `SIM_WORKER_TIMEOUT_GRACE_SECS`
     (currently +2s)
@@ -272,6 +272,7 @@ grows the list; never lower it to make a red gate green.
   `RUMOCA_MSL_SIM_PERF_KEEP_THRESHOLD_SECS`; sampling frequency defaults to 99Hz
   and can be adjusted with `RUMOCA_MSL_COMPILE_PERF_FREQ` and
   `RUMOCA_MSL_SIM_PERF_FREQ`.
+- Full root-example cohorts select the CI measurement profile (20s per worker phase, 45s solver) even with no config file. Typed partial selections retain 10s/12s defaults unless `--budget-profile ci` or explicit diagnostic timeouts are supplied. Named profiles conflict with explicit timeout fields in both CLI and direct config.
 - Canonical full-run entry point:
   - `cargo xtask verify msl-parity`
   - raw test equivalent:

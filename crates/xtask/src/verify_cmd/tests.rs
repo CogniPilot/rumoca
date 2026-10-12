@@ -36,14 +36,9 @@ fn canonical_parity_steps_use_the_ci_measurement_budgets() {
             panic!("canonical step must invoke MSL parity");
         };
         let config = args.to_parity_config_json();
-        assert_eq!(
-            config.get("sim_timeout_secs"),
-            Some(&serde_json::json!(45.0))
-        );
-        assert_eq!(
-            config.get("model_attempt_timeout_secs"),
-            Some(&serde_json::json!(20.0))
-        );
+        assert_eq!(config.get("budget_profile"), Some(&serde_json::json!("ci")));
+        assert!(config.get("sim_timeout_secs").is_none());
+        assert!(config.get("model_attempt_timeout_secs").is_none());
     }
 }
 

@@ -149,22 +149,14 @@ pub(super) fn checked_dae_has_input_scalars(dae: &Dae) -> bool {
 }
 
 pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
-/// Default parent-watchdog budget for each compiler phase of one model attempt.
+/// Focused parent-watchdog floor for each compiler phase of one model attempt.
 ///
 /// A model gets exactly one attempt. Exceeding this budget is a stable harness
 /// failure, not a reason to re-run the compiler with different limits.
 pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 10.0;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
-    // Raise-only: a config may extend the budget for a long-running diagnostic
-    // lane, but must never shorten it below the value the committed baseline
-    // was measured with.
-    parity_config()
-        .model_attempt_timeout_secs
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .map_or(MODEL_ATTEMPT_TIMEOUT_SECS, |value| {
-            value.max(MODEL_ATTEMPT_TIMEOUT_SECS)
-        })
+    parity_config().wall_budgets().0
 }
 
 pub(super) struct StageAbortWatchdog {

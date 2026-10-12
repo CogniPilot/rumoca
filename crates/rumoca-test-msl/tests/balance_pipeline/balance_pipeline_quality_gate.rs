@@ -1970,16 +1970,7 @@ pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
 }
 
 pub(super) fn should_skip_msl_quality_gate() -> bool {
-    msl_target_scope() != MslTargetScope::RootExamples
-        || sim_targets_file_override().is_some()
-        || !sim_subset_patterns().is_empty()
-        || sim_subset_limit().is_some()
-        || sim_set_mode() != SimSetMode::Full
-        // A shard sees only its stripe of the model set, so the aggregate
-        // baseline ratchet + strict-high floor are meaningless here; the fan-in
-        // job runs the gate once on the merged results. Also stamps the snapshot
-        // partial:true, which promote-quality-baseline correctly refuses.
-        || sim_shard().is_some()
+    parity_config().is_partial_run()
 }
 
 /// Reject a run whose compile/balance KPIs are not measurable at all.
