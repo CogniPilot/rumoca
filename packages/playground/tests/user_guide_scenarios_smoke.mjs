@@ -25,6 +25,7 @@ try {
   const receipts = [];
   const failures = [];
   for (const path of roster) {
+    const started = performance.now();
     try {
       const receipt = await page.evaluate(async (path) => {
         const pkgBase = "/packages/rumoca/dist/release-full-web/";
@@ -175,6 +176,7 @@ try {
         receipt.sampledHorizon = [receipt.samples[0].time, receipt.samples.at(-1).time];
         receipt.samples = receipt.samples.length;
       }
+      receipt.compileAndRuntimeWallMs = performance.now() - started;
       receipts.push(receipt);
       console.log("PASS guide-scenario", JSON.stringify(receipt));
     } catch (error) {

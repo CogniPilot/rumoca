@@ -5,7 +5,7 @@
 // The wrapper builds the book and serves it with the canonical xtask server.
 //
 // Verifies: widgets mount with Monaco editors, Simulate produces a plot,
-// LSP diagnostics produce markers, Show DAE renders Modelica text, the
+// LSP diagnostics produce markers, Show DAE inspects checked event owners, the
 // editable turkey visualization renders, and hardware-admitted Wave2D/Airfoil
 // executions produce finite computed state readbacks. Hardware absence is an
 // explicit skip; CPU compilation and GPU preparation remain mandatory native tests.
@@ -31,7 +31,7 @@ try {
   const page = await browser.newPage();
   const browserFailures = createBrowserFailureCollector();
   browserFailures.watch(page);
-  const verifyArtifact = await observeShippedArtifact(page, ["rumoca_gpu.js"]);
+  const verifyArtifact = await observeShippedArtifact(page, ["rumoca_gpu.js", "rumoca_runtime.js"]);
   await page.addInitScript(() => {
     window.guideGpuReceipt = { submissions: 0, computeDispatches: 0, readbacks: 0, sampledValues: 0, nonfiniteValues: 0 };
     if (!window.GPUQueue || !window.GPUBuffer || !window.GPUComputePassEncoder) return;
