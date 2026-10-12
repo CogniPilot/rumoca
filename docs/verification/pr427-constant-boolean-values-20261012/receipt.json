@@ -1,0 +1,305 @@
+{
+  "schema": "pr427-constant-boolean-values-v1",
+  "qualified_source": "5b129f969e9dac54a3ae02d4941af1cc5bd07df1",
+  "base_source": "8d5e848bca29e5e9604e47e1503f88090492bae4",
+  "ordered_dco_commits": [
+    "8327c6e5701fe74c74a1210ea58dcceff8209751",
+    "7334a6abf8feaa6b1e680d87dedae2fea3baef80",
+    "2afb06036b878a3378b1658e67282d6645260093",
+    "5b129f969e9dac54a3ae02d4941af1cc5bd07df1"
+  ],
+  "production_file_sha256": {
+    "crates/rumoca-eval-flat/src/constant/function_eval.rs": "c0fcbbd4b1f5642f26d99519d38c12b6d3482cfc7028ab305c864db44d1a9fad",
+    "crates/rumoca-eval-flat/src/constant/expr_eval.rs": "c463cf03636610280899d619a158290d41e633f6620369af7a3ec95899b6c33e"
+  },
+  "policy": "SPEC0022 EXPR-042; compile-time function interpretation uses the existing scalar Boolean determining-value predicate. Arrays retain binary evaluation.",
+  "qualification_scope": "Actual flat constant function-call evaluator; source-to-DAE parameter caller is source-reviewed, not independently executed here. Focused3 are a subset of full185. Native/WASM/export qualification belongs to separate peer receipts.",
+  "resource_policy": {
+    "seconds": 600,
+    "aggregate_resident_plus_swap_mib": 2048,
+    "target_mib": 4096,
+    "host_available_floor_mib": 16384,
+    "scratch_free_floor_mib": 8192,
+    "workers": 4
+  },
+  "first_phase_call_chain": [
+    "phase-dae construction/analysis::constant_context registers Flat functions and evaluates Constant/Parameter bindings before DAE lowering",
+    "constant::eval_expr FunctionCall invokes eval_user_function and eval_function_with_call_args",
+    "function interpreter eval_if_expr evaluates its guard with eval_binary",
+    "IndexOutOfBounds has no runtime_dependent_reason and remains a typed compile-time fault when required"
+  ],
+  "attempts": [
+    {
+      "attempt": "before-8327",
+      "note": "And and Or fail at inactive index4; independent-fault test additionally has a fixture span omission.",
+      "source_head": "8327c6e5701fe74c74a1210ea58dcceff8209751",
+      "source_equal": true,
+      "outer_exit": 101,
+      "accepted": false,
+      "rust_summary": {
+        "passed": 0,
+        "failed": 3,
+        "ignored": 0
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--lib",
+        "constant::function_eval::tests::boolean_values::",
+        "--",
+        "--nocapture",
+        "--test-threads=4"
+      ],
+      "elapsed_seconds": 27.685284916,
+      "peak_resident_plus_swap_kib": 960604,
+      "peak_cache_bytes": 120168448,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/command.log": "d6a14aaf53e81df70b20f6f2f78b5b34df014dcd1ec4ecaf445e3dd50bcf8bd4",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/guardian.json": "ddff8a4665a7f4e34fce8d273dcf85aa8d9e722dbb4256a8a05f83da94c16989",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/recipe.json": "97cff11e76083a94d6bb8d179c81f282a64608a9dfff39fe1f853ccb0861999e",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/runner.py": "45078b612e8dd46d9df66cb9a2e7c67b7592426f51e1dcb17d0dd4999fdac005",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/source-pre.json": "0004ac506c5b4af14b235c44cff085397c2fb398e3fffc3abeee1fb7a1016f9f",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/source-post.json": "0004ac506c5b4af14b235c44cff085397c2fb398e3fffc3abeee1fb7a1016f9f",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-8327/outer-exit.json": "51f2115f8873d2bc38aae1f7226362422306d0aa0b49f48ccb70d4fb95496c13"
+      }
+    },
+    {
+      "attempt": "before-provenance-corrected",
+      "note": "Corrected BEFORE: And and Or inactive index4 fail; selected and independent fault control passes.",
+      "source_head": "7334a6abf8feaa6b1e680d87dedae2fea3baef80",
+      "source_equal": true,
+      "outer_exit": 101,
+      "accepted": false,
+      "rust_summary": {
+        "passed": 1,
+        "failed": 2,
+        "ignored": 0
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--lib",
+        "constant::function_eval::tests::boolean_values::",
+        "--",
+        "--nocapture",
+        "--test-threads=4"
+      ],
+      "elapsed_seconds": 12.06501069,
+      "peak_resident_plus_swap_kib": 634600,
+      "peak_cache_bytes": 124223488,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/command.log": "1989dd335a3c95a2260c39ac96e417ac87879d9d225fd88757a1f66eb9f2444c",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/guardian.json": "2000a5b7588f3b184c955a733209d2e134cec4778e3abd9995c07f0a8cbe99bd",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/recipe.json": "3e7619e7cce2cf9d1774b7dea75a4f19b80bb07bf250caa1becea51e3adb209b",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/runner.py": "45078b612e8dd46d9df66cb9a2e7c67b7592426f51e1dcb17d0dd4999fdac005",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/source-pre.json": "b459b43981e1ecace3fe3d0b1841eff9a9bd6261c422958258417ea8377be37a",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/source-post.json": "b459b43981e1ecace3fe3d0b1841eff9a9bd6261c422958258417ea8377be37a",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/before-provenance-corrected/outer-exit.json": "51f2115f8873d2bc38aae1f7226362422306d0aa0b49f48ccb70d4fb95496c13"
+      }
+    },
+    {
+      "attempt": "after-2afb",
+      "note": "Short circuit reaches successful values; two test oracles incorrectly expect Real for Integer branch literals.",
+      "source_head": "2afb06036b878a3378b1658e67282d6645260093",
+      "source_equal": true,
+      "outer_exit": 101,
+      "accepted": false,
+      "rust_summary": {
+        "passed": 1,
+        "failed": 2,
+        "ignored": 0
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--lib",
+        "constant::function_eval::tests::boolean_values::",
+        "--",
+        "--nocapture",
+        "--test-threads=4"
+      ],
+      "elapsed_seconds": 10.049010941999999,
+      "peak_resident_plus_swap_kib": 642104,
+      "peak_cache_bytes": 123658240,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/command.log": "4ffbdcc4d5a99c4d22f9ca23380a0cb01bd3fc8cffdef5a04575eccf119a80c6",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/guardian.json": "235ca8d1cee30433d1ec9525ae9999dade056abbe413152709922559436315a1",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/recipe.json": "84527573d083a42828190f8049b81e102f5efb69943d8853b5370e05e6bc6d07",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/runner.py": "090740c6b289ce49244658dd7b89fd28d4726083041012e6759826c05e231c13",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/source-pre.json": "411ecb2691285ff200d0cd530083b2709e8c26403ce7da984046e99c0e8337db",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/source-post.json": "411ecb2691285ff200d0cd530083b2709e8c26403ce7da984046e99c0e8337db",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-2afb/outer-exit.json": "51f2115f8873d2bc38aae1f7226362422306d0aa0b49f48ccb70d4fb95496c13"
+      }
+    },
+    {
+      "attempt": "after-5b129-focused",
+      "note": "All three controls pass with exact Integer literal values.",
+      "source_head": "5b129f969e9dac54a3ae02d4941af1cc5bd07df1",
+      "source_equal": true,
+      "outer_exit": 0,
+      "accepted": true,
+      "rust_summary": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--lib",
+        "constant::function_eval::tests::boolean_values::",
+        "--",
+        "--nocapture",
+        "--test-threads=4"
+      ],
+      "elapsed_seconds": 10.025061817,
+      "peak_resident_plus_swap_kib": 638040,
+      "peak_cache_bytes": 123658240,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/command.log": "ff6a8891888e677a229c925d127bc5404b6719b5caaccbd30b51a64e9e938720",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/guardian.json": "d33dc039024080be5bf9656ced82f0d51ae7ac8227293ab30d9d2f02b6e8f5ef",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/recipe.json": "cbf4ae8ca4cfe17681acccaca37fe05d30ac49840576803986f6bf94ec9cf2b9",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/runner.py": "090740c6b289ce49244658dd7b89fd28d4726083041012e6759826c05e231c13",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/source-pre.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/source-post.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-focused/outer-exit.json": "a94a6756419cdef92c9eef1e2e9090533df6330a2c754608b6933ded8a3bff35"
+      }
+    },
+    {
+      "attempt": "after-5b129-full",
+      "note": "All 185 eval-flat unit tests pass; includes the focused three.",
+      "source_head": "5b129f969e9dac54a3ae02d4941af1cc5bd07df1",
+      "source_equal": true,
+      "outer_exit": 0,
+      "accepted": true,
+      "rust_summary": {
+        "passed": 185,
+        "failed": 0,
+        "ignored": 0
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--lib",
+        "--",
+        "--nocapture",
+        "--test-threads=4"
+      ],
+      "elapsed_seconds": 0.31745316300000004,
+      "peak_resident_plus_swap_kib": 95480,
+      "peak_cache_bytes": 123662336,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/command.log": "755325e52deb452f1fec168c3d2a1d7177bf3eeaa25cea0c40d2c6b24e850be4",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/guardian.json": "32f959ac5e6573c4976c5f7b0452b1f8595797dbe815ecbd3aeaf7b66f3bed8b",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/recipe.json": "2aed47e4750ef244facc0fdec5bc25ccf8343988285a1bcf476ae5e520b71ffa",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/runner.py": "090740c6b289ce49244658dd7b89fd28d4726083041012e6759826c05e231c13",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/source-pre.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/source-post.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-full/outer-exit.json": "55382c19581b9961275aab867473c22895535994f8b15c437cd0d9579e178f08"
+      }
+    },
+    {
+      "attempt": "after-5b129-lint",
+      "note": "Scoped all-target/all-feature Clippy with warnings denied passes.",
+      "source_head": "5b129f969e9dac54a3ae02d4941af1cc5bd07df1",
+      "source_equal": true,
+      "outer_exit": 0,
+      "accepted": true,
+      "rust_summary": null,
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-flat",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "elapsed_seconds": 27.914441608999997,
+      "peak_resident_plus_swap_kib": 1022492,
+      "peak_cache_bytes": 186093568,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/command.log": "5d79005789476b77fd8857e96a913b29079f77b3b21424b8462ad31067b500b6",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/guardian.json": "ce0b152ce01d8682954826ead2e1433512f07044ce2749a033e924f746f7f663",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/recipe.json": "36c62115cdd02145b5522e0aa746d47e85c862236adf8cfe78b4fe3d2f3ed0ab",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/runner.py": "090740c6b289ce49244658dd7b89fd28d4726083041012e6759826c05e231c13",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/source-pre.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/source-post.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-lint/outer-exit.json": "57eac8601d9575f934b75a7a4926e58ef6b92407e66ed4423674a1c04be905a5"
+      }
+    },
+    {
+      "attempt": "after-5b129-fmt",
+      "note": "Pinned cargo fmt --all -- --check passes.",
+      "source_head": "5b129f969e9dac54a3ae02d4941af1cc5bd07df1",
+      "source_equal": true,
+      "outer_exit": 0,
+      "accepted": true,
+      "rust_summary": null,
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "elapsed_seconds": 12.323668684,
+      "peak_resident_plus_swap_kib": 125412,
+      "peak_cache_bytes": 187740160,
+      "signal": null,
+      "memory_limit_observation": null,
+      "artifacts": {
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/command.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/guardian.json": "97e2fff6aa6b248a286c1050591132964eea0e83e212470abb7284674285e297",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/recipe.json": "6df0e754aa064be694f22dc9117ff646014357160879602cd66c90a1e210ab17",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/runner.py": "090740c6b289ce49244658dd7b89fd28d4726083041012e6759826c05e231c13",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/source-pre.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/source-post.json": "0499542f5c633b6b386ea4bac8e5ab8828b9722133753509c11d4b7d852a79c5",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/source.diff": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "$HOME/scratch/rumoca/pr427-constant-boolean-values-20261012/evidence/after-5b129-fmt/outer-exit.json": "57eac8601d9575f934b75a7a4926e58ef6b92407e66ed4423674a1c04be905a5"
+      }
+    }
+  ]
+}

@@ -182,7 +182,7 @@ impl SymbolicSlots {
     }
 
     /// The output terms of one program, committed to its targets; `None` when
-    /// an operation cannot be evaluated or the output count is not the
+    /// an operation cannot be represented by a term or the output count is not the
     /// target count.
     pub(super) fn run(
         &mut self,
@@ -202,7 +202,7 @@ impl SymbolicSlots {
         targets: &[usize],
         mut transform: impl FnMut(usize, &'a LinearOp) -> Option<std::borrow::Cow<'a, LinearOp>>,
     ) -> Option<Vec<Term>> {
-        let outputs = self.evaluate_regions(terms, ops, &[], &mut transform)?;
+        let outputs = self.derive_region_terms(terms, ops, &[], &mut transform)?;
         if outputs.len() != targets.len() {
             return None;
         }
@@ -210,7 +210,8 @@ impl SymbolicSlots {
         Some(outputs)
     }
 
-    fn evaluate_regions<'a>(
+    // Derive structural identities; arithmetic remains an opaque operation key.
+    fn derive_region_terms<'a>(
         &self,
         terms: &mut Terms,
         ops: &'a [LinearOp],
@@ -226,7 +227,7 @@ impl SymbolicSlots {
         Some(outputs)
     }
 
-    fn evaluate_conditional(
+    fn derive_conditional_terms(
         &self,
         terms: &mut Terms,
         program: &FunctionConditionalProgram,
@@ -236,18 +237,18 @@ impl SymbolicSlots {
         let captures = (0..program.capture_count)
             .map(|offset| registers.get(capture_start.checked_add(Reg::try_from(offset).ok()?)?))
             .collect::<Option<Vec<_>>>()?;
-        let evaluate = |terms: &mut Terms, ops: &[LinearOp]| {
-            self.evaluate_regions(terms, ops, &captures, &mut |_, op| {
+        let derive_terms = |terms: &mut Terms, ops: &[LinearOp]| {
+            self.derive_region_terms(terms, ops, &captures, &mut |_, op| {
                 Some(std::borrow::Cow::Borrowed(op))
             })
         };
-        let mut result = evaluate(terms, &program.fallback)?;
+        let mut result = derive_terms(terms, &program.fallback)?;
         if result.len() != program.result_count {
             return None;
         }
         for arm in program.arms.iter().rev() {
-            let condition = evaluate(terms, &arm.condition)?;
-            let selected = evaluate(terms, &arm.result)?;
+            let condition = derive_terms(terms, &arm.condition)?;
+            let selected = derive_terms(terms, &arm.result)?;
             if condition.len() != 1 || selected.len() != result.len() {
                 return None;
             }
@@ -282,7 +283,7 @@ impl SymbolicSlots {
                 capture_start,
                 ref program,
             } if self.recursive_conditionals && program.owner.is_none() => {
-                let result = self.evaluate_conditional(terms, program, capture_start, registers)?;
+                let result = self.derive_conditional_terms(terms, program, capture_start, registers)?;
                 for (offset, value) in result.into_iter().enumerate() {
                     registers.insert(dst_start.checked_add(Reg::try_from(offset).ok()?)?, value);
                 }
