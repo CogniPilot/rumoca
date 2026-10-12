@@ -81,6 +81,31 @@ fn ordinary_observation_cycles_retain_event_iteration_order() {
 }
 
 #[test]
+fn scheduled_current_cycles_require_a_history_boundary_at_coincident_ticks() {
+    probe(Wiring::Aliases, |probe| {
+        let mut producers = [
+            ordinary(probe, "b", &["aAlias"], &[]),
+            ordinary(probe, "a", &["bAlias"], &[]),
+        ];
+        producers[0].clock_domains = vec![1];
+        producers[1].clock_domains = vec![2];
+        assert_eq!(
+            probe.issue_names_with(&producers, &ClockCoincidence::never()),
+            ["b", "a"]
+        );
+        assert!(matches!(
+            probe.issue_with(&producers, &ClockCoincidence::of_pairs([(1, 2)])),
+            Err(SameTickOrderError::Cycle { span, .. }) if span == probe.span()
+        ));
+        producers[1].clock_domains = vec![1];
+        assert!(matches!(
+            probe.issue(&producers),
+            Err(SameTickOrderError::Cycle { span, .. }) if span == probe.span()
+        ));
+    });
+}
+
+#[test]
 fn an_entry_activation_read_precedes_its_rescheduler_even_with_a_current_body_read() {
     probe(Wiring::Aliases, |probe| {
         let producers = [
