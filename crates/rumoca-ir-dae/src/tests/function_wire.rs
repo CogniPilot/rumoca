@@ -129,6 +129,7 @@ fn iteration_local_loop_value_round_trips_and_restores_its_enclosing_definition(
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".to_owned(),
                                 lower: 1,
@@ -229,6 +230,7 @@ fn assertion_only_function_loop_round_trips_without_generated_fold_values() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".to_string(),
                                 lower: 1,
@@ -647,6 +649,7 @@ fn active_loop_fixture() -> (Dae, DaeProvenance) {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".to_owned(),
                                 lower: 1,

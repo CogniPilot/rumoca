@@ -12,6 +12,8 @@ use crate::{DaeProvenanceOrigin, ScalarType, ValueType, VariableRole};
 /// Failure to construct or decode the DAE.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum DaeConstructionError {
+    #[error("model expression escaped its construction-issued conditional arm")]
+    InvalidModelActivationScope { span: Span },
     #[error("missing source provenance for {origin}")]
     MissingProvenance {
         origin: DaeProvenanceOrigin,
@@ -381,6 +383,7 @@ impl DaeConstructionError {
             | Self::InvalidEnumerationOrdinal { span, .. }
             | Self::InvalidBinderScope { span, .. }
             | Self::InvalidFunctionScope { span, .. }
+            | Self::InvalidModelActivationScope { span }
             | Self::InvalidFunctionValueRead { span, .. }
             | Self::InvalidFunctionCoordinate { span, .. }
             | Self::InvalidFunctionDependency { span, .. }

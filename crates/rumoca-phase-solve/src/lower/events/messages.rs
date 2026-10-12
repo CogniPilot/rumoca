@@ -8,7 +8,7 @@ use super::*;
 
 pub(super) struct MessageActionContext<'borrow, 'dae> {
     pub(super) view: dae::DaeView<'dae>,
-    pub(super) layout: &'borrow LoweredLayout<'dae>,
+    pub(super) layout: &'borrow EventCompilationContext<'borrow, 'dae>,
     pub(super) clocks: &'borrow LoweredClocks<'dae>,
 }
 
@@ -28,7 +28,7 @@ pub(super) fn push_message_action<'dae>(
     } = context;
     let span = action.provenance().span();
     let message = lower_message(view, layout, message)?;
-    let compiler = ScalarCompiler::new(view, layout, None);
+    let compiler = layout.scalar_compiler(view, None);
     let clock = condition_clock_owner(view, action.guard());
     let program = match (clock, holds) {
         (Some(clock), None) => {
@@ -69,7 +69,7 @@ pub(super) fn push_message_action<'dae>(
 
 fn lower_message<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     message: dae::ExprId<'dae>,
 ) -> Result<solve::SolveEventMessage, LowerError> {
     let mut parts = Vec::new();
@@ -79,7 +79,7 @@ fn lower_message<'dae>(
 
 fn lower_message_parts<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     message: dae::ExprId<'dae>,
     parts: &mut Vec<solve::SolveEventMessagePart>,
 ) -> Result<(), LowerError> {
@@ -115,7 +115,7 @@ fn lower_message_parts<'dae>(
                     unreachable!("checked String conversion has a supported scalar source")
                 }
             };
-            let value = ScalarCompiler::new(view, layout, None).program(value, 0)?;
+            let value = layout.scalar_compiler(view, None).program(value, 0)?;
             let format = lower_message_format(view, layout, format)?;
             parts.push(solve::SolveEventMessagePart::Conversion {
                 value,
@@ -152,7 +152,7 @@ fn lower_message_parts<'dae>(
 
 fn lower_message_format<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     format: dae::StringConversionFormatView<'dae>,
 ) -> Result<solve::SolveStringConversionFormat, LowerError> {
     Ok(match format {
@@ -179,10 +179,10 @@ fn lower_message_format<'dae>(
 
 fn lower_message_option<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     value: Option<dae::ExprId<'dae>>,
 ) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
     value
-        .map(|value| ScalarCompiler::new(view, layout, None).program(value, 0))
+        .map(|value| layout.scalar_compiler(view, None).program(value, 0))
         .transpose()
 }

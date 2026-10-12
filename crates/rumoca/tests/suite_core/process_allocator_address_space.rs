@@ -68,3 +68,62 @@ fn a_256_worker_pool_simulates_under_one_default_arena_plus_its_stacks() {
     );
     assert!(csv.is_file(), "the run wrote its trace");
 }
+
+#[test]
+fn issue_425_original_38_bench_fits_a_two_gib_address_space() {
+    let dir = tempdir().expect("original Euler benchmark directory");
+    let file = dir.path().join("issue_425_38.mo");
+    std::fs::write(
+        &file,
+        super::reported_bug_runtime::issue_425_original_38_source(),
+    )
+    .expect("write the original model with only nx/ny changed to 38");
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -v 2097152 && exec \"$0\" \"$@\"")
+        .arg(env!("CARGO_BIN_EXE_rumoca"))
+        .args(["sim", "bench"])
+        .arg(&file)
+        .args([
+            "--model",
+            "E30x30",
+            "--t-end",
+            "0.1",
+            "--dt",
+            "0.01",
+            "--iterations",
+            "1",
+            "--warmups",
+            "0",
+            "--solver",
+            "rk-like",
+            "--json",
+        ])
+        .env("RAYON_NUM_THREADS", "1")
+        .output()
+        .expect("run the original 38x38 benchmark under a 2 GiB address-space limit");
+    eprintln!("original Euler38 benchmark status: {}", output.status);
+    eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "original benchmark must complete");
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("benchmark emits its JSON report");
+    assert_eq!(report["model"], "E30x30");
+    assert_eq!(report["solver"], "rk-like");
+    assert_eq!(report["t_end"], 0.1);
+    assert_eq!(report["dt"], 0.01);
+    assert_eq!(report["iterations"], 1);
+    assert_eq!(report["warmups"], 0);
+    assert_eq!(report["last_points"], 11);
+    assert_eq!(report["last_final_time"], 0.1);
+    for field in [
+        "compile_seconds",
+        "prepare_seconds",
+        "prepare_ir_solve_seconds",
+        "prepare_backend_build_seconds",
+        "hot_total_seconds",
+    ] {
+        let value = report[field].as_f64().expect("reported timing is numeric");
+        assert!(value.is_finite() && value >= 0.0, "{field}={value}");
+    }
+}

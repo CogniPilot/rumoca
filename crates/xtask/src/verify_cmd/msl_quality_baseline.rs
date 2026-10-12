@@ -1,3 +1,4 @@
+mod budget_metadata;
 mod cohort;
 mod reference_boundary;
 #[cfg(test)]
@@ -79,6 +80,8 @@ struct MslQualityBaselineHeader {
     compiler_contract_migration: Option<CompilerContractMigrationHeader>,
     #[serde(default)]
     promoted_baseline_bridge: Option<PromotedBaselineBridge>,
+    #[serde(default)]
+    budget_metadata_correction: Option<budget_metadata::BudgetMetadataCorrection>,
     simulatable_attempted: usize,
     parse_models: usize,
     flatten_models: usize,
@@ -296,7 +299,13 @@ pub(super) fn resolve_msl_quality_baseline(
     {
         let promoted_header = load_promoted_baseline_header(&promoted)?;
         match choose_baseline(&promoted_header, &checked_in_header)? {
-            BaselineChoice::Promoted => return Ok(promoted),
+            BaselineChoice::Promoted => {
+                return budget_metadata::selected_promoted_baseline(
+                    root,
+                    promoted,
+                    checked_in_header.budget_metadata_correction.as_ref(),
+                );
+            }
             BaselineChoice::CheckedInMigration => {
                 println!(
                     "MSL quality baseline: checked-in baseline declares a context/schema migration; using {}",

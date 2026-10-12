@@ -70,6 +70,7 @@ impl CraneliftEmitter {
             signature.params.push(AbiParam::new(pointer_type)); // v
         }
         signature.params.push(AbiParam::new(pointer_type)); // out
+        signature.params.push(AbiParam::new(pointer_type)); // caller-owned scratch
         let func_id = self
             .module
             .declare_function(name, Linkage::Local, &signature)
@@ -90,6 +91,7 @@ impl CraneliftEmitter {
             fb.append_block_params_for_function_params(entry);
             fb.switch_to_block(entry);
             let params = fb.block_params(entry).to_vec();
+            scratch::enter(&mut fb);
             let inputs = KernelInputs {
                 y_ptr: params[0],
                 p_ptr: params[1],
@@ -419,7 +421,9 @@ impl KernelKind for ResidualKernels {
     ) -> u8 {
         // SAFETY: the kernel was declared with the residual row ABI; the
         // caller guarantees the buffers cover every index its plan proved.
-        unsafe { kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr()) }
+        scratch::invoke(|arena| unsafe {
+            kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena)
+        })
     }
 }
 
@@ -446,7 +450,16 @@ impl KernelKind for DirectionalKernels {
     ) -> u8 {
         // SAFETY: the kernel was declared with the directional row ABI; the
         // caller guarantees the buffers cover every index its plan proved.
-        unsafe { kernel(y.as_ptr(), p.as_ptr(), t, seed.as_ptr(), out.as_mut_ptr()) }
+        scratch::invoke(|arena| unsafe {
+            kernel(
+                y.as_ptr(),
+                p.as_ptr(),
+                t,
+                seed.as_ptr(),
+                out.as_mut_ptr(),
+                arena,
+            )
+        })
     }
 }
 

@@ -210,7 +210,7 @@ fn flat_target_needs_no_capabilities_table() {
 /// The shipped registry must stay renderable through the same entry point: the
 /// refusal above must not have caught a built-in target.
 #[test]
-fn builtin_flat_targets_still_render_without_a_capabilities_table() {
+fn builtin_flat_targets_still_render() {
     let dir = tempdir().expect("tempdir");
     let model_file = dir.path().join("AcceptanceFixture.mo");
     fs::write(&model_file, FIXTURE).expect("write model fixture");
@@ -235,6 +235,72 @@ fn builtin_flat_targets_still_render_without_a_capabilities_table() {
             rendered_any_file(&out_dir),
             "built-in target `{target}` wrote no file:\n{stderr}"
         );
+    }
+}
+
+/// The built-in flat templates render neither `when` chains nor algorithm
+/// sections. They declare both unsupported, so a model carrying either is
+/// refused instead of being emitted without it (the emitted model would still
+/// compile, with different dynamics).
+#[test]
+fn builtin_flat_targets_refuse_when_and_algorithms_they_cannot_render() {
+    let cases = [
+        (
+            "events",
+            "model FlatWhenFixture
+  Real x(start = 1, fixed = true);
+  Real v(start = 0, fixed = true);
+equation
+  der(x) = v;
+  der(v) = -9.81;
+  when x < 0 then
+    reinit(v, -0.8*pre(v));
+  end when;
+end FlatWhenFixture;
+",
+        ),
+        (
+            "algorithms",
+            "model FlatAlgorithmFixture
+  Real x(start = 1, fixed = true);
+  Real y;
+equation
+  der(x) = -x;
+algorithm
+  y := 2*x;
+end FlatAlgorithmFixture;
+",
+        ),
+    ];
+    let dir = tempdir().expect("tempdir");
+    for (feature, source) in cases {
+        let model_file = dir.path().join(format!("{feature}.mo"));
+        fs::write(&model_file, source).expect("write model fixture");
+        for target in ["flat-modelica", "base-modelica"] {
+            let out_dir = dir.path().join(format!("{feature}-{target}"));
+            let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+                .arg("compile")
+                .arg(&model_file)
+                .arg("--target")
+                .arg(target)
+                .arg("--output")
+                .arg(&out_dir)
+                .output()
+                .expect("run rumoca compile --target");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success(),
+                "`{target}` must refuse a model with {feature} it cannot render:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(&format!("unsupported-feature:{feature}")),
+                "`{target}` must refuse with unsupported-feature:{feature}:\n{stderr}"
+            );
+            assert!(
+                !rendered_any_file(&out_dir),
+                "`{target}` must not write a partial model:\n{stderr}"
+            );
+        }
     }
 }
 

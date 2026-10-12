@@ -72,6 +72,7 @@ fn carried_aggregate_updates_reuse_the_dying_payload() {
         let tensor = SolveValueType::tensor(SolveScalarType::real(p), vec![extent]).unwrap();
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 3,
                 display_name: "i".into(),
                 lower: 1,

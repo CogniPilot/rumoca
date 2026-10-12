@@ -279,9 +279,16 @@ fn resolve_compiler(root: &Path, args: &VerifyEmbeddedArgs) -> Result<PathBuf> {
         .arg("--package")
         .arg("rumoca")
         .arg("--bin")
-        .arg("rumoca");
+        .arg("rumoca")
+        .current_dir(root);
     run_status(command)?;
-    let path = root.join("target").join("debug").join("rumoca");
+    built_compiler(root)
+}
+
+fn built_compiler(root: &Path) -> Result<PathBuf> {
+    let path = crate::verify_cmd::cargo_target_dir(root)
+        .join("debug")
+        .join(crate::exe_name("rumoca"));
     ensure!(
         path.is_file(),
         "the workspace build did not produce {}",

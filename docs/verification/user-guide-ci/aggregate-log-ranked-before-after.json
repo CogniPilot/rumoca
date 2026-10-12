@@ -1,0 +1,204 @@
+{
+  "before": {
+    "source": "90b0d9ed9e5f5ef7e7056ff8c50aa25a02410bfa",
+    "testCommit": "9f83555097dbcec48bb3a9cd2ebc51e92937db44",
+    "temporaryDiagnosticCommit": "91ed268e359051b8cfa8ac1c918631e884291dfb",
+    "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-ranked-before-90b0-20261012",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca-eval-solve",
+      "--lib",
+      "aggregate_logarithm_directional_",
+      "--",
+      "--nocapture"
+    ],
+    "actual": {
+      "passed": 0,
+      "failed": 2,
+      "ignored": 0,
+      "filteredOut": 324,
+      "rustSeconds": 0,
+      "exitCode": 101,
+      "signal": null,
+      "elapsedMs": 51112.236201,
+      "peakRssKiB": 1113992,
+      "peakCacheBytes": 7343583232,
+      "minimumAvailableKiB": 56488528,
+      "minimumScratchFreeBytes": 71376506880
+    },
+    "firstDivergence": "Both tests refuse the first vector Log because owner.directional is absent; no numeric JVP/FD/nonfinite assertions, Log10 or matrix iterations executed.",
+    "guards": {
+      "seconds": 600,
+      "rssMiB": 4096,
+      "availableMiB": 16384,
+      "cacheMiB": 8192,
+      "scratchFreeFloorBytes": 8589934592
+    },
+    "rawFiles": {
+      "recipe.json": "4ffc851188cb2f2e75dbf0e5fb4104876bd8c1cd03515adbca528d1f0cf6256c",
+      "aggregate-log-ranked-directional-before-two.log": "292bb5d6db8c17dfb52f0a375b4e5ef7ce2ec66e245fcc12f0afdc55ab591b3c",
+      "aggregate-log-ranked-directional-before-two.guardian.json": "1022278b0a203d0441e6f24e3820242540457d7953dafa889ee83d9db4e0f436",
+      "parallel-preflight.json": "d416ae719a84061b03cb058ccab3c543acd2a925d94396f8cfbff1ac7d662b76",
+      "parallel-terminal.json": "3ab31082972a2a8ac899cf7744126bcaea0f7c81b633889d5bc425cde69b9927",
+      "run-lease.json": "f41a271d09a487f617115897438950c75a87e92a7bdf5aee86646d66b832e060"
+    },
+    "terminal": {
+      "time": "2026-10-11T18:20:40.724Z",
+      "ownedReferences": 0,
+      "deniedReads": 2270,
+      "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only",
+      "leaseReleased": true
+    }
+  },
+  "after": {
+    "status": "PENDING; recipe only, no result claimed",
+    "source": "51398d4ab2e8ce900ebe2326e53f564f1ef152da",
+    "recipeSha256": "e3796d0cce60253f7558d76ae740151d7314e99925213beab15f7b3e6c54b191",
+    "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012",
+    "temporaryDiagnosticRemoved": true,
+    "gates": [
+      {
+        "name": "aggregate-log-ranked-after-two",
+        "expectedTests": 2,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "aggregate_logarithm_directional_",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "aggregate-log-checked-profile-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-ir-solve",
+          "--lib",
+          "aggregate_logarithm_directional_keeps_checked_index_profile_and_compact_map",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "scalar-directional-singular-control-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "directional_scalar_guards_match_checked_ad_at_singular_values",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "broadcast-quotient-rule-control-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "scalar_broadcast_quotient_carries_the_elementwise_quotient_rule",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "broadcast-quotient-profile-control-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-ir-solve",
+          "--lib",
+          "broadcast_division_directional_preserves_narrow_integer_profile_primal_owner",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "original-glycol-and-viscosity-probe-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca",
+          "--features",
+          "msl-sim-tests",
+          "--test",
+          "suite_core",
+          "msl_glycol_viscosity_uses_its_checked_coefficient_interface",
+          "--",
+          "--nocapture"
+        ]
+      },
+      {
+        "name": "nested-exponential-interface-one",
+        "expectedTests": 1,
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca",
+          "--features",
+          "msl-sim-tests",
+          "--test",
+          "suite_core",
+          "nested_exponential_polynomial_call_uses_its_checked_interface",
+          "--",
+          "--nocapture"
+        ]
+      }
+    ],
+    "expectedSelectedTests": 8,
+    "producerCommit": "30372aaadec421f50474a054d189589a73d8ab81",
+    "profileCommit": "86be340f48dc774b720f1d69840377bce240bb33"
+  },
+  "originalEvidence": "glycol-aggregate-log-before.json"
+}

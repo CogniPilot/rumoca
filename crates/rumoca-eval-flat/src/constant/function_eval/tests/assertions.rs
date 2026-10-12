@@ -106,6 +106,7 @@ fn false_assertion_inside_an_inactive_branch_is_not_evaluated() {
 fn false_assertion_inside_an_executed_loop_aborts() {
     let loop_statement = Statement::For {
         indices: vec![ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: "i".into(),
             range: Expression::Range {
                 start: Box::new(literal(Literal::Integer(1))),

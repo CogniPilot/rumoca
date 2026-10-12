@@ -26,6 +26,7 @@ fn a_record_comprehension_field_projects_each_point_to_its_own_field() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,

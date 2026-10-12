@@ -34,7 +34,7 @@ Every variable has a *variability* that tells the compiler how it can change:
 A continuous variable that appears under `der(...)` becomes a *state*. Give
 states an initial value with the `start` attribute:
 
-```modelica
+```modelica,fragment,context-state
 Real x(start = 1.0);
 ```
 
@@ -111,7 +111,31 @@ Modelica organizes code in classes:
 Classes compose by *instantiation* (declaring a component of another class)
 and *inheritance* (`extends`). Modifications customize an instance in place:
 
+Here is a minimal ideal tank and its hydraulic connector. Unconnected ports
+have zero flow. Connected ports have equal head, and their flows sum to zero:
+
 ```modelica
+connector TankPort
+  Real head "Hydraulic head";
+  flow Real q "Volume flow into the component";
+end TankPort;
+
+model Tank
+  parameter Real area = 1.0;
+  Real h(start = 1.0) "Liquid head";
+  TankPort inlet;
+  TankPort outlet;
+equation
+  inlet.head = h;
+  outlet.head = h;
+  area * der(h) = inlet.q + outlet.q;
+end Tank;
+```
+
+The following composition uses that `Tank` definition. Compile both blocks
+together. With no external inflow, their initial common head remains constant.
+
+```modelica,fragment,context-tanks
 model TwoTanks
   Tank tank1(area = 2.0);
   Tank tank2(area = 0.5, h(start = 1.0));

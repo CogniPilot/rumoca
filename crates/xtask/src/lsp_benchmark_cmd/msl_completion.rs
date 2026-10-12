@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn run_lsp_msl_completion_timings(
     root: &Path,
     msl_archive_root: &Path,
@@ -136,7 +139,13 @@ fn build_lsp_binary(root: &Path) -> Result<PathBuf> {
         .arg("rumoca-lsp")
         .current_dir(root);
     run_status_quiet(cargo_build)?;
-    let lsp_binary = root.join("target/debug").join(exe_name("rumoca-lsp"));
+    built_lsp_binary(root)
+}
+
+fn built_lsp_binary(root: &Path) -> Result<PathBuf> {
+    let lsp_binary = crate::verify_cmd::cargo_target_dir(root)
+        .join("debug")
+        .join(exe_name("rumoca-lsp"));
     ensure!(
         lsp_binary.is_file(),
         "missing rumoca-lsp binary at {}",

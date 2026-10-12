@@ -1054,9 +1054,14 @@ fn clock_domain_value_roots<'dae>(
         };
         whole_discrete_real_definition(definition, equation.provenance().span())?;
         let target = dae::VariableId::from(definition.target());
-        if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
-            != clock.index()
-        {
+        if !periodic_real::runs_in_domain(
+            view,
+            &real_clocks,
+            target,
+            equation.activation(),
+            clock,
+            equation.provenance().span(),
+        )? {
             continue;
         }
         roots.push(DomainValueRoot {
@@ -1134,34 +1139,16 @@ pub(super) fn value_activation<'dae>(
     }
 }
 
-/// Prove that evaluating a value at domain entry cannot cross a runtime guard.
-///
-/// `Clock` and `Always` add no condition inside the already-selected DoStep
-/// domain. Relations, discrete predicates, negation, and disjunction remain
-/// lazy and therefore forbid preamble hoisting.
+/// Prove that the issued guard is true on this task's tick, retaining unknown
+/// dynamic predicates and other clocks as unknown in the shared Boolean proof.
 fn condition_is_domain_clock_only<'dae>(
     view: dae::DaeView<'dae>,
     condition: dae::ConditionId<'dae>,
     clock: dae::ClockId<'dae>,
 ) -> bool {
-    match view
-        .condition(condition)
-        .expect("checked preamble condition resolves")
-        .operation()
-    {
-        dae::ConditionOperation::Clock(found) => found == clock,
-        dae::ConditionOperation::Always => true,
-        dae::ConditionOperation::And(lhs, rhs) => {
-            condition_is_domain_clock_only(view, lhs, clock)
-                && condition_is_domain_clock_only(view, rhs, clock)
-        }
-        dae::ConditionOperation::Initial
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_)
-        | dae::ConditionOperation::Or(_, _)
-        | dae::ConditionOperation::AnyRise(_, _) => false,
-    }
+    view.condition(condition)
+        .expect("checked sharing guard")
+        .is_true_on_clock_tick(clock)
 }
 
 /// Count the eager call occurrences of one clock-domain value, following the

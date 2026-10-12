@@ -85,27 +85,10 @@ fn var_expr_with_span(name: &str, span: rumoca_core::Span) -> ast::Expression {
 
 fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
     ast::ForIndex {
+        binder: Some(rumoca_core::IndexBinderProvenance::Generated),
         ident: token(name),
         range: range_expr(start, end),
     }
-}
-
-fn indexed_var_expr(name: &str, subscripts: &[&str]) -> ast::Expression {
-    ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: token(name),
-            subs: Some(
-                subscripts
-                    .iter()
-                    .map(|name| ast::Subscript::Expression(var_expr(name)))
-                    .collect(),
-            ),
-            def_id: Some(rumoca_core::DefId::new(19_101)),
-        }],
-        span: rumoca_core::Span::DUMMY,
-        qualified_display_name: None,
-    })
 }
 
 fn assignment(target: &str, value: i64) -> ast::Equation {
@@ -816,27 +799,62 @@ fn streams_side_effect_matching_uses_structured_parts() {
 
 #[test]
 fn when_for_equation_expands_all_index_ranges() {
-    let ctx = crate::Context::default();
-    let indices = vec![for_index("i", 1, 2), for_index("j", 1, 2)];
-    let equations = vec![ast::Equation::Simple {
-        lhs: indexed_var_expr("y", &["i", "j"]),
-        rhs: ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Arc::new(var_expr("i")),
-            rhs: Arc::new(var_expr("j")),
-            span: rumoca_core::Span::DUMMY,
-        },
-    }];
-
+    let source = "model M discrete Real y[2,2]; equation when time > 1 then for i in 1:2, j in 1:2 loop y[i,j] = i+j; end for; end when; end M;";
+    let file = "when_equations_test.mo";
+    let stored = rumoca_phase_parse::parse_to_ast(source, file).expect("fixture parses");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("authored source binders resolve");
+    let class = resolved.get_class_by_qualified_name("M").unwrap();
+    let ast::Equation::When(blocks) = &class.equations[0] else {
+        panic!("authored when-equation");
+    };
+    let ast::Equation::For { indices, equations } = &blocks[0].eqs[0] else {
+        panic!("authored multi-index for-equation");
+    };
+    assert_ne!(indices[0].binder, indices[1].binder);
+    assert!(indices.iter().all(|index| matches!(
+        index.binder,
+        Some(rumoca_core::IndexBinderProvenance::Source(_))
+    )));
     let expanded = flatten_when_for_equation(
-        &ctx,
-        &indices,
-        &equations,
+        &crate::Context::default(),
+        indices,
+        equations,
         &ast::QualifiedName::new(),
-        rumoca_core::Span::DUMMY,
+        blocks[0].cond.span(),
         None,
     )
-    .unwrap();
+    .expect("resolved references retain source spans and issued iterator identities");
+    for (equation, (i, j)) in expanded.iter().zip([(1, 1), (1, 2), (2, 1), (2, 2)]) {
+        let flat::WhenEquation::Assign {
+            target,
+            value,
+            span,
+            ..
+        } = equation
+        else {
+            panic!("expanded assignment");
+        };
+        assert_eq!(target.as_str(), format!("y[{i},{j}]"));
+        assert!(!span.is_dummy());
+        let rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs,
+            rhs,
+            ..
+        } = value
+        else {
+            panic!("original sum retains both substituted indices");
+        };
+        assert!(
+            matches!(lhs.as_ref(), rumoca_core::Expression::Literal { value: rumoca_core::Literal::Integer(value), .. } if *value == i)
+        );
+        assert!(
+            matches!(rhs.as_ref(), rumoca_core::Expression::Literal { value: rumoca_core::Literal::Integer(value), .. } if *value == j)
+        );
+    }
 
     let targets = expanded
         .iter()

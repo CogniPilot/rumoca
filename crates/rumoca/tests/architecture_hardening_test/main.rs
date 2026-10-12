@@ -1360,7 +1360,7 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
                 .split_whitespace()
                 .collect::<String>()
                 .replace(",};", "};")
-                == "pubuserumoca_phase_solve::{deserialize_solve_model,fmi::{deserialize_fmi_component,fmi_component_wire},lower_solve_artifacts,lower_solve_problem,solve_model_wire};"
+                == "pubuserumoca_phase_solve::{deserialize_solve_model,fmi::{deserialize_fmi_component,fmi_component_wire},lower_solve_artifacts,lower_solve_package,lower_solve_problem,solve_model_wire};"
         }),
         "rumoca-sim may expose checked Solve wire replay and solve lowering/artifact preparation as its simulation-preparation facade"
     );
@@ -1672,6 +1672,7 @@ fn test_event_threshold_analysis_is_owned_by_solve_lowering() {
     let ir_root = root.join("crates/rumoca-ir-dae/src/lib.rs");
     let solve_lowering = root.join("crates/rumoca-phase-solve/src/lower.rs");
     let event_lowering = root.join("crates/rumoca-phase-solve/src/lower/events.rs");
+    let root_lowering = root.join("crates/rumoca-phase-solve/src/lower/events/roots.rs");
 
     assert!(
         !ir_analysis.exists(),
@@ -1695,11 +1696,15 @@ rumoca-ir-dae (SPEC_0007 key invariant 2; SPEC_0029 §3)"
 
     let event_lowering =
         fs::read_to_string(event_lowering).expect("read checked Solve event lowering");
+    let root_lowering =
+        fs::read_to_string(root_lowering).expect("read checked Solve root lowering");
     assert!(
-        event_lowering.contains("fn lower_roots")
-            && event_lowering.contains("fn root_zero_domain")
+        event_lowering.contains("mod roots;")
+            && event_lowering.contains("use roots::lower_roots;")
             && event_lowering.contains("root_conditions: roots.programs")
-            && event_lowering.contains(".root_program_outputs(relations.iter().copied())"),
+            && root_lowering.contains("fn lower_roots")
+            && root_lowering.contains("fn root_zero_domain")
+            && root_lowering.contains(".root_program_outputs(relations.iter().copied())"),
         "Solve lowering must own signed root-program construction and threshold-domain \
 classification"
     );

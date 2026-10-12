@@ -1,0 +1,179 @@
+{
+  "scope": "single harness-owned CI measurement profile and full/partial configuration selection; no corpus/runtime speed qualification",
+  "base": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+  "attempts": [
+    {
+      "attempt": "refinement-xtask",
+      "source": "92c69d27043420ec2d5e6917f6d7e3596949314d",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "source_pre_post_equal": true,
+      "tracked_entries": 4170,
+      "guardian": {
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 47531.183968,
+        "peakResidentPlusSwapKiB": 1224984,
+        "peakCacheBytes": 352567296,
+        "minimumAvailableKiB": 51230568,
+        "minimumScratchFreeBytes": 39345225728,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192
+      },
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-xtask/command.log",
+          "sha256": "cb99bfd951dd5a17bb646048c2f60de3a3116a7b4ab48b83539ac80ddee1cae7",
+          "bytes": 2409
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-xtask/guardian.json",
+          "sha256": "a572672799114d34911721ff3fd92e207993f990375249d820d86205cb05b222",
+          "bytes": 4140
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-xtask/source-before.json",
+          "sha256": "ae1adfa2f31e6f0c8db8c07f37d4f1b342a91d9ccf4fd445dd61bb469108aadb",
+          "bytes": 765116
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-xtask/source-after.json",
+          "sha256": "ae1adfa2f31e6f0c8db8c07f37d4f1b342a91d9ccf4fd445dd61bb469108aadb",
+          "bytes": 765116
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-xtask/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    },
+    {
+      "attempt": "refinement-harness",
+      "source": "771cc81478f0e831cb1be4a6e9a5548a996f3e55",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "source_pre_post_equal": true,
+      "tracked_entries": 4174,
+      "guardian": {
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 105461.531116,
+        "peakResidentPlusSwapKiB": 1743620,
+        "peakCacheBytes": 2187608064,
+        "minimumAvailableKiB": 50606284,
+        "minimumScratchFreeBytes": 49854652416,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192
+      },
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-harness/command.log",
+          "sha256": "14f763c1e8bb93d748855928efedd4c431ce2fc118a817e990a3a3f20886d3c0",
+          "bytes": 3544
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-harness/guardian.json",
+          "sha256": "65744e9cc8dbee4127355404a1b81eaf91ec56b02e5a7fb4c4c57e8e6f791b99",
+          "bytes": 8364
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-harness/source-before.json",
+          "sha256": "e024c9ac73863df2b89c1eafe306962eea5e7da8e43b18de80545fbd2cdc4fee",
+          "bytes": 765955
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-harness/source-after.json",
+          "sha256": "e024c9ac73863df2b89c1eafe306962eea5e7da8e43b18de80545fbd2cdc4fee",
+          "bytes": 765955
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/refinement-harness/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    },
+    {
+      "attempt": "final-xtask-help",
+      "source": "195c706a3ba2575afd6b864e59349b703898b97c",
+      "scope": "CLI8, scoped xtask all-target/all-feature Clippy and workspace fmt",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "source_pre_post_equal": true,
+      "guardian": {
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 40769.559496,
+        "peakResidentPlusSwapKiB": 1227292,
+        "peakCacheBytes": 349716480,
+        "minimumAvailableKiB": 56758584,
+        "minimumScratchFreeBytes": 46514987008,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192
+      },
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/final-xtask-help/command.log",
+          "sha256": "273c01b9e801712ae388b689716115aeb067ccbf393e321203cbc1ed053dc93a",
+          "bytes": 2513
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/final-xtask-help/guardian.json",
+          "sha256": "6f93c868255cac2533bf894daeb426ec0cbffe8905d2d4aec5b2d9079bd50d16",
+          "bytes": 3688
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/final-xtask-help/source-before.json",
+          "sha256": "ed3f6cee13a6f83900f5521cdbc997aed8b1f097c1d5a9dc4578230211abca42",
+          "bytes": 765955
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/final-xtask-help/source-after.json",
+          "sha256": "ed3f6cee13a6f83900f5521cdbc997aed8b1f097c1d5a9dc4578230211abca42",
+          "bytes": 765955
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/final-xtask-help/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    }
+  ],
+  "sealed_harness_elf": {
+    "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/sealed/msl-tests-771cc814",
+    "sha256": "ee193192676e33958552f89cd97133b164011ed55a6a7281a2bb4b70794090c3",
+    "bytes": 40188040
+  },
+  "commands_wrapper": {
+    "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/focused-refinement-harness.sh",
+    "sha256": "2641056e45696c42d5de969ba1ca2213167f9a6bf5c86f4e75f1499aaaaa565e",
+    "bytes": 969
+  },
+  "sealed_xtask_elf": {
+    "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/sealed/xtask-tests-92c69d270",
+    "sha256": "bbb29cd9b4b80f4bf7395168a0c91615838a5cdc2ce43943fbfb2c35dcb0209e",
+    "bytes": 14581368
+  },
+  "sealed_final_xtask_elf": {
+    "path": "$HOME/scratch/rumoca/pr427-canonical-parity-budget-profile-20261012/sealed/xtask-tests-195c706a3",
+    "sha256": "21914991af5053f1cdc89583ebd2578b9c4911338984a6985b52e551fdce9737",
+    "bytes": 14948576
+  },
+  "final_production_functional_bytes": "195c differs from composed771 only CLI help wording and two test-only event-clock declaration prefixes; harness budget implementation unchanged",
+  "current_unique_budget_controls": 18,
+  "total_refinement_test_executions": 26
+}

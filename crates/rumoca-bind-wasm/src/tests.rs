@@ -28,7 +28,16 @@ mod session_recovery_tests;
 mod simulation_runtime_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
+mod user_guide_config_fragment_tests;
 mod user_guide_examples_tests;
+#[cfg(feature = "sim-rk45")]
+mod user_guide_fragment_tests;
+mod user_guide_inline_tests;
+mod user_guide_inventory;
+mod user_guide_samples;
+#[cfg(all(not(target_arch = "wasm32"), feature = "sim-rk45"))]
+mod user_guide_scenario_tests;
+mod user_guide_sources;
 mod wasm_cache_tests;
 mod workspace_config_api_tests;
 

@@ -1,0 +1,236 @@
+{
+  "schema": 1,
+  "scope": "Original three pinned modelica_models compatibility CI invocations; initialization-only simulation smoke. No full-horizon or all-corpus simulation claim.",
+  "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+  "source_binding": {
+    "regular_files": 4165,
+    "git_tree_entries": 4166,
+    "pre_manifest": {
+      "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/source-pre.json",
+      "sha256": "a13eafe67e503b9a95132d0a4e3880995448aa4250e65e4df0d41b43e5c1f6cd"
+    },
+    "post_manifest": {
+      "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/source-post.json",
+      "sha256": "a13eafe67e503b9a95132d0a4e3880995448aa4250e65e4df0d41b43e5c1f6cd"
+    },
+    "unchanged": true,
+    "symlink": "docs/dev-guide/live -> ../user-guide/live",
+    "git_blob_verification": {
+      "path": "$HOME/scratch/rumoca/pr427-final-modelicatest-5e6f-20261012/archive-tree-verification.json",
+      "sha256": "7b95dc46b169917f53ef211ef4a477415cb1191cea4d9f547711013c744ac2f6"
+    }
+  },
+  "profile": {
+    "path": "$HOME/scratch/rumoca/pr427-msl-profile-final-5e6f9cb9a-20261012/sealed/rumoca-msl-profile",
+    "sha256": "3fa126496bffe65090a071ca7c402dc2eb20f0f291c8750b17a2924e3d0a33a0"
+  },
+  "profile_owner_build_receipt": {
+    "path": "$HOME/scratch/rumoca/pr427-msl-profile-final-5e6f9cb9a-20261012/receipt.json",
+    "sha256": "0a3a073ace24a7f75dbf362dd4fc8957dd77b6c703fc040878174472223f0a98"
+  },
+  "corpus": {
+    "repository": "CogniPilot/modelica_models",
+    "commit": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "tracked_files": 498,
+    "pre_manifest": {
+      "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/inputs-pre.json",
+      "sha256": "ee2ae96b861a30dc29210351eb58f2eda21a7e309f6d247761ff8e8a4357934f"
+    },
+    "post_manifest": {
+      "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/inputs-post.json",
+      "sha256": "ee2ae96b861a30dc29210351eb58f2eda21a7e309f6d247761ff8e8a4357934f"
+    },
+    "unchanged": true
+  },
+  "recipe": {
+    "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/recipe.json",
+    "sha256": "13ae593d89e1b5c88cae3eecf05791003d76b93c072490ec0068016afa197dde"
+  },
+  "outer_exit_receipt": {
+    "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/outer-exits.json",
+    "sha256": "aeae0deef2341d43c5038738e8fd0680e2b568e38f252620b31dfe4033d7f65d"
+  },
+  "runtime_libraries": {
+    "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/runtime-libraries.txt",
+    "sha256": "26e18d94902ff87deb464cb4591fdc74955008e83d4fdcd4f9502595c98570b1"
+  },
+  "guardian": {
+    "script": {
+      "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/guardian-resident-plus-swap-20261012.mjs",
+      "sha256": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c"
+    },
+    "seconds": 600,
+    "aggregate_rss_plus_swap_mib": 4096,
+    "host_available_floor_mib": 16384,
+    "cache_limit_mib": 8192,
+    "scratch_floor_mib": 8192
+  },
+  "environment": {
+    "shell": "Nix .#full from exact archived source",
+    "cargo_build_jobs": 4,
+    "rust_test_threads": 4,
+    "rayon_num_threads": 4,
+    "cargo_incremental": 0,
+    "git_optional_locks": "0",
+    "cargo_builds": 0,
+    "root_cache_access": false,
+    "raw_environment_in_recipe": true
+  },
+  "gates": [
+    {
+      "model": "Tests.All",
+      "status": "PASS",
+      "command": [
+        "$HOME/scratch/rumoca/pr427-msl-profile-final-5e6f9cb9a-20261012/sealed/rumoca-msl-profile",
+        "--source-root",
+        "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/modelica-models-a41",
+        "--model",
+        "Tests.All",
+        "--mode",
+        "compile"
+      ],
+      "log": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/aggregate.log",
+        "sha256": "17290e4ffe2c93089bb2d4509dbdf7274160582497f12adc80ea548f3a1bde33"
+      },
+      "guardian": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/aggregate.guardian.json",
+        "sha256": "84937a4bf98d4975db2982c06834d7d300e2d36b95f4b5a1c0cc5d26f5c32dd6"
+      },
+      "resource": {
+        "elapsedMs": 3394.7817370000002,
+        "exitCode": 0,
+        "signal": null,
+        "peakRssKiB": 159736,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 159736,
+        "peakCacheBytes": 4689920,
+        "minimumAvailableKiB": 47942512,
+        "minimumScratchFreeBytes": 61863936000
+      },
+      "resource_stop": null,
+      "outcome": {
+        "compile_elapsed_seconds": 2.9,
+        "states": 12,
+        "algebraics": 275,
+        "equations": 300,
+        "balance": 0
+      }
+    },
+    {
+      "model": "Tests.LieGroupTests.SO2",
+      "status": "PASS",
+      "command": [
+        "$HOME/scratch/rumoca/pr427-msl-profile-final-5e6f9cb9a-20261012/sealed/rumoca-msl-profile",
+        "--source-root",
+        "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/modelica-models-a41",
+        "--model",
+        "Tests.LieGroupTests.SO2",
+        "--mode",
+        "simulate",
+        "--stop-time",
+        "0.0"
+      ],
+      "log": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/so2.log",
+        "sha256": "01672245e15103ce74206fc56d826265c8c94cbb98ae5e5db9dd6d16e64e0007"
+      },
+      "guardian": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/so2.guardian.json",
+        "sha256": "59f168dbb35c1d9d17c316e70e6cd7e1f89acdeb023554fa2d05577dd00bdac1"
+      },
+      "resource": {
+        "elapsedMs": 454.25084699999996,
+        "exitCode": 0,
+        "signal": null,
+        "peakRssKiB": 63108,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 63108,
+        "peakCacheBytes": 7745536,
+        "minimumAvailableKiB": 48770456,
+        "minimumScratchFreeBytes": 61863919616
+      },
+      "resource_stop": null,
+      "input": {
+        "path": "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/modelica-models-a41/Tests/LieGroupTests/SO2.mo",
+        "sha256": "e97e38bf75e19764f78751436f0ab821bc65a3afef16a38999f64a42a305dfd1"
+      },
+      "outcome": {
+        "compile_elapsed_ms": 205.48,
+        "simulation_elapsed_ms": 8.26,
+        "states": 0,
+        "algebraics": 7,
+        "equations": 7,
+        "balance": 0,
+        "points": 1,
+        "t_start": 0,
+        "t_end": 0,
+        "corpus_assertions": 7,
+        "original_assertion_tolerance": 1e-10
+      }
+    },
+    {
+      "model": "Tests.LieGroupTests.SE2",
+      "status": "PASS",
+      "command": [
+        "$HOME/scratch/rumoca/pr427-msl-profile-final-5e6f9cb9a-20261012/sealed/rumoca-msl-profile",
+        "--source-root",
+        "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/modelica-models-a41",
+        "--model",
+        "Tests.LieGroupTests.SE2",
+        "--mode",
+        "simulate",
+        "--stop-time",
+        "0.0"
+      ],
+      "log": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/se2.log",
+        "sha256": "4eb21fce77b25f892955095c11262be05e56cde7ea0ac74f82c5f78697728f74"
+      },
+      "guardian": {
+        "path": "$HOME/scratch/rumoca/pr427-final-compatibility-5e6f-20261012/se2.guardian.json",
+        "sha256": "91a172965582f5c3e4c8d63b48ed920ba4e548ab711c4c2fd4c08565226271c3"
+      },
+      "resource": {
+        "elapsedMs": 408.360749,
+        "exitCode": 0,
+        "signal": null,
+        "peakRssKiB": 63728,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 63728,
+        "peakCacheBytes": 7745536,
+        "minimumAvailableKiB": 49377664,
+        "minimumScratchFreeBytes": 61852069888
+      },
+      "resource_stop": null,
+      "input": {
+        "path": "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/modelica-models-a41/Tests/LieGroupTests/SE2.mo",
+        "sha256": "bf19eae6e23c072b25c9c5a8df2709bc71ed314008aae86e5417a01e7e34f8c9"
+      },
+      "outcome": {
+        "compile_elapsed_ms": 160.23,
+        "simulation_elapsed_ms": 20.01,
+        "states": 0,
+        "algebraics": 10,
+        "equations": 10,
+        "balance": 0,
+        "points": 1,
+        "t_start": 0,
+        "t_end": 0,
+        "corpus_assertions": 6,
+        "original_assertion_tolerance": 1e-09
+      }
+    }
+  ],
+  "result": {
+    "invocations": 3,
+    "passed": 3,
+    "failed": 0,
+    "retried": 0,
+    "excluded": 0
+  },
+  "ci_owner": ".github/workflows/ci.yml: modelica-models (modelica_models Compatibility Gate)",
+  "pending_separate_gates": [
+    "Final ordinary OMC differential semantics selection and broader canonical quick/full/GitHub CI are separate receipts."
+  ]
+}

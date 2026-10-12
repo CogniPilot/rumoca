@@ -73,6 +73,7 @@ let lsp_semantic_token_legend;
 let list_classes;
 let get_class_info;
 let render_target;
+let render_target_with_workspace_sources;
 let scenario_get_simulation_config;
 let scenario_set_simulation_preset;
 let scenario_reset_simulation_preset;
@@ -136,6 +137,7 @@ async function loadWasmModule() {
     list_classes = mod.list_classes;
     get_class_info = mod.get_class_info;
     render_target = mod.render_target;
+    render_target_with_workspace_sources = mod.render_target_with_workspace_sources;
     scenario_get_simulation_config = mod.scenario_get_simulation_config;
     scenario_set_simulation_preset = mod.scenario_set_simulation_preset;
     scenario_reset_simulation_preset = mod.scenario_reset_simulation_preset;
@@ -603,6 +605,19 @@ self.onmessage = async (e) => {
                             payload.templates || '{}',
                         );
                         break;
+                    case 'rumoca.workspace.renderTargetWithWorkspaceSources':
+                        // Compiles in the session and renders from the in-memory
+                        // result: Flat targets need the flat model, and no DAE
+                        // round-trips through JavaScript numbers.
+                        result = render_target_with_workspace_sources(
+                            payload.source || '',
+                            payload.modelName || 'Model',
+                            payload.workspaceSources || '{}',
+                            payload.target || '',
+                            payload.manifest || '',
+                            payload.templates || '{}',
+                        );
+                        break;
                     case 'rumoca.workspace.renderGalec':
                         // GALEC codegen ('galec' / 'galec-production' /
                         // 'embedded-c-galec') is served by the SEPARATE, lazily
@@ -617,6 +632,7 @@ self.onmessage = async (e) => {
                                 workspaceSources: payload.workspaceSources || '{}',
                                 modelName: payload.modelName || 'Model',
                                 target: payload.target || '',
+                                sourceRootCacheUrl: payload.sourceRootCacheUrl || '',
                             }),
                         };
                         break;

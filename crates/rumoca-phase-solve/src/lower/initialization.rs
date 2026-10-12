@@ -68,6 +68,25 @@ pub(super) fn lower_initialization<'dae>(
     let dependents = ownership.lower_solved_parameter_reads(view, layout, derivatives)?;
     updates.rows.extend(dependents.rows);
     updates.targets.extend(dependents.targets);
+    for memory in layout
+        .buffered_quotients
+        .entries()
+        .iter()
+        .filter(|memory| memory.domain.is_none())
+    {
+        let span = view
+            .expression(memory.quotient)
+            .expect("checked quotient expression")
+            .provenance()
+            .span();
+        let output = updates.rows.len();
+        updates.rows.push(
+            ScalarCompiler::new(view, layout, None).quotient_memory_program(memory.quotient)?,
+            span,
+            output,
+        );
+        updates.targets.push(solve::scalar_slot_p(memory.parameter));
+    }
     Ok(solve::InitializationSolveSystem::construct(
         solve::InitializationSystemInput {
             residual: rows.into_compute_block()?,

@@ -8,12 +8,14 @@ use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::TargetFile;
+#[cfg(feature = "fmi")]
+use rumoca_compile::codegen::targets::validate_solve_target_capabilities;
 #[cfg(test)]
 use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
     TargetTemplateSource, ensure_target_has_rendered_files, validate_dae_target_capabilities,
-    validate_solve_target_capabilities,
+    validate_flat_target_capabilities, validate_solve_target_capabilities_with_calls,
 };
 #[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
@@ -654,7 +656,9 @@ fn validate_target_requirements(
     result: &CompilationResult,
     manifest: &TargetManifest,
 ) -> Result<ValidatedTarget> {
-    let mut validated = ValidatedTarget::default();
+    let validated = ValidatedTarget::default();
+    #[cfg(feature = "fmi")]
+    let mut validated = validated;
     match manifest.ir {
         TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
             let capabilities = declared_capabilities(manifest)?;
@@ -674,16 +678,35 @@ fn validate_target_requirements(
                 validated.fmi_component = Some(component);
                 return Ok(validated);
             }
-            let solve = rumoca_sim::lower_solve_problem(&result.dae)
+            // The renderer inlines pure calls from the owners lowered with
+            // the problem (`build_solve_template_renderer`), so the gate reads
+            // the same pair.
+            let solve = rumoca_sim::lower_solve_package(&result.dae)
                 .context("Lower Solve IR for target capability validation")?;
-            validate_solve_target_capabilities(&solve, manifest, capabilities)?;
+            validate_solve_target_capabilities_with_calls(
+                &solve.problem,
+                Some(&solve.pure_calls),
+                manifest,
+                capabilities,
+            )?;
+            if manifest.ir == TargetTemplateIr::Solve && capabilities.scalar_fallback == Some(true)
+            {
+                result.require_scalar_target_projection()?;
+            }
         }
-        // Flat and AST templates carry no capability obligation. The Flat
-        // render context proves its own contract before any byte is produced
-        // (`rumoca::codegen::EC007`, the non-materialized structured-family
-        // refusal), and the AST is source structure with no lowering claim a
-        // capability column could describe.
-        TargetTemplateIr::Flat | TargetTemplateIr::Ast => {}
+        // A Flat template that declares a `[capabilities]` table is held to
+        // it: `events` / `algorithms` declared unsupported refuse a model whose
+        // `when` chains or algorithm sections the template would otherwise
+        // drop silently. Undeclared Flat templates keep no obligation; the
+        // render context still proves its own structured-family contract
+        // (`rumoca::codegen::EC007`). The AST is source structure with no
+        // lowering claim a capability column could describe.
+        TargetTemplateIr::Flat => {
+            if let Some(capabilities) = manifest.capabilities.as_ref() {
+                validate_flat_target_capabilities(&result.flat, manifest, capabilities)?;
+            }
+        }
+        TargetTemplateIr::Ast => {}
     }
     Ok(validated)
 }

@@ -85,7 +85,7 @@ function parseAddonJson(text, context) {
  * (e.g. continuous dynamics) or the target is unknown, and when this rumoca
  * build predates the addon.
  */
-export async function renderGalec(pkgBase, workspaceSources, modelName, target) {
+export async function renderGalec(pkgBase, workspaceSources, modelName, target, sourceRootBytes = null) {
   if (!isGalecTarget(target)) {
     throw new Error(
       `'${target}' is not a GALEC codegen target ` +
@@ -98,8 +98,14 @@ export async function renderGalec(pkgBase, workspaceSources, modelName, target) 
       "this rumoca build predates the GALEC addon; rebuild the package",
     );
   }
+  if (sourceRootBytes && typeof addon.render_galec_with_source_roots_binary !== "function") {
+    throw new Error("this GALEC addon lacks checked source-root support; rebuild the package");
+  }
+  const rendered = sourceRootBytes
+    ? addon.render_galec_with_source_roots_binary(workspaceSources, modelName, target, sourceRootBytes)
+    : addon.render_galec(workspaceSources, modelName, target);
   const parsed = parseAddonJson(
-    addon.render_galec(workspaceSources, modelName, target),
+    rendered,
     "render_galec",
   );
   if (!parsed || parsed.ok !== true) {
@@ -239,7 +245,8 @@ export async function renderGalecTargetFiles(
   workspaceSources,
   modelName,
   target,
+  sourceRootBytes = null,
 ) {
-  const parsed = await renderGalec(pkgBase, workspaceSources, modelName, target);
+  const parsed = await renderGalec(pkgBase, workspaceSources, modelName, target, sourceRootBytes);
   return galecResultToFiles(target, parsed);
 }

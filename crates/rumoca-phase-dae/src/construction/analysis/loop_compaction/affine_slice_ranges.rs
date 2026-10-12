@@ -106,6 +106,7 @@ impl AffineSliceRanges {
             expr: Box::new(Expression::ArrayComprehension {
                 expr: Box::new(coordinate),
                 indices: vec![ComprehensionIndex {
+                    binder: rumoca_core::IndexBinderProvenance::Generated,
                     name: binder,
                     range: integer_range(1, extent, span_of),
                 }],
@@ -137,16 +138,27 @@ impl ExpressionRewriter for AffineSliceRanges {
         filter: Option<&Expression>,
         span: Span,
     ) -> Expression {
-        let rewritten_indices = self.rewrite_comprehension_indices(indices);
-        let binders = indices
-            .iter()
-            .map(|index| (index.name.as_str(), &index.range));
-        self.in_binder_scope(binders, |scope| Expression::ArrayComprehension {
-            expr: Box::new(scope.rewrite_expression(expr)),
+        let outer = self.shapes.clone();
+        let mut rewritten_indices = indices.to_vec();
+        for index in rewritten_indices.iter_mut().rev() {
+            index.range = self.rewrite_expression(&index.range);
+            match index.binder {
+                rumoca_core::IndexBinderProvenance::Source(_) => {
+                    self.shapes.bind_comprehension_index(index)
+                }
+                rumoca_core::IndexBinderProvenance::Generated => self
+                    .shapes
+                    .bind_range_binder(VarName::new(&index.name), &index.range),
+            }
+        }
+        let result = Expression::ArrayComprehension {
+            expr: Box::new(self.rewrite_expression(expr)),
             indices: rewritten_indices,
-            filter: filter.map(|filter| Box::new(scope.rewrite_expression(filter))),
+            filter: filter.map(|filter| Box::new(self.rewrite_expression(filter))),
             span,
-        })
+        };
+        self.shapes = outer;
+        result
     }
 }
 

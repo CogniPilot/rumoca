@@ -85,6 +85,7 @@ pub(super) fn conditional(
 pub(super) fn for_loop(name: &str, count: i64, body: Vec<Statement>, span: Span) -> Statement {
     Statement::For {
         indices: vec![ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: name.into(),
             range: Expression::Range {
                 start: Box::new(integer(1, span)),

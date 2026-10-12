@@ -47,13 +47,37 @@ impl AlgorithmCodeTemplateRenderer {
         model_name: &str,
         artifact: &T,
     ) -> Result<String, CodegenError> {
+        self.render_context(
+            template,
+            minijinja::context! {
+                model_name => model_name,
+                artifact => Value::from_serialize(artifact),
+                ..self.context.clone()
+            },
+        )
+    }
+
+    /// Render source text without packaging artifact facts. Templates that
+    /// require timestamps, checksums or container identities are unavailable
+    /// at this boundary and fail under the renderer's strict undefined policy.
+    pub fn render_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CodegenError> {
+        self.render_context(
+            template,
+            minijinja::context! {
+                model_name => model_name,
+                ..self.context.clone()
+            },
+        )
+    }
+
+    fn render_context(&self, template: &str, context: Value) -> Result<String, CodegenError> {
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
-        Ok(tmpl.render(minijinja::context! {
-            model_name => model_name,
-            artifact => Value::from_serialize(artifact),
-            ..self.context.clone()
-        })?)
+        Ok(tmpl.render(context)?)
     }
 }

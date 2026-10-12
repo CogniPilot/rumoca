@@ -67,6 +67,7 @@ fn make_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
 
 fn make_for_index(name: &str, start: i64, end: i64) -> ForIndex {
     ForIndex {
+        binder: Some(rumoca_core::IndexBinderProvenance::Generated),
         ident: Token {
             text: Arc::from(name.to_string()),
             ..Token::default()
@@ -528,19 +529,55 @@ fn test_flatten_nested_for_equation_lifts_inner_grouping() {
 
 #[test]
 fn test_substitute_index_descends_into_array_comprehension_body() {
-    let expr = ast::Expression::ArrayComprehension {
-        expr: Arc::new(ast::Expression::Binary {
-            op: OpBinary::Add,
-            lhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("j"))),
-            rhs: Arc::new(ast::Expression::ComponentReference(make_comp_ref("k"))),
-            span: rumoca_core::Span::DUMMY,
-        }),
-        indices: vec![make_for_index("k", 1, 3)],
-        filter: None,
-        span: rumoca_core::Span::DUMMY,
+    let source = "model M Real x[3,3]; equation for j in 1:3 loop x[j,:] = {j+k for k in 1:3}; end for; end M;";
+    let file = "conditional_and_eval_test.mo";
+    let stored = rumoca_phase_parse::parse_to_ast(source, file).expect("fixture parses");
+    let mut tree = ast::ClassTree::from_parsed(stored);
+    tree.source_map.add(file, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("fixture resolves with distinct source binders");
+    let class = resolved.get_class_by_qualified_name("M").unwrap();
+    let ast::Equation::For { indices, equations } = &class.equations[0] else {
+        panic!("authored outer for-equation");
     };
-
-    let substituted = substitute_index_in_expression(&expr, "j", 2);
+    let outer = IndexSubstitution::from_index(&indices[0]).unwrap();
+    let ast::Equation::Simple { rhs: expr, .. } = &equations[0] else {
+        panic!("authored array assignment");
+    };
+    let ast::Expression::ArrayComprehension {
+        expr: body,
+        indices: inner,
+        ..
+    } = expr
+    else {
+        panic!("authored comprehension");
+    };
+    assert_ne!(indices[0].binder, inner[0].binder);
+    assert!(matches!(
+        indices[0].binder,
+        Some(rumoca_core::IndexBinderProvenance::Source(_))
+    ));
+    let Some(rumoca_core::IndexBinderProvenance::Source(inner_id)) = inner[0].binder else {
+        panic!("Resolve-issued inner binder");
+    };
+    let ast::Expression::Binary {
+        lhs,
+        rhs: original_rhs,
+        ..
+    } = body.as_ref()
+    else {
+        panic!("authored addition");
+    };
+    assert!(
+        matches!(original_rhs.as_ref(), ast::Expression::ComponentReference(reference) if reference.target_def_id() == Some(inner_id))
+    );
+    assert_eq!(
+        substitute_index_in_expression(expr, IndexSubstitution::Generated("j"), 2),
+        *expr,
+        "a generated axis cannot capture a resolved source declaration"
+    );
+    let lhs_span = lhs.span();
+    let substituted = substitute_index_in_expression(expr, outer, 2);
 
     let ast::Expression::ArrayComprehension { expr, indices, .. } = substituted else {
         panic!("expected array comprehension");
@@ -549,11 +586,14 @@ fn test_substitute_index_descends_into_array_comprehension_body() {
     let ast::Expression::Binary { lhs, rhs, .. } = expr.as_ref() else {
         panic!("expected binary comprehension body");
     };
-    assert_eq!(lhs.as_ref(), &make_int(2));
-    assert!(matches!(
+    assert!(
+        matches!(lhs.as_ref(), ast::Expression::Terminal { terminal_type: TerminalType::UnsignedInteger, token, span } if token.text.as_ref() == "2" && *span == lhs_span)
+    );
+    assert_eq!(
         rhs.as_ref(),
-        ast::Expression::ComponentReference(cr) if cr.parts[0].ident.text.as_ref() == "k"
-    ));
+        original_rhs.as_ref(),
+        "inner declaration remains unchanged"
+    );
 }
 
 #[test]
@@ -567,7 +607,7 @@ fn test_substitute_index_respects_array_comprehension_shadowing() {
         span: rumoca_core::Span::DUMMY,
     };
 
-    let substituted = substitute_index_in_expression(&expr, "j", 2);
+    let substituted = substitute_index_in_expression(&expr, IndexSubstitution::Generated("j"), 2);
 
     let ast::Expression::ArrayComprehension { expr, filter, .. } = substituted else {
         panic!("expected array comprehension");

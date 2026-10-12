@@ -424,7 +424,7 @@ fn prevalidate_target_storage(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::num::NonZeroU64;
 
     use indexmap::IndexMap;
@@ -432,7 +432,7 @@ mod tests {
 
     use super::*;
 
-    fn transaction_model() -> solve::SolveModel {
+    pub(in crate::runtime::solve_runtime) fn transaction_model() -> solve::SolveModel {
         let span = Span::from_offsets(
             SourceId::from_source_name("event_transaction_runtime.mo"),
             0,

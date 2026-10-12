@@ -1,6 +1,6 @@
 //! Explicit failure propagation across private native kernel calls.
 
-use super::CompileError;
+use super::{CompileError, scratch};
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use cranelift_frontend::FunctionBuilder;
 
@@ -13,6 +13,8 @@ pub(super) const NATIVE_BODY_FAILURE: u8 = 4;
 pub(super) const NATIVE_BODY_FOREIGN_ERROR: u8 = 5;
 /// A SOLVE-C62 member call would exceed its group's declared depth limit.
 const RECURSION_DEPTH_EXCEEDED: i64 = 6;
+const SCALAR_PAYLOAD_FAILURE: i64 = 7;
+const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
 
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
@@ -35,6 +37,16 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
         6 => Err(CompileError::Input(
             "recursive call exceeds the execution profile's depth limit".into(),
         )),
+        7 => Err(CompileError::Input(
+            "Integer value is outside its domain or not exactly representable in the scalar ABI"
+                .into(),
+        )),
+        8 => Err(CompileError::Input(
+            "native Integer arithmetic left the checked target domain".into(),
+        )),
+        scratch::FAILURE => Err(CompileError::Backend(
+            "native scratch allocation or frame contract failed".into(),
+        )),
         _ => Err(CompileError::Backend(format!(
             "unknown native kernel status {status}"
         ))),
@@ -43,6 +55,7 @@ pub(super) fn check(status: u8) -> Result<(), CompileError> {
 
 pub(super) fn succeed(builder: &mut FunctionBuilder<'_>) {
     let success = builder.ins().iconst(types::I8, 0);
+    scratch::leave(builder);
     builder.ins().return_(&[success]);
 }
 
@@ -52,6 +65,7 @@ pub(super) fn propagate(builder: &mut FunctionBuilder<'_>, status: Value) {
     builder.ins().brif(status, failed, &[], continuation, &[]);
     builder.switch_to_block(failed);
     builder.seal_block(failed);
+    scratch::leave(builder);
     builder.ins().return_(&[status]);
     builder.switch_to_block(continuation);
     builder.seal_block(continuation);
@@ -73,6 +87,18 @@ pub(super) fn require_integer_quotient(builder: &mut FunctionBuilder<'_>, valid:
     require(builder, valid, INTEGER_QUOTIENT_FAILURE);
 }
 
+pub(super) fn require_scalar_payload(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, SCALAR_PAYLOAD_FAILURE);
+}
+
+pub(super) fn require_integer_arithmetic(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, INTEGER_ARITHMETIC_FAILURE);
+}
+
+pub(super) fn require_scratch(builder: &mut FunctionBuilder<'_>, valid: Value) {
+    require(builder, valid, i64::from(scratch::FAILURE));
+}
+
 fn require(builder: &mut FunctionBuilder<'_>, valid: Value, failure: i64) {
     let failed = builder.create_block();
     let continuation = builder.create_block();
@@ -80,6 +106,7 @@ fn require(builder: &mut FunctionBuilder<'_>, valid: Value, failure: i64) {
     builder.switch_to_block(failed);
     builder.seal_block(failed);
     let status = builder.ins().iconst(types::I8, failure);
+    scratch::leave(builder);
     builder.ins().return_(&[status]);
     builder.switch_to_block(continuation);
     builder.seal_block(continuation);

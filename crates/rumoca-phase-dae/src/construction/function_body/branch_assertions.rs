@@ -58,6 +58,7 @@ pub(super) fn lower_branch_assertion<'dae>(
                 function_body: Some(body),
                 values: Some(&state.values),
                 owner_clock: None,
+                source_comprehension_binders: None,
             },
             binders,
             expression,

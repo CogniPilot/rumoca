@@ -1051,6 +1051,64 @@ test_file = 'tests/expr_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
 
+# EXPR-042 reuses the workspace-owned semantic regressions in rumoca::suite_core.
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'issue_403_original_scalar_boolean_guard_short_circuits'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'issue_403_original_guard_executes_natively_without_fallback'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'scalar_boolean_or_skips_a_dynamic_invalid_index'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'scalar_boolean_selected_asserting_call_keeps_its_effect'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'scalar_boolean_skipping_does_not_hide_an_independently_demanded_index'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'scalar_boolean_index_of_shape_one_remains_a_scalar_value'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'ordinary_model_boolean_value_issues_guarded_arms_and_replays'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EXPR-042'
+case_id = 'scalar_boolean_nested_and_or_keep_both_truth_tables'
+test_file = '../rumoca/tests/suite_core/reported_bug_runtime/scalar_boolean_values.rs'
+kind = 'Sim'
+outcome = 'Accept'
+
 [[cases]]
 contract_id = 'FUNC-001'
 case_id = 'func_001_input_output_ok'

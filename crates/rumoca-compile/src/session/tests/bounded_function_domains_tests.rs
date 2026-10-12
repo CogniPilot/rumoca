@@ -109,6 +109,20 @@ fn loop_binders_shadow_an_immutable_function_local_in_the_actual_pipeline() {
     assert_eq!(evaluate(&source, -3.0), -397302.0);
 }
 
+#[test]
+fn for_range_reads_same_name_enclosing_constant_before_binding_its_iterator() {
+    let source = STRIDED
+        .replace(
+            "output Real y;",
+            "output Real y; protected constant Integer i=4;",
+        )
+        .replace("1:4", "1:i");
+    // The range reads the enclosing constant i=4; the body reads the fresh
+    // iterator. The dependent inner range must still see that outer iterator.
+    assert_eq!(evaluate(&source, 2.0), 264868.0);
+    assert_eq!(evaluate(&source, -3.0), -397302.0);
+}
+
 const FEATURE_SELECTION_FULL: &str = include_str!("fixtures/feature_selection_full.mo");
 
 fn compile_feature_selection(source: &str) -> Result<(), String> {

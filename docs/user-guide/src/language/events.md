@@ -71,7 +71,7 @@ model Thermostat "Bang-bang temperature control with hysteresis"
   parameter Real band = 1.0 "Hysteresis half-width [degC]";
   parameter Real T_amb = 5.0 "Outside temperature [degC]";
   parameter Real tau = 600.0 "Thermal time constant [s]";
-  parameter Real heat = 0.02 "Heater authority [degC/s]";
+  parameter Real heat = 0.05 "Heater authority [degC/s]";
   Real T(start = 15.0) "Room temperature [degC]";
   Boolean on(start = true) "Heater state";
 equation

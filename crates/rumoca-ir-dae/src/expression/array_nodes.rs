@@ -114,8 +114,10 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         let domain_extents = self.storage.domain_extents(domain, self.provenance)?;
         let body_ty = self.storage.expr_type(body, self.provenance)?.clone();
         let variability = self.storage.expr_variability(body, self.provenance)?;
+        // MLS §3.6.5 / §10.4: the comprehension closes its binder domain,
+        // while insertion retains and checks the current model arm.
         self.storage
-            .expect_domain_expression(body, domain, self.provenance)?;
+            .expect_domain_coordinates(body, domain, self.provenance)?;
         let mut dimensions = Vec::with_capacity(body_ty.dimensions().len() + domain_extents.len());
         dimensions.extend_from_slice(domain_extents);
         dimensions.extend_from_slice(body_ty.dimensions());
@@ -141,7 +143,9 @@ fn range_bound<'dae>(
     owner: DaeProvenance,
 ) -> Result<(i64, DaeProvenance), DaeConstructionError> {
     let provenance = storage.expr_provenance(expression, owner)?;
-    storage.expect_closed_expression(expression, provenance)?;
+    // The range is an expression in its current arm, not a model root.
+    // Its insertion checks lexical visibility for every bound operand.
+    storage.expect_closed_coordinates(expression, provenance)?;
     match storage.expressions.nodes.get(expression.index() as usize) {
         Some(ExprNode::Literal(DaeLiteral::Integer(value))) => Ok((*value, provenance)),
         Some(_) => Err(DaeConstructionError::InvalidRangeBound {

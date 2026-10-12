@@ -761,7 +761,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                         .get(relation as usize)
                         .ok_or_else(|| unknown("relation", relation, provenance))?
                         .expression;
-                    expressions.push(expression);
+                    expressions.extend(self.storage.model_expression_roots(expression));
                 }
                 ConditionNode::Discrete(expression) => expressions.push(expression),
                 ConditionNode::Not(inner) => conditions.push(inner),

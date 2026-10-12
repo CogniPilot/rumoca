@@ -1,3 +1,6 @@
+mod jax_lazy_conditionals;
+mod selected_regions;
+
 use rumoca::Compiler;
 use rumoca_compile::codegen::targets::RenderedTargetFile;
 use std::fs;
@@ -16,8 +19,16 @@ fn checked_decay() -> rumoca::CompilationResult {
 
 fn rendered_target(target: &str) -> (tempfile::TempDir, Vec<RenderedTargetFile>) {
     let result = checked_decay();
-    let files = rumoca::render_target_files(&result, "Decay", target, None)
-        .expect("checked target renders");
+    rendered_model_target(&result, "Decay", target)
+}
+
+fn rendered_model_target(
+    result: &rumoca::CompilationResult,
+    model: &str,
+    target: &str,
+) -> (tempfile::TempDir, Vec<RenderedTargetFile>) {
+    let files =
+        rumoca::render_target_files(result, model, target, None).expect("checked target renders");
     let directory = tempfile::tempdir().expect("temporary target directory");
     for file in &files {
         let path = directory.path().join(&file.path);
@@ -133,6 +144,8 @@ end ExactAlgebraic;
         assert!(assign_c.contains("if (!isfinite(m->y[1]))"));
     }
 
+    // The scalar ODE right-hand-side targets consume the same schedule: they
+    // assign every algebraic slot in-function before the derivative rows.
     for target in [
         "c-ode",
         "rust-ode",
@@ -140,17 +153,121 @@ end ExactAlgebraic;
         "casadi-ode",
         "jax-ode",
         "cuda-ode",
-        "wgsl-ode",
     ] {
-        let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
-            .expect_err("a target without an exact-assignment consumer must fail closed");
+        let files = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
+            .unwrap_or_else(|error| panic!("{target} consumes the exact schedule: {error:#}"));
         assert!(
-            error
-                .to_string()
-                .contains("unsupported-feature:residual_equations"),
-            "target {target} returned the wrong diagnostic: {error:#}"
+            files
+                .iter()
+                .any(|file| file.content.contains("Algebraic refresh")),
+            "{target} must emit the in-function algebraic refresh"
         );
     }
+    execute_c_ode_algebraic_refresh(&compiled);
+
+    // wgsl-ode renders rows as expressions over a read-only `y` buffer and has
+    // no exact-assignment consumer, so it still fails closed.
+    let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", "wgsl-ode", None)
+        .expect_err("a target without an exact-assignment consumer must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported-feature:residual_equations"),
+        "wgsl-ode returned the wrong diagnostic: {error:#}"
+    );
+}
+
+/// Compile and call the emitted c-ode RHS with a deliberately stale algebraic
+/// slot: `y = 2*x` must be recomputed in-function, so `der(x) = -y = -3` at
+/// `x = 1.5` whatever the caller left in `y[1]`.
+fn execute_c_ode_algebraic_refresh(compiled: &rumoca::CompilationResult) {
+    let files = rumoca::render_target_files(compiled, "ExactAlgebraic", "c-ode", None)
+        .expect("c-ode renders the exact algebraic model");
+    let header = files
+        .iter()
+        .find(|file| file.path == "ExactAlgebraic_ode.h")
+        .expect("c-ode emits its header")
+        .content
+        .clone();
+    let source = files
+        .iter()
+        .find(|file| file.path == "ExactAlgebraic_ode.c")
+        .expect("c-ode emits its source")
+        .content
+        .replace("#include \"ExactAlgebraic_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_EXACTALGEBRAIC_Y_LEN] = {{0}};
+    double p[RUMOCA_EXACTALGEBRAIC_P_LEN + 1] = {{0}};
+    double out[RUMOCA_EXACTALGEBRAIC_DERIVATIVE_LEN] = {{0}};
+    y[0] = 1.5;
+    y[1] = 999.0;
+    if (ExactAlgebraic_derivative_rhs(0.0, y, p, out) != 0) return 1;
+    return fabs(out[0] + 3.0) < 1e-12 ? 0 : 2;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode exact algebraic refresh");
+}
+
+/// Solve lowering compacts an algebraic `for` family into one pure call
+/// (SPEC_0043 §6c). The scalar ODE targets inline its body, so the family
+/// stays renderable; c-ode evaluates it to the reference values.
+#[test]
+fn ode_targets_inline_a_compacted_algebraic_family_call() {
+    let compiled = Compiler::new()
+        .model("FamilyCall")
+        .compile_str(
+            r#"
+model FamilyCall
+  parameter Real b[3] = {0.1, 0.2, 0.3};
+  Real x[3](start = {1, 2, 3}, each fixed = true);
+  Real a[3];
+equation
+  for i in 1:3 loop
+    a[i] = tanh(x[i] + b[i]);
+  end for;
+  der(x) = -a;
+end FamilyCall;
+"#,
+            "FamilyCall.mo",
+        )
+        .expect("the compiler accepts an algebraic family");
+    for target in [
+        "c-ode",
+        "rust-ode",
+        "rust-fixed-ode",
+        "casadi-ode",
+        "jax-ode",
+        "cuda-ode",
+    ] {
+        rumoca::render_target_files(&compiled, "FamilyCall", target, None)
+            .unwrap_or_else(|error| panic!("{target} inlines the family call: {error:#}"));
+    }
+    let files = rumoca::render_target_files(&compiled, "FamilyCall", "c-ode", None)
+        .expect("c-ode renders the family call");
+    let header = source_unit(&files, "FamilyCall_ode.h");
+    let source =
+        source_unit(&files, "FamilyCall_ode.c").replace("#include \"FamilyCall_ode.h\"", "");
+    let driver = format!(
+        r#"{header}
+{source}
+int main(void) {{
+    double y[RUMOCA_FAMILYCALL_Y_LEN] = {{0}};
+    double out[RUMOCA_FAMILYCALL_DERIVATIVE_LEN] = {{0}};
+    const double b[3] = {{0.1, 0.2, 0.3}};
+    for (int i = 0; i < 3; ++i) y[i] = 1.0 + i;
+    if (FamilyCall_derivative_rhs(0.0, y, FamilyCall_default_p, out) != 0) return 1;
+    for (int i = 0; i < 3; ++i) {{
+        if (fabs(out[i] + tanh(y[i] + b[i])) > 1e-14) return 2;
+    }}
+    return 0;
+}}
+"#
+    );
+    compile_and_run_c(&driver, "c-ode inlined family call");
 }
 
 #[test]
@@ -831,12 +948,31 @@ assert float(derivative(ca.DM([1.0]))) == -2.0
 #[test]
 fn jax_ode_target_imports_jits_evaluates_and_differentiates() {
     let (directory, files) = rendered_target("jax-ode");
+    assert_jax_decay(directory.path(), &files);
+}
+
+#[test]
+fn jax_ode_target_handles_reported_explicit_algebraic_assignments() {
+    let compiled = Compiler::new()
+        .model("B")
+        .compile_str(
+            include_str!(
+                "../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_418.mo"
+            ),
+            "B.mo",
+        )
+        .expect("the original issue 418 model compiles");
+    let (directory, files) = rendered_model_target(&compiled, "B", "jax-ode");
+    assert_jax_decay(directory.path(), &files);
+}
+
+fn assert_jax_decay(directory: &Path, files: &[RenderedTargetFile]) {
     let module = files
         .iter()
         .find(|file| file.path.ends_with(".py"))
         .expect("JAX target emits Python");
     run_python(
-        &directory.path().join(&module.path),
+        &directory.join(&module.path),
         r#"
 import importlib.util, sys
 import jax

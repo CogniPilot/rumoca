@@ -31,7 +31,7 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
         ],
         scale_and_offset_assignment_residual_row(2, 1, 0.25, 1.0),
     ];
-    let model = solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
@@ -72,6 +72,12 @@ fn projection_affinity_treats_earlier_block_values_as_coefficients() {
         initial_y: vec![2.0, 4.0, 2.0],
         ..Default::default()
     };
+    set_test_implicit_jvp(
+        &mut model,
+        coefficient_product_jvp_rows(),
+        "block_affinity_jvp.mo",
+    );
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
     let projection = RefreshProjectionModel {
         seed_linearizations: None,
@@ -122,7 +128,16 @@ fn refresh_solves_affine_coordinates_even_when_the_seed_residual_is_small() {
         initial_y: vec![2.0e-7, 1.0e-7],
         ..Default::default()
     };
+    set_test_implicit_jvp(
+        &mut model,
+        vec![
+            affine_seed_row(&[(0, 1.0), (1, -2.0)]),
+            affine_seed_row(&[(1, 1.0), (0, -0.75)]),
+        ],
+        "accepted_refresh_iterate_jvp.mo",
+    );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
@@ -172,61 +187,13 @@ fn refresh_newton_backtracks_across_expression_domain_boundary() {
     set_test_implicit_jvp(
         &mut model,
         vec![
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-                solve::LinearOp::LoadSeed { dst: 1, index: 1 },
-                solve::LinearOp::Const { dst: 2, value: 2.0 },
-                solve::LinearOp::LoadY { dst: 3, index: 1 },
-                solve::LinearOp::Unary {
-                    dst: 4,
-                    op: solve::UnaryOp::Sqrt,
-                    arg: 3,
-                },
-                solve::LinearOp::Binary {
-                    dst: 5,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 2,
-                    rhs: 4,
-                },
-                solve::LinearOp::Binary {
-                    dst: 6,
-                    op: solve::BinaryOp::Div,
-                    lhs: 1,
-                    rhs: 5,
-                },
-                solve::LinearOp::Binary {
-                    dst: 7,
-                    op: solve::BinaryOp::Sub,
-                    lhs: 0,
-                    rhs: 6,
-                },
-                solve::LinearOp::StoreOutput { src: 7 },
-            ],
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
-                solve::LinearOp::Const {
-                    dst: 1,
-                    value: 10.0,
-                },
-                solve::LinearOp::LoadSeed { dst: 2, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 3,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 1,
-                    rhs: 2,
-                },
-                solve::LinearOp::Binary {
-                    dst: 4,
-                    op: solve::BinaryOp::Add,
-                    lhs: 0,
-                    rhs: 3,
-                },
-                solve::LinearOp::StoreOutput { src: 4 },
-            ],
+            sqrt_difference_jvp_row(0, 1),
+            affine_seed_row(&[(1, 1.0), (0, 10.0)]),
         ],
         "damped_newton_domain_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
@@ -314,6 +281,7 @@ fn refresh_projects_rank_deficient_bilinear_start() {
         "bilinear_start_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
@@ -366,7 +334,13 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
         initial_y: vec![7.0],
         ..Default::default()
     };
+    set_test_implicit_jvp(
+        &mut model,
+        vec![affine_seed_row(&[(0, 1.0)])],
+        "refresh_semantic_error_jvp.mo",
+    );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = vec![19.0];
 
@@ -558,6 +532,14 @@ fn unavailable_projection_seed_projects_its_own_block_from_the_incoming_coordina
             "unavailable_stage_seed.mo",
         ));
     model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    set_test_implicit_jvp(
+        &mut model,
+        vec![
+            affine_seed_row(&[(0, 1.0), (1, -0.5)]),
+            sqrt_difference_jvp_row(1, 0),
+        ],
+        "stage_rescue_actual_jvp.mo",
+    );
     derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
     let plan = &runtime.algebraic_refresh;
@@ -644,6 +626,14 @@ fn failed_seed_rescue_restores_the_incoming_coordinate_and_runs_the_complete_pla
             "failed_stage_rescue.mo",
         ));
     model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    set_test_implicit_jvp(
+        &mut model,
+        vec![
+            affine_seed_row(&[(0, 1.0), (1, -0.5)]),
+            sqrt_difference_jvp_row(1, 0),
+        ],
+        "stage_rescue_actual_jvp.mo",
+    );
     derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
     let plan = &runtime.algebraic_refresh;
@@ -692,4 +682,88 @@ fn failed_seed_rescue_restores_the_incoming_coordinate_and_runs_the_complete_pla
         solver_y, incoming,
         "the complete plan starts from the incoming coordinate"
     );
+}
+
+/// Tangent of target - sqrt(source), with the same active sqrt domain.
+fn sqrt_difference_jvp_row(target: usize, source: usize) -> Vec<solve::LinearOp> {
+    use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput, Unary};
+    vec![
+        LoadSeed {
+            dst: 0,
+            index: target,
+        },
+        LoadSeed {
+            dst: 1,
+            index: source,
+        },
+        Const { dst: 2, value: 2.0 },
+        LoadY {
+            dst: 3,
+            index: source,
+        },
+        Unary {
+            dst: 4,
+            op: solve::UnaryOp::Sqrt,
+            arg: 3,
+        },
+        Binary {
+            dst: 5,
+            op: solve::BinaryOp::Mul,
+            lhs: 2,
+            rhs: 4,
+        },
+        Binary {
+            dst: 6,
+            op: solve::BinaryOp::Div,
+            lhs: 1,
+            rhs: 5,
+        },
+        Binary {
+            dst: 7,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 6,
+        },
+        StoreOutput { src: 7 },
+    ]
+}
+
+fn coefficient_product_jvp_rows() -> Vec<Vec<solve::LinearOp>> {
+    use solve::LinearOp::{Binary, LoadSeed, LoadY, StoreOutput};
+    vec![
+        vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+        vec![
+            LoadSeed { dst: 0, index: 1 },
+            LoadSeed { dst: 1, index: 0 },
+            LoadY { dst: 2, index: 2 },
+            Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            LoadY { dst: 4, index: 0 },
+            LoadSeed { dst: 5, index: 2 },
+            Binary {
+                dst: 6,
+                op: solve::BinaryOp::Mul,
+                lhs: 4,
+                rhs: 5,
+            },
+            Binary {
+                dst: 7,
+                op: solve::BinaryOp::Add,
+                lhs: 3,
+                rhs: 6,
+            },
+            Binary {
+                dst: 8,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 7,
+            },
+            StoreOutput { src: 8 },
+        ],
+        affine_seed_row(&[(2, 1.0), (1, -0.25)]),
+    ]
 }

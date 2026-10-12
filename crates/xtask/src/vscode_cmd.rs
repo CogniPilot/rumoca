@@ -1193,11 +1193,17 @@ fn build_and_stage_vscode_lsp(root: &Path, vscode_dir: &Path, release: bool) -> 
     cargo_build.current_dir(root);
     run_status(cargo_build)?;
 
+    stage_vscode_lsp(root, vscode_dir, profile_name)
+}
+
+fn stage_vscode_lsp(root: &Path, vscode_dir: &Path, profile_name: &str) -> Result<()> {
     let bin_dir = vscode_dir.join("bin");
     fs::create_dir_all(&bin_dir)
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
     let stage_bin = |name: &str| -> Result<()> {
-        let source = root.join("target").join(profile_name).join(exe_name(name));
+        let source = crate::verify_cmd::cargo_target_dir(root)
+            .join(profile_name)
+            .join(exe_name(name));
         let target = bin_dir.join(exe_name(name));
         replace_staged_binary(&source, &target).with_context(|| {
             format!(
@@ -1386,8 +1392,7 @@ fn stage_vscode_release_binaries(
         }
     }
 
-    let release_dir = root
-        .join("target")
+    let release_dir = crate::verify_cmd::cargo_target_dir(root)
         .join(target.rust_target())
         .join("release");
     stage_named_binary(&release_dir, &bin_dir, "rumoca-lsp", "rumoca-lsp")?;
@@ -1494,6 +1499,7 @@ fn cargo_target_cc_env_suffix(target: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod cargo_artifacts;
     use super::{
         VscodeMslSmokeSummary, VscodeNpmDependencyMode, VscodeNpmInstallPlan, VscodePackageTarget,
         VscodeSmokeEnvironment, VscodeSmokeLaunchMode, VscodeSmokeOptions,

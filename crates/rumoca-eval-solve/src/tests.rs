@@ -1,4 +1,6 @@
 mod demanded_gathers;
+mod prepared_tensor_snapshots;
+mod scalar_integer_payload;
 
 use super::*;
 use crate::prepared::assignment_shape_reads_y_index;

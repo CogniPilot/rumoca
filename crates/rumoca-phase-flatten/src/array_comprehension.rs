@@ -1,12 +1,14 @@
 //! Array-comprehension and component-array-dimension expansion helpers (MLS §10.4/§10.5).
 
-use crate::equations::{expand_range_indices, substitute_index_in_expression};
+use crate::equations::{IndexSubstitution, expand_range_indices, substitute_index_in_expression};
 use crate::pipeline::{
     ComponentOverrideMap, ImportCaches, OverlayScopeIndex, variable_import_context_for_instance,
 };
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 use crate::{Context, FlattenError, ast_lower, variables};
-use rumoca_eval_flat::phase_constant::infer_array_dimensions;
+use rumoca_eval_flat::phase_constant::{
+    infer_array_dimensions, infer_array_dimensions_full_with_functions,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -124,13 +126,14 @@ pub(crate) fn expand_array_comprehension_bindings(
         // Preserve structured comprehensions when dimensions are inferable from
         // symbolic ranges/body shape; avoid eager scalar expansion.
         if let Some(binding) = &flat_var.binding
-            && let Some(inferred_dims) = infer_array_dimensions(binding)
+            && let Some(inferred_dims) = infer_array_dimensions_full_with_functions(
+                binding,
+                &ctx.param_eval_context(Some(var_name.as_str())),
+            )
         {
-            if inferred_dims.len() >= flat_var.dims.len() {
-                flat_var.dims = inferred_dims.clone();
-            }
+            complete_unknown_extents(&mut flat_var.dims, &inferred_dims);
             ctx.array_dimensions
-                .insert(var_name.to_string(), inferred_dims);
+                .insert(var_name.to_string(), flat_var.dims.clone());
             continue;
         }
 
@@ -160,9 +163,9 @@ pub(crate) fn expand_array_comprehension_bindings(
         changed_binding = true;
 
         if let Some(inferred_dims) = infer_array_dimensions(&flat_binding) {
-            flat_var.dims = inferred_dims.clone();
+            complete_unknown_extents(&mut flat_var.dims, &inferred_dims);
             ctx.array_dimensions
-                .insert(var_name.to_string(), inferred_dims);
+                .insert(var_name.to_string(), flat_var.dims.clone());
             #[cfg(feature = "tracing")]
             tracing::debug!(
                 var = %var_name,
@@ -174,9 +177,20 @@ pub(crate) fn expand_array_comprehension_bindings(
     Ok(changed_binding)
 }
 
+fn complete_unknown_extents(declared: &mut [i64], inferred: &[i64]) {
+    if declared.len() != inferred.len() {
+        return;
+    }
+    for (declared, inferred) in declared.iter_mut().zip(inferred) {
+        if *declared < 0 {
+            *declared = *inferred;
+        }
+    }
+}
+
 /// Try to evaluate all index ranges for a comprehension. Returns None if any range
 /// cannot be expanded or there are no indices.
-type ExpandedIndexRanges<'a> = Vec<(&'a str, Vec<i64>)>;
+type ExpandedIndexRanges<'a> = Vec<(IndexSubstitution<'a>, Vec<i64>)>;
 
 fn try_expand_index_ranges<'a>(
     ctx: &Context,
@@ -188,8 +202,8 @@ fn try_expand_index_ranges<'a>(
     }
 
     let mut ranges = Vec::new();
-    for idx in indices {
-        let idx_name = idx.ident.text.as_ref();
+    for idx in indices.iter().rev() {
+        let idx_name = IndexSubstitution::from_index(idx)?;
         let values = expand_range_indices(ctx, &idx.range, prefix, idx.range.span())?;
         ranges.push((idx_name, values));
     }
@@ -199,7 +213,7 @@ fn try_expand_index_ranges<'a>(
 /// Expand an array comprehension expression by substituting all index combinations.
 fn expand_comprehension(
     expr: &ast::Expression,
-    index_ranges: &[(&str, Vec<i64>)],
+    index_ranges: &[(IndexSubstitution<'_>, Vec<i64>)],
 ) -> Vec<ast::Expression> {
     if index_ranges.is_empty() {
         return vec![expr.clone()];
@@ -210,7 +224,7 @@ fn expand_comprehension(
         let (idx_name, values) = &index_ranges[0];
         return values
             .iter()
-            .map(|&val| substitute_index_in_expression(expr, idx_name, val))
+            .map(|&val| substitute_index_in_expression(expr, *idx_name, val))
             .collect();
     }
 
@@ -220,7 +234,7 @@ fn expand_comprehension(
 
     let mut result = Vec::new();
     for &val in first_values {
-        let substituted = substitute_index_in_expression(expr, first_name, val);
+        let substituted = substitute_index_in_expression(expr, *first_name, val);
         let inner = expand_comprehension(&substituted, remaining);
         result.extend(inner);
     }
@@ -290,8 +304,12 @@ mod tests {
 
     #[test]
     fn test_expand_comprehension_single_index_substitutes_all_values() {
-        let expr = cref("i");
-        let expanded = expand_comprehension(&expr, &[("i", vec![1, 2, 3])]);
+        let mut expr = cref("i");
+        if let ast::Expression::ComponentReference(reference) = &mut expr {
+            reference.set_target_def_id(None);
+        }
+        let expanded =
+            expand_comprehension(&expr, &[(IndexSubstitution::Generated("i"), vec![1, 2, 3])]);
         assert_eq!(expanded.len(), 3);
         assert_eq!(expanded[0], int_lit(1));
         assert_eq!(expanded[1], int_lit(2));
@@ -301,11 +319,26 @@ mod tests {
     #[test]
     fn test_expand_comprehension_multiple_indices_cartesian_product() {
         let expr = ast::Expression::Array {
-            elements: vec![cref("i"), cref("j")],
+            elements: ["i", "j"]
+                .into_iter()
+                .map(|name| {
+                    let mut expression = cref(name);
+                    if let ast::Expression::ComponentReference(reference) = &mut expression {
+                        reference.set_target_def_id(None);
+                    }
+                    expression
+                })
+                .collect(),
             kind: rumoca_core::ArrayConstructor::Array,
             span: test_span(),
         };
-        let expanded = expand_comprehension(&expr, &[("i", vec![1, 2]), ("j", vec![10, 20])]);
+        let expanded = expand_comprehension(
+            &expr,
+            &[
+                (IndexSubstitution::Generated("i"), vec![1, 2]),
+                (IndexSubstitution::Generated("j"), vec![10, 20]),
+            ],
+        );
         assert_eq!(expanded.len(), 4);
     }
 
@@ -341,5 +374,22 @@ mod tests {
             panic!("expected imported constant var ref");
         };
         assert_eq!(name.as_str(), "Modelica.Constants.pi");
+    }
+    #[test]
+    fn comprehension_shape_completion_retains_every_known_axis() {
+        let mut declared = [3, -1];
+        complete_unknown_extents(&mut declared, &[2, 3]);
+        assert_eq!(declared, [3, 3]);
+        let mut rank = [3];
+        complete_unknown_extents(&mut rank, &[2, 3]);
+        assert_eq!(rank, [3]);
+    }
+
+    #[test]
+    fn generated_comprehension_expansion_cannot_capture_resolved_source_name() {
+        let expression = cref("i");
+        let expanded =
+            expand_comprehension(&expression, &[(IndexSubstitution::Generated("i"), vec![1])]);
+        assert_eq!(expanded, vec![expression]);
     }
 }

@@ -9,6 +9,16 @@ pub(super) struct InteractiveOptions {
     pub rtol: f64,
     pub initial_inputs: Vec<(String, f64)>,
     pub execution_policy: rumoca_sim::SimExecutionPolicy,
+    #[serde(rename = "parameters", deserialize_with = "deserialize_parameters")]
+    pub param_overrides: Vec<(String, f64)>,
+}
+
+fn deserialize_parameters<'de, D>(deserializer: D) -> Result<Vec<(String, f64)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    crate::simulation_api::parameter_overrides_from_value(&value).map_err(serde::de::Error::custom)
 }
 
 impl InteractiveOptions {
@@ -75,9 +85,29 @@ mod tests {
             r#"{"atol":-1}"#,
             r#"{"dt":null}"#,
             r#"{"initial_inputs":[["u",null]]}"#,
+            r#"{"parameters":{"k":true}}"#,
+            r#"{"parameters":{"k":null}}"#,
+            r#"{"parameters":{"k":"3"}}"#,
+            r#"{"parameters":{"k":1e400}}"#,
+            r#"{"parameters":[["k",3]]}"#,
             "[]",
         ] {
             assert!(InteractiveOptions::parse(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn interactive_options_reuse_the_numeric_parameter_override_reader() {
+        for json in ["{}", r#"{"parameters":{}}"#, r#"{"parameters":null}"#] {
+            assert!(
+                InteractiveOptions::parse(json)
+                    .unwrap()
+                    .param_overrides
+                    .is_empty()
+            );
+        }
+        let parsed = InteractiveOptions::parse(r#"{"parameters":{"k":3,"zero":-0.0}}"#).unwrap();
+        assert_eq!(parsed.param_overrides[0], ("k".to_owned(), 3.0));
+        assert_eq!(parsed.param_overrides[1].1.to_bits(), (-0.0_f64).to_bits());
     }
 }

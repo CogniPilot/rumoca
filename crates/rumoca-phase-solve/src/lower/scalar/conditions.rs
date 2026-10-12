@@ -2,7 +2,7 @@ use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{ActivationCondition, ActivationGuard, ScalarCompiler};
+use super::{ActivationCondition, ActivationGuard, ScalarCompiler, ScalarContextFrame};
 use crate::LowerError;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
@@ -126,15 +126,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// dependencies and are evaluated with the source call's cardinality.
     pub(in crate::lower) fn root_program_outputs(
         mut self,
-        relations: impl IntoIterator<Item = dae::RelationId<'dae>>,
+        relations: impl IntoIterator<Item = (dae::RelationId<'dae>, Option<dae::ExprId<'dae>>)>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        for relation in relations {
+        for (relation, guard) in relations {
             let relation = self
                 .view
                 .relation(relation)
                 .expect("checked relation identity resolves");
-            let output =
-                self.root_expression(relation.expression(), relation.provenance().span())?;
+            let output = self.activated_root_expression(
+                relation.expression(),
+                guard,
+                relation.provenance().span(),
+            )?;
             self.ops.push(solve::LinearOp::StoreOutput { src: output });
         }
         Ok(self.ops)
@@ -143,19 +146,30 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(in crate::lower) fn root_expression_program(
         mut self,
         expression: dae::ExprId<'dae>,
+        guard: Option<dae::ExprId<'dae>>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let output = self.root_expression(expression, span)?;
+        let output = self.activated_root_expression(expression, guard, span)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
     }
 
-    fn root_expression(
+    pub(super) fn root_expression(
         &mut self,
         expression: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let node = self.node(expression);
+        if node.value_type().scalar_type() == dae::ScalarType::Boolean
+            && let Some(condition) = self.exact_integer_expression(expression, 0)?
+        {
+            // Integer relations change at discrete events (MLS §3.8.5).
+            // Their signed truth surface must not subtract rounded operands
+            // or introduce overflow by subtracting two valid Integers.
+            let when_true = self.constant(-1.0, span)?;
+            let when_false = self.constant(1.0, span)?;
+            return self.select(condition, when_true, when_false, span);
+        }
         let output = match node.operation() {
             dae::ExpressionOperation::Binary {
                 operator: dae::BinaryOperator::Less | dae::BinaryOperator::LessEqual,
@@ -301,6 +315,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> ScalarCompiler<'layout, 'dae> {
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.active_clock = clock;
+        compiler.derivative_definitions = self.derivative_definitions;
+        compiler.affine_derivative_systems = self.affine_derivative_systems;
+        compiler.active_derivatives = self.active_derivatives.clone();
+        compiler.derivative_seeds = self.derivative_seeds.clone();
+        compiler.same_tick_definitions = self.same_tick_definitions.clone();
+        compiler.function_conditional_owners = self.function_conditional_owners;
         compiler.activation_path = path
             .iter()
             .copied()
@@ -336,6 +356,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         path: &[(ActivationCondition<'dae>, bool)],
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let mut compiler = self.guarded_region_compiler(clock, path);
+        compiler.project_current_definitions = compiler.same_tick_definitions.is_some();
+        compiler.enter_context(ScalarContextFrame::CurrentDefinitions {
+            parent: compiler.context_id,
+        });
         for target in targets {
             let branch = compiler.dynamic_guarded_branches(target)[ordinal];
             compiler.sampled_source = target.sampled;
@@ -384,6 +408,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         match condition {
             ActivationCondition::Expression(expression) => self.expression(expression, 0),
+            owner @ ActivationCondition::GuardedAssignment { .. }
+                if self.project_current_definitions =>
+            {
+                self.with_entry_definition_reads(owner, span)
+            }
             ActivationCondition::GuardedAssignment {
                 clock,
                 periodic,
@@ -413,6 +442,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         width: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if !self.project_current_definitions && self.same_tick_definitions.is_some() {
+            self.project_current_definitions = true;
+            self.enter_context(ScalarContextFrame::CurrentDefinitions {
+                parent: self.context_id,
+            });
+            let result = self.store_guarded_assignment_value(value, width, span);
+            self.leave_context();
+            self.project_current_definitions = false;
+            return result;
+        }
         if self.node(value).value_type().scalar_count() != Some(width) {
             return Err(LowerError::contract(
                 "guarded-assignment value width differs from its target range",
@@ -548,7 +587,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .relation(relation)
                     .expect("checked condition relation resolves")
                     .expression();
-                self.expression(expression, 0)
+                self.activated_relation_expression(expression, span)
             }
             dae::ConditionOperation::Discrete(expression) => self.expression(expression, 0),
             dae::ConditionOperation::Clock(clock) => match self.active_clock {

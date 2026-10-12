@@ -77,6 +77,55 @@
     const double __r{{ op.dst }} = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     const double __r{{ op.dst }} = (__r{{ op.cond }} != 0.0 ? __r{{ op.if_true }} : __r{{ op.if_false }});
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+    const double __r{{ op.dst }} = __captures[{{ op.index }}];
+{%- elif op.kind == "FunctionConditional" %}
+{%- for offset in range(op.result_count) %}
+    double __r{{ op.dst + offset }};
+{%- endfor %}
+    {
+        const double __captures[{{ op.capture_count }}] = { {% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}{{ ", " if not loop.last else "" }}{% endfor %} };
+        double __result[{{ op.result_count }}];
+        int __taken = 0;
+        (void)__captures;
+{%- for arm in op.arms %}
+        if (!__taken) {
+            double __condition[1];
+            {
+                double *__out = __condition;
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child) }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+            if (__condition[0] != 0.0) {
+                double *__out = __result;
+                __taken = 1;
+{%- for child in arm.result.ops %}
+{{ scalar_op(child) }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if (!__taken) {
+            double *__out = __result;
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child) }}
+{%- if child.dst is defined and child.dst is not none %}
+            (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+        }
+{%- for offset in range(op.result_count) %}
+        __r{{ op.dst + offset }} = __result[{{ offset }}];
+        (void)__r{{ op.dst + offset }};
+{%- endfor %}
+    }
 {%- elif op.kind == "StoreOutput" %}
     __out[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}
@@ -92,8 +141,11 @@
 
 #include <math.h>
 {{ real_extremum_prelude("c") }}
-{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
-{%- if plan.uses_linear_solve_component %}
+{%- set plan = (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).scalar_plan %}
+{%- set alg = solve_blocks.continuous.algebraic_assignments %}
+{%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- set pinit_plan = solve_blocks.parameter_initialization.scalar_plan if solve_blocks.parameter_initialization else none %}
+{%- if plan.uses_linear_solve_component or (alg_plan and alg_plan.uses_linear_solve_component) or (pinit_plan and pinit_plan.uses_linear_solve_component) %}
 static int __rumoca_solve_linear_component(
     const double *matrix,
     const double *rhs,
@@ -165,24 +217,107 @@ static int __rumoca_solve_linear_component(
 }
 {%- endif %}
 
+{%- if solve.layout.p_scalars > 0 %}
+const double {{ model_name | sanitize }}_default_p[RUMOCA_{{ model_name | upper | replace("-", "_") }}_P_LEN] = {
+{%- for value in solve_parameter_defaults %}
+    {{ value if value is not none else "NAN" }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+};
+{%- endif %}
+
+int {{ model_name | sanitize }}_init_params(double *p)
+{
+    (void)p;
+{%- set pinit = solve_blocks.parameter_initialization %}
+{%- if pinit and pinit.output_count > 0 %}
+    {
+        /* Ordered parameter-only initialization: a later assignment may read
+         * a parameter an earlier one computed. */
+        double *__out = p;
+{%- for program in pinit.scalar_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+        {%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+        {%- endif %}{% endfor %}
+        }
+{%- endfor %}
+    }
+{%- endif %}
+    return 0;
+}
+
+int {{ model_name | sanitize }}_init_state(const double *p, double *y)
+{
+    (void)p;
+    (void)y;
+{%- set sinit = solve_blocks.state_initialization %}
+{%- if sinit and sinit.output_count > 0 %}
+    {
+        double *__out = y;
+{%- for program in sinit.scalar_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+        {%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+        {%- endif %}{% endfor %}
+        }
+{%- endfor %}
+    }
+{%- endif %}
+    return 0;
+}
+
 int {{ model_name | sanitize }}_derivative_rhs(
     double time,
-    const double *y,
+    const double *y_in,
     const double *p,
     double *out)
 {
     (void)time;
-    (void)y;
     (void)p;
+{%- if alg_plan and alg_plan.output_count > 0 %}
+    /* Algebraic refresh: the derivative rows read algebraic slots of y. Only
+     * the state slots of y_in are inputs; every algebraic slot is assigned
+     * here first, in checked exact-assignment order. */
+    double y[RUMOCA_{{ model_name | upper | replace("-", "_") }}_Y_LEN];
+    for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_Y_LEN; ++i) {
+        y[i] = y_in[i];
+    }
+    {
+        double *__out = y;
+{%- for program in alg_plan.programs %}
+        {
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+        {#- An assignment program carries its source residual's prefix, which can
+            load registers the isolated value never reads. #}
+        {%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+        {%- endif %}{% endfor %}
+        }
+{%- endfor %}
+    }
+{%- else %}
+    const double *y = y_in;
+{%- endif %}
+    (void)y;
 {%- if plan.output_count > 0 %}
     double __out[RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN];
     for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
         __out[i] = 0.0;
     }
 {%- for program in plan.programs %}
+    {
 {%- for op in program.ops %}
 {{ scalar_op(op) }}
 {%- endfor %}
+    }
 {%- endfor %}
     for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
         out[i] = __out[i];

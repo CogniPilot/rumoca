@@ -193,6 +193,7 @@ fn selection_domain(dimensions: &[u32]) -> rumoca_core::StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(id, extent)| rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id,
                 display_name: format!("slice_axis_{id}"),
                 lower: 1,

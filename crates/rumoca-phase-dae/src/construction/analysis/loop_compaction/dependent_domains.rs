@@ -119,15 +119,15 @@ fn rectangularize_statement(
         require_entry_invariant_range(&index.range, equations, range_span)?;
         // A body that never reads its binder still runs once per element of
         // the source range, so its guard reads the binder it introduces.
-        let reference = first_binder_reference(equations, &index.ident)
-            .unwrap_or_else(|| Reference::generated(&index.ident));
         guards.push(range_membership_guard(
-            reference,
+            index.binder,
+            &index.ident,
             &index.range,
             envelope.step,
             range_span,
         )?);
         rectangular.push(rumoca_core::ForIndex {
+            binder: index.binder,
             ident: index.ident.clone(),
             range: oriented_integer_range(
                 envelope.lower,
@@ -315,10 +315,16 @@ impl ExpressionRewriter for MaskedComprehensionRewriter<'_> {
         if envelope.step != 1 {
             return self.walk_expression(expression);
         }
-        let Some(reference) = first_expression_binder_reference(expr, &index.name) else {
+        if !comprehension_body_reads_binder(expr, index) {
             return self.walk_expression(expression);
-        };
-        let guard = match range_membership_guard(reference, &index.range, envelope.step, *span) {
+        }
+        let guard = match range_membership_guard(
+            index.binder,
+            &index.name,
+            &index.range,
+            envelope.step,
+            *span,
+        ) {
             Ok(guard) => guard,
             Err(error) => {
                 self.error.get_or_insert(error);
@@ -335,6 +341,7 @@ impl ExpressionRewriter for MaskedComprehensionRewriter<'_> {
                 span: *span,
             }),
             indices: vec![rumoca_core::ComprehensionIndex {
+                binder: index.binder,
                 name: index.name.clone(),
                 range: integer_range(envelope.lower, envelope.upper, *span),
             }],
@@ -410,65 +417,39 @@ fn dependent_range_envelope(
     Ok(Some(DependentEnvelope { lower, upper, step }))
 }
 
-fn first_binder_reference(
-    statements: &[rumoca_core::Statement],
-    binder: &str,
-) -> Option<Reference> {
-    struct Finder<'a> {
-        binder: &'a str,
-        found: Option<Reference>,
+fn comprehension_body_reads_binder(
+    expression: &Expression,
+    index: &rumoca_core::ComprehensionIndex,
+) -> bool {
+    struct Reads<'a> {
+        index: &'a rumoca_core::ComprehensionIndex,
+        found: bool,
     }
-    impl rumoca_core::ExpressionVisitor for Finder<'_> {
+    impl rumoca_core::ExpressionVisitor for Reads<'_> {
         fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
-            if self.found.is_none()
-                && subscripts.is_empty()
-                && reference.var_name() == &VarName::new(self.binder)
-            {
-                self.found = Some(reference.clone());
-            }
+            self.found |= subscripts.is_empty()
+                && match self.index.binder {
+                    rumoca_core::IndexBinderProvenance::Source(id) => {
+                        reference.target_def_id() == Some(id)
+                    }
+                    rumoca_core::IndexBinderProvenance::Generated => {
+                        reference.is_generated() && reference.as_str() == self.index.name
+                    }
+                };
             self.walk_var_ref(reference, subscripts);
         }
     }
-    impl rumoca_ir_flat::visitor::StatementVisitor for Finder<'_> {}
-    let mut finder = Finder {
-        binder,
-        found: None,
+    let mut reads = Reads {
+        index,
+        found: false,
     };
-    for statement in statements {
-        rumoca_ir_flat::visitor::StatementVisitor::visit_statement(&mut finder, statement);
-        if finder.found.is_some() {
-            break;
-        }
-    }
-    finder.found
-}
-
-fn first_expression_binder_reference(expression: &Expression, binder: &str) -> Option<Reference> {
-    struct Finder<'a> {
-        binder: &'a str,
-        found: Option<Reference>,
-    }
-    impl rumoca_core::ExpressionVisitor for Finder<'_> {
-        fn visit_var_ref(&mut self, reference: &Reference, subscripts: &[Subscript]) {
-            if self.found.is_none()
-                && subscripts.is_empty()
-                && reference.var_name() == &VarName::new(self.binder)
-            {
-                self.found = Some(reference.clone());
-            }
-            self.walk_var_ref(reference, subscripts);
-        }
-    }
-    let mut finder = Finder {
-        binder,
-        found: None,
-    };
-    rumoca_core::ExpressionVisitor::visit_expression(&mut finder, expression);
-    finder.found
+    rumoca_core::ExpressionVisitor::visit_expression(&mut reads, expression);
+    reads.found
 }
 
 fn range_membership_guard(
-    binder: Reference,
+    binder: rumoca_core::IndexBinderProvenance,
+    display_name: &str,
     range: &Expression,
     stride: i64,
     span: Span,
@@ -480,10 +461,20 @@ fn range_membership_guard(
             span,
         ));
     };
+    let range_span = expression_span(range)?;
+    let binder = binder
+        .reference(display_name, range_span)
+        .map_err(|error| {
+            ToDaeError::unsupported_flat(
+                "function loop iterator",
+                format!("invalid issued iterator identity: {error}"),
+                range_span,
+            )
+        })?;
     let binder = || Expression::VarRef {
         name: binder.clone(),
         subscripts: Vec::new(),
-        span,
+        span: range_span,
     };
     let lower = Expression::Binary {
         op: if stride > 0 {

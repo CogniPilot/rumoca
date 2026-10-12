@@ -18,7 +18,7 @@ impl<'dae> DaeView<'dae> {
             .runtime_quotient_owners
             .iter()
             .find(|entry| entry.quotient == expression.index())
-            .map(runtime_quotient_owner_view)
+            .map(|entry| runtime_quotient_owner_view(entry, &self.dae.storage))
     }
 
     pub fn runtime_quotient_owner_at(self, index: usize) -> Option<RuntimeQuotientOwnerView<'dae>> {
@@ -26,13 +26,14 @@ impl<'dae> DaeView<'dae> {
             .storage
             .runtime_quotient_owners
             .get(index)
-            .map(runtime_quotient_owner_view)
+            .map(|entry| runtime_quotient_owner_view(entry, &self.dae.storage))
     }
 }
 
 /// The finalized owner identity of one dynamic quotient.
 #[derive(Clone, Copy)]
 pub struct RuntimeQuotientOwnerView<'dae> {
+    activation_guard: Option<ExprId<'dae>>,
     quotient: ExprId<'dae>,
     builtin: crate::PureBuiltin,
     kind: RuntimeQuotientOwnerKind<'dae>,
@@ -50,11 +51,20 @@ pub enum RuntimeQuotientOwnerKind<'dae> {
         activation: ConditionId<'dae>,
         root: RootId<'dae>,
     },
+    /// A compact model boundary over exactly the quotient's checked domain.
+    StructuredModelEvent {
+        generated: [ExprId<'dae>; 6],
+        domain: DomainId<'dae>,
+        root: StructuredRootId<'dae>,
+    },
     /// An MLS §3.7.2 event-free quotient owned by its exact function body.
     FunctionBody { function: FunctionId<'dae> },
 }
 
 impl<'dae> RuntimeQuotientOwnerView<'dae> {
+    pub const fn activation_guard(self) -> Option<ExprId<'dae>> {
+        self.activation_guard
+    }
     pub const fn quotient(self) -> ExprId<'dae> {
         self.quotient
     }
@@ -68,10 +78,13 @@ impl<'dae> RuntimeQuotientOwnerView<'dae> {
     }
 }
 
-fn runtime_quotient_owner_view(
-    entry: &runtime_quotients::RuntimeQuotientOwnerEntry,
-) -> RuntimeQuotientOwnerView<'_> {
+fn runtime_quotient_owner_view<'dae>(
+    entry: &'dae runtime_quotients::RuntimeQuotientOwnerEntry,
+    storage: &'dae FrozenStorage,
+) -> RuntimeQuotientOwnerView<'dae> {
     RuntimeQuotientOwnerView {
+        activation_guard: storage.expressions.model_arm_scopes[entry.quotient as usize]
+            .map(|arm| ExprId::from_raw(storage.model_arms[arm as usize].guard)),
         quotient: ExprId::from_raw(entry.quotient),
         builtin: entry.builtin,
         kind: match &entry.kind {
@@ -85,6 +98,15 @@ fn runtime_quotient_owner_view(
                 relation: RelationId::from_raw(*relation),
                 activation: ConditionId::from_raw(*activation),
                 root: RootId::from_raw(*root),
+            },
+            runtime_quotients::QuotientOwnerKind::StructuredModelEvent {
+                generated,
+                domain,
+                root,
+            } => RuntimeQuotientOwnerKind::StructuredModelEvent {
+                generated: generated.map(ExprId::from_raw),
+                domain: DomainId::from_raw(*domain),
+                root: StructuredRootId::from_raw(*root),
             },
             runtime_quotients::QuotientOwnerKind::FunctionBody { function } => {
                 RuntimeQuotientOwnerKind::FunctionBody {

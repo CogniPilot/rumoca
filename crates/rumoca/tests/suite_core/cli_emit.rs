@@ -256,8 +256,11 @@ fn emit_flat_json_exposes_structured_equation_families() {
     );
 }
 
+/// A non-materialized Flat family's interior rows are placeholders; the
+/// Modelica export prints the family as the `for` loop its template states
+/// instead of reading them.
 #[test]
-fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
+fn flat_modelica_prints_non_materialized_structured_families_as_loops() {
     let (_dir, file) = named_fixture_file(
         "NonMaterializedStructuredFixture",
         NON_MATERIALIZED_STRUCTURED_FIXTURE,
@@ -267,23 +270,54 @@ fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        !output.status.success(),
-        "non-materialized Flat families must not render placeholder equations:\n{stdout}"
+        output.status.success(),
+        "the family renders as a loop:\n{stderr}"
     );
     assert!(
-        stderr.contains("scalar equation view is unavailable")
-            && stderr.contains("structured family"),
-        "the rejection must identify the unsupported scalar view:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("rumoca::codegen::EC007"),
-        "the rejection must carry its stable diagnostic code so a caller can match on \
-         the refusal rather than on prose:\n{stderr}"
+        stdout.contains("for i in 1:6 loop") && stdout.contains("end for;"),
+        "the family is printed as its source loop:\n{stdout}"
     );
     assert!(
         !stdout.contains("= 0.0"),
-        "failed Flat export must not publish cheapened equation bodies:\n{stdout}"
+        "Flat export must not publish cheapened placeholder bodies:\n{stdout}"
     );
+}
+
+const RELOADABLE_FLAT_FIXTURE: &str = "\
+package Types
+  type Mode = enumeration(Off, On);
+end Types;
+model ReloadableFlatFixture
+  parameter Types.Mode mode = Types.Mode.On;
+  parameter Real p0[3] = {1, 2, 3};
+  parameter Real a[3] = {1, 1, 2};
+  Real x[3](start = p0, each fixed = true, each stateSelect = StateSelect.prefer);
+  parameter Integer n1 = 1;
+  parameter Integer n2 = 2;
+  Boolean differs;
+equation
+  der(x) = -(a .* x);
+  differs = n1 <> n2;
+end ReloadableFlatFixture;
+";
+
+/// The Flat Modelica export reloads: an enumeration type keeps its declaring
+/// package, an elementwise product stays `.*` (not the scalar product `*`),
+/// inequality is Modelica's `<>`, an array-valued start takes no `each`, and
+/// `stateSelect` uses the predefined literal's spelling.
+#[test]
+fn flat_modelica_export_spells_reloadable_modelica() {
+    let (_dir, file) = named_fixture_file("ReloadableFlatFixture", RELOADABLE_FLAT_FIXTURE);
+    let out = assert_emit_ok(&file, "flat-mo");
+    for expected in [
+        "parameter Types.Mode mode",
+        ".* x",
+        "<>",
+        "x(start = p0",
+        "stateSelect = StateSelect.prefer",
+    ] {
+        assert!(out.contains(expected), "missing `{expected}` in:\n{out}");
+    }
 }
 
 /// The Flat JSON dump is the self-describing sibling of the export above: it

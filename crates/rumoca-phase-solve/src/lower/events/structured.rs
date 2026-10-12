@@ -1,9 +1,11 @@
+mod selected_indices;
+
 use super::*;
 use std::collections::HashMap;
 
 pub(super) fn lower_discrete_value_owners<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
@@ -60,7 +62,7 @@ pub(super) fn lower_discrete_value_owners<'dae>(
 #[allow(clippy::too_many_lines)]
 fn lower_unconditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -108,40 +110,45 @@ fn lower_unconditional_discrete_value_owner<'dae>(
     // program whenever no member observes another member on the tick. Where a
     // member *does* observe another, the members stay separate producers and
     // the SOLVE-C57 issued order sequences them.
-    let fusable = || {
-        SameTickExchange::new(
+    let fusable = || -> Result<bool, LowerError> {
+        Ok(SameTickExchange::new(
             &owner_values
                 .iter()
-                .map(|entry| SameTickExchangeMember {
-                    targets: vec![entry.3.index()],
-                    entry_reads: BTreeSet::new(),
-                    reads: if entry.5 {
-                        BTreeSet::new()
-                    } else {
-                        rows.same_tick_definitions.read_closure(
-                            view,
-                            std::slice::from_ref(&entry.1),
-                            &[],
-                        )
-                    },
+                .map(|entry| {
+                    Ok(SameTickExchangeMember {
+                        event_reads: None,
+                        targets: vec![entry.3.index()],
+                        entry_reads: BTreeSet::new(),
+                        reads: if entry.5 {
+                            BTreeSet::new()
+                        } else {
+                            rows.same_tick_definitions.read_closure(
+                                view,
+                                std::slice::from_ref(&entry.1),
+                                &[],
+                            )?
+                        },
+                    })
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, LowerError>>()?,
         )
-        .all_fusable()
+        .all_fusable())
     };
     if let Some((clock_id, solve_clock)) = owner_values.first().and_then(|entry| entry.4)
         && total_outputs > 1
-        && fusable()
+        && fusable()?
         && owner_values
             .iter()
             .all(|entry| entry.4 == Some((clock_id, solve_clock)) && entry.5 == owner_values[0].5)
     {
         let sampled = owner_values[0].5;
-        let program = ScalarCompiler::new(view, layout, None).clocked_aggregate_programs(
-            clock_id,
-            owner_values.iter().map(|entry| entry.1),
-            sampled,
-        )?;
+        let program = layout
+            .scalar_compiler(view, None)
+            .clocked_aggregate_programs(
+                clock_id,
+                owner_values.iter().map(|entry| entry.1),
+                sampled,
+            )?;
         let mut outputs = Vec::with_capacity(total_outputs);
         for &(_, value, span, variable, _, _, scalar_count) in &owner_values {
             let pre_mode = expression_pre_mode(view, value, sampled);
@@ -199,7 +206,7 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         if let Some((clock_id, solve_clock)) = clock
             && scalar_count > 1
         {
-            let compiler = ScalarCompiler::new(view, layout, None);
+            let compiler = layout.scalar_compiler(view, None);
             let program = if sampled {
                 compiler.sampled_aggregate_program(clock_id, value)?
             } else {
@@ -235,14 +242,15 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         }
         let first_row = rows.targets.len();
         for scalar in 0..scalar_count {
-            let program =
-                match clock {
-                    Some((clock, _)) if sampled => ScalarCompiler::new(view, layout, None)
-                        .sampled_program(clock, value, scalar)?,
-                    Some((clock, _)) => ScalarCompiler::new(view, layout, None)
-                        .clocked_program(clock, value, scalar)?,
-                    None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
-                };
+            let program = match clock {
+                Some((clock, _)) if sampled => layout
+                    .scalar_compiler(view, None)
+                    .sampled_program(clock, value, scalar)?,
+                Some((clock, _)) => layout
+                    .scalar_compiler(view, None)
+                    .clocked_program(clock, value, scalar)?,
+                None => layout.scalar_compiler(view, None).program(value, scalar)?,
+            };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.claim_scalar_event_owner(variable, target, span)?;
             let pre_mode = expression_pre_mode(view, value, sampled);
@@ -300,7 +308,7 @@ struct CallProjectionValue<'dae> {
 /// Returns, per value, whether it was lowered here.
 fn lower_call_projection_values<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut DiscreteRows<'dae>,
     observed: bool,
     values: &[CallProjectionValue<'dae>],
@@ -329,7 +337,8 @@ fn lower_call_projection_values<'dae>(
         if scalars <= 1 {
             continue;
         }
-        let program = ScalarCompiler::new(view, layout, None)
+        let program = layout
+            .scalar_compiler(view, None)
             .aggregate_program(members.iter().map(|&index| values[index].value))?;
         let mut outputs = Vec::with_capacity(scalars);
         for &index in &members {
@@ -359,7 +368,7 @@ fn lower_call_projection_values<'dae>(
 
 fn lower_structured_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -399,6 +408,7 @@ fn lower_structured_discrete_value_owner<'dae>(
             structured_map_program(StructuredMapProgramInput {
                 view,
                 layout,
+                derivatives: layout.derivatives,
                 domain_id: structure.domain(),
                 domain: &domain,
                 scalar_view: structure.scalar_view(),
@@ -460,6 +470,7 @@ fn lower_structured_discrete_value_owner<'dae>(
 struct StructuredMapProgramInput<'scope, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'scope LoweredLayout<'dae>,
+    derivatives: &'scope super::super::ContinuousRowIndex<'dae>,
     domain_id: dae::DomainId<'dae>,
     domain: &'scope rumoca_core::StructuredIndexDomain,
     scalar_view: rumoca_core::ComprehensionScalarView,
@@ -513,8 +524,10 @@ fn structured_map_program(
             .ok_or_else(|| {
                 LowerError::contract("structured B.1c scalar view overflow", input.span)
             })?;
-        let compiler =
-            ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)));
+        let mut compiler =
+            ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)))
+                .with_derivative_definitions(input.derivatives);
+        compiler.bind_symbolic_domain(input.domain_id, Some(values), input.span)?;
         programs.push(match input.clock {
             Some((clock, _)) if input.sampled => {
                 compiler.sampled_program(clock, input.value, scalar)?
@@ -523,12 +536,14 @@ fn structured_map_program(
             None => compiler.program(input.value, scalar)?,
         });
     }
+    // The complete family comes from this exact issued source value/domain/view.
+    // Capture plumbing exposes index leaves; the unchanged certificate checks every point.
+    selected_indices::expose_selected_indices(&mut programs, input.span)?;
     derive_affine_program_certificate(input.domain, base_point, &points, &programs, input.span)
 }
 
 pub(in crate::lower) fn unclocked_structured_program<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    context: super::super::ContinuousContext<'_, 'dae>,
     domain_id: dae::DomainId<'dae>,
     domain: &rumoca_core::StructuredIndexDomain,
     scalar_view: rumoca_core::ComprehensionScalarView,
@@ -536,8 +551,9 @@ pub(in crate::lower) fn unclocked_structured_program<'dae>(
     span: Span,
 ) -> Result<AffineProgramCertificate, LowerError> {
     structured_map_program(StructuredMapProgramInput {
-        view,
-        layout,
+        view: context.view,
+        layout: context.layout,
+        derivatives: context.derivatives,
         domain_id,
         domain,
         scalar_view,
@@ -559,8 +575,20 @@ pub(in crate::lower) fn derive_affine_program_certificate(
     span: Span,
 ) -> Result<AffineProgramCertificate, LowerError> {
     let base = &programs[0];
-    if programs.iter().any(|program| program.len() != base.len()) {
-        return Err(non_affine_structured_program(span));
+    if let Some((point, program)) = programs
+        .iter()
+        .enumerate()
+        .find(|(_, program)| program.len() != base.len())
+    {
+        return Err(LowerError::non_computable(
+            format!(
+                "structured B.1c body does not have one proven affine scalar program: \
+                 point {point} has {} operations; base has {}",
+                program.len(),
+                base.len()
+            ),
+            span,
+        ));
     }
     let offsets = points
         .iter()
@@ -585,11 +613,18 @@ pub(in crate::lower) fn derive_affine_program_certificate(
             if !terms.is_empty() {
                 const_strides.push(solve::AffineStencilConstStride { op_position, terms });
             }
-        } else if programs
+        } else if let Some((point, program)) = programs
             .iter()
-            .any(|program| program[op_position] != *base_op)
+            .enumerate()
+            .find(|(_, program)| program[op_position] != *base_op)
         {
-            return Err(non_affine_structured_program(span));
+            return Err(non_affine_structured_operation(
+                point,
+                op_position,
+                base_op,
+                &program[op_position],
+                span,
+            ));
         }
     }
     Ok((base.clone(), load_strides, const_strides))
@@ -778,6 +813,58 @@ fn infer_const_terms(
         .collect())
 }
 
+fn non_affine_structured_operation(
+    point: usize,
+    position: usize,
+    base: &solve::LinearOp,
+    actual: &solve::LinearOp,
+    span: Span,
+) -> LowerError {
+    let detail = match (base, actual) {
+        (
+            solve::LinearOp::PureCall {
+                input_starts: base_inputs,
+                site: base_site,
+                ..
+            },
+            solve::LinearOp::PureCall {
+                input_starts: actual_inputs,
+                site: actual_site,
+                ..
+            },
+        ) => format!(
+            "call owners {:?}/{:?}, input counts {}/{}, first differing input {:?}",
+            base_site.owner(),
+            actual_site.owner(),
+            base_inputs.len(),
+            actual_inputs.len(),
+            base_inputs
+                .iter()
+                .zip(actual_inputs.iter())
+                .position(|(base, actual)| base != actual)
+        ),
+        (
+            solve::LinearOp::StoreOutput { src: base },
+            solve::LinearOp::StoreOutput { src: actual },
+        ) => format!("output registers {base}/{actual}"),
+        _ => String::new(),
+    };
+    LowerError::non_computable(
+        format!(
+            "structured B.1c body does not have one proven affine scalar program: \
+             point {point}, operation {position}: {}/{}, destinations {:?}/{:?}, \
+             widths {}/{}; {detail}",
+            base.kind_name(),
+            actual.kind_name(),
+            base.dst_register(),
+            actual.dst_register(),
+            base.dst_register_count(),
+            actual.dst_register_count(),
+        ),
+        span,
+    )
+}
+
 fn non_affine_structured_program(span: Span) -> LowerError {
     LowerError::non_computable(
         "structured B.1c body does not have one proven affine scalar program",
@@ -787,19 +874,31 @@ fn non_affine_structured_program(span: Span) -> LowerError {
 
 fn lower_conditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
     let mut lowered = Vec::new();
+    let common_clock = common_periodic_clock(
+        view,
+        owner
+            .branches()
+            .iter()
+            .map(|branch| match branch.activation() {
+                dae::DiscreteBranchActivation::When { guard, .. } => {
+                    condition_clock_owner(view, guard)
+                }
+                dae::DiscreteBranchActivation::Always => None,
+            }),
+    );
     for (target_ordinal, target) in owner.targets().iter().enumerate() {
         let target_variable = dae::VariableId::from(target);
         let variable = view
             .variable(target_variable)
             .expect("checked B.1c target resolves");
         for branch in owner.branches().iter() {
-            let branch = lower_checked_discrete_value_branch(
+            let mut branch = lower_checked_discrete_value_branch(
                 view,
                 layout,
                 clocks,
@@ -807,6 +906,9 @@ fn lower_conditional_discrete_value_owner<'dae>(
                 target_ordinal,
                 branch,
             )?;
+            if is_ordinary_target(clocks, target_variable) && common_clock.is_none() {
+                branch.clock = None;
+            }
             record_guarded_target(
                 &mut lowered,
                 GuardedTargetMetadata {
@@ -823,13 +925,8 @@ fn lower_conditional_discrete_value_owner<'dae>(
             )?;
         }
     }
-    lower_guarded_targets(
-        view,
-        layout,
-        rows,
-        &mut lowered,
-        solve::DiscreteRowRole::Equation,
-    )
+    rows.guarded_equation_targets.extend(lowered);
+    Ok(())
 }
 
 /// Lowers an always-active B.1c owner of an MLS §16.3 event clock: its
@@ -837,7 +934,7 @@ fn lower_conditional_discrete_value_owner<'dae>(
 /// guarded update whose trigger and guard are the tick condition.
 fn lower_triggered_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -887,7 +984,7 @@ fn lower_triggered_discrete_value_owner<'dae>(
             None,
         )?;
     }
-    rows.event_clock_targets.extend(lowered);
+    rows.guarded_equation_targets.extend(lowered);
     Ok(())
 }
 
@@ -901,7 +998,7 @@ struct LoweredDiscreteValueBranch<'dae> {
 
 fn lower_checked_discrete_value_branch<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     target: dae::DiscreteValueId<'dae>,
     target_ordinal: usize,

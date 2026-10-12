@@ -2,6 +2,7 @@
 
 mod assertions;
 mod captures;
+mod expression_owner;
 mod family_owner;
 mod folds;
 pub(crate) mod formal_stages;
@@ -21,6 +22,7 @@ mod total_conditionals;
 mod value_types;
 
 use assertions::{assertion_conditions, assertion_is_map_independent, nested_calls};
+pub(crate) use expression_owner::ExactExpressionForm;
 pub(crate) use family_owner::AlgebraicFamilyForm;
 use indexed_values::leading_index_axes;
 use model_coordinates::ModelCoordinateKey;
@@ -323,6 +325,7 @@ struct CallRegistration<'dae> {
     calls: HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
     /// SOLVE-C70 owners, keyed by the DAE family they lower.
     families: HashMap<dae::ContinuousFamilyId<'dae>, solve::SolvePureCallSite>,
+    expressions: HashMap<dae::ExprId<'dae>, expression_owner::RegisteredExactExpression<'dae>>,
     /// Functions whose call SCC was already examined for a SOLVE-C62 group.
     examined_functions: std::collections::HashSet<dae::FunctionId<'dae>>,
     /// What each function contributes to every owner of it, derived once.
@@ -336,6 +339,7 @@ impl CallRegistration<'_> {
             next: 1,
             calls: HashMap::new(),
             families: HashMap::new(),
+            expressions: HashMap::new(),
             examined_functions: std::collections::HashSet::new(),
             function_facts: HashMap::new(),
         }

@@ -1,3 +1,6 @@
+{#- A flattened hierarchical variable name as a quoted Modelica identifier. -#}
+{% macro qname(name) -%}{{ ("'" ~ name ~ "'") if ("." in name or "$" in name) else name }}{%- endmacro %}
+
 {% macro scalar_name(scalar, provenance) -%}
 {%- if scalar == "real" -%}Real
 {%- elif scalar == "integer" -%}Integer
@@ -10,7 +13,7 @@
 
 {% macro type_decl(name, type_id) -%}
 {%- set ty = dae.value_types[type_id].value_type -%}
-{{ ty.record_name if ty.record_name is not none else scalar_name(ty.scalar, dae.value_types[type_id].provenance) }} {{ name }}
+{{ ty.record_name if ty.record_name is not none else scalar_name(ty.scalar, dae.value_types[type_id].provenance) }} {{ qname(name) }}
 {%- if ty.dimensions | length > 0 -%}
 [{% for extent in ty.dimensions %}{{ extent }}{% if not loop.last %}, {% endif %}{% endfor %}]
 {%- endif -%}
@@ -39,9 +42,9 @@
 
 {% macro coordinate(c, provenance) -%}
 {%- if c.kind in ["parameter", "input", "state", "algebraic", "discrete_real", "discrete_value"] -%}
-{{ dae.variables[c.id].name }}
-{%- elif c.kind == "derivative" -%}der({{ dae.variables[c.id].name }})
-{%- elif c.kind in ["pre_discrete_real", "pre_discrete_value"] -%}pre({{ dae.variables[c.id].name }})
+{{ qname(dae.variables[c.id].name) }}
+{%- elif c.kind == "derivative" -%}der({{ qname(dae.variables[c.id].name) }})
+{%- elif c.kind in ["pre_discrete_real", "pre_discrete_value"] -%}pre({{ qname(dae.variables[c.id].name) }})
 {%- elif c.kind == "time" -%}time
 {%- elif c.kind == "condition" -%}$condition{{ c.id }}
 {%- elif c.kind == "delay" -%}$delay{{ c.id }}
@@ -63,6 +66,51 @@
 
 {% macro expression_list(ids) -%}
 {%- for id in ids -%}{{ expr(id) }}{% if not loop.last %}, {% endif %}{%- endfor -%}
+{%- endmacro %}
+
+{# MLS 3.7 §3.7: array derivatives are elementwise. Preserve the checked
+   coordinate owner and projection path inside der's argument; a subscript
+   after a function call is not a primary in Appendix A.2.7. #}
+{% macro derivative_projection(id) -%}
+{%- set op = dae.expressions[id].operation -%}
+{%- if op.kind == "coordinate" and op.coordinate.kind == "derivative" -%}yes
+{%- elif op.kind == "field" -%}{{ derivative_projection(op.base) }}
+{%- elif op.kind == "index" -%}
+{%- set ns = namespace(invariant=true) -%}
+{%- for item in op.subscripts -%}
+{%- if item.kind != "whole" and dae.expressions[item.expression].variability not in ["constant", "parameter"] -%}
+{%- set ns.invariant = false -%}
+{%- endif -%}
+{%- endfor -%}
+{%- if ns.invariant -%}{{ derivative_projection(op.base) }}{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{# General expressions need parentheses before selection (MLS §3.6, §10.5).
+   In particular, a time-varying index stays outside der: no differentiation
+   of the index is introduced by printing the checked projection. #}
+{% macro selection_base(id) -%}
+{%- set op = dae.expressions[id].operation -%}
+{%- set component = op.kind == "coordinate" and op.coordinate.kind in ["parameter", "input", "state", "algebraic", "discrete_real", "discrete_value", "function_parameter"] -%}
+{% if not component %}({% endif %}{{ expr(id) }}{% if not component %}){% endif %}
+{%- endmacro %}
+
+{% macro projected_state(id) -%}
+{%- set e = dae.expressions[id] -%}
+{%- set op = e.operation -%}
+{%- if op.kind == "coordinate" and op.coordinate.kind == "derivative" -%}
+{{ qname(dae.variables[op.coordinate.id].name) }}
+{%- elif op.kind in ["index", "field"] -%}
+{%- set base = dae.expressions[op.base] -%}
+{%- if base.operation.kind != "coordinate" -%}({%- endif -%}
+{{ projected_state(op.base) }}
+{%- if base.operation.kind != "coordinate" -%}){%- endif -%}
+{%- if op.kind == "index" -%}
+[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- else -%}.{{ dae.value_types[base.value_type_id].value_type.record_fields[op.field].name }}
+{%- endif -%}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-derivative-projection", e.provenance) }}
+{%- endif -%}
 {%- endmacro %}
 
 {% macro expr(id) -%}
@@ -92,13 +140,19 @@
   {{ " else " }}{{ expr(op.operands[op.operands | length - 1]) }}
 {%- elif op.kind == "array" -%}{{ "{" }}{{ expression_list(op.elements) }}{{ "}" }}
 {%- elif op.kind == "record" -%}{{ dae.value_types[e.value_type_id].value_type.record_name }}({{ expression_list(op.fields) }})
-{%- elif op.kind == "field" -%}{{ expr(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
+{%- elif op.kind == "field" -%}
+{%- if derivative_projection(id) -%}der({{ projected_state(id) }})
+{%- else -%}{{ selection_base(op.base) }}.{{ dae.value_types[dae.expressions[op.base].value_type_id].value_type.record_fields[op.field].name }}
+{%- endif -%}
 {%- elif op.kind == "range" -%}
 {{ op.start.value }}:{% if op.explicit_step is not none %}{{ op.explicit_step.value }}:{% endif %}{{ op.stop.value }}
 {%- elif op.kind == "comprehension" -%}
 {{ "{" }}{{ expr(op.body) }} for {% for binder in dae.domains[op.domain].domain.binders %}{{ binder.display_name }} in {{ binder.lower }}:{% if binder.step != 1 %}{{ binder.step }}:{% endif %}{{ binder.upper }}{% if not loop.last %}, {% endif %}{% endfor %}{{ "}" }}
 {%- elif op.kind == "index" -%}
-{{ expr(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- if derivative_projection(id) -%}der({{ projected_state(id) }})
+{%- else -%}
+{{ selection_base(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- endif -%}
 {%- elif op.kind == "array_update" -%}
 {{ fail_at("unsupported-feature:dae-modelica-expression:array_update", e.provenance) }}
 {%- elif op.kind == "builtin" -%}
@@ -196,11 +250,14 @@ end {{ function.name }};
 {%- if a.start is not none or a.minimum is not none or a.maximum is not none or a.nominal is not none or a.fixed is not none or a.unit is not none -%}
 (
   {%- set parts = [] -%}
-  {%- if a.start is not none -%}{%- set parts = parts + ["start = " ~ expr(a.start)] -%}{%- endif -%}
-  {%- if a.minimum is not none -%}{%- set parts = parts + ["min = " ~ expr(a.minimum)] -%}{%- endif -%}
-  {%- if a.maximum is not none -%}{%- set parts = parts + ["max = " ~ expr(a.maximum)] -%}{%- endif -%}
-  {%- if a.nominal is not none -%}{%- set parts = parts + ["nominal = " ~ expr(a.nominal)] -%}{%- endif -%}
-  {%- if a.fixed is not none -%}{%- set parts = parts + ["fixed = " ~ a.fixed] -%}{%- endif -%}
+  {#- `each` on an array variable unless the value is itself an array (MLS 7.2.5). -#}
+  {%- set is_array = dae.value_types[variable.value_type_id].value_type.dimensions | length > 0 -%}
+  {%- macro mod(key, value) -%}{{ ("each " if is_array and value[:1] not in ["{", "["] else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
+  {%- if a.start is not none -%}{%- set parts = parts + [mod("start", expr(a.start))] -%}{%- endif -%}
+  {%- if a.minimum is not none -%}{%- set parts = parts + [mod("min", expr(a.minimum))] -%}{%- endif -%}
+  {%- if a.maximum is not none -%}{%- set parts = parts + [mod("max", expr(a.maximum))] -%}{%- endif -%}
+  {%- if a.nominal is not none -%}{%- set parts = parts + [mod("nominal", expr(a.nominal))] -%}{%- endif -%}
+  {%- if a.fixed is not none -%}{%- set parts = parts + [mod("fixed", a.fixed | string)] -%}{%- endif -%}
   {%- if a.unit is not none -%}{%- set parts = parts + ["unit = " ~ (a.unit | modelica_string)] -%}{%- endif -%}
   {{- parts | join(", ") -}}
 )
@@ -220,11 +277,21 @@ end {{ function.name }};
 {%- if owner.kind == "residual" -%}
 {{ residual(owner.residual) }}
 {%- elif owner.kind == "structured" -%}
+{#- A family whose bodies are whole arrays (a vector equation `der(x) = {...}`
+    stored element-wise) states each array equation once; wrapping it in the
+    element loop would repeat it per element (over-determined). -#}
+{%- set ns = namespace(array_bodies=true) -%}
+{%- for body in owner.bodies %}{% if dae.expressions[body].value_type.dimensions | length == 0 %}{% set ns.array_bodies = false %}{% endif %}{% endfor -%}
+{%- if ns.array_bodies -%}
+{%- for body in owner.bodies %}{{ residual(body) }}{% if not loop.last %}
+{% endif %}{% endfor -%}
+{%- else -%}
 for {% for binder in dae.domains[owner.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop
   {%- for body in owner.bodies %}
   {{ residual(body) }}
   {%- endfor %}
 end for;
+{%- endif -%}
 {%- else -%}
 {{ fail_at("unsupported-feature:dae-modelica-equation-owner:" ~ owner.kind, owner.provenance) }}
 {%- endif -%}
@@ -246,10 +313,10 @@ equation
 {% if dae.systems.initialization.owners | length > 0 or dae.systems.initialization.parameter_values | length > 0 or dae.systems.initialization.discrete_values | length > 0 %}
 initial equation
 {% for definition in dae.systems.initialization.parameter_values %}
-  {{ dae.variables[definition.target].name }} = {{ expr(definition.value) }};
+  {{ qname(dae.variables[definition.target].name) }} = {{ expr(definition.value) }};
 {% endfor %}
 {% for definition in dae.systems.initialization.discrete_values %}
-  {{ dae.variables[definition.target].name }} = {{ expr(definition.value) }};
+  {{ qname(dae.variables[definition.target].name) }} = {{ expr(definition.value) }};
 {% endfor %}
 {% for owner in dae.systems.initialization.owners %}
   {{ equation_owner(owner) | indent(2) }}

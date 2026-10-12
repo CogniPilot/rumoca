@@ -11,10 +11,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
-  # MSL parity phase budgets, shared by the shards that measure under them and
-  # the merge that certifies against them (SPEC_0050 timing margin).
-  MSL_PARITY_SIM_TIMEOUT_SECS: 45
-  MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS: 20
 
 # Prevent duplicate runs
 concurrency:
@@ -407,6 +403,19 @@ jobs:
           cargo xtask repo modelica-deps ensure
           test -f target/cmm/CMM-a642c381/LieGroups/package.mo
 
+      - name: Install Python for mandatory guide CLI and stdio examples
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Resolve owning Git Bash for mandatory guide syntax (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # The later Windows Cargo/Python steps use PowerShell, retaining this native path.
+          test -f "$BASH"
+          printf 'BASH=%s\n' "$(cygpath -w "$BASH")" >> "$GITHUB_ENV"
+
       - name: Run example build smoke (Linux monitored)
         if: runner.os == 'Linux'
         shell: bash
@@ -456,6 +465,36 @@ jobs:
           # Not nextest-sharded: the suite isn't the CI pole (the MSL gate is), so
           # sharding it buys no overall wall-clock, only jobs + runner cost.
           cargo xtask verify workspace
+
+      - name: Prepare GNU static-PIE test executables (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          export TMPDIR="$RUNNER_TEMP"
+          bash .github/scripts/qualify-issue422-static-pie.sh \
+            "$RUNNER_TEMP/issue422-gnu-static-pie" prepare
+
+      - name: Qualify GNU static-PIE memcmp and original U4 (Linux)
+        if: runner.os == 'Linux' && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          export TMPDIR="$RUNNER_TEMP"
+          timeout --kill-after=5s 600s bash .github/scripts/qualify-issue422-static-pie.sh \
+            "$RUNNER_TEMP/issue422-gnu-static-pie" run
+
+      - name: Upload GNU static-PIE qualification (Linux)
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: issue422-gnu-static-pie
+          path: ${{ runner.temp }}/issue422-gnu-static-pie
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Run heavy Solve counterexample regressions (Linux)
         if: runner.os == 'Linux' && !cancelled()
@@ -681,10 +720,36 @@ jobs:
           if [ "$TEMPLATE_BACKEND" = fmi ]; then
             export PATH="$(dirname "$system_cmake"):$PATH"
           fi
-          cargo xtask verify template-runtimes \
-            --backend "$TEMPLATE_BACKEND" \
-            --require-external-tools
+          runtime_check=(cargo xtask verify template-runtimes
+            --backend "$TEMPLATE_BACKEND" --require-external-tools)
+          if [ "$TEMPLATE_BACKEND" = modelica ]; then
+            export TMPDIR="${RUNNER_TEMP:?}/rumoca-workshop-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
+            mkdir "$TMPDIR"
+            "${runtime_check[@]}" 2>&1 | tee "$TMPDIR/template-runtime.log"
+          else
+            "${runtime_check[@]}"
+          fi
           EOF
+
+      - name: Hash retained workshop Modelica evidence
+        if: always() && matrix.backend == 'modelica'
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP:?}/rumoca-workshop-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}"
+          if [ -d "$evidence" ]; then
+            cd "$evidence"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z |
+              xargs -0 -r sha256sum > SHA256SUMS
+          fi
+
+      - name: Upload retained workshop Modelica evidence
+        if: always() && matrix.backend == 'modelica'
+        uses: actions/upload-artifact@v6
+        with:
+          name: workshop-modelica-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rumoca-workshop-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
 
   editor-msl-smoke:
     name: Full-MSL LSP/Editor Gate
@@ -1193,8 +1258,7 @@ jobs:
             --sim-parallelism 2 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
-            --sim-timeout-secs "$MSL_PARITY_SIM_TIMEOUT_SECS" \
-            --model-attempt-timeout-secs "$MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS" \
+            --budget-profile ci \
             --monitor-interval-secs 10
 
       - name: Upload shard results
@@ -1271,8 +1335,7 @@ jobs:
         run: |
           cargo xtask verify msl-parity \
             --merge-shards target/msl/shards \
-            --sim-timeout-secs "$MSL_PARITY_SIM_TIMEOUT_SECS" \
-            --model-attempt-timeout-secs "$MSL_PARITY_MODEL_ATTEMPT_TIMEOUT_SECS" \
+            --budget-profile ci \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
       # The band table is part of the merged evidence, not an optional extra:
@@ -1929,6 +1992,14 @@ jobs:
           node packages/rumoca/build.mjs --profile release --variant core --optimize
           EOF
 
+      - name: Execute user-guide browser examples
+        run: |
+          nix develop .#docs --command bash <<'EOF'
+          set -euo pipefail
+          npm ci --prefix packages/playground
+          node packages/playground/tests/user_guide_browser.mjs
+          EOF
+
       - name: Prepare GitHub Pages content
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -2026,7 +2097,7 @@ jobs:
     name: Playground contract
     # Relocated out of build-wasm so PRs keep the playground/WASM contract test
     # without the heavy release build. Self-contained: builds the FullWeb wasm
-    # bundle and runs the native + Node smoke harnesses (no MSL/browser/GPU).
+    # bundle and runs the native + Node smoke harnesses with pinned guide libraries (no browser/GPU).
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     steps:
@@ -2067,6 +2138,10 @@ jobs:
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
     # Release-only: cross-platform binary artifacts are consumed solely by the
     # tag-time deploy job, so they are deferred off PRs (native build/test
     # coverage on PRs comes from the `test` job). A PR that breaks a cross
@@ -2117,7 +2192,7 @@ jobs:
         if: contains(matrix.target, 'musl')
         uses: ./.github/actions/apt-install
         with:
-          packages: musl-tools
+          packages: musl-tools pkg-config
 
       - name: Configure musl build (Linux musl)
         if: contains(matrix.target, 'musl')
@@ -2132,6 +2207,19 @@ jobs:
           EOF
           echo "CC_${target_env_suffix}=musl-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_${target_env_upper}_LINKER=musl-gcc" >> $GITHUB_ENV
+          # The default gamepad feature requires musl libudev. This ISC source
+          # pin matches nixpkgs' libudev-zero 1.0.3 used by our static toolchain.
+          udev_source="$RUNNER_TEMP/libudev-zero-1.0.3"
+          udev_prefix="$RUNNER_TEMP/musl-libudev"
+          curl --fail --location --max-time 60 \
+            https://codeload.github.com/illiliti/libudev-zero/tar.gz/refs/tags/1.0.3 \
+            --output "$RUNNER_TEMP/libudev-zero.tar.gz"
+          echo "0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5  $RUNNER_TEMP/libudev-zero.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/libudev-zero.tar.gz" -C "$RUNNER_TEMP"
+          make -C "$udev_source" -j4 CC=musl-gcc PREFIX="$udev_prefix" install-static
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALL_STATIC=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$udev_prefix/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Rust cache (release ${{ matrix.target }})
         uses: Swatinem/rust-cache@v2
@@ -2139,6 +2227,14 @@ jobs:
           prefix-key: release
           key: ${{ matrix.target }}
           cache-on-failure: true
+
+      - name: Prepare Linux musl native regression executables
+        if: contains(matrix.target, 'musl')
+        run: |
+          cargo test --locked --release --target ${{ matrix.target }} \
+            -p rumoca-exec-cranelift --lib --no-run --message-format=json > release-native-cranelift.jsonl
+          cargo test --locked --release --target ${{ matrix.target }} \
+            -p rumoca --test suite_core --no-run --message-format=json > release-native-core.jsonl
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --bin rumoca --bin rumoca-lsp
@@ -2189,6 +2285,52 @@ jobs:
           fi
           ldd "$lsp_bin" || true
           "$lsp_bin" --version
+          for artifact in "$rumoca_bin" "$lsp_bin"; do
+            if readelf -d "$artifact" | grep -F '(NEEDED)' >/dev/null; then
+              echo "::error::$artifact unexpectedly depends on a shared library"
+              exit 1
+            fi
+          done
+
+      - name: Qualify native execution in Linux musl release artifacts
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Test executables were prepared before the final default-feature
+          # build and strip. Their CARGO_BIN_EXE_rumoca points at this artifact.
+          test_executable() {
+            jq -s -er --arg target "$2" '
+              [ .[] | select(.reason == "compiler-artifact")
+                | select(.target.name == $target and .profile.test == true
+                  and (.executable | type) == "string") | .executable ]
+              | if length == 1 then .[0] else error("expected one test executable") end
+            ' "$1"
+          }
+          cranelift_test="$(test_executable release-native-cranelift.jsonl rumoca_exec_cranelift)"
+          core_test="$(test_executable release-native-core.jsonl suite_core)"
+          run_exact_test() {
+            local executable="$1" selector="$2"
+            local roster result status=0
+            roster="$("$executable" "$selector" --exact --list)"
+            test "$(printf '%s\n' "$roster" | grep -Fxc "$selector: test")" -eq 1
+            result="$("$executable" "$selector" --exact --nocapture 2>&1)" || status=$?
+            printf '%s\n' "$result"
+            test "$status" -eq 0
+            printf '%s\n' "$result" | grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored;'
+          }
+          sha256sum target/${{ matrix.target }}/release/{rumoca,rumoca-lsp} > release-artifact-sha256.txt
+          for selector in \
+            emit::host_runtime::tests::issue_422_memcmp_relocation_needs_no_process_symbol_export \
+            emit::host_runtime::tests::issue_422_memory_libcalls_relocate_without_process_symbol_export; do
+            run_exact_test "$cranelift_test" "$selector"
+          done
+          for selector in \
+            reported_bug_runtime::issue_422_original_array_function_runs_without_native_fallback \
+            cli_sim_serve_stdio::issue_422_release_cli_runs_original_u4_without_native_fallback; do
+            run_exact_test "$core_test" "$selector"
+          done
+          sha256sum --check release-artifact-sha256.txt
 
       - name: Strip binaries (macOS)
         if: runner.os == 'macOS'
@@ -2352,10 +2494,14 @@ jobs:
             python -m pip install --upgrade pip
             WHEEL=$(ls dist/*.whl | head -1)
             python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-            python crates/rumoca-bind-python/tests/smoke_test.py
-            python crates/rumoca-bind-python/tests/api_test.py
-            python crates/rumoca-bind-python/tests/magic_test.py
-            python crates/rumoca-bind-python/tests/export_test.py
+            # The existing supported Linux wheel lane must exercise both live
+            # exports. JAX is unavailable on some wheel-matrix platforms.
+            export_args=()
+            if [[ "${{ matrix.name }}" == "linux-x86_64-gnu" ]]; then
+              python -m pip install jax==0.9.2 casadi==3.7.2 numpy==2.4.3 matplotlib==3.10.8
+              export_args=(--require-guide)
+            fi
+            cargo xtask python test --wheel "$WHEEL" --python "$(command -v python)" "${export_args[@]}"
           '
 
       - name: Smoke test installed wheel (Windows)
@@ -2367,10 +2513,7 @@ jobs:
           python -m pip install --upgrade pip
           WHEEL=$(ls dist/*.whl | head -1)
           python -m pip install --force-reinstall "${WHEEL}[notebook,data]"
-          python crates/rumoca-bind-python/tests/smoke_test.py
-          python crates/rumoca-bind-python/tests/api_test.py
-          python crates/rumoca-bind-python/tests/magic_test.py
-          python crates/rumoca-bind-python/tests/export_test.py
+          cargo xtask python test --wheel "$WHEEL" --python "$(command -v python)"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6

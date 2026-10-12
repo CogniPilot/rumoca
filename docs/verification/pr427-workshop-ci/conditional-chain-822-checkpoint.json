@@ -1,0 +1,36 @@
+{
+  "source": "822a0d5bd0ea2c2b690fb8297e8acaeedb10fe05",
+  "command": "cargo test --locked --offline -p rumoca --test suite_core function_conditional_chains::a_chain_of_conditional_values_longer_than_the_native_stack_allows_lowers -- --exact --nocapture",
+  "test_result": "1 passed; 0 failed; 0 ignored; 1466 filtered out",
+  "test_wall_seconds": 25.98,
+  "compile_wall_seconds": 249,
+  "source_unchanged": true,
+  "assertions": [
+    "3000 predecessor-dependent conditional links",
+    "256 KiB lowering-thread stack",
+    "at least 3000 scalar FunctionConditional emissions",
+    "exact numerical result 3000.5"
+  ],
+  "guardian": {
+    "elapsedMs": 279743.814983,
+    "peakResidentPlusSwapKiB": 3043116,
+    "minimumAvailableKiB": 47437168,
+    "minimumScratchFreeBytes": 74901630976,
+    "stopped": null,
+    "exitCode": 0
+  },
+  "sha256": {
+    "command.log": "fb9c7c28b7d34b22565d6bd331be1cd142802cbd6e17962e699e5f4de56e35b3",
+    "guardian.json": "458a9b62e721c0867030efc651a58096afdae707ed7dfd2e9cc87ebac931f7fb",
+    "source-before.json": "c049f471454e3564eca84cacff2e08cd5b7aa04e30dcc1254cac0ec18c092825",
+    "source-after.json": "c049f471454e3564eca84cacff2e08cd5b7aa04e30dcc1254cac0ec18c092825",
+    "exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "artifacts_root": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/conditional-chain-822a0d5bd0ea-20261012T045011Z",
+  "previous_attempt": {
+    "source": "822a0d5bd0ea2c2b690fb8297e8acaeedb10fe05",
+    "result": "resource-stop before tests; unrelated native_step observed at 45133560 KiB RSS",
+    "receipt": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/conditional-chain-822a0d5bd0ea-20261012T044516Z/resource-stop-receipt.json"
+  },
+  "scope": "Exact regression only; final combined branch and canonical quick/full remain unqualified."
+}

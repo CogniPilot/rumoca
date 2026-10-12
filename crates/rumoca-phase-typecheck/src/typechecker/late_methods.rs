@@ -92,8 +92,9 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         self.check_expression_operator_types(expression, type_table);
     }
 
-    fn push_integer_iterator(&mut self, name: &str) {
-        self.current_integer_iterators.push(name.to_string());
+    fn push_integer_iterator(&mut self, index: &rumoca_ir_ast::ForIndex) {
+        self.current_integer_iterators
+            .push((index.binder, index.ident.text.to_string()));
     }
 
     fn pop_integer_iterators(&mut self, count: usize) {

@@ -19,6 +19,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::super::common::apply_omc_thread_env;
+use super::simulation_result::FreshResultFile;
 
 /// Poll interval while waiting for the OMC ZeroMQ port file to appear.
 const PORT_FILE_POLL: Duration = Duration::from_millis(20);
@@ -52,6 +53,8 @@ pub(super) struct OmcSimSettings {
 #[derive(Debug, Clone)]
 pub(super) struct OmcSimOutcome {
     pub(super) result_file: Option<String>,
+    pub(super) fresh_result: Option<FreshResultFile>,
+    pub(super) raw_reply: String,
     pub(super) messages: String,
     pub(super) error: String,
     pub(super) timing: OmcPhaseSeconds,
@@ -84,6 +87,7 @@ pub(super) struct OmcSession {
     // The context must outlive the socket; keep it owned by the session.
     _ctx: zmq::Context,
     port_file: PathBuf,
+    work_dir: PathBuf,
 }
 
 impl OmcSession {
@@ -152,6 +156,7 @@ impl OmcSession {
             socket,
             _ctx: ctx,
             port_file,
+            work_dir: work_dir.to_path_buf(),
         };
 
         for expr in msl_load_exprs {
@@ -205,13 +210,20 @@ impl OmcSession {
                 "simulate({model}, stopTime={stop_time}, outputFormat=\"csv\", fileNamePrefix=\"{model}\")"
             )
         };
+        let expected_result = self.work_dir.join(format!("{model}_res.csv"));
+        let prior_result = FreshResultFile::snapshot(&expected_result);
         let record = self.eval(&expr, sim_timeout)?;
         let error = match self.eval("getErrorString()", Duration::from_secs(10)) {
             Ok(text) => unquote_omc_string(text.trim()),
             Err(OmcEvalError::Timeout) => return Err(OmcEvalError::Timeout),
             Err(other) => return Err(other),
         };
-        Ok(parse_sim_record(&record, error))
+        Ok(FreshResultFile::from_request(
+            &expected_result,
+            prior_result,
+            &record,
+            error,
+        ))
     }
 
     /// Kill the underlying process. Used before respawning after a hang.
@@ -337,8 +349,10 @@ fn unquote_omc_string(text: &str) -> String {
     inner.replace("\\n", "\n").replace("\\\"", "\"")
 }
 
-fn parse_sim_record(record: &str, error: String) -> OmcSimOutcome {
+pub(super) fn parse_sim_record(record: &str, error: String) -> OmcSimOutcome {
     OmcSimOutcome {
+        fresh_result: None,
+        raw_reply: record.to_string(),
         result_file: extract_record_string(record, "resultFile").filter(|value| !value.is_empty()),
         messages: extract_record_string(record, "messages").unwrap_or_default(),
         error,
@@ -587,10 +601,11 @@ end SimulationResult;"#;
 
     #[test]
     fn reference_outcome_accepts_result_with_nonfatal_warning() {
-        let outcome = parse_sim_record(
+        let mut outcome = parse_sim_record(
             r#"record SimulationResult
     resultFile = "result.csv",
-    messages = "LOG_ASSERT | warning | [<interactive>:1:68-1:125:writable]
+    messages = "LOG_SUCCESS | info | The initialization finished successfully without homotopy method.
+LOG_ASSERT | warning | [<interactive>:1:68-1:125:writable]
 | | | The following assertion has been violated during initialization at time 0.000000
 | | | ((x < -1.0)) --> \"expected warning\"
 LOG_SUCCESS | info | The simulation finished successfully.
@@ -598,10 +613,17 @@ LOG_SUCCESS | info | The simulation finished successfully.
 end SimulationResult;"#,
             "Warning: harmless diagnostic".into(),
         );
+        let directory = tempfile::tempdir().expect("result directory");
+        let path = directory.path().join("result.csv");
+        std::fs::write(&path, "time,y\n0,1\n").expect("fresh result");
+        let reply = outcome
+            .raw_reply
+            .replace("result.csv", &path.display().to_string());
+        outcome = FreshResultFile::from_request(&path, Ok(None), &reply, outcome.error);
         let result = super::super::build_session_model_result(&outcome, 1.0);
 
         assert_eq!(result.status, "success");
-        assert_eq!(result.result_file.as_deref(), Some("result.csv"));
+        assert_eq!(result.result_file, outcome.result_file);
         assert_eq!(result.error, None);
     }
 

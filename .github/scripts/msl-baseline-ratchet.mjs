@@ -144,6 +144,7 @@ export function ratchetDecision(current, baseline, checkedIn) {
 
   const improvements = [];
   const regressions = [];
+  compareCertifiedRoster(current, baseline, regressions);
   compareIntegerMetrics(
     CONTEXT_INDEPENDENT_HIGHER_IS_BETTER,
     current,
@@ -355,6 +356,28 @@ function compareIntegerMetrics(
       regressions,
     );
   }
+}
+
+function compareCertifiedRoster(current, baseline, regressions) {
+  const certified = certifiedRosterAt(current, 'current snapshot');
+  for (const model of certifiedRosterAt(baseline, 'baseline snapshot')) {
+    if (!certified.has(model)) {
+      regressions.push(`baseline-certified strict-high model ${model} left the certified roster`);
+    }
+  }
+}
+
+function certifiedRosterAt(snapshot, name) {
+  const field = 'certified_strict_high_models';
+  const roster = valueAt(snapshot, [field]);
+  assert.equal(Array.isArray(roster), true, `${name}: ${field} must be an array`);
+  const models = new Set();
+  for (const model of roster) {
+    assert.ok(typeof model === 'string' && model.trim() !== '', `${name}: ${field} has an invalid identity`);
+    assert.ok(!models.has(model), `${name}: ${field} repeats ${model}`);
+    models.add(model);
+  }
+  return models;
 }
 
 function compareFloatMetrics(metrics, current, baseline, improvements, regressions) {

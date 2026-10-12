@@ -16,13 +16,75 @@ pub(crate) fn projection_jacobian_source(
     to_scalar_program_block(canonical).map_err(Into::into)
 }
 
+/// Backend preparation follows the issued value-execution paths. A complete
+/// causal certificate returns before projection; initialization row probes
+/// additionally project their recorded settled-read cones directly.
+pub(crate) fn projection_jacobian_demand(
+    model: &solve::SolveModel,
+    settled_read_cones: Option<&[Box<[usize]>]>,
+) -> Result<BTreeSet<usize>, EvalSolveError> {
+    let owners = &model.problem.continuous.refresh_owners;
+    let mut demanded = BTreeSet::new();
+    let plans = [
+        owners.algebraic(),
+        owners.derivative(),
+        owners.root(),
+        owners.event(),
+    ]
+    .into_iter()
+    .chain(owners.clock_events())
+    .chain(
+        owners
+            .root_after_derivative()
+            .map(|relation| relation.remainder()),
+    )
+    .chain(
+        owners
+            .algebraic_after_derivative()
+            .map(|relation| relation.remainder()),
+    )
+    .chain(
+        owners
+            .clock_events_after_event()
+            .iter()
+            .map(|relation| relation.remainder()),
+    );
+    for plan in plans {
+        if !plan.causal_solution_certified {
+            demanded.extend(&plan.simultaneous_block_indices);
+        }
+    }
+    if let Some(cones) = settled_read_cones {
+        for &position in cones.iter().flat_map(|cone| cone.iter()) {
+            let index = owners
+                .algebraic()
+                .simultaneous_block_indices
+                .get(position)
+                .ok_or_else(|| EvalSolveError::InvalidRow {
+                    message: "initialization read cone is outside its algebraic refresh plan"
+                        .into(),
+                    span: None,
+                })?;
+            demanded.insert(*index);
+        }
+    }
+    Ok(demanded)
+}
+
 pub(crate) fn prepare_projection_jacobians(
     structures: &solve::ContinuousStructuralArtifacts,
     primal: &PreparedScalarProgramBlock,
     source: &solve::ScalarProgramBlock,
     compiled: Option<&dyn CompiledSolveJacobianExpression>,
+    demanded: &BTreeSet<usize>,
 ) -> Result<Vec<Option<Rc<dyn CompiledSolveProjectionJacobian>>>, EvalSolveError> {
     let blocks = structures.algebraic_projection();
+    if demanded.iter().any(|&slot| slot >= blocks.len()) {
+        return Err(EvalSolveError::InvalidRow {
+            message: "projection demand is outside its continuous structural owner".into(),
+            span: None,
+        });
+    }
     let mut prepared = vec![None; blocks.len()];
     let Some(compiled) = compiled else {
         return Ok(prepared);
@@ -31,6 +93,9 @@ pub(crate) fn prepare_projection_jacobians(
         .iter()
         .enumerate()
         .filter_map(|(slot, structure)| {
+            if !demanded.contains(&slot) {
+                return None;
+            }
             let application = structure.jacobian_application()?;
             let all_forward = application.rows().iter().all(|&row| {
                 primal
@@ -41,7 +106,10 @@ pub(crate) fn prepare_projection_jacobians(
                 .then_some((slot, application))
         })
         .unzip();
-    // One preparation for every application, so a native backend compiles
+    if applications.is_empty() {
+        return Ok(prepared);
+    }
+    // One preparation for every demanded application, so a native backend compiles
     // them into one module and finalizes it once.
     let compiled = compiled
         .prepare_projections(&applications)

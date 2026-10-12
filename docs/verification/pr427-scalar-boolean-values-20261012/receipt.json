@@ -1,0 +1,612 @@
+{
+  "schema": "pr427-scalar-boolean-values-qualification-v1",
+  "source_head": "6c610bafa22515a7d9490eb100048f6340d75956",
+  "base_head": "8a0853cafe290844a5ded691e721c97de9137bab",
+  "unique_passing_tests": 72,
+  "focused_tests": 16,
+  "activation_regressions": 48,
+  "existing_exporter_regressions": 8,
+  "gates": [
+    {
+      "name": "after-final-constructor1",
+      "unique_tests": 1,
+      "exit_code": 0,
+      "elapsed_ms": 963.673349,
+      "peak_resident_plus_swap_kib": 45936,
+      "peak_cache_bytes": 5890342912,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-final-constructor1.sh",
+          "sha256": "dafd71cc780264f14ad4ce487cc8a67537581ee3bbb127badca79ce14a90d1ff",
+          "bytes": 1940
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/command.log",
+          "sha256": "efdc85425fa9da4623db487d86ff9204e55c98a00cb3d2376b73834a82125200",
+          "bytes": 458
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/guardian.json",
+          "sha256": "5f56cdbd5225746fa48b6c79c0426deb31c0eff02e967eb37a8a43ef0bedf09e",
+          "bytes": 1858
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-constructor1/elf.sha256",
+          "sha256": "4181f62d38f12312dcf56f6dce6532a6b3943d8f4bc0c1279931a2c8cd9de328",
+          "bytes": 165
+        }
+      ]
+    },
+    {
+      "name": "after-final-wasm5",
+      "unique_tests": 5,
+      "exit_code": 0,
+      "elapsed_ms": 1098.049002,
+      "peak_resident_plus_swap_kib": 103908,
+      "peak_cache_bytes": 5890342912,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-final-wasm5.sh",
+          "sha256": "f127c2bebd31f81013daa07df28b5674c4de55f35aed662cca42a1e32685040e",
+          "bytes": 1887
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/command.log",
+          "sha256": "feab9e57eba59aa740921387ac85e34e9001be05d9aa3e5b58720a659a0f1609",
+          "bytes": 1764
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/guardian.json",
+          "sha256": "c4f0a216f36491033e62f905c17e65bd6f988c6783108b4ca57456e0c45ca70c",
+          "bytes": 1838
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-final-wasm5/elf.sha256",
+          "sha256": "75960f8d35229bfec18df8144fee534f1b97e239ea0349e14080fbd0430021f6",
+          "bytes": 160
+        }
+      ]
+    },
+    {
+      "name": "after-bound-core4",
+      "unique_tests": 4,
+      "exit_code": 0,
+      "elapsed_ms": 58169.698253,
+      "peak_resident_plus_swap_kib": 1834992,
+      "peak_cache_bytes": 5927669760,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-bound-core4.sh",
+          "sha256": "ee8d6a57ca89101f0fb26415fdbed131e02c5f90305486f1dcfb8334d3f13db8",
+          "bytes": 1855
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/command.log",
+          "sha256": "ed23bdb455080265e6390d5d02b8fdcec5d0c2c391db2d77dbe020dcd8032baa",
+          "bytes": 829
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/guardian.json",
+          "sha256": "170b45e10c260c28197ae592a679199a808165114ab304a16e88ab6be1c21248",
+          "bytes": 2557
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-core4/elf.sha256",
+          "sha256": "fd4b58659b16509fc8200788551504ae872ad7f8c3cecd713e6f760729a88eec",
+          "bytes": 160
+        }
+      ]
+    },
+    {
+      "name": "after-bound-values6",
+      "unique_tests": 6,
+      "exit_code": 0,
+      "elapsed_ms": 4693.976218,
+      "peak_resident_plus_swap_kib": 500532,
+      "peak_cache_bytes": 5890338816,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-bound-values6.sh",
+          "sha256": "e22b5f0005dcbd2cebb2d8012b352026f4be50da329f9cc08ef8c415e39fc9eb",
+          "bytes": 1870
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/command.log",
+          "sha256": "d4f2ffbbc96de8ce3a73a9810d41c6dfc5047f6598fa6cb5f4df05a6628b425d",
+          "bytes": 1027
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/guardian.json",
+          "sha256": "3b0d1a77bc8e04f91930d0c32cfcc710cd7ff9287d04902a9ec43bad203521ce",
+          "bytes": 1800
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-bound-values6/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    },
+    {
+      "name": "after-activation",
+      "unique_tests": 48,
+      "exit_code": 0,
+      "elapsed_ms": 2030.776301,
+      "peak_resident_plus_swap_kib": 128428,
+      "peak_cache_bytes": 6423240704,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-activation.sh",
+          "sha256": "fe04ab23009bf0a2b7a7f0132cc2c7cbcb2ca6661174b1b63465259d0206de86",
+          "bytes": 2217
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/command.log",
+          "sha256": "676847a887ed82f71dd9c0d2e4f076458fefaf821ae7e00147b6ddf4005bf712",
+          "bytes": 5690
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/guardian.json",
+          "sha256": "8e229362a3e928991cfe6f247e82058c34e6d3e507760c5cae48101b1506ecce",
+          "bytes": 2489
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-activation/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    },
+    {
+      "name": "after-exports-roster8",
+      "unique_tests": 8,
+      "exit_code": 0,
+      "elapsed_ms": 6934.408573,
+      "peak_resident_plus_swap_kib": 693456,
+      "peak_cache_bytes": 6653231104,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-exports-roster8.sh",
+          "sha256": "04d294b93097dc1617c20a6b129f7e64636061c6a6671867b3a49c78dca1bb48",
+          "bytes": 2355
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/command.log",
+          "sha256": "dda53c1ea09e52311221885d454b774b4629446483827eeae098292c6b9c4e72",
+          "bytes": 2302
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/guardian.json",
+          "sha256": "454e5d0a78eedf0437a0c75538a755e9847be8eaa7ad7a18cb4b4067320e0aea",
+          "bytes": 4508
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports-roster8/elf.sha256",
+          "sha256": "6f3c0e81f4af39ab60fb4f601e2ca09811c5f9b718c657394fe9213be0195cfd",
+          "bytes": 164
+        }
+      ]
+    },
+    {
+      "name": "after-lint",
+      "unique_tests": null,
+      "exit_code": 0,
+      "elapsed_ms": 167715.519092,
+      "peak_resident_plus_swap_kib": 2674808,
+      "peak_cache_bytes": 6423240704,
+      "signal": null,
+      "source_seals_equal": true,
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-lint.sh",
+          "sha256": "5309d65c84ea9ec77e5da5e9de86d4df3cca3190561015e5dc77a0b5e8a39ead",
+          "bytes": 1896
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/command.log",
+          "sha256": "4cd8b3bf5532a5a7f8e358825ab85bb31cb355564289a17284b39217b155c920",
+          "bytes": 25361
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/guardian.json",
+          "sha256": "2d4d516420a6c7382b6d7ac6d8702c0c4af3e21460137b9113473db013aac5e6",
+          "bytes": 61038
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-lint/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      ]
+    }
+  ],
+  "sealed_elfs": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/core-test-6c610bafa",
+      "sha256": "ed72e2fdfea75671cd8785c4cbb9c65dfb02042e5634ffd619ce963bc5eced1e",
+      "bytes": 110054056
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/phase-dae-test-6c610bafa",
+      "sha256": "8514dbe3e09cbd6d9e9b03d25c714874404d10c4ccc3be5b2dfafdd65fb2638f",
+      "bytes": 14224424
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/phase-dae-test-8d5e848bc",
+      "sha256": "8514dbe3e09cbd6d9e9b03d25c714874404d10c4ccc3be5b2dfafdd65fb2638f",
+      "bytes": 14224424
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/template-test-6c610bafa",
+      "sha256": "83b093c8ed5048d75bd4abf0ea46301bf8fbd8f21f526ef2269b6d9c56a28e65",
+      "bytes": 93016376
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/wasm-test-6c610bafa",
+      "sha256": "0019fe13de615ca0613b3fe3cd47eb0ca1c495d93cca9c378ba4a58e2ba60e3f",
+      "bytes": 70436456
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/sealed/wasm-test-8d5e848bc",
+      "sha256": "0019fe13de615ca0613b3fe3cd47eb0ca1c495d93cca9c378ba4a58e2ba60e3f",
+      "bytes": 70436456
+    }
+  ],
+  "source_bindings": {
+    "crates/rumoca-phase-dae/src/construction/expression.rs": "b164dd769ec3c9dffa00c48d980c513822f13f95c3e88f1063c6cd7f65303a2e",
+    "crates/rumoca-phase-dae/src/construction/expression/logical_values.rs": "d219214e7f59f213a6eabd124bfddfff0e6aafc4d7a73a355299965848897cdc",
+    "crates/rumoca-phase-dae/src/construction/expression/model_conditionals.rs": "fae1136722f003f24dde826526c7228fca8b692756159d5bd31ce3f65f397e3c",
+    "crates/rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_403.mo": "f999d518f24cc731b460b23f27aaf3fb05ce00bd67d9c51be35c4736c477c378",
+    "spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md": "df1fc5312400e96d2e314fcaaf9a92795d3d1fa0238f50436794788331921651"
+  },
+  "before": {
+    "source_head": "8a0853cafe290844a5ded691e721c97de9137bab",
+    "cli_sha256": "6bab159379f1966e0e44266f7fbdd960efa8df75fdea666d49cb0f662a39aa58",
+    "probe_results_path": "$HOME/scratch/rumoca/pr427-issue403-cli-before-8a0853ca-20261012/stdio-exact-initial-inputs/probe-results.json",
+    "probe_results_sha256": "4c739eea68db9f5967ea1a2c4903c1be8ccfb16960b108a2864f1023dd24cdc2",
+    "original_k4": {
+      "exit_code": 1,
+      "failure": "EX001 tensor index4 outside1..=3",
+      "source_sha256": "f999d518f24cc731b460b23f27aaf3fb05ce00bd67d9c51be35c4736c477c378",
+      "runtime_initial_input": {
+        "k": 4
+      }
+    },
+    "inbounds_k3_control": {
+      "exit_code": 0,
+      "state_samples": 11,
+      "source_sha256": "3f31b5bb795b39ec3ead2059ed7b81b6922fda952f9e2df9c67a246998f2d81c"
+    },
+    "scope": "sealed unpatched CLI with exact original k4 source/runtime input mapping; k3 is the retained inbounds control"
+  },
+  "retained_nonpassing_attempts": [
+    {
+      "name": "before-wasm1",
+      "classification": "operator capacity stop during compilation; zero tests, not semantic evidence",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/before-wasm1.sh",
+          "sha256": "6022137cea1439c9f79a4a4840fc34ef5da0b6b73e5259fce056fcd21b88a5d1",
+          "bytes": 1875
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/command.log",
+          "sha256": "d2d858b41857c3937c27d0517611b9e513134caef8e2d949d631bf49f85b15d9",
+          "bytes": 2185
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/guardian.json",
+          "sha256": "9db95a3231aaca79ba6f97365d36fde40b605c7b992b8b45948c02bbc8f96a6c",
+          "bytes": 9153
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/source-head.txt",
+          "sha256": "3b18fe3b10531d4db2769c9f157e2215cb4b62a78f7b6a80282391be1d0f49a2",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/source-before.json",
+          "sha256": "01de64cd396c5e78223357e5573fe9769e84da4dc0a4b12a13a2ace679874e40",
+          "bytes": 772771
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/source-after.json",
+          "sha256": "01de64cd396c5e78223357e5573fe9769e84da4dc0a4b12a13a2ace679874e40",
+          "bytes": 772771
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/before-wasm1/exit-code.txt",
+          "sha256": "e3b9c2844b5a5c2677b3a2279db2ec8487491dd9a23d6b22fac153391b3bb63c",
+          "bytes": 4
+        }
+      ]
+    },
+    {
+      "name": "after-core4",
+      "classification": "test-only Arc/Dae compile error; zero tests",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-core4.sh",
+          "sha256": "b6fd0c48e5078ba886f1676e24e765c70a96822e7c8e7b828b7439dcc25db641",
+          "bytes": 1849
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/command.log",
+          "sha256": "63748c799f6407056594816fc2e88f630a977dd653ec7b7d43660aa3acf74acd",
+          "bytes": 19076
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/guardian.json",
+          "sha256": "0bf7ebd77a6a66cdbd2e8d47a419582dbedcbcc14ba376a3dd7db9fb7a7d2d7e",
+          "bytes": 89543
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/source-head.txt",
+          "sha256": "ec367aa797dff41214010b3673a9853a87763256533e5115b2a0199db54060bf",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/source-before.json",
+          "sha256": "85baf903ed12bfc3fae42778ed0cbf53ebc4706c56eaff4b8cba4bff39cf2c63",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/source-after.json",
+          "sha256": "85baf903ed12bfc3fae42778ed0cbf53ebc4706c56eaff4b8cba4bff39cf2c63",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-core4/exit-code.txt",
+          "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+          "bytes": 4
+        }
+      ]
+    },
+    {
+      "name": "after-corrected-core4",
+      "classification": "3 PASS/1 FAIL; missing test runtime input prevents native preparation, no helper call executed",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-corrected-core4.sh",
+          "sha256": "c6b71fc13c30fa758083691244116eb64b961387322e9381a835850f69e006be",
+          "bytes": 1859
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/command.log",
+          "sha256": "30422598b916f7eb61cbeeb9e706d13e67147bbf08b997f754404fb44f023f84",
+          "bytes": 1500
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/guardian.json",
+          "sha256": "8a84db5a61394becfded8979ba6acaed7675d27b7675ff7f561d297c19b9dd0e",
+          "bytes": 2576
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/source-head.txt",
+          "sha256": "50dbf8d3f8fd2b004753cda8b1e0d39685160a5223ec448822d3d7ebd8d111f0",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/source-before.json",
+          "sha256": "56c7e4a9c7af54b3573bf45174dba508f056012c04b733e2958f90de8bccc334",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/source-after.json",
+          "sha256": "56c7e4a9c7af54b3573bf45174dba508f056012c04b733e2958f90de8bccc334",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-corrected-core4/exit-code.txt",
+          "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+          "bytes": 4
+        }
+      ]
+    },
+    {
+      "name": "after-exports",
+      "classification": "all8 runtime tests PASS/guardian0, outer expected5-vs-actual6 roster assertion1; corrected roster warm pass retained separately",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/after-exports.sh",
+          "sha256": "cab7fed31972e8abfd941d0060fdd3fa826b70b4615d61262585997de326c7af",
+          "bytes": 2347
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/command.log",
+          "sha256": "e463f369523c350e1de80f16356874c9f2fb0027fea5035e8a1044cb2f985158",
+          "bytes": 2423
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/guardian.json",
+          "sha256": "bc3b1dc7889e03fda2d3ed3d176dcaae63e77a44610872cf852d6c677a39985d",
+          "bytes": 6530
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/source-head.txt",
+          "sha256": "b57f11f7ee6297c3cec38cd3038d4bd4ac11847a0d93939cf47617b1641de88e",
+          "bytes": 41
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/source-before.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/source-after.json",
+          "sha256": "4abf855c86cb841fb1e5b50ee63fd4314bc74ea4de378a28fed2cef9481dec09",
+          "bytes": 773168
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/after-exports/exit-code.txt",
+          "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "bytes": 2
+        }
+      ]
+    }
+  ],
+  "scope_limits": [
+    "Original model has no continuous states: Auto chooses Interpreter; native proof directly executes the unchanged source-derived issued Cranelift helper, not a whole-session native receipt.",
+    "WASM proof executes the actual issued main assignment schedule in Wasmi.",
+    "Selected exporters exercise existing C/Rust/fixed-Rust/CasADi/JAX profiles and lazy JAX AD; they are not an original-model proof for every export backend.",
+    "Activation ConditionInput DAG and Boolean tensor semantics retain their existing policy.",
+    "Compile-time evaluator proof is a separately qualified peer chain, not included in this runtime receipt.",
+    "No final whole-workspace/platform CI/coverage claim."
+  ],
+  "resource_policy": {
+    "seconds_per_gate": 600,
+    "aggregate_rss_plus_swap_mib": 4096,
+    "cache_mib": 12288,
+    "host_available_floor_mib": 16384,
+    "scratch_free_floor_mib": 8192,
+    "workers": [
+      4,
+      4,
+      4
+    ]
+  },
+  "cache_idle_after": {
+    "path": "$HOME/scratch/rumoca/pr427-scalar-boolean-values-20261012/evidence/cache-idle-after.json",
+    "sha256": "3597ccc15944082f294bf3a01a8f86703c28be2764ddfc28ba29839b3e904b8e",
+    "visible_references": 0,
+    "denied_pids": 418,
+    "allocated_bytes": 6653235200
+  }
+}

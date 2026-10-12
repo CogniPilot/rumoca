@@ -8,6 +8,9 @@ use crate::lower::call_scoped_actions::CallScopedActionCollector;
 
 mod relation_memory;
 use relation_memory::BufferedRelations;
+mod quotient_memory;
+use quotient_memory::BufferedQuotients;
+pub(crate) use quotient_memory::{QuotientMemory, quotient_step_operator};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StorageClass {
@@ -29,6 +32,7 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
     pub(crate) buffered_relations: BufferedRelations<'dae>,
+    pub(crate) buffered_quotients: BufferedQuotients<'dae>,
     pub(crate) clock_activations: Vec<usize>,
     pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
@@ -43,6 +47,7 @@ pub(crate) struct LoweredLayout<'dae> {
 struct RuntimeLayout<'dae> {
     condition_memory: Vec<usize>,
     buffered_relations: BufferedRelations<'dae>,
+    buffered_quotients: BufferedQuotients<'dae>,
     clock_activations: Vec<usize>,
     delay_values: Vec<usize>,
     initial_event_parameter_index: Option<usize>,
@@ -148,6 +153,7 @@ pub(crate) fn lower_layout<'dae>(
         previous_values: pre.previous_values,
         condition_memory: runtime.condition_memory,
         buffered_relations: runtime.buffered_relations,
+        buffered_quotients: runtime.buffered_quotients,
         clock_activations: runtime.clock_activations,
         delay_values: runtime.delay_values,
         layout,
@@ -257,10 +263,13 @@ fn append_runtime_layout<'dae>(
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     let (delay_values, after_delays) = append_delay_values(view, after_clocks)?;
     let buffered_relations = BufferedRelations::construct(view, after_delays)?;
-    let flags = append_runtime_flags(view, buffered_relations.end())?;
+    let buffered_quotients =
+        BufferedQuotients::construct(view, buffered_relations.end(), &buffered_relations)?;
+    let flags = append_runtime_flags(view, buffered_quotients.end())?;
     Ok(RuntimeLayout {
         condition_memory,
         buffered_relations,
+        buffered_quotients,
         clock_activations,
         delay_values,
         initial_event_parameter_index: flags.initial_event_parameter_index,

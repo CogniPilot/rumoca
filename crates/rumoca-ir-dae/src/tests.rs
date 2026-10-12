@@ -1,4 +1,5 @@
 mod derived_wire;
+mod discrete_integer_quotients;
 mod expression_children;
 mod external_functions;
 mod function_conditionals;
@@ -9,12 +10,14 @@ mod function_scopes;
 mod function_tensor_builtins;
 mod function_wire;
 mod linear_solve;
+mod model_conditionals;
 mod model_event_transactions;
 mod provenance;
 mod range_wire;
 mod runtime_owner_replay;
 mod runtime_owners;
 mod string_conversion;
+mod structured_quotients;
 mod temporal_wire;
 mod type_arena;
 mod wire_buffers;
@@ -292,6 +295,7 @@ fn every_expression_form_dae() -> Dae {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,
@@ -656,6 +660,7 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
     let domain = StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -663,6 +668,7 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
                 step: 1,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "j".to_string(),
                 lower: 1,
@@ -743,6 +749,7 @@ fn row_major_family_preserves_singleton_axes_with_equal_scalar_cardinality() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,
@@ -849,6 +856,7 @@ fn binder_prefix_projection_compacts_nested_array_families() {
                 StructuredIndexDomain {
                     binders: vec![
                         StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".to_string(),
                             lower: 1,
@@ -856,6 +864,7 @@ fn binder_prefix_projection_compacts_nested_array_families() {
                             step: 1,
                         },
                         StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 1,
                             display_name: "j".to_string(),
                             lower: 1,
@@ -988,6 +997,7 @@ fn domain_binders_cannot_cross_domains_or_escape_structured_owners() {
     let dae = Dae::construct(source.map, |dae| {
         let domain = |id, display_name: &str| StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id,
                 display_name: display_name.to_string(),
                 lower: 1,
@@ -1069,6 +1079,7 @@ fn nested_comprehensions_retain_lexical_scope_provenance_and_wire_identity() {
     let sum_owner = source.source("i + j", 0);
     let singleton_domain = |name: &str, upper| StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: name.to_string(),
             lower: 1,

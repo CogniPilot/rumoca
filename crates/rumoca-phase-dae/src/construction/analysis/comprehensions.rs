@@ -11,7 +11,7 @@ pub(in crate::construction) struct ComprehensionPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::construction) struct ComprehensionKey {
     owner: Span,
-    binders: Vec<(VarName, Span, u64)>,
+    binders: Vec<(rumoca_core::IndexBinderProvenance, Span, u64)>,
 }
 
 impl ComprehensionKey {
@@ -23,7 +23,7 @@ impl ComprehensionKey {
             .iter()
             .map(|index| {
                 Some((
-                    VarName::new(&index.name),
+                    index.binder,
                     index.range.span()?,
                     rumoca_core::expression_semantic_fingerprint(&index.range),
                 ))
@@ -51,9 +51,14 @@ struct ComprehensionPlanEntry {
 #[derive(Debug, Default)]
 pub(in crate::construction) struct ComprehensionPlans {
     buckets: HashMap<ComprehensionKey, Vec<ComprehensionPlanEntry>>,
+    source_declarations: HashSet<rumoca_core::DefId>,
 }
 
 impl ComprehensionPlans {
+    pub(in crate::construction) fn is_source_declaration(&self, id: rumoca_core::DefId) -> bool {
+        self.source_declarations.contains(&id)
+    }
+
     fn insert(
         &mut self,
         key: ComprehensionKey,
@@ -61,6 +66,11 @@ impl ComprehensionPlans {
         plan: ComprehensionPlan,
         span: Span,
     ) -> Result<(), ToDaeError> {
+        for index in indices {
+            if let rumoca_core::IndexBinderProvenance::Source(id) = index.binder {
+                self.source_declarations.insert(id);
+            }
+        }
         let bucket = self.buckets.entry(key).or_default();
         if let Some(previous) = bucket.iter().find(|entry| entry.indices == indices) {
             if previous.plan != plan {
@@ -113,8 +123,26 @@ pub(super) fn analyze_model_comprehensions(
         plans: ComprehensionPlans::default(),
     };
     analyzer.visit_equation_owners(flat, templates)?;
+    DeclarationCollector(&mut analyzer.plans.source_declarations)
+        .visit_model_owners(flat, templates)?;
     Ok(analyzer.plans)
 }
+
+struct DeclarationCollector<'a>(&'a mut HashSet<rumoca_core::DefId>);
+impl FallibleExpressionVisitor for DeclarationCollector<'_> {
+    type Error = ToDaeError;
+    fn enter_scope(&mut self, scope: rumoca_core::ExpressionScope<'_>) -> Result<(), Self::Error> {
+        let rumoca_core::ExpressionScope::ArrayComprehension(indices) = scope;
+        for index in indices {
+            if let rumoca_core::IndexBinderProvenance::Source(id) = index.binder {
+                self.0.insert(id);
+            }
+        }
+        Ok(())
+    }
+}
+impl FallibleStatementVisitor for DeclarationCollector<'_> {}
+impl ModelExpressionOwnerVisitor for DeclarationCollector<'_> {}
 
 struct ModelComprehensions<'scope> {
     constants: &'scope EvalContext,
@@ -149,11 +177,20 @@ fn analyze_expression(
     constants: &EvalContext,
     plans: &mut ComprehensionPlans,
 ) -> Result<(), ToDaeError> {
+    analyze_expression_scoped(expression, constants, plans, &HashSet::new())
+}
+
+fn analyze_expression_scoped(
+    expression: &Expression,
+    constants: &EvalContext,
+    plans: &mut ComprehensionPlans,
+    enclosing: &HashSet<rumoca_core::DefId>,
+) -> Result<(), ToDaeError> {
     if let Expression::ArrayComprehension {
+        expr,
         indices,
         filter,
         span,
-        ..
     } = expression
     {
         require_span(*span, "array comprehension")?;
@@ -175,11 +212,20 @@ fn analyze_expression(
             ComprehensionKey::new(*span, indices).ok_or_else(|| ToDaeError::MissingProvenance {
                 owner: "array comprehension range".to_string(),
             })?;
-        let plan = comprehension_plan(indices, constants, *span)?;
+        let plan = comprehension_plan(indices, constants, *span, enclosing)?;
+        let mut scoped = enclosing.clone();
+        for index in indices.iter().rev() {
+            analyze_expression_scoped(&index.range, constants, plans, &scoped)?;
+            if let rumoca_core::IndexBinderProvenance::Source(id) = index.binder {
+                scoped.insert(id);
+            }
+        }
+        analyze_expression_scoped(expr, constants, plans, &scoped)?;
         plans.insert(key, indices, plan, *span)?;
+        return Ok(());
     }
     for child in expression_children(expression) {
-        analyze_expression(child, constants, plans)?;
+        analyze_expression_scoped(child, constants, plans, enclosing)?;
     }
     Ok(())
 }
@@ -209,8 +255,8 @@ fn analyze_expression(
 /// key does not carry by value. Each is reported at the bound that failed; no
 /// extent is guessed. A *triangular* domain is in this set: MLS §10.4.1 opens
 /// each index as a fresh scalar of the comprehension, so the ranges are read
-/// left to right in a scope where an earlier index has a shape and no value,
-/// and `{e for i in 1:m, j in 1:i}` is reported at `i` rather than folded to
+/// right to left in a scope where an outer index has a shape and no value,
+/// and `{e for i in 1:j, j in 1:m}` is reported at `j` rather than folded to
 /// some rectangular over-approximation.
 ///
 /// **Owner.** This function is the only place a function-body comprehension's
@@ -246,10 +292,11 @@ pub(in crate::construction) fn specialized_comprehension_plan(
     let mut scoped = values.clone();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
+    for (ordinal, index) in indices.iter().rev().enumerate() {
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = proven_comprehension_range(&index.range, &scoped, range_span)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.name.clone(),
             lower,
@@ -260,7 +307,7 @@ pub(in crate::construction) fn specialized_comprehension_plan(
         // MLS §10.4.1 opens the index as a fresh scalar of the comprehension, so
         // a later range written over it must read the binder — which has no
         // proven value — and never the value of a shadowed outer coordinate.
-        scoped.insert(VarName::new(&index.name), Vec::new());
+        scoped.bind_comprehension_index(index);
     }
     let domain = StructuredIndexDomain { binders };
     domain.scalar_count().map_err(|error| {
@@ -337,21 +384,36 @@ fn comprehension_plan(
     indices: &[rumoca_core::ComprehensionIndex],
     constants: &EvalContext,
     span: Span,
+    enclosing: &HashSet<rumoca_core::DefId>,
 ) -> Result<ComprehensionPlan, ToDaeError> {
-    let mut names = HashSet::new();
+    let mut active_source_ids = enclosing.clone();
+    let mut source_ids = HashSet::new();
+    let mut generated_names = HashSet::new();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
-        if !names.insert(&index.name) {
+    for (ordinal, index) in indices.iter().rev().enumerate() {
+        let fresh = match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => source_ids.insert(id),
+            rumoca_core::IndexBinderProvenance::Generated => generated_names.insert(&index.name),
+        };
+        if !fresh {
             return Err(ToDaeError::unsupported_flat(
                 "array comprehension domain",
                 format!("binder `{}` is declared more than once", index.name),
                 span,
             ));
         }
+        if range_reads_binders(&index.range, &active_source_ids) {
+            return Err(ToDaeError::unsupported_flat(
+                "array comprehension domain",
+                "range depends on an enclosing iterator rather than a parameter-evaluable scalar Integer",
+                expression_span(&index.range)?,
+            ));
+        }
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = evaluated_range(&index.range, constants)?;
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.name.clone(),
             lower,
@@ -359,6 +421,9 @@ fn comprehension_plan(
             step,
         });
         binder_spans.push(range_span);
+        if let rumoca_core::IndexBinderProvenance::Source(id) = index.binder {
+            active_source_ids.insert(id);
+        }
     }
     let domain = StructuredIndexDomain { binders };
     domain.scalar_count().map_err(|error| {
@@ -372,6 +437,24 @@ fn comprehension_plan(
         domain,
         binder_spans,
     })
+}
+
+fn range_reads_binders(expression: &Expression, ids: &HashSet<rumoca_core::DefId>) -> bool {
+    struct Reads<'a> {
+        ids: &'a HashSet<rumoca_core::DefId>,
+        found: bool,
+    }
+    impl rumoca_core::ExpressionVisitor for Reads<'_> {
+        fn visit_var_ref(&mut self, reference: &rumoca_core::Reference, subscripts: &[Subscript]) {
+            self.found |= reference
+                .target_def_id()
+                .is_some_and(|id| self.ids.contains(&id));
+            self.walk_var_ref(reference, subscripts);
+        }
+    }
+    let mut reads = Reads { ids, found: false };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut reads, expression);
+    reads.found
 }
 
 fn evaluated_range(
@@ -428,6 +511,7 @@ mod tests {
         Expression::ArrayComprehension {
             expr: Box::new(literal(0, span)),
             indices: vec![ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: "i".to_string(),
                 range: Expression::Range {
                     start: Box::new(literal(1, span)),
@@ -475,7 +559,7 @@ mod tests {
             unreachable!("fixture is a comprehension")
         };
         let key = ComprehensionKey::new(span, indices).expect("fixture has exact provenance");
-        let expected = comprehension_plan(indices, &EvalContext::new(), span)
+        let expected = comprehension_plan(indices, &EvalContext::new(), span, &HashSet::new())
             .expect("fixture has a constant compact domain");
         let mut conflicting = expected.clone();
         conflicting.domain.binders[0].upper = 3;
@@ -493,5 +577,37 @@ mod tests {
             ToDaeError::UnsupportedFlatSemantics { feature, .. }
                 if feature == "array comprehension provenance"
         ));
+    }
+    #[test]
+    fn nested_constructor_range_cannot_fold_an_enclosing_source_iterator_by_name() {
+        let span = Span::from_offsets(SourceId::from_source_name("nested_domain.mo"), 1, 2);
+        let outer_id = rumoca_core::DefId::new(42);
+        let mut inner = comprehension(3, span);
+        let Expression::ArrayComprehension { indices, .. } = &mut inner else {
+            unreachable!()
+        };
+        indices[0].binder = rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(43));
+        let Expression::Range { end, .. } = &mut indices[0].range else {
+            unreachable!()
+        };
+        **end = Expression::VarRef {
+            name: rumoca_core::IndexBinderProvenance::Source(outer_id)
+                .reference("i", span)
+                .unwrap(),
+            subscripts: Vec::new(),
+            span,
+        };
+        let mut outer = comprehension(3, span);
+        let Expression::ArrayComprehension { expr, indices, .. } = &mut outer else {
+            unreachable!()
+        };
+        indices[0].binder = rumoca_core::IndexBinderProvenance::Source(outer_id);
+        **expr = inner;
+        let mut constants = EvalContext::new();
+        constants.add_parameter("i", rumoca_eval_flat::constant::Value::Integer(9));
+        let error = analyze_comprehensions([&outer], &constants).unwrap_err();
+        assert!(
+            matches!(error, ToDaeError::UnsupportedFlatSemantics { detail, .. } if detail.contains("enclosing iterator"))
+        );
     }
 }

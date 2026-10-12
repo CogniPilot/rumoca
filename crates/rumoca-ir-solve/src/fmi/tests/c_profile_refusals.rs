@@ -141,14 +141,17 @@ fn event_edge_actions_are_refused() {
 }
 
 #[test]
-fn sample_tick_pulse_buffers_are_refused() {
-    assert_refused(
-        "the C profile executes only discrete equations and condition memories",
-        |model| {
-            static_partition(model);
-            one_discrete_row(model, DiscreteRowRole::PulseConditionMemory);
-        },
-    );
+fn sample_tick_pulse_buffers_publish_their_exact_producer() {
+    let (mut model, input) = super::max_step_duration_local::delay_bearing_model_with_one_run();
+    model.problem.events.delays = SolveDelayPartition::default();
+    static_partition(&mut model);
+    one_discrete_row(&mut model, DiscreteRowRole::PulseConditionMemory);
+    let component = FmiComponent::construct(model, vec![input]).unwrap();
+    let view = component.into_codegen_view().try_c().unwrap();
+    let events = &serde_json::to_value(view).unwrap()["scalar_events"];
+    assert_eq!(events["condition_memory_rows"], serde_json::json!([true]));
+    assert_eq!(events["pulse_rows"], serde_json::json!([0]));
+    assert_eq!(events["pulse_programs"], serde_json::json!([0]));
 }
 
 #[test]
@@ -291,6 +294,7 @@ fn a_parameter_read_only_inside_a_nested_program_stays_settable() {
     let fold = crate::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,

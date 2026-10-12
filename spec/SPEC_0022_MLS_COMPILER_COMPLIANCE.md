@@ -22,24 +22,24 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §4.1 LEX contracts | 332–351 | Contract catalog heading + lexical rules (13 contracts) |
 | §4.2 DECL contracts | 352–393 | Declaration rules (37 contracts) |
 | §4.3 INST contracts | 394–457 | Instantiation rules (59 contracts) |
-| §4.4 EXPR contracts | 458–503 | Expression/operator rules (41 contracts) |
-| §4.5 EQN contracts | 504–549 | Equation rules (41 contracts) |
-| §4.6 ALG contracts | 550–573 | Algorithm rules (20 contracts) |
-| §4.7 CONN contracts | 574–608 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 609–658 | Function rules (45 contracts) |
-| §4.9 TYPE contracts | 659–699 | Type/interface rules (36 contracts) |
-| §4.10 ARR contracts | 700–750 | Array rules (46 contracts) |
-| §4.11 PKG contracts | 751–768 | Package/import rules (13 contracts) |
-| §4.12 OPREC contracts | 769–785 | Operator record rules (12 contracts) |
-| §4.13 SIM contracts | 786–800 | Simulation rules (10 contracts) |
-| §4.14 CLK contracts | 801–825 | Clock/synchronous rules (20 contracts) |
-| §4.15 STRM contracts | 826–843 | Stream connector rules (13 contracts) |
-| §4.16 SM contracts | 844–942 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
-| §4.17 ANN contracts | 943–964 | Annotation rules (17 contracts) |
-| §4.18 UNIT contracts | 965–980 | Unit expression rules (9 contracts) |
-| §5. Contract Summary | 981–1006 | Category counts and totals |
-| §6. Compiler Phases | 1007–1056 | Phase input/output mapping |
-| §7. MLS Chapter Index | 1057–1084 | MLS chapter → contract category mapping |
+| §4.4 EXPR contracts | 458–504 | Expression/operator rules (42 contracts) |
+| §4.5 EQN contracts | 505–550 | Equation rules (41 contracts) |
+| §4.6 ALG contracts | 551–574 | Algorithm rules (20 contracts) |
+| §4.7 CONN contracts | 575–609 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 610–659 | Function rules (45 contracts) |
+| §4.9 TYPE contracts | 660–700 | Type/interface rules (36 contracts) |
+| §4.10 ARR contracts | 701–751 | Array rules (46 contracts) |
+| §4.11 PKG contracts | 752–769 | Package/import rules (13 contracts) |
+| §4.12 OPREC contracts | 770–786 | Operator record rules (12 contracts) |
+| §4.13 SIM contracts | 787–801 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 802–826 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 827–844 | Stream connector rules (13 contracts) |
+| §4.16 SM contracts | 845–951 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 952–973 | Annotation rules (17 contracts) |
+| §4.18 UNIT contracts | 974–989 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 990–1015 | Category counts and totals |
+| §6. Compiler Phases | 1016–1065 | Phase input/output mapping |
+| §7. MLS Chapter Index | 1066–1093 | MLS chapter → contract category mapping |
 
 ---
 
@@ -500,6 +500,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-039 | noEvent event suppression | §3.3 | "noEvent suppresses event generation for relational operators within its scope" |
 | EXPR-040 | Event triggering operators | §3.7.2 | "div, ceil, floor, integer can only change values at events and will trigger events as needed". Rumoca: a model-level `floor`, `ceil`, or `integer` of a varying argument `x` outside `noEvent`/`smooth` owns one state-event root on `sin(pi*x) >= 0`, so a discrete target defined from it changes at each integer crossing; function bodies generate no events. Tested in `suite_core/integer_step_events.rs` |
 | EXPR-041 | smooth event freedom | §3.7.5 | "A tool is free to not generate events for expressions inside smooth. However, smooth does not guarantee that no events will be generated." Rumoca takes the freedom except for a relation inside `smooth(0, ..)` whose operands are unknowns of its own algebraic block, which owns an MLS §8.5 event (SPEC_0044 ME-EVENT-008) |
+| EXPR-042 | Scalar Boolean value evaluation policy | §3.3, §3.6.5 | Rumoca chooses left-to-right short-circuit for primitive scalar Boolean value expressions: `L and R` becomes `if L then R else false`; `L or R` becomes `if L then true else R`. Phase-DAE issues the existing checked conditional before executable lowering; a skipped operand may execute only under the existing total, effect-free conditional proof (SOLVE-C61). Inactive faulting calls, computed indices and checked Integer operations remain selected; active faults retain source provenance. Boolean tensors keep compact element-wise operations without per-element short-circuit guarantees. Activation condition DAGs, vector `when`/`AnyRise`, clock eligibility and event observation keep their existing owners; this policy promises no lazy activation DAG evaluation. Static type/shape/profile refusals and explicit-if guarantees remain unchanged. |
 
 ### 4.5 Equation Contracts (EQN)
 
@@ -892,7 +893,15 @@ areas.
 - Functions (§3.7.2, §12): `div`/`mod`/`rem` of Integer operands in a
   function body are exact Integer quotients (truncating `div`, flooring `mod`)
   in the typed Solve program, and a function-body quotient needs no event owner
-  whatever its operands' variability.
+  whatever its operands' variability. Model-level Integer quotients also retain
+  the whole Integer expression in the typed owner before final scalar-runtime
+  publication (SPEC_0040 SOLVE-C84). Comparisons of two Integer operands
+  retain typed Integer arithmetic through their Boolean result (§3.5, §6.7);
+  mixed Real operands still require Real promotion. An Integer scalar payload that cannot be
+  represented exactly is refused, while typed Int64 interfaces remain Int64.
+  Regression evidence: `suite_core::reported_bug_runtime::issue_411_*` and
+  `suite_core::reported_bug_runtime::main_dae_integer` (MLS §3.7.2 Operators
+  3.4/3.5/3.6).
 - Event clocks (§16.3 Operator 16.4): `Clock(condition, startInterval)` whose
   condition names a scalar Boolean coordinate ticks when `edge(pre(condition))`
   becomes true, once per rise: a condition that stays true through later event
@@ -985,7 +994,7 @@ areas.
 | Lexical | LEX | 13 |
 | Declarations | DECL | 37 |
 | Instantiation | INST | 59 |
-| Expressions | EXPR | 41 |
+| Expressions | EXPR | 42 |
 | Equations | EQN | 41 |
 | Algorithms | ALG | 20 |
 | Connections | CONN | 30 |
@@ -1000,7 +1009,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 17 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **470** |
+| **Total** | | **471** |
 
 ---
 
@@ -1089,5 +1098,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 470 |
+| Total Contracts | 471 |
 | MLS Chapters Referenced | 21 |

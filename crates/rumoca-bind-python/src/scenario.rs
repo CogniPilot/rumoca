@@ -12,7 +12,9 @@ use std::time::Instant;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rumoca_compile::compile::Session as CompileSession;
-use rumoca_compile::scenario::{ScenarioConfigFile, ScenarioTask, parse_scenario_config_file};
+use rumoca_compile::scenario::{
+    ScenarioConfigFile, ScenarioTask, parse_scenario_config_file, resolve_scenario_codegen_target,
+};
 use rumoca_sim::scenario_config::SimulationConfig as ScenarioSimulationConfig;
 use rumoca_sim::{
     DiffsolMethod, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimulationRequestSummary,
@@ -182,7 +184,11 @@ fn run_codegen_scenario(
     )
     .map_err(|e| ApiError::Compile(e.0))?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let files = render_target_files(&result, &compiled_model, &target)?;
+    let target_path = resolve_scenario_codegen_target(scenario_path, &target);
+    let target_argument = target_path.to_str().ok_or_else(|| {
+        ApiError::Compile("scenario codegen target path is not UTF-8".to_string())
+    })?;
+    let files = render_target_files(&result, &compiled_model, target_argument)?;
     let codegen = CodegenResult::new(target.clone(), files);
     let output_dir_string = output_path.to_string_lossy().to_string();
     let written = codegen.save_all_to(&output_dir_string)?;

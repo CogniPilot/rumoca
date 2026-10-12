@@ -282,6 +282,7 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
 fn a_compact_map_compiles_as_one_native_kernel_without_per_row_code() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,

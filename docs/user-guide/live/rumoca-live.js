@@ -303,10 +303,7 @@
                 const base = resolvedPkgBase || await locatePkgBase();
                 const packageRuntime = base + 'rumoca_runtime.js';
                 const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_runtime.js');
-                const localPreview = isLocalPreviewHost();
-                const candidates = localPreview
-                    ? [sourceRuntime, packageRuntime]
-                    : [packageRuntime, sourceRuntime];
+                const candidates = [packageRuntime, sourceRuntime];
                 let lastError = null;
                 for (const candidate of candidates) {
                     try {
@@ -332,10 +329,7 @@
                 const base = resolvedPkgBase || await locatePkgBase();
                 const packageRuntime = base + 'rumoca_interactive.js';
                 const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_interactive.js');
-                const localPreview = isLocalPreviewHost();
-                const candidates = localPreview
-                    ? [sourceRuntime, packageRuntime]
-                    : [packageRuntime, sourceRuntime];
+                const candidates = [packageRuntime, sourceRuntime];
                 let lastError = null;
                 for (const candidate of candidates) {
                     try {
@@ -532,19 +526,18 @@ self.onmessage = async (event) => {
                     workspaceSources: args.workspaceSources || '{}',
                     modelName: args.model,
                     target,
+                    sourceRootCacheUrl: args.sourceRootCacheUrl || '',
                 }));
             } else {
                 if (!/^[A-Za-z0-9_.-]+$/.test(target)) {
                     throw new Error('The book widget supports built-in codegen targets only.');
                 }
                 await ensureParsedSourceRootCache(rumoca, args.sourceRootCacheUrl || '');
-                if (typeof rumoca.compile !== 'function' || typeof rumoca.render_target !== 'function') {
+                if (typeof rumoca.render_target_for_source !== 'function') {
                     throw new Error('code generation APIs are missing in this WASM build');
                 }
-                const compiled = JSON.parse(rumoca.compile(args.source || '', args.model || 'Model'));
-                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
-                const rendered = rumoca.render_target(
-                    daeJson,
+                const rendered = rumoca.render_target_for_source(
+                    args.source || '',
                     args.model || 'Model',
                     target,
                     '',
@@ -3467,15 +3460,14 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                         workspaceSources,
                         modelName: model,
                         target,
+                        sourceRootCacheUrl,
                     }));
                 }
                 if (!/^[A-Za-z0-9_.-]+$/.test(target)) {
                     throw new Error('The book widget supports built-in codegen targets only.');
                 }
                 await runtime.ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
-                const compiled = JSON.parse(wasm.compile(source, model));
-                const daeJson = JSON.stringify(compiled.dae_native || compiled.dae);
-                const rendered = wasm.render_target(daeJson, model, target, '', '{}');
+                const rendered = wasm.render_target_for_source(source, model, target, '', '{}');
                 return JSON.stringify(Array.isArray(rendered?.files) ? rendered.files : []);
             }, signal);
             throwIfAborted(signal);

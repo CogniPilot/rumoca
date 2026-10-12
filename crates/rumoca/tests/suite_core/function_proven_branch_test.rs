@@ -459,7 +459,7 @@ function triangular
   input Integer m;
   output Real y;
 algorithm
-  y := sum({1.0*i*j for i in 1:m, j in 1:i});
+  y := sum({1.0*i*j for j in 1:i, i in 1:m});
 end triangular;
 model TriangularComprehension
   Real z;
@@ -471,11 +471,20 @@ end TriangularComprehension;
         .model("TriangularComprehension")
         .compile_str(source, "TriangularComprehension.mo")
         .expect_err("a triangular domain is not rectangular");
-    let rendered = format!("{error:?}");
-    assert!(
-        rendered.contains("value of scalar `i`"),
-        "the rejection must name the comprehension index: {rendered}"
-    );
+    let rumoca::CompilerError::CompileDiagnosticsError { failures, .. } = error else {
+        panic!("the comprehension must retain a typed phase diagnostic: {error:?}");
+    };
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    let failure = &failures[0];
+    assert_eq!(failure.error_code.as_deref(), Some("ED019"));
+    assert!(failure.error.contains("array comprehension domain"));
+    let span = failure
+        .primary_label
+        .as_ref()
+        .expect("index provenance")
+        .span;
+    let index = source.find("1:i").unwrap() + 2;
+    assert_eq!((span.start.0, span.end.0), (index, index + 1));
 }
 
 /// `Modelica.Math.Vectors.relNodePositions` is the shape this covers: several

@@ -1,0 +1,596 @@
+{
+  "schema": 1,
+  "scope": "Focused CascadeControlledDrive structural regression; not canonical quick/full/CI/strict-high qualification",
+  "base": "85c37de07f08a9c5fed578f70d9e60886559bda3",
+  "test_before": "752cfd00a1dfad999dbc5aa5e1e91f3282dcfefc",
+  "after": "e6b21c70357b6b997ceea004104e8cfc60af6748",
+  "source_tree": "6a23f264be1eb8365d420274166be0083ed1478b",
+  "tracked_files": 4217,
+  "msl_files_verified_unchanged": 2946,
+  "artifact_root": "$HOME/scratch/rumoca/pr427-cascade-clocked-structural-20261012/evidence",
+  "msl_version": "4.1.0",
+  "msl_archive_sha256": "5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d",
+  "rustc": "1.95.0-nightly (6a979b3e3 2026-02-26)",
+  "toolchain_shell": "docs",
+  "jobs": 4,
+  "test_threads": 4,
+  "rayon_threads": 4,
+  "incremental": false,
+  "debug_information": 0,
+  "default_features": true,
+  "cli_features": [
+    "tracing"
+  ],
+  "unit_before": {
+    "passed": 1,
+    "failed": 1,
+    "ignored": 0
+  },
+  "unit_after": {
+    "passed": 2,
+    "failed": 0,
+    "ignored": 0
+  },
+  "full_structural_after": {
+    "passed": 290,
+    "failed": 0,
+    "ignored": 0
+  },
+  "scoped_clippy": "all-targets/all-features PASS",
+  "whole_format": "PASS",
+  "models": [
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
+      "elapsed_seconds": 13.542459833901376,
+      "exit_code": 0,
+      "source_sha256": "363a39d9b3d93e763af195a4f831ef0389d1ea80a158cea141b127fada693176",
+      "trace_byte_identical_to_actual_8a": true,
+      "samples": 4007,
+      "nonfinite_values": 0,
+      "comparison": {
+        "bounded_normalized_l1_score": 4.673840930485478e-06,
+        "mean_channel_bounded_normalized_l1": 0.0002094049521058574,
+        "compared_variables": 42,
+        "samples_compared": 494424
+      },
+      "common_channels": 42,
+      "rumoca_only_channels": 47,
+      "omc_only_channels": [
+        "der(load.w)",
+        "der(speed.flange.phi)",
+        "previous(PI.x)"
+      ],
+      "overlap": [
+        0.0,
+        4.0
+      ]
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+      "elapsed_seconds": 6.578384937951341,
+      "exit_code": 0,
+      "source_sha256": "3363b03a6ec74f4ce459725da24490174a2a60cd7056d3e06b5bc6be37e75730",
+      "trace_byte_identical_to_actual_8a": true,
+      "samples": 507,
+      "nonfinite_values": 0,
+      "comparison": {
+        "bounded_normalized_l1_score": 3.01942936997192e-07,
+        "mean_channel_bounded_normalized_l1": 8.90262353910296e-06,
+        "compared_variables": 32,
+        "samples_compared": 37248
+      },
+      "common_channels": 32,
+      "rumoca_only_channels": 48,
+      "omc_only_channels": [
+        "der(PI.x)",
+        "der(load.w)",
+        "der(speed.flange.phi)"
+      ],
+      "overlap": [
+        0.0,
+        4.0
+      ]
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
+      "elapsed_seconds": 9.684195222798735,
+      "exit_code": 0,
+      "source_sha256": "c959cbc059bd0f83193ea243cd3250de107c8097d4193c0900ef1ca90583c6f8",
+      "trace_byte_identical_to_actual_8a": true,
+      "samples": 4007,
+      "nonfinite_values": 0,
+      "comparison": {
+        "bounded_normalized_l1_score": 6.2961461963744996e-06,
+        "mean_channel_bounded_normalized_l1": 0.00023059123965510532,
+        "compared_variables": 42,
+        "samples_compared": 503580
+      },
+      "common_channels": 42,
+      "rumoca_only_channels": 47,
+      "omc_only_channels": [
+        "der(load.w)",
+        "der(speed.flange.phi)",
+        "previous(PI.x)"
+      ],
+      "overlap": [
+        0.0,
+        4.0
+      ]
+    },
+    {
+      "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
+      "elapsed_seconds": 7.33403713000007,
+      "exit_code": 0,
+      "source_sha256": "09e6c0fc9f5f4461be638cfd64a9997e2386ca24a3d6f07cb966c696d057a21f",
+      "trace_byte_identical_to_actual_8a": true,
+      "samples": 4007,
+      "nonfinite_values": 0,
+      "comparison": {
+        "bounded_normalized_l1_score": 6.2961461963744996e-06,
+        "mean_channel_bounded_normalized_l1": 0.00023059123965510532,
+        "compared_variables": 42,
+        "samples_compared": 503580
+      },
+      "common_channels": 42,
+      "rumoca_only_channels": 47,
+      "omc_only_channels": [
+        "der(load.w)",
+        "der(speed.flange.phi)",
+        "previous(PI.x)"
+      ],
+      "overlap": [
+        0.0,
+        4.0
+      ]
+    }
+  ],
+  "guards": {
+    "build-before": {
+      "exitCode": 0,
+      "elapsedMs": 554667.528287,
+      "peakResidentPlusSwapKiB": 2937976,
+      "peakCacheBytes": 2028171264,
+      "minimumAvailableKiB": 46548412,
+      "minimumScratchFreeBytes": 81392164864,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    },
+    "simulate-before": {
+      "exitCode": 0,
+      "elapsedMs": 39034.505552,
+      "peakResidentPlusSwapKiB": 1574040,
+      "peakCacheBytes": 294055936,
+      "minimumAvailableKiB": 49515988,
+      "minimumScratchFreeBytes": 80765177856,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    },
+    "simulate-8a-attempt2": {
+      "exitCode": 0,
+      "elapsedMs": 52197.231392,
+      "peakResidentPlusSwapKiB": 1534056,
+      "peakCacheBytes": 177418240,
+      "minimumAvailableKiB": 51003816,
+      "minimumScratchFreeBytes": 81525731328,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    },
+    "unit-before": {
+      "exitCode": 101,
+      "elapsedMs": 59620.098035999996,
+      "peakResidentPlusSwapKiB": 1202700,
+      "peakCacheBytes": 2289750016,
+      "minimumAvailableKiB": 51914580,
+      "minimumScratchFreeBytes": 80069840896,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    },
+    "after": {
+      "exitCode": 0,
+      "elapsedMs": 287398.21372099995,
+      "peakResidentPlusSwapKiB": 2872916,
+      "peakCacheBytes": 2359767040,
+      "minimumAvailableKiB": 50462676,
+      "minimumScratchFreeBytes": 78895992832,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    },
+    "compare": {
+      "exitCode": 0,
+      "elapsedMs": 10831.547492,
+      "peakResidentPlusSwapKiB": 380104,
+      "peakCacheBytes": 2352779264,
+      "minimumAvailableKiB": 55758352,
+      "minimumScratchFreeBytes": 78646751232,
+      "memoryLimitObservation": null,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "scratchFreeFloorMiB": 8192
+    }
+  },
+  "omc_reference_source": "8a0853cafe290844a5ded691e721c97de9137bab",
+  "omc_version": "a96aa1a-cmake",
+  "omc_settings": {
+    "method": "dassl",
+    "tolerance": 1e-06,
+    "number_of_intervals": 500,
+    "start_time": 0,
+    "stop_time": 4
+  },
+  "comparison_owner": "Unchanged rumoca-msl-tools plot-compare --reuse-traces; CSV adapter only, no new numerical oracle",
+  "comparison_limitations": [
+    "No strict-high or cohort verdict",
+    "CLI and OMC have different event grids; unchanged canonical comparator handles them",
+    "Three OMC-only channels per model remain unmatched; exact names recorded",
+    "CSV adapter carries no variable metadata/certification profile"
+  ],
+  "infra_only_attempts": [
+    "simulate-8a: missing copied binary, no model executed; corrected distinct simulate-8a-attempt2",
+    "First structural ELF-copy relative path failed; exact target ELF copied before AFTER mutation"
+  ],
+  "auxiliary_inspection": "8a --inspect structure also refuses all4; auxiliary preparation route differs from actual simulation and is not the old-simulation verdict",
+  "files": {
+    "8a-models.json": {
+      "bytes": 3843,
+      "sha256": "e1bdeb3f77581a9afbfacfef6ef6690dc98e13b8a4dadf33674466ba8e2c2b4f"
+    },
+    "after.guardian.json": {
+      "bytes": 15139,
+      "sha256": "d9c2593716f6e432cd627e11a88db62c84f9cf95779da830e26fd8dd8f5d53e8"
+    },
+    "source-after.json": {
+      "bytes": 1434406,
+      "sha256": "b1933be3e8d430005232043a158a841ce29e2e91df477b63b791e000e56351b9"
+    },
+    "before-AbsoluteClocks.stderr": {
+      "bytes": 11910,
+      "sha256": "0502c80c1903be5f7e14725ddf5c5659f9d34378d41bdc8fcd3aec33e55b65d3"
+    },
+    "after-SubClocked.stdout": {
+      "bytes": 102,
+      "sha256": "0df0a380cafa1a5c59d5daea2cdc3be504893f04695b224d78ef35f8105e1d69"
+    },
+    "after-AbsoluteClocks.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "cache-idle-before.json": {
+      "bytes": 391,
+      "sha256": "81259595db293569df7118e217833a75ca85e9e62e4a6b19333eff1059fa04c7"
+    },
+    "after-SuperSampled.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "8a-SubClocked.stdout": {
+      "bytes": 686,
+      "sha256": "05f725b35692c0c2f767ddf073d78f2cfce6965c65217325dc4c08559f85e7ff"
+    },
+    "rumoca-msl-tools-reference": {
+      "bytes": 62186592,
+      "sha256": "b129a686bc6df0dcc653aa0ff1ece95ba97fffb958d816adf49f3e5f529cc1d0"
+    },
+    "8a-sim-AbsoluteClocks.stdout": {
+      "bytes": 107,
+      "sha256": "f21a5ed1684e8f8320a408858106462f03987b81f17cd536726ff8ed7eee1b67"
+    },
+    "simulate-8a-attempt2.log": {
+      "bytes": 3771,
+      "sha256": "d049cc50b186fc7382fb9ec87b01c1aeae4a7b2d48dda10e86b84c4a0f8c9ba5"
+    },
+    "build-before.log": {
+      "bytes": 22921,
+      "sha256": "1c70f6848e7275aa0251c1066c28a31eeb1d75534a684f77c5fbade6445af6d7"
+    },
+    "before-SubClocked.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "before-Continuous.stderr": {
+      "bytes": 11906,
+      "sha256": "e6a41ce191da5216c62595b47abbbbd8bf74bda23d3aabb98a06c3038034f675"
+    },
+    "probe-8a.log": {
+      "bytes": 3377,
+      "sha256": "4517e224925b700f727af6b8d2e117141b5f63ab4907aee97e790f23e7d07e9a"
+    },
+    "source-after-before.json": {
+      "bytes": 76,
+      "sha256": "1a50d6b1e06091c9fb54a61d8a0c7be268813236bb03f80cd44c2ba73b15676b"
+    },
+    "8a-Continuous.stdout": {
+      "bytes": 686,
+      "sha256": "0a61617e967c0144896296fb088fdc3fdadc7eb53074f2b50e9124ac7734065f"
+    },
+    "after-AbsoluteClocks.stderr": {
+      "bytes": 11880,
+      "sha256": "c1af08c9841cf923d227b308bb2a15d4dd772c08692fb4ddcc9f7368e6f60c1e"
+    },
+    "structural-unit-before": {
+      "bytes": 13387272,
+      "sha256": "f5d48ff5365c8eb87ecb6aeaa55e83b5ab9599d49478766910de3f64c0ab32f4"
+    },
+    "after-SuperSampled.stdout": {
+      "bytes": 104,
+      "sha256": "21eecbe372b1572acec5f0c67e15bb81a6ee89930529d6049ce07bc1ad7897ae"
+    },
+    "after-build-info.txt": {
+      "bytes": 57,
+      "sha256": "cab312effc898d7d9db5809fb63165d7294237df1b851c080bd5f2b61c4d3684"
+    },
+    "compare-Continuous.html": {
+      "bytes": 598402,
+      "sha256": "1c539b6e94810a8be497950907bcdb9b60aeb78ae70c8437531aaeccd23fa3d1"
+    },
+    "8a-sim-SuperSampled.stderr": {
+      "bytes": 11878,
+      "sha256": "56b3e47757ee300041577b3a5d070b307f8f11424f4686d60d0b8bf103c7ef3f"
+    },
+    "simulate-8a.log": {
+      "bytes": 1213,
+      "sha256": "24d2a2e8695e87507390730f0975ab1b872c8d925bb7a3859e21404ea03afc70"
+    },
+    "simulate-8a.guardian.json": {
+      "bytes": 1457,
+      "sha256": "d731125539b8885c175f6f2fd13d6d7d965d62cb7351f79ad5bf9479507ada75"
+    },
+    "build-before.guardian.json": {
+      "bytes": 117447,
+      "sha256": "72597b965e217576560fd3fc0301ea66f80d434281cef6c89d05aa87801f2e1e"
+    },
+    "comparison-inputs.json": {
+      "bytes": 31496,
+      "sha256": "5fde661bcf141eae0454a4ab4ac2ae8ebceae991bca8a7a1e167cc7573f10f0a"
+    },
+    "8a-sim-AbsoluteClocks.stderr": {
+      "bytes": 11880,
+      "sha256": "c1af08c9841cf923d227b308bb2a15d4dd772c08692fb4ddcc9f7368e6f60c1e"
+    },
+    "unit-before.log": {
+      "bytes": 2554,
+      "sha256": "1d033e633c445bb06645309aa3b9d6f5a0ecc4e04d80a767b8893a206e23a437"
+    },
+    "probe-8a.guardian.json": {
+      "bytes": 2231,
+      "sha256": "46a65750a41a0b30834827983de579c2701510cba9810b70f153f4c78016d295"
+    },
+    "rumoca-8a-sim": {
+      "bytes": 101665960,
+      "sha256": "6bab159379f1966e0e44266f7fbdd960efa8df75fdea666d49cb0f662a39aa58"
+    },
+    "8a-sim-SubClocked.stderr": {
+      "bytes": 11876,
+      "sha256": "0621f2a5d5d1265da6775e70b1a4c6026697a0ffcb737dd74cdc6715193186c8"
+    },
+    "after-Continuous.stderr": {
+      "bytes": 11875,
+      "sha256": "40fc52c43af7178bdda49251a3dcaba242d2b1fbc313d7aee978e5c8e971d932"
+    },
+    "after-SubClocked.stderr": {
+      "bytes": 11876,
+      "sha256": "0621f2a5d5d1265da6775e70b1a4c6026697a0ffcb737dd74cdc6715193186c8"
+    },
+    "after-SuperSampled.stderr": {
+      "bytes": 11878,
+      "sha256": "56b3e47757ee300041577b3a5d070b307f8f11424f4686d60d0b8bf103c7ef3f"
+    },
+    "compare.guardian.json": {
+      "bytes": 3126,
+      "sha256": "25026fe57cd018b5e5dfa874944176db7621dc0e94c04730268348e044ea4b1c"
+    },
+    "simulate-before.guardian.json": {
+      "bytes": 2275,
+      "sha256": "2a46488de3eab9f77b27082b834e66caf3b0d959f118a15bbb8153a3759baddb"
+    },
+    "8a-AbsoluteClocks.stdout": {
+      "bytes": 690,
+      "sha256": "5606faf20d0ea1c440ad33bfee43982d2700f1c908f9732bcfbaf2c21752e7fc"
+    },
+    "after-Continuous.stdout": {
+      "bytes": 102,
+      "sha256": "f476d4b46ddc1fad3dbf8f9bb52e5a04b40ca8c6c7962410186b09be682bcb43"
+    },
+    "omc-SuperSampled-trace.json": {
+      "bytes": 5522160,
+      "sha256": "186bab720a12c922b0ee9195de0bd8c9337df9d2cf1b5b8211c36db26cd2243b"
+    },
+    "8a-SuperSampled.stderr": {
+      "bytes": 11796,
+      "sha256": "8bbe63ab30d48643b0c26ea9ddbd512f34e141077e1a47c78182b26bf2a59ec0"
+    },
+    "before-SuperSampled.stderr": {
+      "bytes": 11908,
+      "sha256": "513d616854ca4a9fc8455e23e00027ba20a958ef7cafc13df23b3fdd1fdfa40a"
+    },
+    "8a-SubClocked.stderr": {
+      "bytes": 11796,
+      "sha256": "8bbe63ab30d48643b0c26ea9ddbd512f34e141077e1a47c78182b26bf2a59ec0"
+    },
+    "compare-SuperSampled.html": {
+      "bytes": 2986047,
+      "sha256": "54c751c26d8832cdffc1b465307f4c74cae8be01cbacf79d71267d8e9a17d823"
+    },
+    "8a-sim-models.json": {
+      "bytes": 4237,
+      "sha256": "32825cdacb7f5dc385b04b6c253c9c0a4429c34aa81c18fccb9fd9561bb4b0c2"
+    },
+    "8a-sim-Continuous.csv": {
+      "bytes": 554168,
+      "sha256": "b7e2364489b2321c3cde9a7c5a0ad1fb96f196fcc27f71c21f534f23056e42e7"
+    },
+    "8a-Continuous.stderr": {
+      "bytes": 11796,
+      "sha256": "e6220ed69417c330c68a12397056711d30e2c3996061726a938c7a3788b58921"
+    },
+    "8a-AbsoluteClocks.stderr": {
+      "bytes": 11796,
+      "sha256": "8bbe63ab30d48643b0c26ea9ddbd512f34e141077e1a47c78182b26bf2a59ec0"
+    },
+    "omc-AbsoluteClocks-trace.json": {
+      "bytes": 5498175,
+      "sha256": "f73b2605c1003a55408e43062267c7299e100fb66aff21716216bbd8581b9515"
+    },
+    "8a-sim-SubClocked.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "rumoca-8a": {
+      "bytes": 101665960,
+      "sha256": "6bab159379f1966e0e44266f7fbdd960efa8df75fdea666d49cb0f662a39aa58"
+    },
+    "8a-sim-SuperSampled.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "before-SubClocked.stderr": {
+      "bytes": 11906,
+      "sha256": "a25ae9b1ff2552321ae0fde4784473155607ce0ccfef2481712f229ba6205fc2"
+    },
+    "after-SubClocked.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "after-SubClocked-trace.json": {
+      "bytes": 5580244,
+      "sha256": "d5af3b012ee582e029c578b4b135588e7bd71e9dd238e5e9a3eeeb934e9e2d21"
+    },
+    "compare.log": {
+      "bytes": 34395,
+      "sha256": "bae2c3639e2f12c3b7a4008d6a6241f68f929309a66d7ac3a8e656f7c10073e0"
+    },
+    "after.log": {
+      "bytes": 11273,
+      "sha256": "9f7fc6554b4624f9188686704869d6062330758d619c8d12a4183dacbbec2310"
+    },
+    "compare-AbsoluteClocks.html": {
+      "bytes": 2983659,
+      "sha256": "30317e1332ef38cc2a24499fc872b16e09c443cd661e3b08e1ba4f69db79f3c0"
+    },
+    "8a-sim-AbsoluteClocks.csv": {
+      "bytes": 5005420,
+      "sha256": "a75b5b6cae935d5aeca17fefbdabc698e62573415d1fb7c87f8d4f439f69d621"
+    },
+    "8a-sim-SubClocked.stdout": {
+      "bytes": 103,
+      "sha256": "b180b05d8338457908aba62b6fc18ec71ef39c8edb697442d630dd1f80e789b4"
+    },
+    "omc-Continuous-trace.json": {
+      "bytes": 315643,
+      "sha256": "608917f995b3073d0c0cf32f85d4d0bf45ad8be5d91fb5ef84c7cfa4e72cbcba"
+    },
+    "after-AbsoluteClocks.stdout": {
+      "bytes": 106,
+      "sha256": "88040bd448d532bb9dcca2698e6a9d5c75055d822d989292c9e1fd94184d88d3"
+    },
+    "source-before.json": {
+      "bytes": 1434144,
+      "sha256": "3f51d97c368f902cc69e1eb1eea7865238b1fc1013f4ec43760c142cbfc74047"
+    },
+    "after-models.json": {
+      "bytes": 4225,
+      "sha256": "b92ab4f0753efb89bf9dc06406ebe5290c31c302a4fec8270b8ab0da36e995c6"
+    },
+    "simulate-before.log": {
+      "bytes": 3766,
+      "sha256": "c502b88250770a35995989cd9d6d44776812f6fb58ab14d55d61a57f003d0995"
+    },
+    "after-Continuous-trace.json": {
+      "bytes": 622734,
+      "sha256": "d3c647415158c95d829e1c097b1f1638fb42f6bee34008d18063ebd222559c0c"
+    },
+    "8a-sim-Continuous.stdout": {
+      "bytes": 103,
+      "sha256": "794c91d3d62a91144247724f5751674c3fe2ca9b722917e81752264fe3088116"
+    },
+    "compare-SubClocked.html": {
+      "bytes": 2986041,
+      "sha256": "b5247f50e1c6bb5fc1c334a9139f47c0a05c6b40b4ebbe38902c0b8a928a86fc"
+    },
+    "before-SuperSampled.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "after-Continuous.csv": {
+      "bytes": 554168,
+      "sha256": "b7e2364489b2321c3cde9a7c5a0ad1fb96f196fcc27f71c21f534f23056e42e7"
+    },
+    "before-models.json": {
+      "bytes": 4232,
+      "sha256": "14d9d4a15d204c62f00eece254f1e33876bdad8e6f7847ac6119165da4f01bc0"
+    },
+    "simulate-8a-attempt2.guardian.json": {
+      "bytes": 2270,
+      "sha256": "5386e6ff415cf24500cccd62f4e3a1a727f474613a4ea08530076d1ac68c1151"
+    },
+    "after-SuperSampled-trace.json": {
+      "bytes": 5580246,
+      "sha256": "73b69ade9d682d6bf71514d926b47f42507364693b55c93fc48a3866cde6cf2b"
+    },
+    "structural-unit-after": {
+      "bytes": 13384816,
+      "sha256": "8cc4c041347b29d01ecebb4f0a15cc419e976b47dc9af1e391aa3ad94d346c67"
+    },
+    "rumoca-before": {
+      "bytes": 124115168,
+      "sha256": "d572cb9292e78ad22ea1b28aff3c7c896f0d02215461a888e7933e4af231b0ea"
+    },
+    "unit-before.guardian.json": {
+      "bytes": 6103,
+      "sha256": "0b2b2253ae951e9c51d4f124ea0229034bb72ec4d00fc53ef991428ec60d221e"
+    },
+    "before-AbsoluteClocks.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "8a-sim-SuperSampled.stdout": {
+      "bytes": 105,
+      "sha256": "80c62037137d56bd16af388b013289b4d3575a86ada40fe5f194d3ce9c9ef29c"
+    },
+    "8a-SuperSampled.stdout": {
+      "bytes": 688,
+      "sha256": "100137102c010ba9db5bd2720ad71e4cb45e1fcdf813a807ede3a7c2192d6c5b"
+    },
+    "omc-SubClocked-trace.json": {
+      "bytes": 5522158,
+      "sha256": "ece07ffdc332e234db2c50a248835400922bec22acb7f98730417b240bfc4cc8"
+    },
+    "after-AbsoluteClocks-trace.json": {
+      "bytes": 5580248,
+      "sha256": "55dc023af2d8ee461c71487c60b5642d8022a5681cc33eaf31d6a7a874940b5d"
+    },
+    "before-Continuous.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rumoca-after": {
+      "bytes": 124116144,
+      "sha256": "acf6d9b87c805b968db6342273f1884433c9484907773ef2b067e8b328749cc8"
+    },
+    "8a-sim-Continuous.stderr": {
+      "bytes": 11875,
+      "sha256": "40fc52c43af7178bdda49251a3dcaba242d2b1fbc313d7aee978e5c8e971d932"
+    }
+  }
+}

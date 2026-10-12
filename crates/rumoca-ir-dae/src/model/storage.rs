@@ -36,8 +36,13 @@ impl DeclaredEntry for ConditionEntry {
 }
 
 impl Storage {
-    pub(super) fn freeze(self) -> FrozenStorage {
+    pub(super) fn freeze(
+        self,
+        model_conditionals: Box<[model_conditionals::ClosedModelConditional]>,
+    ) -> FrozenStorage {
         FrozenStorage {
+            model_conditionals,
+            model_arms: self.model_arms.into_boxed_slice(),
             predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
             flat_type_ids: self.flat_type_ids.into_boxed_slice(),
@@ -254,6 +259,17 @@ impl Storage {
         expression: ExprId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        self.expect_discharged_model_arm(expression, at)?;
+        self.expect_closed_coordinates(expression, at)
+    }
+
+    /// Closed coordinates may additionally belong to a separately checked
+    /// model activation owner. This helper does not discharge that owner.
+    pub(crate) fn expect_closed_coordinates(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         match self.expr_binder_domain(expression, at)? {
             None => {}
             Some(found_domain) => Err(DaeConstructionError::InvalidBinderScope {
@@ -262,6 +278,14 @@ impl Storage {
                 span: at.span(),
             })?,
         }
+        self.expect_closed_function_scope(expression, at)
+    }
+
+    fn expect_closed_function_scope(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         match self.expr_function_scope(expression, at)? {
             None => Ok(()),
             Some(found_function) => Err(DaeConstructionError::InvalidFunctionScope {
@@ -273,6 +297,16 @@ impl Storage {
     }
 
     pub(crate) fn expect_domain_expression(
+        &self,
+        expression: ExprId<'_>,
+        domain: DomainId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        self.expect_discharged_model_arm(expression, at)?;
+        self.expect_domain_coordinates(expression, domain, at)
+    }
+
+    pub(crate) fn expect_domain_coordinates(
         &self,
         expression: ExprId<'_>,
         domain: DomainId<'_>,
@@ -538,7 +572,10 @@ impl Storage {
         relation: ExprId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        self.expect_closed_expression(relation, at)?;
+        self.expect_relation_model_arm(relation, at)?;
+        for root in self.model_expression_roots(relation.index()) {
+            self.expect_closed_coordinates(ExprId::from_raw(root), at)?;
+        }
         self.expect_relation_node(relation, at)
     }
 
@@ -548,7 +585,12 @@ impl Storage {
         domain: DomainId<'_>,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        self.expect_domain_expression(relation, domain, at)?;
+        self.expect_relation_model_arm(relation, at)?;
+        for root in self.model_expression_roots(relation.index()) {
+            let root = ExprId::from_raw(root);
+            self.expect_domain_coordinates(root, domain, at)?;
+            self.expect_closed_function_scope(root, at)?;
+        }
         self.expect_relation_node(relation, at)
     }
 
@@ -711,7 +753,33 @@ impl Storage {
             + self.discrete_real_equations.len()
     }
 
-    pub(super) fn finish_construction(&self) -> Result<(), DaeConstructionError> {
+    pub(super) fn finish_construction(
+        &self,
+    ) -> Result<Box<[model_conditionals::ClosedModelConditional]>, DaeConstructionError> {
+        let active_owner = self
+            .active_model_arm
+            .or_else(|| self.active_model_ancestors.iter().copied().min())
+            .map(|arm| self.model_arms[arm as usize].owner)
+            .or(self.closing_model_conditional);
+        let active_provenance = active_owner
+            .map(|owner| self.model_conditionals[owner as usize].provenance)
+            .or(self.owned_quotient_surface);
+        if let Some(provenance) = active_provenance {
+            return Err(DaeConstructionError::InvalidModelActivationScope {
+                span: provenance.span(),
+            });
+        }
+        let model_conditionals = self
+            .model_conditionals
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                entry
+                    .closed
+                    .clone()
+                    .ok_or_else(|| incomplete("model conditional", index, entry.provenance))
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
         if self.unfilled_variables != 0 {
             return Err(self.incomplete_arena("variable", &self.variables));
         }
@@ -755,7 +823,7 @@ impl Storage {
                 span: declaration.span(),
             });
         }
-        Ok(())
+        Ok(model_conditionals)
     }
 
     fn incomplete_arena<T: DeclaredEntry>(

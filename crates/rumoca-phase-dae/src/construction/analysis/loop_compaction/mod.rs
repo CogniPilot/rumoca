@@ -27,6 +27,7 @@ mod liveness_join_tests;
 #[cfg(test)]
 mod loop_carry_tests;
 mod loop_local_substitution;
+mod prefix_breaks;
 /// The executable preservation theorem for this pass.
 ///
 /// [`preservation_differential_tests`] runs every corpus program twice, once as
@@ -105,7 +106,8 @@ pub(super) fn compact_function_loops(
         })
         .cloned()
         .collect::<HashSet<_>>();
-    let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(statements);
+    let statements = prefix_breaks::truncate_prefix_breaks(statements);
+    let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(&statements);
     let settled = inline_settled_shape_integer_locals(
         &affine_slices,
         static_integers,
@@ -225,6 +227,7 @@ impl ExpressionRewriter for BoundedReductionComprehensions<'_> {
             args: vec![Expression::ArrayComprehension {
                 expr: Box::new(term),
                 indices: vec![rumoca_core::ComprehensionIndex {
+                    binder: index.binder,
                     name: index.name.clone(),
                     range,
                 }],
@@ -280,8 +283,9 @@ fn bounded_reduction_comprehension(
         }),
         span: *range_span,
     };
+    let binder_reference = index.binder.reference(&index.name, span).ok()?;
     let binder = || Expression::VarRef {
-        name: Reference::new(&index.name),
+        name: binder_reference.clone(),
         subscripts: Vec::new(),
         span,
     };
@@ -491,11 +495,7 @@ fn bounded_slice_assignment(
     domain: (&str, Expression, Span),
 ) -> rumoca_core::Statement {
     let (binder_name, fixed_range, span) = domain;
-    let binder = || Expression::VarRef {
-        name: Reference::new(binder_name),
-        subscripts: Vec::new(),
-        span,
-    };
+    let binder = || generated_slice_binder(binder_name, span);
     let after_start = Expression::Binary {
         op: OpBinary::Ge,
         lhs: Box::new(binder()),
@@ -533,6 +533,7 @@ fn bounded_slice_assignment(
         value: Expression::ArrayComprehension {
             expr: Box::new(element),
             indices: vec![rumoca_core::ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: binder_name.to_owned(),
                 range: fixed_range,
             }],
@@ -545,11 +546,15 @@ fn bounded_slice_assignment(
 
 fn binder_subscript(name: &str, span: Span) -> Subscript {
     Subscript::Expr {
-        expr: Box::new(Expression::VarRef {
-            name: Reference::new(name),
-            subscripts: Vec::new(),
-            span,
-        }),
+        expr: Box::new(generated_slice_binder(name, span)),
+        span,
+    }
+}
+
+fn generated_slice_binder(name: &str, span: Span) -> Expression {
+    Expression::VarRef {
+        name: Reference::generated(name),
+        subscripts: Vec::new(),
         span,
     }
 }

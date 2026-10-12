@@ -430,6 +430,7 @@ mod tests {
 
     fn for_index(name: &str) -> ast::ForIndex {
         ast::ForIndex {
+            binder: Some(rumoca_core::IndexBinderProvenance::Generated),
             ident: rumoca_core::Token {
                 text: name.into(),
                 ..Default::default()

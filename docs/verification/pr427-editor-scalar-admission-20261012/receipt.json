@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "evidence_root": "$HOME/scratch/rumoca/pr427-lsp-scalar-admission-20261012",
+  "qualified_source": "daccf4f7f6f5af7576b2e348d2c76100a4d268b4",
+  "qualified_tree": "ee077e653b706bbd3fbac90d91362cb9e8b8f9c9",
+  "base": "f06d50c6ff78ca01d88a61e146f1be5f1239b1fc",
+  "status": "FOCUSED_PASS",
+  "qualification_scope": "LSP scalar-fallback admission and structural test-only seed adapter; not final-tip, whole-workspace or MSL qualification.",
+  "commits": [
+    "27af3d70ef0d8d81f74fca008d75678d2762ad58",
+    "aff77a7ed4f8dda958416c85063103c700b15497",
+    "daccf4f7f6f5af7576b2e348d2c76100a4d268b4"
+  ],
+  "envelope": {
+    "seconds": 600,
+    "rss_plus_swap_mib": 4096,
+    "host_reserve_mib": 16384,
+    "scratch_floor_mib": 8192,
+    "workers": 4,
+    "cpus": "9-12",
+    "guardian_sha256": "b4f7488f1ddc8d94dc596de8793d0df06bb567f8d67d41ca1cb52c8112d4b69f"
+  },
+  "commands": [
+    "cargo test --locked -p rumoca-tool-lsp --lib server::tests::render_target_tests",
+    "cargo test --locked -p rumoca-phase-structural --lib same_tick::tests::event_fact_tests",
+    "cargo clippy --locked -p rumoca-tool-lsp -p rumoca-phase-structural --all-targets --all-features -- -D warnings",
+    "cargo fmt --all -- --check"
+  ],
+  "tests": [
+    {
+      "owner": "rumoca-tool-lsp",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 252,
+      "runtime_seconds": 0.16
+    },
+    {
+      "owner": "rumoca-phase-structural",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 279,
+      "runtime_seconds": 0.0
+    }
+  ],
+  "attempts": [
+    {
+      "path": "evidence/before-27af3d70ef0d8d81f74fca008d75678d2762ad58",
+      "scope": "Fixture setup failure: scalar_fallback=false conflicted with scalar tensor capabilities; intended negative unrun.",
+      "exit_code": 101,
+      "elapsed_ms": 285002.23530199996,
+      "stop": null,
+      "peak_rss_plus_swap_kib": 2822756,
+      "minimum_scratch_free_bytes": 24781266944,
+      "source_identical": true,
+      "artifacts": {
+        "guardian.json": "1c922c28cd40020229f870fc6a9f21b1dc7c4b6c743550e3cdfe5543ff3d40b4",
+        "command.log": "124b0b586e6bb62eba0a362b3e6fdb0ae4dd7d1957707f858caca7b29d3fb119",
+        "source-before.json": "f2808b0d6e2025c63ed4e6785b62681cc168c69748b91206af4028405c6e6fe0",
+        "source-after.json": "f2808b0d6e2025c63ed4e6785b62681cc168c69748b91206af4028405c6e6fe0",
+        "source-identity.txt": "875b12848b6a006f62d1f74985e1de5badd61e2656de924dfe5f9b9803dd4113",
+        "recipe.sha256": "00cf797f0c46f9a51751fed6e246c455ce9cc5840f98abf9fae42fd094c35658"
+      }
+    },
+    {
+      "path": "evidence/before-aff77a7ed4f8dda958416c85063103c700b15497",
+      "scope": "Qualified admission counterexample: Real positive succeeds, runtime Integer conversion wrongly returns ok=true and admitted.txt.",
+      "exit_code": 101,
+      "elapsed_ms": 230739.04970600002,
+      "stop": null,
+      "peak_rss_plus_swap_kib": 2794256,
+      "minimum_scratch_free_bytes": 12195594240,
+      "source_identical": true,
+      "artifacts": {
+        "guardian.json": "f479a27a4f591b19bdec9cfc0f1696e7659f1ad7bdd7f8c3242c66fcb439dd8f",
+        "command.log": "177d950197f1c3d6704b04db78400d08633fd90df783bf696e86dd5824788b2c",
+        "source-before.json": "113de9bed33b23d6e4458f78c921763e6dcfab161e4cdfb688de9f55797abb50",
+        "source-after.json": "113de9bed33b23d6e4458f78c921763e6dcfab161e4cdfb688de9f55797abb50",
+        "source-identity.txt": "39441d6e09a6f5028b6531492ab5523a9820475dd9ff825c84ae44f274c2b46d",
+        "recipe.sha256": "00cf797f0c46f9a51751fed6e246c455ce9cc5840f98abf9fae42fd094c35658"
+      }
+    },
+    {
+      "path": "evidence/after-daccf4f7f6f5af7576b2e348d2c76100a4d268b4",
+      "scope": "Scratch-floor stop before tests/lint; incomplete qualification, retained unchanged.",
+      "exit_code": 137,
+      "elapsed_ms": 18486.981399,
+      "stop": "scratch-free-floor",
+      "peak_rss_plus_swap_kib": 1583904,
+      "minimum_scratch_free_bytes": 8454410240,
+      "source_identical": true,
+      "artifacts": {
+        "guardian.json": "df84f683e6940b766a7fea7ce6236ae1dae07e79eb9da0a291263ab1d9f98541",
+        "command.log": "459447b5b51022f67ad48864e1c0049cfecc51a8974f88945e8f206a1166905e",
+        "source-before.json": "b193d81afc19e7080afb8ad31665139e3c854bf1960da1c16b503eed33e3c819",
+        "source-after.json": "b193d81afc19e7080afb8ad31665139e3c854bf1960da1c16b503eed33e3c819",
+        "source-identity.txt": "e25a1aaf27dcb7c0136fe58aa5ccb57d9c84e652962c233bedf534e113cee282",
+        "recipe.sha256": "00cf797f0c46f9a51751fed6e246c455ce9cc5840f98abf9fae42fd094c35658"
+      }
+    },
+    {
+      "path": "evidence/after-capacity-restored-daccf4f7f6f5af7576b2e348d2c76100a4d268b4",
+      "scope": "Complete focused AFTER: LSP3, structural11, both-package Clippy, workspace fmt pass.",
+      "exit_code": 0,
+      "elapsed_ms": 297024.927597,
+      "stop": null,
+      "peak_rss_plus_swap_kib": 2701624,
+      "minimum_scratch_free_bytes": 24723693568,
+      "source_identical": true,
+      "artifacts": {
+        "guardian.json": "0cf4edce589d4def3af59ee899599fddba895f62dcb87b8a978b1f03f9297539",
+        "command.log": "63255266eab6be16ac75d290189a4556eff0ed2a27806fd36194614eb118f68b",
+        "source-before.json": "b193d81afc19e7080afb8ad31665139e3c854bf1960da1c16b503eed33e3c819",
+        "source-after.json": "b193d81afc19e7080afb8ad31665139e3c854bf1960da1c16b503eed33e3c819",
+        "source-identity.txt": "e25a1aaf27dcb7c0136fe58aa5ccb57d9c84e652962c233bedf534e113cee282",
+        "recipe.sha256": "00192bb6ce702783880f6622a80f90ee6a7d5043687782a701331f893f25ed5d"
+      }
+    }
+  ],
+  "sealed_executables": [
+    {
+      "path": "evidence/sealed/rumoca_tool_lsp-5568669862e1e3b3",
+      "sha256": "820beab716ec008fffa39048e9927d66c39d50591661869e4bc904a9f33c0d26",
+      "bytes": 103021352
+    },
+    {
+      "path": "evidence/sealed/rumoca_phase_structural-943224d4a6686f40",
+      "sha256": "0af32c583984ac63423fcc674e341c99655e522f08f43342abdc9fe5325debd3",
+      "bytes": 13384816
+    }
+  ],
+  "census": {
+    "scope": "all repository Rust source files",
+    "definition_and_test_call_only": true,
+    "artifacts": {
+      "issue-event-read-facts-callers.txt": "f202ddadfa8e3b610f1905627c2b8893582bc7f1b966ebfdbbf2b467bd5fd31e",
+      "issue-event-read-facts-callers-after.txt": "9f2babab7a21258f4ea00c1998f5c2d6e09a7ea51d92160c27c8f47e63a39610",
+      "read-seeds-raw-callers.txt": "7aaea58dd4826e8edeb21e0848a93306c1203168a301d280405fa590cd9bbd3d"
+    }
+  },
+  "cache_return": {
+    "path": "evidence/cache-idle-final.json",
+    "sha256": "f0e10ab8c1a47bbe76e3d85e3511701f7564b69dde81014df8a9ed559a449118",
+    "visible_references": 0,
+    "lease_files": 0,
+    "denied_reads": 1670,
+    "denied_pids": 414,
+    "scope": "exact HOME alias and realpath only; denied reads unobserved; no global idle claim"
+  }
+}

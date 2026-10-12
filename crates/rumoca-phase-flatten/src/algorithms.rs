@@ -63,6 +63,7 @@ fn qualify_statement(
             // MLS §10.4.1: evaluate/index ranges left-to-right with lexical scope.
             for idx in indices {
                 qualified_indices.push(ast::ForIndex {
+                    binder: idx.binder,
                     ident: idx.ident.clone(),
                     range: qualify_expr(&idx.range, prefix, imports, &active_locals),
                 });
@@ -476,6 +477,7 @@ mod tests {
         // for i in 1:n loop x := x + i; end for;
         let stmt = ast::Statement::For {
             indices: vec![ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: Token {
                     text: std::sync::Arc::from("i"),
                     ..Default::default()
@@ -541,6 +543,7 @@ mod tests {
         // for i in 1:n loop y := t[i]; end for;
         let stmt = ast::Statement::For {
             indices: vec![ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: Token {
                     text: Arc::from("i"),
                     ..Default::default()
@@ -655,6 +658,7 @@ mod tests {
         // for i in 1:10 loop y := y + i; end for;
         let ast_stmts = vec![ast::Statement::For {
             indices: vec![ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: Token {
                     text: std::sync::Arc::from("i"),
                     ..Default::default()
@@ -810,6 +814,7 @@ mod tests {
                 .expect("fixture target");
         let mut algorithm = algorithm_of(vec![rumoca_core::Statement::For {
             indices: vec![rumoca_core::ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "i".to_string(),
                 range: rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),

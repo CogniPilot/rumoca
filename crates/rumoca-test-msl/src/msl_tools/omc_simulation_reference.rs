@@ -4,9 +4,9 @@ use super::common::{
     BatchElapsedStats, BatchTimingDetail, MSL_VERSION, MslPaths, OMC_SERVICES_DIR,
     OMC_THREADS_DEFAULT, SIM_STOP_TIME_DEFAULT, TRACE_EXCLUSIONS_FILE_REL,
     choose_effective_batch_size, get_git_commit, get_omc_version, git_worktree_is_dirty,
-    has_fatal_omc_error, load_target_models, load_trace_exclusions_file, msl_load_lines,
-    omc_services_package, round3, summarize_batch_timings, summarize_omc_error,
-    typed_exception_reasons, unix_timestamp_seconds, write_pretty_json,
+    load_target_models, load_trace_exclusions_file, msl_load_lines, omc_services_package, round3,
+    summarize_batch_timings, summarize_omc_error, typed_exception_reasons, unix_timestamp_seconds,
+    write_pretty_json,
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -29,6 +29,7 @@ mod omc_session;
 mod output;
 mod retry_policy;
 mod runtime;
+mod simulation_result;
 mod speed_report;
 mod state_selection;
 #[cfg(test)]
@@ -42,6 +43,7 @@ use runtime::{
     attach_rumoca_runtime, ensure_target_placeholders, load_rumoca_runtime,
     path_for_rumoca_results, select_omc_simulation_models,
 };
+use simulation_result::build_session_model_result;
 use state_selection::StateSelectionMetric;
 
 #[derive(Debug, Clone, ClapArgs)]
@@ -114,6 +116,9 @@ pub struct Args {
 struct SimModelResult {
     status: String,
     error: Option<String>,
+    /// Complete same-request diagnostics, including explicitly recovered optimizer errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    omc_diagnostics: Option<String>,
     sim_system_seconds: Option<f64>,
     total_system_seconds: Option<f64>,
     omc_wall_seconds: Option<f64>,
@@ -644,7 +649,7 @@ fn omc_reference_cache_key(omc_version: &str, msl_dir: &Path) -> String {
     // References made with host-dependent or generic services, or with
     // incomplete-success acceptance, cannot be reused under the producer
     // contract: the pinned OpenModelica services and a required result file.
-    hasher.update(b"omc-pinned-tool-services/required-result-file/v2\0");
+    hasher.update(b"omc-pinned-tool-services/checked-simulation-recovery/v3\0");
     hasher.update(OMC_SERVICES_DIR.as_bytes());
     hasher.update(b"\0");
     hasher.update(MSL_VERSION.as_bytes());
@@ -945,57 +950,6 @@ fn run_one_session_worker(ctx: SessionWorkerCtx<'_>) {
 /// Recycle an omc session after this many models to bound its memory growth.
 const SESSION_RECYCLE_MODELS: usize = 25;
 
-/// Build a [`SimModelResult`] from a session simulate outcome, mirroring the
-/// success/error classification of the former script-parsing path.
-fn build_session_model_result(outcome: &OmcSimOutcome, elapsed: f64) -> SimModelResult {
-    let mut error_text = outcome.error.clone();
-    let messages = outcome.messages.trim();
-    let messages_indicate_failure = messages.contains("Simulation Failed")
-        || messages.contains("Simulation execution failed")
-        || messages.contains("does not exist");
-    let missing_result = outcome
-        .result_file
-        .as_deref()
-        .is_none_or(|path| path.trim().is_empty());
-    // Successful simulations can report warning-level assertion violations.
-    // Preserve runtime diagnostics when the outcome identifies a failure.
-    if missing_result || messages_indicate_failure || has_fatal_omc_error(&error_text) {
-        if !error_text.trim().is_empty() {
-            error_text.push('\n');
-        }
-        error_text.push_str(messages);
-    }
-    if missing_result {
-        error_text.push_str("\nOMC simulation returned no result file");
-    }
-    let assertion_failures = omc_assertion_failure_lines(&error_text);
-    let fatal = missing_result
-        || has_fatal_omc_error(&error_text)
-        || !assertion_failures.is_empty()
-        || messages_indicate_failure;
-    let status = if fatal { "error" } else { "success" };
-    let error = if fatal {
-        Some(summarize_omc_error_with_assertions(
-            &error_text,
-            &assertion_failures,
-        ))
-    } else {
-        None
-    };
-    SimModelResult {
-        status: status.to_string(),
-        error,
-        sim_system_seconds: outcome.timing.simulation,
-        total_system_seconds: outcome.timing.total,
-        omc_phases: Some(outcome.timing.clone()),
-        omc_settings: Some(outcome.settings.clone()),
-        omc_timing_context: None,
-        omc_wall_seconds: Some(round3(elapsed)),
-        result_file: outcome.result_file.clone(),
-        ..empty_omc_result()
-    }
-}
-
 fn session_timeout_result(elapsed: f64, sim_timeout: Duration) -> SimModelResult {
     SimModelResult {
         status: "timeout".to_string(),
@@ -1022,6 +976,7 @@ fn empty_omc_result() -> SimModelResult {
     SimModelResult {
         status: String::new(),
         error: None,
+        omc_diagnostics: None,
         sim_system_seconds: None,
         total_system_seconds: None,
         omc_wall_seconds: None,
@@ -1416,6 +1371,9 @@ fn hydrate_omc_fields_from_cached(current: &mut SimModelResult, cached: &SimMode
     }
     if current.total_system_seconds.is_none() {
         current.total_system_seconds = cached.total_system_seconds;
+    }
+    if current.omc_diagnostics.is_none() {
+        current.omc_diagnostics = cached.omc_diagnostics.clone();
     }
     if current.omc_phases.is_none() {
         current.omc_phases = cached.omc_phases.clone();

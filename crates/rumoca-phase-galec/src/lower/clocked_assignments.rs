@@ -27,6 +27,7 @@ pub(super) struct ClockedAssignments {
     pub(super) schedules_shared_calls: bool,
 }
 
+mod periodic_real;
 mod shared_calls;
 
 use shared_calls::{
@@ -268,7 +269,14 @@ fn plan_clocked_discrete_reals<'refs, 'dae>(
         let span = equation.provenance().span();
         whole_discrete_real_definition(definition, span)?;
         let target = dae::VariableId::from(definition.target());
-        if require_discrete_real_clock_owner(&clock_owners, target, span)? != clock.index() {
+        if !periodic_real::runs_in_domain(
+            view,
+            &clock_owners,
+            target,
+            equation.activation(),
+            clock,
+            span,
+        )? {
             continue;
         }
         let classified = by_id.get(&target.index()).ok_or_else(|| {
@@ -774,21 +782,6 @@ fn coupled_discrete_real_equation(span: Span) -> GalecTargetError {
     )
 }
 
-fn require_discrete_real_clock_owner<'dae>(
-    owners: &HashMap<u32, u32>,
-    target: dae::VariableId<'dae>,
-    span: Span,
-) -> Result<u32, GalecTargetError> {
-    match owners.get(&target.index()).copied() {
-        Some(clock) => Ok(clock),
-        None => Err(unsupported(
-            "clock-domain",
-            "discrete Real definition has no explicit clock owner".to_owned(),
-            span,
-        )),
-    }
-}
-
 fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
     clock_owners_of_kind(view, dae::ClockedVariableKind::DiscreteReal)
 }
@@ -1251,8 +1244,11 @@ fn require_periodic_trigger<'dae>(
     expected: dae::ClockId<'dae>,
     span: Span,
 ) -> Result<(), GalecTargetError> {
-    let mut seen = HashSet::new();
-    if condition_requires_clock(view, root, expected, &mut seen) {
+    if view
+        .condition(root)
+        .expect("checked periodic trigger")
+        .requires_clock(expected)
+    {
         return Ok(());
     }
     Err(unsupported(
@@ -1260,44 +1256,6 @@ fn require_periodic_trigger<'dae>(
         "a conditional assignment is not owned by the admitted periodic DoStep clock".to_owned(),
         span,
     ))
-}
-
-fn condition_requires_clock<'dae>(
-    view: dae::DaeView<'dae>,
-    condition: dae::ConditionId<'dae>,
-    expected: dae::ClockId<'dae>,
-    seen: &mut HashSet<u32>,
-) -> bool {
-    if !seen.insert(condition.index()) {
-        return false;
-    }
-    match view
-        .condition(condition)
-        .expect("checked condition identity resolves")
-        .operation()
-    {
-        dae::ConditionOperation::Clock(found) => found == expected,
-        dae::ConditionOperation::And(lhs, rhs) => {
-            let mut lhs_seen = seen.clone();
-            let mut rhs_seen = seen.clone();
-            condition_requires_clock(view, lhs, expected, &mut lhs_seen)
-                || condition_requires_clock(view, rhs, expected, &mut rhs_seen)
-        }
-        // Every arm of a disjunction — and every element of a vector activation
-        // — must be owned by the clock, or the activation can reach the
-        // assignment off-tick.
-        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-            let mut lhs_seen = seen.clone();
-            let mut rhs_seen = seen.clone();
-            condition_requires_clock(view, lhs, expected, &mut lhs_seen)
-                && condition_requires_clock(view, rhs, expected, &mut rhs_seen)
-        }
-        dae::ConditionOperation::Initial
-        | dae::ConditionOperation::Always
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_) => false,
-    }
 }
 
 #[cfg(test)]

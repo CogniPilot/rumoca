@@ -335,6 +335,7 @@ pub trait ExpressionRewriter {
         indices
             .iter()
             .map(|index| ComprehensionIndex {
+                binder: index.binder,
                 name: index.name.clone(),
                 range: self.rewrite_expression(&index.range),
             })
@@ -698,6 +699,7 @@ pub trait FallibleExpressionRewriter {
             .iter()
             .map(|index| {
                 Ok(ComprehensionIndex {
+                    binder: index.binder,
                     name: index.name.clone(),
                     range: self.rewrite_expression(&index.range)?,
                 })

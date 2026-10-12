@@ -1,0 +1,441 @@
+{
+  "qualified_source": "a6c70a34e71dc95b4d1dd0b5b3fce16b18d04853",
+  "ordered_source_commits": [
+    "95a18674d2093465710927d1291596779bf9ade3",
+    "9cfd2c4767ef3afabcec3059880eca647f68bdce",
+    "263ad6fa4ed8299c1bef0adb8b469b905c6eac03",
+    "a2522e814446fa088506ba2eacaf13952a7fab02",
+    "a6c70a34e71dc95b4d1dd0b5b3fce16b18d04853"
+  ],
+  "baseline_source": "301b4d5668382bf73826ef55f5f3d4a4ca7494b0",
+  "baseline_excerpt": {
+    "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-contract-census-excerpt.log",
+    "sha256": "1b9c6d78290aba3e55200d8f775e7eba7957d5a581f3896bb52b05f48a433f75",
+    "bytes": 4074
+  },
+  "baseline_excerpt_scope": "Two original expect_err assertions receive successful simulations; numerical traces intentionally truncated, not an OMC comparison.",
+  "attempts": [
+    {
+      "name": "before-95a18674d",
+      "source": "95a18674d2093465710927d1291596779bf9ade3",
+      "exit_code": 137,
+      "source_manifest_equal": true,
+      "tracked_entries": 4151,
+      "rust_summaries": [],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-periodic-current-cycles-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca-phase-structural --lib same_tick::tests::event_fact_tests::scheduled_current_cycles_require_a_history_boundary_at_coincident_ticks -- --exact --nocapture\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/source-before.json",
+          "sha256": "5e5971c7aeb96519f316da128310f330c95c7a955f56de1fb90846b02545cd51",
+          "bytes": 761359
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/source-after.json",
+          "sha256": "5e5971c7aeb96519f316da128310f330c95c7a955f56de1fb90846b02545cd51",
+          "bytes": 761359
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/focused.sh",
+          "sha256": "23042e5573e8b895104047c97124c8d0c70e9a50715b8c890a06197d62ad558c",
+          "bytes": 667
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/command.log",
+          "sha256": "908af320e9aca517abbd038ef2af7922d2a49eb8a43f2e550e1ef3e3db0a19e7",
+          "bytes": 564
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/guardian.json",
+          "sha256": "2c881517935876689829878c74f23bbb84c47a685bdbc502af93f3818b1bfdfe",
+          "bytes": 2614
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/before-95a18674d/exit-code.txt",
+          "sha256": "e3b9c2844b5a5c2677b3a2279db2ec8487491dd9a23d6b22fac153391b3bb63c",
+          "bytes": 4
+        }
+      },
+      "guardian": {
+        "exitCode": 137,
+        "signal": "SIGKILL",
+        "elapsedMs": 29314.728376000003,
+        "peakResidentPlusSwapKiB": 1207308,
+        "peakCacheBytes": 6911463424,
+        "minimumAvailableKiB": 16529680,
+        "minimumScratchFreeBytes": 76800430080,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      }
+    },
+    {
+      "name": "after-9cfd2c476-owner",
+      "source": "9cfd2c4767ef3afabcec3059880eca647f68bdce",
+      "exit_code": 101,
+      "source_manifest_equal": true,
+      "tracked_entries": 4152,
+      "rust_summaries": [
+        "test result: FAILED. 287 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s"
+      ],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-scheduled-cycle-owner-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca-phase-structural --lib -- --nocapture\ncargo test --locked --offline --jobs 4 -p rumoca-phase-solve --lib lower::events::clock_partition::event_order_tests:: -- --nocapture\ncargo clippy --locked --offline --jobs 4 -p rumoca-phase-structural -p rumoca-phase-solve --all-targets --all-features -- -D warnings\ncargo fmt --all -- --check\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/source-before.json",
+          "sha256": "cd8c751b2282295ee64211f5cfecf46c9015e7e6aa6869f6473a39a101093b3a",
+          "bytes": 761564
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/source-after.json",
+          "sha256": "cd8c751b2282295ee64211f5cfecf46c9015e7e6aa6869f6473a39a101093b3a",
+          "bytes": 761564
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/focused.sh",
+          "sha256": "b369e30098c1b736f784744ef56bb8b82c1ad87e8f9e173f73104fb26bb82120",
+          "bytes": 844
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/command.log",
+          "sha256": "f0a36508db03fdcc43e5ec5139db100c59496fecb27d07e3c9a7a557ebc9bd04",
+          "bytes": 31309
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/guardian.json",
+          "sha256": "a7ac42df511d452ef344a46d040d4d775b8a93b6959d3832e78cf75205b77b26",
+          "bytes": 2743
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-9cfd2c476-owner/exit-code.txt",
+          "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+          "bytes": 4
+        }
+      },
+      "guardian": {
+        "exitCode": 101,
+        "signal": null,
+        "elapsedMs": 43006.499209999994,
+        "peakResidentPlusSwapKiB": 1205164,
+        "peakCacheBytes": 6921445376,
+        "minimumAvailableKiB": 56426616,
+        "minimumScratchFreeBytes": 76138881024,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      }
+    },
+    {
+      "name": "after-263ad6fa4-owner",
+      "source": "263ad6fa4ed8299c1bef0adb8b469b905c6eac03",
+      "exit_code": 101,
+      "source_manifest_equal": true,
+      "tracked_entries": 4152,
+      "rust_summaries": [
+        "test result: ok. 288 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s",
+        "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s"
+      ],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-scheduled-cycle-owner-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca-phase-structural --lib -- --nocapture\ncargo test --locked --offline --jobs 4 -p rumoca-phase-solve --lib lower::events::clock_partition::event_order_tests:: -- --nocapture\ncargo clippy --locked --offline --jobs 4 -p rumoca-phase-structural -p rumoca-phase-solve --all-targets --all-features -- -D warnings\ncargo fmt --all -- --check\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/source-before.json",
+          "sha256": "1735ef537dbf3f788afe18e51b1acf5565de5853a6c6db4d6b439ccdcb843f81",
+          "bytes": 761564
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/source-after.json",
+          "sha256": "1735ef537dbf3f788afe18e51b1acf5565de5853a6c6db4d6b439ccdcb843f81",
+          "bytes": 761564
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/focused.sh",
+          "sha256": "b369e30098c1b736f784744ef56bb8b82c1ad87e8f9e173f73104fb26bb82120",
+          "bytes": 844
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/command.log",
+          "sha256": "de087e9ed02be9e8ef4b527c4e269556656e66dc4d03c3510306cca38cf57c69",
+          "bytes": 33082
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/guardian.json",
+          "sha256": "0fd02913ae6045818f075f24c19f65304108828fd40192bee1a772e06eefaa46",
+          "bytes": 4748
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-263ad6fa4-owner/exit-code.txt",
+          "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+          "bytes": 4
+        }
+      },
+      "guardian": {
+        "exitCode": 101,
+        "signal": null,
+        "elapsedMs": 108128.294264,
+        "peakResidentPlusSwapKiB": 2438260,
+        "peakCacheBytes": 6934253568,
+        "minimumAvailableKiB": 54168956,
+        "minimumScratchFreeBytes": 75401838592,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      }
+    },
+    {
+      "name": "after-a6c70a34e-owner",
+      "source": "a6c70a34e71dc95b4d1dd0b5b3fce16b18d04853",
+      "exit_code": 1,
+      "source_manifest_equal": true,
+      "tracked_entries": 4152,
+      "rust_summaries": [
+        "test result: ok. 288 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s",
+        "test result: FAILED. 201 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s"
+      ],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-scheduled-cycle-owner-20261012\"\ngate_code=0\ncargo test --locked --offline --jobs 4 -p rumoca-phase-structural --lib -- --nocapture || gate_code=1\ncargo test --locked --offline --jobs 4 -p rumoca-phase-solve --lib -- --nocapture || gate_code=1\ncargo clippy --locked --offline --jobs 4 -p rumoca-phase-structural -p rumoca-phase-solve --all-targets --all-features -- -D warnings || gate_code=1\ncargo fmt --all -- --check || gate_code=1\nexit \"$gate_code\"\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/source-before.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/source-after.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/focused.sh",
+          "sha256": "8414e907a156f2a224b06ff5546783f169da3e500106ea505cc98e4461df0470",
+          "bytes": 882
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/command.log",
+          "sha256": "4a781aa305092d98f3c8355929c3067f0877d03942736fa3ad65113e0e581cd6",
+          "bytes": 67750
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/guardian.json",
+          "sha256": "06e99530caf7a2f11fa635397efe09e2be2481bc79d79ee8a4f9b2eb7e20333b",
+          "bytes": 7075
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-owner/exit-code.txt",
+          "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "bytes": 2
+        }
+      },
+      "guardian": {
+        "exitCode": 1,
+        "signal": null,
+        "elapsedMs": 153791.5825,
+        "peakResidentPlusSwapKiB": 2433664,
+        "peakCacheBytes": 6930767872,
+        "minimumAvailableKiB": 52297640,
+        "minimumScratchFreeBytes": 74901630976,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      },
+      "sealed_test_executables": [
+        {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/sealed/after-a6c70a34e-owner-rumoca_phase_solve-d1b0e17634dccc49",
+          "sha256": "fdcf1fe0adb6eff7b8c8c810e3f79a32ed3ba8d66c39cf181e36ef46a74fcc38",
+          "bytes": 26564944
+        },
+        {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/sealed/after-a6c70a34e-owner-rumoca_phase_structural-e18db3af05df5fe3",
+          "sha256": "1fc0de1428f4be90c5805f156f48f10e0fc2610577bc31497b82c642a9a9e77b",
+          "bytes": 13383984
+        }
+      ]
+    },
+    {
+      "name": "after-a6c70a34e-contracts",
+      "source": "a6c70a34e71dc95b4d1dd0b5b3fce16b18d04853",
+      "exit_code": 0,
+      "source_manifest_equal": true,
+      "tracked_entries": 4152,
+      "rust_summaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s",
+        "test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+      ],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-scheduled-cycle-owner-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca-contracts --test sim_contracts same_tick_cycle_is_rejected_at_construction -- --nocapture\ncargo test --locked --offline --jobs 4 -p rumoca-contracts --test sim_contracts -- --nocapture\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/source-before.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/source-after.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/focused.sh",
+          "sha256": "9924546daf66eb6e6dbb69603426e37ebc3b60c3ef217021897b813499396b8c",
+          "bytes": 696
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/command.log",
+          "sha256": "47973bb3166e43ee4cd62cfab9005339703dad7c806ec27f6095d4db9ab4b4b0",
+          "bytes": 11485
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/guardian.json",
+          "sha256": "7fe26a386ffe6f5d24be17aab1777d9744670beb67b29fe97196cbfd6b490b29",
+          "bytes": 13411
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-contracts/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      },
+      "guardian": {
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 306542.749362,
+        "peakResidentPlusSwapKiB": 2776308,
+        "peakCacheBytes": 6994743296,
+        "minimumAvailableKiB": 51834104,
+        "minimumScratchFreeBytes": 73644052480,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      },
+      "sealed_test_executables": [
+        {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/sealed/after-a6c70a34e-contracts-sim_contracts-ea8b087636c602d9",
+          "sha256": "39934dfa14bc5ce3409781e18de11b746afd5789e7d8cc00ed9cab69990de380",
+          "bytes": 69295520
+        }
+      ]
+    },
+    {
+      "name": "after-a6c70a34e-entry",
+      "source": "a6c70a34e71dc95b4d1dd0b5b3fce16b18d04853",
+      "exit_code": 0,
+      "source_manifest_equal": true,
+      "tracked_entries": 4152,
+      "rust_summaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1465 filtered out; finished in 0.02s"
+      ],
+      "commands": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-periodic-current-cycles-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-scheduled-cycle-owner-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca --test suite_core --features examples-smoke-tests event_iteration_entry:: -- --nocapture\n",
+      "artifacts": {
+        "source-before.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/source-before.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "source-after.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/source-after.json",
+          "sha256": "ee3e57a1cf7140fb4226d2f1a7c86cea5b960ab529553fafc7b0800d6497e64b",
+          "bytes": 761564
+        },
+        "focused.sh": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/focused.sh",
+          "sha256": "280e30b559f986ebd7eb5c37b39d09785b7ba1d75f1550d2bda19bf978bae654",
+          "bytes": 600
+        },
+        "command.log": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/command.log",
+          "sha256": "7e07affd6fa9b6cf14995f3dd511db5febfc4261dede51811c3859829c87c579",
+          "bytes": 6453
+        },
+        "guardian.json": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/guardian.json",
+          "sha256": "f09b44a249be5267e272a509c1ecd42a532ae7d976bc599d180abfb6cce19385",
+          "bytes": 9746
+        },
+        "exit-code.txt": {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/after-a6c70a34e-entry/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+          "bytes": 2
+        }
+      },
+      "guardian": {
+        "exitCode": 0,
+        "signal": null,
+        "elapsedMs": 212011.872759,
+        "peakResidentPlusSwapKiB": 3029536,
+        "peakCacheBytes": 7030472704,
+        "minimumAvailableKiB": 51610488,
+        "minimumScratchFreeBytes": 72823476224,
+        "scratchFreeFloorMiB": 8192,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "secondsLimit": 600
+      },
+      "sealed_test_executables": [
+        {
+          "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/sealed/after-a6c70a34e-entry-suite_core-1a6b012e21783c94",
+          "sha256": "fbca9ec5df091cac7a09604efffa4d9f07622e0d52eaca9320f7ddb31003287d",
+          "bytes": 108775696
+        }
+      ]
+    }
+  ],
+  "scope_notes": [
+    "Original2 and full45 are distinct overlapping executions.",
+    "Full phase-Solve is201 pass/1 inherited derivative-refusal assertion failure; all new C58 ordering4 pass.",
+    "Captured owner recipe retains unit failure while continuing scoped Clippy and fmt; both pass.",
+    "Executable hashes are sealed post-run copies; no unobserved pre-run ELF identity claim.",
+    "Entry2 guardian/exit-code.txt are0; outer login shell subsequently returned127 from /etc/bash_logout unbound variable after source-after seal.",
+    "Absent host python lookup preceded guardian/model execution; corrected to existing pinned tool.",
+    "No combined82, corrected combined fullphase202, OMC parity, canonical quick/full or remote CI green claim."
+  ],
+  "tool_sources": {
+    "guardian-resident-plus-swap-20261012.mjs": {
+      "path_relative_to_home": "scratch/rumoca/workshop427-c-modelica-86c-20261012/guardian-resident-plus-swap-20261012.mjs",
+      "sha256": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c",
+      "bytes": 9296
+    },
+    "source-manifest.py": {
+      "path_relative_to_home": "scratch/rumoca/workshop427-extrema-event-20261012/source-manifest.py",
+      "sha256": "7ce6b94ce0c8d2f361e74363397d6fe31b7952e4a4aafd58e082c83f57c0a9e8",
+      "bytes": 452
+    }
+  },
+  "cache_idle_audit": {
+    "path_relative_to_home": "scratch/rumoca/pr427-periodic-current-cycles-20261012/cache-idle-after.json",
+    "sha256": "58a9cead8f452211ad470ee0e16c7e1e7e09937635f0271a9189594464d31a95",
+    "bytes": 738
+  },
+  "cache_visibility": {
+    "references": 0,
+    "denied_reads": 2289,
+    "visible_native_tasks": [
+      {
+        "pid": "1434909",
+        "argv0": "cargo"
+      },
+      {
+        "pid": "1439800",
+        "argv0": "rustc"
+      },
+      {
+        "pid": "1439824",
+        "argv0": "rustc"
+      },
+      {
+        "pid": "1440770",
+        "argv0": "rustc"
+      },
+      {
+        "pid": "1441305",
+        "argv0": "rustc"
+      }
+    ],
+    "limitation": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+  }
+}

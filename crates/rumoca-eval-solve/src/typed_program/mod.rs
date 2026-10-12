@@ -1,6 +1,6 @@
 mod linear_solve;
 mod native;
-mod number;
+pub(crate) mod number;
 mod payload;
 mod tensor;
 #[cfg(test)]
@@ -159,6 +159,12 @@ pub enum TypedProgramEvalError {
     InvalidIntegerConversion {
         provenance: Span,
     },
+    TensorIndexOutOfBounds {
+        axis: usize,
+        index: i64,
+        extent: u32,
+        provenance: Span,
+    },
     LinearSolve {
         reason: String,
         provenance: Span,
@@ -185,6 +191,7 @@ impl TypedProgramEvalError {
             | Self::InvalidCheckedProgram { provenance, .. }
             | Self::IntegerArithmetic { provenance, .. }
             | Self::InvalidIntegerConversion { provenance }
+            | Self::TensorIndexOutOfBounds { provenance, .. }
             | Self::LinearSolve { provenance, .. }
             | Self::NativeBody { provenance, .. }
             | Self::RecursionDepthExceeded { provenance, .. } => Some(*provenance),
@@ -224,11 +231,42 @@ impl std::fmt::Display for TypedProgramEvalError {
             Self::InvalidIntegerConversion { .. } => {
                 formatter.write_str("Real-to-Integer conversion left the checked target domain")
             }
+            Self::TensorIndexOutOfBounds {
+                axis,
+                index,
+                extent,
+                ..
+            } => write!(
+                formatter,
+                "tensor index {index} is outside axis {axis} with extent {extent}"
+            ),
         }
     }
 }
 
 impl std::error::Error for TypedProgramEvalError {}
+
+impl From<TypedProgramEvalError> for crate::EvalSolveError {
+    fn from(error: TypedProgramEvalError) -> Self {
+        match error {
+            TypedProgramEvalError::TensorIndexOutOfBounds {
+                axis,
+                index,
+                extent,
+                provenance,
+            } => Self::TensorIndexOutOfBounds {
+                axis,
+                index,
+                extent,
+                span: Some(provenance),
+            },
+            error => Self::InvalidRow {
+                message: error.to_string(),
+                span: error.source_span(),
+            },
+        }
+    }
+}
 
 /// Evaluate one compiler-issued pure-call owner with compact typed arguments.
 pub fn eval_pure_call(
@@ -1014,8 +1052,8 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .iter()
             .map(|index| scalar_integer(self.read(*index, provenance)?, provenance))
             .collect::<Result<Vec<_>, _>>()?;
-        let element = select_modelica_element(self.read(aggregate, provenance)?, &coordinates)
-            .ok_or(invalid_error("project aggregate element", provenance))?;
+        let element =
+            select_modelica_element(self.read(aggregate, provenance)?, &coordinates, provenance)?;
         let value = TypedValue::checked(
             self.destination_type(destination, provenance)?.clone(),
             vec![element],
@@ -1037,8 +1075,15 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .map(|index| scalar_integer(self.read(*index, provenance)?, provenance))
             .collect::<Result<Vec<_>, _>>()?;
         let fallback = scalar_element(self.read(out_of_range, provenance)?, provenance)?;
-        let element = select_modelica_element(self.read(aggregate, provenance)?, &coordinates)
-            .unwrap_or(fallback);
+        let element = match select_modelica_element(
+            self.read(aggregate, provenance)?,
+            &coordinates,
+            provenance,
+        ) {
+            Ok(element) => element,
+            Err(TypedProgramEvalError::TensorIndexOutOfBounds { .. }) => fallback,
+            Err(error) => return Err(error),
+        };
         let value = TypedValue::checked(
             self.destination_type(destination, provenance)?.clone(),
             vec![element],
@@ -1329,7 +1374,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
     }
 }
 
-fn element_matches_type(value: SolveValueKind, scalar: SolveScalarType) -> bool {
+pub(crate) fn element_matches_type(value: SolveValueKind, scalar: SolveScalarType) -> bool {
     match (value, scalar) {
         (
             SolveValueKind::Real32(_),
@@ -1395,18 +1440,38 @@ fn row_major_offset(dimensions: &[u32], indices: &[u32]) -> Option<usize> {
         })
 }
 
-fn select_modelica_element(value: &TypedValue, indices: &[i64]) -> Option<SolveValueKind> {
-    let indices = indices
-        .iter()
+fn select_modelica_element(
+    value: &TypedValue,
+    indices: &[i64],
+    provenance: Span,
+) -> Result<SolveValueKind, TypedProgramEvalError> {
+    let dimensions = value.value_type.dimensions();
+    if dimensions.len() != indices.len() {
+        return invalid("project aggregate element", provenance);
+    }
+    let mut offset = 0usize;
+    // MLS §10.5: source indices are one-based Integers within each declared axis.
+    for (axis, (&extent, &index)) in dimensions.iter().zip(indices).enumerate() {
+        if index < 1 || index > i64::from(extent) {
+            return Err(TypedProgramEvalError::TensorIndexOutOfBounds {
+                axis: axis + 1,
+                index,
+                extent,
+                provenance,
+            });
+        }
+        let coordinate = usize::try_from(index - 1)
+            .map_err(|_| invalid_error("project aggregate element", provenance))?;
+        offset = offset
+            .checked_mul(extent as usize)
+            .and_then(|offset| offset.checked_add(coordinate))
+            .ok_or(invalid_error("project aggregate element", provenance))?;
+    }
+    value
+        .elements
+        .get(offset)
         .copied()
-        .map(|index| {
-            index
-                .checked_sub(1)
-                .and_then(|index| u32::try_from(index).ok())
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let offset = row_major_offset(value.value_type.dimensions(), &indices)?;
-    value.elements.get(offset).copied()
+        .ok_or(invalid_error("project aggregate element", provenance))
 }
 
 fn project_slice(

@@ -8,6 +8,9 @@ enum Probe {
     Indexed,
     LargeInteger,
     Tunable,
+    FalseAndTunable,
+    TrueOrTunable,
+    TunableConditional,
 }
 
 fn model(probe: Probe) -> dae::Dae {
@@ -63,13 +66,33 @@ fn model(probe: Probe) -> dae::Dae {
                 Probe::LargeInteger => expressions
                     .at(at)
                     .literal(dae::DaeLiteral::Integer((1_i64 << 53) + 1))?,
-                Probe::Tunable => expressions
+                Probe::Tunable
+                | Probe::FalseAndTunable
+                | Probe::TrueOrTunable
+                | Probe::TunableConditional => expressions
                     .at(at)
                     .coordinate(dae::CoordinateInput::Parameter(parameter))?,
             };
-            expressions
+            let comparison = expressions
                 .at(at)
                 .binary(dae::BinaryOperator::Equal, lhs, zero)?;
+            if matches!(
+                probe,
+                Probe::FalseAndTunable | Probe::TrueOrTunable | Probe::TunableConditional
+            ) {
+                let yes = expressions.at(at).literal(dae::DaeLiteral::Boolean(true))?;
+                let no = expressions
+                    .at(at)
+                    .literal(dae::DaeLiteral::Boolean(false))?;
+                let (condition, selected, fallback) = match probe {
+                    Probe::FalseAndTunable => (no, comparison, no),
+                    Probe::TrueOrTunable => (yes, yes, comparison),
+                    _ => (comparison, yes, no),
+                };
+                expressions
+                    .at(at)
+                    .conditional([(condition, selected)], fallback)?;
+            }
             Ok(())
         })
     })
@@ -94,4 +117,7 @@ fn translation_scalar_guard_is_exact_and_rejects_other_projection_rules() {
     assert_eq!(result(Probe::Indexed), None);
     assert_eq!(result(Probe::LargeInteger), None);
     assert_eq!(result(Probe::Tunable), None);
+    assert_eq!(result(Probe::FalseAndTunable), Some(false));
+    assert_eq!(result(Probe::TrueOrTunable), Some(true));
+    assert_eq!(result(Probe::TunableConditional), None);
 }

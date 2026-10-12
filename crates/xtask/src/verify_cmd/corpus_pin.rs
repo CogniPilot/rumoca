@@ -147,7 +147,6 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
     // unfiltered run still demands both corpora.
     let selected = selected_manifest(&manifest, &args.only)?;
     let roots = resolve_roots(root, &selected, args)?;
-    roots::ensure_usable(&selected, &roots)?;
     let rumoca = resolve_compiler(root, args)?;
     let entries: Vec<&CorpusEntry> = selected.entries.iter().collect();
     // Read from the whole manifest, never the selection: a `--only` run must
@@ -163,7 +162,11 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
     // names a root nothing was read from.
     for corpus in [manifest::Corpus::FlightModels, manifest::Corpus::Msl] {
         if entries.iter().any(|entry| entry.corpus == corpus) {
-            println!("  {}: {}", corpus.label(), roots.root_for(corpus).display());
+            println!(
+                "  {}: {}",
+                corpus.label(),
+                roots.root_for(corpus)?.display()
+            );
         }
     }
     println!("  compiler: {}", rumoca.display());
@@ -177,7 +180,7 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
         &rumoca,
         &artifact_dir,
         Schedule {
-            jobs: jobs(args),
+            jobs: jobs(args)?,
             deadline,
         },
     )?;
@@ -244,10 +247,8 @@ fn selected_manifest(manifest: &CorpusManifest, only: &[String]) -> Result<Corpu
     })
 }
 
-fn jobs(args: &VerifyCorpusPinArgs) -> usize {
-    args.jobs
-        .unwrap_or_else(|| num_cpus::get().saturating_sub(1))
-        .clamp(1, MAX_JOBS)
+fn jobs(args: &VerifyCorpusPinArgs) -> Result<usize> {
+    crate::resource_budget::worker_jobs(args.jobs, MAX_JOBS)
 }
 
 /// Clear and recreate the per-run artifact directory.
@@ -291,14 +292,16 @@ impl Worker<'_> {
     fn drain(&self) {
         while let Some(index) = self.claim() {
             let entry = self.entries[index];
-            let context = RunContext {
-                rumoca: self.rumoca,
-                corpus_root: self.roots.root_for(entry.corpus),
-                artifact_dir: self.artifact_dir,
-                cache_dir: self.cache_dir,
-                deadline: self.deadline,
-            };
-            let outcome = execution::run_entry(entry, &context);
+            let outcome = self.roots.root_for(entry.corpus).and_then(|corpus_root| {
+                let context = RunContext {
+                    rumoca: self.rumoca,
+                    corpus_root,
+                    artifact_dir: self.artifact_dir,
+                    cache_dir: self.cache_dir,
+                    deadline: self.deadline,
+                };
+                execution::run_entry(entry, &context)
+            });
             *self.slots[index].lock().expect("corpus slot mutex") = Some(outcome);
         }
     }
@@ -502,10 +505,9 @@ fn resolve_compiler(root: &Path, args: &VerifyCorpusPinArgs) -> Result<PathBuf> 
         .arg("rumoca")
         .current_dir(root);
     run_status(command)?;
-    let path = root
-        .join("target")
+    let path = super::cargo_target_dir(root)
         .join(RUMOCA_BUILD_PROFILE)
-        .join("rumoca");
+        .join(format!("rumoca{}", std::env::consts::EXE_SUFFIX));
     ensure!(
         path.is_file(),
         "the `{RUMOCA_BUILD_PROFILE}` build did not produce {}",

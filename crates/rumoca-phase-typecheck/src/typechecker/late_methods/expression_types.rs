@@ -107,7 +107,16 @@ impl TypeChecker {
                 .current_integer_iterators
                 .iter()
                 .rev()
-                .any(|name| name.as_str() == comp.parts[0].ident.text.as_ref())
+                .any(|(binder, name)| match binder {
+                    Some(rumoca_core::IndexBinderProvenance::Source(id)) => {
+                        comp.target_def_id() == Some(*id)
+                    }
+                    Some(rumoca_core::IndexBinderProvenance::Generated) => {
+                        comp.target_def_id().is_none()
+                            && name.as_str() == comp.parts[0].ident.text.as_ref()
+                    }
+                    None => false,
+                })
     }
 
     pub(crate) fn infer_function_call_result_type(

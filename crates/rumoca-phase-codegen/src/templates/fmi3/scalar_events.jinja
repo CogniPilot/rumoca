@@ -164,7 +164,8 @@ static bool rmc_clock_active(size_t clock, double t) {
     double period = rmc_clock_period[clock], phase = rmc_clock_phase[clock];
     if (!isfinite(period) || !isfinite(phase) || period <= 0.0 || t + period < phase) return false;
     double ticks = (t - phase) / period;
-    return ticks >= 0.0 && rmc_time_match(ticks, round(ticks));
+    double tick = round(ticks);
+    return tick >= 0.0 && rmc_time_match(ticks, tick);
 }
 /* The answer of a time-event query: no event in the window, the next event, or
    a clock whose ticks the match tolerance cannot tell apart from `current`
@@ -384,6 +385,38 @@ static {{ prefix }}Status rmc_discrete_owners(ModelInstance* m, bool* changed, b
 {%- endif %}
     return {{ prefix }}OK;
 }
+
+{%- if ev.pulse_rows|length > 0 %}
+/* discrete_rows.rs release_condition_pulses: evaluate the issued pulse
+   producers against one snapshot with no clock ticking. Ordinary condition
+   memories, relations and equations retain their settled values. */
+static {{ prefix }}Status rmc_pulse_values(ModelInstance* m, double* values) {
+    (void)m; (void)values;
+{%- for index in ev.pulse_programs %}
+{%- set program = solve.discrete.rhs_plan.programs[index] %}
+    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{%- for op in program.ops %}
+{{ scalar_op(op, "values", prefix ~ "Error") }}
+{%- endfor %}
+    }
+{%- endfor %}
+    return {{ prefix }}OK;
+}
+static {{ prefix }}Status rmc_release_condition_pulses(ModelInstance* m) {
+    double clocks[{{ [ev.time_events.clocks|length, 1]|max }}];
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) clocks[k] = m->p[rmc_clock_activation[k]];
+    rmc_clear_clock_lanes(m);
+    double values[{{ ndisc }}];
+    {{ prefix }}Status status = rmc_pulse_values(m, values);
+    for (size_t k = 0; k != RMC_CLOCKS; ++k) m->p[rmc_clock_activation[k]] = clocks[k];
+    if (status != {{ prefix }}OK) return status;
+{%- for row in ev.pulse_rows %}
+    m->p[{{ ev.discrete_targets[row] }}] = values[{{ row }}];
+{%- endfor %}
+    return {{ prefix }}OK;
+}
+{%- endif %}
 
 {%- if ndisc > 0 and (ev.observation_rows | select | list | length) > 0 %}
 /* discrete_rows.rs refresh_observation_discrete_rows: a public observation
@@ -689,6 +722,9 @@ static {{ prefix }}Status rmc_event_iterate_passes(ModelInstance* m, bool canoni
 {%- else %}
     if (check_assertions(m) != {{ prefix }}OK || report_warnings(m) != {{ prefix }}OK) return {{ prefix }}Error;
 {%- endif %}
+{%- if ev.pulse_rows|length > 0 %}
+    if (rmc_release_condition_pulses(m) != {{ prefix }}OK) return {{ prefix }}Error;
+{%- endif %}
     /* pre_params.rs commit_pre_params_after_event_at. */
     bool history = false;
     double committed_p[P_LEN];
@@ -741,6 +777,7 @@ static {{ prefix }}Status rmc_event_iterate(ModelInstance* m, bool canonicalize)
 static {{ prefix }}Status rmc_events_initialize(ModelInstance* m) {
     bool changed = false;
     m->rmc_override_count = 0;
+    rmc_clear_clock_lanes(m);
     if (settle_values(m) != {{ prefix }}OK || rmc_relation_refresh(m, false, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
     for (size_t k = 0; k < RMC_PRE_LANES; ++k) m->p[rmc_pre_dest[k]] = rmc_pre_source(m->y, m->p, k);
     if (rmc_discrete_owners(m, &changed, true) != {{ prefix }}OK) return {{ prefix }}Error;

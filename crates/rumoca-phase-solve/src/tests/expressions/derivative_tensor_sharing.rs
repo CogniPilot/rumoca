@@ -36,6 +36,7 @@ fn derivative_tensor_model(domain_dependent: bool) -> dae::Dae {
                 domains.structured(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".into(),
                             lower: 1,

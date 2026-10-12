@@ -1,0 +1,101 @@
+{
+  "scope": "Lifecycle-settled FMI 3 ME C API counterexample at historical 5e6; frozen production AFTER still pending. Earlier unsettlement probes are excluded from semantic evidence.",
+  "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+  "compiler": {
+    "path": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/rumoca-cli-5e6f",
+    "sha256": "2152593d350e5b2fafc43095b0d03d7662e3ebfe3f883240cfc5bf7ea1d6c53b"
+  },
+  "original_source": {
+    "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/input/IntegerPrecision.mo",
+    "sha256": "79b5b6e7fd2ebf2d79098603f0a2217bd2cc0bc2514b3554d0e7749212212c2c"
+  },
+  "division_source": {
+    "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/input-div/IntegerPrecision.mo",
+    "sha256": "9bbe71daf1481a8618fa26d9cf40819972834b9db42ecf80a7fd08403dbd6636"
+  },
+  "division_change": "Only mod( replaced by div(; input n=2.",
+  "observed": {
+    "settled_internal_value": 1286742750677285,
+    "get_int32_status": 0,
+    "get_int32_value": -2147483648,
+    "expected_contract": "Out-of-domain public Int32 must return FMI Error and preserve all request outputs."
+  },
+  "protocol": [
+    "Instantiate Model Exchange",
+    "EnterInitializationMode",
+    "SetInt32 n=2",
+    "ExitInitializationMode",
+    "UpdateDiscreteStates with need=false and terminate=false",
+    "EnterContinuousTimeMode",
+    "observe settled storage",
+    "GetInt32 y"
+  ],
+  "raw": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/div-fmi3-correct-lifecycle.log",
+      "sha256": "1fda4d120dbf1fb7f5beb4ae7f5cab361bb83618bc071d59c250058a6240eb14"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/div-fmi3-correct-lifecycle.guardian.json",
+      "sha256": "0350d9dfe0afbbe86f9a74d121de304aa1916554afd013694028964aa4099b3a"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/div-fmi3-correct-lifecycle-harness.c",
+      "sha256": "b510c2b7a641f8867acabce5dad6b694d0c3ba45577c909676bd27e617494bc7"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/run-div-fmi3-correct-lifecycle.sh",
+      "sha256": "28581197e1982e34637fd65e99b95175e2023327376227b22b9df31595d0e0b8"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/div-fmi3-correct-lifecycle-harness",
+      "sha256": "cd4a7345995972fb9707b4bfaab211e1d4bbdd940043b67d1b02f1402035e02e"
+    }
+  ],
+  "resource": {
+    "elapsedMs": 3235.721482,
+    "peakRssKiB": 68068,
+    "peakSwapKiB": 0,
+    "peakResidentPlusSwapKiB": 68068,
+    "exitCode": 4,
+    "signal": null,
+    "resourceStop": null
+  },
+  "setup_and_observation_attempts": [
+    {
+      "receipt": {
+        "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/mod-fmi3.guardian.json",
+        "sha256": "4e937469a9419e12e78ff74dc6e45bbff018b0fac6f8091964a43d0eb5631e6e"
+      },
+      "classification": "Missing generated shell script after a Python formatting error; no model execution."
+    },
+    {
+      "receipt": {
+        "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/export-fmi2-and-div.guardian.json",
+        "sha256": "9a7d01ba96514d450e74bb06eeb5f17fd8f1a8e9968cf243747949e7d33363a3"
+      },
+      "classification": "Duplicate model names in one source folder caused EM001 before export."
+    },
+    {
+      "receipt": {
+        "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/div-fmi3.guardian.json",
+        "sha256": "29522eb4472a28c93f80cb4334c76d1b1e6446b5d96db2ccda87e92253977bad"
+      },
+      "classification": "ME event initialization was not settled; zero output cannot establish quotient publication failure."
+    },
+    {
+      "receipt": {
+        "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/draft-publication.guardian.json",
+        "sha256": "5b4ace17b62f0df4d4ccd7854f6202f28812493d8b483c4911af247ac274ea58"
+      },
+      "classification": "Custom target registry mismatch; local diagnostic only, not production qualification."
+    },
+    {
+      "receipt": {
+        "path": "$HOME/scratch/rumoca/pr427-issue411-fmi-c-5e6f-20261012/draft-publication-local.guardian.json",
+        "sha256": "1682fce731c462123c14c469862b97f18ff5faa158eb5ba529e0de1ec675a6a5"
+      },
+      "classification": "Explicit local template diagnostic with helper macro inlined verbatim; UBSan passed but is not an embedded-registry proof."
+    }
+  ]
+}

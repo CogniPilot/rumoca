@@ -145,7 +145,8 @@ fn empty_reduction_retains_rectangular_and_descending_domains() {
     assert_eq!(
         checked_reductions(&result),
         [
-            (ScalarType::Integer, vec![0, 3], 0.0),
+            // MLS §10.4.1.2: {i+j for i..., j...} nests j outside i.
+            (ScalarType::Integer, vec![3, 0], 0.0),
             (ScalarType::Real, vec![0], 1.0)
         ]
     );

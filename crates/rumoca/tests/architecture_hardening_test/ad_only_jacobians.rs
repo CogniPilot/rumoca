@@ -20,6 +20,30 @@ use crate::architecture_hardening_support::workspace_root;
 /// each may name one. Paths are relative to the workspace root.
 const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
     (
+        "crates/rumoca-eval-solve/src/typed_program/tests/aggregate_logarithms.rs",
+        "aggregate logarithm JVPs against independent primal differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/broadcast_power.rs",
+        "broadcast power JVPs against analytic values and independent primal differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/reduction_extrema.rs",
+        "unique-extremum JVPs against analytic values and independent primal differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests.rs",
+        "ranked typed-program JVPs against independent primal differences",
+    ),
+    (
+        "crates/rumoca-opt/src/tests.rs",
+        "neural parameter gradients against independent objective differences",
+    ),
+    (
+        "crates/rumoca-phase-solve/src/lower/typed_functions/tests/division.rs",
+        "broadcast division JVPs against independent primal differences",
+    ),
+    (
         "crates/rumoca/tests/suite_core/jacobian_admission_battery.rs",
         "admission battery: every admitted AD pair against central differences",
     ),

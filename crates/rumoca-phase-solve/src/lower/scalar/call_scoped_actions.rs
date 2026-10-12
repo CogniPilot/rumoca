@@ -6,11 +6,19 @@ use crate::lower::call_scoped_actions::{
     CollectedCallAssertionRoot,
 };
 
+#[derive(Clone, Copy)]
+pub(super) enum TypedCallInvocation<'dae> {
+    Call {
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionId<'dae>,
+    },
+    Expression(dae::ExprId<'dae>),
+}
+
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(super) fn schedule_typed_pure_call_assertions(
         &self,
-        call: dae::ExprId<'dae>,
-        function: dae::FunctionId<'dae>,
+        invocation: TypedCallInvocation<'dae>,
         registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
         call_span: Span,
     ) -> Result<(), LowerError> {
@@ -18,22 +26,36 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(());
         }
         let action_program =
-            self.typed_pure_call_assertion_program(call, function, registered, call_span, false)?;
+            self.typed_pure_call_assertion_program(invocation, registered, call_span, false)?;
         let action_program = std::sync::Arc::<[solve::LinearOp]>::from(action_program);
         let root_program = (registered
             .callee
             .assertions
             .iter()
             .any(|assertion| self.event_root_owned(assertion.level)))
-        .then(|| {
-            self.typed_pure_call_assertion_program(call, function, registered, call_span, true)
-        })
+        .then(|| self.typed_pure_call_assertion_program(invocation, registered, call_span, true))
         .transpose()?
         .map(std::sync::Arc::<[solve::LinearOp]>::from);
         for (output_offset, assertion) in registered.callee.assertions.iter().enumerate() {
+            let projection = match invocation {
+                TypedCallInvocation::Call { .. } => CallAssertionProjection {
+                    owner: registered.callee.owner,
+                    output_offset,
+                },
+                TypedCallInvocation::Expression(expression) => self
+                    .layout
+                    .pure_calls
+                    .borrow()
+                    .exact_assertion_projection(expression, output_offset)
+                    .ok_or_else(|| {
+                        LowerError::contract(
+                            "typed expression lost its issued assertion projection",
+                            call_span,
+                        )
+                    })?,
+            };
             let message_owner = AssertionMessageOwner::Specialized {
-                call,
-                function,
+                invocation,
                 registered,
                 assertion,
             };
@@ -55,10 +77,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 message,
                 assertion.level,
                 assertion.provenance,
-                Some(CallAssertionProjection {
-                    owner: registered.callee.owner,
-                    output_offset,
-                }),
+                Some(projection),
             )?;
         }
         Ok(())
@@ -66,28 +85,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn typed_pure_call_assertion_program(
         &self,
-        call: dae::ExprId<'dae>,
-        function: dae::FunctionId<'dae>,
+        invocation: TypedCallInvocation<'dae>,
         registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
         span: Span,
         root: bool,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let arguments = match self.node(call).operation() {
-            dae::ExpressionOperation::Call { arguments, .. } => arguments,
-            _ => {
-                return Err(LowerError::contract(
-                    "typed pure-call assertion owner is not a call expression",
-                    span,
-                ));
-            }
-        };
         let mut compiler = self.fork_for_call_action();
         compiler.call_action_compilation = true;
-        let (start, replayed) = compiler
-            .emit_typed_pure_call(call, function, arguments, span)?
-            .ok_or_else(|| {
-                LowerError::contract("typed pure-call assertion lost its issued invocation", span)
-            })?;
+        let (start, replayed) = compiler.emit_assertion_invocation(invocation, span)?;
         if replayed.callee.owner != registered.callee.owner || replayed.site != registered.site {
             return Err(LowerError::contract(
                 "typed pure-call assertion changed its issued owner",
@@ -126,6 +131,36 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(compiler.ops)
     }
 
+    fn emit_assertion_invocation(
+        &mut self,
+        invocation: TypedCallInvocation<'dae>,
+        span: Span,
+    ) -> Result<
+        (
+            solve::Reg,
+            crate::lower::typed_functions::RegisteredCall<'dae>,
+        ),
+        LowerError,
+    > {
+        let emitted = match invocation {
+            TypedCallInvocation::Call { call, function } => {
+                let dae::ExpressionOperation::Call { arguments, .. } = self.node(call).operation()
+                else {
+                    return Err(LowerError::contract(
+                        "typed assertion invocation is not a call",
+                        span,
+                    ));
+                };
+                self.emit_typed_pure_call(call, function, arguments, span)?
+            }
+            TypedCallInvocation::Expression(expression) => {
+                self.emit_exact_integer_expression(expression)?
+            }
+        };
+        emitted
+            .ok_or_else(|| LowerError::contract("typed assertion lost its issued invocation", span))
+    }
+
     pub(in crate::lower) fn deferred_call_action_program<'recipe>(
         view: dae::DaeView<'dae>,
         layout: &'layout LoweredLayout<'dae>,
@@ -151,6 +186,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .collect();
             compiler.active_clock = Some(recipe.active_clock);
             compiler.sampled_source = recipe.sampled_source;
+            compiler.same_tick_definitions = recipe.current_definitions.clone();
+            compiler.project_current_definitions = recipe.current_definitions.is_some();
             compiler.active_parameters = recipe.active_parameters.clone();
             compiler.active_call_assertions = recipe.active_call_assertions.clone();
             compiler.context_id = 0;
@@ -429,6 +466,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .active_clock
                 .expect("deferred call assertions are clock-owned"),
             sampled_source: self.sampled_source,
+            current_definitions: self
+                .project_current_definitions
+                .then(|| self.same_tick_definitions.clone())
+                .flatten(),
             active_parameters: self.active_parameters.clone(),
             active_call_assertions: self.active_call_assertions.clone(),
         }
@@ -669,6 +710,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.function_arguments = self.function_arguments.clone();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();
@@ -823,12 +865,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.node(value).provenance().span(),
             )),
             AssertionMessageOwner::Specialized {
-                call,
-                function,
+                invocation,
                 registered,
                 assertion,
             } => self.specialized_message_value_program(
-                *call, *function, registered, assertion, value, call_span,
+                *invocation,
+                registered,
+                assertion,
+                value,
+                call_span,
             ),
         }
     }
@@ -840,32 +885,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// frame evaluated them.
     fn specialized_message_value_program(
         &self,
-        call: dae::ExprId<'dae>,
-        function: dae::FunctionId<'dae>,
+        invocation: TypedCallInvocation<'dae>,
         registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
         assertion: &crate::lower::typed_functions::RegisteredAssertion<'dae>,
         value: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let arguments = match self.node(call).operation() {
-            dae::ExpressionOperation::Call { arguments, .. } => arguments,
-            _ => {
-                return Err(LowerError::contract(
-                    "typed pure-call assertion message owner is not a call expression",
-                    span,
-                ));
-            }
-        };
         let mut compiler = self.fork_for_call_action();
         compiler.call_action_compilation = true;
-        let (start, replayed) = compiler
-            .emit_typed_pure_call(call, function, arguments, span)?
-            .ok_or_else(|| {
-                LowerError::contract(
-                    "typed pure-call assertion message lost its issued invocation",
-                    span,
-                )
-            })?;
+        let (start, replayed) = compiler.emit_assertion_invocation(invocation, span)?;
         if replayed.callee.owner != registered.callee.owner || replayed.site != registered.site {
             return Err(LowerError::contract(
                 "typed pure-call assertion message changed its issued owner",
@@ -940,8 +968,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 enum AssertionMessageOwner<'call, 'dae> {
     /// The shared pure-call owner named by SOLVE-C25.
     Specialized {
-        call: dae::ExprId<'dae>,
-        function: dae::FunctionId<'dae>,
+        invocation: TypedCallInvocation<'dae>,
         registered: &'call crate::lower::typed_functions::RegisteredCall<'dae>,
         assertion: &'call crate::lower::typed_functions::RegisteredAssertion<'dae>,
     },

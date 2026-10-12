@@ -114,6 +114,7 @@ pub trait StatementRewriter: ExpressionRewriter {
         let mut rewritten = Vec::with_capacity(indices.len());
         for index in indices {
             rewritten.push(ForIndex {
+                binder: index.binder,
                 ident: index.ident.clone(),
                 range: self.rewrite_expression(&index.range),
             });
@@ -280,6 +281,7 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
         let mut rewritten = Vec::with_capacity(indices.len());
         for index in indices {
             rewritten.push(ForIndex {
+                binder: index.binder,
                 ident: index.ident.clone(),
                 range: self.rewrite_expression(&index.range)?,
             });
@@ -343,6 +345,7 @@ mod tests {
 
     fn indices() -> Vec<ForIndex> {
         vec![ForIndex {
+            binder: crate::IndexBinderProvenance::Generated,
             ident: "i".to_string(),
             range: Expression::Empty { span: Span::DUMMY },
         }]

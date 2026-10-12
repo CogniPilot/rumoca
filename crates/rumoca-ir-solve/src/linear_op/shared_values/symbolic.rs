@@ -153,10 +153,17 @@ pub(super) fn value_shape(op: &LinearOp) -> Option<ValueShape> {
 /// every solver slot, committed after each program.
 #[derive(Default)]
 pub(super) struct SymbolicSlots {
+    recursive_conditionals: bool,
     slots: HashMap<usize, Term>,
 }
 
 impl SymbolicSlots {
+    pub(super) fn value_proof() -> Self {
+        Self {
+            recursive_conditionals: true,
+            ..Self::default()
+        }
+    }
     pub(super) fn slot(&self, terms: &mut Terms, index: usize) -> Term {
         match self.slots.get(&index) {
             Some(&term) => term,
@@ -175,7 +182,7 @@ impl SymbolicSlots {
     }
 
     /// The output terms of one program, committed to its targets; `None` when
-    /// an operation cannot be evaluated or the output count is not the
+    /// an operation cannot be represented by a term or the output count is not the
     /// target count.
     pub(super) fn run(
         &mut self,
@@ -183,11 +190,19 @@ impl SymbolicSlots {
         ops: &[LinearOp],
         targets: &[usize],
     ) -> Option<Vec<Term>> {
-        let mut registers = RegisterTable::<Term>::default();
-        let mut outputs = Vec::with_capacity(targets.len());
-        for op in ops {
-            self.step(terms, op, &mut registers, &mut outputs)?;
-        }
+        self.run_transformed(terms, ops, targets, |_, op| {
+            Some(std::borrow::Cow::Borrowed(op))
+        })
+    }
+
+    pub(super) fn run_transformed<'a>(
+        &mut self,
+        terms: &mut Terms,
+        ops: &'a [LinearOp],
+        targets: &[usize],
+        mut transform: impl FnMut(usize, &'a LinearOp) -> Option<std::borrow::Cow<'a, LinearOp>>,
+    ) -> Option<Vec<Term>> {
+        let outputs = self.derive_region_terms(terms, ops, &[], &mut transform)?;
         if outputs.len() != targets.len() {
             return None;
         }
@@ -195,14 +210,85 @@ impl SymbolicSlots {
         Some(outputs)
     }
 
+    // Derive structural identities; arithmetic remains an opaque operation key.
+    fn derive_region_terms<'a>(
+        &self,
+        terms: &mut Terms,
+        ops: &'a [LinearOp],
+        captures: &[Term],
+        transform: &mut impl FnMut(usize, &'a LinearOp) -> Option<std::borrow::Cow<'a, LinearOp>>,
+    ) -> Option<Vec<Term>> {
+        let mut registers = RegisterTable::<Term>::default();
+        let mut outputs = Vec::new();
+        for (index, op) in ops.iter().enumerate() {
+            let projected = transform(index, op)?;
+            self.step(terms, &projected, captures, &mut registers, &mut outputs)?;
+        }
+        Some(outputs)
+    }
+
+    fn derive_conditional_terms(
+        &self,
+        terms: &mut Terms,
+        program: &FunctionConditionalProgram,
+        capture_start: Reg,
+        registers: &RegisterTable<Term>,
+    ) -> Option<Vec<Term>> {
+        let captures = (0..program.capture_count)
+            .map(|offset| registers.get(capture_start.checked_add(Reg::try_from(offset).ok()?)?))
+            .collect::<Option<Vec<_>>>()?;
+        let derive_terms = |terms: &mut Terms, ops: &[LinearOp]| {
+            self.derive_region_terms(terms, ops, &captures, &mut |_, op| {
+                Some(std::borrow::Cow::Borrowed(op))
+            })
+        };
+        let mut result = derive_terms(terms, &program.fallback)?;
+        if result.len() != program.result_count {
+            return None;
+        }
+        for arm in program.arms.iter().rev() {
+            let condition = derive_terms(terms, &arm.condition)?;
+            let selected = derive_terms(terms, &arm.result)?;
+            if condition.len() != 1 || selected.len() != result.len() {
+                return None;
+            }
+            for (found, selected) in result.iter_mut().zip(selected) {
+                let key = terms.key(
+                    "checked conditional result",
+                    vec![(0, condition[0]), (1, selected), (2, *found)],
+                    1,
+                );
+                *found = Terms::value(&key, 0)?;
+            }
+        }
+        Some(result)
+    }
+
     fn step(
         &self,
         terms: &mut Terms,
         op: &LinearOp,
+        captures: &[Term],
         registers: &mut RegisterTable<Term>,
         outputs: &mut Vec<Term>,
     ) -> Option<()> {
         match *op {
+            LinearOp::LoadFunctionConditionalCapture { dst, index }
+                if self.recursive_conditionals =>
+            {
+                registers.insert(dst, *captures.get(index)?);
+            }
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                ref program,
+            } if self.recursive_conditionals && program.owner.is_none() => {
+                let result =
+                    self.derive_conditional_terms(terms, program, capture_start, registers)?;
+                for (offset, value) in result.into_iter().enumerate() {
+                    registers.insert(dst_start.checked_add(Reg::try_from(offset).ok()?)?, value);
+                }
+            }
             LinearOp::LoadY { dst, index } => {
                 registers.insert(dst, self.slot(terms, index));
             }

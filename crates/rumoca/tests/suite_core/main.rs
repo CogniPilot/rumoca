@@ -26,7 +26,10 @@
 
 mod history_operator_checked;
 mod initial_boolean_parameter;
+mod initialization_parameter_conditionals;
 mod periodic_clock_session;
+mod reported_bug_runtime;
+mod solve_renderer_without_dae;
 
 mod actual_stream_product_events;
 mod additive_torque;
@@ -91,6 +94,8 @@ mod enumeration_ordinal_conversion;
 mod evaluable_parameters;
 mod evaluate_assert_fold;
 mod event_clocks;
+#[cfg(feature = "msl-sim-tests")]
+mod event_clocks_initial_conjunction;
 mod event_commutation;
 mod event_inductive_commutation;
 mod event_iteration_entry;
@@ -231,12 +236,17 @@ mod model_algorithm_continuous;
 mod model_conditional_dead_arm_test;
 mod model_value_forms;
 mod modifier_value_context;
+#[cfg(feature = "msl-sim-tests")]
+mod msl_glycol_viscosity;
+#[cfg(feature = "msl-sim-tests")]
+mod msl_nested_exp;
 mod msl_table_regression;
 mod multi_output_record_receivers;
 mod nanosecond_bdf_steps;
 mod native_foreign_bodies;
 mod native_least_squares;
 mod native_linear_solve;
+mod native_lu_inverse;
 mod negative_zero_kink;
 mod nested_class_shadowing_test;
 mod nested_loop_conditional;
@@ -274,6 +284,7 @@ mod replaceable_package_members;
 mod requested_states;
 mod root_time_event_coincidence;
 mod sample_tick_pulses;
+mod sampled_extrema_conditions;
 mod sampled_integral_consistency;
 mod sampled_timer_accuracy;
 mod selected_package_vectorization;
@@ -281,6 +292,7 @@ mod semi_linear_zero_flow;
 mod sign_integer_result;
 mod state_coordinate_sources;
 mod state_select_priorities;
+mod structured_discrete_replay;
 mod structured_initialization_family;
 mod supplied_derivative_record_fields;
 mod switched_integral_accuracy;
@@ -338,6 +350,9 @@ mod variability_classes;
 mod vectorized_constant_calls;
 mod verification_surface_wiring;
 mod when_activation_settled_reads;
+mod when_current_alias;
+mod when_mixed_value_order;
+mod when_multi_output_calls;
 mod when_right_limit_events;
 mod when_written_reads;
 

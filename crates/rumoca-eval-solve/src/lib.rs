@@ -23,8 +23,7 @@ use rumoca_ir_solve::{
     ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventMessagePart,
     SolveEventPartition, SolveProblemShapeContractError, SolvePureCallDirectionalSite,
     SolvePureCallSite, SolvePureCallTable, SolveScalarType, SolveStringConversionFormat,
-    SolveStringConversionSource, SolveValueKind, SolveValueType, StridedOperand, UnaryOp,
-    resolve_indexed_slot,
+    SolveStringConversionSource, SolveValueKind, SolveValueType, UnaryOp, resolve_indexed_slot,
 };
 
 mod block_residual_split;
@@ -32,6 +31,7 @@ mod compute_block_scalarize;
 pub mod dense_basis;
 pub mod linear_solve;
 pub mod nan_trace;
+mod native_tensors;
 mod ops;
 mod prepared;
 mod prepared_event_transaction;
@@ -41,13 +41,16 @@ mod pure_call_execution;
 mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
+mod scalar_ops;
 #[cfg(test)]
 mod scalar_program_contract_tests;
+pub use scalar_ops::lower_scalar_ops;
 mod sparsity;
 mod table_runtime;
 mod tangent_lanes;
 mod tensor_index;
 pub mod tensor_policy;
+mod tensor_snapshot;
 use tensor_index::tensor_register_offset;
 mod typed_program;
 mod update_rows;
@@ -791,6 +794,7 @@ pub(crate) struct RowEvalScratch {
     pub(crate) regs: Vec<f64>,
     pub(crate) initialized: Vec<bool>,
     pub(crate) affine_ops: Vec<LinearOp>,
+    tensor_results: Vec<f64>,
     lazy_computed: Vec<bool>,
     lazy_tasks: Vec<LazyEvalTask>,
     lazy_trace: Vec<LazyTraceStep>,
@@ -864,6 +868,13 @@ impl PreparedLazyRowPlan {
             if let Some(dst) = op.dst_register() {
                 let start = dst as usize;
                 let end = start.saturating_add(op.dst_register_count());
+                // Demand scheduling requires one authoritative definition per
+                // register. Ordered aliases remain legal and use the native
+                // sequential evaluator with its aggregate snapshot witness.
+                definitions[start..end]
+                    .iter()
+                    .all(|definition| *definition == usize::MAX)
+                    .then_some(())?;
                 definitions[start..end].fill(op_index);
             }
             if let LinearOp::StoreOutput { src } = *op {
@@ -1635,7 +1646,13 @@ fn eval_row_prepared_lazy(
     scratch.regs.resize(input.register_count, 0.0);
     scratch.lazy_outputs.clear();
     if let Some(trace) = plan.trace.borrow().as_deref()
-        && eval_cached_lazy_trace(input, &mut scratch.regs, trace, &mut scratch.lazy_outputs)?
+        && eval_cached_lazy_trace(
+            input,
+            &mut scratch.regs,
+            &mut scratch.tensor_results,
+            trace,
+            &mut scratch.lazy_outputs,
+        )?
     {
         for value in scratch.lazy_outputs.iter().copied() {
             sink.store(value)?;
@@ -1694,7 +1711,12 @@ fn execute_lazy_task(
         }
         LazyEvalTask::Apply(op_index) => {
             let op = input.row[op_index].clone();
-            eval_lazy_pure_op(input, &mut scratch.regs, op.clone())?;
+            eval_lazy_pure_op(
+                input,
+                &mut scratch.regs,
+                &mut scratch.tensor_results,
+                op.clone(),
+            )?;
             scratch.lazy_trace.push(LazyTraceStep::Apply(op_index));
             let dst = op
                 .dst_register()
@@ -1747,6 +1769,7 @@ fn execute_lazy_task(
 fn eval_cached_lazy_trace(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
+    tensor_results: &mut Vec<f64>,
     trace: &[LazyTraceStep],
     outputs: &mut Vec<f64>,
 ) -> Result<bool, EvalSolveError> {
@@ -1754,7 +1777,7 @@ fn eval_cached_lazy_trace(
     for step in trace.iter().copied() {
         match step {
             LazyTraceStep::Apply(op_index) => {
-                eval_lazy_pure_op(input, regs, input.row[op_index].clone())?;
+                eval_lazy_pure_op(input, regs, tensor_results, input.row[op_index].clone())?;
             }
             LazyTraceStep::Guard { cond, expected } => {
                 if (regs[cond as usize] != 0.0) != expected {
@@ -2035,6 +2058,7 @@ fn push_lazy_tensor_elements(
 fn eval_lazy_pure_op(
     input: PreparedRowEval<'_, '_>,
     regs: &mut [f64],
+    tensor_results: &mut Vec<f64>,
     op: LinearOp,
 ) -> Result<(), EvalSolveError> {
     match op {
@@ -2054,10 +2078,11 @@ fn eval_lazy_pure_op(
         | LinearOp::TensorBinary { .. }
         | LinearOp::TensorTranspose { .. }
         | LinearOp::TensorConcatenate { .. }
-        | LinearOp::TensorUpdate { .. }) => eval_lazy_tensor_algebra_op(regs, op)?,
-        op @ (LinearOp::TensorFill { .. }
-        | LinearOp::TensorIdentity { .. }
-        | LinearOp::TensorLoad { .. }) => eval_lazy_tensor_constructor_op(input, regs, op)?,
+        | LinearOp::TensorUpdate { .. }
+        | LinearOp::TensorFill { .. }) => eval_lazy_tensor_algebra_op(regs, tensor_results, op)?,
+        op @ (LinearOp::TensorIdentity { .. } | LinearOp::TensorLoad { .. }) => {
+            eval_lazy_tensor_constructor_op(input, regs, op)?
+        }
         op @ (LinearOp::FunctionFold { .. }
         | LinearOp::GuardedFunctionFold { .. }
         | LinearOp::FunctionConditional { .. }) => eval_lazy_region_op(input, regs, op)?,
@@ -2139,101 +2164,12 @@ fn eval_lazy_scalar_op(
     Ok(())
 }
 
-fn eval_lazy_tensor_algebra_op(regs: &mut [f64], op: LinearOp) -> Result<(), EvalSolveError> {
-    match op {
-        LinearOp::MatrixMultiply {
-            dst_start,
-            lhs_start,
-            rhs_start,
-            rows,
-            inner,
-            columns,
-            lanes,
-        } => eval_matrix_multiply(
-            regs,
-            dst_start,
-            lhs_start,
-            rhs_start,
-            MatrixProductShape {
-                rows,
-                inner,
-                columns,
-                lanes,
-            },
-        ),
-        LinearOp::TensorBinary {
-            dst_start,
-            op,
-            lhs_start,
-            rhs_start,
-            count,
-            lhs_stride,
-            rhs_stride,
-            lanes,
-        } => eval_tensor_binary(
-            regs,
-            dst_start,
-            op,
-            (
-                StridedOperand {
-                    start: lhs_start,
-                    stride: lhs_stride,
-                },
-                StridedOperand {
-                    start: rhs_start,
-                    stride: rhs_stride,
-                },
-            ),
-            count,
-            lanes,
-        ),
-        LinearOp::TensorTranspose {
-            dst_start,
-            src_start,
-            rows,
-            columns,
-            element_width,
-            lanes,
-        } => eval_tensor_transpose(
-            regs,
-            dst_start,
-            src_start,
-            rows,
-            columns,
-            element_width,
-            lanes,
-        ),
-        LinearOp::TensorConcatenate {
-            dst_start,
-            sources,
-            dimensions,
-            axis,
-            lanes,
-        } => {
-            visit_tensor_concatenate(&sources, &dimensions, axis, lanes, |source, destination| {
-                regs[dst_start as usize + destination] = regs[source as usize];
-                Ok::<(), EvalSolveError>(())
-            })?
-        }
-        LinearOp::TensorUpdate {
-            dst_start,
-            base_start,
-            value_start,
-            dimensions,
-            subscripts,
-            lanes,
-        } => eval_tensor_update(
-            regs,
-            dst_start,
-            base_start,
-            value_start,
-            &dimensions,
-            &subscripts,
-            lanes,
-        )?,
-        _ => unreachable!("lazy tensor algebra dispatch receives only tensor operations"),
-    }
-    Ok(())
+fn eval_lazy_tensor_algebra_op(
+    regs: &mut [f64],
+    tensor_results: &mut Vec<f64>,
+    op: LinearOp,
+) -> Result<(), EvalSolveError> {
+    native_tensors::eval(regs, tensor_results, &op)
 }
 
 fn eval_lazy_tensor_constructor_op(
@@ -2242,19 +2178,6 @@ fn eval_lazy_tensor_constructor_op(
     op: LinearOp,
 ) -> Result<(), EvalSolveError> {
     match op {
-        LinearOp::TensorFill {
-            dst_start,
-            value_start,
-            count,
-            lanes,
-        } => {
-            for element in 0..count {
-                for lane in 0..lanes {
-                    regs[dst_start as usize + element * lanes + lane] =
-                        regs[value_start as usize + lane];
-                }
-            }
-        }
         LinearOp::TensorIdentity {
             dst_start,
             size,
@@ -2603,67 +2526,8 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                 }
                 self.set(dst, value)?;
             }
-            LinearOp::MatrixMultiply {
-                dst_start,
-                lhs_start,
-                rhs_start,
-                rows,
-                inner,
-                columns,
-                lanes,
-            } => {
-                let mut values = vec![0.0; rows * columns * lanes];
-                for row in 0..rows {
-                    for column in 0..columns {
-                        let output = (row * columns + column) * lanes;
-                        for term in 0..inner {
-                            let lhs = (row * inner + term) * lanes;
-                            let rhs = (term * columns + column) * lanes;
-                            let lhs_re = self.get(lhs_start + lhs as Reg)?;
-                            let rhs_re = self.get(rhs_start + rhs as Reg)?;
-                            values[output] += lhs_re * rhs_re;
-                            for lane in 1..lanes {
-                                values[output + lane] +=
-                                    self.get(lhs_start + (lhs + lane) as Reg)? * rhs_re
-                                        + lhs_re * self.get(rhs_start + (rhs + lane) as Reg)?;
-                            }
-                        }
-                    }
-                }
-                for (offset, value) in values.into_iter().enumerate() {
-                    self.set(dst_start + offset as Reg, value)?;
-                }
-            }
-            LinearOp::TensorBinary {
-                dst_start,
-                op,
-                lhs_start,
-                rhs_start,
-                count,
-                lhs_stride,
-                rhs_stride,
-                lanes,
-            } => {
-                let mut values = Vec::with_capacity(count * lanes);
-                for element in 0..count {
-                    let lhs = lhs_start + (element * lhs_stride * lanes) as Reg;
-                    let rhs = rhs_start + (element * rhs_stride * lanes) as Reg;
-                    let lhs_re = self.get(lhs)?;
-                    let rhs_re = self.get(rhs)?;
-                    values.push(eval_tensor_binary_primal(op, lhs_re, rhs_re, lanes));
-                    for lane in 1..lanes {
-                        values.push(eval_tensor_binary_tangent(
-                            op,
-                            lhs_re,
-                            self.get(lhs + lane as Reg)?,
-                            rhs_re,
-                            self.get(rhs + lane as Reg)?,
-                        ));
-                    }
-                }
-                for (offset, value) in values.into_iter().enumerate() {
-                    self.set(dst_start + offset as Reg, value)?;
-                }
+            op @ (LinearOp::MatrixMultiply { .. } | LinearOp::TensorBinary { .. }) => {
+                self.eval_tensor_result(&op)?
             }
             LinearOp::TensorCross {
                 dst_start,
@@ -2684,29 +2548,7 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                     self.set(dst_start + offset as Reg, *value)?;
                 }
             }
-            LinearOp::TensorTranspose {
-                dst_start,
-                src_start,
-                rows,
-                columns,
-                element_width,
-                lanes,
-            } => {
-                let value_width = element_width * lanes;
-                let mut values = vec![0.0; rows * columns * value_width];
-                for row in 0..rows {
-                    for column in 0..columns {
-                        for value in 0..value_width {
-                            let dst = (row * columns + column) * value_width + value;
-                            let src = (column * rows + row) * value_width + value;
-                            values[dst] = self.get(src_start + src as Reg)?;
-                        }
-                    }
-                }
-                for (offset, value) in values.into_iter().enumerate() {
-                    self.set(dst_start + offset as Reg, value)?;
-                }
-            }
+            op @ LinearOp::TensorTranspose { .. } => self.eval_tensor_result(&op)?,
             LinearOp::TensorConcatenate {
                 dst_start,
                 sources,
@@ -3133,6 +2975,19 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
         self.set(dst, self.input.read_input("seed", seed, slot)?)
     }
 
+    fn eval_tensor_result(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
+        let dst = op
+            .dst_register()
+            .expect("tensor operation has a destination");
+        let values = (0..op.dst_register_count())
+            .map(|offset| native_tensors::value_at(op, &mut |reg| self.get(reg), offset))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (offset, value) in values.into_iter().enumerate() {
+            self.set(dst + offset as Reg, value)?;
+        }
+        Ok(())
+    }
+
     fn get(&self, reg: Reg) -> Result<f64, EvalSolveError> {
         get(self.regs, self.initialized, reg, self.input.source_span)
     }
@@ -3157,6 +3012,7 @@ fn eval_row_prepared_fast(
 ) -> Result<(), EvalSolveError> {
     scratch.regs.resize(input.register_count, 0.0);
     let regs = &mut scratch.regs;
+    let tensor_results = &mut scratch.tensor_results;
     for op in input.row {
         if let LinearOp::StoreOutputFoldTensorUpdate {
             source_base,
@@ -3336,121 +3192,18 @@ fn eval_row_prepared_fast(
                 }
                 regs[*dst as usize] = value;
             }
-            LinearOp::MatrixMultiply {
-                dst_start,
-                lhs_start,
-                rhs_start,
-                rows,
-                inner,
-                columns,
-                lanes,
-            } => eval_matrix_multiply(
-                regs,
-                *dst_start,
-                *lhs_start,
-                *rhs_start,
-                MatrixProductShape {
-                    rows: *rows,
-                    inner: *inner,
-                    columns: *columns,
-                    lanes: *lanes,
-                },
-            ),
-            LinearOp::TensorBinary {
-                dst_start,
-                op,
-                lhs_start,
-                rhs_start,
-                count,
-                lhs_stride,
-                rhs_stride,
-                lanes,
-            } => eval_tensor_binary(
-                regs,
-                *dst_start,
-                *op,
-                (
-                    StridedOperand {
-                        start: *lhs_start,
-                        stride: *lhs_stride,
-                    },
-                    StridedOperand {
-                        start: *rhs_start,
-                        stride: *rhs_stride,
-                    },
-                ),
-                *count,
-                *lanes,
-            ),
+            op @ (LinearOp::MatrixMultiply { .. }
+            | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorTranspose { .. }
+            | LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. }) => native_tensors::eval(regs, tensor_results, op)?,
             LinearOp::TensorCross {
                 dst_start,
                 lhs_start,
                 rhs_start,
                 lanes,
             } => eval_tensor_cross(regs, *dst_start, *lhs_start, *rhs_start, *lanes),
-            LinearOp::TensorTranspose {
-                dst_start,
-                src_start,
-                rows,
-                columns,
-                element_width,
-                lanes,
-            } => eval_tensor_transpose(
-                regs,
-                *dst_start,
-                *src_start,
-                *rows,
-                *columns,
-                *element_width,
-                *lanes,
-            ),
-            LinearOp::TensorConcatenate {
-                dst_start,
-                sources,
-                dimensions,
-                axis,
-                lanes,
-            } => {
-                visit_tensor_concatenate(
-                    sources,
-                    dimensions,
-                    *axis,
-                    *lanes,
-                    |source, destination| {
-                        regs[*dst_start as usize + destination] = regs[source as usize];
-                        Ok::<(), EvalSolveError>(())
-                    },
-                )?;
-            }
-            LinearOp::TensorUpdate {
-                dst_start,
-                base_start,
-                value_start,
-                dimensions,
-                subscripts,
-                lanes,
-            } => eval_tensor_update(
-                regs,
-                *dst_start,
-                *base_start,
-                *value_start,
-                dimensions,
-                subscripts,
-                *lanes,
-            )?,
-            LinearOp::TensorFill {
-                dst_start,
-                value_start,
-                count,
-                lanes,
-            } => {
-                for element in 0..*count {
-                    for lane in 0..*lanes {
-                        regs[*dst_start as usize + element * *lanes + lane] =
-                            regs[*value_start as usize + lane];
-                    }
-                }
-            }
             LinearOp::TensorIdentity {
                 dst_start,
                 size,
@@ -3748,90 +3501,6 @@ fn fold_tensor_node_value(
     }
 }
 
-fn eval_matrix_multiply(
-    regs: &mut [f64],
-    dst_start: Reg,
-    lhs_start: Reg,
-    rhs_start: Reg,
-    shape: MatrixProductShape,
-) {
-    let MatrixProductShape {
-        rows,
-        inner,
-        columns,
-        lanes,
-    } = shape;
-    for element in 0..rows.saturating_mul(columns) {
-        let row = element / columns;
-        let column = element % columns;
-        let output = element * lanes;
-        let mut re = 0.0;
-        for term in 0..inner {
-            let lhs = (row * inner + term) * lanes;
-            let rhs = (term * columns + column) * lanes;
-            re += regs[lhs_start as usize + lhs] * regs[rhs_start as usize + rhs];
-        }
-        // Each tangent lane accumulates in the same term order as the dual lane.
-        for lane in 1..lanes {
-            let mut du = 0.0;
-            for term in 0..inner {
-                let lhs = (row * inner + term) * lanes;
-                let rhs = (term * columns + column) * lanes;
-                du += regs[lhs_start as usize + lhs + lane] * regs[rhs_start as usize + rhs]
-                    + regs[lhs_start as usize + lhs] * regs[rhs_start as usize + rhs + lane];
-            }
-            regs[dst_start as usize + output + lane] = du;
-        }
-        regs[dst_start as usize + output] = re;
-    }
-}
-
-fn eval_tensor_binary(
-    regs: &mut [f64],
-    dst_start: Reg,
-    op: BinaryOp,
-    operands: (StridedOperand, StridedOperand),
-    count: usize,
-    lanes: usize,
-) {
-    let (lhs_operand, rhs_operand) = operands;
-    for element in 0..count {
-        let lhs = lhs_operand.start as usize + element * lhs_operand.stride * lanes;
-        let rhs = rhs_operand.start as usize + element * rhs_operand.stride * lanes;
-        let dst = dst_start as usize + element * lanes;
-        let lhs_re = regs[lhs];
-        let rhs_re = regs[rhs];
-        let mut tangents = [0.0; MAX_OP_LANES];
-        for lane in 1..lanes {
-            tangents[lane] =
-                eval_tensor_binary_tangent(op, lhs_re, regs[lhs + lane], rhs_re, regs[rhs + lane]);
-        }
-        regs[dst] = eval_tensor_binary_primal(op, lhs_re, rhs_re, lanes);
-        regs[dst + 1..dst + lanes].copy_from_slice(&tangents[1..lanes]);
-    }
-}
-
-fn eval_tensor_transpose(
-    regs: &mut [f64],
-    dst_start: Reg,
-    src_start: Reg,
-    rows: usize,
-    columns: usize,
-    element_width: usize,
-    lanes: usize,
-) {
-    let value_width = element_width * lanes;
-    for row in 0..rows {
-        for column in 0..columns {
-            for value in 0..value_width {
-                let dst = dst_start as usize + (row * columns + column) * value_width + value;
-                let src = src_start as usize + (column * rows + row) * value_width + value;
-                regs[dst] = regs[src];
-            }
-        }
-    }
-}
-
 fn visit_tensor_concatenate<E>(
     sources: &[rumoca_ir_solve::TensorConcatenateSource],
     dimensions: &[u32],
@@ -3863,34 +3532,6 @@ fn visit_tensor_concatenate<E>(
             }
         }
         axis_offset += source_axis;
-    }
-    Ok(())
-}
-
-fn eval_tensor_update(
-    regs: &mut [f64],
-    dst_start: Reg,
-    base_start: Reg,
-    value_start: Reg,
-    dimensions: &[u32],
-    subscripts: &[rumoca_ir_solve::TensorUpdateSubscript],
-    lanes: usize,
-) -> Result<(), EvalSolveError> {
-    let count = dimensions
-        .iter()
-        .fold(1usize, |count, extent| count * *extent as usize);
-    for element in 0..count {
-        let value_offset =
-            tensor_update_register_value_offset(dimensions, subscripts, element, |register| {
-                Ok::<_, EvalSolveError>(regs[register as usize])
-            })?;
-        for lane in 0..lanes {
-            let source = match value_offset {
-                Some(offset) => value_start as usize + offset * lanes + lane,
-                None => base_start as usize + element * lanes + lane,
-            };
-            regs[dst_start as usize + element * lanes + lane] = regs[source];
-        }
     }
     Ok(())
 }
@@ -4519,13 +4160,15 @@ fn eval_typed_call_payload(
         inputs,
         output_count,
     } = signature;
+    let provenance = table.owner(owner).map(|owner| owner.provenance());
     let mut arguments = Vec::with_capacity(inputs.len());
     for (&start, value_type) in input_starts.iter().zip(inputs) {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
         for offset in 0..value_type.scalar_count() as usize {
-            elements.push(pure_call_execution::read_input_element(
-                start, offset, value_type, read,
-            )?);
+            elements.push(
+                pure_call_execution::read_input_element(start, offset, value_type, read)
+                    .map_err(|error| error.with_source_span(provenance))?,
+            );
         }
         arguments.push(
             TypedValue::construct(value_type.clone(), elements)
@@ -4537,17 +4180,24 @@ fn eval_typed_call_payload(
     } else {
         typed_program::eval_pure_call(table, owner, &arguments)
     }
-    .map_err(|error| invalid_row(error.to_string()))?;
+    .map_err(EvalSolveError::from)?;
     let mut flattened = Vec::with_capacity(
         output_count.ok_or_else(|| invalid_row("pure-call output width overflows"))?,
     );
     for output in outputs {
-        flattened.extend(output.elements().iter().copied().map(typed_kind_to_scalar));
+        for &value in output.elements() {
+            flattened.push(
+                checked_scalar_payload_value(value)
+                    .map_err(|error| error.with_source_span(provenance))?,
+            );
+        }
     }
     Ok(flattened)
 }
 
-pub(crate) fn typed_kind_from_scalar(
+/// Decode one scalar runtime ABI value against its checked typed interface.
+/// Integer inputs must fit the signed domain before conversion.
+pub fn typed_kind_from_scalar(
     value: f64,
     value_type: &SolveValueType,
 ) -> Result<SolveValueKind, EvalSolveError> {
@@ -4563,6 +4213,9 @@ pub(crate) fn typed_kind_from_scalar(
         SolveScalarType::Integer(domain) => {
             if !value.is_finite() || value.fract() != 0.0 {
                 return Err(invalid_row("pure-call Integer input is not integral"));
+            }
+            if value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
+                return Err(invalid_row("pure-call Integer input is outside its domain"));
             }
             let integer = value as i64;
             if !domain.contains(integer) || integer as f64 != value {
@@ -4581,6 +4234,20 @@ pub(crate) fn typed_kind_to_scalar(value: SolveValueKind) -> f64 {
         SolveValueKind::Integer(value) => value as f64,
         SolveValueKind::Boolean(value) => f64::from(value),
     }
+}
+
+/// Project one typed value into the scalar runtime ABI without Integer rounding.
+/// This boundary does not restrict typed Int64 storage or Integer-to-Real coercion.
+pub fn checked_scalar_payload_value(value: SolveValueKind) -> Result<f64, EvalSolveError> {
+    let scalar = typed_kind_to_scalar(value);
+    if let SolveValueKind::Integer(integer) = value
+        && scalar as i128 != i128::from(integer)
+    {
+        return Err(invalid_row(
+            "Integer result is not exactly representable in the scalar ABI",
+        ));
+    }
+    Ok(scalar)
 }
 
 pub(crate) fn required_registers(row: &[LinearOp]) -> Result<usize, EvalSolveError> {

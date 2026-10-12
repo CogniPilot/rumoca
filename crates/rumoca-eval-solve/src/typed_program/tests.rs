@@ -1,7 +1,13 @@
+mod aggregate_logarithms;
+mod broadcast_power;
 mod directional_map;
 mod immutable_payloads;
+mod index_bounds;
 mod linear_solve;
 mod recursion;
+mod reduction_extrema;
+mod scalar_projection;
+mod static_integer_capture;
 
 use std::num::NonZeroU64;
 
@@ -40,6 +46,73 @@ fn real_kind(format: SolveRealFormat, value: f64) -> SolveValueKind {
     match format {
         SolveRealFormat::Binary32 => SolveValueKind::Real32((value as f32).to_bits()),
         SolveRealFormat::Binary64 => SolveValueKind::Real64(value.to_bits()),
+    }
+}
+
+fn assert_scalar_call_projection(
+    table: &SolvePureCallTable,
+    owner: usize,
+    inputs: &[f64],
+    expected: &[f64],
+) {
+    let mut program = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, _)| LinearOp::LoadY {
+            dst: u32::try_from(index).unwrap(),
+            index,
+        })
+        .collect::<Vec<_>>();
+    let first = u32::try_from(inputs.len()).unwrap();
+    let site = table.owners()[owner].call_site();
+    let mut end = 0u32;
+    let input_starts = site
+        .inputs()
+        .iter()
+        .map(|value_type| {
+            let start = end;
+            end = end.checked_add(value_type.scalar_count()).unwrap();
+            start
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    assert_eq!(end, first, "inputs use the issued aggregate interface");
+    assert_eq!(site.output_scalar_count(), Some(expected.len()));
+    program.push(LinearOp::PureCall {
+        dst_start: first,
+        input_starts,
+        site,
+    });
+    program.extend(
+        expected
+            .iter()
+            .enumerate()
+            .map(|(index, _)| LinearOp::StoreOutput {
+                src: first + u32::try_from(index).unwrap(),
+            }),
+    );
+    let projected = crate::lower_scalar_ops(&program, Some(table))
+        .expect("the bounded primal profile has a scalar template projection");
+    for (label, program) in [
+        ("canonical checked call", program),
+        ("scalar template projection", projected),
+    ] {
+        let block = ScalarProgramBlock::with_program_spans(vec![program], vec![span(1200)])
+            .expect("the projected program retains a checked scalar contract");
+        let mut actual = vec![f64::NAN; expected.len()];
+        crate::eval_scalar_program_block_with_context(
+            &block,
+            inputs,
+            &[],
+            0.0,
+            crate::RowEvalContext {
+                pure_calls: Some(table),
+                ..Default::default()
+            },
+            &mut actual,
+        )
+        .expect("the admitted primal program executes");
+        assert_eq!(actual, expected, "{label}");
     }
 }
 
@@ -115,6 +188,7 @@ fn directional_fold_table(
 ) -> SolvePureCallTable {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 8,
             display_name: "i".into(),
             lower: 1,
@@ -329,6 +403,8 @@ fn conditional_projections_select_lazily_between_identical_calls() {
         inactive[0].elements(),
         [real_kind(SolveRealFormat::Binary64, 6.0)]
     );
+    assert_scalar_call_projection(&table, 1, &[1.0, 3.0], &[12.0]);
+    assert_scalar_call_projection(&table, 1, &[0.0, 3.0], &[6.0]);
 }
 
 #[test]
@@ -678,6 +754,7 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
     let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 7,
             display_name: "i".into(),
             lower: 1,
@@ -739,6 +816,7 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
     let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 7,
             display_name: "i".into(),
             lower: 1,
@@ -792,6 +870,7 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
     // 0, 1, 3, 6, 10: the fifth predicate is false.
     let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
     assert_eq!(output[0].elements(), [SolveValueKind::Integer(10)]);
+    assert_scalar_call_projection(&table, 0, &[], &[10.0]);
 }
 
 #[test]
@@ -799,6 +878,9 @@ fn directional_fold_differentiates_only_the_selected_structured_region() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
     let table = directional_fold_table(arithmetic, &real);
+    for (input, expected) in [(-2.0, -24.0), (0.0, 0.0), (1.5, 18.0)] {
+        assert_scalar_call_projection(&table, 0, &[input], &[expected]);
+    }
     let value = |number| {
         TypedValue::construct(
             real.clone(),
@@ -1010,6 +1092,15 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         outputs[4].elements(),
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].map(real_value)
     );
+    assert_scalar_call_projection(
+        &table,
+        0,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 1.0, 1.0, 2.0],
+        &[
+            12.0, 30.0, 42.0, 2.0, 8.0, 4.0, 10.0, 6.0, 12.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ],
+    );
 }
 
 #[test]
@@ -1103,6 +1194,12 @@ fn compact_cross_product_evaluates_without_coordinate_operations() {
     let outputs = eval_pure_call(&table, table.owners()[0].id(), &[lhs, rhs]).unwrap();
 
     assert_eq!(outputs[0].elements(), [-3.0, 6.0, -3.0].map(real_value));
+    assert_scalar_call_projection(
+        &table,
+        0,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[-3.0, 6.0, -3.0],
+    );
     assert!(
         table.owners()[0]
             .body()
@@ -1144,6 +1241,7 @@ fn promoted_vector_columns_preserve_modelica_row_major_order() {
 
     assert_eq!(outputs[0].value_type(), &matrix);
     assert_eq!(outputs[0].elements(), [1.0, 3.0, 2.0, 4.0].map(real_value));
+    assert_scalar_call_projection(&table, 0, &[1.0, 2.0, 3.0, 4.0], &[1.0, 3.0, 2.0, 4.0]);
 }
 
 #[test]
@@ -1153,6 +1251,7 @@ fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_owned(),
             lower: 1,
@@ -1202,6 +1301,7 @@ fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let outputs = eval_pure_call(&table, table.owners()[0].id(), &[scale]).unwrap();
 
     assert_eq!(outputs[0].elements(), [2.0, 4.0, 6.0].map(real_value));
+    assert_scalar_call_projection(&table, 0, &[2.0], &[2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -1269,10 +1369,12 @@ fn scalar_broadcast_quotient_carries_the_elementwise_quotient_rule() {
         Ok(())
     })
     .unwrap();
-    assert!(
-        table.owners()[1].directional().is_none(),
-        "a scalar dividend over an aggregate has no directional rule"
-    );
+    for owner in table.owners() {
+        assert!(
+            owner.directional().is_some(),
+            "both quotient orientations are checked"
+        );
+    }
     let owner = &table.owners()[0];
     let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
     let typed = |value_type: &SolveValueType, values: &[f64]| {
@@ -1293,4 +1395,84 @@ fn scalar_broadcast_quotient_carries_the_elementwise_quotient_rule() {
 
     assert_eq!(outputs[0].elements(), [1.0, 2.0, 4.0].map(real_value));
     assert_eq!(outputs[1].elements(), [0.0, -1.0, -2.0].map(real_value));
+    for (ordinal, scalar_on_lhs) in [false, true].into_iter().enumerate() {
+        assert_broadcast_quotient_relation(&table, ordinal, scalar_on_lhs);
+    }
+}
+
+fn assert_broadcast_quotient_relation(
+    table: &SolvePureCallTable,
+    ordinal: usize,
+    scalar_on_lhs: bool,
+) {
+    let owner = &table.owners()[ordinal];
+    let values = [2.0, 4.0, 8.0];
+    let seeds = [1.0, -0.5, 2.0];
+    let scalar = 2.0;
+    let scalar_seed = 1.0;
+    let typed = |index: usize, values: &[f64]| {
+        TypedValue::construct(
+            owner.inputs()[index].clone(),
+            values
+                .iter()
+                .map(|&v| real_kind(SolveRealFormat::Binary64, v))
+                .collect(),
+        )
+        .unwrap()
+    };
+    let numbers = |value: &TypedValue| {
+        value
+            .elements()
+            .iter()
+            .map(|value| match value {
+                SolveValueKind::Real64(bits) => f64::from_bits(*bits),
+                other => panic!("expected Binary64 quotient cell, got {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let outputs = eval_pure_call_directional(
+        table,
+        owner.id(),
+        &[
+            typed(0, &values),
+            typed(0, &seeds),
+            typed(1, &[scalar]),
+            typed(1, &[scalar_seed]),
+        ],
+    )
+    .unwrap();
+    assert_eq!(outputs.len(), 2);
+    for output in &outputs {
+        assert_eq!(output.value_type(), &owner.inputs()[0]);
+    }
+    let h = 1e-6;
+    let primal_at = |step: f64| {
+        let shifted = std::array::from_fn::<_, 3, _>(|i| values[i] + step * seeds[i]);
+        let output = eval_pure_call(
+            table,
+            owner.id(),
+            &[typed(0, &shifted), typed(1, &[scalar + step * scalar_seed])],
+        )
+        .unwrap();
+        assert_eq!(output.len(), 1);
+        numbers(&output[0])
+    };
+    let primal = numbers(&outputs[0]);
+    assert_eq!(primal, primal_at(0.0));
+    let tangent = numbers(&outputs[1]);
+    let plus = primal_at(h);
+    let minus = primal_at(-h);
+    for i in 0..3 {
+        let (numerator, denominator, dn, dd) = if scalar_on_lhs {
+            (scalar, values[i], scalar_seed, seeds[i])
+        } else {
+            (values[i], scalar, seeds[i], scalar_seed)
+        };
+        let expected = (dn * denominator - numerator * dd) / denominator.powi(2);
+        let finite_difference = (plus[i] - minus[i]) / (2.0 * h);
+        assert_eq!(primal[i], numerator / denominator);
+        assert!(tangent[i].is_finite());
+        assert!((tangent[i] - expected).abs() < 1e-14);
+        assert!((tangent[i] - finite_difference).abs() < 2e-9);
+    }
 }

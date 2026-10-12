@@ -106,7 +106,9 @@ fn pattern(height: usize, width: usize, r: usize, c: usize, ch: usize) -> f64 {
     }
 }
 
-/// The kernel in source order; `sum` adds its comprehension row-major.
+/// The kernel in canonical constructor order: MLS §10.4.1.2 expands
+/// several iterators with the last iterator outermost, then `sum` reduces
+/// the resulting array in row-major order. The binary64 fold retains that order.
 fn reference(height: usize, width: usize) -> Vec<Vec<f64>> {
     let gray = |y: usize, x: usize| {
         ((pattern(height, width, y, x, 1) + pattern(height, width, y, x, 2))
@@ -123,7 +125,7 @@ fn reference(height: usize, width: usize) -> Vec<Vec<f64>> {
             (1..=width - 4)
                 .map(|x| {
                     let window = (0..=2)
-                        .flat_map(|row| (0..=2).map(move |column| (row, column)))
+                        .flat_map(|column| (0..=2).map(move |row| (row, column)))
                         .map(|(row, column)| gxx(y + row, x + column))
                         .reduce(|sum, value| sum + value)
                         .expect("a nonempty window");

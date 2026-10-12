@@ -38,6 +38,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return;
         }
         match self.node(expression).operation() {
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                if let Ok(Some((_, definition))) = self.current_definition(coordinate) {
+                    self.mark_evaluated(definition, visited);
+                }
+            }
             dae::ExpressionOperation::Unary { operand, .. } => {
                 self.mark_evaluated(operand, visited);
             }
@@ -73,7 +78,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return true;
         }
         match self.node(expression).operation() {
-            dae::ExpressionOperation::Literal(_) | dae::ExpressionOperation::Coordinate(_) => true,
+            dae::ExpressionOperation::Literal(_) => true,
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                self.coordinate_is_total(coordinate, visited)
+            }
             dae::ExpressionOperation::Unary { operand, .. } => self.is_total(operand, visited),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 self.is_total(lhs, visited) && self.is_total(rhs, visited)
@@ -98,6 +106,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     })
             }
             _ => false,
+        }
+    }
+
+    fn coordinate_is_total(
+        &self,
+        coordinate: dae::CoordinateView<'dae>,
+        visited: &mut HashSet<dae::ExprId<'dae>>,
+    ) -> bool {
+        match self.current_definition(coordinate) {
+            Ok(Some((variable, definition))) => {
+                self.current_definition_is_acyclic(variable, definition)
+                    && self.is_total(definition, visited)
+            }
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 
@@ -282,6 +305,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ));
             }
         };
+        self.emit_conditional_program(captures, program, span)
+    }
+
+    pub(super) fn emit_conditional_program(
+        &mut self,
+        captures: Vec<solve::Reg>,
+        program: solve::FunctionConditionalProgram,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
         let capture_start = self.next_register;
         for source in captures {
             let destination = self.register(span)?;
@@ -313,7 +345,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     /// evaluation context with its own register file, the symbolic domain
     /// points loaded from the program's captures, and the branch guards on
     /// its activation path so scheduled call assertions keep the same path.
-    fn selected_arm_region(
+    pub(super) fn selected_arm_region(
         &self,
         branch_guards: &[(dae::ExprId<'dae>, bool)],
         span: Span,
@@ -356,6 +388,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.fold_guard_base = compiler.activation_path.len();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();

@@ -13,6 +13,8 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Context, Result, ensure};
+
 const CARGO_BUILD_JOBS: &str = "CARGO_BUILD_JOBS";
 const RUST_TEST_THREADS: &str = "RUST_TEST_THREADS";
 const RAYON_NUM_THREADS: &str = "RAYON_NUM_THREADS";
@@ -265,6 +267,50 @@ static ANNOUNCED_JOBS: AtomicUsize = AtomicUsize::new(0);
 /// Last test-thread cap announced by [`apply_to_child`]; 0 means "uncapped".
 static ANNOUNCED_TEST_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// Bound tool workers by the same explicit Cargo override or detected host
+/// budget used for repository-tool children. A tool's own CLI wins, and its
+/// existing safety ceiling applies to either source of the requested count.
+pub(crate) fn worker_jobs(explicit: Option<usize>, maximum: usize) -> Result<usize> {
+    let configured = std::env::var_os(CARGO_BUILD_JOBS);
+    configured_worker_jobs(
+        explicit,
+        configured.as_deref(),
+        RustJobBudget::detect(),
+        maximum,
+    )
+}
+
+fn configured_worker_jobs(
+    explicit: Option<usize>,
+    configured: Option<&std::ffi::OsStr>,
+    budget: RustJobBudget,
+    maximum: usize,
+) -> Result<usize> {
+    ensure!(maximum > 0, "worker safety ceiling must be positive");
+    if let Some(jobs) = explicit {
+        return Ok(jobs.clamp(1, maximum));
+    }
+    let Some(configured) = configured else {
+        return Ok(budget.jobs.clamp(1, maximum));
+    };
+    let configured = configured
+        .to_str()
+        .context("CARGO_BUILD_JOBS must contain a UTF-8 job count")?;
+    if configured == "default" {
+        return Ok(budget.logical_cpus.clamp(1, maximum));
+    }
+    let jobs = configured
+        .parse::<isize>()
+        .context("CARGO_BUILD_JOBS must be a nonzero integer or `default`")?;
+    ensure!(jobs != 0, "CARGO_BUILD_JOBS must not be zero");
+    let jobs = if jobs < 0 {
+        budget.logical_cpus.saturating_add_signed(jobs)
+    } else {
+        jobs as usize
+    };
+    Ok(jobs.clamp(1, maximum))
+}
+
 /// Apply the automatic Cargo and libtest budgets to a child process and
 /// everything it launches. Explicit overrides remain authoritative per variable.
 ///
@@ -329,6 +375,66 @@ mod tests {
 
     fn for_topology(logical_cpus: usize, physical_cores: usize) -> RustJobBudget {
         RustJobBudget::for_host(logical_cpus, physical_cores, unconstrained_memory())
+    }
+
+    #[test]
+    fn worker_jobs_honors_configured_four_and_explicit_cli_priority() {
+        let budget = for_topology(32, 16);
+        assert_eq!(
+            configured_worker_jobs(None, Some("4".as_ref()), budget, 6).unwrap(),
+            4
+        );
+        assert_eq!(
+            configured_worker_jobs(Some(2), Some("4".as_ref()), budget, 6).unwrap(),
+            2
+        );
+        assert_eq!(
+            configured_worker_jobs(Some(8), Some("invalid".as_ref()), budget, 6).unwrap(),
+            6
+        );
+    }
+
+    #[test]
+    fn worker_jobs_default_resets_to_cargo_logical_cpu_count() {
+        let budget = RustJobBudget::for_host(
+            32,
+            16,
+            Some(HostMemory {
+                total_mib: 32_768,
+                available_mib: 10_000,
+            }),
+        );
+        assert_eq!(budget.jobs, 2);
+        assert_eq!(configured_worker_jobs(None, None, budget, 6).unwrap(), 2);
+        assert_eq!(
+            configured_worker_jobs(None, Some("default".as_ref()), budget, 6).unwrap(),
+            6
+        );
+    }
+
+    #[test]
+    fn worker_jobs_preserves_cargo_negative_offsets_and_the_safety_ceiling() {
+        let budget = for_topology(8, 4);
+        assert_eq!(
+            configured_worker_jobs(None, Some("-1".as_ref()), budget, 6).unwrap(),
+            6
+        );
+        assert_eq!(
+            configured_worker_jobs(None, Some("-7".as_ref()), budget, 6).unwrap(),
+            1
+        );
+        assert_eq!(
+            configured_worker_jobs(None, Some("-99".as_ref()), budget, 6).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn worker_jobs_refuses_invalid_configured_counts() {
+        let budget = for_topology(32, 16);
+        for configured in ["0", "invalid", "", "18446744073709551616"] {
+            assert!(configured_worker_jobs(None, Some(configured.as_ref()), budget, 6).is_err());
+        }
     }
 
     #[test]

@@ -19,8 +19,6 @@ use super::*;
 /// function scope. Anything else fails serialization: the wire never omits a
 /// range the registry has not proven it owns.
 pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerProjection, String> {
-    use crate::model::runtime_quotients::QuotientOwnerKind;
-
     // The registry is canonical in quotient order on every recording path;
     // the marker ordinals below are exactly its indices. A violation here
     // is a broken construction invariant, never something to repair by
@@ -40,70 +38,21 @@ pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerPr
         relation_markers: rustc_hash::FxHashMap::default(),
         activation_markers: rustc_hash::FxHashMap::default(),
         root_markers: rustc_hash::FxHashMap::default(),
+        structured_root_markers: rustc_hash::FxHashMap::default(),
     };
     for (ordinal, entry) in sorted.iter().enumerate() {
         let (quotient_range, [lhs, rhs]) = verified_quotient_operands(storage, entry)?;
         if projection.replace.contains_key(&entry.quotient) {
             return Err("duplicate registry quotient".into());
         }
-        let kind = match &entry.kind {
-            QuotientOwnerKind::FunctionBody { function } => {
-                let scope = storage
-                    .expressions
-                    .function_scopes
-                    .get(entry.quotient as usize)
-                    .copied()
-                    .flatten();
-                if scope != Some(*function) {
-                    return Err("function owner quotient is outside its recorded body".into());
-                }
-                OwnerNodeKind::Function {
-                    function: *function,
-                }
-            }
-            QuotientOwnerKind::ModelEvent {
-                generated,
-                relation,
-                activation,
-                root,
-            } => {
-                let indicator_range = verify_model_owner_batch(
-                    storage,
-                    entry.quotient,
-                    quotient_range,
-                    [lhs, rhs],
-                    generated,
-                )?;
-                verify_model_owner_surface(
-                    storage,
-                    entry.quotient,
-                    *generated,
-                    *relation,
-                    *activation,
-                    *root,
-                )?;
-                projection.skip_nodes.extend(*generated);
-                projection.skip_operands.extend(indicator_range.indices());
-                let claimed = projection
-                    .relation_markers
-                    .insert(*relation, ordinal as u32)
-                    .is_some()
-                    || projection
-                        .activation_markers
-                        .insert(*activation, ordinal as u32)
-                        .is_some()
-                    || projection
-                        .root_markers
-                        .insert(*root, ordinal as u32)
-                        .is_some();
-                if claimed {
-                    return Err("two model owners claim one event artifact".into());
-                }
-                OwnerNodeKind::Model {
-                    activation: *activation,
-                }
-            }
-        };
+        let kind = verify_owner_kind(
+            storage,
+            entry,
+            quotient_range,
+            [lhs, rhs],
+            ordinal as u32,
+            &mut projection,
+        )?;
         projection.skip_operands.extend(quotient_range.indices());
         projection.replace.insert(
             entry.quotient,
@@ -116,6 +65,105 @@ pub(super) fn verify_owner_projection(storage: &FrozenStorage) -> Result<OwnerPr
         );
     }
     Ok(projection)
+}
+
+/// Verify and project one owner-specific event surface. The shared caller
+/// retains canonical registry ordering and quotient operand ownership.
+fn verify_owner_kind(
+    storage: &FrozenStorage,
+    entry: &crate::model::runtime_quotients::RuntimeQuotientOwnerEntry,
+    quotient_range: OperandRange,
+    [lhs, rhs]: [u32; 2],
+    ordinal: u32,
+    projection: &mut OwnerProjection,
+) -> Result<OwnerNodeKind, String> {
+    use crate::model::runtime_quotients::QuotientOwnerKind;
+
+    Ok(match &entry.kind {
+        QuotientOwnerKind::FunctionBody { function } => {
+            let scope = storage
+                .expressions
+                .function_scopes
+                .get(entry.quotient as usize)
+                .copied()
+                .flatten();
+            if scope != Some(*function) {
+                return Err("function owner quotient is outside its recorded body".into());
+            }
+            OwnerNodeKind::Function {
+                function: *function,
+            }
+        }
+        QuotientOwnerKind::StructuredModelEvent {
+            generated,
+            domain,
+            root,
+        } => {
+            let indicator_range = verify_model_owner_batch(
+                storage,
+                entry.quotient,
+                quotient_range,
+                [lhs, rhs],
+                generated,
+            )?;
+            structured_quotients::verify_surface(
+                storage,
+                entry.quotient,
+                *generated,
+                *domain,
+                *root,
+            )?;
+            projection.skip_nodes.extend(*generated);
+            projection.skip_operands.extend(indicator_range.indices());
+            if projection
+                .structured_root_markers
+                .insert(*root, ordinal)
+                .is_some()
+            {
+                return Err("two structured owners claim one event artifact".into());
+            }
+            OwnerNodeKind::StructuredModel { domain: *domain }
+        }
+        QuotientOwnerKind::ModelEvent {
+            generated,
+            relation,
+            activation,
+            root,
+        } => {
+            let indicator_range = verify_model_owner_batch(
+                storage,
+                entry.quotient,
+                quotient_range,
+                [lhs, rhs],
+                generated,
+            )?;
+            verify_model_owner_surface(
+                storage,
+                entry.quotient,
+                *generated,
+                *relation,
+                *activation,
+                *root,
+            )?;
+            projection.skip_nodes.extend(*generated);
+            projection.skip_operands.extend(indicator_range.indices());
+            let claimed = projection
+                .relation_markers
+                .insert(*relation, ordinal)
+                .is_some()
+                || projection
+                    .activation_markers
+                    .insert(*activation, ordinal)
+                    .is_some()
+                || projection.root_markers.insert(*root, ordinal).is_some();
+            if claimed {
+                return Err("two model owners claim one event artifact".into());
+            }
+            OwnerNodeKind::Model {
+                activation: *activation,
+            }
+        }
+    })
 }
 
 fn verified_quotient_operands(
@@ -246,7 +294,15 @@ fn verify_model_owner_surface(
         .conditions
         .get(activation as usize)
         .is_some_and(|entry| {
-            matches!(entry.node, Some(crate::conditions::ConditionNode::Always))
+            entry.node
+                == Some(
+                    match storage.expressions.model_arm_scopes[quotient as usize] {
+                        None => crate::conditions::ConditionNode::Always,
+                        Some(arm) => crate::conditions::ConditionNode::Discrete(
+                            storage.model_arms[arm as usize].guard,
+                        ),
+                    },
+                )
                 && entry.provenance == canonical
         });
     let root_ok = storage.roots.get(root as usize).is_some_and(|entry| {

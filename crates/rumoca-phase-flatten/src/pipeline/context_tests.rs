@@ -1839,4 +1839,6 @@ mod tests {
     }
 
     mod enum_and_overrides;
+
+    mod scalar_inventory;
 }

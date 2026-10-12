@@ -659,8 +659,26 @@ fn cli_parses_python_build() {
     match cli.command {
         Commands::Python(args) => match args.command {
             PythonCommand::Build(_) => {}
+            PythonCommand::Test(_) => panic!("expected python build command"),
         },
         other => panic!("expected python command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_required_installed_wheel_guide_checks() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "python",
+        "test",
+        "--wheel",
+        "current-source.whl",
+        "--require-guide",
+    ])
+    .expect("parse the mandatory CI wheel verification command");
+    match cli.command {
+        Commands::Python(args) => assert!(matches!(args.command, PythonCommand::Test(_))),
+        other => panic!("expected python test command, got {other:?}"),
     }
 }
 

@@ -10,6 +10,11 @@ and integration.
 ## Contract
 
 - Input: checked Solve IR.
+- Algebraic variables: when every algebraic slot has an issued exact
+  assignment (`exact_algebraic_assignments`), the function assigns them
+  in-function, in checked order, before the derivative rows. Only the state
+  slots of the input are read. Coupled or implicit algebraic blocks, and
+  tensor-affine assignments, are still rejected (`residual_equations`).
 - Output: deterministic CUDA C defining one batched derivative kernel.
 - Every CUDA thread evaluates one checked `(y, p)` lane with explicit strides.
 - Tensor nodes remain in Solve IR; this readiness level uses the evaluator's

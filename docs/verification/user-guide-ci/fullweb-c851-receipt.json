@@ -1,0 +1,56 @@
+{
+  "source": "c85128c50cd6e65198a712578c80679afc01aeaf",
+  "profile": "release",
+  "variant": "full-web",
+  "optimize": true,
+  "files": {
+    "package.json": {
+      "bytes": 1513,
+      "sha256": "2249bb735461c633a304cb57f42383e8e8a3f80bd9037ddc7eba38a42ffd4790"
+    },
+    "rumoca_bind_wasm.js": {
+      "bytes": 85403,
+      "sha256": "5f17e1488e4f7a106d7c9844112491750764e757626074a2f0151d6ee6ea961e"
+    },
+    "rumoca_bind_wasm_bg.wasm": {
+      "bytes": 32699826,
+      "sha256": "1d95ed1020cb987a5b5503e47fc339e0daab085b8591a27b1e9261630ab68d8a"
+    },
+    "rumoca_bind_wasm_diffsol.js": {
+      "bytes": 15910,
+      "sha256": "d7c22899d1b46826daee1386fc32ee8e57a9d43eabec02dd66c5bf7e0d60dd11"
+    },
+    "rumoca_bind_wasm_diffsol_bg.wasm": {
+      "bytes": 5700320,
+      "sha256": "dc34d85602fb350f8659907d9ed9dacfda955d4e27ccba323339dfe659481916"
+    },
+    "rumoca_bind_wasm_galec.js": {
+      "bytes": 13670,
+      "sha256": "ce9a855c12c663be59c40b34bc55ed15a94ab05bfe381251a7dfbe48b7fd8079"
+    },
+    "rumoca_bind_wasm_galec_bg.wasm": {
+      "bytes": 16180361,
+      "sha256": "a2d2e31025ace87a13a43f22fdea7885538eb7d63f4b13c6ee142f9ed2ef21d8"
+    },
+    "rumoca_runtime.js": {
+      "bytes": 7077,
+      "sha256": "386adf1ee0def289c37d7a1c3dfaa4754ef44c0df42c47364331935ee479ea28"
+    },
+    "rumoca_interactive.js": {
+      "bytes": 54333,
+      "sha256": "ca075e416654dda0af89d743c74d7e781dd019857f30baa874bba99e77002437"
+    },
+    "rumoca_gpu.js": {
+      "bytes": 44297,
+      "sha256": "33a9bb454f028a255c9bba637626f3a4e78c20ebabdaab2201089b87465c5dc8"
+    }
+  },
+  "attempt": "full-web-release-c851-current-20261011",
+  "exit_status": 0,
+  "resource_stop": null,
+  "wall_seconds": 552.0641055949964,
+  "sampled_peak_owned_rss_bytes": 2919567360,
+  "raw_sha256": "309e5875d7ebff158aabfe2650dce70e6c8862c0509408c1fe7137150da75c48",
+  "cache_scope": "owned partially cold WASM target; no universal cold/warm timing claim",
+  "verification_scope": "optimized package construction only; browser execution pending"
+}

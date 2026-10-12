@@ -53,6 +53,7 @@ fn certify_function(
         flat,
         roles: &roles,
         static_integers: &static_integers,
+        comprehension_values: None,
         shapes: &certificate.values,
         shape_analysis: shapes,
         generated_booleans: &[],

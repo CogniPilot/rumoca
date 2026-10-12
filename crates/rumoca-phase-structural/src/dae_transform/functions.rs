@@ -278,6 +278,26 @@ fn index_function_expressions(source: dae::DaeView<'_>) -> FunctionExpressionInd
             });
         }
     }
+    // Each recursive SCC shares one issued construction interval. Inventory
+    // closed callback expressions once, alongside the existing value scopes;
+    // deriving only value incidence would drop dead global callback nodes.
+    let mut intervals = std::collections::BTreeSet::new();
+    for (function_index, scope) in scopes.iter_mut().enumerate() {
+        let function = source
+            .function(source.function_id(function_index).unwrap())
+            .unwrap();
+        let range = function.construction_expression_range();
+        if !intervals.insert((range.start, range.end)) {
+            continue;
+        }
+        for ordinal in range {
+            let id = source.expression_id(ordinal as usize).unwrap();
+            if source.expression(id).unwrap().function_scope().is_none() {
+                scope.push(id);
+            }
+        }
+        scope.sort_unstable_by_key(|id| id.index());
+    }
     indexed.sort_unstable_by_key(|entry| {
         (
             entry.function,
@@ -464,13 +484,8 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         let function = self.source_function(index);
         let rebuilt_function = self.functions[index].clone();
         if let Some(external) = function.external() {
-            return self.rebuild_external_body(
-                target,
-                function,
-                &rebuilt_function,
-                reservation,
-                external,
-            );
+            self.rebuild_external_body(target, function, &rebuilt_function, reservation, external)?;
+            return self.rebuild_orphaned_scoped_expressions(target, index, None);
         }
         let body =
             target.functions(|functions| functions.begin(reservation, function.declaration()))?;
@@ -479,7 +494,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             let body =
                 self.rebuild_statements(target, &rebuilt_function, body, function.statements())?;
             self.seed_results(target, function, &rebuilt_function, &body)?;
-            self.rebuild_orphaned_scoped_expressions(target, index, &body)?;
+            self.rebuild_orphaned_scoped_expressions(target, index, Some(&body))?;
             target.functions(|functions| functions.define(body, function.declaration()))
         })();
         self.active_function = None;
@@ -1079,12 +1094,12 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         &mut self,
         target: &mut dae::DaeConstruction<'target>,
         function: usize,
-        body: &dae::FunctionBody<'target>,
+        body: Option<&dae::FunctionBody<'target>>,
     ) -> Result<(), dae::DaeConstructionError> {
         for index in 0..self.function_scopes[function].len() {
             let source_id = self.function_scopes[function][index];
             if self.rebuilt[source_id.index() as usize].is_none() {
-                self.rebuild_postorder(target, source_id, Some(body))?;
+                self.rebuild_postorder(target, source_id, body)?;
             }
         }
         Ok(())

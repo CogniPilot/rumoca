@@ -968,6 +968,7 @@ impl SolveRuntime {
     /// exactly the reads that select an assembly branch.
     pub fn initialization_updates_read_algebraic_slots(&self) -> bool {
         updates_read_algebraic_slots(&self.model)
+            || self.initial_quotient_maps_read_algebraic_slots()
     }
 }
 
@@ -980,17 +981,52 @@ fn updates_read_algebraic_slots(model: &solve::SolveModel) -> bool {
         .update_rhs()
         .programs()
         .iter()
-        .flatten()
-        .any(|op| match op {
-            solve::LinearOp::LoadY { index, .. } => *index >= state_count,
-            solve::LinearOp::TensorLoad {
-                input: solve::TensorInputKind::Y,
-                input_start,
-                count,
-                ..
-            } => input_start.saturating_add(*count) > state_count,
-            _ => false,
-        })
+        .any(|ops| program_reads_algebraic_slots(ops, state_count))
+}
+
+/// Nested regions read the same solver vector as their enclosing program.
+/// Reuse the canonical Solve walker for scalar and compact Map update queries.
+pub(super) fn program_reads_algebraic_slots(ops: &[solve::LinearOp], state_count: usize) -> bool {
+    struct Reads {
+        state_count: usize,
+        found: bool,
+    }
+    impl solve::visitor::SolveVisitor for Reads {
+        type Error = std::convert::Infallible;
+
+        fn visit_linear_op(
+            &mut self,
+            _kind: solve::visitor::LinearOpSliceKind,
+            _index: usize,
+            op: &solve::LinearOp,
+        ) -> Result<(), Self::Error> {
+            self.found |= reads_algebraic_slot(op, self.state_count);
+            Ok(())
+        }
+    }
+    let mut reads = Reads {
+        state_count,
+        found: false,
+    };
+    let kind = solve::visitor::LinearOpSliceKind::ScalarProgram {
+        program_index: 0,
+        span: None,
+    };
+    let Ok(()) = solve::visitor::walk_linear_op_slice(&mut reads, kind, ops);
+    reads.found
+}
+
+fn reads_algebraic_slot(op: &solve::LinearOp, state_count: usize) -> bool {
+    match op {
+        solve::LinearOp::LoadY { index, .. } => *index >= state_count,
+        solve::LinearOp::TensorLoad {
+            input: solve::TensorInputKind::Y,
+            input_start,
+            count,
+            ..
+        } => input_start.saturating_add(*count) > state_count,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1389,6 +1425,83 @@ mod tests {
             parameters: vec![100.0, 100.0],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn initial_updates_find_algebraic_reads_in_checked_nested_regions() {
+        // MLS §8.6: initialization depends on the solved algebraic even when
+        // its load is inside a checked nested region, rather than a top-level op.
+        let row = vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ];
+        let domain = rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
+                id: 0,
+                display_name: "iteration".into(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        };
+        let fold = solve::FunctionFoldProgram::checked(domain, 1, 0, row.clone())
+            .expect("checked single-iteration algebraic read");
+        let conditional = solve::FunctionConditionalProgram::checked(
+            0,
+            vec![1],
+            [(
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 1.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                row.clone(),
+            )],
+            row,
+        )
+        .expect("checked conditional algebraic read");
+        for nested in [
+            solve::LinearOp::FunctionFold {
+                dst_start: 1,
+                initial_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(fold),
+            },
+            solve::LinearOp::FunctionConditional {
+                dst_start: 1,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+        ] {
+            let mut model = fixed_algebraic_parameter_model();
+            let mut input = model.problem.initialization.clone().into_input();
+            input.update_rhs = scalar_block(vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                nested,
+                solve::LinearOp::StoreOutput { src: 1 },
+            ]]);
+            model.problem.initialization = solve::InitializationSolveSystem::construct(input)
+                .expect("checked nested initialization update");
+            let mut outputs = [f64::NAN];
+            solve_eval::eval_scalar_program_block_with_context(
+                model.problem.initialization.update_rhs(),
+                &model.initial_y,
+                &model.parameters,
+                0.0,
+                Default::default(),
+                &mut outputs,
+            )
+            .expect("canonical nested read executes");
+            assert_eq!(outputs, [51.0], "reads the actual algebraic slot");
+            assert!(
+                updates_read_algebraic_slots(&model),
+                "a nested LoadY still requires solved algebraic reconstruction"
+            );
+        }
+        assert!(
+            !updates_read_algebraic_slots(&fixed_algebraic_parameter_model()),
+            "parameter-only update remains independent of algebraic refresh"
+        );
     }
 
     #[test]

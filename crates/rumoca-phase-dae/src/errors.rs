@@ -162,6 +162,17 @@ pub enum ToDaeError {
         span: Span,
     },
 
+    #[error("declared discrete Real `{name}` has no when-clause owner")]
+    #[diagnostic(
+        code(rumoca::todae::ED024),
+        help("MLS 3.7 §4.5.3: assign a declared discrete Real in a when-clause")
+    )]
+    DiscreteRealWithoutWhen {
+        name: String,
+        #[label("discrete Real declared without a when owner")]
+        span: Span,
+    },
+
     #[error("canonical DAE construction rejected an invalid operation: {source}")]
     #[diagnostic(
         code(rumoca::todae::ED020),
@@ -305,6 +316,7 @@ impl ToDaeError {
             | Self::UnsupportedFlatSemantics { span, .. }
             | Self::UninitializedFunctionValue { span, .. }
             | Self::ContinuousDiscreteDefinition { span, .. }
+            | Self::DiscreteRealWithoutWhen { span, .. }
             | Self::Construction { span, .. } => std::slice::from_ref(span),
             Self::Unbalanced { .. }
             | Self::Internal { .. }

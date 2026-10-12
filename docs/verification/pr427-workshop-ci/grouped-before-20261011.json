@@ -1,0 +1,310 @@
+{
+  "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+  "scope": "Five focused defect classes; eight tests, not a full CI or workshop cohort",
+  "rawRoot": "$HOME/scratch/rumoca/slam-integration-cycle-20261010",
+  "concurrency": {
+    "cargoBuildJobs": 4,
+    "rustTestThreads": 4,
+    "rayonNumThreads": 4,
+    "cargoIncremental": 0,
+    "devDebug": 0,
+    "testDebug": 0
+  },
+  "countGuardSha256": "7347479ec13adb192b6b5210f9b5b33f8e2c3a1b7da17a954d439553b054822b",
+  "total": {
+    "passed": 2,
+    "failed": 6,
+    "ignored": 0
+  },
+  "attempts": [
+    {
+      "attempt": "pr427-grouped-cross-before-20261011",
+      "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+      "countGuard": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-solve",
+        "--lib",
+        "overlapping_cross_destination_preserves_snapshot_inputs",
+        "--",
+        "--nocapture"
+      ],
+      "wrapper": "nix develop .#full --command run-focused-cargo-test.py <count> <cargo args>",
+      "result": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 289,
+        "testSeconds": 0,
+        "exitCode": 101,
+        "signal": null
+      },
+      "resources": {
+        "elapsedMs": 41760.666593,
+        "peakRssKiB": 1112304,
+        "minimumAvailableKiB": 57718080,
+        "minimumScratchFreeBytes": 9029820416,
+        "peakCacheBytes": 7387807744
+      },
+      "guards": {
+        "seconds": 600,
+        "rssMiB": 4096,
+        "availableMiB": 16384,
+        "cacheMiB": 8192,
+        "scratchFreeFloorBytes": 8589934592,
+        "ownedSwapBytes": 0
+      },
+      "terminalAudit": {
+        "time": "2026-10-11T07:33:59.615Z",
+        "auditorStatus": 0,
+        "observedReferences": 0,
+        "observedNativeTasks": 0,
+        "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+      },
+      "sha256": {
+        "recipe.json": "d66f64ba410f04345fe2cb18764b4b936d3fa787cf91113ca8ae1458dc5a0125",
+        "cross-before.log": "b8de208a12f33fecf309fea5b75f88e1bdfdf0e0f4c0e43aff56830d839d6b51",
+        "cross-before.guardian.json": "5d7dae14a1d2860edddf103aa950aedcbd918698a04526f60fbfeaf0422446b9",
+        "preflight.json": "daf992eb8d3bcbf630fd6cd77c6560bae5a211710433880cd694fc231e598893",
+        "terminal-idle.json": "2be5b596a3ffe2f2d70e2f057365f2113e3a70a1b201c69ba505145e256875e5"
+      }
+    },
+    {
+      "attempt": "pr427-grouped-dense-budget-before-20261011",
+      "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+      "countGuard": 2,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-eval-solve",
+        "--lib",
+        "scalar_dense_solve_",
+        "--",
+        "--nocapture"
+      ],
+      "wrapper": "nix develop .#full --command run-focused-cargo-test.py <count> <cargo args>",
+      "result": {
+        "passed": 1,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 288,
+        "testSeconds": 0.01,
+        "exitCode": 101,
+        "signal": null
+      },
+      "resources": {
+        "elapsedMs": 4689.235435,
+        "peakRssKiB": 530260,
+        "minimumAvailableKiB": 58272080,
+        "minimumScratchFreeBytes": 9039376384,
+        "peakCacheBytes": 7387136000
+      },
+      "guards": {
+        "seconds": 600,
+        "rssMiB": 4096,
+        "availableMiB": 16384,
+        "cacheMiB": 8192,
+        "scratchFreeFloorBytes": 8589934592,
+        "ownedSwapBytes": 0
+      },
+      "terminalAudit": {
+        "time": "2026-10-11T07:34:05.555Z",
+        "auditorStatus": 0,
+        "observedReferences": 0,
+        "observedNativeTasks": 0,
+        "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+      },
+      "sha256": {
+        "recipe.json": "7c0a08c6a228bc141cd1d90b7a9e8691d2912bbf9354b9922a09972cd24c6169",
+        "dense-budget-before.log": "fab913a1af01fd55d628a4525704793b0838e6e46018a9c93c3628b2375b88b3",
+        "dense-budget-before.guardian.json": "ba279def0ca5c11084b5e678ab163f1fc21143c976e9a648323e10f53084394a",
+        "preflight.json": "458e0f08781a60e248acd5ad84d23fce14d77b867a29b733ab4fbe8fdb44e04d",
+        "terminal-idle.json": "7e5308486747c36a6fefaaa6bc80713cc5ef10da43da1619a76923f286e67ec6"
+      }
+    },
+    {
+      "attempt": "pr427-grouped-browser-provenance-before-20261011",
+      "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+      "countGuard": 2,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-bind-wasm",
+        "--lib",
+        "source_preview_tests::browser_",
+        "--",
+        "--nocapture"
+      ],
+      "wrapper": "nix develop .#full --command run-focused-cargo-test.py <count> <cargo args>",
+      "result": {
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 72,
+        "testSeconds": 0.06,
+        "exitCode": 101,
+        "signal": null
+      },
+      "resources": {
+        "elapsedMs": 132137.259261,
+        "peakRssKiB": 2433060,
+        "minimumAvailableKiB": 56623204,
+        "minimumScratchFreeBytes": 8947240960,
+        "peakCacheBytes": 7398404096
+      },
+      "guards": {
+        "seconds": 600,
+        "rssMiB": 4096,
+        "availableMiB": 16384,
+        "cacheMiB": 8192,
+        "scratchFreeFloorBytes": 8589934592,
+        "ownedSwapBytes": 0
+      },
+      "terminalAudit": {
+        "time": "2026-10-11T07:36:18.974Z",
+        "auditorStatus": 0,
+        "observedReferences": 0,
+        "observedNativeTasks": 0,
+        "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+      },
+      "sha256": {
+        "recipe.json": "5d8160e2db4a60987655de6a101a29e0bfe5c69d30b8749cc77b333ad4ed7f47",
+        "browser-provenance-before.log": "869f97c14192134a1411e2f1c9767242e33078ba194608f67d4f8b88119b278c",
+        "browser-provenance-before.guardian.json": "5d39561e1f7e91d45b1ef80ce790967572b18c46273456f55a2e4a5fa4d43339",
+        "preflight.json": "fc225271b75543900ad36ab953160452136004debecccc499cc2d0df71f4ca7e",
+        "terminal-idle.json": "7499c7e5c22bc6a8ed7b24c64316d266341b5aa305c56e4b9a6e21226298cf20"
+      }
+    },
+    {
+      "attempt": "pr427-grouped-rendered-path-before-20261011",
+      "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+      "countGuard": 1,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca-bind-wasm",
+        "--lib",
+        "algorithm_preview_classifies_the_rendered_output_path",
+        "--",
+        "--nocapture"
+      ],
+      "wrapper": "nix develop .#full --command run-focused-cargo-test.py <count> <cargo args>",
+      "result": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 73,
+        "testSeconds": 0.02,
+        "exitCode": 101,
+        "signal": null
+      },
+      "resources": {
+        "elapsedMs": 4778.659671,
+        "peakRssKiB": 538548,
+        "minimumAvailableKiB": 58198956,
+        "minimumScratchFreeBytes": 8953335808,
+        "peakCacheBytes": 7387688960
+      },
+      "guards": {
+        "seconds": 600,
+        "rssMiB": 4096,
+        "availableMiB": 16384,
+        "cacheMiB": 8192,
+        "scratchFreeFloorBytes": 8589934592,
+        "ownedSwapBytes": 0
+      },
+      "terminalAudit": {
+        "time": "2026-10-11T07:36:25.002Z",
+        "auditorStatus": 0,
+        "observedReferences": 0,
+        "observedNativeTasks": 0,
+        "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+      },
+      "sha256": {
+        "recipe.json": "92f481182fbaf14783792a9a3de751956631f02683c958da62e226e93d5277c7",
+        "rendered-path-before.log": "59a1bf8ae8219be15c56a71f40a47e0a09956a1fed00150ab2d817d0021e00ee",
+        "rendered-path-before.guardian.json": "bddfbaf1a6bf4861ce0816a234255ad83c8e2f32adc58c3c0fdcbdf03ff76e42",
+        "preflight.json": "8a872fce47b18e50f4b8a5204c9d30d8fe9f0aecc1d52421644f58c663888557",
+        "terminal-idle.json": "f9b40171bcea2d7b1331fe7a5b9018c478416ec237c6a399399abe0f193b2993"
+      }
+    },
+    {
+      "attempt": "pr427-grouped-jax-selected-region-before-20261011",
+      "source": "8e5ba0c3778ca705ce8774ae23c0c885d82accf2",
+      "countGuard": 2,
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "rumoca",
+        "--no-default-features",
+        "--features",
+        "template-runtime-tests",
+        "--test",
+        "suite_template_runtime",
+        "jax_lazy_conditionals::",
+        "--",
+        "--nocapture"
+      ],
+      "wrapper": "nix develop .#full --command run-focused-cargo-test.py <count> <cargo args>",
+      "result": {
+        "passed": 1,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 43,
+        "testSeconds": 2.2,
+        "exitCode": 101,
+        "signal": null
+      },
+      "resources": {
+        "elapsedMs": 156510.27926799998,
+        "peakRssKiB": 2860088,
+        "minimumAvailableKiB": 56429920,
+        "minimumScratchFreeBytes": 8944590848,
+        "peakCacheBytes": 7388602368
+      },
+      "guards": {
+        "seconds": 600,
+        "rssMiB": 4096,
+        "availableMiB": 16384,
+        "cacheMiB": 8192,
+        "scratchFreeFloorBytes": 8589934592,
+        "ownedSwapBytes": 0
+      },
+      "terminalAudit": {
+        "time": "2026-10-11T07:39:02.783Z",
+        "auditorStatus": 0,
+        "observedReferences": 0,
+        "observedNativeTasks": 0,
+        "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only"
+      },
+      "sha256": {
+        "recipe.json": "dbbc26356291b88b7c48cf55d6e0b1ea2909f25756138544b055def853c35824",
+        "jax-selected-region-before.log": "d8f77ced04283e8b148e0cf42f8f0f5f19ae999f74eeb02347e4734bea41ae5d",
+        "jax-selected-region-before.guardian.json": "cfe351e07e44ed7871ea47e0a6a5f1e87b075cb7bf5b493f00f5e6d9411319aa",
+        "preflight.json": "70d13beb82f04b811c287cd31beb46c32a8c909575bf7720347eccbb7a1e51b9",
+        "terminal-idle.json": "5895b2972bbcff6da196b8888a2deb9c4cbda3a90a541d8cb496d93ed316fe4f"
+      }
+    }
+  ]
+}

@@ -430,17 +430,36 @@ fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
 }
 
 #[test]
-fn discrete_row_still_rejects_a_derivative_coordinate() {
+fn checked_b1b_row_substitutes_its_matched_derivative_definition() {
+    // This checked DAE row tests Appendix B.1b's residual capability. The
+    // source declaration obligation is tested independently in rumoca-compile;
+    // a declared source discrete Real still needs an actual when owner.
     let model = derivative_alias_model(true, &[]);
-    let error = lower_solve_problem(&model).unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            LowerError::NonComputable { reason, .. }
-                if reason.contains("escaped checked structural substitution")
-        ),
-        "only continuous algebraic and initial rows resolve a derivative: {error:?}"
+    let solve =
+        lower_solve_problem(&model).expect("the matched derivative has an issued definition");
+    solve
+        .validate()
+        .expect("the checked row satisfies Solve storage contracts");
+    assert_eq!(solve.solve_layout.solver_maps.names, ["x", "a"]);
+    assert_eq!(
+        solve.discrete.update_targets,
+        [solve.layout.binding("d").unwrap()]
     );
+    assert_eq!(solve.discrete.clock_owners, [None]);
+    let parameters = vec![73.0; solve.solve_layout.compiled_parameter_len];
+    for state in [2.0, -3.0, 0.0] {
+        let mut output = [f64::NAN];
+        rumoca_eval_solve::eval_scalar_program_block(
+            &solve.discrete.rhs,
+            &[state, 19.0],
+            &parameters,
+            0.25,
+            None,
+            &mut output,
+        )
+        .expect("the B.1b right-hand side evaluates using the continuous definition");
+        assert_eq!(output, [-state]);
+    }
 }
 
 #[test]

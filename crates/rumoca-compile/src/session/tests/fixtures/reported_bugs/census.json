@@ -1,0 +1,209 @@
+{
+  "base": "14e48c6704f3ebc444b8271eb12519e8be9b3340",
+  "main_at_triage": "0b249f0f7",
+  "baseline_source": "fb7c8217feb436e7691d353b892a549e38980ce5",
+  "baseline_scope": "Historical compiler-only source reproductions 423/424/426 at fb7c8217f: 426 passes; 423/424 fail. No simulation or fixed-20 canary claim.",
+  "combined_source": "Historical published PR421 f84a4304e plus PR427 cfe53b91d assembly, qualified with the integration adapter at 206599d0f: original compiler tests 1 PASS, 2 FAIL. This is not the current workshop candidate.",
+  "current_gate_source": "0db939b75deb0bf8b018c0378a2324537310f1c7: reviewed PR427 report source after test corrections/static-PIE CI preparation; executed results below belong to1447, not this source.",
+  "current_gate_scope": "Exact1447 final focused13PASS and public14 measured12PASS/2FAIL; all10 original issue regression/control tests403/405/411/418/422/423/426 passed. Extra Integer controls failed before numeric evaluation: dynamic model divisor ED018 and structured B.1c affine lowering EL005. C13 Interpreter/Auto exposes actual Cranelift Auto; U4 has one checked owner and11 Cranelift samples0..1. At the same1447 source native browser8/editor catalog1/public no-DAE renderer1 passed. The tracked example CLI stopped during compilation at the8GiB scratch-free floor (exit137); no test result/15-model pass was measured. Test-only corrections present after1447, GNU static-PIE and remaining workshop qualification are unrun here. Actual static-PIE,425 preparation memory/time, full421, final coverage and fixed cohort evidence remain unmeasured.",
+  "issues": [
+    {
+      "number": 403,
+      "model": "GuardedOperands",
+      "source_origin": "Concrete model built from the issue\u2019s stated function/relation shape; the issue has no full Modelica listing.",
+      "baseline": "Historical MLS3.3 profile census: eager Boolean operands are permitted; only if branches guarantee protection. Exact1447 runtime observations/explicit-if/active-fault controls passed; no mandatory short-circuit defect is claimed.",
+      "controls": [
+        "k=1,n=3 reads a[1]",
+        "k=4,n=3 may return 0 through short-circuiting or retain the eager invalid-index fault",
+        "k=4,n=4 must retain the active invalid-index fault",
+        "explicit if with k=4,n=3 must return 0 without reading a[4]"
+      ],
+      "required": [
+        "typed interpreter",
+        "Cranelift",
+        "native WASM"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/403",
+      "source_file": "issue_403.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Exact1447 Boolean profile, explicit-if protection and active-invalid-index controls passed. Interpreter/Auto both exposed permitted eager inactive-operand bounds faults with retained one-based axis/source span; explicit if returned0 and active invalid access faulted. No mandatory short-circuit claim."
+    },
+    {
+      "number": 405,
+      "model": "TopLevel",
+      "baseline": "Input-event repair is merged into main via squash976a5141541a2a8b676a252740143517a9b8ae6c;94cff417c itself is not ancestral. Historical evidence is retained in docs/verification/interactive-input-events.md; exact original schedule passed at1447.",
+      "controls": [
+        "input schedule 0->7 at 0.3, 7->0 at 0.8, 0->7 at 1.3",
+        "when u>3 increments exactly twice",
+        "bit-identical set_input produces no new event",
+        "noEvent and algebraic-alias variants"
+      ],
+      "required": [
+        "interactive SimulationSession up/down schedule",
+        "when edge control"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/405",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_405.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Exact1447 original interactive input schedule passed under Interpreter/Auto. Historical merged repair remains referenced; this is not forced native/WASM or all input-event variants qualification."
+    },
+    {
+      "number": 411,
+      "model": "IntegerPrecision",
+      "source_origin": "Concrete model built from the issue\u2019s stated Integer input and mod expression; the issue has no full Modelica listing.",
+      "baseline": "Historical original main-DAE Integer arithmetic rounded before its quotient. Exact1447 original modulo/division controls passed; two extra controls hit unsupported profile refusals and did not evaluate numerically.",
+      "controls": [
+        "n=0: mod result 5",
+        "div at the same wide Integer value",
+        "literal-only and Integer pure-call forms",
+        "checked overflow at i64 bounds retains typed refusal"
+      ],
+      "required": [
+        "typed interpreter",
+        "Cranelift",
+        "native WASM",
+        "FMI C"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/411",
+      "source_file": "issue_411.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Exact1447 original wide modulo/division, signed operands and scalar ABI controls passed. Public14 nevertheless had two extra control failures before numeric execution: dynamic input divisor ED018 and structured B.1c affine refusal EL005. Reviewed test-only corrections after1447 remain unrun in this receipt."
+    },
+    {
+      "number": 418,
+      "model": "B",
+      "baseline": "Historical main target refused explicit algebraic assignments. Exact1447 original B public JAX rendering passed; that test does not itself execute JAX or prove AD.",
+      "controls": [
+        "state-only der(x)=-2*x",
+        "explicit y=2*x gives rhs=-2*x",
+        "actual residual algebraic solve remains refused",
+        "JAX forward/reverse derivatives agree with -2"
+      ],
+      "required": [
+        "jax-ode public rendering",
+        "JAX execution/AD"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/418",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_418.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Exact1447 original B public JAX rendering passed. Its file assertions do not prove JAX execution/AD; separate backend and final-tip gates remain required."
+    },
+    {
+      "number": 422,
+      "model": "U4",
+      "baseline": "Historical main builder relied on process symbol lookup. Explicit memcmp registration control passed ata137 and original U4 actual native execution passed at1447. Actual GNU/static-PIE link and execution remain unmeasured.",
+      "controls": [
+        "sized and unsized array inputs",
+        "scalar-only function succeeds",
+        "JIT memcmp relocation succeeds with process symbol lookup prohibited in the test",
+        "static-pie original simulation has no panic and y(1)=exp(-1)"
+      ],
+      "required": [
+        "canonical Cranelift builder libcall regression",
+        "actual static-pie build"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/422",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_422.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Canonical no-process-symbol memcmp regression passed ata137. Exact1447 original U4 retained one checked pure-call owner and11 Cranelift samples0..1 with y=exp(-t), no refusal/declined requests. New GNU static-PIE CI links/ELFs/execution and actual musl release/static-PIE remain unmeasured."
+    },
+    {
+      "number": 423,
+      "model": "C13",
+      "baseline": "Exact original source FAILED at fb7c8217f with ED020: domain binder from 0 escaped its structured owner.",
+      "controls": [
+        "mod/div/rem with parameter and literal divisors",
+        "for-equation, initial-equation and parameter-comprehension owners",
+        "parameter zero and dynamic divisors retain required refusals",
+        "continuous dividend still owns its event root"
+      ],
+      "required": [
+        "source compiler reproduction",
+        "canonical DAE admission/replay",
+        "OMC semantic comparison",
+        "full original simulation"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/423",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_423.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Compiler6 passed at673. Exact1447 original C13 settled y(0)=1 and exp(-2t) checkpoints0.02/0.04/0.1/1 passed in Interpreter and Auto, with explicit Cranelift Auto receipt. Internal m is not a public session output. No unrelated OMC/full-cohort claim."
+    },
+    {
+      "number": 424,
+      "model": "C3",
+      "baseline": "Original printed C3 has declared [3,2] versus constructor [2,3], confirmed by MLS and actual pinned OMC at 2a0cbb0fd. The conforming reverse-order issue variant remains a real identity/order regression, repaired separately.",
+      "controls": [
+        "preserved original [3,2] declaration must retain typed shape rejection",
+        "conforming [2,3] constructor values 11,12,13,21,22,23",
+        "explicit nested {{i+10*j for j in 1:2} for i in 1:3} has dimensions [3,2]",
+        "range reads enclosing same-name declaration before introducing its iterator",
+        "last textual outer iterator scopes an inner dependent range; nested shadowing retains distinct DefIds"
+      ],
+      "required": [
+        "precise typed rejection of original source",
+        "conforming constructor compact dimensions and values",
+        "actual OMC comparison retained at pr427-native-copies-after-and-original-comprehension-omc-20261011",
+        "four reproduced Resolve declaration-identity controls before/after"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/424",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_424.mo",
+      "issue_type": "Bug",
+      "closure": "Keep original typed-negative and conforming reverse-order positive distinct. The issue is not closed by rejecting its original printed dimension mismatch; current complete after qualification and merge remain required.",
+      "current_evidence": "Pinned OMC2a rejects original printed [3,2] source versus constructor[2,3]; conforming reverse-order variant remains a real repaired identity/order issue. Resolve5 at718 and compiler6 at673 passed; exact1447 membership3/normal-for1 passed. Original typed-negative and conforming positive are distinct; complete issue closure is not claimed."
+    },
+    {
+      "number": 425,
+      "model": "E30x30",
+      "baseline": "Original source preserved unchanged; current backend preparation memory/time unmeasured.",
+      "controls": [
+        "original grids 20x20,30x30,38x38",
+        "quiescent r=1,mu=0,mv=0,E=2.5 remains exact throughout",
+        "heat stencil with the same state count",
+        "retain compact native kernel inventory rather than tensor expansion"
+      ],
+      "required": [
+        "guarded original backend preparation benchmark",
+        "memory/time against fixed same-source baseline"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/425",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_425.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Original unchanged source retained; guarded original20/30/38 preparation memory/time remains unmeasured. Neither compiler balance nor compact-owner source audit closes this issue."
+    },
+    {
+      "number": 426,
+      "model": "G1",
+      "baseline": "Exact original compiler/balance passed atfb7c8217f;aa3696659 is ancestral to main. Original full11-sample analytic simulation passed at1447.",
+      "controls": [
+        "split boundary row has the same solution",
+        "active invalid index still diagnoses or faults at the checked owner",
+        "2-D neighbor guards and both boundaries",
+        "cached/uncached projection strict and conditional activation remain distinct"
+      ],
+      "required": [
+        "original simulation",
+        "strict active-index controls"
+      ],
+      "url": "https://github.com/CogniPilot/rumoca/issues/426",
+      "source_origin": "Modelica listing from the issue body, preserved verbatim.",
+      "source_file": "issue_426.mo",
+      "issue_type": "Bug",
+      "closure": "Close only after the qualified fix is merged; source/compile evidence alone is not complete runtime qualification.",
+      "current_evidence": "Exact1447 original G1 full11-sample analytic trace passed under Interpreter/Auto. This is not a forced Cranelift/WASM or full neighboring-index capability claim."
+    }
+  ],
+  "current_evidence_file": "docs/verification/pr427-workshop-ci/measured-gates-1447.json"
+}

@@ -53,6 +53,7 @@ use crate::balance::BalanceDetail;
 use algorithm::{
     AlgorithmFunctionCall, AlgorithmStatementContext, lower_algorithm_assignment,
     lower_algorithm_function_call, lower_algorithm_tensor_loop, own_clocked_algorithm_targets,
+    own_clocked_function_outputs,
 };
 use algorithm_lowering::{AlgorithmEnvironment, ModelAlgorithmsRequest, lower_algorithms};
 use analysis::{
@@ -68,14 +69,15 @@ use analysis::{
     MultiOutputEquationPlan, NativeLapackPlan, PartialJoinPlan, PlannedRole, RecordArrayFieldPlan,
     RecordArrayFieldPlans, RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan,
     RecordProjectionStep, RuntimeVariableRole, SemiLinearRules, StructuredSource, WhenBranchKey,
-    analyze, assigned_function_targets, branch_never_completes, collect_algorithm_writes,
-    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
-    function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
-    is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
-    materialized_discrete_value_rows, model_algorithm_targets, names_overlap,
-    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
-    structured_assignment_names, when_conditional_selects_clock_structure,
+    WhenFunctionCallKey, analyze, assigned_function_targets, branch_never_completes,
+    collect_algorithm_writes, discrete_value_assignment, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    flattened_function_loop_source, function_assertion, function_record_field_name,
+    inferred_clock_transfer, is_event_condition, is_inferred_clock_condition,
+    is_whole_clock_coordinate, materialized_discrete_real_family, materialized_discrete_value_rows,
+    model_algorithm_targets, names_overlap, record_field_projections,
+    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
+    when_conditional_selects_clock_structure, when_function_call_key,
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
@@ -516,15 +518,7 @@ fn lower_model_owners<'dae>(
     lower_when_chains(
         construction,
         &mut discrete_values,
-        WhenChainsRequest::new(
-            coordinates,
-            functions,
-            &analysis.sample_lattices,
-            clocks,
-            &flat.when_chains,
-            &analysis.discrete_value_topology,
-            &analysis.clocked_when_owners,
-        ),
+        WhenChainsRequest::new(coordinates, functions, clocks, flat, analysis),
     )?;
     discrete_values.add_holds(construction, coordinates, &analysis.discrete_value_topology)?;
     discrete_values.finish(construction, &analysis.discrete_value_topology)
@@ -575,6 +569,7 @@ fn lower_attribute_expression<'dae>(
     lower_expression_scoped(
         construction,
         LoweringSymbols {
+            source_comprehension_binders: None,
             coordinates,
             functions,
             // A variable's attribute and binding values keep their MLS §3.6.5
@@ -898,6 +893,7 @@ fn lower_structured_equations<'dae>(
                 .iter()
                 .map(|body| {
                     let symbols = LoweringSymbols {
+                        source_comprehension_binders: None,
                         coordinates,
                         functions,
                         shapes: &scoped_shapes,
@@ -998,6 +994,14 @@ fn structured_family_partition<'flat>(
     template: &'flat rumoca_core::ComprehensionTemplate,
     environment: StructuredEquationEnvironment<'flat, '_>,
 ) -> StructuredFamilyPartition<'flat> {
+    if let Some(assignment) = environment.aggregate_connections.source_family_assignment(
+        environment.flat,
+        family,
+        template,
+        environment.roles,
+    ) {
+        return StructuredFamilyPartition::DiscreteValue(vec![assignment]);
+    }
     let assignments = template
         .body
         .iter()
@@ -1112,6 +1116,7 @@ fn lower_structured_discrete_family<'dae>(
         .expect("a structured discrete family has one planned B.1c owner");
     for plan in input.assignments {
         let symbols = LoweringSymbols {
+            source_comprehension_binders: None,
             coordinates: input.coordinates,
             functions: input.functions,
             shapes: input.shapes,

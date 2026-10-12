@@ -267,13 +267,7 @@ impl MslTargetScope {
 /// MSL target scope (default: root examples). The parity config can select
 /// `default-simulation-targets` to run the committed target file instead.
 pub(super) fn msl_target_scope() -> MslTargetScope {
-    match parity_config().target_scope.as_deref() {
-        None | Some("root-examples") => MslTargetScope::RootExamples,
-        Some("default-simulation-targets") => MslTargetScope::DefaultSimulationTargets,
-        Some(other) => panic!(
-            "invalid target_scope '{other}' in MSL parity config (expected 'root-examples' or 'default-simulation-targets')"
-        ),
-    }
+    parity_config().target_scope()
 }
 
 impl std::fmt::Display for SimSetMode {
@@ -289,14 +283,7 @@ impl std::fmt::Display for SimSetMode {
 /// Simulation set to run (default: full). The parity config can select
 /// `short`/`long` to run a curated lexical subset.
 pub(super) fn sim_set_mode() -> SimSetMode {
-    match parity_config().sim_set.as_deref() {
-        None | Some("full") => SimSetMode::Full,
-        Some("short") => SimSetMode::Short,
-        Some("long") => SimSetMode::Long,
-        Some(other) => panic!(
-            "invalid sim_set '{other}' in MSL parity config (expected 'full', 'short', or 'long')"
-        ),
-    }
+    parity_config().sim_set_mode()
 }
 
 pub(super) fn sim_set_limit() -> usize {
@@ -563,13 +550,7 @@ pub(super) fn sim_subset_exact_match_enabled() -> bool {
 /// `None` for an un-sharded run. A bad pair (`m` out of range, `n == 0`) is
 /// treated as un-sharded rather than silently dropping every model.
 pub(super) fn sim_shard() -> Option<(usize, usize)> {
-    let config = parity_config();
-    match (config.shard_index, config.shard_count) {
-        (Some(index), Some(count)) if count >= 1 && index >= 1 && index <= count => {
-            Some((index, count))
-        }
-        _ => None,
-    }
+    parity_config().shard()
 }
 
 /// Keep only this shard's stripe of `names`. `names` is already in slowest-first

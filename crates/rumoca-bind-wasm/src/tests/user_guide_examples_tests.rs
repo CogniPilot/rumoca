@@ -4,8 +4,9 @@
 //! the CPU path offered when WebGPU is unavailable.
 #![cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 
+use super::user_guide_samples::{finite_sample_grid, finite_vector};
 use super::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// One fenced ```` ```modelica,…,gpu ```` block of the user guide.
 struct GuideGpuExample {
@@ -15,68 +16,19 @@ struct GuideGpuExample {
     interactive: bool,
 }
 
-fn user_guide_src() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user-guide/src")
-}
-
-fn markdown_pages(dir: &Path, pages: &mut Vec<PathBuf>) {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
-        .map(|entry| entry.expect("guide directory entry").path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            markdown_pages(&path, pages);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            pages.push(path);
-        }
-    }
-}
-
-fn top_level_model_name(source: &str) -> Option<String> {
-    source.lines().rev().find_map(|line| {
-        let rest = line.strip_prefix("model ")?;
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        (!name.is_empty()).then_some(name)
-    })
-}
-
 fn guide_gpu_examples() -> Vec<GuideGpuExample> {
-    let mut pages = Vec::new();
-    markdown_pages(&user_guide_src(), &mut pages);
-    let mut examples = Vec::new();
-    for page in pages {
-        let text = std::fs::read_to_string(&page)
-            .unwrap_or_else(|error| panic!("read {}: {error}", page.display()));
-        let mut lines = text.lines();
-        while let Some(line) = lines.next() {
-            let Some(info) = line.strip_prefix("```modelica") else {
-                continue;
-            };
-            let flags: Vec<&str> = info.split(',').map(str::trim).collect();
-            let body: Vec<&str> = lines
-                .by_ref()
-                .take_while(|l| !l.starts_with("```"))
-                .collect();
-            if !flags.contains(&"gpu") {
-                continue;
-            }
-            let source = body.join("\n") + "\n";
-            let model = top_level_model_name(&source)
-                .unwrap_or_else(|| panic!("GPU example in {} names no model", page.display()));
-            examples.push(GuideGpuExample {
-                page: page.clone(),
-                model,
-                source,
-                interactive: flags.contains(&"interactive"),
-            });
-        }
-    }
-    examples
+    super::user_guide_sources::guide_fences()
+        .into_iter()
+        .filter(|fence| fence.has_flag("gpu"))
+        .map(|fence| GuideGpuExample {
+            model: fence.model_name().unwrap_or_else(|| {
+                panic!("GPU example in {} names no model", fence.page.display())
+            }),
+            interactive: fence.has_flag("interactive"),
+            page: fence.page,
+            source: fence.source,
+        })
+        .collect()
 }
 
 /// The Interactive toggle of the live runner flips the structural
@@ -115,6 +67,30 @@ fn prepare_guide_gpu_payload(example: &GuideGpuExample, source: &str) -> serde_j
         "{} must expose integrated states to the GPU driver",
         example.model
     );
+    for (vector, extent) in [("y0", "y_len"), ("p0", "p_len")] {
+        let len = payload["layout"][extent]
+            .as_u64()
+            .and_then(|len| usize::try_from(len).ok())
+            .expect("the checked shader layout issues a physical vector extent");
+        finite_vector(&payload[vector], len)
+            .unwrap_or_else(|error| panic!("{} {vector}: {error}", example.model));
+    }
+    let state_count = payload["n_states"].as_u64().unwrap();
+    assert_eq!(
+        payload["state_names"].as_array().unwrap().len() as u64,
+        state_count
+    );
+    assert!(state_count <= payload["layout"]["y_len"].as_u64().unwrap());
+    for setting in ["t_start", "t_end", "dt", "internal_dt"] {
+        assert!(
+            payload[setting].as_f64().is_some_and(f64::is_finite),
+            "{} finite {setting}",
+            example.model
+        );
+    }
+    assert!(payload["t_end"].as_f64().unwrap() > payload["t_start"].as_f64().unwrap());
+    assert!(payload["dt"].as_f64().unwrap() > 0.0);
+    assert!(payload["internal_dt"].as_f64().unwrap() > 0.0);
     payload
 }
 
@@ -162,29 +138,77 @@ fn user_guide_gpu_examples_simulate_on_the_cpu_path() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
 
+    let mut airfoil_live_covered = false;
     for example in guide_gpu_examples() {
-        let json = simulate_model(&example.source, &example.model, 0.02, 0.01, "auto", "{}")
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{} ({}) must simulate on the CPU path: {error}",
-                    example.model,
-                    example.page.display()
-                )
-            });
-        let simulation: serde_json::Value =
-            serde_json::from_str(&json).expect("simulation payload should be valid JSON");
-        let times = simulation
-            .pointer("/payload/allData/0")
-            .and_then(serde_json::Value::as_array)
-            .expect("simulation payload should include sampled times");
-        assert!(
-            times.len() >= 2,
-            "{} must produce samples on the CPU path",
-            example.model
-        );
+        simulate_guide_cpu(&example, &example.source);
+        let live_source = if example.interactive {
+            live_input_source(&example.source)
+        } else {
+            None
+        };
+        if example.model == "AirfoilFlow" {
+            assert!(
+                live_source.is_some(),
+                "AirfoilFlow must retain its Interactive source variant"
+            );
+        }
+        if let Some(live_source) = live_source {
+            let simulation = simulate_guide_cpu(&example, &live_source);
+            if example.model == "AirfoilFlow" {
+                assert_airfoil_default_inputs(&simulation);
+                airfoil_live_covered = true;
+            }
+        }
     }
+    assert!(airfoil_live_covered, "the live Airfoil CPU path must run");
 
     clear_source_root_cache().expect("clear source-root cache");
+}
+
+fn simulate_guide_cpu(example: &GuideGpuExample, source: &str) -> serde_json::Value {
+    let json =
+        simulate_model(source, &example.model, 0.02, 0.01, "auto", "{}").unwrap_or_else(|error| {
+            panic!(
+                "{} ({}) must simulate on the CPU path: {error}",
+                example.model,
+                example.page.display()
+            )
+        });
+    let simulation: serde_json::Value =
+        serde_json::from_str(&json).expect("simulation payload should be valid JSON");
+    finite_sample_grid(&simulation, &[0.0, 0.01, 0.02])
+        .unwrap_or_else(|error| panic!("{} CPU samples: {error}", example.model));
+    simulation
+}
+
+fn assert_airfoil_default_inputs(simulation: &serde_json::Value) {
+    let names = simulation["payload"]["names"]
+        .as_array()
+        .expect("named CPU sample channels");
+    let columns = simulation["payload"]["allData"].as_array().unwrap();
+    assert_eq!(columns.len(), names.len() + 1, "time plus named channels");
+    // With no host input frame, the authored bindings command each actuator's
+    // initial value. Its first-order motor must therefore stay at that value.
+    for (input, motor, default) in [
+        ("aoa_cmd", "aoa_motor", 8.0),
+        ("mc", "mc_motor", 0.02),
+        ("pc", "pc_motor", 0.4),
+        ("tk", "tk_motor", 0.12),
+    ] {
+        for name in [input, motor] {
+            let index = names
+                .iter()
+                .position(|value| value.as_str() == Some(name))
+                .unwrap_or_else(|| panic!("AirfoilFlow must sample {name}"));
+            for sample in columns[index + 1].as_array().unwrap() {
+                let actual = sample.as_f64().unwrap();
+                assert!(
+                    (actual - default).abs() < 1e-9,
+                    "AirfoilFlow {name}: {actual} != authored default {default}"
+                );
+            }
+        }
+    }
 }
 
 /// The airfoil's AoA slider re-runs the GPU path through

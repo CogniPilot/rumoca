@@ -1,5 +1,5 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import copy, binary %}
+{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary %}
 {%- macro bounds(index, extent) -%}
 if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% endmacro %}
@@ -10,12 +10,18 @@ if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif -%}
 {% if op.operation == "reduce" -%}
 {% set operators = {"sum":"add", "product":"multiply", "minimum":"min", "maximum":"max", "all":"and"} -%}
-{% if op.operator not in operators or not ((ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" and op.operator != "all") or (ty.scalar.kind == "boolean" and op.operator == "all")) %}{{ fail("unsupported-feature:fmi.c.pure-call: reduction type or operator") }}{% endif -%}
+{% if op.operator not in operators or not (((ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64") or ty.scalar.kind == "integer") and op.operator != "all" or (ty.scalar.kind == "boolean" and op.operator in ["all", "minimum", "maximum"])) %}{{ fail("unsupported-feature:fmi.c.pure-call: reduction type or operator") }}{% endif -%}
 {% set count = program.register_types[op.operand].scalar_count -%}
 {#- Match the typed evaluator's eval_reduce: seed with the first element, then
     combine in order. An extra identity changes NaNs and signed zeros. -#}
 {{ dst }}[0]=r{{ op.operand }}[0];
-for (size_t k=1; k<{{ count }}; ++k) {{ dst }}[0] = {{ binary(operators[op.operator], dst ~ "[0]", "r" ~ op.operand ~ "[k]") }};
+for (size_t k=1; k<{{ count }}; ++k) {
+{% if ty.scalar.kind == "integer" -%}
+{{ integer_binary(operators[op.operator], dst ~ "[0]", dst ~ "[0]", "r" ~ op.operand ~ "[k]") -}}
+{% else -%}
+{{ dst }}[0] = {{ binary(operators[op.operator], dst ~ "[0]", "r" ~ op.operand ~ "[k]") }};
+{% endif -%}
+}
 {% elif op.operation == "fill" -%}
 for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.value }}[0];
 {% elif op.operation == "identity" -%}
@@ -112,6 +118,61 @@ offset+=({{ axis.span.origin }}+rest%{{ axis.span.extent }})*{{ stride }}; rest/
 {% else -%}
 {{ dst }}[k]=r{{ op.aggregate }}[offset];
 {% endif -%}
+}
+{% elif op.operation == "broadcast_binary" -%}
+{% set a = "r" ~ op.aggregate ~ "[k]" -%}
+{% set b = "r" ~ op.scalar ~ "[0]" -%}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {
+{% if ty.scalar.kind == "integer" -%}
+{{ integer_binary(op.operator, dst ~ "[k]", b if op.scalar_on_lhs else a, a if op.scalar_on_lhs else b) -}}
+{% else -%}
+{{ dst }}[k]={{ binary(op.operator, b if op.scalar_on_lhs else a, a if op.scalar_on_lhs else b) }};
+{% endif -%}
+}
+{% elif op.operation in ["project_slice", "update_slice"] -%}
+{#- Rank-preserving compact block at a zero-based origin; the block's own
+    shape is the destination's (project) or the value's (update). -#}
+{% set shape = program.register_types[op.aggregate].dimensions -%}
+{% set block = program.register_types[op.value].dimensions if op.operation == "update_slice" else ty.dimensions -%}
+{% set count = program.register_types[op.value].scalar_count if op.operation == "update_slice" else ty.scalar_count -%}
+{% if op.operation == "update_slice" %}{{ copy(dst, "r" ~ op.aggregate) }}{% endif -%}
+for (size_t k=0; k<{{ count }}; ++k) { size_t rest=k; size_t offset=0; (void)rest;
+{% for i in range(block|length)|reverse -%}
+{% set stride = shape[i+1:]|product -%}
+offset+=({{ op.origin[i] }}+rest%{{ block[i] }})*{{ stride }}; rest/={{ block[i] }};
+{% endfor -%}
+{% if op.operation == "update_slice" -%}
+{{ dst }}[offset]=r{{ op.value }}[k];
+{% else -%}
+{{ dst }}[k]=r{{ op.aggregate }}[offset];
+{% endif -%}
+}
+{% elif op.operation == "select_element" -%}
+{#- Dynamic one-based element read that yields the fallback instead of
+    failing when any coordinate is out of range. -#}
+{% set shape = program.register_types[op.aggregate].dimensions -%}
+{ size_t index=0; int in_range=1;
+{% for index in op.indices -%}
+if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ shape[loop.index0] }}) in_range=0;
+index=index*{{ shape[loop.index0] }}+(in_range ? (size_t)(r{{ index }}[0]-1) : 0);
+{% endfor -%}
+{{ dst }}[0]=in_range ? r{{ op.aggregate }}[index] : r{{ op.out_of_range }}[0];
+}
+{% elif op.operation == "linear_solve" -%}
+{#- Dense square solve by Gaussian elimination with partial pivoting on a
+    private copy; a zero pivot is a runtime failure. -#}
+{% set n = program.register_types[op.matrix].dimensions[0] -%}
+{% set m = program.register_types[op.rhs].dimensions -%}
+{% set columns = 1 if m|length == 1 else m[1] -%}
+{ double A[{{ n * n }}]; double B[{{ n * columns }}];
+memcpy(A, r{{ op.matrix }}, sizeof(A)); memcpy(B, r{{ op.rhs }}, sizeof(B));
+for (size_t c=0; c<{{ n }}; ++c) {
+size_t p=c; for (size_t i=c+1; i<{{ n }}; ++i) if (fabs(A[i*{{ n }}+c])>fabs(A[p*{{ n }}+c])) p=i;
+if (A[p*{{ n }}+c]==0.0) return 1;
+if (p!=c) { for (size_t j=0; j<{{ n }}; ++j) { double t=A[c*{{ n }}+j]; A[c*{{ n }}+j]=A[p*{{ n }}+j]; A[p*{{ n }}+j]=t; } for (size_t j=0; j<{{ columns }}; ++j) { double t=B[c*{{ columns }}+j]; B[c*{{ columns }}+j]=B[p*{{ columns }}+j]; B[p*{{ columns }}+j]=t; } }
+for (size_t i=c+1; i<{{ n }}; ++i) { double f=A[i*{{ n }}+c]/A[c*{{ n }}+c]; for (size_t j=c; j<{{ n }}; ++j) A[i*{{ n }}+j]-=f*A[c*{{ n }}+j]; for (size_t j=0; j<{{ columns }}; ++j) B[i*{{ columns }}+j]-=f*B[c*{{ columns }}+j]; }
+}
+for (size_t ii=0; ii<{{ n }}; ++ii) { size_t i={{ n }}-1-ii; for (size_t j=0; j<{{ columns }}; ++j) { double s=B[i*{{ columns }}+j]; for (size_t k=i+1; k<{{ n }}; ++k) s-=A[i*{{ n }}+k]*{{ dst }}[k*{{ columns }}+j]; {{ dst }}[i*{{ columns }}+j]=s/A[i*{{ n }}+i]; } }
 }
 {% else %}{{ fail("unsupported-feature:fmi.c.pure-call: tensor " ~ op.operation) }}{% endif -%}
 {% endmacro %}

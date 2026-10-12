@@ -157,6 +157,11 @@ if (rumoca_pure_{{ kind }}{{ owner.id }}((const void*[]){ {% for ty in owner.inp
     unit's interface. -#}
 {%- macro functions(table, directional=[]) -%}
 {% if table.owners|length > 0 -%}
+{#- Only typed constants call it, so a unit without one must not trip
+    `-Wunused-function` under the wasm build's `-Werror`. #}
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
 static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }
 {% endif -%}
 {% for owner in table.owners %}static int rumoca_pure_{{ owner.id }}(const void* const in[], void* const out[]);{% endfor %}

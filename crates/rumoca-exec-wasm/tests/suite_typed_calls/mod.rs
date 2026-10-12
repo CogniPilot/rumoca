@@ -162,6 +162,7 @@ fn nested_conditional_inside_fold_retains_activation_and_full_fault_path() {
 fn domain(lower: i64, upper: i64, step: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 9,
             display_name: "coordinate".into(),
             lower,

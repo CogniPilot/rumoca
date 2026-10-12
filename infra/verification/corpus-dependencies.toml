@@ -1,0 +1,15 @@
+version = 1
+
+# Numerical flight pins use their historical source input. The independent
+# modelica-models compatibility gate keeps its own revision.
+[libraries.flight_models]
+display_name = "Numerical flight corpus"
+version = "3d6204e7a907e452e08c46cd63352d6365089a38"
+url = "https://github.com/CogniPilot/modelica_models/archive/3d6204e7a907e452e08c46cd63352d6365089a38.zip"
+sha256 = "9475fdc2e27df233a1c8b8debddbbc56765c9559c69938a1583df2210c3aec6f"
+cache_dir = "target/verification/corpus-dependencies/modelica_models-3d6204e7"
+zip_layout = "auto-strip-common-root"
+required_files = [
+  "Estimation/StrapdownINS/UKF/package.mo",
+  "Vehicles/Cubs2/Test/Scenarios.mo",
+]

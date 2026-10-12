@@ -48,8 +48,25 @@ fn dependent_slices_and_reductions_solve_the_exact_system() {
         .model("TriangularSolve")
         .compile_str(SOURCE, "TriangularSolve.mo")
         .expect("triangular loop domains have compact checked owners");
-    let simulation =
-        simulate_dae(&compiled.dae, &SimOptions::default()).expect("the elimination simulates");
+    let options = SimOptions::default();
+    let simulation = simulate_dae(&compiled.dae, &options).expect("the elimination simulates");
+    assert!(
+        simulation.termination.is_none(),
+        "the complete interval is required"
+    );
+    assert!(
+        simulation.times.len() > 1,
+        "the numerical oracle must execute"
+    );
+    assert_eq!(simulation.times[0], options.t_start);
+    assert_eq!(*simulation.times.last().unwrap(), options.t_end);
+    assert!(simulation.times.iter().all(|time| time.is_finite()));
+    assert!(
+        simulation
+            .times
+            .windows(2)
+            .all(|times| times[0] <= times[1])
+    );
     for (name, expected) in [
         ("x[1]", 2.0 / 9.0),
         ("x[2]", 1.0 / 9.0),
@@ -60,6 +77,7 @@ fn dependent_slices_and_reductions_solve_the_exact_system() {
             .iter()
             .position(|candidate| candidate == name)
             .unwrap_or_else(|| panic!("simulation exposes {name}"));
+        assert_eq!(simulation.data[output].len(), simulation.times.len());
         assert!(
             simulation.data[output]
                 .iter()

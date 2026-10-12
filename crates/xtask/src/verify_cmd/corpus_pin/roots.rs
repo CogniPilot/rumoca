@@ -1,30 +1,14 @@
-//! Finding the two corpora, and refusing to run when either one is not there.
-//!
-//! # Why no path in the repository
-//!
-//! The flight corpus is an out-of-tree checkout. A machine path committed here
-//! would be wrong for everyone except the machine it was written on, and a
-//! `RUMOCA_*` environment variable is banned outright by SPEC_0018. So the root
-//! arrives at RUN time only, through channels SPEC_0018 names: argv first, then
-//! a fixed-path config file under `target/`, then the location CI already
-//! checks the pinned corpus out to, then the Modelica-standard `MODELICAPATH`
-//! (a pass-through variable, explicitly out of scope for the `RUMOCA_*` rule,
-//! and already how the sibling RDD2 gates find this same corpus).
-//!
-//! # Why absence is red
-//!
-//! [`CORPUS_UNMEASURED_HEADLINE`] mirrors `parity unmeasured` exactly. A gate
-//! that skips when its corpus is missing reports "ok" for a run in which
-//! nothing was compared, which is the one failure mode an oracle net cannot
-//! tolerate: the green tick would mean "not measured" and read as "correct".
+//! Qualified numerical corpus inputs. Flight sources are checked against the
+//! immutable verification archive before workers start. Explicit argv/config
+//! roots remain authoritative and fail closed instead of selecting another input.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::manifest::{Corpus, CorpusManifest};
+use crate::modelica_dependency_cache::{QualifiedSource, qualify_flight_source};
 
 /// Fixed headline for a run that could not measure a corpus. Operators and CI
 /// summaries grep for this exact text, so it is spelled once.
@@ -36,10 +20,6 @@ pub(crate) const CORPUS_UNMEASURED_HEADLINE: &str =
 /// carry the value; here it is what lets `cargo xtask verify full` run the gate
 /// without every caller retyping the path.
 pub(crate) const CONFIG_PATH: &str = "target/verification/corpus-config.json";
-
-/// Where CI checks the pinned `modelica_models` revision out to. Trying it
-/// keeps the CI job and a local run on the same resolution order.
-const CI_FLIGHT_MODELS_PATH: &str = "target/modelica-models";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,15 +34,19 @@ pub(crate) struct CorpusConfig {
 /// manifest asks of it.
 #[derive(Debug)]
 pub(crate) struct CorpusRoots {
-    pub(crate) flight_models: PathBuf,
+    flight_models: Option<QualifiedSource>,
     pub(crate) msl: PathBuf,
 }
 
 impl CorpusRoots {
-    pub(crate) fn root_for(&self, corpus: Corpus) -> &Path {
+    pub(crate) fn root_for(&self, corpus: Corpus) -> Result<&Path> {
         match corpus {
-            Corpus::FlightModels => &self.flight_models,
-            Corpus::Msl => &self.msl,
+            Corpus::FlightModels => Ok(self
+                .flight_models
+                .as_ref()
+                .context("flight corpus was not selected")?
+                .root()),
+            Corpus::Msl => Ok(&self.msl),
         }
     }
 }
@@ -81,35 +65,15 @@ pub(crate) fn read_config(root: &Path) -> Result<Option<CorpusConfig>> {
     Ok(Some(config))
 }
 
-/// Candidate flight-model roots in resolution order.
-pub(super) fn flight_model_candidates(
-    root: &Path,
-    from_argv: Option<&Path>,
-    config: Option<&CorpusConfig>,
-) -> Vec<(String, PathBuf)> {
-    // An explicitly named root is authoritative, never a preference: if it is
-    // unusable the gate reports "corpus unmeasured" rather than silently
-    // measuring whatever fallback happens to be usable. A developer who
-    // mistypes a path, or whose checkout is one file short, must see the
-    // refusal, not a green run against a different corpus.
-    if let Some(path) = from_argv {
-        return vec![("--models-root".to_string(), path.to_path_buf())];
-    }
-    let mut candidates = Vec::new();
-    if let Some(path) = config.and_then(|config| config.models_root.as_deref()) {
-        candidates.push((format!("{CONFIG_PATH} models_root"), path.to_path_buf()));
-    }
-    candidates.push((
-        CI_FLIGHT_MODELS_PATH.to_string(),
-        root.join(CI_FLIGHT_MODELS_PATH),
-    ));
-    if let Some(raw) = env::var_os("MODELICAPATH") {
-        candidates.extend(env::split_paths(&raw).map(|path| ("MODELICAPATH".to_string(), path)));
-    }
-    candidates
+/// Explicit roots are authoritative, including a root named in the config.
+pub(super) fn named_flight_root<'a>(
+    from_argv: Option<&'a Path>,
+    config: Option<&'a CorpusConfig>,
+) -> Option<&'a Path> {
+    from_argv.or_else(|| config.and_then(|config| config.models_root.as_deref()))
 }
 
-/// Resolve both roots or fail closed.
+/// Resolve and qualify the selected corpora exactly once before launching workers.
 pub(crate) fn resolve(
     root: &Path,
     manifest: &CorpusManifest,
@@ -117,32 +81,50 @@ pub(crate) fn resolve(
     msl: PathBuf,
     config: Option<&CorpusConfig>,
 ) -> Result<CorpusRoots> {
-    let candidates = flight_model_candidates(root, from_argv, config);
-    let flight_models = first_usable(manifest, Corpus::FlightModels, &candidates)
-        .ok_or_else(|| unmeasured(root, manifest, Corpus::FlightModels, &candidates))?;
-    let msl_candidates = vec![("the cached MSL release".to_string(), msl)];
-    let msl = first_usable(manifest, Corpus::Msl, &msl_candidates)
-        .ok_or_else(|| unmeasured(root, manifest, Corpus::Msl, &msl_candidates))?;
+    let flight_models = if manifest
+        .entries
+        .iter()
+        .any(|entry| entry.corpus == Corpus::FlightModels)
+    {
+        let source = qualify_flight_source(root, named_flight_root(from_argv, config))
+            .context(CORPUS_UNMEASURED_HEADLINE)?;
+        let candidates = [(
+            "qualified flight source".to_string(),
+            source.root().to_path_buf(),
+        )];
+        require_entry_points(root, manifest, Corpus::FlightModels, &candidates)?;
+        println!(
+            "  flight input: {} (archive SHA-256 {})",
+            source.revision(),
+            source.archive_sha256()
+        );
+        Some(source)
+    } else {
+        None
+    };
+    require_entry_points(
+        root,
+        manifest,
+        Corpus::Msl,
+        &[("MSL release".to_string(), msl.clone())],
+    )?;
     Ok(CorpusRoots { flight_models, msl })
 }
 
-/// The first candidate that carries every entry point the manifest names for
-/// this corpus.
-///
-/// "Carries every entry point" rather than "exists": a directory that happens
-/// to be there but holds none of the models would otherwise be accepted and
-/// then fail every row with a compiler error, reporting a compiler regression
-/// where the real fact is that nothing was measured.
-fn first_usable(
+fn require_entry_points(
+    root: &Path,
     manifest: &CorpusManifest,
     corpus: Corpus,
     candidates: &[(String, PathBuf)],
-) -> Option<PathBuf> {
-    candidates
+) -> Result<()> {
+    if candidates
         .iter()
-        .map(|(_, path)| path)
-        .find(|path| missing_entry_points(manifest, corpus, path).is_empty())
-        .cloned()
+        .all(|(_, path)| missing_entry_points(manifest, corpus, path).is_empty())
+    {
+        Ok(())
+    } else {
+        Err(unmeasured(root, manifest, corpus, candidates))
+    }
 }
 
 fn missing_entry_points(manifest: &CorpusManifest, corpus: Corpus, root: &Path) -> Vec<String> {
@@ -188,13 +170,10 @@ fn describe_miss(missing: &[String]) -> String {
 fn remedy(root: &Path, corpus: Corpus) -> String {
     match corpus {
         Corpus::FlightModels => format!(
-            "  Point the gate at your checkout, either way:\n    \
-             cargo xtask verify corpus-pin --models-root /path/to/modelica_models\n  or write \
-             the path once:\n    mkdir -p {parent} && printf '{{\"models_root\": \
-             \"/path/to/modelica_models\"}}\\n' > {config}\n  This is a hard failure rather \
-             than a skip: a green run that compared nothing would report the corpus as correct.",
-            parent = root.join("target/verification").display(),
-            config = config_path(root).display(),
+            "  Without --models-root or a models_root in {}, the gate provisions the immutable \
+             numerical flight input from infra/verification/corpus-dependencies.toml. An explicit \
+             root must match every source file in that archive; it is never replaced by a fallback.",
+            config_path(root).display(),
         ),
         Corpus::Msl => format!(
             "  The MSL release is normally provisioned into {}. Run any MSL gate once to \
@@ -202,21 +181,4 @@ fn remedy(root: &Path, corpus: Corpus) -> String {
             root.join("target/msl").display()
         ),
     }
-}
-
-/// Refuse a root that exists but is not the corpus, before anything is run.
-pub(crate) fn ensure_usable(manifest: &CorpusManifest, roots: &CorpusRoots) -> Result<()> {
-    for corpus in [Corpus::FlightModels, Corpus::Msl] {
-        let root = roots.root_for(corpus);
-        let missing = missing_entry_points(manifest, corpus, root);
-        if !missing.is_empty() {
-            bail!(
-                "{CORPUS_UNMEASURED_HEADLINE}\n  corpus: {} at {}\n  missing entry points: {}",
-                corpus.label(),
-                root.display(),
-                missing.join(", ")
-            );
-        }
-    }
-    Ok(())
 }

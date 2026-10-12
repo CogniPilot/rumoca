@@ -30,9 +30,11 @@ rumoca sim -c examples/simulation/rumoca-scenario.neural_ode_tensor.toml
 
 ## What the Model Does
 
-The core equations are three matrix-vector layers with smooth activations:
+The core equations are three matrix-vector layers with smooth activations.
+This excerpt keeps the activation equations inside their respective
+`for i in 1:nHidden loop` sections in the complete `NeuralODETensor.mo` model:
 
-```modelica
+```modelica,fragment,context-neural-tensor
 z1 = W1 * x;
 a1[i] = tanh(z1[i] + b1[i]);
 z2 = Wmid * a1;
@@ -71,7 +73,7 @@ The committed scenario uses `H = 32`, which is small enough for a quick browser
 run and gives `1186` trainable parameters. To exercise a roughly 100k-parameter
 model, edit `nHidden` in `examples/models/NeuralODETensor.mo`:
 
-```modelica
+```modelica,fragment,context-neural-width
 parameter Integer nHidden(min = 2) = 314;
 ```
 
@@ -90,19 +92,13 @@ trainables, objective, gradient method, and optimizer.
 The first supported API shape is RHS fitting, which is the core Neural ODE
 vector-field training problem:
 
+The following code uses `compiled` from compiling the unchanged
+`NeuralODETensor.mo` model and a two-element `target_derivatives` vector.
+It selects independent first- and second-layer biases from `parameter_slots()`.
+The excerpt is included directly from its executable Rust test:
+
 ```rust
-let mut model = rumoca_opt::DifferentiableModel::from_dae_default(
-    &compiled.dae,
-    &rumoca_solver::SimOptions::default(),
-)?;
-let trainables = rumoca_opt::TrainableSet::by_names(&model, &["W[1,1]", "b[1]"])?;
-let objective = rumoca_opt::RhsMseObjective::new(0.0, target_derivatives);
-let gradient = rumoca_opt::rhs_mse_value_and_gradient(
-    &model,
-    &objective,
-    &trainables,
-    rumoca_opt::GradientMode::Auto,
-)?;
+{{#include ../../../../crates/rumoca-opt/src/tests.rs:guide-rhs-fit}}
 ```
 
 `GradientMode::Auto` uses reverse-mode VJP for pure ODE models and falls back
@@ -141,14 +137,19 @@ enabled. It reports:
   diagnostics, and full integration.
 - A `comparison` block with Rumoca ready time versus JAX integrated compile
   time, hot-loop ratio, structural-prepare fraction, and max parity error.
-- Accuracy checks for initial parameters, observables, gradients, final
-  parameters, and JAX manual gradients versus `jax.value_and_grad`.
+- Accuracy comparisons for the six Rumoca output observables at the initial
+  and final times, plus all 1082 JAX manual gradients versus
+  `jax.value_and_grad`. The visible-output CSV does not expose internal
+  trainable states or gradients, so the report explicitly leaves their
+  cross-backend parity unavailable.
 
 Use Rumoca `ready_seconds` versus JAX `integrate_compile_seconds` when you care
 about first-run wait time. The benchmark also makes clear which Rumoca path is
-being measured: the native Solve IR CPU simulator executes the Modelica
+being measured: the Solve IR CPU simulator executes the Modelica
 backpropagation equations, while the JAX side uses `jax.value_and_grad` for the
-same RHS.
+same RHS. Mandatory Linux wheel CI and `cargo xtask python test --require-guide`
+also check all eleven output samples against the independent JAX trajectory.
+Timings remain measurements; numerical assertions determine correctness.
 
 ## Using Trained Weights
 
@@ -181,7 +182,7 @@ normalized prey and predator populations. The neural network reads normalized
 prey, normalized predator, and a seasonal forcing term, then outputs per-capita
 growth rates:
 
-```modelica
+```modelica,fragment,context-neural-population
 features[1] = population[1] / preyEquilibrium - 1.0;
 features[2] = population[2] / predatorEquilibrium - 1.0;
 features[3] = sin(seasonRate * time);
@@ -232,7 +233,7 @@ in latent space, and the decoder is another learned map.
 `NeuralLatentOscillator` uses eight latent states, three decoded output
 channels, time features, a large recurrent tensor block, and a learned decoder:
 
-```modelica
+```modelica,fragment,context-neural-observed
 z1 = W1 * features;
 z2 = Wmid * a1;
 latentResidual = Wdyn * a2 + bdyn;
@@ -243,7 +244,7 @@ The baseline dynamics are four lightly damped oscillator pairs. The neural
 network adds a learned residual to the latent derivative and decodes the hidden
 trajectory into three observable signals:
 
-```modelica
+```modelica,fragment,context-neural-dynamics
 der(latent[2 * k - 1]) =
   -damping * latent[2 * k - 1] - freq[k] * latent[2 * k]
   + residualGain * latentResidual[2 * k - 1];

@@ -1,0 +1,436 @@
+{
+  "source": "38bf1f3fb757f948b4c3bedc467eb9bf602b5003",
+  "trackedSourceFilesVerifiedUnchanged": 4086,
+  "sourceManifestSha256": "b1381b62d816f437c89a322f18c1e87d95784af9a5bbebcd9a209ed94080518e",
+  "postSourceReceiptSha256": "31087dbffd00733b1680301dec8a96b7ef4cd6852c171fe66d236650d7ccfa44",
+  "artifactManifestSha256": "390c2273c171bbdc6163a17d1ed05b9f6825cedde553ec95401995192ae0172f",
+  "retainedArtifactFiles": 24,
+  "retainedArtifactBytes": 55394440,
+  "componentIdentity": {
+    "mainRustTree": "be20244f409d7c8e984328dc9cb2953db8ffdae9 (unchanged through invoked source)",
+    "commonCoreBakedIdentity": "be20244f409d",
+    "modifiedGalecAddonRustTree": "38bf1f3fb757f948b4c3bedc467eb9bf602b5003",
+    "runtimeJavascriptTree": "38bf1f3fb757f948b4c3bedc467eb9bf602b5003",
+    "allBinaryFinalHeadIdentityClaim": false
+  },
+  "tools": {
+    "chromium": "154.0.8037.92",
+    "nodeInNixDocs": "22.23.1",
+    "guardianNode": "24.18.0",
+    "rustfmt": "nightly-2026-02-27"
+  },
+  "guard": {
+    "sha256": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c",
+    "seconds": 600,
+    "aggregateRssPlusSwapMiB": 4096,
+    "cacheMiB": 8192,
+    "hostAvailableMiB": 16384,
+    "scratchFloorMiB": 8192,
+    "jobs": 4,
+    "testThreads": 4,
+    "rayonThreads": 4
+  },
+  "stages": [
+    {
+      "attempt": "build-strict-roots-38bf",
+      "exitCode": 0,
+      "elapsedSeconds": 223.27504334200003,
+      "peakResidentPlusSwapKiB": 2172500,
+      "peakCacheBytes": 6995501056,
+      "logSha256": "09957f821f0b3d9c43cef50a947b85268894f40ffae06f030ead249f7645b824",
+      "guardianSha256": "95dc73e4ba7264ff2ddc8da9ad771f5a0df90f21e7e4c14f0e8aa5fa2d818a79"
+    },
+    {
+      "attempt": "galec-source-roots-38bf",
+      "exitCode": 0,
+      "elapsedSeconds": 5.496464186,
+      "peakResidentPlusSwapKiB": 662520,
+      "peakCacheBytes": 6995685376,
+      "logSha256": "e15f7c64392616f604e7481937d2343fe4930c0169fc02267f9606a2f40f79dd",
+      "guardianSha256": "d9afc5c63d7224228122f80e1caab886c5aed147a6e5e02fe94a7211683d2ad4"
+    },
+    {
+      "attempt": "simulate-38bf",
+      "exitCode": 0,
+      "elapsedSeconds": 2.100169517,
+      "peakResidentPlusSwapKiB": 438232,
+      "peakCacheBytes": 6995386368,
+      "logSha256": "d7117c5d55e7972faee1e3fff731a80f5fc37923eba0310c54a58b176ada85f1",
+      "guardianSha256": "97ddbaff7851b1b6f1e2f4eb54196cadd143e041c6e9380fb280103fa2e82ae3"
+    },
+    {
+      "attempt": "source_root-38bf",
+      "exitCode": 0,
+      "elapsedSeconds": 2.4641071660000002,
+      "peakResidentPlusSwapKiB": 435772,
+      "peakCacheBytes": 6995386368,
+      "logSha256": "e2b1235eba418c016459aee0f833cee0ef30dfa288062cb9e759808686c9d4c0",
+      "guardianSha256": "fd39e91e9bf1ce3e1e9710148f8943c13eed49bddff7f6a048f01ca002a1d227"
+    },
+    {
+      "attempt": "target_render-38bf",
+      "exitCode": 0,
+      "elapsedSeconds": 3.1649730459999996,
+      "peakResidentPlusSwapKiB": 777264,
+      "peakCacheBytes": 6995386368,
+      "logSha256": "26e211d85be322601cb1ac58416ab4d924329c745ead05014cdede947162309f",
+      "guardianSha256": "8f06c51cdc5aacc51b1360a06b5fb5bc5ab0f290f32c71cd5f58c09f8c0d0b3f"
+    },
+    {
+      "attempt": "guide-strict-roots-38bf",
+      "exitCode": 1,
+      "elapsedSeconds": 151.76757854800002,
+      "peakResidentPlusSwapKiB": 3496336,
+      "peakCacheBytes": 6995386368,
+      "logSha256": "930d3e57838a2c0e42820378d36316615e1031365f3ecd88c9c303dba75bb03c",
+      "guardianSha256": "d9d0fd9515d79260f3e0ac2099144dcab67c7da0b4aa0210afcf449945d63cf2"
+    }
+  ],
+  "browserScripts": {
+    "mandatory": 4,
+    "completed": 4,
+    "passed": 3,
+    "failed": 1
+  },
+  "scenarioCells": {
+    "mandatory": 16,
+    "visited": 16,
+    "passed": 15,
+    "failed": 1
+  },
+  "scenarioPasses": [
+    {
+      "path": "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+      "model": "GalecCounter",
+      "sourcePath": "examples/models/GalecCounter.mo",
+      "scenarioSha256": "0a8bf1b65e64ff671e155c0f90822916d83f13ad7e17007a8cc9c2f196dcc9b3",
+      "sourceSha256": "7a8398030c5a8ab6ad4449a1d2743031fe314d3ec355f73dd7a0d20e98b62e31",
+      "authoredHorizon": null,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "codegen",
+      "files": [
+        {
+          "path": "GalecCounter.alg",
+          "bytes": 748
+        },
+        {
+          "path": "GalecCounter.h",
+          "bytes": 1701
+        },
+        {
+          "path": "GalecCounter.c",
+          "bytes": 3124
+        }
+      ],
+      "compileAndRuntimeWallMs": 2121.98216
+    },
+    {
+      "path": "examples/interactive/fixedwing/rumoca-scenario.toml",
+      "model": "FixedWing",
+      "sourcePath": "examples/interactive/fixedwing/FixedWingSIL.mo",
+      "scenarioSha256": "afd7126a1e7f714c30f4f3f2f30066bd8d3d2e8c189f5a891641f62325c81573",
+      "sourceSha256": "c21ebdaaddd1d8e2f892c89628a55b60234085cb8c8a0d60016215794ca09939",
+      "authoredHorizon": null,
+      "authoredDt": 0.01,
+      "solver": "rk-like",
+      "kind": "interactive",
+      "samples": 8,
+      "sampledHorizon": [
+        0,
+        0.07
+      ],
+      "compileAndRuntimeWallMs": 16474.582808
+    },
+    {
+      "path": "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
+      "model": "QuadrotorAcro",
+      "sourcePath": "examples/interactive/quadrotor/QuadrotorSIL.mo",
+      "scenarioSha256": "589f5be56e2c4f469613f8aec3f455b115da86f263d97cc934c4689d8db5f586",
+      "sourceSha256": "823fe3bfb69446133951abfc87cb32e4b3acc4ac6e3aa50f41e101b005affc55",
+      "authoredHorizon": null,
+      "authoredDt": 0.01,
+      "solver": "rk-like",
+      "kind": "interactive",
+      "samples": 8,
+      "sampledHorizon": [
+        0,
+        0.07
+      ],
+      "compileAndRuntimeWallMs": 3044.6305360000006
+    },
+    {
+      "path": "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
+      "model": "ReusableBoosterEmbeddedControlLaw",
+      "sourcePath": "examples/interactive/reusable_booster/ReusableBoosterLanding.mo",
+      "scenarioSha256": "b45d94fb594f199fec15b7dba8c431daa1a4dfce2ce4b6ae826c86728758cca9",
+      "sourceSha256": "180760c31308ed7a49d6cedd9869e5f29619695b7e138f23feb5268939fdc38e",
+      "authoredHorizon": null,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "codegen",
+      "files": [
+        {
+          "path": "ReusableBoosterEmbeddedControlLaw.alg",
+          "bytes": 7916
+        },
+        {
+          "path": "ReusableBoosterEmbeddedControlLaw.h",
+          "bytes": 5996
+        },
+        {
+          "path": "ReusableBoosterEmbeddedControlLaw.c",
+          "bytes": 19299
+        }
+      ],
+      "compileAndRuntimeWallMs": 9992.504977
+    },
+    {
+      "path": "examples/interactive/rover/rumoca-scenario.toml",
+      "model": "Rover",
+      "sourcePath": "examples/interactive/rover/Rover.mo",
+      "scenarioSha256": "314cbdc1f662df7b5f6721c8cb4aacc0dcd0b1d435a24a758e28ede4752a4564",
+      "sourceSha256": "1ca4915deee20b010957e6adf80d58aaa0982c65734d0c5a94500e816611f937",
+      "authoredHorizon": null,
+      "authoredDt": 0.01,
+      "solver": "rk-like",
+      "kind": "interactive",
+      "samples": 8,
+      "sampledHorizon": [
+        0,
+        0.07
+      ],
+      "compileAndRuntimeWallMs": 2107.457008999998
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.ball.toml",
+      "model": "Ball",
+      "sourcePath": "examples/models/Ball.mo",
+      "scenarioSha256": "b2afa4558dd6986b4ad8cde2fbf76c1e819fe787fad2bba323e02f621c90ebfb",
+      "sourceSha256": "e7c121ddd4a633d662e1018853aaa7ca79a25f31e87952d1497a76e028d7c9c0",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "rk-like",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 528,
+      "compileAndRuntimeWallMs": 2281.781195000003
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
+      "model": "KalmanFilterStepTest",
+      "sourcePath": "examples/models/KalmanFilterStepTest.mo",
+      "scenarioSha256": "20c81b812dcf73b6c5474fa8b0732012cdbb558ef5d09bfbe7ab5f6d3a036d56",
+      "sourceSha256": "ba6abde6969213e954053bca2a3cd9197543a96fd7f8f654098f51543b671dad",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 501,
+      "compileAndRuntimeWallMs": 2272.062522
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",
+      "model": "NeuralLatentOscillator",
+      "sourcePath": "examples/models/NeuralLatentOscillator.mo",
+      "scenarioSha256": "b8f362e756669c5d90cb85291a77db5f97aad213608fa56d3543d1ef6521ea82",
+      "sourceSha256": "f424698839728ca792eccbef27c53bdc67878cc2e4514faedb4cb558fb991130",
+      "authoredHorizon": 12,
+      "authoredDt": 0.06,
+      "solver": "rk-like",
+      "kind": "batch",
+      "requestedHorizon": 0.18,
+      "requestedDt": 0.06,
+      "sampledHorizon": [
+        0,
+        0.18
+      ],
+      "samples": 4,
+      "compileAndRuntimeWallMs": 7940.811537000001
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.neural_ode_backprop.toml",
+      "model": "NeuralODEBackprop",
+      "sourcePath": "examples/models/NeuralODEBackprop.mo",
+      "scenarioSha256": "54eba2433af319d605866454973e5f395dfc9f8a2193343f90cf49e34ffc6091",
+      "sourceSha256": "158a75cf63d83c7592b459432f67ec90ef2e5c2ac3d372f5c73a9c11e0c02ddf",
+      "authoredHorizon": 8,
+      "authoredDt": 0.05,
+      "solver": "rk-like",
+      "kind": "batch",
+      "requestedHorizon": 0.15000000000000002,
+      "requestedDt": 0.05,
+      "sampledHorizon": [
+        0,
+        0.15000000000000002
+      ],
+      "samples": 4,
+      "compileAndRuntimeWallMs": 3626.415538000001
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.neural_ode_tensor.toml",
+      "model": "NeuralODETensor",
+      "sourcePath": "examples/models/NeuralODETensor.mo",
+      "scenarioSha256": "8328c151a980b6cb5200079989d5c2ea2f187d94575ace0d9ad7e4182bb3ef08",
+      "sourceSha256": "f1e5fca9fcc28b91e941a2c637824e1fd72e00da925a1ebb0504677165a83cac",
+      "authoredHorizon": 8,
+      "authoredDt": 0.02,
+      "solver": "rk-like",
+      "kind": "batch",
+      "requestedHorizon": 0.06,
+      "requestedDt": 0.02,
+      "sampledHorizon": [
+        0,
+        0.06
+      ],
+      "samples": 4,
+      "compileAndRuntimeWallMs": 1708.9216059999962
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.neural_predator_prey.toml",
+      "model": "NeuralPredatorPrey",
+      "sourcePath": "examples/models/NeuralPredatorPrey.mo",
+      "scenarioSha256": "f7d0277a9fdc65f96becf24200b7ed4603b8343af88e020f8f3150d6ea22edf3",
+      "sourceSha256": "e05d7e768873dd0d5c4fd64671617ea1ab324943f4fb8a8b0618b41e86408c91",
+      "authoredHorizon": 24,
+      "authoredDt": 0.02,
+      "solver": "rk-like",
+      "kind": "batch",
+      "requestedHorizon": 0.06,
+      "requestedDt": 0.02,
+      "sampledHorizon": [
+        0,
+        0.06
+      ],
+      "samples": 4,
+      "compileAndRuntimeWallMs": 1801.3218239999987
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.pidmsl.toml",
+      "model": "PIDMSL",
+      "sourcePath": "examples/models/PIDMSL.mo",
+      "scenarioSha256": "7f1bf35fcf0491e650f0bf9702fdd0a01f8be4c05ec1edac7633cde3cf384653",
+      "sourceSha256": "560455790c01e032b4aea27fbaca2c017161f0aa7e23c327878f37f6a7c79fbc",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 501,
+      "compileAndRuntimeWallMs": 2234.3265790000005
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.switched_rlc.toml",
+      "model": "SwitchedRLC",
+      "sourcePath": "examples/models/SwitchedRLC.mo",
+      "scenarioSha256": "57b8c41d0dc3aa68ed13b0653c335fd7d9309cfd02fd142aee68967276d3823b",
+      "sourceSha256": "20d217108780f0d65da39a994e0a774ee3d98fa568b73b804ffa27f2e1444723",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 502,
+      "compileAndRuntimeWallMs": 1633.9696580000018
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.switched_rlc_msl.toml",
+      "model": "SwitchedRLC_MSL",
+      "sourcePath": "examples/models/SwitchedRLC_MSL.mo",
+      "scenarioSha256": "e1c092af21a7dbc7f5254fa3b7dfa76b7143a601c55c697ca19f42d5c9d39ee3",
+      "sourceSha256": "105ed4f74c69fe3d0fd29a593be5f884a360a04a12ee14cb1e568773e7959c15",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 502,
+      "compileAndRuntimeWallMs": 1780.7049570000017
+    },
+    {
+      "path": "examples/simulation/rumoca-scenario.sympy_decay.toml",
+      "model": "SympyDecay",
+      "sourcePath": "examples/models/SympyDecay.mo",
+      "scenarioSha256": "b3f11623d8445cc720daa92f8a85699a6bcb13d0e2622a7d6c4d72ad70bb1c32",
+      "sourceSha256": "847cd6aba7b2df72c7aac45f5a4651f61bc351e7d857698207053a36d049ae29",
+      "authoredHorizon": 10,
+      "authoredDt": null,
+      "solver": "auto",
+      "kind": "batch",
+      "requestedHorizon": 10,
+      "requestedDt": 0,
+      "sampledHorizon": [
+        0,
+        10
+      ],
+      "samples": 501,
+      "compileAndRuntimeWallMs": 1706.4912170000025
+    }
+  ],
+  "scenarioFailures": [
+    "FAIL guide-scenario examples/interactive/reusable_booster/rumoca-scenario.toml page.evaluate: Session creation error: DAE system is not computable: derivative coordinate escaped checked structural substitution"
+  ],
+  "optionalHardwareGpuComputationsSkipped": 2,
+  "scope": "Actual component/browser qualification; not all16, final-head, full CI, wheel, or broad coverage qualification.",
+  "preceding53afFailure": {
+    "source": "53af3f872bc5f729543b110e35a528098b146562",
+    "exitCode": 1,
+    "elapsedSeconds": 155.991477325,
+    "firstControllerFailure": "Canonical root cache loaded; global Session compilation refused unrelated MSL resolution diagnostics.",
+    "logSha256": "0afd6c71c4b2642c3dd6664788fc282196f4d6492b9ad8f2a9b4d644a4ce1f33",
+    "guardianSha256": "576421795a9759f8b2dc1f038fac8082724dfb28591971e6e9f753caeec60924"
+  },
+  "strengthenedNativeDiagnosticAfter": {
+    "source": "7b36b3686224dfcb218bb8b0228112d03486fbdc",
+    "productionThrough": "38bf1f3fb757f948b4c3bedc467eb9bf602b5003",
+    "testCommit": "45f3acd7f4096509434dbd4d36ce76f4f9622c3f",
+    "tests": {
+      "selector": "galec_source_root_snapshot_",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "runtimeSeconds": 0.04
+    },
+    "scopedAllTargetClippy": "PASS -D warnings",
+    "scopedFormatter": "PASS",
+    "nativeTestBuildSeconds": 164,
+    "clippySeconds": 51,
+    "guardianElapsedSeconds": 220.466931035,
+    "peakResidentPlusSwapKiB": 2442588,
+    "peakCacheBytes": 7177990144,
+    "sourceFilesVerifiedUnchanged": 4088,
+    "sourceManifestSha256": "1693c5ad56063b7d23f78eac60570cf6a7fefa5d917bfe9172db13a0fc035d05",
+    "scriptSha256": "98f41f5112feefd1c8091acaab1a9e019163d47b0fbd41840211b81cc7f4ecb0",
+    "logSha256": "70c6ccc1f3d7a55f3c9e5945c85adaed1488e38cb136bc9c70e1cf100784c072",
+    "testLogSha256": "3e9bc2ca56380c93d39f708021a855b0e90a6a6cfd7a5cf89524e64cabb5b9cd",
+    "guardianSha256": "6b66e7d2cccd024e0d2d3566d7352da070e5ad5b88347924b95b228a14400d0c",
+    "retainedExecutableSha256": "028f31e1570a348c97a14a926cb4803ca0fbf7cdf2895e1385856fb598ebcd1e",
+    "scope": "Native addon diagnostic test and scoped style checks; no refreshed browser, final-head, full CI or wheel claim."
+  }
+}

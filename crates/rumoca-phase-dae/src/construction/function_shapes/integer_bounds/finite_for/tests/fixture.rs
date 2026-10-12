@@ -78,6 +78,7 @@ pub(super) fn range(start: i64, step: Option<i64>, end: i64) -> Expression {
 pub(super) fn for_range(range: Expression, body: Vec<Statement>) -> Statement {
     Statement::For {
         indices: vec![ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: "i".to_owned(),
             range,
         }],

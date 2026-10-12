@@ -20,6 +20,7 @@ mod hover_definition_timing_tests;
 mod hover_preview_tests;
 mod multi_source_root_completion_tests;
 mod open_and_nested_model_tests;
+mod render_target_tests;
 mod simulation_override_diagnostic_tests;
 mod simulation_surface_tests;
 mod source_root_load_diagnostic_tests;
@@ -29,6 +30,7 @@ mod startup_timing_tests;
 mod strict_compile_diagnostic_tests;
 mod tool_config_tests;
 mod utf16_range_tests;
+mod workshop_codegen_tests;
 mod workspace_query_tests;
 
 static SESSION_STATS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

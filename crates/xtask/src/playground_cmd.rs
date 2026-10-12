@@ -22,6 +22,20 @@ pub(crate) fn stage_playground_vendor_assets(root: &Path) -> Result<()> {
 }
 
 pub(crate) fn run_playground_test_suite(root: &Path) -> Result<()> {
+    crate::modelica_dependency_cache::ensure_example_libraries(root, false)?;
+    let mut guide_tests = Command::new("cargo");
+    guide_tests
+        .args([
+            "test",
+            "--locked",
+            "-p",
+            "rumoca-bind-wasm",
+            "--lib",
+            "user_guide_",
+        ])
+        .current_dir(root);
+    run_status(guide_tests)?;
+
     let mut wasm_tests = Command::new("cargo");
     wasm_tests
         .arg("test")
@@ -210,13 +224,19 @@ fn run_wasm_simulation_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
 }
 
 fn run_wasm_source_root_smoke(root: &Path, pkg_subdir: &str) -> Result<()> {
-    let mut wasm_smoke = Command::new("node");
-    wasm_smoke
-        .arg("packages/playground/tests/source_root_smoke.mjs")
-        .arg("--pkg-subdir")
-        .arg(pkg_subdir)
-        .current_dir(root);
-    run_status(wasm_smoke)
+    for script in [
+        "packages/playground/tests/source_root_smoke.mjs",
+        "packages/playground/tests/target_render_smoke.mjs",
+    ] {
+        let mut wasm_smoke = Command::new("node");
+        wasm_smoke
+            .arg(script)
+            .arg("--pkg-subdir")
+            .arg(pkg_subdir)
+            .current_dir(root);
+        run_status(wasm_smoke)?;
+    }
+    Ok(())
 }
 
 fn ensure_any_file_contains(root: &Path, files: &[&str], needle: &str) -> Result<()> {

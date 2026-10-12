@@ -12,10 +12,16 @@ use std::path::PathBuf;
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae_with_diagnostics};
 
-fn msl_root() -> Option<PathBuf> {
+pub(super) fn msl_root() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/msl/ModelicaStandardLibrary-4.1.0");
-    root.is_dir().then_some(root)
+    let available =
+        root.join("Complex.mo").is_file() && root.join("Modelica 4.1.0/package.mo").is_file();
+    assert!(
+        !cfg!(feature = "msl-sim-tests") || available,
+        "required MSL fixture is missing; run cargo xtask repo modelica-deps ensure"
+    );
+    available.then_some(root)
 }
 
 const SOURCE: &str = r#"

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -43,6 +44,14 @@ pub fn run(args: Args) -> Result<()> {
     let snapshot: serde_json::Value = serde_json::from_str(&snapshot_text)
         .with_context(|| format!("invalid JSON in {}", source.display()))?;
     ensure_promotable_quality_snapshot(&snapshot, &source)?;
+
+    if baseline.exists() {
+        let previous_text = fs::read_to_string(&baseline)
+            .with_context(|| format!("failed to read {}", baseline.display()))?;
+        let previous: serde_json::Value = serde_json::from_str(&previous_text)
+            .with_context(|| format!("invalid JSON in {}", baseline.display()))?;
+        ensure_certified_roster_preserved(&snapshot, &previous, &baseline)?;
+    }
 
     if let Some(parent) = baseline.parent() {
         fs::create_dir_all(parent)
@@ -99,6 +108,7 @@ fn ensure_promotable_quality_snapshot(snapshot: &serde_json::Value, source: &Pat
         ),
         None => bail!("cannot promote {}: missing omc_version", source.display()),
     }
+    certified_roster(snapshot, source)?;
     let Some(partial) = root.get("partial") else {
         return Ok(());
     };
@@ -115,9 +125,62 @@ fn ensure_promotable_quality_snapshot(snapshot: &serde_json::Value, source: &Pat
     }
 }
 
+fn ensure_certified_roster_preserved(
+    current: &serde_json::Value,
+    previous: &serde_json::Value,
+    baseline: &Path,
+) -> Result<()> {
+    let certified = certified_roster(current, baseline)?;
+    if let Some(model) = certified_roster(previous, baseline)?
+        .difference(&certified)
+        .next()
+    {
+        bail!(
+            "cannot promote {}: baseline-certified strict-high model {model} left the certified roster",
+            baseline.display()
+        );
+    }
+    Ok(())
+}
+
+fn certified_roster<'a>(
+    snapshot: &'a serde_json::Value,
+    source: &Path,
+) -> Result<BTreeSet<&'a str>> {
+    let field = "certified_strict_high_models";
+    let roster = snapshot
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .with_context(|| {
+            format!(
+                "cannot promote {}: {field} must be an array",
+                source.display()
+            )
+        })?;
+    let mut models = BTreeSet::new();
+    for value in roster {
+        let model = value
+            .as_str()
+            .filter(|model| !model.trim().is_empty())
+            .with_context(|| {
+                format!(
+                    "cannot promote {}: {field} has an invalid identity",
+                    source.display()
+                )
+            })?;
+        if !models.insert(model) {
+            bail!(
+                "cannot promote {}: {field} repeats {model}",
+                source.display()
+            );
+        }
+    }
+    Ok(models)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EXPECTED_QUALITY_GATE_VERSION, ensure_promotable_quality_snapshot};
+    use super::{Args, EXPECTED_QUALITY_GATE_VERSION, ensure_promotable_quality_snapshot, run};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -126,8 +189,143 @@ mod tests {
             "quality_gate_version": EXPECTED_QUALITY_GATE_VERSION,
             "run_scope": "full",
             "omc_version": "OpenModelica 1.26.1",
-            "sim_ok": 120
+            "sim_ok": 120,
+            "certified_strict_high_models": ["High0", "High1"],
+            "timing_margin_models": {"Slow": {"phase": "Sim", "budget_share": 0.6}}
         })
+    }
+
+    #[test]
+    fn manual_promotion_rejects_dropped_and_equal_count_swapped_certificates_atomically() {
+        let previous = full_snapshot();
+        for roster in [json!(["High0"]), json!(["High0", "Slow"])] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let baseline = dir.path().join("baseline.json");
+            let source = dir.path().join("current.json");
+            let original = serde_json::to_string(&previous).expect("baseline JSON");
+            std::fs::write(&baseline, &original).expect("write baseline");
+            let mut current = previous.clone();
+            current["certified_strict_high_models"] = roster;
+            current["timing_margin_models"] =
+                json!({"High1": {"phase": "Sim", "budget_share": 0.6}});
+            std::fs::write(&source, current.to_string()).expect("write current");
+            let err = run(Args {
+                source: Some(source),
+                baseline: Some(baseline.clone()),
+            })
+            .expect_err("certification loss must refuse promotion");
+            assert!(err.to_string().contains("High1"), "{err}");
+            assert_eq!(
+                std::fs::read_to_string(baseline).expect("retained baseline"),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn manual_promotion_preserves_certificates_across_schema_and_context_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let baseline = dir.path().join("baseline.json");
+        let source = dir.path().join("current.json");
+        let mut previous = full_snapshot();
+        previous["quality_gate_version"] = json!(EXPECTED_QUALITY_GATE_VERSION - 1);
+        previous["omc_version"] = json!("OpenModelica 1.25.0");
+        let original = previous.to_string();
+        std::fs::write(&baseline, &original).expect("write baseline");
+        let mut current = full_snapshot();
+        current["certified_strict_high_models"] = json!(["High0"]);
+        current["compiler_contract_migration"] = json!({
+            "from_contract": "permissive-dae-v1",
+            "to_contract": "checked-dae-v1",
+            "evidence_git_commit": "reviewed-contract-evidence",
+            "sim_target_models": 566
+        });
+        std::fs::write(&source, current.to_string()).expect("write current");
+        run(Args {
+            source: Some(source.clone()),
+            baseline: Some(baseline.clone()),
+        })
+        .expect_err("a version or context change cannot waive certificate loss");
+        assert_eq!(
+            std::fs::read_to_string(&baseline).expect("retained baseline"),
+            original
+        );
+        current["certified_strict_high_models"] = json!(["High0", "High1", "NewHigh"]);
+        std::fs::write(&source, current.to_string()).expect("write current");
+        run(Args {
+            source: Some(source),
+            baseline: Some(baseline.clone()),
+        })
+        .expect("preserved certificates permit promotion");
+        assert_eq!(
+            std::fs::read_to_string(baseline).expect("promoted baseline"),
+            current.to_string()
+        );
+    }
+
+    #[test]
+    fn manual_promotion_rejects_missing_or_malformed_certification_rosters() {
+        for bad in [
+            None,
+            Some(json!(null)),
+            Some(json!("High0")),
+            Some(json!([""])),
+            Some(json!(["High0", "High0"])),
+        ] {
+            for corrupt_previous in [false, true] {
+                assert_invalid_certification_refused(bad.as_ref(), corrupt_previous);
+            }
+        }
+    }
+
+    fn assert_invalid_certification_refused(
+        bad: Option<&serde_json::Value>,
+        corrupt_previous: bool,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let baseline = dir.path().join("baseline.json");
+        let source = dir.path().join("current.json");
+        let mut previous = full_snapshot();
+        let mut current = full_snapshot();
+        let damaged = if corrupt_previous {
+            &mut previous
+        } else {
+            &mut current
+        };
+        match bad {
+            Some(value) => damaged["certified_strict_high_models"] = value.clone(),
+            None => {
+                damaged
+                    .as_object_mut()
+                    .expect("snapshot object")
+                    .remove("certified_strict_high_models");
+            }
+        };
+        std::fs::write(&baseline, previous.to_string()).expect("write baseline");
+        std::fs::write(&source, current.to_string()).expect("write current");
+        run(Args {
+            source: Some(source),
+            baseline: Some(baseline),
+        })
+        .expect_err("invalid certification metadata cannot become a baseline");
+    }
+
+    #[test]
+    fn manual_promotion_creates_the_first_baseline_from_a_valid_full_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let baseline = dir.path().join("baseline.json");
+        let source = dir.path().join("current.json");
+        let text = full_snapshot().to_string();
+        std::fs::write(&source, &text).expect("write current");
+        run(Args {
+            source: Some(source),
+            baseline: Some(baseline.clone()),
+        })
+        .expect("first full baseline has no earlier certificates to retain");
+        assert_eq!(
+            std::fs::read_to_string(baseline).expect("new baseline"),
+            text
+        );
     }
 
     #[test]

@@ -1,5 +1,9 @@
 mod arena_walks;
+mod expression_operands;
+mod model_conditionals;
 mod quotient_owners;
+pub use expression_operands::ConditionalExpressionOperands;
+pub use model_conditionals::ModelConditionalView;
 #[cfg(test)]
 mod scalar_owner_tests;
 pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};
@@ -756,6 +760,13 @@ pub struct FunctionView<'dae> {
 }
 
 impl<'dae> FunctionView<'dae> {
+    /// Exact operation interval issued by the function construction callback.
+    /// Closed body expressions have no function value scope, but remain within
+    /// this global construction suspension during checked reconstruction.
+    pub fn construction_expression_range(self) -> std::ops::Range<u32> {
+        self.entry.construction_start..self.entry.construction_end
+    }
+
     pub fn derivatives(self) -> impl ExactSizeIterator<Item = FunctionDerivativeView<'dae>> {
         self.entry
             .derivatives

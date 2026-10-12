@@ -270,7 +270,7 @@ fn a_folded_condition_selects_its_branch_and_drops_the_unselected_reads() {
     assert!((x - 50.0).abs() < 1e-6, "x(1) = {x}");
 }
 
-/// Names of the parameters one declaration's binding reads.
+/// Evaluated parameter reads, distinct from the complete source arm DAG.
 fn binding_reads(model: &dae::Dae, name: &str) -> Vec<String> {
     model.inspect(|view| {
         let (_, variable) = view
@@ -279,7 +279,7 @@ fn binding_reads(model: &dae::Dae, name: &str) -> Vec<String> {
             .unwrap_or_else(|| panic!("{name} is declared"));
         let binding = variable.binding().expect("the declaration has a binding");
         let mut names = Vec::new();
-        dae::for_each_expression(view, binding, |_, node| {
+        rumoca_eval_dae::for_each_selected_value_expression(view, binding, |_, node| {
             if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) =
                 node.operation()
             {

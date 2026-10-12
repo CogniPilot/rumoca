@@ -93,6 +93,10 @@ const REMOVED_DECLARATION_ONLY_SURFACES: &[(&str, &str)] = &[
         "crates/rumoca-phase-structural/src/lib.rs",
         "maximum_regular_subsystem",
     ),
+    (
+        "crates/rumoca-phase-structural/src/same_tick.rs",
+        "opaque_reads",
+    ),
     ("crates/rumoca-sim/src/lib.rs", "compare_trace_files"),
     ("crates/rumoca-sim/src/lib.rs", "clear_parameter_overrides"),
     ("crates/rumoca-sim/src/lib.rs", "set_parameter_values"),

@@ -175,7 +175,7 @@ pub(super) const WASM_SURFACE_SPECS: &[SurfaceCoverageSpec] = &[
     SurfaceCoverageSpec {
         surface: "render_target",
         kind: "codegen",
-        source_path: "crates/rumoca-bind-wasm/src/lib.rs",
+        source_path: "crates/rumoca-bind-wasm/src/target_render_api.rs",
         source_pattern: "pub fn render_target(",
         proof_path: "crates/rumoca-bind-wasm/src/tests.rs",
         proof_pattern: "fn test_render_target_wrapper_serializes_target_files()",

@@ -1,0 +1,215 @@
+{
+  "schema": 2,
+  "profiles": {
+    "project-template-bash": {
+      "classification": "project-template",
+      "owner": "cli-context",
+      "scope": "Explicit caller-supplied model/target/path placeholder; guide supplies no source under this filename. Generic syntax coverage is distinct from actual linked-model runs."
+    },
+    "explanatory-output-text": {
+      "classification": "explanatory-output",
+      "owner": "displayed-output",
+      "scope": "Displayed output, notation or directory layout; not executable source."
+    },
+    "executable-command-bash": {
+      "classification": "executable-command",
+      "owner": "cli-context",
+      "scope": "Actual command/configuration context identified by its surrounding page; native binding compilation is not CLI execution. Exact CLI gate pending."
+    },
+    "configuration-context-toml": {
+      "classification": "configuration-context",
+      "owner": "guide-toml",
+      "scope": "Checked config parser context; source-derived selector, actual gate pending."
+    },
+    "environment-setup-bash": {
+      "classification": "environment-setup",
+      "owner": "package-install",
+      "scope": "Installation/setup instructions; not a model compilation or application input. Do not run external installer or mutate user shell during guide tests."
+    },
+    "executable-visualizer-js": {
+      "classification": "executable-visualizer",
+      "owner": "book-browser",
+      "scope": "Runtime-provided viz/data/container context; native model proof does not execute this JS. Browser gate pending."
+    },
+    "executable-context-rust": {
+      "classification": "executable-context",
+      "owner": "opt-rhs",
+      "scope": "Source-derived mandatory workspace selector; current actual gate pending."
+    },
+    "executable-benchmark-bash": {
+      "classification": "executable-benchmark",
+      "owner": "neural-benchmark",
+      "scope": "The exact documented NeuralODEBackprop CLI/JAX benchmark uses the script-defined model and dimensions; larger neural width examples have separate controls."
+    },
+    "explanatory-output-xml": {
+      "classification": "explanatory-output",
+      "owner": "metadata-output",
+      "scope": "Illustrates generated FMI annotation inside modelDescription.xml; not a standalone input document."
+    },
+    "explanatory-output-json": {
+      "classification": "explanatory-output",
+      "owner": "protocol-output",
+      "scope": "Expected hello response, not a command or source; exact CLI protocol replay pending."
+    },
+    "executable-notebook-text": {
+      "classification": "executable-notebook",
+      "owner": "python-guide",
+      "scope": "The exact %%modelica cell executes through the installed-wheel IPython extension; guide_test.py checks its Model, analytic trace and SolveExport."
+    },
+    "executable-context-python": {
+      "classification": "executable-context",
+      "owner": "python-guide",
+      "scope": "Exact guide execution pending Python owner candidate and receipt."
+    },
+    "executable-tool-bash": {
+      "classification": "executable-tool",
+      "owner": "cli-context",
+      "scope": "Requires disposable authored source context; existing formatter/linter tests are not exact guide-command receipts."
+    },
+    "project-template-cmake": {
+      "classification": "executable-context",
+      "owner": "python-guide",
+      "scope": "Application template requires user model.mo/rumoca-scenario.toml and project CMake source/build directory; no supplied standalone project."
+    },
+    "executable-stdio-python": {
+      "classification": "executable-context",
+      "owner": "cli-stdio",
+      "scope": "Exact documented Python controller executed against the native CLI stdio session."
+    }
+  },
+  "contexts": {
+    "stdio-plant": {
+      "page": "simulation/stdio-session.md",
+      "line": 122,
+      "source_line_count": 6,
+      "language": "modelica",
+      "source_sha256": "41189b0bca2ad03befe01f7eb08cc948a328a3d4b830dccc186c78548a272a3d"
+    },
+    "first-hanging-mass": {
+      "page": "getting-started/first-model.md",
+      "line": 50,
+      "source_line_count": 14,
+      "language": "modelica",
+      "source_sha256": "b245e013107b793382ff9797781b472f796bfd6a687567b3c016b1ff349eb74c"
+    }
+  },
+  "entries": [
+    {"page": "codegen/custom-targets.md", "line": 11, "language": "bash", "source_sha256": "db957192b6486608de09294de51045874aadb92c62e72dcd0e326e0fe7a780fb", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "codegen/custom-targets.md", "line": 21, "language": "bash", "source_sha256": "5f0cab1aae832750e073ce61cbbcc9cfc4bfee80dfca3021c66eb54641668950", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "codegen/custom-targets.md", "line": 30, "language": "bash", "source_sha256": "717d74d4fe3d8c459fd1b767a017e00e0ce46d35e197f922760be09dec916f31", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "codegen/galec-efmi.md", "line": 26, "language": "bash", "source_sha256": "ae8b1743725700cdfdd6db216d45ed93a2d7b038007d095e6dc7271335011005", "profile": "project-template-bash", "source_line_count": 3},
+    {"page": "codegen/galec-efmi.md", "line": 35, "language": "text", "source_sha256": "84d08ced2a57bbc2ee4ba5d0420e6758f61d400e982538f62a0a61928e10e0b4", "profile": "explanatory-output-text", "source_line_count": 7},
+    {"page": "codegen/galec-efmi.md", "line": 80, "language": "bash", "source_sha256": "a1eed5a3a3dfd4166c43082e1cea8611e701d114beb916b993ab4c320488d394", "profile": "executable-command-bash", "source_line_count": 5},
+    {"page": "codegen/targets.md", "line": 12, "language": "bash", "source_sha256": "b66962e63174af7ae1bc0c05ca950326c646725647c2cd698ad57f0e5bbf1629", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "codegen/targets.md", "line": 46, "language": "bash", "source_sha256": "d8d938eb70415588d6031fd423601b439dd7d753a61874f3f1c7afc2b4eb74b9", "profile": "executable-command-bash", "source_line_count": 4},
+    {"page": "getting-started/first-model.md", "line": 77, "language": "bash", "source_sha256": "7d2452093c2d09e9302e3fcd8ab66b30c8ace93c53b6928c38807f997e1e173c", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/first-model.md", "line": 88, "language": "toml", "source_sha256": "96f0801b4a5a8cbecb03963703ad5cdecbded266beea0d892157f5b1cfe7c5d9", "profile": "configuration-context-toml", "source_line_count": 12},
+    {"page": "getting-started/first-model.md", "line": 103, "language": "bash", "source_sha256": "3ab283b8bd307a11483b205eaae81e62559df6c658ae298ab97532e83341065a", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 12, "language": "bash", "source_sha256": "27b4538732a93927b682f5d6ce5d0b2ba75effac64a1e5d9fca83e8b1c4ff684", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 18, "language": "bash", "source_sha256": "60bbad4f9c0272aab5bf4415e2cdf2458912f0743b312bc0efceb322b5666180", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 27, "language": "bash", "source_sha256": "8e32139074c2db20a5f61eb677fa929a982ac03f789f5e50aca89e12f2c7aac6", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 40, "language": "bash", "source_sha256": "7d2e9f143e80aeb63dc7c55a7804e3b4d79898a09f4d77377272dea3181b659e", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 48, "language": "bash", "source_sha256": "6624cf485544dcbda40db453c1f280b0e2d88c9c804435d7207cab9f4dfc7822", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 59, "language": "bash", "source_sha256": "5ff2f6ebcecd4b8b59327744bdc480a35c490f513562c5f43eba68acd3661b57", "profile": "environment-setup-bash", "source_line_count": 3},
+    {"page": "getting-started/installation.md", "line": 67, "language": "bash", "source_sha256": "e31ec910d2c95548a2199b0760ac3f290f1e45768fdeb0a410151087118adadc", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/installation.md", "line": 82, "language": "bash", "source_sha256": "5238658025f52d1411db2423d71301defff663f0dc10490a90083ab9467aae9b", "profile": "environment-setup-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 28, "language": "bash", "source_sha256": "f7cdab249700e84a6c87964e85928d9409c0dbf20ff49c5c029d29ab8624367d", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 39, "language": "bash", "source_sha256": "91ee1c7406e617e61551fbd3c691fea0a3028c2b0def85c5331675529ee85b26", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 45, "language": "bash", "source_sha256": "131634c665119f9683e62f4411bd0b8904a581b33bf902fcbcf11c3715199dd6", "profile": "project-template-bash", "source_line_count": 3},
+    {"page": "getting-started/quickstart.md", "line": 56, "language": "bash", "source_sha256": "8206f0af836cba8aa556150e8fa40b4c6e6c3e0db9403ef5be43ad0894cf698d", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 62, "language": "bash", "source_sha256": "ba55712fe3eec40a3a9fb776bb501ebfeed9578345f10b784f7a108f9e600089", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 68, "language": "bash", "source_sha256": "ea1ecb93f6b853b583770c5bc8a578cd89f6d8448b6362d201c9afb2e6b77bd3", "profile": "executable-command-bash", "source_line_count": 2},
+    {"page": "getting-started/quickstart.md", "line": 79, "language": "bash", "source_sha256": "b66962e63174af7ae1bc0c05ca950326c646725647c2cd698ad57f0e5bbf1629", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "getting-started/quickstart.md", "line": 85, "language": "bash", "source_sha256": "d8d938eb70415588d6031fd423601b439dd7d753a61874f3f1c7afc2b4eb74b9", "profile": "executable-command-bash", "source_line_count": 4},
+    {"page": "getting-started/quickstart.md", "line": 94, "language": "bash", "source_sha256": "87e6de6b4faff74d09a789d535b23485e074a4a795dd1c989647a299f96a3969", "profile": "executable-command-bash", "source_line_count": 2},
+    {"page": "introduction.md", "line": 57, "language": "js", "source_sha256": "b444690b4cf66c420decef7e168b1d22e19941945ad3daf51384d67227493bfe", "profile": "executable-visualizer-js", "source_line_count": 257},
+    {"page": "language/arrays-pde.md", "line": 72, "language": "js", "source_sha256": "a0f19c954716c00882a8cec5cd4437236f95a7c09fa2b8104650e1f2b2097b66", "profile": "executable-visualizer-js", "source_line_count": 33},
+    {"page": "language/arrays-pde.md", "line": 188, "language": "js", "source_sha256": "269cfdedb16af5f54fec2132bb2819f57067578b09eb225a90c4dab9b978a5a8", "profile": "executable-visualizer-js", "source_line_count": 225},
+    {"page": "language/arrays-pde.md", "line": 627, "language": "js", "source_sha256": "219a1f83df04dc089480252a6c0db59ce29bd3fea7fc20a8742d6703c7deb931", "profile": "executable-visualizer-js", "source_line_count": 583},
+    {"page": "language/libraries.md", "line": 16, "language": "bash", "source_sha256": "6a260e7fd4cfb39edbc95d691e920c7209a70b2ad6358ae0b7888cd860bba2a3", "profile": "project-template-bash", "source_line_count": 4},
+    {"page": "language/libraries.md", "line": 26, "language": "toml", "source_sha256": "db85166d6b002980c3d63b458b0324cdc0bd39b99d1c0fa9d37340d70c6362f4", "profile": "configuration-context-toml", "source_line_count": 1},
+    {"page": "language/libraries.md", "line": 44, "language": "bash", "source_sha256": "5238658025f52d1411db2423d71301defff663f0dc10490a90083ab9467aae9b", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 6, "language": "text", "source_sha256": "4d5d811aee185edb2942cfa3762ba27c7efff13b9bc243680fbd3c364f4c91a0", "profile": "explanatory-output-text", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 28, "language": "bash", "source_sha256": "d5f3cb62643e37183225a47a2bf6f23294df58b04ea1d2f208f8e6ea710bf97c", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 63, "language": "text", "source_sha256": "3d04fee6dba6e0992c2dbfd024e4fadd76a0e54ba82c2bcd04155356d1930963", "profile": "explanatory-output-text", "source_line_count": 7},
+    {"page": "language/neural-odes.md", "line": 101, "language": "rust", "source_sha256": "b27f54a282ca2d7898b79d06b7111368742f0bc67eb02581a57a34b3ea383d87", "profile": "executable-context-rust", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 124, "language": "bash", "source_sha256": "68492329ea898b7dad5fc6d874a0913b13e4944daa25fb25be5c8923d3903dda", "profile": "executable-benchmark-bash", "source_line_count": 4},
+    {"page": "language/neural-odes.md", "line": 205, "language": "bash", "source_sha256": "fd0fb011174f61f44eb5bfe88a36d4a2e05f9dcb6bde1a9b40c19ddda46781f3", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 212, "language": "text", "source_sha256": "638178ed87b6123a438644fcc8c171b9b470aa6f326a606e80a6b8c7cae4eb1e", "profile": "explanatory-output-text", "source_line_count": 7},
+    {"page": "language/neural-odes.md", "line": 265, "language": "bash", "source_sha256": "7b6acfb3d08ae3575605fda9f6ece6e57a4c215b524f89e5194be9e816766f2f", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "language/neural-odes.md", "line": 272, "language": "text", "source_sha256": "376c71b6ae4a624999016e0dccf5e5199d96630ac4c59b2e4bbe3f74aff92848", "profile": "explanatory-output-text", "source_line_count": 9},
+    {"page": "language/support-status.md", "line": 54, "language": "bash", "source_sha256": "4b2bcc6be4da6ef1f909f4a9ee477c4ae8940aef00d192d458e061b8f46396ea", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "simulation/inspect.md", "line": 19, "language": "bash", "source_sha256": "0cc19194a61d3c0e061198d89bf921896d35182ea0739dce55b7fcd296b53cf7", "profile": "project-template-bash", "source_line_count": 2},
+    {"page": "simulation/inspect.md", "line": 44, "language": "xml", "source_sha256": "c7e68f979f0b2d0ceaba041ec3908f5d75cb64e26133702fe48ad41355933a50", "profile": "explanatory-output-xml", "source_line_count": 4},
+    {"page": "simulation/inspect.md", "line": 53, "language": "bash", "source_sha256": "4e7da2b5ed76064415bff970fcbbca50f8f2303b775db8f8f7eb8647310d6f1d", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "simulation/inspect.md", "line": 65, "language": "bash", "source_sha256": "a38acb51dc1f0974b3a9fe2e146926d1ae0b96faa0b1c24f07ea477b530d9d91", "profile": "project-template-bash", "source_line_count": 2},
+    {"page": "simulation/inspect.md", "line": 80, "language": "bash", "source_sha256": "bbabecf2c7c75bbd9f85db9128c51188b4013c4eba72b5a55c894ed0d2ead645", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "simulation/inspect.md", "line": 96, "language": "bash", "source_sha256": "11fe0d7acec50a7333e19063d9750c0df4e790a845fb39f74143aa70ba751e79", "profile": "project-template-bash", "source_line_count": 2},
+    {"page": "simulation/inspect.md", "line": 103, "language": "bash", "source_sha256": "27ee361a678976360ef1f002a2babdad62b02d53a2368f49bae685a85d683e2e", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "simulation/interactive.md", "line": 27, "language": "bash", "source_sha256": "c7081247244272cced0d6266a2a6bd5abead64be1dce182c6c89f11e8f0cc649", "profile": "executable-command-bash", "source_line_count": 3},
+    {"page": "simulation/interactive.md", "line": 41, "language": "bash", "source_sha256": "78dce0ccc5025f064e746a11f217f2fac32e61bb359e8aacb18bc5200ae10581", "profile": "executable-command-bash", "source_line_count": 2},
+    {"page": "simulation/interactive.md", "line": 54, "language": "bash", "source_sha256": "7075802d94eeb1957b85821120c6e0ca0e2011721ef896c0424949a74f79cf0c", "profile": "executable-command-bash", "source_line_count": 3},
+    {"page": "simulation/interactive.md", "line": 68, "language": "bash", "source_sha256": "ced3aa2a7e16baeaeac4a4e140aa5fd6203167fa8d35693ca612be9a7ea84f7b", "profile": "executable-command-bash", "source_line_count": 3},
+    {"page": "simulation/interactive.md", "line": 86, "language": "toml", "source_sha256": "13069ba1d2950b0f1375db22e902eb8e1cd71250b0c411ac1e0c2f1c02b28574", "profile": "configuration-context-toml", "source_line_count": 15},
+    {"page": "simulation/interactive.md", "line": 108, "language": "toml", "source_sha256": "8a5a369b9b09aa52631cb29517bf7e451fc030d69ab504c2ac3b1602beafca52", "profile": "configuration-context-toml", "source_line_count": 24},
+    {"page": "simulation/interactive.md", "line": 137, "language": "toml", "source_sha256": "f33b32fe272eff9c6a274b2ec87f49f32cf2749a9f1475f4400a637a5f09ea7d", "profile": "configuration-context-toml", "source_line_count": 11},
+    {"page": "simulation/reusable-booster-landing.md", "line": 33, "language": "bash", "source_sha256": "ced3aa2a7e16baeaeac4a4e140aa5fd6203167fa8d35693ca612be9a7ea84f7b", "profile": "executable-command-bash", "source_line_count": 3},
+    {"page": "simulation/reusable-booster-landing.md", "line": 47, "language": "text", "source_sha256": "3443ab571c5f178cc30361d135e612a1479e740c9f8a829e26d803c72d1441ca", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "simulation/reusable-booster-landing.md", "line": 75, "language": "text", "source_sha256": "0e497e6c4f06dcc5f71256f4d5cd5bd32fb4809cf0bd6d55475773b68f0673e8", "profile": "explanatory-output-text", "source_line_count": 1},
+    {"page": "simulation/reusable-booster-landing.md", "line": 85, "language": "text", "source_sha256": "5f6f6fbd5f3ff3bb0dfc16f734df4d8f12a14f87cf4a94810d7ae5e5a8bcfbc2", "profile": "explanatory-output-text", "source_line_count": 1},
+    {"page": "simulation/reusable-booster-landing.md", "line": 107, "language": "text", "source_sha256": "741da84aa933eab51fcb95107610b74df73c7daa8379543fe62319606ddeac6b", "profile": "explanatory-output-text", "source_line_count": 4},
+    {"page": "simulation/reusable-booster-landing.md", "line": 156, "language": "bash", "source_sha256": "c6ba1c1dc4af071ee769c041eee282962c02eaf3ea6a99a2aca8dd46c7d6216d", "profile": "executable-command-bash", "source_line_count": 7},
+    {"page": "simulation/reusable-booster-landing.md", "line": 178, "language": "text", "source_sha256": "84fe7da46fa38aad9767423b5afd924e19c8222ad9f2a734b311abbee8d59b99", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "simulation/reusable-booster-landing.md", "line": 195, "language": "text", "source_sha256": "5eea7be627a23c620f3a5faeb75033e1146ce8ece5183d3e5fe299c666751dee", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "simulation/running.md", "line": 11, "language": "bash", "source_sha256": "e05c9c2250541741e0dc3a59bd228fbf568266240c1200116c3c2905a1345489", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 28, "language": "bash", "source_sha256": "8206f0af836cba8aa556150e8fa40b4c6e6c3e0db9403ef5be43ad0894cf698d", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 53, "language": "bash", "source_sha256": "4acb0b6e5963b42b9c826ddcb411ff2623e43d36920c0ded2765788691464e65", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 67, "language": "bash", "source_sha256": "8206f0af836cba8aa556150e8fa40b4c6e6c3e0db9403ef5be43ad0894cf698d", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 79, "language": "bash", "source_sha256": "b8f90a9420237485828cbc123fab2d59585ba92500b1ddc4fa0da0390e503781", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 92, "language": "bash", "source_sha256": "d5f3cb62643e37183225a47a2bf6f23294df58b04ea1d2f208f8e6ea710bf97c", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 108, "language": "bash", "source_sha256": "fd0fb011174f61f44eb5bfe88a36d4a2e05f9dcb6bde1a9b40c19ddda46781f3", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 121, "language": "bash", "source_sha256": "7b6acfb3d08ae3575605fda9f6ece6e57a4c215b524f89e5194be9e816766f2f", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 135, "language": "bash", "source_sha256": "04c069e57e9d4959d554901f1e89462a8b01b45725b8b9b07cfcd4d89d463687", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/running.md", "line": 159, "language": "bash", "source_sha256": "8fb5e4a67b3a34d6a089f67fae32baad9420d2c2398215b53d1fd3613af51aca", "profile": "executable-command-bash", "source_line_count": 2},
+    {"page": "simulation/scenario-tomls.md", "line": 18, "language": "bash", "source_sha256": "644f30027ec12b4506c21af8e5f8943c0a121e90abccb567aaa97bee9460eaf5", "profile": "executable-command-bash", "source_line_count": 3},
+    {"page": "simulation/scenario-tomls.md", "line": 26, "language": "toml", "source_sha256": "64d27844f1df0f0b4ad396f4dabe61c746b3cf373692904fb4230a9d4be2bef4", "profile": "configuration-context-toml", "source_line_count": 20},
+    {"page": "simulation/scenario-tomls.md", "line": 61, "language": "toml", "source_sha256": "8169c4ab70d512cb9bf1295a7b9282c0156413e82208dc8883fe11f3c192b1cf", "profile": "configuration-context-toml", "source_line_count": 3},
+    {"page": "simulation/scenario-tomls.md", "line": 70, "language": "toml", "source_sha256": "db85166d6b002980c3d63b458b0324cdc0bd39b99d1c0fa9d37340d70c6362f4", "profile": "configuration-context-toml", "source_line_count": 1},
+    {"page": "simulation/scenario-tomls.md", "line": 79, "language": "toml", "source_sha256": "37c78b072198cb7c10dc8e785790b0cdac2c60f3a0dd39f1f89c9e80a2a79b47", "profile": "configuration-context-toml", "source_line_count": 8},
+    {"page": "simulation/scenario-tomls.md", "line": 111, "language": "toml", "source_sha256": "ae5d49c9d1063efe51f484cd8b9718eefbb81deb79f3da9a0f4b6dda09c6ddd6", "profile": "configuration-context-toml", "source_line_count": 6},
+    {"page": "simulation/scenario-tomls.md", "line": 132, "language": "toml", "source_sha256": "c55ec050c1fbf100d29e7ad628b3b130725b4e12dac61e316d9bf91e2cd15b16", "profile": "configuration-context-toml", "source_line_count": 6},
+    {"page": "simulation/scenario-tomls.md", "line": 151, "language": "toml", "source_sha256": "96fdc1eb548618c9c3f217686989fa97d691f3c626c8d023b4855e6035ebb952", "profile": "configuration-context-toml", "source_line_count": 6},
+    {"page": "simulation/scenario-tomls.md", "line": 162, "language": "toml", "source_sha256": "e8c9496721bac744ff623544475d5d55e133d6ef71b942aa96524db47db974a2", "profile": "configuration-context-toml", "source_line_count": 6},
+    {"page": "simulation/scenario-tomls.md", "line": 177, "language": "toml", "source_sha256": "be92064761f8f5dcfe6e011c01a4b32c8edf0b30f2484ded22aa68acd81173c2", "profile": "configuration-context-toml", "source_line_count": 15},
+    {"page": "simulation/scenario-tomls.md", "line": 197, "language": "toml", "source_sha256": "d2a78144487b30e62a7da09affba6d18e0715ec32454f6a0d764469f553e7d0b", "profile": "configuration-context-toml", "source_line_count": 3},
+    {"page": "simulation/stdio-session.md", "line": 12, "language": "bash", "source_sha256": "67d27cbe7b838e8db3f0cb8f2112115d5efc64d2293e416b5dd686db66b05d1c", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "simulation/stdio-session.md", "line": 33, "language": "json", "source_sha256": "f96d4c53d2df140df303e1660182f24029fbbdf99d9ec2a1f876168858791d62", "profile": "explanatory-output-json", "source_line_count": 1},
+    {"page": "simulation/stdio-session.md", "line": 107, "language": "text", "source_sha256": "34c336731158a782456e4b19e0b5f0c787af32a5d9a6293376451bbfae443b89", "profile": "explanatory-output-text", "source_line_count": 8},
+    {"page": "simulation/stdio-session.md", "line": 135, "language": "python", "source_sha256": "96d32a8fb5580ef813d8f049aece15f82c39a314d54313055c887e85107b597d", "profile": "executable-stdio-python", "source_line_count": 20},
+    {"page": "tools/cli.md", "line": 7, "language": "text", "source_sha256": "f39f5d6301ae4395854d50478f18b6a66c05268070424360083333c3fe0aa88a", "profile": "explanatory-output-text", "source_line_count": 10},
+    {"page": "tools/cli.md", "line": 27, "language": "bash", "source_sha256": "98d4bc5032e46e0adf0b3beb355fd951b80c9cb9160fcc4922bba42aa6dadfe9", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "tools/cli.md", "line": 33, "language": "bash", "source_sha256": "620a0f5d0573993e5d37311acdcb31a1f9f03c4e0924c3831b52924a968e0d0a", "profile": "project-template-bash", "source_line_count": 1},
+    {"page": "tools/cli.md", "line": 76, "language": "bash", "source_sha256": "bc294cee0012171ff9fdbd1d9b35c54071dfc058b0784a6290bef9f1aecf1790", "profile": "project-template-bash", "source_line_count": 4},
+    {"page": "tools/cli.md", "line": 101, "language": "bash", "source_sha256": "38065597251240699b6aed3aa918efaa4852b23929e8fea80ac8bd7c36bf9d0f", "profile": "executable-command-bash", "source_line_count": 2},
+    {"page": "tools/cli.md", "line": 111, "language": "bash", "source_sha256": "03b182e758701cd4088412dae71210d09dd47c3a5ff32f70d802b2436d5c7fcd", "profile": "executable-command-bash", "source_line_count": 1},
+    {"page": "tools/fmt-lint.md", "line": 10, "language": "bash", "source_sha256": "a93fe4f8c1f5bcea06bfeec90706863ff8c02274f5cebfc92b0b2a03c8799559", "profile": "project-template-bash", "source_line_count": 3},
+    {"page": "tools/fmt-lint.md", "line": 23, "language": "bash", "source_sha256": "c488940f02f9b881df4ac600f6a9b71ddb86b9333b72bcb5712809f553400007", "profile": "executable-tool-bash", "source_line_count": 1},
+    {"page": "tools/fmt-lint.md", "line": 42, "language": "bash", "source_sha256": "85519f6b520eb81f18b8b24b5d2d472c7436be273ebb7eb0f26c8e0f44b16350", "profile": "executable-tool-bash", "source_line_count": 5},
+    {"page": "tools/playground.md", "line": 8, "language": "text", "source_sha256": "fd4db4536f72f1811e0c5d812653ad49d4a866ce7c82a89921129e3e7210a650", "profile": "explanatory-output-text", "source_line_count": 1},
+    {"page": "tools/python.md", "line": 9, "language": "bash", "source_sha256": "46743c95939f4019ce7b8ed31b1b60020bb2406c1be2aa512609428344df369b", "profile": "environment-setup-bash", "source_line_count": 6},
+    {"page": "tools/python.md", "line": 28, "language": "python", "source_sha256": "100532c8a67e8e5803eefca51a07ccc556ac09acc03e03bb50a14459782e126e", "profile": "executable-context-python", "source_line_count": 13},
+    {"page": "tools/python.md", "line": 50, "language": "python", "source_sha256": "a1a8f45ccc6ec984a8793ba7124889c5c99752aff4b2c642530981bf63092c1d", "profile": "executable-context-python", "source_line_count": 3},
+    {"page": "tools/python.md", "line": 59, "language": "python", "source_sha256": "713c2c4cd0f10599c306d25d8a0a4a2308eb86484d22adb56a77d0e702934b56", "profile": "executable-context-python", "source_line_count": 6},
+    {"page": "tools/python.md", "line": 70, "language": "python", "source_sha256": "237af8456bcb458695570515f29408edc6357212ec95ed6e4a1c6f5295f0d0aa", "profile": "executable-context-python", "source_line_count": 5},
+    {"page": "tools/python.md", "line": 98, "language": "python", "source_sha256": "c1bc014ac160b4e63dde3e7fe77a4eafcf1f7a2a270c0d724eeb06aa0d09323c", "profile": "executable-context-python", "source_line_count": 3},
+    {"page": "tools/python.md", "line": 112, "language": "python", "source_sha256": "bbc79a3a2c2bf13a858a41994ae3b92ac33986216c39384dcf5aeeb43ac09881", "profile": "executable-context-python", "source_line_count": 13},
+    {"page": "tools/python.md", "line": 134, "language": "python", "source_sha256": "1193da9e5fe3ecdf8051fdb7e6d35a65e25874e7da7f3de8d20ff9cba5cd89b7", "profile": "executable-context-python", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 143, "language": "python", "source_sha256": "c039f9197304af0cb95ea8d9f40218faf2517e3ce244cb4e764e121f684efe16", "profile": "executable-context-python", "source_line_count": 1},
+    {"page": "tools/python.md", "line": 149, "language": "python", "source_sha256": "a7ca7ed04816a01251e92feac7c57ade53eed07e21504595a2abd3987fee8d19", "profile": "executable-context-python", "source_line_count": 7},
+    {"page": "tools/python.md", "line": 169, "language": "cmake", "source_sha256": "04ef8edd8a78afd2a37aab4d0b7aeafdfdcc2aa9b06c8f67c3df12aa1959ff75", "profile": "project-template-cmake", "source_line_count": 17},
+    {"page": "tools/python.md", "line": 192, "language": "cmake", "source_sha256": "aaa5744bc1327489cb37fe1ef2b45ccc8438c7e66b918373dfd4485871a51186", "profile": "project-template-cmake", "source_line_count": 5},
+    {"page": "tools/python.md", "line": 209, "language": "text", "source_sha256": "9a4675c83281dcb9507cb3bfe0f0889588db66fb540a1ac7abe13049ea6ab1eb", "profile": "executable-notebook-text", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 225, "language": "python", "source_sha256": "bc1861f0e9c3567a213dd04113650cdc76519c4a2c2e59563fadafbc596a7d8b", "profile": "executable-context-python", "source_line_count": 2},
+    {"page": "tools/vscode.md", "line": 22, "language": "toml", "source_sha256": "047a3344a41395fbed0eeb44fa3dc5489360cb1de5a7d9aa5f36960dbec8d214", "profile": "configuration-context-toml", "source_line_count": 4}
+  ]
+}

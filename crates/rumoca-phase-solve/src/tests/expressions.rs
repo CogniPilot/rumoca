@@ -1013,56 +1013,66 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
     })
     .unwrap();
 
-    let solve = lower_solve_problem(&model).unwrap();
+    let package = lower_solve_package(&model).unwrap();
+    let solve = &package.problem;
     solve
         .validate()
         .expect("constructor-certified quotients produce computable Solve IR");
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
-    assert_static_quotient_program(&rows.programs()[0]);
-    // The op-mix assertions above count Floor and Trunc without saying which
-    // builtin owns which, so exchanging the `mod` and `rem` lowerings leaves
-    // them all satisfied. Pin the value: MLS 3.6 §3.7.3 gives
+    assert_static_quotient_program(&rows.programs()[0], &package.pure_calls);
+    // Pin the value independently of the exact Integer owner's opcode mix:
+    // MLS 3.7 §3.7.2 gives
     // `div(-7,3) = -2`, `mod(-7,3) = 2`, `rem(-7,3) = -1`, so the residual
     // `y - (div - mod + rem)` at `y = 0` is `5`.
-    assert_eq!(eval_residual_rows(rows, &[0.0], &[]), [5.0]);
+    for y in [-3.0, 0.0, 11.0] {
+        assert_eq!(
+            eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[y], &[]),
+            [y + 5.0]
+        );
+    }
 }
 
-fn assert_static_quotient_program(operations: &[LinearOp]) {
-    // Each quotient of two literals is one exact literal division, folded at
-    // lowering; the rounding each builtin owns still runs.
-    assert_eq!(
-        operations
-            .iter()
-            .filter(|operation| matches!(
-                operation,
-                LinearOp::Binary {
-                    op: rumoca_ir_solve::BinaryOp::Div,
-                    ..
-                }
-            ))
-            .count(),
-        0
+fn assert_static_quotient_program(
+    operations: &[LinearOp],
+    calls: &rumoca_ir_solve::SolvePureCallTable,
+) {
+    let sites = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            LinearOp::PureCall {
+                input_starts, site, ..
+            } => {
+                assert!(
+                    input_starts.is_empty(),
+                    "literal operands need no runtime capture"
+                );
+                Some(site)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !sites.is_empty(),
+        "Integer quotients retain a checked typed owner"
     );
-    assert_eq!(
-        operations
-            .iter()
-            .filter(|operation| matches!(
-                operation,
-                LinearOp::Unary {
-                    op: rumoca_ir_solve::UnaryOp::Trunc,
-                    ..
-                }
-            ))
-            .count(),
-        2
+    for site in sites {
+        let owner = calls.owner(site.owner()).expect("issued call owner exists");
+        assert_eq!(owner.call_site(), *site);
+        assert!(site.outputs().iter().all(|output| matches!(
+            output.value_type().element_type(),
+            rumoca_ir_solve::SolveScalarType::Integer { .. }
+        )));
+    }
+    assert!(
+        !operations.iter().any(|operation| matches!(
+            operation,
+            LinearOp::Binary {
+                op: rumoca_ir_solve::BinaryOp::Div,
+                ..
+            }
+        )),
+        "Integer quotients never use a binary64 division"
     );
-    assert!(operations.iter().any(|operation| matches!(
-        operation,
-        LinearOp::Unary {
-            op: rumoca_ir_solve::UnaryOp::Floor,
-            ..
-        }
-    )));
 }

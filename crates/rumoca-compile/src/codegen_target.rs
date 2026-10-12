@@ -150,6 +150,10 @@ pub struct TargetCapabilities {
     /// FMI projection proves ordered parameter-only initialization assignments.
     pub parameter_initialization: Option<bool>,
     pub events: Option<bool>,
+    /// A Flat template renders `algorithm` / `initial algorithm` sections.
+    /// Declared `false`, a model carrying either is refused instead of being
+    /// emitted without them.
+    pub algorithms: Option<bool>,
     /// FMI C projection proves assertion predicates are parameter-dependent.
     pub static_assertions: Option<bool>,
     pub runtime_events: Option<bool>,
@@ -721,6 +725,36 @@ pub fn render_dae_target_files(
     Ok(files)
 }
 
+/// Capability gate for Flat templates that declare a `[capabilities]` table.
+///
+/// Flat templates render the Flat model directly, so a section the template
+/// never reads is silently absent from the output: a `when` chain or an
+/// algorithm section would vanish and the emitted model would still compile,
+/// simulating different dynamics. A Flat target that declares `events` or
+/// `algorithms` unsupported converts that silent loss into a refusal.
+pub fn validate_flat_target_capabilities(
+    flat: &rumoca_ir_flat::Model,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
+    if capabilities.events == Some(false) && !flat.when_chains.is_empty() {
+        unsupported_feature(
+            manifest,
+            "events",
+            format!("{} when-equation chain(s)", flat.when_chains.len()),
+        )?;
+    }
+    let algorithm_sections = flat.algorithms.len() + flat.initial_algorithms.len();
+    if capabilities.algorithms == Some(false) && algorithm_sections != 0 {
+        unsupported_feature(
+            manifest,
+            "algorithms",
+            format!("{algorithm_sections} algorithm section(s)"),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn validate_dae_target_capabilities(
     dae: &dae::Dae,
     manifest: &TargetManifest,
@@ -838,10 +872,24 @@ pub fn validate_solve_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    validate_solve_target_capabilities_with_calls(solve, None, manifest, capabilities)
+}
+
+/// [`validate_solve_target_capabilities`] for a renderer that receives the
+/// model's pure-call owners from the same Solve lowering
+/// (`SolveTemplateRenderer::new_owned_with_dae_and_calls`): a scalar target
+/// then inlines `PureCall` ops, so programs holding them stay renderable.
+pub fn validate_solve_target_capabilities_with_calls(
+    solve: &rumoca_ir_solve::SolveProblem,
+    pure_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
     solve.validate()?;
     if capabilities.residual_equations != Some(true)
         && solve_requires_residual_equations(
             solve,
+            pure_calls,
             capabilities.exact_algebraic_assignments,
             capabilities.algebraic_projection,
         )
@@ -855,8 +903,15 @@ pub fn validate_solve_target_capabilities(
     // The Solve presence queries below are owned by `rumoca_ir_solve`
     // (SPEC_0041 §1) and are called qualified so this gate and the checked FMI
     // projection provably read the same facts.
+    // A Solve target that renders `solve_blocks.parameter_initialization` /
+    // `state_initialization` accepts an initialization made only of ordered
+    // assignments into parameter and state slots.
+    let parameter_only_initialization = manifest.ir == TargetTemplateIr::Solve
+        && capabilities.parameter_initialization == Some(true)
+        && rumoca_phase_codegen::explicit_initialization_renderable_with_calls(solve, pure_calls);
     if capabilities.initialization == Some(false)
         && !supports_parameter_initialization(manifest, capabilities)
+        && !parameter_only_initialization
         && rumoca_ir_solve::solve_has_initialization(solve)
     {
         unsupported_feature(
@@ -1339,8 +1394,13 @@ fn validate_target_capabilities(
     if capabilities.static_assertions.is_some() && manifest.ir != TargetTemplateIr::Fmi {
         bail!("static_assertions capability is only valid for FMI targets");
     }
-    if capabilities.parameter_initialization.is_some() && manifest.ir != TargetTemplateIr::Fmi {
-        bail!("parameter_initialization capability is only valid for FMI targets");
+    if capabilities.parameter_initialization.is_some()
+        && !matches!(manifest.ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi)
+    {
+        bail!("parameter_initialization capability is only valid for Solve-derived targets");
+    }
+    if capabilities.algorithms.is_some() && manifest.ir != TargetTemplateIr::Flat {
+        bail!("algorithms capability is only valid for ir = \"flat\" targets");
     }
     if capabilities.structured_equation_families.is_some() && manifest.ir != TargetTemplateIr::Dae {
         bail!("structured_equation_families capability is only valid for ir = \"dae\" targets");

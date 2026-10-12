@@ -10,9 +10,21 @@
   "array_end": "}",
   "if_style": "modelica",
   "sanitize_dots": false,
+  "quote_dotted": true,
+  "quote_names": flat.variables,
   "one_based_index": true,
   "modelica_builtins": true
 } -%}
+{#- Macro: a flattened hierarchical name as a quoted Modelica identifier -#}
+{%- macro qname(name) -%}{{ ("'" ~ name ~ "'") if ("." in name or "$" in name) else name }}{%- endmacro -%}
+{#- Macro: one scalar attribute modifier; `each` on an array variable unless
+    the value is itself an array literal (MLS 7.2.5) -#}
+{#- Whether `expr` is an unsubscripted reference to an array variable, an
+    array value that must not take `each`. -#}
+{%- macro array_ref(expr) -%}
+{%- if expr is mapping and "VarRef" in expr and not expr.VarRef.subscripts and expr.VarRef.name.name in flat.variables and flat.variables[expr.VarRef.name.name].dims | length > 0 -%}yes{%- endif -%}
+{%- endmacro -%}
+{%- macro scalar_mod(var, key, value, expr=none) -%}{{ ("each " if var.dims | length > 0 and value[:1] not in ["{", "["] and not array_ref(expr) else "") ~ key ~ " = " ~ value }}{%- endmacro -%}
 {#- Macro: variable attributes (unit, min, max, start, fixed, nominal, stateSelect) -#}
 {%- macro var_attrs(var) -%}
 {%- set ns = namespace(parts="") -%}
@@ -26,22 +38,22 @@
 {%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ 'displayUnit = "' ~ var.display_unit ~ '"' -%}
 {%- endif -%}
 {%- if var.min is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "min = " ~ render_expr(var.min, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "min", render_expr(var.min, cfg), var.min) -%}
 {%- endif -%}
 {%- if var.max is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "max = " ~ render_expr(var.max, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "max", render_expr(var.max, cfg), var.max) -%}
 {%- endif -%}
 {%- if var.start is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "start = " ~ render_expr(var.start, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "start", render_expr(var.start, cfg), var.start) -%}
 {%- endif -%}
 {%- if var.fixed is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "fixed = " ~ ("true" if var.fixed else "false") -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "fixed", ("true" if var.fixed else "false")) -%}
 {%- endif -%}
 {%- if var.nominal is not none -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "nominal = " ~ render_expr(var.nominal, cfg) -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ scalar_mod(var, "nominal", render_expr(var.nominal, cfg), var.nominal) -%}
 {%- endif -%}
 {%- if var.state_select and var.state_select != "Default" -%}
-{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ var.state_select -%}
+{%- set ns.parts = ns.parts ~ (", " if ns.parts else "") ~ "stateSelect = StateSelect." ~ (var.state_select | lower) -%}
 {%- endif -%}
 {%- if ns.parts %}({{ ns.parts }}){% endif -%}
 {%- endmacro -%}
@@ -59,8 +71,10 @@
 {%- if var.variability is mapping and var.variability.Parameter is defined %}parameter {% endif -%}
 {%- if var.variability is mapping and var.variability.Constant is defined %}constant {% endif -%}
 {%- if var.variability is mapping and var.variability.Discrete is defined %}discrete {% endif -%}
-{%- if var.causality is mapping and var.causality.Input is defined %}input {% endif -%}
-{%- if var.causality is mapping and var.causality.Output is defined %}output {% endif -%}
+{#- Causality survives flattening only at the top level: a sub-component's
+    input (`rover.throttle`) is bound by its parent, not by the host. -#}
+{%- if var.causality is mapping and var.causality.Input is defined and "." not in name %}input {% endif -%}
+{%- if var.causality is mapping and var.causality.Output is defined and "." not in name %}output {% endif -%}
 {%- endmacro -%}
 {#- Macro: binding expression -#}
 {%- macro binding(var) -%}
@@ -70,7 +84,25 @@
 {%- endmacro -%}
 {#- Macro: declared type name with fallback -#}
 {%- macro var_type(flat, name) -%}
-{{ flat.variable_type_names[name] | default("Real") }}
+{{ flat_type_names[name] | default(flat.variable_type_names[name] | default("Real")) }}
+{%- endmacro -%}
+{#- Macro: one equation partition, each unmaterialized `for` family as a loop -#}
+{%- macro equation_rows(rows) -%}
+{%- for row in rows %}
+{%- if "loop" in row %}
+{%- for header in row.loop.headers %}
+  {{ header }}
+{%- endfor %}
+{%- for eq in row.loop.equations %}
+    {{ render_flat_equation(eq, cfg) }};
+{%- endfor %}
+{%- for _ in row.loop.headers %}
+  end for;
+{%- endfor %}
+{%- else %}
+  {{ render_flat_equation(row.equation, cfg) }};
+{%- endif %}
+{%- endfor %}
 {%- endmacro -%}
 {#- Macro: assert-equation statement -#}
 {%- macro render_assert_eq(assert_eq) -%}
@@ -79,7 +111,7 @@ assert({{ render_expr(assert_eq.condition, cfg) }}, {{ render_expr(assert_eq.mes
 class {{ model_name }}{% if flat.model_description %} "{{ flat.model_description }}"{% endif %}
 {%- for name, var in flat.variables | items %}
 {%- if not var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- set ns = namespace(has_protected=false) -%}
@@ -92,22 +124,18 @@ class {{ model_name }}{% if flat.model_description %} "{{ flat.model_description
 protected
 {%- for name, var in flat.variables | items %}
 {%- if var.is_protected %}
-  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ name }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
+  {{ var_prefix(flat, name, var) }}{{ var_type(flat, name) }}{{ dims(var) }} {{ qname(name) }}{{ var_attrs(var) }}{{ binding(var) }}{{ var_desc(var) }};
 {%- endif %}
 {%- endfor %}
 {%- endif %}
 equation
-{%- for eq in flat.equations %}
-  {{ render_flat_equation(eq, cfg) }};
-{%- endfor -%}
+{{- equation_rows(flat_equation_rows.regular) -}}
 {%- for assert_eq in flat.assert_equations %}
   {{ render_assert_eq(assert_eq) }};
 {%- endfor -%}
 {%- if flat.initial_equations | length > 0 or flat.initial_assert_equations | length > 0 %}
 initial equation
-{%- for eq in flat.initial_equations %}
-  {{ render_flat_equation(eq, cfg) }};
-{%- endfor -%}
+{{- equation_rows(flat_equation_rows.initial) -}}
 {%- for assert_eq in flat.initial_assert_equations %}
   {{ render_assert_eq(assert_eq) }};
 {%- endfor -%}

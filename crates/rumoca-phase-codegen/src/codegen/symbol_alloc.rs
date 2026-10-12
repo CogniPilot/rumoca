@@ -547,6 +547,29 @@ pub(super) fn lookup_symbol_value(symbols: Option<&Value>, name: &str) -> Option
         .filter(|value| !value.is_empty())
 }
 
+/// The emitted name of a variable reference: `emitted_symbol`, quoted as a
+/// Modelica identifier when `quote_dotted` is set and the name is a flattened
+/// hierarchical path (`src.p.v` -> `'src.p.v'`) or a generated name (`$...`).
+pub(super) fn emitted_variable_symbol(reference: &str, cfg: &ExprConfig) -> RenderResult {
+    let symbol = emitted_symbol(reference, cfg)?;
+    let declared = cfg.quote_names.as_ref().is_none_or(|names| {
+        names
+            .get_item(&Value::from(reference))
+            .is_ok_and(|entry| !entry.is_undefined() && !entry.is_none())
+    });
+    // A generated name (`$parentIndex1`, a comprehension binder) is never a
+    // legal bare identifier; a dotted one is quoted only when it names a
+    // declared variable (not an enumeration literal or type path).
+    let generated = symbol.contains('$');
+    if cfg.quote_dotted
+        && !symbol.starts_with('\'')
+        && (generated || (declared && symbol.contains('.')))
+    {
+        return Ok(format!("'{symbol}'"));
+    }
+    Ok(symbol)
+}
+
 pub(super) fn emitted_symbol(reference: &str, cfg: &ExprConfig) -> RenderResult {
     if let Some(symbols) = cfg.symbols.as_ref() {
         return lookup_symbol_value(Some(symbols), reference).ok_or_else(|| {

@@ -10,6 +10,19 @@ pub(super) fn validate_static_quotient(
         unreachable!("builtin result validation proves quotient arity")
     };
     let operator = quotient_name(builtin);
+    if discrete_integer_quotient(storage, [*lhs, *rhs], at)? {
+        // MLS §3.8.5: Integer expressions with discrete operands are already
+        // discrete-time. Their exact arithmetic needs no continuous root and
+        // must not be domain-proved through the Real static-value helper.
+        return if storage.static_integer(*rhs) == Some(0) {
+            Err(DaeConstructionError::UndefinedBuiltinDomain {
+                operator,
+                span: at.span(),
+            })
+        } else {
+            Ok(())
+        };
+    }
     let (Some(lhs), Some(rhs)) = (
         static_numeric_value(storage, lhs.index()),
         static_numeric_value(storage, rhs.index()),
@@ -31,6 +44,23 @@ pub(super) fn validate_static_quotient(
             span: at.span(),
         })
     }
+}
+
+fn discrete_integer_quotient(
+    storage: &Storage,
+    arguments: [ExprId<'_>; 2],
+    at: DaeProvenance,
+) -> Result<bool, DaeConstructionError> {
+    for argument in arguments {
+        let value_type = storage.expr_type(argument, at)?;
+        if !value_type.is_scalar()
+            || value_type.scalar_type() != ScalarType::Integer
+            || storage.expr_variability(argument, at)? == ExpressionVariability::Continuous
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Where a runtime quotient is evaluated.
@@ -96,11 +126,10 @@ pub(super) fn validate_runtime_quotient(
 }
 
 /// MLS §3.7.2: `div`, `mod`, and `rem` trigger events where their result
-/// changes discontinuously during continuous integration. Operands of constant
-/// variability, such as the binders of a structured domain, never change, so
-/// the quotient needs no event owner. A statically proven zero divisor is still
-/// an undefined domain. Parameter-variability operands keep their checked
-/// runtime owner, which proves the divisor for the parameter values in use.
+/// changes discontinuously during continuous integration. Constant and parameter
+/// operands, including structured-domain binders, never change during integration,
+/// so their quotient needs no event owner. A statically proven zero divisor is
+/// still undefined; other invalid divisors retain the ordinary evaluation fault.
 fn validate_time_invariant_quotient(
     storage: &Storage,
     operator: &'static str,
@@ -110,9 +139,7 @@ fn validate_time_invariant_quotient(
     for operand in [lhs, rhs] {
         if matches!(
             storage.expr_variability(operand, at)?,
-            ExpressionVariability::Parameter
-                | ExpressionVariability::Discrete
-                | ExpressionVariability::Continuous
+            ExpressionVariability::Discrete | ExpressionVariability::Continuous
         ) {
             return Err(DaeConstructionError::NonStaticDiscontinuity {
                 operator,

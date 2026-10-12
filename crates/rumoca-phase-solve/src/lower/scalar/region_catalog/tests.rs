@@ -25,6 +25,7 @@ fn model() -> dae::Dae {
                     domains.structured(
                         rumoca_core::StructuredIndexDomain {
                             binders: vec![rumoca_core::StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".into(),
                                 lower: 1,

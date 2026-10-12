@@ -70,6 +70,7 @@ fn assign(target: &str, value: Expression) -> rumoca_core::Statement {
 fn for_loop(index: &str, count: i64, body: Vec<rumoca_core::Statement>) -> rumoca_core::Statement {
     rumoca_core::Statement::For {
         indices: vec![rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: index.to_string(),
             range: Expression::Range {
                 start: Box::new(integer(1)),

@@ -249,6 +249,7 @@ pub(super) fn lower_root_call(model: &dae::Dae) -> solve::SolvePureCallTable {
 pub(super) fn structured_range(name: &str, upper: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: name.to_owned(),
             lower: 1,

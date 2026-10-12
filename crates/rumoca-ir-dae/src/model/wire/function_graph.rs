@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct WireFunctionComponent {
     pub(super) functions: Box<[usize]>,
     pub(super) recursive: bool,
+    pub(super) construction_start: usize,
     pub(super) expression_end: usize,
 }
 
@@ -32,6 +33,12 @@ pub(super) fn function_components(
         .map_err(|_| malformed("functions.dependencies"))?
         .into_iter()
         .map(|component| WireFunctionComponent {
+            construction_start: component
+                .members
+                .iter()
+                .map(|&function| wire.functions[function].construction_start as usize)
+                .min()
+                .unwrap_or(0),
             expression_end: component
                 .members
                 .iter()
@@ -56,6 +63,23 @@ pub(super) fn function_components(
     }
     let mut previous_end = 0;
     for component in &mut components {
+        if component.functions.iter().any(|&function| {
+            wire.functions[function].construction_start as usize != component.construction_start
+        }) || component.construction_start < previous_end
+        {
+            return Err(malformed("function construction order"));
+        }
+        let issued_end = wire.functions[component.functions[0]].construction_end as usize;
+        if component
+            .functions
+            .iter()
+            .any(|&function| wire.functions[function].construction_end as usize != issued_end)
+            || issued_end < component.construction_start
+            || component.expression_end > issued_end
+        {
+            return Err(malformed("function construction extent"));
+        }
+        component.expression_end = issued_end;
         if component.expression_end < previous_end {
             return Err(malformed("functions.expression_order"));
         }
@@ -169,7 +193,8 @@ fn operand_count(node: &ExprNodeWire) -> u32 {
 fn source_width(node: &ExprNodeWire) -> u32 {
     match node {
         ExprNodeWire::RuntimeQuotientOwner {
-            kind: QuotientOwnerKindWire::Model { .. },
+            kind:
+                QuotientOwnerKindWire::Model { .. } | QuotientOwnerKindWire::StructuredModel { .. },
             ..
         } => 7,
         _ => 1,
@@ -273,7 +298,8 @@ fn expression_scopes(
         }
         match node {
             ExprNodeWire::RuntimeQuotientOwner {
-                kind: QuotientOwnerKindWire::Model { .. },
+                kind:
+                    QuotientOwnerKindWire::Model { .. } | QuotientOwnerKindWire::StructuredModel { .. },
                 ..
             } => {
                 if scope.is_some() {

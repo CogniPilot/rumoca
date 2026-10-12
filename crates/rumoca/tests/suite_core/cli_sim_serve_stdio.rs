@@ -1,8 +1,13 @@
 //! `rumoca sim --serve-stdio` drives one session from JSON-lines commands.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::io::{self, BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use rumoca_sim::{SessionCommand, SessionEvent};
+use rumoca_solver::SimExecutionEngine;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -23,17 +28,25 @@ struct Served {
 
 impl Served {
     fn spawn() -> Self {
+        Self::spawn_source(
+            PLANT,
+            "Plant",
+            &[
+                "--solver", "bdf", "--atol", "1e-10", "--rtol", "1e-10", "--input", "u=0",
+            ],
+        )
+    }
+
+    fn spawn_source(source: &str, model: &str, options: &[&str]) -> Self {
         let dir = tempdir().unwrap();
-        let file = dir.path().join("Plant.mo");
-        std::fs::write(&file, PLANT).unwrap();
+        let file = dir.path().join(format!("{model}.mo"));
+        std::fs::write(&file, source).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_rumoca"))
             .arg("sim")
             .arg("--serve-stdio")
             .arg(&file)
-            .args([
-                "-m", "Plant", "--solver", "bdf", "--atol", "1e-10", "--rtol", "1e-10", "--input",
-                "u=0",
-            ])
+            .args(["-m", model])
+            .args(options)
             .arg("--cache-dir")
             .arg(dir.path().join("cache"))
             .stdin(Stdio::piped())
@@ -74,11 +87,107 @@ impl Served {
         self.read()
     }
 
+    fn command(&mut self, command: SessionCommand) -> SessionEvent {
+        serde_json::from_value(self.call(serde_json::to_value(command).unwrap())).unwrap()
+    }
+
     fn y(&mut self) -> f64 {
         self.call(json!({"command": "get", "name": "y"}))["value"]
             .as_f64()
             .unwrap()
     }
+}
+
+fn wait_for_exit(child: &mut Child) -> io::Result<ExitStatus> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let failure = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Err(error) => break error,
+            Ok(None) => {}
+        }
+        if Instant::now() >= deadline {
+            break io::Error::new(
+                io::ErrorKind::TimedOut,
+                "stdio child did not exit within 10 seconds",
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let _ = child.kill();
+    child.wait()?;
+    Err(failure)
+}
+
+fn keep_writing_state(
+    mut stdin: ChildStdin,
+    stop: Receiver<()>,
+) -> (ChildStdin, Option<io::Error>) {
+    let command = json!({"command": "state"});
+    loop {
+        if let Err(error) = writeln!(stdin, "{command}").and_then(|()| stdin.flush()) {
+            // Keep stdin alive until the parent has observed the child's exit.
+            return (stdin, Some(error));
+        }
+        match stop.recv_timeout(Duration::from_millis(10)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return (stdin, None),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+#[test]
+fn issue_422_release_cli_runs_original_u4_without_native_fallback() {
+    let source = include_str!(
+        "../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_422.mo"
+    );
+    let mut served = Served::spawn_source(
+        source,
+        "U4",
+        &[
+            "--solver", "rk-like", "--t-end", "1", "--dt", "0.1", "--atol", "1e-9", "--rtol",
+            "1e-9",
+        ],
+    );
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 10.0;
+        if sample != 0 {
+            assert_eq!(
+                served.command(SessionCommand::AdvanceTo { time }),
+                SessionEvent::Ok { time }
+            );
+        }
+        let SessionEvent::State {
+            time: actual_time,
+            values,
+        } = served.command(SessionCommand::State)
+        else {
+            panic!("original U4 must return its state");
+        };
+        assert_eq!(actual_time, time);
+        let actual = values["y"];
+        let expected = (-time).exp();
+        let bound = 20.0 * (1e-9 + 1e-9 * expected.abs());
+        assert!(
+            actual.is_finite() && (actual - expected).abs() <= bound,
+            "original U4/{sample}: y={actual}, expected {expected}, bound {bound}"
+        );
+        let SessionEvent::Hello { engine, .. } = served.command(SessionCommand::Hello {
+            protocol_version: 1,
+        }) else {
+            panic!("original U4 must return its execution receipt");
+        };
+        assert_eq!(engine.engine, SimExecutionEngine::Cranelift, "{engine:?}");
+        assert_eq!(engine.refusal, None, "{engine:?}");
+        assert!(engine.declined.is_empty(), "{engine:?}");
+        eprintln!("original U4 release CLI/{sample} time={time} y={actual}: {engine:?}");
+    }
+    assert_eq!(
+        served.command(SessionCommand::Close),
+        SessionEvent::Closed { time: 1.0 }
+    );
+    drop(served.stdin.take());
+    assert!(wait_for_exit(&mut served.child).unwrap().success());
 }
 
 /// Exact sampled-data solution of `y' = -2y + 4u` under `u = 0.8 (1 - y)` held
@@ -116,7 +225,7 @@ fn an_external_proportional_controller_closes_the_loop() {
     );
     assert_eq!(served.call(json!({"command": "close"}))["event"], "closed");
     drop(served.stdin.take());
-    assert!(served.child.wait().unwrap().success());
+    assert!(wait_for_exit(&mut served.child).unwrap().success());
 }
 
 #[test]
@@ -141,7 +250,7 @@ fn an_unsupported_protocol_version_ends_the_session_with_status_72() {
     let reply = served.call(json!({"command": "hello", "protocol_version": 99}));
     assert_eq!(reply["event"], "error");
     assert_eq!(reply["code"], "EX010");
-    assert_eq!(served.child.wait().unwrap().code(), Some(72));
+    assert_eq!(wait_for_exit(&mut served.child).unwrap().code(), Some(72));
 }
 
 #[test]
@@ -152,7 +261,7 @@ fn closing_stdin_without_close_exits_with_the_disconnect_status() {
         "ok"
     );
     drop(served.stdin.take());
-    assert_eq!(served.child.wait().unwrap().code(), Some(71));
+    assert_eq!(wait_for_exit(&mut served.child).unwrap().code(), Some(71));
 }
 
 #[test]
@@ -213,15 +322,21 @@ fn a_closed_stdout_exits_with_the_disconnect_status() {
     let Served {
         _dir,
         mut child,
-        mut stdin,
+        stdin,
         stdout,
     } = Served::spawn();
     drop(stdout);
-    let stdin = stdin.as_mut().unwrap();
-    // The controller keeps writing after it stopped reading.
-    writeln!(stdin, "{}", json!({"command": "state"})).unwrap();
-    stdin.flush().unwrap();
-    assert_eq!(child.wait().unwrap().code(), Some(71));
+    let (stop, requests) = mpsc::channel();
+    // Concurrent child launches can briefly inherit the dropped reader. Keep
+    // writing in this one session until the closed pipe is actually observed.
+    let writer = thread::spawn(move || keep_writing_state(stdin.unwrap(), requests));
+    let status = wait_for_exit(&mut child);
+    let _ = stop.send(());
+    let (_stdin, write_error) = writer.join().unwrap();
+    assert_eq!(status.unwrap().code(), Some(71));
+    if let Some(error) = write_error {
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
 }
 
 #[test]

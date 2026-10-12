@@ -86,6 +86,7 @@ fn comprehension(name: &str, count: Expression, element: Expression, span: Span)
     Expression::ArrayComprehension {
         expr: Box::new(element),
         indices: vec![ComprehensionIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             name: name.to_string(),
             range: Expression::Range {
                 start: Box::new(int_lit(1, span)),
@@ -182,7 +183,16 @@ fn colon_local_function(span: Span) -> rumoca_core::Function {
         comprehension(
             "i",
             var_ref("b", span),
-            binary(OpBinary::Mul, real_lit(1.0, span), var_ref("i", span), span),
+            binary(
+                OpBinary::Mul,
+                real_lit(1.0, span),
+                Expression::VarRef {
+                    name: Reference::generated("i"),
+                    subscripts: Vec::new(),
+                    span,
+                },
+                span,
+            ),
             span,
         ),
         span,
@@ -220,7 +230,11 @@ fn scaled_offset(count: &str, span: Span) -> Expression {
         binary(
             OpBinary::Sub,
             var_ref(count, span),
-            var_ref("i", span),
+            Expression::VarRef {
+                name: Reference::generated("i"),
+                subscripts: Vec::new(),
+                span,
+            },
             span,
         ),
         var_ref("d", span),

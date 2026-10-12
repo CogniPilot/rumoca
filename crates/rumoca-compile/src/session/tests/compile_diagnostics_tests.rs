@@ -501,7 +501,9 @@ fn test_dae_strict_compile_projects_flat_derived_metadata() {
                   Real x(start = 0);
                 equation
                   der(x) = p;
-                  z = time;
+                  when sample(0, 0.1) then
+                    z = time;
+                  end when;
                 end M;
                 "#,
         )

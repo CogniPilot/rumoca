@@ -2,7 +2,7 @@
 
 use rumoca_ir_solve as solve;
 
-use crate::{EvalSolveError, TypedValue, typed_kind_from_scalar, typed_kind_to_scalar};
+use crate::{EvalSolveError, TypedValue, checked_scalar_payload_value, typed_kind_from_scalar};
 
 /// Prepared evaluator boundary for one [`solve::EventTransactionProgram`].
 ///
@@ -149,14 +149,16 @@ impl PreparedEventTransactionProgram {
             );
         }
         let values = crate::eval_pure_call(table, self.program.site().owner(), &arguments)
-            .map_err(|error| EvalSolveError::ShapeContract {
-                message: error.to_string(),
-                span: error.source_span().or(Some(self.program.span())),
-            })?;
+            .map_err(EvalSolveError::from)?;
         output.clear();
         output.reserve(self.output_scalar_count);
         for value in values {
-            output.extend(value.elements().iter().copied().map(typed_kind_to_scalar));
+            for &element in value.elements() {
+                output.push(
+                    checked_scalar_payload_value(element)
+                        .map_err(|error| error.with_source_span(Some(self.program.span())))?,
+                );
+            }
         }
         if output.len() != self.output_scalar_count {
             return Err(shape_error(

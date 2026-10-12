@@ -1,0 +1,29 @@
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAETransform.mo:337:7-337:48:writable] Error: Internal error BackendDAETransform.analyseStrongComponentBlock failed (Purely discrete algebraic loops cannot be solved by iterative processes. Try to break them open using the delay() operator.)
+disjunctiveClock.reset_ticked.input_sample.y
+disjunctiveClock.reset_ticked.input_ticked.u
+disjunctiveClock.reset_ticked.input_hold.u
+disjunctiveClock.reset_ticked.input_tick.y
+disjunctiveClock.reset_ticked.input_tick.u
+disjunctiveClock.reset_ticked.input_tick.u = disjunctiveClock.reset_ticked.input_sample.y
+disjunctiveClock.reset_ticked.input_tick.y = not disjunctiveClock.reset_ticked.input_tick.u
+disjunctiveClock.reset_ticked.input_hold.u = disjunctiveClock.reset_ticked.input_tick.y
+disjunctiveClock.reset_ticked.input_ticked.u = $getPart(disjunctiveClock.reset_ticked.input_hold.u)
+disjunctiveClock.reset_ticked.input_sample.y = $getPart(disjunctiveClock.reset_ticked.input_ticked.u)
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAETransform.mo:347:7-347:48:writable] Error: Internal error BackendDAETransform.analyseStrongComponentBlock failed
+variables:
+  disjunctiveClock.reset_ticked.input_sample.y
+  disjunctiveClock.reset_ticked.input_ticked.u
+  disjunctiveClock.reset_ticked.input_hold.u
+  disjunctiveClock.reset_ticked.input_tick.y
+  disjunctiveClock.reset_ticked.input_tick.u
+equations:
+  disjunctiveClock.reset_ticked.input_tick.u = disjunctiveClock.reset_ticked.input_sample.y
+  disjunctiveClock.reset_ticked.input_tick.y = not disjunctiveClock.reset_ticked.input_tick.u
+  disjunctiveClock.reset_ticked.input_hold.u = disjunctiveClock.reset_ticked.input_tick.y
+  disjunctiveClock.reset_ticked.input_ticked.u = $getPart(disjunctiveClock.reset_ticked.input_hold.u)
+  disjunctiveClock.reset_ticked.input_sample.y = $getPart(disjunctiveClock.reset_ticked.input_ticked.u)
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAETransform.mo:351:7-351:90:writable] Error: Internal error function analyseStrongComponentBlock failed
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAETransform.mo:202:5-202:89:writable] Error: Internal error function analyseStrongComponentScalar failed
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAETransform.mo:113:7-113:113:writable] Error: Internal error function strongComponentsScalar failed (sorting strong components)
+[/build/source/OMCompiler/Compiler/BackEnd/BackendDAEUtil.mo:7986:5-7986:89:writable] Error: Internal error Transformation module sort components failed
+Warning: The optimization module detectJacobianSparsePattern failed. This module will be skipped and the transformation process continued.

@@ -1,7 +1,121 @@
 //! Division keeps the source quotient, not a rounded reciprocal and product.
 
 use super::*;
-use rumoca_eval_solve::{TypedValue, eval_pure_call};
+use rumoca_eval_solve::{TypedValue, eval_pure_call, eval_pure_call_directional};
+
+#[test]
+fn broadcast_division_directional_matches_independent_finite_differences() {
+    for shape in [vec![4], vec![2, 2], vec![2, 1, 2]] {
+        for scalar_on_lhs in [false, true] {
+            check_broadcast_directional_differences(&shape, scalar_on_lhs);
+        }
+    }
+}
+
+fn check_broadcast_directional_differences(shape: &[u32], scalar_on_lhs: bool) {
+    let a = [2.0, -4.0, 8.0, -16.0];
+    let da = [0.25, -0.5, 0.75, -1.0];
+    let s = 3.0;
+    let step = 1e-5;
+    let model = division_fixture(dae::BinaryOperator::ElementwiseDivide, shape, scalar_on_lhs);
+    let table = lower_root_call(&model);
+    let [owner] = table.owners() else {
+        panic!("one issued division owner")
+    };
+    for (da, ds) in [([0.0; 4], 2.0), (da, 0.0), (da, -0.75)] {
+        let results = eval_pure_call_directional(
+            &table,
+            owner.id(),
+            &[
+                real_value(&owner.inputs()[0], &a),
+                real_value(&owner.inputs()[0], &da),
+                real_value(&owner.inputs()[1], &[s]),
+                real_value(&owner.inputs()[1], &[ds]),
+            ],
+        )
+        .expect("broadcast division has a checked directional relation");
+        assert_eq!(results.len(), 2);
+        for result in &results {
+            assert_eq!(result.value_type(), owner.outputs()[0].value_type());
+        }
+        for (i, tangent) in real_elements(&results[1]).into_iter().enumerate() {
+            let quotient = |offset| {
+                let (lhs, rhs) =
+                    ordered_operands(scalar_on_lhs, s + offset * ds, a[i] + offset * da[i]);
+                lhs / rhs
+            };
+            assert_eq!(
+                real_elements(&results[0])[i].to_bits(),
+                quotient(0.0).to_bits()
+            );
+            let finite_difference = (quotient(step) - quotient(-step)) / (2.0 * step);
+            assert!(
+                (tangent - finite_difference).abs() < 1e-9,
+                "shape={shape:?}, scalar_on_lhs={scalar_on_lhs}, cell={i}: {tangent} vs {finite_difference}"
+            );
+        }
+    }
+}
+
+#[test]
+fn broadcast_division_directional_retains_singular_policy_and_checked_shapes() {
+    for scalar_on_lhs in [false, true] {
+        check_broadcast_directional_singular_cases(scalar_on_lhs);
+    }
+}
+
+fn check_broadcast_directional_singular_cases(scalar_on_lhs: bool) {
+    let model = division_fixture(dae::BinaryOperator::ElementwiseDivide, &[4], scalar_on_lhs);
+    let table = lower_root_call(&model);
+    let [owner] = table.owners() else {
+        panic!("one issued division owner")
+    };
+    for s in [0.0_f64, -0.0] {
+        let a = [0.0, -0.0, 1.0, -1.0];
+        let inputs = [
+            real_value(&owner.inputs()[0], &a),
+            real_value(&owner.inputs()[0], &[1.0; 4]),
+            real_value(&owner.inputs()[1], &[s]),
+            real_value(&owner.inputs()[1], &[2.0]),
+        ];
+        let results = eval_pure_call_directional(&table, owner.id(), &inputs).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].value_type(), owner.outputs()[0].value_type());
+        assert_eq!(results[1].value_type(), owner.outputs()[0].value_type());
+        let expected_tangent = if scalar_on_lhs {
+            [0.0, 0.0, 2.0, -2.0]
+        } else {
+            [0.0; 4]
+        };
+        assert_eq!(real_elements(&results[1]), expected_tangent);
+        for (i, primal) in real_elements(&results[0]).into_iter().enumerate() {
+            let (lhs, rhs) = ordered_operands(scalar_on_lhs, s, a[i]);
+            let expected = lhs / rhs;
+            if expected.is_nan() {
+                assert!(primal.is_nan());
+            } else {
+                assert_eq!(primal.to_bits(), expected.to_bits());
+            }
+        }
+        let mut wrong_shape = inputs.clone();
+        wrong_shape[1] = real_value(&owner.inputs()[1], &[1.0]);
+        assert!(matches!(
+            eval_pure_call_directional(&table, owner.id(), &wrong_shape),
+            Err(rumoca_eval_solve::TypedProgramEvalError::InvalidArgument { index: 1, .. })
+        ));
+    }
+}
+
+fn real_elements(value: &TypedValue) -> Vec<f64> {
+    value
+        .elements()
+        .iter()
+        .map(|element| match element {
+            solve::SolveValueKind::Real64(bits) => f64::from_bits(*bits),
+            _ => panic!("binary64 result"),
+        })
+        .collect()
+}
 
 #[test]
 fn plain_and_elementwise_tensor_division_preserve_direct_binary64_results() {

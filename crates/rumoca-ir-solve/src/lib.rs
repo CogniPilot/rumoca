@@ -24,6 +24,7 @@ mod linear_op;
 mod model;
 mod parameter_classification;
 mod parameter_reads;
+mod quotient_memory;
 mod refresh;
 mod root_search;
 mod scalar_program_outputs;
@@ -55,7 +56,7 @@ pub use compact_pattern::CompactPatternLayout;
 pub use event_writes::{EventWrites, event_writes};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
-    solve_has_initialization, solve_has_runtime_events,
+    solve_has_initialization, solve_has_runtime_events, solve_initialization_is_explicit,
 };
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
@@ -100,7 +101,8 @@ pub use visitor::{
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 74;
+/// 78 checks lazy quotient root/step activation and exact inactive private holds.
+pub const SOLVE_SCHEMA_VERSION: u16 = 78;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1221,6 +1223,7 @@ fn validate_event_iteration_plan(
         ));
     }
     validate_scalar_event_producers(problem, &claims.scalar_rows)?;
+    quotient_memory::validate(problem)?;
     validate_structured_event_producers(problem, &claims.structured_updates)?;
     validate_guarded_event_producers(problem, &claims.guarded_ranges)?;
     validate_event_transaction_target_claims(problem, &claims.transaction_targets)

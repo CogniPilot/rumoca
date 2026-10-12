@@ -7,6 +7,7 @@
 //! groups stay separable.
 
 mod backend_template_runtime_regression;
+mod c_ode_pure_call_semantics;
 #[cfg(feature = "fmu-packaging")]
 mod cli_target_fmi;
 mod codegen_example_regression;
@@ -17,3 +18,4 @@ mod fmi_ls_wasm_runtime;
 mod modelica_interchange_runtime;
 mod template_runtime_policy;
 mod template_target_ci;
+mod workshop_numerical_examples;

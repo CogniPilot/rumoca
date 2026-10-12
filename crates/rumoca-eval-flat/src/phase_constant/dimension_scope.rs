@@ -10,7 +10,7 @@ use super::{ParamEvalContext, ParamEvaluator, Value};
 pub(super) struct DimensionScope<'a, 'b> {
     parameters: &'a ParamEvalContext<'b>,
     evaluator: Rc<OnceCell<RefCell<ParamEvaluator<'b>>>>,
-    indices: Vec<String>,
+    indices: Vec<(rumoca_core::IndexBinderProvenance, String)>,
 }
 
 impl<'a, 'b> std::ops::Deref for DimensionScope<'a, 'b> {
@@ -29,8 +29,8 @@ impl<'a, 'b> DimensionScope<'a, 'b> {
         }
     }
 
-    pub(super) fn bind_index(&mut self, name: &str) {
-        self.indices.push(name.to_owned());
+    pub(super) fn bind_index(&mut self, index: &ComprehensionIndex) {
+        self.indices.push((index.binder, index.name.clone()));
     }
 
     pub(super) fn is_index(&self, reference: &Reference) -> bool {
@@ -69,12 +69,20 @@ impl<'a, 'b> DimensionScope<'a, 'b> {
 }
 
 struct IndexReads {
-    indices: Vec<String>,
+    indices: Vec<(rumoca_core::IndexBinderProvenance, String)>,
     found: bool,
 }
 
-fn is_lexical_index(reference: &Reference, indices: &[String]) -> bool {
-    reference.instance_id().is_none() && indices.iter().any(|index| index == reference.as_str())
+fn is_lexical_index(
+    reference: &Reference,
+    indices: &[(rumoca_core::IndexBinderProvenance, String)],
+) -> bool {
+    indices.iter().any(|(binder, name)| match binder {
+        rumoca_core::IndexBinderProvenance::Source(id) => reference.target_def_id() == Some(*id),
+        rumoca_core::IndexBinderProvenance::Generated => {
+            reference.is_generated() && name == reference.as_str()
+        }
+    })
 }
 
 impl ExpressionVisitor for IndexReads {
@@ -90,9 +98,13 @@ impl ExpressionVisitor for IndexReads {
         filter: Option<&Expression>,
     ) {
         let outer = self.indices.clone();
-        for index in indices {
+        for index in indices.iter().rev() {
             self.visit_expression(&index.range);
-            self.indices.retain(|name| name != &index.name);
+            self.indices.retain(|(binder, name)| {
+                *binder != index.binder
+                    || (*binder == rumoca_core::IndexBinderProvenance::Generated
+                        && name != &index.name)
+            });
         }
         self.visit_expression(expr);
         if let Some(filter) = filter {

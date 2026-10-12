@@ -5,7 +5,7 @@
 //! initialized from their declaration equations (§12.4.4, §12.9.1). The
 //! Solve runtime executes only programs the checked DAE defines, so a
 //! foreign body has no executable meaning there unless the DAE defines it.
-//! Two FORTRAN 77 LAPACK drivers are defined:
+//! The FORTRAN 77 LAPACK profiles are:
 //!
 //! - `dgesv` with one right-hand side (SPEC_0040 DAE-C26). For a square
 //!   `n`-by-`n` matrix `A` with leading dimension `max(1, n)` and one
@@ -20,6 +20,9 @@
 //!   pivoting, an incremental condition estimate of the effective rank
 //!   against `rcond`, and a complete orthogonal factorization of the
 //!   leading rank rows; it returns that `rank` and `info = 0`.
+//! - `dgetrf` and `dgetri` (SPEC_0040 DAE-C34) retain LU factors,
+//!   ordered row interchanges, and singular status, then compute the inverse
+//!   through checked triangular solves.
 //!
 //! The interface is proven from the declaration, never from spelling alone:
 //! the FORTRAN 77 entry point, plain arguments, a proven matrix, a vector
@@ -28,6 +31,8 @@
 //! accepts. Anything else keeps the ordinary external interface analysis.
 
 use super::*;
+
+mod lu_inverse;
 
 /// The LAPACK driver a function's external clause names, with the function
 /// values that carry its operands.
@@ -46,6 +51,16 @@ pub(in crate::construction) enum NativeLapackPlan {
         rank: VarName,
         info: VarName,
     },
+    LuFactorization {
+        matrix: VarName,
+        pivots: VarName,
+        info: VarName,
+    },
+    LuInverse {
+        matrix: VarName,
+        pivots: VarName,
+        info: VarName,
+    },
 }
 
 pub(super) fn native_lapack_plan(
@@ -61,6 +76,8 @@ pub(super) fn native_lapack_plan(
     let plan = match external.function_name.as_deref()? {
         "dgesv" => interface.linear_solve(&external.args)?,
         "dgelsy" => interface.least_squares(&external.args)?,
+        "dgetrf" => interface.lu_factorization(&external.args)?,
+        "dgetri" => interface.lu_inverse(&external.args)?,
         _ => return None,
     };
     Some(FunctionPlan::NativeLapack(plan))

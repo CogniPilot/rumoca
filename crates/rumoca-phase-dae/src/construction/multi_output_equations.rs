@@ -124,6 +124,7 @@ pub(super) fn lower_multi_output_equation<'dae>(
         function_body: None,
         values: None,
         owner_clock: discrete.as_ref().and_then(|discrete| discrete.owner_clock),
+        source_comprehension_binders: None,
     };
     let receivers = plan_receivers(plan, &source);
     let generated =

@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "qualified_source": "95867919f749202f36563367f72074a06717f1f3",
+  "base_source": "1a197650204715a97f23a8284a6d6f8ea077a1eb",
+  "before": {
+    "source": "6d62feb2a61e8854c1856e3566470835291151f2",
+    "log": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/evidence/workspace-inventory-6d62feb2a/command.log",
+    "sha256": "579b6b1c596d3cb3f3a5878152a308fba9903dc0e389f750b0d912b4f7ec4617",
+    "lines": "759-775",
+    "observed": "StateAndTimeEvents fmi2 rejected PulseConditionMemory before C generation; original strict warning test failed. Later fmi3 cell was unrun."
+  },
+  "source_identity": {
+    "tracked_files": 4063,
+    "pre_post_changed_files": [],
+    "pre_seal": "source-final-pre.json",
+    "post_check": "source-final-post.json"
+  },
+  "limits": {
+    "seconds": 600,
+    "aggregate_resident_plus_swap_mib": 4096,
+    "cache_mib": 8192,
+    "host_available_floor_mib": 16384,
+    "scratch_free_floor_mib": 8192,
+    "jobs": 4,
+    "rust_test_threads": 4,
+    "rayon_threads": 4,
+    "incremental": false,
+    "debug_info": 0
+  },
+  "gates": {
+    "c_lifecycle": {
+      "result": "PASS",
+      "selected_rust_tests": 2,
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/workshop427-conditional-operand-20261012/run-env.sh",
+        "nix",
+        "develop",
+        ".#full",
+        "--command",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "fmi_event_c_warnings::",
+        "--",
+        "--nocapture"
+      ],
+      "elapsed_ms": 251846.060038,
+      "peak_resident_plus_swap_kib": 3024296,
+      "peak_cache_bytes": 3021840384,
+      "minimum_scratch_free_bytes": 83014414336,
+      "exit_code": 0,
+      "resource_stop": null,
+      "log": "c-lifecycle-two-versions-after.log"
+    },
+    "ir_solve": {
+      "result": "PASS",
+      "selected_rust_tests": 609,
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/workshop427-conditional-operand-20261012/run-env.sh",
+        "nix",
+        "develop",
+        ".#full",
+        "--command",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-solve",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "elapsed_ms": 61835.600226999995,
+      "peak_resident_plus_swap_kib": 1776968,
+      "peak_cache_bytes": 3027402752,
+      "minimum_scratch_free_bytes": 82478145536,
+      "exit_code": 0,
+      "resource_stop": null,
+      "log": "ir-solve-full-after.log"
+    },
+    "clippy": {
+      "result": "PASS",
+      "selected_rust_tests": null,
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/workshop427-conditional-operand-20261012/run-env.sh",
+        "nix",
+        "develop",
+        ".#full",
+        "--command",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-solve",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "elapsed_ms": 85421.163671,
+      "peak_resident_plus_swap_kib": 2099376,
+      "peak_cache_bytes": 2986246144,
+      "minimum_scratch_free_bytes": 85055455232,
+      "exit_code": 0,
+      "resource_stop": null,
+      "log": "scoped-clippy-row-owner.log"
+    }
+  },
+  "c_warning_matrix": {
+    "models": [
+      "RelationSwitch",
+      "BouncingBall",
+      "StateAndTimeEvents"
+    ],
+    "targets": [
+      "fmi2",
+      "fmi3"
+    ],
+    "optimization": [
+      "-O2",
+      "-O3"
+    ],
+    "flags": [
+      "-std=c11",
+      "-U_FORTIFY_SOURCE",
+      "-D_FORTIFY_SOURCE=2",
+      "-Wall",
+      "-Wextra",
+      "-Wmaybe-uninitialized",
+      "-Werror"
+    ]
+  },
+  "public_abi_runtime": {
+    "interfaces": [
+      "FMI2 CoSimulation",
+      "FMI3 CoSimulation"
+    ],
+    "model": "unchanged StateAndTimeEvents from fmi_event_c_warnings.rs",
+    "start": 0.0,
+    "step": 0.1,
+    "steps": 6,
+    "initial_counters": [
+      0,
+      0,
+      0
+    ],
+    "expected_n_m_ticks": [
+      [
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        0,
+        2
+      ],
+      [
+        0,
+        0,
+        3
+      ],
+      [
+        0,
+        0,
+        4
+      ],
+      [
+        1,
+        1,
+        5
+      ],
+      [
+        1,
+        1,
+        6
+      ]
+    ],
+    "metadata": "actual rendered GUID/token, modelIdentifier, and n/m/ticks valueReferences; no hardcoded identities"
+  },
+  "scope": "C lifecycle and strict compilation only; no packaged-FMU, ModelExchange-runtime, whole workspace, or remote CI-green claim. Current integrated-source broad verification remains required.",
+  "artifacts": {
+    "source-final-pre.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/source-final-pre.json",
+      "sha256": "31c48743260744e959a7cc1f3a52097ab693fcbf04a5a027a12ac0b13c436a66"
+    },
+    "source-final-post.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/source-final-post.json",
+      "sha256": "7c451da3f015d0a74299cef8156afd23631380b5bf21abe86d57015b146218b0"
+    },
+    "c-lifecycle-after.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/c-lifecycle-after.log",
+      "sha256": "45ea6d875b99c2015386c38876acfdde3102da8995642fd815be41b6b9e51f6b"
+    },
+    "c-lifecycle-after-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/c-lifecycle-after-guardian.json",
+      "sha256": "7969f9269118f0fc165b25c388221cc07d630f3ffd5b4a5b6af37996ffaa1603"
+    },
+    "scoped-clippy.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy.log",
+      "sha256": "1ddc631835a45a56475382f342cbcb910a4398b2e14c994e5eb4ceefa51e4683"
+    },
+    "scoped-clippy-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy-guardian.json",
+      "sha256": "8f2ab5b65869a1c8ffb004d6df077b0c8232528ab440b90c4726efce82309afe"
+    },
+    "scoped-clippy-two-versions.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy-two-versions.log",
+      "sha256": "b6a0195abbfe9cb7f8eeef6760591dcd74e9859daa6801fef93e91b6ff399626"
+    },
+    "scoped-clippy-two-versions-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy-two-versions-guardian.json",
+      "sha256": "95e7bd478152f0acea371da0550f7165d3a19354510a0746fc260a6117f3cf19"
+    },
+    "scoped-clippy-row-owner.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy-row-owner.log",
+      "sha256": "a35b649fbe5db65fed859b45eb2fc861c81e6a7f64c09113a97803d66320a18d"
+    },
+    "scoped-clippy-row-owner-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/scoped-clippy-row-owner-guardian.json",
+      "sha256": "445bd2ffce78749a7b4a625b7e3f528051991420402711c42f4829413c68f0aa"
+    },
+    "c-lifecycle-two-versions-after.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/c-lifecycle-two-versions-after.log",
+      "sha256": "883e200973dbb5f8f47d89fcb983de5949ede2853a1039f4b84bc843393adb5e"
+    },
+    "c-lifecycle-two-versions-after-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/c-lifecycle-two-versions-after-guardian.json",
+      "sha256": "0228f5556c12e1c2fe0297c30e5ab3aee89f3267c7a2b97ea928be9e0fce85e3"
+    },
+    "ir-solve-full-after.log": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/ir-solve-full-after.log",
+      "sha256": "641d08a6147e9d8f0202d0e6a465a415d9465888c27c157622ad40f47d36088e"
+    },
+    "ir-solve-full-after-guardian.json": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/ir-solve-full-after-guardian.json",
+      "sha256": "8121b12ed316fe612604bbb3a5993a82d38f5953ef80a2b318a54b826e90aca3"
+    },
+    "suite-core-958": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/suite-core-958",
+      "sha256": "dff288d517eed9a3a7fa4a1e205361121dc90cca65e46adfcfcf31dd1d6c1d4e"
+    },
+    "ir-solve-958": {
+      "path": "$HOME/scratch/rumoca/pr427-fmi-condition-pulses-20261012/evidence/ir-solve-958",
+      "sha256": "4be13227f8ec1aa0136573114a990f9a1bf52766e75af9105bc05bce61a7bf5e"
+    }
+  }
+}

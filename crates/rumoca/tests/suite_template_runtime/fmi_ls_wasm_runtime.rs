@@ -592,13 +592,20 @@ fn fmi_ls_wasm_ci_lane_provisions_its_prerequisites_and_runs_strict() {
     let root = workspace_root();
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read ci.yml");
     let flake = fs::read_to_string(root.join("flake.nix")).expect("read flake.nix");
+    let runtime_step = ci
+        .split("- name: Run template runtime checks")
+        .nth(1)
+        .and_then(|step| step.split("- name:").next())
+        .expect("CI defines the template-runtime execution step");
     assert!(
         ci.contains("- backend: wasm\n            nix_shell: ci-template-wasm"),
         "the wasm template-runtime lane must run in the ci-template-wasm shell"
     );
     assert!(
-        ci.contains("--backend \"$TEMPLATE_BACKEND\" \\\n            --require-external-tools"),
-        "template-runtime lanes must run with --require-external-tools"
+        runtime_step.contains(
+            "runtime_check=(cargo xtask verify template-runtimes\n            --backend \"$TEMPLATE_BACKEND\" --require-external-tools)"
+        ) && runtime_step.contains("else\n            \"${runtime_check[@]}\"\n          fi"),
+        "the wasm lane must execute the required-tools command array"
     );
     assert!(
         ci.contains(

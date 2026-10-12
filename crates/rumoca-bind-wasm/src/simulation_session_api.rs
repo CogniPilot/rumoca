@@ -209,6 +209,7 @@ fn create_interactive_session(
     }
     opts.initial_inputs = initial_inputs()?;
     opts.execution_policy = options.execution_policy;
+    opts.param_overrides = options.param_overrides.clone();
     let session = rumoca_sim::SimulationSession::new(&dae, opts)
         .map_err(|e| WasmError::new(format!("Session creation error: {e}")))?;
     Ok(WasmSimulationSession { session })

@@ -72,7 +72,7 @@ pub(crate) fn lower_solve_problem(
         overrides,
     )?;
     let (mut discrete, mut events, event_transactions) =
-        events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
+        events::lower_discrete_and_events(view, &lowered, &clocks, &continuous, &derivatives)?;
     discrete.event_transactions = call_scoped_actions::append_collected_actions(
         view,
         &lowered,

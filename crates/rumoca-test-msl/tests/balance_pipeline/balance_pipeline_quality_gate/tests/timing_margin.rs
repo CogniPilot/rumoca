@@ -20,10 +20,7 @@ fn timing_margin_holds_back_completions_above_half_a_phase_budget() {
         timed_result("SlowSolve", 1.0, 11.0),
         timed_result("AtMargin", 22.5, 10.0),
     ];
-    let budgets = PhaseBudgets {
-        model_attempt_seconds: 20.0,
-        simulation_seconds: 45.0,
-    };
+    let budgets = PhaseBudgets::new(20.0, 45.0).expect("valid phase budgets");
     let held = timing_margin_models(
         &summary,
         ["Fast", "SlowSim", "SlowSolve", "AtMargin", "Unmeasured"],

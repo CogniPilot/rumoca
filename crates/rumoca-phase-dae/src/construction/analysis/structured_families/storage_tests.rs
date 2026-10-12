@@ -15,6 +15,7 @@ fn family(
                 .iter()
                 .enumerate()
                 .map(|(id, &upper)| rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id,
                     display_name: format!("i{id}"),
                     lower: 1,

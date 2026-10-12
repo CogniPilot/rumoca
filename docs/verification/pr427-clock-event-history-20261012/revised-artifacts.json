@@ -1,0 +1,196 @@
+{
+  "source": "2a2d8d405f2590305616fba12e3000a72ec0aaae",
+  "actual_cli_build_info": "2a2d8d405f25",
+  "changed_condition_nodes": [
+    {
+      "expression_index": 244,
+      "before": {
+        "coordinate": {
+          "discrete_value": 24
+        }
+      },
+      "after": {
+        "coordinate": {
+          "pre_discrete_value": 24
+        }
+      }
+    },
+    {
+      "expression_index": 245,
+      "before": {
+        "coordinate": {
+          "discrete_value": 61
+        }
+      },
+      "after": {
+        "coordinate": {
+          "pre_discrete_value": 61
+        }
+      }
+    },
+    {
+      "expression_index": 246,
+      "before": {
+        "coordinate": {
+          "discrete_value": 96
+        }
+      },
+      "after": {
+        "coordinate": {
+          "pre_discrete_value": 96
+        }
+      }
+    }
+  ],
+  "reset_guard_before": [
+    {
+      "program_index": 31,
+      "targets_P": [
+        144
+      ],
+      "pre_mode": "EventEntry",
+      "condition_loads_P": [
+        [
+          83,
+          267
+        ]
+      ]
+    },
+    {
+      "program_index": 33,
+      "targets_P": [
+        146
+      ],
+      "pre_mode": "FollowCurrent",
+      "condition_loads_P": [
+        [
+          83,
+          267
+        ]
+      ]
+    },
+    {
+      "program_index": 34,
+      "targets_P": [
+        147
+      ],
+      "pre_mode": "FollowCurrent",
+      "condition_loads_P": [
+        [
+          83,
+          267
+        ]
+      ]
+    }
+  ],
+  "reset_guard_after": [
+    {
+      "program_index": 15,
+      "targets_P": [
+        144
+      ],
+      "pre_mode": "EventEntry",
+      "condition_loads_P": [
+        [
+          189,
+          267
+        ]
+      ]
+    },
+    {
+      "program_index": 29,
+      "targets_P": [
+        146
+      ],
+      "pre_mode": "Fixed",
+      "condition_loads_P": [
+        [
+          189,
+          267
+        ]
+      ]
+    },
+    {
+      "program_index": 30,
+      "targets_P": [
+        147
+      ],
+      "pre_mode": "Fixed",
+      "condition_loads_P": [
+        [
+          189,
+          267
+        ]
+      ]
+    }
+  ],
+  "guard": {
+    "elapsedMs": 20512.541494,
+    "peakResidentPlusSwapKiB": 1675984,
+    "peakSwapKiB": 0,
+    "minimumAvailableKiB": 56951016,
+    "minimumScratchFreeBytes": 59526873088,
+    "rssLimitMiB": 4096,
+    "availableFloorMiB": 16384,
+    "scratchFreeFloorMiB": 8192,
+    "secondsLimit": 600,
+    "signal": null,
+    "stopObservation": null,
+    "childExitCode": 0,
+    "exitCode": 0,
+    "cleanup": {
+      "elapsedMs": 20.832084999998187,
+      "errors": [],
+      "liveRemaining": [],
+      "trackedIdentities": 5,
+      "scope": "birth-verified observed descendants; zombies do not execute; unreadable owned identities fail cleanup"
+    },
+    "raw": {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/guardian.json",
+      "sha256": "a0ca046ac8e05a0d5b08a7c750ad89c35deb5b48bc5d9e08c362e8f19d2a99d9",
+      "size_bytes": 2495
+    },
+    "command_log": {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/command.log",
+      "sha256": "a8cdc39b3d1a60e3422f64414cd093a6be422dba3f5708039cdf7e3b744c077d",
+      "size_bytes": 26544
+    },
+    "source_before": {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/source-before.json",
+      "sha256": "66bb765e680cb95d119762d4c2f0f152fb7e70fbfdb49b6f189cad2139617734",
+      "size_bytes": 776058
+    },
+    "source_after": {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/source-after.json",
+      "sha256": "66bb765e680cb95d119762d4c2f0f152fb7e70fbfdb49b6f189cad2139617734",
+      "size_bytes": 776058
+    }
+  },
+  "artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/build-info.json",
+      "sha256": "7c615e28f5eecacd50d9de63ac0f49013165e5ffa5d1fc1f8f5b4b5c0d1c046a",
+      "size_bytes": 13
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/cli-before.sha256",
+      "sha256": "b31adbd87cff494a8c00f3084a15b0cccfceed9322304c6e6c3a1fc16d5e9586",
+      "size_bytes": 184
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/cli-after.sha256",
+      "sha256": "b31adbd87cff494a8c00f3084a15b0cccfceed9322304c6e6c3a1fc16d5e9586",
+      "size_bytes": 184
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/conjunction-dae-json.json",
+      "sha256": "cc2b556718dbb67102ba07fd67c8c4d20d07660ff96c5995323b79cafe384648",
+      "size_bytes": 19176076
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-logical-sample-first-tick-b077-20261012/artifact-2a2/evidence/conjunction-solve-json.json",
+      "sha256": "95acdf5fcb859559dcf0c6eb689fae87b27246315e5c8ccdcf0e0aa0dd35fb61",
+      "size_bytes": 546914
+    }
+  ]
+}

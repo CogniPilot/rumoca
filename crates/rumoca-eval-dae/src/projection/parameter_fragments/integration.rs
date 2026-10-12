@@ -103,6 +103,9 @@ impl<'dae> Projection<'_, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar_index: usize,
     ) -> Result<(), ProjectionError> {
+        if self.omitted.is_some_and(|omitted| omitted(expression)) {
+            return Ok(());
+        }
         let fragment = self.begin_parameter_fragment(expression, None, scalar_index);
         if let Start::Cached(dependencies) | Start::Imported(dependencies) = &fragment {
             self.replay_parameter_fragment(dependencies, matches!(fragment, Start::Imported(_)));

@@ -19,17 +19,13 @@ pub(super) fn issued_current(json: &str, source: &str) -> solve::SolvePureCallTa
     let wire: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(
         wire["compilerSourceSha256"],
-        "a88161891ff1851c7586dd71a7c3e834123fcc7c0926b7bdc9bee5d97132819b"
+        "56c85749388c4a1e4589c1db4503f14b91a1f5b85572db98d3e4142c039f3270"
     );
     assert_eq!(
         wire["producerBinarySha256"],
-        "262ee681e0cdb87b499ee8907508d8ea77c9640caa2b480bb3eda782886d1457"
+        "f18690ce2982dd231dfd8cce2690eeaef7bb4001ec6fa02a0ba77b9c266bebc8"
     );
-    issued_revision(
-        json,
-        source,
-        "14694fd7e4369b775b15cd2dafc86f0b06bd4608-dirty",
-    )
+    issued_revision(json, source, "f32073326b91e0716c226a1c25b6044cecd231ef")
 }
 
 fn legacy_wire_is_refused(json: &str, source: &str) {
@@ -37,8 +33,8 @@ fn legacy_wire_is_refused(json: &str, source: &str) {
     assert_eq!(wire["source"], source);
     assert_eq!(wire["compilerRevision"], "943aa7d7b745");
     let error = serde_json::from_value::<solve::SolvePureCallTable>(wire["table"].take())
-        .expect_err("legacy wire must not receive missing recursion defaults");
-    assert_eq!(error.to_string(), "missing field `recursion`");
+        .expect_err("legacy wire must not receive missing binder provenance defaults");
+    assert_eq!(error.to_string(), "missing field `provenance`");
 }
 
 fn arguments(values: &[f64], initial: f64, final_value: f64) -> Vec<Vec<solve::SolveValueKind>> {

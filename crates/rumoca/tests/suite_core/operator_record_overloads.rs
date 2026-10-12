@@ -318,6 +318,49 @@ fn comprehensions_over_record_vectors_call_operators_per_element() {
     }
 }
 
+#[test]
+fn record_comprehension_calls_preserve_source_index_shape_scope() {
+    let source = r#"
+record Pair
+  Real re;
+  Real im;
+end Pair;
+function realPart
+  input Pair c;
+  output Real y;
+algorithm
+  y := c.re;
+end realPart;
+model RecordComprehension
+  Pair v[3] = {Pair(2 + time, 3), Pair(4, 5), Pair(6, 7)};
+  output Real P[3] = {realPart(v[k]) for k in 1:3};
+end RecordComprehension;
+model RecordVector
+  Pair v[3] = {Pair(2 + time, 3), Pair(4, 5), Pair(6, 7)};
+  output Real P[3] = realPart(v);
+end RecordVector;
+"#;
+    for model in ["RecordVector", "RecordComprehension"] {
+        let result = simulate_source(source, model);
+        assert_eq!(result.times, [0.0, 0.5, 1.0]);
+        for (sample, time) in result.times.iter().enumerate() {
+            for (name, expected) in [("P[1]", 2.0 + time), ("P[2]", 4.0), ("P[3]", 6.0)] {
+                let column = result
+                    .names
+                    .iter()
+                    .position(|candidate| candidate == name)
+                    .expect("the declared output exists");
+                assert_eq!(result.data[column].len(), result.times.len());
+                let actual = result.data[column][sample];
+                assert!(
+                    actual.is_finite() && (actual - expected).abs() < 1e-9,
+                    "{model}: {name} at {time}: {actual} != {expected}"
+                );
+            }
+        }
+    }
+}
+
 /// A chain of operator records whose `'+'` applies the next record's `'+'`,
 /// `depth` records deep: each link is collected only after the previous
 /// link's operator is resolved.

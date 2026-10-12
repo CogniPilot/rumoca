@@ -1,0 +1,13 @@
+# Mixed periodic event edge memory
+
+At `74bef169d60c329dedc61ff5c0e8cc35b86613f4`, all 314 Solve/GALEC library tests pass, but both original initial/sample elsewhen models fail during initialization: `event update iteration did not converge at t=0`. Both vector activation controls and the unchanged totality-debt gate pass; the production event module also fails the existing file-size gate at 2,003 lines.
+
+The first divergent owner is Solve condition-memory construction. Whole-target clock eligibility correctly retains a mixed initial/sample chain as an ordinary event owner, but memory construction omits its sample condition's rising-edge buffer because that individual Boolean condition selects a periodic task. The missing buffer repeatedly activates `pre(s)+1` instead of consuming the tick.
+
+MLS §8.3.5.1 (SPEC_0022 EQN-013) requires the chain's branch edges. SPEC_0007 / SPEC_0040 SOLVE-C58 retains ordinary event ownership and entry trigger observations. The repair carries exact already-issued ordinary branch ConditionIds into condition-memory construction; it does not recompute target clock eligibility. Synchronous clock owners remain excluded, and existing unowned vector leaves retain their buffers. Continuous root construction and periodic eligibility were moved unchanged into normal modules by concern, satisfying SPEC_0021 without exemptions.
+
+At `2c47adeaf`, the unchanged four numerical regressions and two architecture gates all pass: six passed, zero failed, 1,700 unrelated tests filtered. Both equation and algorithm models produce `s=4,5,6,8` at `t=0,.05,.1,.2` and `r=.5`; vector controls retain their distinct start-tick counts. Runtime tests retain their original `.2`-second horizon, `.01` output interval and `1e-9` checks. The six-test execution takes 2.205 seconds; the complete build/guard command takes 115.476 seconds and peaks at 2,272,184 KiB resident+swap. The source manifest is unchanged. A read-only peer review finds no concrete ownership or MLS blocker.
+
+This run emits an unused import warning from the module extraction; the subsequent `6e4f3e58b` removes that import and makes its root-only helper private. Final combined Clippy and full gates remain required. The four-model regression is already selected by the existing suite_core workspace CI lane; no model/oracle, runtime, validator, ceiling or tolerance is changed by this repair.
+
+`mixed-periodic-edge-memory.json` binds exact source identities, command/log/manifests and limits for both terminal attempts. Raw receipts are retained beneath `$HOME/scratch/rumoca/workshop427-final-broad-20261012/evidence/`. This is focused evidence and does not qualify the complete MSL cohort or final candidate.

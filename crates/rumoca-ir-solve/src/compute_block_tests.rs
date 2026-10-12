@@ -9,6 +9,7 @@ use crate::{
 fn test_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -47,6 +48,7 @@ fn wide_2d_domain() -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -54,6 +56,7 @@ fn wide_2d_domain() -> StructuredIndexDomain {
                 step: 1,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "j".to_string(),
                 lower: 1,
@@ -61,6 +64,7 @@ fn wide_2d_domain() -> StructuredIndexDomain {
                 step: 1,
             },
             StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 2,
                 display_name: "k".to_string(),
                 lower: 1,
@@ -483,6 +487,7 @@ fn derivative_problem_refuses_state_storage_it_cannot_name() {
 
 fn grid_domain(rows: (i64, i64), columns: (i64, i64)) -> StructuredIndexDomain {
     let binder = |id: usize, name: &str, (lower, upper): (i64, i64)| StructuredIndexBinder {
+        provenance: rumoca_core::IndexBinderProvenance::Generated,
         id,
         display_name: name.to_string(),
         lower,

@@ -197,6 +197,7 @@ pub(super) const USES_CONTEXT_KEY: &str = "uses_real_extremum";
 pub(super) fn used_by(
     problem: &rumoca_ir_solve::SolveProblem,
     artifacts: &rumoca_ir_solve::SolveArtifacts,
+    inlined_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
 ) -> bool {
     use rumoca_ir_solve::{BinaryOp, LinearOp, LinearOpSliceKind, SolveVisitor};
 
@@ -229,7 +230,53 @@ pub(super) fn used_by(
     let mut uses = Uses(false);
     let Ok(()) = uses.visit_solve_problem(problem);
     let Ok(()) = uses.visit_solve_artifacts(artifacts);
+    // A scalar target that inlines pure calls emits their bodies' min/max as
+    // scalar ops the Solve scan above cannot see. Unlike `used_by_calls`
+    // (typed C bodies), every element type and every min/max reduction counts:
+    // inlining lowers all of them to the scalar `Min`/`Max` the helper renders.
     uses.0
+        || inlined_calls.is_some_and(|table| {
+            table
+                .owners()
+                .iter()
+                .any(|owner| program_uses_extremum(owner.body()))
+        })
+}
+
+/// Whether a typed program, or any region nested in it, applies `min`/`max`.
+fn program_uses_extremum(program: &rumoca_ir_solve::TypedProgram) -> bool {
+    use rumoca_ir_solve::{SolveBinaryOperator, SolveOperation, SolveReductionOperator};
+    program
+        .operations()
+        .iter()
+        .any(|operation| match operation.operation() {
+            SolveOperation::Binary { operator, .. }
+            | SolveOperation::BroadcastBinary { operator, .. } => {
+                matches!(
+                    operator,
+                    SolveBinaryOperator::Min | SolveBinaryOperator::Max
+                )
+            }
+            SolveOperation::Reduce { operator, .. } => matches!(
+                operator,
+                SolveReductionOperator::Minimum | SolveReductionOperator::Maximum
+            ),
+            SolveOperation::Map { body, .. } => program_uses_extremum(body.body()),
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                program_uses_extremum(transition.body())
+                    || continuation
+                        .as_deref()
+                        .is_some_and(|region| program_uses_extremum(region.body()))
+            }
+            SolveOperation::Conditional {
+                if_true, if_false, ..
+            } => program_uses_extremum(if_true.body()) || program_uses_extremum(if_false.body()),
+            _ => false,
+        })
 }
 
 /// Typed pure-call owners are retained outside the scalar problem. Every
@@ -289,10 +336,14 @@ fn typed_program_uses(program: &rumoca_ir_solve::TypedProgram) -> bool {
 pub(super) fn real_extremum_prelude_function(
     state: &minijinja::State,
     language: String,
+    always: Option<bool>,
 ) -> Result<String, minijinja::Error> {
-    if state
-        .lookup(USES_CONTEXT_KEY)
-        .is_some_and(|uses| !uses.is_true())
+    // `always`: the caller also renders code the solve-IR scan cannot see
+    // (typed pure-function bodies), so emit the inline helpers regardless.
+    if always != Some(true)
+        && state
+            .lookup(USES_CONTEXT_KEY)
+            .is_some_and(|uses| !uses.is_true())
     {
         return Ok(String::new());
     }

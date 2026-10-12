@@ -98,6 +98,70 @@ impl PreparedStructuredDiscreteRows {
 }
 
 impl SolveRuntime {
+    /// MLS §8.6 uses precisely the certified event Map producer at startup.
+    /// Preparation owns its scalar adapter; initialization never reconstructs
+    /// a second bytecode producer or publishes a partially evaluated tuple.
+    pub(super) fn apply_initial_quotient_maps(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        max_iters: usize,
+    ) -> Result<bool, RuntimeSolveError> {
+        let rows = self.structured_discrete_rows.rows();
+        let numeric = || {
+            rows.iter()
+                .filter(|row| matches!(row.role, solve::DiscreteRowRole::QuotientMemory { .. }))
+        };
+        let count = numeric().count();
+        if count == 0 {
+            return Ok(false);
+        }
+        let mut values = self.update_values_scratch.borrow_mut();
+        resize_runtime_values(&mut values, count, 0.0, "initial quotient Map values")?;
+        let mut changed_any = false;
+        for _ in 0..max_iters {
+            for (output, row) in numeric().enumerate() {
+                values[output] = self
+                    .structured_discrete_rows
+                    .rhs
+                    .eval_row_unchecked_with_context(
+                        row.source_row,
+                        y,
+                        p,
+                        t,
+                        self.row_eval_context(),
+                    )?;
+            }
+            let mut changed = false;
+            for (output, row) in numeric().enumerate() {
+                changed |=
+                    solve_eval::apply_scalar_slot_value_exact(row.target, values[output], y, p)?;
+            }
+            if !changed {
+                return Ok(changed_any);
+            }
+            changed_any = true;
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "initial quotient Maps did not converge at t={t} after {max_iters} iterations"
+        )))
+    }
+
+    pub(super) fn initial_quotient_maps_read_algebraic_slots(&self) -> bool {
+        let state_count = self.model.state_scalar_count();
+        self.structured_discrete_rows
+            .rows()
+            .iter()
+            .filter(|row| matches!(row.role, solve::DiscreteRowRole::QuotientMemory { .. }))
+            .any(|row| {
+                super::initial_projection::program_reads_algebraic_slots(
+                    &self.structured_discrete_rows.rhs.block().programs()[row.source_row],
+                    state_count,
+                )
+            })
+    }
+
     /// Evaluate and apply every scalar and structured discrete definition once.
     ///
     /// Deadline ticks call this path when they intentionally skip event filtering.

@@ -735,6 +735,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             domain_points: self.domain_points.clone(),
             active_clock: self.active_clock,
             sampled_source: self.sampled_source,
+            project_current_definitions: self.project_current_definitions,
             active_parameters: self.active_parameters.clone(),
         })
     }
@@ -892,6 +893,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.fold_guard_base = compiler.activation_path.len();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();
@@ -1883,7 +1885,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let (conditions, fallback) = self.record_conditions(operands)?;
+        let (conditions, fallback) = self.record_conditions(operands, span)?;
         self.push_inactive_conditions(&conditions);
         let mut selected = self.record_field(fallback, field, scalar, span)?;
         self.pop_activations(conditions.len());
@@ -1903,23 +1905,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn record_conditions(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
+        span: Span,
     ) -> Result<(Vec<RecordCondition<'dae>>, dae::ExprId<'dae>), LowerError> {
-        let fallback_index = operands.len() - 1;
-        let mut conditions = Vec::with_capacity(fallback_index / 2);
-        let mut fallback = operands
-            .get(fallback_index)
-            .expect("checked conditional has a fallback");
-        for ordinal in (0..fallback_index).step_by(2) {
-            let condition = operands
-                .get(ordinal)
-                .expect("checked conditional condition ordinal");
+        let operands = operands.conditional().ok_or_else(|| {
+            LowerError::contract(
+                "record conditional operands have no checked branch shape",
+                span,
+            )
+        })?;
+        let mut conditions = Vec::with_capacity(operands.branch_count());
+        let mut fallback = operands.fallback();
+        for (condition, value) in operands.branches() {
             let register = self.expression(condition, 0)?;
             if self.integer_register(register) == Some(0) {
                 continue;
             }
-            let value = operands
-                .get(ordinal + 1)
-                .expect("checked conditional value ordinal");
             if self.integer_register(register).is_some() {
                 fallback = value;
                 break;
@@ -4105,6 +4105,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.fold_guard_base = compiler.activation_path.len();
         compiler.active_clock = self.active_clock;
         compiler.sampled_source = self.sampled_source;
+        compiler.inherit_current_definitions(self);
         compiler.derivative_definitions = self.derivative_definitions;
         compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();
@@ -4524,20 +4525,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
         let scheduled = self.active_clock.is_none() && !registered.callee.assertions.is_empty();
         if scheduled {
-            self.schedule_typed_pure_call_assertions(call, function, &registered, span)
-                .map_err(|error| match error {
-                    // A refused feature already names its own construct and
-                    // span; restating it as a specialization failure would
-                    // move the diagnostic away from the source it rejects.
-                    LowerError::Unsupported { .. } => error,
-                    error => LowerError::non_computable(
-                        format!(
-                            "typed assertions for `{}` could not be specialized: {error}",
-                            self.function_name_for_diagnostic(function)
-                        ),
-                        span,
+            self.schedule_typed_pure_call_assertions(
+                super::call_scoped_actions::TypedCallInvocation::Call { call, function },
+                &registered,
+                span,
+            )
+            .map_err(|error| match error {
+                // A refused feature already names its own construct and
+                // span; restating it as a specialization failure would
+                // move the diagnostic away from the source it rejects.
+                LowerError::Unsupported { .. } => error,
+                error => LowerError::non_computable(
+                    format!(
+                        "typed assertions for `{}` could not be specialized: {error}",
+                        self.function_name_for_diagnostic(function)
                     ),
-                })?;
+                    span,
+                ),
+            })?;
         }
         Ok(scheduled)
     }
@@ -4638,7 +4643,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.typed_pure_call_cache
             .insert(key, (start, registered.clone()));
         if !self.call_action_compilation && !registered.callee.assertions.is_empty() {
-            self.schedule_typed_pure_call_assertions(call, function_id, &registered, span)?;
+            self.schedule_typed_pure_call_assertions(
+                super::call_scoped_actions::TypedCallInvocation::Call {
+                    call,
+                    function: function_id,
+                },
+                &registered,
+                span,
+            )?;
         }
         Ok(Some((start, registered)))
     }
@@ -4661,7 +4673,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(());
         }
         if !value.is_record() {
-            starts.push(self.pack_expression(argument)?);
+            starts.push(self.pack_typed_scalar_argument(argument, value.scalar_type())?);
             return Ok(());
         }
         if !value.dimensions().is_empty() {

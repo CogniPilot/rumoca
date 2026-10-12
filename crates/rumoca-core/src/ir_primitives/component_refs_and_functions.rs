@@ -1,8 +1,52 @@
 use super::*;
 use crate::{EffectiveType, strip_array_index};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum IndexBinderProvenance {
+    Source(DefId),
+    Generated,
+}
+
+impl<'de> Deserialize<'de> for IndexBinderProvenance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Wire {
+            Source(DefId),
+            Generated,
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Source(id) if id.index() == 0 => Err(serde::de::Error::custom(
+                "source iterator requires a resolved nonzero DefId",
+            )),
+            Wire::Source(id) => Ok(Self::Source(id)),
+            Wire::Generated => Ok(Self::Generated),
+        }
+    }
+}
+
+impl IndexBinderProvenance {
+    /// Construct a reference from the binder's issued provenance, retaining text only for display.
+    pub fn reference(self, name: &str, span: Span) -> Result<Reference, ComponentReferenceError> {
+        match self {
+            Self::Source(def_id) => ComponentReference::construct(
+                false,
+                span,
+                vec![ComponentRefPart {
+                    ident: name.to_string(),
+                    span,
+                    subs: Vec::new(),
+                    def_id,
+                }],
+            )
+            .map(Reference::from_component_reference),
+            Self::Generated => Ok(Reference::generated(name)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComprehensionIndex {
+    pub binder: IndexBinderProvenance,
     pub name: String,
     pub range: Expression,
 }
@@ -404,6 +448,7 @@ impl std::fmt::Display for ComponentReference {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForIndex {
+    pub binder: IndexBinderProvenance,
     pub ident: String,
     pub range: Expression,
 }
@@ -1445,6 +1490,78 @@ mod tests {
         assert_eq!(
             resolve_function_instance([&first, &second], instance_id),
             Err(FunctionInstanceLookupError::Duplicate(instance_id))
+        );
+    }
+}
+
+#[cfg(test)]
+mod iterator_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn iterator_wire_roundtrips_source_and_generated_json_and_bincode() {
+        for binder in [
+            IndexBinderProvenance::Source(DefId::new(42)),
+            IndexBinderProvenance::Generated,
+        ] {
+            let json = serde_json::to_string(&binder).unwrap();
+            assert_eq!(
+                serde_json::from_str::<IndexBinderProvenance>(&json).unwrap(),
+                binder
+            );
+            let binary = bincode::serialize(&binder).unwrap();
+            assert_eq!(
+                bincode::deserialize::<IndexBinderProvenance>(&binary).unwrap(),
+                binder
+            );
+        }
+    }
+
+    #[test]
+    fn iterator_wire_rejects_reserved_source_zero_json_and_bincode() {
+        let error = serde_json::from_str::<IndexBinderProvenance>(r#"{"Source":0}"#).unwrap_err();
+        assert!(error.to_string().contains("nonzero DefId"));
+        let binary = bincode::serialize(&IndexBinderProvenance::Source(DefId::new(0))).unwrap();
+        assert!(
+            bincode::deserialize::<IndexBinderProvenance>(&binary)
+                .unwrap_err()
+                .to_string()
+                .contains("nonzero DefId")
+        );
+    }
+
+    #[test]
+    fn iterator_wire_rejects_missing_provenance_in_current_core_layout() {
+        let span = Span::from_offsets(SourceId::from_source_name("iterator_wire.mo"), 1, 2);
+        let expression = Expression::Literal {
+            value: Literal::Integer(1),
+            span,
+        };
+        let mut wire = serde_json::to_value(ComprehensionIndex {
+            binder: IndexBinderProvenance::Generated,
+            name: "i".to_string(),
+            range: expression.clone(),
+        })
+        .unwrap();
+        wire.as_object_mut().unwrap().remove("binder");
+        assert!(
+            serde_json::from_value::<ComprehensionIndex>(wire)
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `binder`")
+        );
+        let mut wire = serde_json::to_value(ForIndex {
+            binder: IndexBinderProvenance::Generated,
+            ident: "i".to_string(),
+            range: expression,
+        })
+        .unwrap();
+        wire.as_object_mut().unwrap().remove("binder");
+        assert!(
+            serde_json::from_value::<ForIndex>(wire)
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `binder`")
         );
     }
 }

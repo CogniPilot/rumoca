@@ -1,7 +1,7 @@
 //! Shared expression diamonds remain shared inside a function's selected arm.
 
 use super::*;
-use rumoca_ir_solve::{LinearOpSliceKind, SolveVisitor};
+use rumoca_ir_solve::{LinearOpSliceKind, SolveOperation, SolveVisitor, TypedProgram};
 
 fn diamond_expression<'dae>(
     expressions: &mut dae::Expressions<'_, 'dae>,
@@ -13,7 +13,7 @@ fn diamond_expression<'dae>(
     let zero = expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?;
     let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
     let array = expressions.at(at).array([input, zero])?;
-    // Array maximum forces scalar AD expansion, as in the long SSA chain.
+    // Array maximum and the shared diamonds stay in their checked call owner.
     let mut value = expressions.at(at).builtin(dae::PureBuiltin::Max, [array])?;
     for _ in 0..depth {
         let guard = expressions
@@ -77,6 +77,40 @@ fn diamond_model(depth: usize) -> dae::Dae {
 struct OperationCensus {
     total: usize,
     conditional: usize,
+    calls: usize,
+}
+
+impl OperationCensus {
+    fn typed_body(&mut self, body: &TypedProgram) {
+        for operation in body.operations() {
+            self.typed_operation(operation.operation());
+        }
+    }
+
+    fn typed_operation(&mut self, operation: &SolveOperation) {
+        self.total += 1;
+        match operation {
+            SolveOperation::Conditional {
+                if_true, if_false, ..
+            } => {
+                self.conditional += 1;
+                self.typed_body(if_true.body());
+                self.typed_body(if_false.body());
+            }
+            SolveOperation::Map { body, .. } => self.typed_body(body.body()),
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                self.typed_body(transition.body());
+                if let Some(continuation) = continuation {
+                    self.typed_body(continuation.body());
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl SolveVisitor for OperationCensus {
@@ -89,6 +123,7 @@ impl SolveVisitor for OperationCensus {
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
         self.total += 1;
+        self.calls += usize::from(matches!(op, LinearOp::PureCall { .. }));
         self.conditional += usize::from(matches!(
             op,
             LinearOp::FunctionConditional { .. } | LinearOp::Select { .. }
@@ -103,8 +138,18 @@ fn lowered_diamond_size(depth: usize) -> usize {
     let mut census = OperationCensus::default();
     census.visit_solve_problem(&package.problem).unwrap();
     assert!(
+        census.calls > 0,
+        "the residual consumes its checked call owner"
+    );
+    for owner in package.pure_calls.owners() {
+        census.typed_body(owner.body());
+        if let Some(directional) = owner.directional() {
+            census.typed_body(directional.body());
+        }
+    }
+    assert!(
         census.conditional > 0,
-        "the scalar conditional path must be exercised"
+        "the checked conditional DAG must be exercised"
     );
     let [ComputeNode::ScalarPrograms(rows)] = package.problem.continuous.residual.nodes.as_slice()
     else {

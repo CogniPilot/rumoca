@@ -27,6 +27,8 @@ mod simulation_api;
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_session_api;
 pub mod source_root_api;
+#[cfg(any(target_arch = "wasm32", test))]
+mod target_render_api;
 mod workspace_config_api;
 
 use std::{
@@ -48,11 +50,6 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_compile::Session;
-use rumoca_compile::codegen::render_algorithm_code_template_with_artifact;
-use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetTemplateIr, builtin_target_descriptors_for_ir,
-    parse_target_manifest, render_dae_target_files,
-};
 use rumoca_compile::compile::{
     CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, FailedPhase, PhaseResult,
     compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
@@ -273,16 +270,6 @@ pub fn get_build_time_utc() -> String {
     BUILD_TIME_UTC.to_string()
 }
 
-/// Get the built-in codegen targets bundled with the WASM runtime.
-#[wasm_bindgen]
-pub fn get_builtin_targets() -> Result<JsValue, WasmError> {
-    let mut targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
-    targets.extend(builtin_target_descriptors_for_ir(
-        TargetTemplateIr::AlgorithmCode,
-    ));
-    serialize_js_value(&targets, "Serialize built-in target descriptors")
-}
-
 // ==========================================================================
 // Parsing & Checking
 // ==========================================================================
@@ -300,13 +287,6 @@ struct WasmSimulationModelState {
     models: Vec<String>,
     selected_model: Option<String>,
     error: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WasmRenderedTarget {
-    ok: bool,
-    files: Vec<RenderedTargetFile>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1203,119 +1183,14 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, WasmError> {
 }
 
 // ==========================================================================
-// Code Generation
+// Code Generation (see target_render_api)
 // ==========================================================================
 
-#[wasm_bindgen]
-pub fn render_target(
-    dae_json: &str,
-    model_name: &str,
-    target: &str,
-    manifest_source: &str,
-    templates_json: &str,
-) -> Result<JsValue, WasmError> {
-    let dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
-        .map_err(|e| WasmError::new(format!("Invalid DAE JSON: {e}")))?;
-
-    let custom_templates: BTreeMap<String, String> = serde_json::from_str(templates_json)
-        .map_err(|e| WasmError::new(format!("Invalid target template map: {e}")))?;
-    let files = if manifest_source.trim().is_empty() {
-        let bundle = TargetBundle::builtin(target)
-            .ok_or_else(|| WasmError::new(format!("Unknown built-in target '{target}'")))?;
-        let manifest = bundle
-            .parse_manifest()
-            .map_err(|e| WasmError::new(e.to_string()))?;
-        match manifest.ir {
-            TargetTemplateIr::Dae => render_dae_target_files(&bundle, &manifest, &dae, model_name),
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&bundle, &manifest, &dae, model_name)
-            }
-            _ => Err(anyhow::anyhow!(
-                "WASM target rendering supports dae and algorithm-code IR targets"
-            )),
-        }
-        .map_err(|e| WasmError::new(format!("Target render failed: {e}")))?
-    } else {
-        let manifest =
-            parse_target_manifest(manifest_source).map_err(|e| WasmError::new(e.to_string()))?;
-        match manifest.ir {
-            TargetTemplateIr::Dae => {
-                render_dae_target_files(&custom_templates, &manifest, &dae, model_name)
-            }
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&custom_templates, &manifest, &dae, model_name)
-            }
-            _ => Err(anyhow::anyhow!(
-                "WASM target rendering supports dae and algorithm-code IR targets"
-            )),
-        }
-        .map_err(|e| WasmError::new(format!("Target render failed: {e}")))?
-    };
-
-    serde_wasm_bindgen::to_value(&WasmRenderedTarget { ok: true, files })
-        .map_err(|e| WasmError::new(format!("Serialize target output: {e}")))
-}
-
-#[derive(Serialize)]
-struct WasmSourceArtifactFacts {
-    generated_at: &'static str,
-    generation_tool: &'static str,
-    identities: BTreeMap<String, String>,
-    checksums: BTreeMap<String, String>,
-}
-
-fn render_algorithm_code_source_files(
-    source: &impl rumoca_compile::codegen::targets::TargetTemplateSource,
-    manifest: &rumoca_compile::codegen::targets::TargetManifest,
-    dae: &rumoca_compile::compile::Dae,
-    model_name: &str,
-) -> anyhow::Result<Vec<RenderedTargetFile>> {
-    let model_id = model_name.replace('.', "_");
-    let package = rumoca_phase_galec::lower_to_algorithm_code(
-        &rumoca_phase_galec::GalecInput::new(dae, &model_id),
-        &rumoca_phase_galec::GalecOptions::default(),
-    )
-    .map_err(|diagnostics| {
-        anyhow::anyhow!(
-            "GALEC projection failed: {}",
-            diagnostics
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    })?;
-    let artifact = WasmSourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca wasm source preview",
-        identities: BTreeMap::new(),
-        checksums: BTreeMap::new(),
-    };
-    let mut files = Vec::new();
-    for file in &manifest.files {
-        let extension = std::path::Path::new(&file.path)
-            .extension()
-            .and_then(|value| value.to_str());
-        if !matches!(extension, Some("alg" | "h" | "c")) {
-            continue;
-        }
-        let path = render_algorithm_code_template_with_artifact(
-            &package, &artifact, &file.path, &model_id,
-        )?;
-        let template = source.template_source(&file.template)?;
-        let content = render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            template.as_ref(),
-            &model_id,
-        )?;
-        files.push(RenderedTargetFile {
-            path: path.trim().to_owned(),
-            content,
-        });
-    }
-    Ok(files)
-}
+#[cfg(target_arch = "wasm32")]
+pub use crate::target_render_api::{
+    get_builtin_targets, render_target, render_target_for_source,
+    render_target_with_workspace_sources,
+};
 
 // ==========================================================================
 // LSP Functions — thin wrappers over rumoca-tool-lsp

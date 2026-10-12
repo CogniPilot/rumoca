@@ -250,6 +250,7 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -319,6 +320,7 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_cached_csv() {
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -388,6 +390,7 @@ fn ensure_omc_trace_artifacts_rejects_error_result_with_stale_csv() {
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -430,6 +433,7 @@ fn cached_success_without_materialized_trace_source_is_not_reusable() {
     let stale_success = SimModelResult {
         status: "success".to_string(),
         error: None,
+        omc_diagnostics: None,
         sim_system_seconds: Some(0.25),
         total_system_seconds: Some(0.5),
         omc_wall_seconds: Some(0.75),
@@ -562,6 +566,7 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -646,6 +651,7 @@ fn quantify_trace_differences_rejects_error_status_model_with_stale_traces() {
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -723,6 +729,7 @@ fn quantify_trace_differences_rejects_undeclared_omc_trace_file() {
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: Some(rumoca_relative),
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );
@@ -1027,6 +1034,7 @@ fn ensure_target_placeholders_preserves_full_target_denominator() {
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: Some("sim_traces/rumoca/A.json".to_string()),
             rumoca_trace_error: None,
+            omc_diagnostics: None,
             failed_attempts: 0,
         },
     );

@@ -12,12 +12,44 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub(crate) mod cargo_target_directory;
+
 fn step_argvs(suite: VerifySuite) -> Vec<Vec<&'static str>> {
     VERIFY_SUITE_STEPS
         .iter()
         .filter(|step| suite.includes(step))
         .map(|step| step.args.to_vec())
         .collect()
+}
+
+#[test]
+fn cargo_target_dir_resolves_the_owned_build_path() {
+    cargo_target_directory::in_cargo_target_directory(
+        "verify_cmd::tests::cargo_target_dir_resolves_the_owned_build_path",
+        |root, expected| assert_eq!(super::cargo_target_dir(root), expected),
+    );
+}
+
+#[test]
+fn canonical_parity_steps_use_the_ci_measurement_budgets() {
+    use clap::Parser;
+
+    for suite in [VerifySuite::Quick, VerifySuite::Full] {
+        let steps = step_argvs(suite);
+        let mut argv = vec!["xtask"];
+        argv.extend(&steps[1]);
+        let parsed = crate::Cli::try_parse_from(argv).expect("canonical parity command");
+        let crate::Commands::Verify(super::VerifyArgs {
+            command: super::VerifyCommand::MslParity(args),
+        }) = parsed.command
+        else {
+            panic!("canonical step must invoke MSL parity");
+        };
+        let config = args.to_parity_config_json();
+        assert_eq!(config.get("budget_profile"), Some(&serde_json::json!("ci")));
+        assert!(config.get("sim_timeout_secs").is_none());
+        assert!(config.get("model_attempt_timeout_secs").is_none());
+    }
 }
 
 #[test]
@@ -54,7 +86,17 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         steps,
         vec![
             vec!["verify", "lint"],
-            vec!["verify", "msl-parity", "--no-remote-quality-baseline"],
+            vec![
+                "verify",
+                "msl-parity",
+                "--budget-profile",
+                "ci",
+                "--no-remote-quality-baseline",
+                "--stage-parallelism",
+                "4",
+                "--sim-parallelism",
+                "4",
+            ],
             vec!["verify", "corpus-pin"],
             vec!["verify", "architecture"],
             vec!["verify", "workspace"],
@@ -78,7 +120,13 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         Some(&vec![
             "verify",
             "msl-parity",
-            "--no-remote-quality-baseline"
+            "--budget-profile",
+            "ci",
+            "--no-remote-quality-baseline",
+            "--stage-parallelism",
+            "4",
+            "--sim-parallelism",
+            "4",
         ])
     );
     assert!(steps.contains(&vec!["verify", "architecture"]));
@@ -86,13 +134,20 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     assert!(steps.contains(&vec!["verify", "examples"]));
     assert!(steps.contains(&vec!["verify", "binaries"]));
     assert!(steps.contains(&vec!["verify", "template-runtimes"]));
+    assert!(steps.contains(&vec!["python", "test", "--require-guide"]));
     assert!(steps.contains(&vec!["coverage", "run"]));
     assert!(steps.contains(&vec!["playground", "test"]));
     assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
     assert!(steps.contains(&vec![
         "verify",
         "msl-parity",
-        "--no-remote-quality-baseline"
+        "--budget-profile",
+        "ci",
+        "--no-remote-quality-baseline",
+        "--stage-parallelism",
+        "4",
+        "--sim-parallelism",
+        "4",
     ]));
 }
 

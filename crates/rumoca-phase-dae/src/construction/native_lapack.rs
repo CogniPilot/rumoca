@@ -5,6 +5,7 @@
 use super::*;
 
 mod least_squares;
+mod lu_inverse;
 
 /// Define the body of a function whose external clause is a native LAPACK
 /// driver.
@@ -64,12 +65,50 @@ pub(super) fn lower_native_lapack<'dae>(
             })?;
             vec![(solution, solved), (rank, effective_rank), (info, status)]
         }
+        NativeLapackPlan::LuFactorization {
+            matrix,
+            pivots,
+            info,
+        } => {
+            let value = read(construction, matrix)?;
+            let (factors, interchanges, status) = construction.expressions(|expressions| {
+                LapackBuilder {
+                    expressions,
+                    provenance,
+                }
+                .lu_factorization(value)
+            })?;
+            vec![(matrix, factors), (pivots, interchanges), (info, status)]
+        }
+        NativeLapackPlan::LuInverse {
+            matrix,
+            pivots,
+            info,
+        } => {
+            let value = read(construction, matrix)?;
+            let interchanges = read(construction, pivots)?;
+            let (inverse, status, valid) = construction.expressions(|expressions| {
+                LapackBuilder {
+                    expressions,
+                    provenance,
+                }
+                .lu_inverse(value, interchanges)
+            })?;
+            let message = construction.expressions(|expressions| {
+                expressions.at(provenance).literal(dae::DaeLiteral::String(
+                    "LAPACK dgetri pivot index out of range".to_owned(),
+                ))
+            })?;
+            construction
+                .functions(|functions| functions.assertion(body, valid, message, provenance))?;
+            vec![(matrix, inverse), (info, status)]
+        }
     };
-    for (name, value) in assignments {
-        let target = function_value_coordinate(coordinates, name);
-        construction.functions(|functions| functions.assign(body, target, value, provenance))?;
-    }
-    Ok(())
+    let assignments = assignments
+        .into_iter()
+        .map(|(name, value)| (function_value_coordinate(coordinates, name), value))
+        .collect::<Vec<_>>();
+    construction.functions(|functions| functions.assign_all(body, &assignments, provenance))
 }
 
 /// Straight-line scalar and row arithmetic over operands of translation-time
@@ -279,20 +318,37 @@ impl<'dae> LapackBuilder<'_, '_, 'dae> {
         taken: &[dae::ExprId<'dae>],
         is_zero: dae::ExprId<'dae>,
     ) -> Result<(), dae::DaeConstructionError> {
+        self.swap_selected_row(rows, taken)?;
+        let pivot_row = rows[0];
+        let pivot = self.at_index(pivot_row, column)?;
+        let one = self.literal(dae::DaeLiteral::Real(1.0))?;
+        let denominator = self.conditional(is_zero, one, pivot)?;
+        for row in rows.iter_mut().skip(1) {
+            let leading = self.at_index(*row, column)?;
+            let factor = self.op(dae::BinaryOperator::Divide, leading, denominator)?;
+            let scaled = self.op(dae::BinaryOperator::Multiply, factor, pivot_row)?;
+            *row = self.op(dae::BinaryOperator::Subtract, *row, scaled)?;
+        }
+        rows[0] = pivot_row;
+        Ok(())
+    }
+
+    fn swap_selected_row(
+        &mut self,
+        rows: &mut [dae::ExprId<'dae>],
+        taken: &[dae::ExprId<'dae>],
+    ) -> Result<(), dae::DaeConstructionError> {
+        // DAE-C34 / MLS §12.9: with one remaining row the selected row
+        // is already first. An identity interchange has no conditional arms.
+        if rows.len() == 1 {
+            return Ok(());
+        }
         let pivot_row = self.expressions.at(self.provenance).conditional(
             taken[1..].iter().copied().zip(rows[1..].iter().copied()),
             rows[0],
         )?;
-        let pivot = self.at_index(pivot_row, column)?;
-        let one = self.literal(dae::DaeLiteral::Real(1.0))?;
-        let denominator = self.conditional(is_zero, one, pivot)?;
         for offset in 1..rows.len() {
-            // The old pivot row moves to the taken row's place.
-            let swapped = self.conditional(taken[offset], rows[0], rows[offset])?;
-            let leading = self.at_index(swapped, column)?;
-            let factor = self.op(dae::BinaryOperator::Divide, leading, denominator)?;
-            let scaled = self.op(dae::BinaryOperator::Multiply, factor, pivot_row)?;
-            rows[offset] = self.op(dae::BinaryOperator::Subtract, swapped, scaled)?;
+            rows[offset] = self.conditional(taken[offset], rows[0], rows[offset])?;
         }
         rows[0] = pivot_row;
         Ok(())

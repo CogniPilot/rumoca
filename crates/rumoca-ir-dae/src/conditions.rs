@@ -1,3 +1,6 @@
+mod clock_projection;
+use clock_projection::ClockProjection;
+
 use std::marker::PhantomData;
 
 use crate::model::{Storage, check_provenance, checked_u32, duplicate, unknown};
@@ -31,6 +34,10 @@ pub(crate) struct RelationEntry {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConditionEntry {
     pub(crate) node: Option<ConditionNode>,
+    #[serde(skip)]
+    pub(crate) synchronous_clock: Option<u32>,
+    #[serde(skip)]
+    pub(crate) clock_projection: ClockProjection,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -46,6 +53,7 @@ pub(crate) struct RootEntry {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StructuredRootEntry {
+    pub(crate) activation: Option<u32>,
     pub(crate) domain: u32,
     pub(crate) expression: u32,
     pub(crate) provenance: DaeProvenance,
@@ -98,11 +106,36 @@ pub enum ConditionOperation<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConditionView<'dae> {
+    pub(crate) synchronous_clock: Option<ClockId<'dae>>,
+    pub(crate) clock_projection: ClockProjection,
     pub(crate) operation: ConditionOperation<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
 impl<'dae> ConditionView<'dae> {
+    /// The synchronous owner issued by the condition constructor.
+    pub const fn synchronous_clock_owner(self) -> Option<ClockId<'dae>> {
+        self.synchronous_clock
+    }
+
+    /// The checked Boolean condition cannot be true outside this clock's task.
+    pub fn requires_clock(self, clock: ClockId<'dae>) -> bool {
+        self.clock_projection.requires_clock(clock.index())
+    }
+
+    /// The checked Boolean condition is true on every tick of this clock.
+    pub fn is_true_on_clock_tick(self, clock: ClockId<'dae>) -> bool {
+        self.clock_projection.true_on_tick(clock.index())
+    }
+
+    /// A unique Boolean task selected by this condition, independently of
+    /// synchronous variable ownership. Consumers check its admitted clock kind.
+    pub fn projected_task_clock(self) -> Option<ClockId<'dae>> {
+        self.clock_projection
+            .selected_clock()
+            .map(ClockId::from_raw)
+    }
+
     pub const fn operation(self) -> ConditionOperation<'dae> {
         self.operation
     }
@@ -135,12 +168,16 @@ impl<'dae> RootView<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct StructuredRootView<'dae> {
+    pub(crate) activation: Option<ExprId<'dae>>,
     pub(crate) domain: DomainId<'dae>,
     pub(crate) expression: ExprId<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
 impl<'dae> StructuredRootView<'dae> {
+    pub const fn activation_guard(self) -> Option<ExprId<'dae>> {
+        self.activation
+    }
     pub const fn domain(self) -> DomainId<'dae> {
         self.domain
     }
@@ -208,9 +245,10 @@ impl<'dae> Conditions<'_, 'dae> {
         let raw = checked_u32(self.storage.conditions.len(), "condition arena", provenance)?;
         self.storage.conditions.push(ConditionEntry {
             node: None,
+            synchronous_clock: None,
+            clock_projection: ClockProjection::default(),
             provenance,
         });
-        self.storage.condition_owner_clocks.push(None);
         self.storage.unfilled_conditions += 1;
         Ok(ConditionId::from_raw(raw))
     }
@@ -224,6 +262,7 @@ impl<'dae> Conditions<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         let node = self.checked_node(input, provenance)?;
         let owner_clock = owner_clock_for_node(self.storage, node, provenance)?;
+        let clock_projection = ClockProjection::issue(node, self.storage);
         let Some(entry) = self.storage.conditions.get_mut(condition.index() as usize) else {
             return Err(unknown("condition", condition.index(), provenance));
         };
@@ -231,7 +270,8 @@ impl<'dae> Conditions<'_, 'dae> {
             return Err(duplicate("condition", condition.index(), provenance));
         }
         entry.node = Some(node);
-        self.storage.condition_owner_clocks[condition.index() as usize] = owner_clock;
+        entry.synchronous_clock = owner_clock;
+        entry.clock_projection = clock_projection;
         self.storage.unfilled_conditions -= 1;
         Ok(())
     }
@@ -276,15 +316,35 @@ impl<'dae> Conditions<'_, 'dae> {
         expression: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<StructuredRootId<'dae>, DaeConstructionError> {
+        self.structured_root_activated(domain, expression, None, provenance)
+    }
+
+    pub(crate) fn structured_root_activated(
+        &mut self,
+        domain: DomainId<'dae>,
+        expression: ExprId<'dae>,
+        activation: Option<ExprId<'dae>>,
+        provenance: DaeProvenance,
+    ) -> Result<StructuredRootId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         self.storage
             .expect_domain_relation(expression, domain, provenance)?;
+        // MLS §3.6.5 / §8.5: the same issued arm protects this whole domain.
+        // The quotient owner supplies its separately certified activation;
+        // ordinary relations derive it from their checked expression scope.
+        let activation = activation.or_else(|| {
+            self.storage
+                .model_expression_roots(expression.index())
+                .nth(1)
+                .map(ExprId::from_raw)
+        });
         let raw = checked_u32(
             self.storage.structured_roots.len(),
             "structured root arena",
             provenance,
         )?;
         self.storage.structured_roots.push(StructuredRootEntry {
+            activation: activation.map(ExprId::index),
             domain: domain.index(),
             expression: expression.index(),
             provenance,
@@ -394,10 +454,7 @@ pub(crate) fn condition_owner_clock(
             span: provenance.span(),
         });
     }
-    Ok(*storage
-        .condition_owner_clocks
-        .get(condition as usize)
-        .expect("condition owner-clock cache stays aligned with condition arena"))
+    Ok(entry.synchronous_clock)
 }
 
 fn owner_clock_for_node(

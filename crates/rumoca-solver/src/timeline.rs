@@ -270,8 +270,12 @@ pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t
     if !period.is_finite() || !phase.is_finite() || period <= 0.0 || t + period < phase {
         return false;
     }
+    // The tick count is judged after rounding: a time a rounding error before
+    // the first tick (a step end `0.09 + 0.01 = 0.0999…`) lands at a count
+    // just below zero and still is that tick.
     let ticks = (t - phase) / period;
-    ticks >= 0.0 && sample_time_match_with_tol(ticks, ticks.round())
+    let tick = ticks.round();
+    tick >= 0.0 && sample_time_match_with_tol(ticks, tick)
 }
 
 pub fn scheduled_root_matches_time(root: &solve::ScheduledRootCondition, t: f64) -> bool {
@@ -437,6 +441,19 @@ mod tests {
             rumoca_core::ClockLattice::from_seconds(period, phase).unwrap(),
         )
         .unwrap()
+    }
+
+    /// A step end accumulated in floating point (`0.09 + 0.01`) lands a
+    /// rounding error before the first tick; it is still that tick.
+    #[test]
+    fn periodic_schedule_matches_a_first_tick_reached_from_below() {
+        let schedule = periodic(0.1, 0.1);
+        let end = 0.09_f64 + 0.01;
+        assert!(end < 0.1);
+        assert!(periodic_schedule_matches_time(&schedule, end));
+        assert!(periodic_schedule_matches_time(&schedule, 0.1));
+        assert!(!periodic_schedule_matches_time(&schedule, 0.05));
+        assert!(!periodic_schedule_matches_time(&schedule, 0.0));
     }
 
     #[test]

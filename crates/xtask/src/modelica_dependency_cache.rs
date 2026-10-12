@@ -14,6 +14,9 @@ const CMM_KEY: &str = "cmm";
 const OMC_SERVICES_KEY: &str = "omc_services";
 const REVISION_FILE: &str = ".rumoca-source-revision";
 
+mod verified_source;
+pub(crate) use verified_source::{QualifiedSource, qualify_flight_source};
+
 #[derive(Debug, Args, Clone)]
 pub(crate) struct CmmArgs {
     #[command(subcommand)]
@@ -152,9 +155,12 @@ pub(crate) fn ensure_omc_services_library(root: &Path, force: bool) -> Result<()
 }
 
 fn load_manifest(root: &Path) -> Result<DependencyManifest> {
-    let path = root.join(MANIFEST_FILE);
+    load_manifest_file(&root.join(MANIFEST_FILE))
+}
+
+fn load_manifest_file(path: &Path) -> Result<DependencyManifest> {
     let raw =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let manifest: DependencyManifest =
         toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
     ensure!(
@@ -170,7 +176,7 @@ fn required_library<'a>(manifest: &'a DependencyManifest, key: &str) -> Result<&
     manifest
         .libraries
         .get(key)
-        .ok_or_else(|| anyhow!("{MANIFEST_FILE} is missing [libraries.{key}]"))
+        .ok_or_else(|| anyhow!("dependency manifest is missing [libraries.{key}]"))
 }
 
 fn ensure_library(root: &Path, spec: &LibrarySpec, force: bool) -> Result<()> {

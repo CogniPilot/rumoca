@@ -4,17 +4,18 @@ use super::*;
 
 pub(super) fn lower_condition_memory<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
-    let vector_elements = unowned_vector_elements(view);
+    let edge_conditions = unowned_edge_conditions(view, &rows.ordinary_trigger_edges);
+    let mut internal_constants = BTreeMap::new();
     for (condition, condition_view) in view.conditions() {
         // A clock-owned condition is the activation of its partition and needs
-        // no edge buffer, unless it is an element `bi` of a vector `when` that
-        // no partition owns: §8.3.5.1 activates that `when` on `edge(bi)`, so
-        // each element keeps its own buffer.
-        if condition_clock_owner(view, condition).is_some() && !vector_elements.contains(&condition)
+        // no edge buffer, unless an issued ordinary branch consumes its edge
+        // or it is an element `bi` of an unowned vector `when`. MLS §8.3.5.1
+        // requires the buffer in both cases.
+        if condition_clock_owner(view, condition).is_some() && !edge_conditions.contains(&condition)
         {
             continue;
         }
@@ -27,6 +28,13 @@ pub(super) fn lower_condition_memory<'dae>(
         // `when true then` is a real `when` and keeps its buffer, so §8.3.5.1
         // starts that buffer true and it never has an edge to run on.
         if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
+            continue;
+        }
+        // A negated internal Always is false at every instant. Its zeroed
+        // memory slot already represents that truth, so no refresh row is
+        // needed. Source literal conditions are Discrete nodes and retain
+        // their initialization/edge buffers, including source `when true`.
+        if internal_false_condition(view, condition, &mut internal_constants) {
             continue;
         }
         let span = condition_view.provenance().span();
@@ -47,9 +55,12 @@ pub(super) fn lower_condition_memory<'dae>(
                 || condition_reads_previous(view, condition)
         });
         let program = match clock {
-            Some((clock, _)) => ScalarCompiler::new(view, layout, None)
+            Some((clock, _)) => layout
+                .scalar_compiler(view, None)
                 .clocked_condition_program(clock, condition)?,
-            None => ScalarCompiler::new(view, layout, None).condition_program(condition)?,
+            None => layout
+                .scalar_compiler(view, None)
+                .condition_program(condition)?,
         };
         let row = rows.targets.len();
         rows.push(
@@ -78,6 +89,39 @@ pub(super) fn lower_condition_memory<'dae>(
         }
     }
     Ok(())
+}
+
+/// Prove constant false from internal Always/Not nodes alone. Reading no
+/// expression, clock or initial flag preserves every real activation owner.
+fn internal_false_condition<'dae>(
+    view: dae::DaeView<'dae>,
+    mut condition: dae::ConditionId<'dae>,
+    constants: &mut BTreeMap<dae::ConditionId<'dae>, Option<bool>>,
+) -> bool {
+    let mut pending = Vec::new();
+    let mut value = loop {
+        if let Some(value) = constants.get(&condition) {
+            break *value;
+        }
+        match view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation()
+        {
+            dae::ConditionOperation::Not(operand) => {
+                pending.push(condition);
+                condition = operand;
+            }
+            dae::ConditionOperation::Always => break Some(true),
+            _ => break None,
+        }
+    };
+    constants.insert(condition, value);
+    while let Some(condition) = pending.pop() {
+        value = value.map(|value| !value);
+        constants.insert(condition, value);
+    }
+    value == Some(false)
 }
 
 /// Whether a relation or discrete operand of `condition` reads a `previous`
@@ -113,7 +157,7 @@ fn condition_reads_previous<'dae>(
             | dae::ConditionOperation::Clock(_) => None,
         };
         if let Some(expression) = expression {
-            dae::for_each_expression(view, expression, |_, node| {
+            super::super::clock_ownership::for_each_dependency(view, expression, |node| {
                 reads |= matches!(
                     node.operation(),
                     dae::ExpressionOperation::Coordinate(dae::CoordinateView::Previous(_))
@@ -124,10 +168,13 @@ fn condition_reads_previous<'dae>(
     reads
 }
 
-/// The elements `bi` of every vector activation `{b1, ..., bn}` that no clock
-/// partition owns (the leaves of each such `AnyRise` tree).
-fn unowned_vector_elements<'dae>(view: dae::DaeView<'dae>) -> BTreeSet<dae::ConditionId<'dae>> {
-    let mut elements = BTreeSet::new();
+/// Exact issued ordinary trigger edges and the leaves of unowned vector
+/// activations. A selected Boolean task does not remove an ordinary edge.
+fn unowned_edge_conditions<'dae>(
+    view: dae::DaeView<'dae>,
+    issued: &BTreeSet<dae::ConditionId<'dae>>,
+) -> BTreeSet<dae::ConditionId<'dae>> {
+    let mut elements = issued.clone();
     for (condition, condition_view) in view.conditions() {
         if !matches!(
             condition_view.operation(),
@@ -221,14 +268,20 @@ fn condition_operand_clock<'dae>(
                     .relation(relation)
                     .expect("checked condition relation resolves")
                     .expression();
-                if let Some(found) = expression_clock_owner(view, clocks, expression) {
-                    visit(found);
-                }
+                super::super::clock_ownership::for_each_expression_clock_owner(
+                    view,
+                    expression,
+                    |variable| clocks.variable_clock(variable),
+                    |clock| visit((clock, clocks.clock(clock).ok())),
+                );
             }
             dae::ConditionOperation::Discrete(expression) => {
-                if let Some(found) = expression_clock_owner(view, clocks, expression) {
-                    visit(found);
-                }
+                super::super::clock_ownership::for_each_expression_clock_owner(
+                    view,
+                    expression,
+                    |variable| clocks.variable_clock(variable),
+                    |clock| visit((clock, clocks.clock(clock).ok())),
+                );
             }
             dae::ConditionOperation::Not(operand) => pending.push(operand),
             dae::ConditionOperation::And(lhs, rhs)
@@ -258,38 +311,21 @@ pub(super) fn condition_clock_owner<'dae>(
     let condition = view
         .condition(condition)
         .expect("checked condition identity resolves");
-    match condition.operation() {
-        dae::ConditionOperation::Initial => None,
-        dae::ConditionOperation::Clock(clock) => Some(clock),
-        dae::ConditionOperation::And(lhs, rhs) => merge_condition_clocks(
-            condition_clock_owner(view, lhs),
-            condition_clock_owner(view, rhs),
-            false,
-        ),
-        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-            merge_condition_clocks(
-                condition_clock_owner(view, lhs),
-                condition_clock_owner(view, rhs),
-                true,
-            )
-        }
-        dae::ConditionOperation::Always
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_) => None,
-    }
+    checked_condition_clock_owner(view, condition)
 }
 
-fn merge_condition_clocks<'dae>(
-    lhs: Option<dae::ClockId<'dae>>,
-    rhs: Option<dae::ClockId<'dae>>,
-    disjunction: bool,
+pub(super) fn checked_condition_clock_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionView<'dae>,
 ) -> Option<dae::ClockId<'dae>> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
-    }
+    condition.synchronous_clock_owner().or_else(|| {
+        let clock = condition.projected_task_clock()?;
+        matches!(
+            view.clock(clock)?.operation(),
+            dae::ClockOperation::Periodic(_)
+        )
+        .then_some(clock)
+    })
 }
 
 pub(in crate::lower) fn condition_memory(
@@ -302,4 +338,77 @@ pub(in crate::lower) fn condition_memory(
         .get(condition.index() as usize)
         .copied()
         .ok_or_else(|| LowerError::contract("condition has no Solve memory slot", span))
+}
+
+#[cfg(test)]
+mod internal_constant_tests {
+    use super::*;
+
+    fn define_negation_chain(
+        conditions: &mut dae::Conditions<'_, '_>,
+        internal: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let ids = (0..=1024)
+            .map(|_| conditions.reserve(internal))
+            .collect::<Result<Vec<_>, _>>()?;
+        conditions.define(ids[1024], dae::ConditionInput::Always, internal)?;
+        for index in (0..1024).rev() {
+            conditions.define(
+                ids[index],
+                dae::ConditionInput::Not(ids[index + 1]),
+                internal,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_negation_chain_is_memoized_without_index_order_assumptions() {
+        let mut source_map = rumoca_core::SourceMap::new();
+        let source = source_map.add("constant.mo", "true");
+        let authored = dae::DaeProvenance::source(Span::from_offsets(source, 0, 4)).unwrap();
+        let internal =
+            dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, authored.span())
+                .unwrap();
+        let model = dae::Dae::construct(source_map, |model| {
+            let literal = model.expressions(|expressions| {
+                expressions
+                    .at(authored)
+                    .literal(dae::DaeLiteral::Boolean(true))
+            })?;
+            model.conditions(|conditions| {
+                define_negation_chain(conditions, internal)?;
+                let unknown = conditions.reserve(authored)?;
+                conditions.define(unknown, dae::ConditionInput::Discrete(literal), authored)
+            })
+        })
+        .expect("defined operands permit reserved IDs in reverse order");
+        model.inspect(|view| {
+            let mut constants = BTreeMap::new();
+            let conditions = view.conditions().map(|(id, _)| id).collect::<Vec<_>>();
+            assert!(!internal_false_condition(
+                view,
+                conditions[0],
+                &mut constants
+            ));
+            assert_eq!(
+                constants.len(),
+                1025,
+                "each shared chain node is issued once"
+            );
+            for (index, condition) in conditions[..1025].iter().copied().enumerate() {
+                assert_eq!(
+                    internal_false_condition(view, condition, &mut constants),
+                    index % 2 == 1
+                );
+                assert_eq!(constants.len(), 1025, "queries reuse the chain proof");
+            }
+            assert!(!internal_false_condition(
+                view,
+                conditions[1025],
+                &mut constants
+            ));
+            assert_eq!(constants.get(&conditions[1025]), Some(&None));
+        });
+    }
 }

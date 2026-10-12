@@ -1,0 +1,265 @@
+{
+  "source_before": "6d62feb2a61e8854c1856e3566470835291151f2",
+  "source_after": "88aeedf6075781cdebca619372c07e0ce371dfa9",
+  "before": {
+    "invocation": [
+      "nix",
+      "develop",
+      ".#full",
+      "--command",
+      "bash",
+      "-c",
+      "\n set -euo pipefail\n unset PYTHONPATH\n export PATH=\"$HOME/scratch/rumoca/workshop427-exports/cache/venv/bin:$PATH\"\n export PYO3_PYTHON=\"$HOME/scratch/rumoca/workshop427-exports/cache/venv/bin/python\"\n export CARGO_HOME=\"$HOME/.cargo\" CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-ci/target\"\n export TMPDIR=\"$HOME/scratch/rumoca/browser-tmp\"\n export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4\n export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 GIT_OPTIONAL_LOCKS=0\n exec cargo nextest run --workspace --exclude rumoca-bind-python --exclude rumoca-bind-wasm --features rumoca/msl-sim-tests --no-fail-fast --test-threads 4\n"
+    ],
+    "test": {
+      "test": "FAIL [   0.017s] (  631/10288) rumoca::suite_core evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads",
+      "detail": "        FAIL [   0.017s] (  631/10288) rumoca::suite_core evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads\n  stdout \u2500\u2500\u2500\n\n    running 1 test\n    test evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads ... FAILED\n\n    failures:\n\n    failures:\n        evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads\n\n    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1452 filtered out; finished in 0.01s\n\n  stderr \u2500\u2500\u2500\n\n    thread 'evaluable_parameters::a_folded_condition_selects_its_branch_and_drops_the_unselected_reads' (65466) panicked at crates/rumoca/tests/suite_core/evaluable_parameters.rs:251:5:\n    assertion `left == right` failed\n      left: [\"b\", \"g\"]\n     right: [\"g\"]\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    },
+    "bindings": [
+      {
+        "path": "scratch/rumoca/workshop427-final-broad-20261012/evidence/workspace-inventory-6d62feb2a/command.log",
+        "sha256": "579b6b1c596d3cb3f3a5878152a308fba9903dc0e389f750b0d912b4f7ec4617"
+      },
+      {
+        "path": "scratch/rumoca/workshop427-final-broad-20261012/evidence/workspace-inventory-6d62feb2a/guardian.json",
+        "sha256": "366b8da0f8d00bc3cf83f37fdb0f3d41528eb440b04b0f131552fcb7f346c3d0"
+      },
+      {
+        "path": "scratch/rumoca/workshop427-final-broad-20261012/evidence/workspace-inventory-6d62feb2a/source-before.json",
+        "sha256": "d1a4a2b1da26ab3d74a328ac2dc57db403076a8f472262d0cb84de0b3f9c6924"
+      },
+      {
+        "path": "scratch/rumoca/workshop427-final-broad-20261012/evidence/workspace-inventory-6d62feb2a/source-after.json",
+        "sha256": "d1a4a2b1da26ab3d74a328ac2dc57db403076a8f472262d0cb84de0b3f9c6924"
+      }
+    ]
+  },
+  "after": [
+    {
+      "name": "selected-values-after",
+      "results": {
+        "function_context": {
+          "passed": 4
+        },
+        "structural_units": {
+          "passed": 267
+        },
+        "dae_units": {
+          "passed": 221
+        },
+        "default_feature_evaluable_runtime": "UNRUN: compile timed out",
+        "scoped_clippy": "UNRUN in this attempt"
+      },
+      "guardian": {
+        "exitCode": 124,
+        "elapsedMs": 600150.729604,
+        "stopped": "timeout",
+        "signal": "SIGKILL",
+        "peakResidentPlusSwapKiB": 2924240,
+        "peakCacheBytes": 5070188544,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "bindings": [
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-after.log",
+          "sha256": "bd5dd0f6091a70c3c068918beb229c860e39eb56662f187cd5dd720805b17016"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-after.guardian.json",
+          "sha256": "db8ca7c8fcd30ec26cf8bee2b3a8720122e30e83fb21941af5dcbc5c6333d9ba"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-after-recipe.json",
+          "sha256": "c6a774cfb46b19c6fc1de0db4a0cc36eeedd1171bfd94df8e5a6eb5e2fde64b3"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/run-selected-values-after.sh",
+          "sha256": "c57b7bc7dd81c0d3fa58e0d3e9140bfc740f11214f9b04c6dcd71efe39f0a36e"
+        }
+      ]
+    },
+    {
+      "name": "selected-values-fmu-after",
+      "results": {
+        "scoped_all_target_clippy": "PASS",
+        "evaluable_parameters_runtime": {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "features": "no-default-features + fmu-packaging"
+        }
+      },
+      "guardian": {
+        "exitCode": 0,
+        "elapsedMs": 238323.777478,
+        "stopped": null,
+        "signal": null,
+        "peakResidentPlusSwapKiB": 2846400,
+        "peakCacheBytes": 5157138432,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "bindings": [
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-fmu-after.log",
+          "sha256": "dfca08daa8d2b92d74f45622405cca25c254e862e24b8d468a65d1e4b50f37e5"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-fmu-after.guardian.json",
+          "sha256": "79e3855d0901e44dcee5bb36196b3db78ba7dee97b69ceb4042f23bf59c520b3"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-fmu-after-recipe.json",
+          "sha256": "e10e5aa328d2a8d4f1353b342c6852efbf98f347f2e6c806aef667cab0650b3f"
+        },
+        {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/run-selected-values-fmu-after.sh",
+          "sha256": "cd5b75816f185af6d752e802c787ca569b0e5aee477ab7ec5913eff864819878"
+        }
+      ]
+    }
+  ],
+  "original_seven_replay": {
+    "source_head": "88aeedf6075781cdebca619372c07e0ce371dfa9",
+    "source_files_rechecked_after": true,
+    "results": [
+      {
+        "model": "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks/result.json",
+          "sha256": "3ab6cac152c79e8d9916fdb47c0e41bdf127fe7c253af7a6127eb3dbd8e2c05e"
+        }
+      },
+      {
+        "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 51 matched out of 53 equations and 53 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.Continuous/result.json",
+          "sha256": "efe0f9174f58da3afe67d418be0f5ea18f7b118f69305ce3e877845c1d67cd1a"
+        }
+      },
+      {
+        "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked/result.json",
+          "sha256": "86804bb62b86d68bf1c0389616248dfc06aeb06218eaee60127216dce7ebc061"
+        }
+      },
+      {
+        "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 44 matched out of 46 equations and 46 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled/result.json",
+          "sha256": "11beeccefaad08b45a579fb7012c3f0b8548f30b2a57eeb020a9a3d69eb23689"
+        }
+      },
+      {
+        "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 391 matched out of 404 equations and 404 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad/result.json",
+          "sha256": "251a9669ea622b8ffcec8269a7cb1ac65832b0d37939e8fa4799c5a4d6f3fa98"
+        }
+      },
+      {
+        "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 77 matched out of 79 equations and 79 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap/result.json",
+          "sha256": "6cf8f6321e629b3a475e3fa495d8cb8e373e3b5cbb83a59ee39f848d988a36b6"
+        }
+      },
+      {
+        "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
+        "status": "sim_solver_fail",
+        "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 77 matched out of 79 equations and 79 unknowns",
+        "binding": {
+          "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection/result.json",
+          "sha256": "6cf3e38db557c0725db3f84a0a03614c029107b7952fbc7cb7da681ed4103133"
+        }
+      }
+    ],
+    "passed_simulations": 0,
+    "failed_simulations": 7,
+    "guardian": {
+      "exitCode": 101,
+      "elapsedMs": 201898.393911,
+      "stopped": null,
+      "peakResidentPlusSwapKiB": 2791736,
+      "peakCacheBytes": 5229481984
+    },
+    "bindings": [
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven.log",
+        "sha256": "edfee90af768cb3c442e8d8cda9abf4901f12ea0cc5a5b5845abf97d4a7e3b8b"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven.guardian.json",
+        "sha256": "796d0e86c9d2b405dd746808d52a6eaa675376a3cfdcb4e21deedab0a4d3f6b8"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-recipe.json",
+        "sha256": "3052e055efee170ed7dca947edef8f8088bff4e7e0231edf6ae68207dc255986"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/run-selected-values-original-seven.sh",
+        "sha256": "d5d64b0b346ce5ae0c696c7cd484100b8b2dac0e48ee27bd6b0236cf3c393a01"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/structural_original_seven.rs",
+        "sha256": "fef1f03c907bc023c705fe467de0df45c2b20c3f56c6f822a1d2abd839d29ed3"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/artifacts/rumoca-worker-88ae",
+        "sha256": "8a885198afa9cd0abd245f660f81d42df240e7b081ca91c2ffe2c6f6e8688b68"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/artifacts/structural-original-seven-88ae",
+        "sha256": "8bae84b9a4b43629f62a9ec49d22b12f585c7febedaa70cf3d7d5038c01118a5"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks.json",
+        "sha256": "775d8ef4419755f63b7cb305043f823960ab70216c4e0384a85c674d1c577943"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Clocked.Examples.CascadeControlledDrive.Continuous.json",
+        "sha256": "3081f419a5a6387a18b668ff8737f5a261220568c533d6ddb70f21f51f79b596"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked.json",
+        "sha256": "4639f5212553d60edf80c27d579808c5ac185fcd36dffecfc4645f8bc559b0fb"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled.json",
+        "sha256": "f7194ba52d76fe07fc18d280691e591b02b68cfc4772d2747e60dac4b9334588"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad.json",
+        "sha256": "6923ae3409fe497c3fa082c918b9b49d812ce5372fb29be70b7d4842d20c9259"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap.json",
+        "sha256": "0207e7f6b57f2c22a14a078af827497b2c14f9c83ca0dcb50e54d9bc89845099"
+      },
+      {
+        "path": "scratch/rumoca/pr427-structural-diagnostics-86c-20261012/selected-values-original-seven-requests/Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection.json",
+        "sha256": "6a39cc724c2d0c9d8fbaf93955d24ef227ec12873f9e3f374c60164ea8db0f16"
+      }
+    ]
+  }
+}

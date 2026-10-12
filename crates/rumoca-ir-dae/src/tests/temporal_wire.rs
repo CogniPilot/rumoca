@@ -833,3 +833,66 @@ fn shifted_event_clocks_relate_only_by_whole_tick_shifts() {
         ));
     });
 }
+
+#[test]
+fn boolean_task_projection_survives_wire_without_synchronous_ownership() {
+    let source = TestSource::new("sample(0,1) or not Always; sample(0,1) and initial();");
+    let at = source.source("sample(0,1) or not Always", 0);
+    let model = Dae::construct(source.map, |model| {
+        let clock = model.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                at,
+            )
+        })?;
+        model.conditions(|conditions| {
+            let tick = conditions.reserve(at)?;
+            conditions.define(tick, ConditionInput::Clock(clock.into()), at)?;
+            let always = conditions.reserve(at)?;
+            conditions.define(always, ConditionInput::Always, at)?;
+            let never = conditions.reserve(at)?;
+            conditions.define(never, ConditionInput::Not(always), at)?;
+            let wrapper = conditions.reserve(at)?;
+            conditions.define(wrapper, ConditionInput::Or(tick, never), at)?;
+            let initial = conditions.reserve(at)?;
+            conditions.define(initial, ConditionInput::Initial, at)?;
+            let narrow = conditions.reserve(at)?;
+            conditions.define(narrow, ConditionInput::And(tick, initial), at)?;
+            assert_eq!(
+                crate::conditions::condition_owner_clock(conditions.storage, wrapper.index(), at,)?,
+                None,
+                "Boolean task proof must not mint synchronous ownership"
+            );
+            Ok(())
+        })
+    })
+    .unwrap();
+    model.inspect(assert_boolean_task_projection);
+    let json = serde_json::to_string(&model).unwrap();
+    assert!(
+        !json.contains("clock_projection") && !json.contains("synchronous_clock"),
+        "derived proof is reissued by the constructor"
+    );
+    let json_model: Dae = serde_json::from_str(&json).unwrap();
+    json_model.inspect(assert_boolean_task_projection);
+    let bytes = bincode::serialize(&model).unwrap();
+    let binary_model: Dae = bincode::deserialize(&bytes).unwrap();
+    binary_model.inspect(assert_boolean_task_projection);
+}
+
+fn assert_boolean_task_projection(view: DaeView<'_>) {
+    assert_eq!(view.clock_ownership_count(), 0);
+    let clock = view.clock_id(0).unwrap();
+    let conditions = view
+        .conditions()
+        .map(|(_, condition)| condition)
+        .collect::<Vec<_>>();
+    assert_eq!(conditions[0].synchronous_clock_owner(), Some(clock));
+    assert_eq!(conditions[3].synchronous_clock_owner(), None);
+    assert_eq!(conditions[5].synchronous_clock_owner(), Some(clock));
+    assert_eq!(conditions[3].projected_task_clock(), Some(clock));
+    assert!(conditions[3].requires_clock(clock));
+    assert!(conditions[3].is_true_on_clock_tick(clock));
+    assert!(conditions[5].requires_clock(clock));
+    assert!(!conditions[5].is_true_on_clock_tick(clock));
+}

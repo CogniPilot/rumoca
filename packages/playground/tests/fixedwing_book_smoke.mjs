@@ -4,7 +4,9 @@
 // node packages/playground/tests/fixedwing_book_smoke.mjs \
 //   --browser-binary /path/to/chromium --base-url http://127.0.0.1:8731
 import assert from "node:assert/strict";
-import { chromium } from "playwright-core";
+import { launchGuideBrowser } from "./browser_launcher.mjs";
+import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
+import { createBrowserFailureCollector } from "./browser_failures.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -12,19 +14,16 @@ function argument(name, fallback) {
 }
 
 const base = argument("--base-url", "http://127.0.0.1:8731");
-const browser = await chromium.launch({
-  executablePath: argument("--browser-binary", "google-chrome"),
-  headless: true,
-  ignoreDefaultArgs: ["--disable-popup-blocking"],
-  args: ["--no-sandbox", "--enable-unsafe-swiftshader"],
-});
+const browser = await launchGuideBrowser(argument("--browser-binary"), { ignoreDefaultArgs: ["--disable-popup-blocking"] });
 const context = await browser.newContext();
 const page = await context.newPage();
-page.on("pageerror", (error) => console.error("pageerror:", error.message));
+const verifyArtifact = await observeShippedArtifact(page, ["rumoca_interactive.js"]);
+const browserFailures = createBrowserFailureCollector();
+browserFailures.watch(page);
 let viewer = page;
 context.on("page", (opened) => {
   viewer = opened;
-  opened.on("pageerror", (error) => console.error("viewer error:", error.message));
+  browserFailures.watch(opened);
 });
 
 async function waitForModel(predicate) {
@@ -46,8 +45,8 @@ try {
   // Observe the real session without replacing compilation, inputs, or stepping.
   await page.evaluate(async () => {
     const wasm = await import("/packages/rumoca/dist/release-full-web/rumoca_bind_wasm.js");
-    const create = wasm.WasmSimulationSession.withInteractiveOptions;
-    wasm.WasmSimulationSession.withInteractiveOptions = (...args) => {
+    const create = wasm.WasmSimulationSession.withInteractiveConfiguration;
+    wasm.WasmSimulationSession.withInteractiveConfiguration = (...args) => {
       const session = create(...args);
       if (args[1] === "FixedWing") window.fixedWingSession = session;
       return session;
@@ -106,6 +105,8 @@ try {
   await viewer.keyboard.press("Escape");
   assert.equal(await capture.getAttribute("aria-pressed"), "false");
   await widget.getByRole("button", { name: "Stop", exact: true }).click();
+  await verifyArtifact();
+  await browserFailures.check();
 } catch (error) {
   console.error(await page.locator(".rumoca-live-status").allTextContents());
   console.error(await page.locator(".rumoca-live-error").allTextContents());

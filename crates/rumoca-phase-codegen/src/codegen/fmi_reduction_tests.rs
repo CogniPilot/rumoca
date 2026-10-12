@@ -57,6 +57,7 @@ fn render(program: &solve::TypedProgram, name: &str) -> Result<String, minijinja
 const REAL: Scalar = Scalar::Real {
     format: solve::SolveRealFormat::Binary64,
 };
+const INTEGER: Scalar = Scalar::Integer(solve::SolveIntegerDomain::FULL);
 
 #[test]
 fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
@@ -75,6 +76,12 @@ fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
         ("min3", Reduction::Minimum, REAL),
         ("max3", Reduction::Maximum, REAL),
         ("all3", Reduction::All, Scalar::Boolean),
+        ("min_bool3", Reduction::Minimum, Scalar::Boolean),
+        ("max_bool3", Reduction::Maximum, Scalar::Boolean),
+        ("sum_integer3", Reduction::Sum, INTEGER),
+        ("product_integer3", Reduction::Product, INTEGER),
+        ("min_integer3", Reduction::Minimum, INTEGER),
+        ("max_integer3", Reduction::Maximum, INTEGER),
     ] {
         source.push_str(&render(&program(operator, scalar, 3), name).unwrap());
     }
@@ -112,6 +119,7 @@ fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
 
 const HARNESS: &str = r#"
 #define RUN(fn, input) assert(fn((const void*[]){input}, (void*[]){&result}) == 0)
+#define RUN_INTEGER(fn, input) assert(fn((const void*[]){input}, (void*[]){&integer_result}) == 0)
 int main(void) {
     double result, ordinary[] = {5.0, 10.0, 15.0};
     RUN(sum3, ordinary); assert(result == 30.0);
@@ -139,27 +147,42 @@ int main(void) {
     assert(all3((const void*[]){flags}, (void*[]){&all}) == 0 && all);
     flags[1] = false;
     assert(all3((const void*[]){flags}, (void*[]){&all}) == 0 && !all);
+    assert(min_bool3((const void*[]){flags}, (void*[]){&all}) == 0 && !all);
+    assert(max_bool3((const void*[]){flags}, (void*[]){&all}) == 0 && all);
+    int64_t integer_result, integers[] = {-3, 2, -4};
+    RUN_INTEGER(sum_integer3, integers); assert(integer_result == -5);
+    RUN_INTEGER(product_integer3, integers); assert(integer_result == 24);
+    RUN_INTEGER(min_integer3, integers); assert(integer_result == -4);
+    RUN_INTEGER(max_integer3, integers); assert(integer_result == 2);
+    int64_t wide[] = {INT64_C(9007199254740993), 2, -1};
+    RUN_INTEGER(sum_integer3, wide); assert(integer_result == INT64_C(9007199254740994));
+    wide[1] = wide[2] = 1;
+    RUN_INTEGER(product_integer3, wide); assert(integer_result == INT64_C(9007199254740993));
+    wide[1] = wide[0]+2; wide[2] = wide[0]-2;
+    RUN_INTEGER(min_integer3, wide); assert(integer_result == INT64_C(9007199254740991));
+    RUN_INTEGER(max_integer3, wide); assert(integer_result == INT64_C(9007199254740995));
+    int64_t overflow[] = {INT64_MAX, 1, 0};
+    integer_result = 177;
+    assert(sum_integer3((const void*[]){overflow}, (void*[]){&integer_result}) != 0);
+    assert(integer_result == 177);
+    overflow[1] = 2;
+    assert(product_integer3((const void*[]){overflow}, (void*[]){&integer_result}) != 0);
+    assert(integer_result == 177);
     return 0;
 }
 "#;
 
 #[test]
 fn reductions_outside_the_supported_profile_fail_during_rendering() {
-    for (operator, scalar, count) in [
-        (
-            Reduction::Sum,
-            Scalar::Integer(solve::SolveIntegerDomain::FULL),
-            3,
-        ),
-        (Reduction::Minimum, Scalar::Boolean, 3),
-        (
-            Reduction::Sum,
-            Scalar::Real {
-                format: solve::SolveRealFormat::Binary32,
-            },
-            3,
-        ),
+    for operator in [
+        Reduction::Sum,
+        Reduction::Product,
+        Reduction::Minimum,
+        Reduction::Maximum,
     ] {
-        assert!(render(&program(operator, scalar, count), "unsupported").is_err());
+        let scalar = Scalar::Real {
+            format: solve::SolveRealFormat::Binary32,
+        };
+        assert!(render(&program(operator, scalar, 3), "unsupported").is_err());
     }
 }

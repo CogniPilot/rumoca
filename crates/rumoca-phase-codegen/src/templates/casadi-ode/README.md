@@ -10,6 +10,11 @@ linearization while retaining Rumoca's checked variable layout.
 
 - Readiness 1: CI imports, evaluates, and differentiates the generated module.
 - Input: checked Solve IR.
+- Algebraic variables: when every algebraic slot has an issued exact
+  assignment (`exact_algebraic_assignments`), the function assigns them
+  in-function, in checked order, before the derivative rows. Only the state
+  slots of the input are read. Coupled or implicit algebraic blocks, and
+  tensor-affine assignments, are still rejected (`residual_equations`).
 - Output: a Python module exporting a CasADi `rhs(t, x, u, p)` expression.
 - Indexed reads and scalar tensor views remain CasADi operations so automatic
   differentiation sees the actual computation.
@@ -28,6 +33,8 @@ or choose an optimizer.
 - `indexed_python_targets_keep_indexing_inside_symbolic_array_dialects` checks
   symbolic indexed access.
 - `explicit_rhs_targets_reject_implicit_algebraic_models` is the negative gate.
+- `fmi2_and_fmi3_consume_an_exact_isolable_algebraic_schedule` renders the exact
+  algebraic refresh for every scalar ODE target and executes the c-ode one.
 
 ## Example
 

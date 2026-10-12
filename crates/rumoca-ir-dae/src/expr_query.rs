@@ -63,6 +63,16 @@ fn walk_pruned<'dae>(
     pending: &mut Vec<ExprId<'dae>>,
     visit: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<bool>,
 ) -> bool {
+    walk_projected(dae, stamps, pending, visit, &mut |_, _| None)
+}
+
+fn walk_projected<'dae>(
+    dae: DaeView<'dae>,
+    stamps: &mut StampTable,
+    pending: &mut Vec<ExprId<'dae>>,
+    visit: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<bool>,
+    project: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<ExprId<'dae>>,
+) -> bool {
     while let Some(expression) = pending.pop() {
         if !stamps.mark(expression) {
             continue;
@@ -71,12 +81,25 @@ fn walk_pruned<'dae>(
             .expression(expression)
             .expect("a branded expression identity resolves in its owning DAE");
         match visit(expression, node) {
-            Some(true) => push_children(dae, node.operation(), pending),
+            Some(true) => push_projected_children(dae, expression, node, pending, project),
             Some(false) => {}
             None => return true,
         }
     }
     false
+}
+
+fn push_projected_children<'dae>(
+    dae: DaeView<'dae>,
+    expression: ExprId<'dae>,
+    node: ExpressionView<'dae>,
+    pending: &mut Vec<ExprId<'dae>>,
+    project: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<ExprId<'dae>>,
+) {
+    match project(expression, node) {
+        Some(selected) => pending.push(selected),
+        None => push_children(dae, node.operation(), pending),
+    }
 }
 
 /// Generation-stamped visited marks: stamp `0` is never visited, and each pass
@@ -183,6 +206,36 @@ impl<'dae> ExpressionTraversal<'dae> {
         let pending = &mut self.pending;
         with_shared_stamps(dae, &mut |stamps| {
             walk_pruned(dae, stamps, pending, &mut |id, node| Some(visit(id, node)));
+        });
+    }
+
+    /// Visit a semantic projection of existing checked source expressions.
+    ///
+    /// A semantic owner may select an existing value instead of descending
+    /// into every source operand. `None` retains the full source descent.
+    /// This read-only query changes neither the source DAG nor its owners.
+    /// The same pending stack and visited stamps cover all selected values.
+    pub fn visit_projected(
+        &mut self,
+        dae: DaeView<'dae>,
+        roots: impl IntoIterator<Item = ExprId<'dae>>,
+        mut project: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<ExprId<'dae>>,
+        mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>),
+    ) {
+        self.pending.clear();
+        self.pending.extend(roots);
+        self.pending.reverse();
+        with_shared_stamps(dae, &mut |stamps| {
+            walk_projected(
+                dae,
+                stamps,
+                &mut self.pending,
+                &mut |id, node| {
+                    visit(id, node);
+                    Some(true)
+                },
+                &mut project,
+            );
         });
     }
 }

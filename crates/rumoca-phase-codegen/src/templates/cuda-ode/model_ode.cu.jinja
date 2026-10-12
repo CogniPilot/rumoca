@@ -38,13 +38,13 @@
 {%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
 {%- endif -%}
 {%- endmacro %}
-{%- macro scalar_op(op) %}
+{%- macro scalar_op(op, y="batch_y", out="batch_out") %}
 {%- if op.kind == "Const" %}
     const double __r{{ op.dst }} = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}
     const double __r{{ op.dst }} = time;
 {%- elif op.kind == "LoadY" %}
-    const double __r{{ op.dst }} = batch_y[{{ op.index }}];
+    const double __r{{ op.dst }} = {{ y }}[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     const double __r{{ op.dst }} = batch_p[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}
@@ -77,11 +77,60 @@
     const double __r{{ op.dst }} = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     const double __r{{ op.dst }} = (__r{{ op.cond }} != 0.0 ? __r{{ op.if_true }} : __r{{ op.if_false }});
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+    const double __r{{ op.dst }} = __captures[{{ op.index }}];
+{%- elif op.kind == "FunctionConditional" %}
+{%- for offset in range(op.result_count) %}
+    double __r{{ op.dst + offset }};
+{%- endfor %}
+    {
+        const double __captures[{{ op.capture_count }}] = { {% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}{{ ", " if not loop.last else "" }}{% endfor %} };
+        double __result[{{ op.result_count }}];
+        int __taken = 0;
+        (void)__captures;
+{%- for arm in op.arms %}
+        if (!__taken) {
+            double __condition[1];
+            {
+                double *__out = __condition;
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+            if (__condition[0] != 0.0) {
+                double *__out = __result;
+                __taken = 1;
+{%- for child in arm.result.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+                (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if (!__taken) {
+            double *__out = __result;
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child, y=y, out="__out") }}
+{%- if child.dst is defined and child.dst is not none %}
+            (void)__r{{ child.dst }};
+{%- endif %}
+{%- endfor %}
+        }
+{%- for offset in range(op.result_count) %}
+        __r{{ op.dst + offset }} = __result[{{ offset }}];
+        (void)__r{{ op.dst + offset }};
+{%- endfor %}
+    }
 {%- elif op.kind == "StoreOutput" %}
-    batch_out[{{ op.output_index }}] = __r{{ op.src }};
+    {{ out }}[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}
 {%- for output_index in op.output_indices %}
-    batch_out[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }};
+    {{ out }}[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }};
 {%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
@@ -93,11 +142,75 @@
 // Solve-IR scalar view. Native tensor kernels require their own capability and
 // differential evidence before this target may advertise them.
 
+// NVRTC (runtime compilation) provides the math builtins but no libc headers.
+#ifndef __CUDACC_RTC__
 #include <math.h>
+#endif
 {{ real_extremum_prelude("cuda") }}
 {%- set name = model_name | default("model") | sanitize %}
-{%- set derivative = solve_blocks.continuous.derivative_rhs %}
+{%- set derivative = (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs) %}
 {%- set nodes = derivative.nodes %}
+
+// Compute the parameters defined by other parameters in place, for each batch
+// slot of p (stride p_stride), from the base parameters already there. Launch
+// after changing any parameter, before the derivative kernel.
+extern "C" __global__ void {{ name }}_init_params_batch(
+    double *p,
+    int p_stride,
+    int batch_count)
+{
+    int batch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (batch >= batch_count) {
+        return;
+    }
+    double *batch_p = p + ((long long)batch * (long long)p_stride);
+    (void)batch_p;
+{%- set pinit = solve_blocks.parameter_initialization %}
+{%- if pinit and pinit.output_count > 0 %}
+{%- for program in pinit.scalar_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="batch_p") }}
+{%- endfor %}
+{%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+{%- endif %}{% endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+}
+
+// Write the start values computed from parameters into the state slots of
+// each batch slot of y (stride y_stride); launch after init_params_batch.
+extern "C" __global__ void {{ name }}_init_state_batch(
+    const double *p,
+    double *y,
+    int p_stride,
+    int y_stride,
+    int batch_count)
+{
+    int batch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (batch >= batch_count) {
+        return;
+    }
+    const double *batch_p = p + ((long long)batch * (long long)p_stride);
+    double *batch_y = y + ((long long)batch * (long long)y_stride);
+    (void)batch_p;
+    (void)batch_y;
+{%- set sinit = solve_blocks.state_initialization %}
+{%- if sinit and sinit.output_count > 0 %}
+{%- for program in sinit.scalar_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, y="batch_y", out="batch_y") }}
+{%- endfor %}
+{%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+{%- endif %}{% endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+}
 
 extern "C" __global__ void {{ name }}_derivative_rhs_batch(
     double time,
@@ -114,10 +227,33 @@ extern "C" __global__ void {{ name }}_derivative_rhs_batch(
         return;
     }
 
-    const double *batch_y = y + ((long long)batch * (long long)y_stride);
+    const double *batch_y_in = y + ((long long)batch * (long long)y_stride);
     const double *batch_p = p + ((long long)batch * (long long)p_stride);
     double *batch_out = out + ((long long)batch * (long long)out_stride);
 
+{%- set alg = solve_blocks.continuous.algebraic_assignments %}
+{%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- if alg_plan and alg_plan.output_count > 0 %}
+    // Algebraic refresh: the derivative rows read algebraic slots of y. Only
+    // the state slots of the input are read; every algebraic slot is assigned
+    // here first (per thread), in checked exact-assignment order.
+    double batch_y[{{ solve.layout.y_scalars }}];
+    for (int i = 0; i < {{ solve.layout.y_scalars }}; ++i) {
+        batch_y[i] = batch_y_in[i];
+    }
+{%- for program in alg_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, y="batch_y", out="batch_y") }}
+{%- endfor %}
+{%- for op in program.ops %}{% if op.dst is defined and op.dst is not none %}
+        (void)__r{{ op.dst }};
+{%- endif %}{% endfor %}
+    }
+{%- endfor %}
+{%- else %}
+    const double *batch_y = batch_y_in;
+{%- endif %}
     (void)time;
     (void)batch_y;
     (void)batch_p;
@@ -128,9 +264,11 @@ extern "C" __global__ void {{ name }}_derivative_rhs_batch(
     (void)batch_out;
 {%- endif %}
 {%- for program in derivative.scalar_plan.programs %}
+    {
 {%- for op in program.ops %}
 {{ scalar_op(op) }}
 {%- endfor %}
+    }
 {%- endfor %}
 }
 

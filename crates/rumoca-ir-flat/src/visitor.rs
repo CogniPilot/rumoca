@@ -792,6 +792,7 @@ mod tests {
     fn test_algorithm_output_collector() {
         let stmts = vec![Statement::For {
             indices: vec![ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "i".to_string(),
                 range: Expression::Literal {
                     value: Literal::Integer(1),

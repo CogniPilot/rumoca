@@ -19,6 +19,8 @@
 //! from a compiled object, so the counted set is pinned by a test that runs on
 //! any machine: see [`OBJDUMP_FIXTURE`].
 
+mod cargo_artifacts;
+
 use std::path::{Path, PathBuf};
 
 use super::emit::{artifact_stem, state_type_names, strip_ansi};

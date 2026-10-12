@@ -80,6 +80,7 @@ pub(super) fn lower_function_record_value<'dae>(
                 function_body: Some(body),
                 values: Some(&staged_values),
                 owner_clock: None,
+                source_comprehension_binders: None,
             },
             binders,
             &value,
@@ -342,6 +343,7 @@ fn lower_nested_record_field<'dae>(
                 .iter()
                 .enumerate()
                 .map(|(ordinal, extent)| StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: ordinal,
                     display_name: format!("{}{ordinal}", nested.name),
                     lower: 1,

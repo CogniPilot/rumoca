@@ -78,6 +78,7 @@ fn validate_function_loop_domain(
             ));
         };
         binders.push(StructuredIndexBinder {
+            provenance: index.binder,
             id: ordinal,
             display_name: index.ident.clone(),
             lower,

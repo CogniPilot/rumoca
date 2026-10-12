@@ -383,3 +383,53 @@ fn query_free_calls_contribute_no_queried_dependency_over_a_record_body() {
         assert_eq!(project(view, root, &mut mixed, true).unwrap(), []);
     });
 }
+
+#[test]
+fn issued_storage_leaves_do_not_poison_later_projection_queries() {
+    selector_model(Nested::None).inspect(|view| {
+        let roots = calls(view);
+        let root = roots[0];
+        let dae::ExpressionOperation::Call { arguments, .. } =
+            view.expression(root).unwrap().operation()
+        else {
+            panic!("checked selector call");
+        };
+        let actual = arguments.get(0).unwrap();
+        let mut reference = Vec::new();
+        for_each_scalar_coordinate(view, root, 0, None, |coordinate, scalar| {
+            reference.push((coordinate, scalar));
+        })
+        .unwrap();
+        assert!(!reference.is_empty());
+        let omitted_actual = |id| id == actual;
+        let omitted_root = |id| id == root;
+        let mut actual_query = PrunedScalarCoordinateProjection::new(view, &omitted_actual);
+        let mut root_query = PrunedScalarCoordinateProjection::new(view, &omitted_root);
+        let mut normal_query = PrunedScalarCoordinateProjection::new(view, &|_| false);
+        for _ in 0..3 {
+            let mut stored = Vec::new();
+            actual_query
+                .project(root, 0, None, |coordinate, scalar| {
+                    stored.push((coordinate, scalar))
+                })
+                .unwrap();
+            assert!(stored.is_empty());
+            root_query
+                .project(root, 0, None, |_, _| {
+                    panic!("stored root has no executable reads")
+                })
+                .unwrap();
+            let mut restored = Vec::new();
+            normal_query
+                .project(root, 0, None, |coordinate, scalar| {
+                    restored.push((coordinate, scalar))
+                })
+                .unwrap();
+            assert_eq!(restored, reference);
+        }
+        assert!(matches!(
+            normal_query.project(roots[2], 0, None, |_, _| {}),
+            Err(ProjectionError::IndexOutOfBounds { index: 4, .. })
+        ));
+    });
+}

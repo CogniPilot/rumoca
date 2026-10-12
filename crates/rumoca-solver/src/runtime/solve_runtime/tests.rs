@@ -44,6 +44,36 @@ fn mirror_scalar_implicit_jvp(model: &mut solve::SolveModel) {
     );
 }
 
+/// A fixture's explicitly declared affine derivative; this does not inspect
+/// or differentiate a primal program.
+fn affine_seed_row(terms: &[(usize, f64)]) -> Vec<solve::LinearOp> {
+    use solve::LinearOp::{Binary, Const, LoadSeed, StoreOutput};
+    let mut ops = vec![Const { dst: 0, value: 0.0 }];
+    for &(index, coefficient) in terms {
+        ops.extend([
+            LoadSeed { dst: 1, index },
+            Const {
+                dst: 2,
+                value: coefficient,
+            },
+            Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            Binary {
+                dst: 0,
+                op: solve::BinaryOp::Add,
+                lhs: 0,
+                rhs: 3,
+            },
+        ]);
+    }
+    ops.push(StoreOutput { src: 0 });
+    ops
+}
+
 fn set_test_implicit_jvp(
     model: &mut solve::SolveModel,
     rows: Vec<Vec<solve::LinearOp>>,
@@ -53,13 +83,7 @@ fn set_test_implicit_jvp(
     mirror_scalar_implicit_jvp(model);
 }
 
-fn derive_test_structural_artifacts(model: &mut solve::SolveModel) {
-    let (continuous, initialization) =
-        solve_eval::derive_solve_structural_artifacts(&model.problem, &model.artifacts)
-            .expect("fixture programs derive their structural artifacts");
-    model.artifacts.continuous.structural = continuous;
-    model.artifacts.initialization.structural = initialization;
-}
+use crate::test_fixtures::derive_structural_artifacts as derive_test_structural_artifacts;
 
 fn set_complete_test_projection_plan(model: &mut solve::SolveModel) {
     let state_count = model.state_scalar_count();
@@ -97,6 +121,7 @@ fn set_causal_test_projection_plan(model: &mut solve::SolveModel) {
 fn warm_start_test_model() -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 2, 0),
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
                     names: vec!["x".to_string(), "z".to_string()],
@@ -143,7 +168,12 @@ fn warm_start_test_model() -> solve::SolveModel {
         ],
         "solver_y_warm_start_jvp.mo",
     );
+    model.artifacts.continuous.full_jacobian_v = spanned_block(
+        vec![affine_seed_row(&[(0, 1.0)])],
+        "solver_y_warm_start_derivative_jvp.mo",
+    );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     model
 }
 
@@ -193,6 +223,7 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("bad.mo"), 3, 8);
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -572,7 +603,7 @@ fn certified_assignment_refresh_rejects_nonfinite_value_and_restores_input() {
 
 #[test]
 fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
-    let model = solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
@@ -618,6 +649,12 @@ fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
         ..Default::default()
     };
 
+    set_test_implicit_jvp(
+        &mut model,
+        vec![affine_seed_row(&[(0, 1.0)]), affine_seed_row(&[(1, 1.0)])],
+        "swapped_blt_pairs_jvp.mo",
+    );
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
 }
@@ -625,7 +662,7 @@ fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
 #[test]
 fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
     let span = test_span("uncertified_seed_projection.mo");
-    let model = solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
             solve_layout: solve::SolveLayout {
                 solver_maps: solve::SolverNameIndexMaps {
@@ -701,6 +738,15 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
         parameters: vec![3.0],
         ..Default::default()
     };
+    set_test_implicit_jvp(
+        &mut model,
+        vec![
+            affine_seed_row(&[(0, -1.0)]),
+            affine_seed_row(&[(0, 2.0), (1, -1.0)]),
+        ],
+        "uncertified_seed_projection_jvp.mo",
+    );
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     assert_eq!(
@@ -826,6 +872,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
         ]],
         "positive_residual_jvp.mo",
     );
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
@@ -1105,6 +1152,7 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
         "causal_newton_seed_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
+    derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();

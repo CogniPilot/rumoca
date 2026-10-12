@@ -950,6 +950,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".to_string(),
                                 lower: 1,
@@ -1110,6 +1111,7 @@ fn nested_loop_domains<'dae>(
         domains.structured(
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -1125,6 +1127,7 @@ fn nested_loop_domains<'dae>(
             outer_domain,
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "j".to_string(),
                     lower: 1,
@@ -1247,6 +1250,7 @@ fn function_loop_rejects_duplicate_carried_targets() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "k".to_string(),
                                 lower: 1,

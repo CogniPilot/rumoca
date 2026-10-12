@@ -859,6 +859,7 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".to_owned(),
                                 lower: 1,
@@ -959,6 +960,7 @@ fn function_fold_stays_one_compact_typed_owner() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".to_owned(),
                                 lower: 1,
@@ -1066,6 +1068,7 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".to_owned(),
                                 lower: 1,
@@ -1150,6 +1153,7 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".to_owned(),
                                 lower: 1,

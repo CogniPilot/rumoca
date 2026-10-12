@@ -253,7 +253,7 @@ pub struct TypeChecker {
     current_instance_scope: Option<ComponentPath>,
     /// Lexically active `for` iterators. These are Integer locals, not
     /// component references, and may shadow a component with the same name.
-    current_integer_iterators: Vec<String>,
+    current_integer_iterators: Vec<(Option<rumoca_core::IndexBinderProvenance>, String)>,
     /// Array domain contributed by the current structured class instance.
     /// Declaration-body equations are scalar over this implicit outer domain.
     current_instance_domain_shape: Vec<usize>,

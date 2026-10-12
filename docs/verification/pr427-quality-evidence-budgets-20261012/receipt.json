@@ -1,0 +1,101 @@
+{
+  "schema": "pr427_quality_evidence_budgets_v1",
+  "source_chain": [
+    "8c657dbfc97310a007a16e078054dc3c92662e60",
+    "169d04c47b8585d165065a37740fab85db62ce85"
+  ],
+  "qualification_source": "169d04c47b8585d165065a37740fab85db62ce85",
+  "scope": "Budget-evidence constructor/wire, snapshot, context and exact-asset metadata correction. No new model simulation, cohort parity or overall quick/full success is claimed.",
+  "unique_unit_tests": 141,
+  "overlap": "The5 PhaseBudgets controls are within112 quality tests; the5 exact-asset controls are within29 resolver tests. The dirty five-test visibility check is repeated coverage.",
+  "resource_policy": {
+    "child_seconds": 600,
+    "aggregate_resident_plus_swap_mib": 4096,
+    "host_available_floor_mib": 16384,
+    "target_limit_mib": 8192,
+    "scratch_free_floor_mib": 8192,
+    "cargo_jobs": 4,
+    "rust_test_threads": 4,
+    "rayon_threads": 4,
+    "incremental": false,
+    "debug_info": false
+  },
+  "format": {
+    "result": {
+      "argv": [
+        "nix",
+        "develop",
+        ".#full",
+        "--command",
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": "169d04c47b8585d165065a37740fab85db62ce85"
+    },
+    "raw_log": {
+      "path": "$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_exit": {
+      "path": "$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/fmt-exit.json",
+      "sha256": "76a2c8b2b004d0d84e89edeec5f26e921f85eeec363b2da89fcd868ec4d58e1e"
+    }
+  },
+  "sealed_executables": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/sealed/msl_tests-c41518ac15b88211",
+      "sha256": "2fbba512d15402f8d8396d70377dca127a0362638910f9a06a5407b395144b2d",
+      "source": "169d04c47b8585d165065a37740fab85db62ce85"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/sealed/xtask-1b4598a0d6995139",
+      "sha256": "48cfb6e5bf392679bc66f9b0cf91b61021e4fa3ac1902c276099794ad045444e",
+      "source": "169d04c47b8585d165065a37740fab85db62ce85"
+    }
+  ],
+  "target_handoff": {
+    "audit": {
+      "path": "$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/cache-idle-after.json",
+      "sha256": "ef6a751bb9c1d2ff1066627a738e158c248d9c7da8ce98ce8e9355fde4810450"
+    },
+    "visible_references": 0,
+    "denied_reads": 1706,
+    "raced_or_exited_reads": 43,
+    "lease": "Released exclusively to budget-profile owner after terminal; no target deletion/movement.",
+    "scope": "Target-specific observations; not global process idleness."
+  },
+  "historical_proof": {
+    "manifest": "immutable-ci-budget-proof.json",
+    "raw_manifest_sha256": "883d960d150d48b289769da6a2dbd78df081bb861f0912f1a2fefde163683f50",
+    "checked_baseline_nominal_head": "db4d45b",
+    "checked_baseline_actual_measured_merge": "4dc555662188ef8e42075d0b4100ed7205492724",
+    "promoted_actual_source": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+    "historical_comparators_dirty": true,
+    "budgets": {
+      "model_attempt_timeout_seconds": 20,
+      "sim_timeout_seconds": 45
+    },
+    "promoted_raw_asset_sha256": "6c6d3a77fff81fc8f328321ca1b0d0e8cf7825900e4848cd07801bb141baa4eb",
+    "preserved_promoted_counts": {
+      "flatten_models": 541,
+      "compiled_models": 440,
+      "certified_strict_high_models": 302
+    },
+    "checked_nonbudget_values": "All unchanged; checked542/439/303 are not substituted for promoted541/440/302."
+  },
+  "remaining": "Profile-owner composition, current exact-source CI-comparable full MSL measurement and final quick/full remain separate/pending.",
+  "gates": [
+    {"name":"harness-budget-5","source":"8c657dbfc97310a007a16e078054dc3c92662e60","source_status":"","command":["cargo","test","--locked","-p","rumoca-test-msl","--features","msl-full-test","--test","msl_tests","quality_evidence_phase_budgets","--","--nocapture"],"outcome":{"exit_code":101,"observed_last_pass_count":null,"expected_tests":5,"source_equal":true,"accepted":false},"resources":{"elapsedMs":275006.04017,"peakRssKiB":2573100,"peakSwapKiB":0,"peakResidentPlusSwapKiB":2573100,"peakCacheBytes":1217880064,"minimumAvailableKiB":47913236,"minimumScratchFreeBytes":39042994176,"signal":null,"exitCode":101,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5/recipe.json","sha256":"7cab0fda593b3a2d9780d25795f40fdabe578f7fd7c128327c7c79d12c60d7b0"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5/command.log","sha256":"72d65317bbddcb547067f8b59ef81cfdff8e3bd260f04d27f55b94216a4da3a1"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5/guardian.json","sha256":"6bc9418723f2b634365f52db13a475dbbdd75d6e3fabce539e31197dee432c30"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5/source-pre.json","sha256":"c2d0f45a1d1031b6a6a7bbfb4791f83ad1bf6c3751571ba727c8c83fd026dccd"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5/source-post.json","sha256":"c2d0f45a1d1031b6a6a7bbfb4791f83ad1bf6c3751571ba727c8c83fd026dccd"}},"source_diff":null},
+    {"name":"harness-budget-5-shell","source":"8c657dbfc97310a007a16e078054dc3c92662e60","source_status":"","command":["cargo","test","--locked","-p","rumoca-test-msl","--features","msl-full-test","--test","msl_tests","quality_evidence_phase_budgets","--","--nocapture"],"outcome":{"exit_code":101,"observed_last_pass_count":null,"expected_tests":5,"source_equal":true,"accepted":false},"resources":{"elapsedMs":148383.402382,"peakRssKiB":2326688,"peakSwapKiB":0,"peakResidentPlusSwapKiB":2326688,"peakCacheBytes":1615245312,"minimumAvailableKiB":46497260,"minimumScratchFreeBytes":38355202048,"signal":null,"exitCode":101,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-shell/recipe.json","sha256":"4628bcb62b62ef28ec7f08c5f143884ee6fee813eb9705b40cc3861bd0d6cb46"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-shell/command.log","sha256":"cdccae654694530097f363f065085479785bfb91c5893401ded1cd25adf53bc9"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-shell/guardian.json","sha256":"d7a99d8a3efc5e5717c0d7e979939eafd8017e5ca68c356e198edabb933dfb17"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-shell/source-pre.json","sha256":"c2d0f45a1d1031b6a6a7bbfb4791f83ad1bf6c3751571ba727c8c83fd026dccd"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-shell/source-post.json","sha256":"c2d0f45a1d1031b6a6a7bbfb4791f83ad1bf6c3751571ba727c8c83fd026dccd"}},"source_diff":null},
+    {"name":"harness-budget-5-private","source":"8c657dbfc97310a007a16e078054dc3c92662e60","source_status":" M crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_quality_gate.rs\n","command":["cargo","test","--locked","-p","rumoca-test-msl","--features","msl-full-test","--test","msl_tests","quality_evidence_phase_budgets","--","--nocapture"],"outcome":{"exit_code":0,"observed_last_pass_count":5,"expected_tests":5,"source_equal":true,"accepted":true},"resources":{"elapsedMs":13974.713615,"peakRssKiB":978956,"peakSwapKiB":0,"peakResidentPlusSwapKiB":978956,"peakCacheBytes":1660882944,"minimumAvailableKiB":47142748,"minimumScratchFreeBytes":38390431744,"signal":null,"exitCode":0,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/recipe.json","sha256":"e3416bd9aee8d15254c5b1c4fb9b1f2d7e92c1d71704775e82b23372388c082e"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/command.log","sha256":"7dfb0576578942d7f3974fe82ce0c0c08d6448717278fb9544ef17f93f1a4939"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/guardian.json","sha256":"8f11669fd3fecb8a22e3f41e257dd5201bae563ccde0af71c738a8161e7fba1f"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/source-pre.json","sha256":"69ec7ecf9947c8647103c6efd8832a73581798842be4a983df1acc8677835a07"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/source-post.json","sha256":"69ec7ecf9947c8647103c6efd8832a73581798842be4a983df1acc8677835a07"}},"source_diff":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-budget-5-private/source.diff","sha256":"4545fe0b26a0176d74b72f44adec6bffada444aa2f1b53c1d33919b67bb99110"}},
+    {"name":"xtask-metadata-5-shell","source":"169d04c47b8585d165065a37740fab85db62ce85","source_status":"","command":["cargo","test","--locked","-p","xtask","--bin","xtask","quality_budget_metadata","--","--nocapture"],"outcome":{"exit_code":0,"observed_last_pass_count":5,"expected_tests":5,"source_equal":true,"accepted":true},"resources":{"elapsedMs":70032.078994,"peakRssKiB":1090680,"peakSwapKiB":0,"peakResidentPlusSwapKiB":1090680,"peakCacheBytes":1899548672,"minimumAvailableKiB":48005424,"minimumScratchFreeBytes":37786243072,"signal":null,"exitCode":0,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/recipe.json","sha256":"5820a134211d5b85db0f37b1b0d386acd1e4fb3da250cadc01828981be07c7fa"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/command.log","sha256":"454b172e2225e5d92f3c6425f8f1ca5acfc0cd0669a38e292d16290dfa7ce3d8"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/guardian.json","sha256":"a95e7708b0410253c7a3d2bbec70821aafbf60f3026c961e85077cd0a85e091b"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/source-pre.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/source-post.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"}},"source_diff":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-metadata-5-shell/source.diff","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},
+    {"name":"harness-quality-unit-shell","source":"169d04c47b8585d165065a37740fab85db62ce85","source_status":"","command":["cargo","test","--locked","-p","rumoca-test-msl","--features","msl-full-test","--test","msl_tests","balance_pipeline::balance_pipeline_quality_gate::","--","--nocapture"],"outcome":{"exit_code":0,"observed_last_pass_count":112,"expected_tests":null,"source_equal":true,"accepted":true},"resources":{"elapsedMs":197072.665371,"peakRssKiB":2791936,"peakSwapKiB":0,"peakResidentPlusSwapKiB":2791936,"peakCacheBytes":1909514240,"minimumAvailableKiB":47246072,"minimumScratchFreeBytes":29509574656,"signal":null,"exitCode":0,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/recipe.json","sha256":"50d6aa8b22351ccd9cfe9940ea3f38d28f000262297c6e11c8d2a22a88c4bd48"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/command.log","sha256":"ba6568ac30805e9d1c719fceb9057cb870dbd99e521ef727ce2073cc2918220c"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/guardian.json","sha256":"2dd13e2d2b9f0b48e3106bcc763c22009599645eef6704e94f89aa9ee56e4058"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/source-pre.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/source-post.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"}},"source_diff":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/harness-quality-unit-shell/source.diff","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},
+    {"name":"xtask-baseline-unit-shell","source":"169d04c47b8585d165065a37740fab85db62ce85","source_status":"","command":["cargo","test","--locked","-p","xtask","--bin","xtask","verify_cmd::msl_quality_baseline::","--","--nocapture"],"outcome":{"exit_code":0,"observed_last_pass_count":29,"expected_tests":null,"source_equal":true,"accepted":true},"resources":{"elapsedMs":316.038223,"peakRssKiB":94992,"peakSwapKiB":0,"peakResidentPlusSwapKiB":94992,"peakCacheBytes":1903378432,"minimumAvailableKiB":49701416,"minimumScratchFreeBytes":29637332992,"signal":null,"exitCode":0,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/recipe.json","sha256":"4f8e81e6bd686dc350592e5717d5225cfe6723f78467bf206d53e5c7667ebef8"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/command.log","sha256":"1d463156eb09df54d8fc302da2800c845c226236971e5a4fb6d4cd586cd0c9c9"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/guardian.json","sha256":"ba60d3ca58cc9ce669e4dc50d863aba17bb7ab91289662e416157db00393d2d0"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/source-pre.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/source-post.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"}},"source_diff":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/xtask-baseline-unit-shell/source.diff","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},
+    {"name":"scoped-lint-shell","source":"169d04c47b8585d165065a37740fab85db62ce85","source_status":"","command":["cargo","clippy","--locked","-p","rumoca-test-msl","-p","xtask","--all-targets","--all-features","--","-D","warnings"],"outcome":{"exit_code":0,"observed_last_pass_count":null,"expected_tests":null,"source_equal":true,"accepted":true},"resources":{"elapsedMs":80734.95917399999,"peakRssKiB":2524384,"peakSwapKiB":0,"peakResidentPlusSwapKiB":2524384,"peakCacheBytes":2178363392,"minimumAvailableKiB":46968920,"minimumScratchFreeBytes":28831449088,"signal":null,"exitCode":0,"resourceStop":null},"artifacts":{"recipe.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/recipe.json","sha256":"cfd4f06039eb5e7471f5caa402892676e09a35b6d7b8b21b84e14414e6220e0f"},"command.log":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/command.log","sha256":"2dd3c4a287e5c4ce5a966c807da7be3a82074277e35a9a26a4ca0dccbf874eb9"},"guardian.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/guardian.json","sha256":"5cfbb57689b6a278cfaa0b228ef767ea3a4f005b77d374bff1b9af81bf1f971e"},"source-pre.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/source-pre.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"},"source-post.json":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/source-post.json","sha256":"c6ec6e0a3d9ea9daa58207d1b66a126c21f85cb65a60e7ebe54c503c90a2fb31"}},"source_diff":{"path":"$HOME/scratch/rumoca/pr427-quality-evidence-budgets-20261012/evidence/scoped-lint-shell/source.diff","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}
+  ]
+}

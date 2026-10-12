@@ -39,6 +39,7 @@ fn fold_with_dense_solve(c: u32) -> Vec<LinearOp> {
     ];
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -340,6 +341,7 @@ fn indexed_fold(capture: bool) -> std::sync::Arc<rumoca_ir_solve::FunctionFoldPr
     };
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".into(),
             lower: 1,

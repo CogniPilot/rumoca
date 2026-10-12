@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "source": "301b4d5668382bf73826ef55f5f3d4a4ca7494b0",
+  "command": "cargo xtask verify lint",
+  "scope": "Canonical lint checkpoint, including formatting, traversal policy and workspace all-target/all-feature Clippy; not quick/full or final-tip qualification.",
+  "source_unchanged": true,
+  "exit_code": 0,
+  "elapsed_ms": 133030.870489,
+  "peak_owned_rss_plus_swap_kib": 2622660,
+  "minimum_host_available_kib": 54063612,
+  "resource_stop": null,
+  "artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/command.log",
+      "sha256": "2061a3eaa0cfbe6f337c27f842ee4aa485e7cc7aa2ec5bf9afe7ba7126d8e475",
+      "bytes": 8535
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/guardian.json",
+      "sha256": "2430f8081f9e223679d8be8b1e61c200c9ceafcad3fc5c505fa5298d92c479b5",
+      "bytes": 38710
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/source-before.json",
+      "sha256": "aabd1cc328a57e452e5088e83d969fc704622cfcd0c262a54964a05f1129d399",
+      "bytes": 761359
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/source-after.json",
+      "sha256": "aabd1cc328a57e452e5088e83d969fc704622cfcd0c262a54964a05f1129d399",
+      "bytes": 761359
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/source-head.txt",
+      "sha256": "67b829ba82a5713130468a679f0f7031a21a3ff0ecf5deb1af2c79afc85023f9",
+      "bytes": 41
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/lint-301b4d566838-20261012T040935Z/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    }
+  ]
+}

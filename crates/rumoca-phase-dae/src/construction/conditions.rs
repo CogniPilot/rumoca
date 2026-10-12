@@ -441,7 +441,7 @@ pub(super) fn chain_owner_clock<'dae>(
 ///
 /// MLS §3.7.5 defines `sample(start, interval)` as a Boolean event operator,
 /// not a clocked partition. The checked DAE derives partition ownership from a
-/// bare periodic condition, so a branch of a [`chain_owner_clock`]-less chain
+/// bare periodic condition, so an ordinary Boolean event condition
 /// joins its ticks with the never-active condition `not always`: the result is
 /// true at exactly the same instants, and the disjunction carries no owner,
 /// as the vector form `{initial(), sample(t0, dt)}` already does.

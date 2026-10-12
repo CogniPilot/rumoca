@@ -1,0 +1,423 @@
+{
+  "manifest": {
+    "source": "cc0225491fe1bfd07c9324b3f4b60fcec2bea563",
+    "before_source": "01e499b4596c20b13886dbb4c8af01622852bb33",
+    "before_recorded_count": 470,
+    "catalog_count": 471,
+    "existing_test": "mls_formalization_manifest_test::mls_formalization_manifest_tracks_every_catalog_contract",
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  "static_pie": {
+    "source": "612e602fd5b273004d5fd1a821dc7b40d9530608",
+    "before_source": "01e499b4596c20b13886dbb4c8af01622852bb33",
+    "before_job": 114762573022,
+    "before_result": "libcalls2PASS; originalU4 compilation stopped by600s watchdog, no U4 execution",
+    "after_passed": 3,
+    "after_failed": 0,
+    "after_ignored": 0,
+    "original_u4_native_checkpoints": 11,
+    "elf": "GNU Linux x86_64 ELF64 DYN, no INTERP/no NEEDED",
+    "runtime_limits": {
+      "execution_watchdog_seconds": 600,
+      "per_test_seconds": 60
+    },
+    "new_ci_preparation_limit_minutes": 20,
+    "refusals": [
+      {
+        "name": "source-mismatch",
+        "exit_code": 1,
+        "elapsed_seconds": 0.015435700071975589,
+        "test_execution": false
+      },
+      {
+        "name": "elf-tamper",
+        "exit_code": 1,
+        "elapsed_seconds": 0.031276670983061194,
+        "test_execution": false
+      },
+      {
+        "name": "dirty-tracked-source",
+        "exit_code": 1,
+        "elapsed_seconds": 0.011428816942498088,
+        "test_execution": false
+      }
+    ]
+  },
+  "source_seals": {
+    "manifest_unchanged": true,
+    "static_prepare_unchanged": true,
+    "static_execute_and_refusal_restore_unchanged": true
+  },
+  "guardians": {
+    "manifest": {
+      "elapsedMs": 379919.699576,
+      "peakResidentPlusSwapKiB": 2927016,
+      "peakCacheBytes": 4522086400,
+      "minimumAvailableKiB": 46625324,
+      "minimumScratchFreeBytes": 83272515584,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "signal": null,
+      "stopped": null,
+      "exitCode": 0
+    },
+    "static_prepare": {
+      "elapsedMs": 437538.698351,
+      "peakResidentPlusSwapKiB": 2828180,
+      "peakCacheBytes": 5911506944,
+      "minimumAvailableKiB": 49468604,
+      "minimumScratchFreeBytes": 79702781952,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "signal": null,
+      "stopped": null,
+      "exitCode": 0
+    },
+    "static_execute": {
+      "elapsedMs": 4741.713101,
+      "peakResidentPlusSwapKiB": 500656,
+      "peakCacheBytes": 5972692992,
+      "minimumAvailableKiB": 56318320,
+      "minimumScratchFreeBytes": 79616290816,
+      "secondsLimit": 600,
+      "rssLimitMiB": 4096,
+      "cacheLimitMiB": 8192,
+      "signal": null,
+      "stopped": null,
+      "exitCode": 0
+    }
+  },
+  "artifact_bindings": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/cache-idle-after.json",
+      "sha256": "626ce1940587a2481bcf05f8cf3cd1e3a2c324d2ead3e446303285d9e6a2753a",
+      "bytes": 379
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/cache-idle-before.json",
+      "sha256": "bc3b31aff4c7f690bb4c47a6f9b0b14c9199f9d352fbceb10540cc9fa938bbed",
+      "bytes": 379
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/cc-version.txt",
+      "sha256": "9ed454ec6d9bc002fcfaba8889826139226da5e2622af26f535f89a0f4271b43",
+      "bytes": 219
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/dirty-tracked-source.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/dirty-tracked-source.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/elf-tamper.stderr.log",
+      "sha256": "c21162752e0e9447063c54afadaabcd769aa943d1dc1e9641847e990d83020b9",
+      "bytes": 54
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/elf-tamper.stdout.log",
+      "sha256": "397b2fb2ac932285cf391d4e225ba0fbae8cedaee9e1fa15f5976ee50b954e9d",
+      "bytes": 165
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/execute-exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/execute-guardian.json",
+      "sha256": "0262ce0fae082e0780e171161887f793f2136d6b7d5c7847a66a84cc07df4082",
+      "bytes": 1714
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/execute.log",
+      "sha256": "3c23f54acae1441ed136e150035c5cd1434aa140549923c6b7fd2762b34c0723",
+      "bytes": 2135
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/library-path.txt",
+      "sha256": "28b35be3793e7c0d422855beef5c8209ec78852eeb58a453769b45b21fe6d3b8",
+      "bytes": 69
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/prepare-exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/prepare-guardian.json",
+      "sha256": "3477a50e10bb2ea64a59aec6bb580f3d8f879424dc4fcb11fd4ecfa56981e0ca",
+      "bytes": 35372
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/prepare.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/refusal-controls.json",
+      "sha256": "e959b6d9717c0f3fe4578725e454d5d521bc183eab336a2f43a4203449c1bf8c",
+      "bytes": 402
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/rustc-version.txt",
+      "sha256": "56f69690edd947d059780724760ee3d9c9016796ba489c7c1f2a015cd400f455",
+      "bytes": 212
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-after-execute.json",
+      "sha256": "9adae5aefa38863c3eb61e67a1179dcd349da6ca049100ccd5eeb0e0355fb2fd",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-after-prepare.json",
+      "sha256": "9adae5aefa38863c3eb61e67a1179dcd349da6ca049100ccd5eeb0e0355fb2fd",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-after-refusals.json",
+      "sha256": "9adae5aefa38863c3eb61e67a1179dcd349da6ca049100ccd5eeb0e0355fb2fd",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-before-execute.json",
+      "sha256": "9adae5aefa38863c3eb61e67a1179dcd349da6ca049100ccd5eeb0e0355fb2fd",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-before-prepare.json",
+      "sha256": "9adae5aefa38863c3eb61e67a1179dcd349da6ca049100ccd5eeb0e0355fb2fd",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-mismatch.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/source-mismatch.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/evidence/tools.txt",
+      "sha256": "b1d3667200261defcbebb8c5ffb91a2d429578ffd26037445e8b357e10bc6766",
+      "bytes": 428
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/input-sha256.txt",
+      "sha256": "3e45aa8cb441c3b0745667bc9a65ef10840f165af97fc5ec8e00cbd14a0b4746",
+      "bytes": 332
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.build.log",
+      "sha256": "da8a73e0980a8df5c170c0bfb3f4e659972a7853c26a6197fad200e6a236d7d6",
+      "bytes": 2393
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.cargo.jsonl",
+      "sha256": "21974c685d375faeffa1aaa5e64487d7ea824a222f2627182c86f98af5c2b261",
+      "bytes": 142833
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.elf",
+      "sha256": "ec0807286cec33931320a1a99ac7e918ea6686af1f074fbf55b2f4ee55714f9a",
+      "bytes": 17338160
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.elf-dynamic.txt",
+      "sha256": "f95e495211ca7671fd88671851cf050fe5e3391048dedca1a775a3ec48b94cbd",
+      "bytes": 1103
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.elf-header.txt",
+      "sha256": "fa8fabc509bdf73c6de940fbaa3451aaab61aee8e6e64c0dffa15a4c527b8e79",
+      "bytes": 984
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.elf-segments.txt",
+      "sha256": "1223f1802deb7cf60618326b439b787b610e82ec344e269e7fa349f22269a2b3",
+      "bytes": 2390
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.elf.sha256",
+      "sha256": "9c7a09e72b84124545fb3907115b7deda12028802fdca84ee16cfa5ef9289890",
+      "bytes": 77
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.file.txt",
+      "sha256": "b25d6ab5ee8ea7b1ca424d90b6e1e6b9b812c30f21b8270997066534ead707b2",
+      "bytes": 234
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memcmp.test.log",
+      "sha256": "41d56b2600457c504f224f790bc732bde04ba18a0efa6898550ae897504202b4",
+      "bytes": 212
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.build.log",
+      "sha256": "b717ab3edc469360becb0d5d83000c2dcc77fe12ab645d114926997bb02114d7",
+      "bytes": 59
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.cargo.jsonl",
+      "sha256": "06eb7b324a4844da4ba828aea819df9c97337a2fc1844dd1a3cb34c4da5ea919",
+      "bytes": 142769
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.elf",
+      "sha256": "ec0807286cec33931320a1a99ac7e918ea6686af1f074fbf55b2f4ee55714f9a",
+      "bytes": 17338160
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.elf-dynamic.txt",
+      "sha256": "f95e495211ca7671fd88671851cf050fe5e3391048dedca1a775a3ec48b94cbd",
+      "bytes": 1103
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.elf-header.txt",
+      "sha256": "fa8fabc509bdf73c6de940fbaa3451aaab61aee8e6e64c0dffa15a4c527b8e79",
+      "bytes": 984
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.elf-segments.txt",
+      "sha256": "1223f1802deb7cf60618326b439b787b610e82ec344e269e7fa349f22269a2b3",
+      "bytes": 2390
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.elf.sha256",
+      "sha256": "aba57bd6e58e5f3ae26df94169ced023aece81922a13e254918d425f23f60565",
+      "bytes": 77
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.file.txt",
+      "sha256": "b25d6ab5ee8ea7b1ca424d90b6e1e6b9b812c30f21b8270997066534ead707b2",
+      "bytes": 234
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/memory.test.log",
+      "sha256": "42e688456f480f7202e83ddf7ffd4ef7aa977dd88303a65e5035db3aba6a9081",
+      "bytes": 218
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.build.log",
+      "sha256": "eefad13e42802ea43713f4640a38adc8ec6e4d0d2e21d53bb1da7fa6bcea57ef",
+      "bytes": 7866
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.cargo.jsonl",
+      "sha256": "cdd212e6deff9e50e10b5822559b8f9feb9a86431cc98d9ffaf6e9b7a2b5e404",
+      "bytes": 424161
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.elf",
+      "sha256": "06dc4dee298e54815a75e85318bedb37877ed6596e52374984a2b944451634b1",
+      "bytes": 108996648
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.elf-dynamic.txt",
+      "sha256": "8389ed93c5c46f65ef174e1cabe46bb1834e3b704d515342672e359acd91092a",
+      "bytes": 1110
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.elf-header.txt",
+      "sha256": "09928b2bffc38f623ff59f338fcda956644e7f795b3a6c5694ef2c76912e8278",
+      "bytes": 986
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.elf-segments.txt",
+      "sha256": "376c5aedc1c18433c9ae01435acfbfe5e903542d0e2d988fe93f67ff74ca3f0b",
+      "bytes": 2406
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.elf.sha256",
+      "sha256": "66c1ad23894c153e364917efb8f53eb6653c9fc61bb0f9480a14e14a656ca12c",
+      "bytes": 82
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.file.txt",
+      "sha256": "7a83151c378402ae688acd256e90c3568a7585d5014c3d1f320c1874892e5188",
+      "bytes": 223
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/original-u4.test.log",
+      "sha256": "4999c127d6f9d23d21dfb8183c66d7800cfd6d4b16b8d9fbfa24f2c4c7c70917",
+      "bytes": 1509
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/rustc-version.txt",
+      "sha256": "56f69690edd947d059780724760ee3d9c9016796ba489c7c1f2a015cd400f455",
+      "bytes": 212
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/artifacts/source.txt",
+      "sha256": "2dcd5375528f06d989a64f6d32bda5e5f8257c805fe87b6dc23ede7496f8b9d5",
+      "bytes": 41
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/command.log",
+      "sha256": "9a7d87b0218430db7035b32bbf059f445d16f08e09bca6256b63023e69710999",
+      "bytes": 18122
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/guardian.json",
+      "sha256": "089a0fdf49c688a9f06bb9213142fb6aad9abffd41e0fe8ebd7546dbecfc7382",
+      "bytes": 56695
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/source-after.json",
+      "sha256": "9e4e2c297f583ea6d2f5a587b2b22057396ee46c473b112fdb66983cfaa79684",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/source-before.json",
+      "sha256": "9e4e2c297f583ea6d2f5a587b2b22057396ee46c473b112fdb66983cfaa79684",
+      "bytes": 774138
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/evidence/suite-gates.elf",
+      "sha256": "d47945f3e647dea85579a7dfeb6225731adae0fb494447f8ef2ee3917cd45be3",
+      "bytes": 2290800
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/run-prepare.sh",
+      "sha256": "69ec26d499c863869ba1b42a2dbcfcc45b2d1a4e044a76b2cb7778a77d178746",
+      "bytes": 2177
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-staticpie-ci-preparation-20261012/run-execute.sh",
+      "sha256": "9ae7733e8024821cdc7ca6ba5e35c2e32813b76d52539545dd8c63625f45f29a",
+      "bytes": 1603
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-mls-manifest-count-20261012/run.sh",
+      "sha256": "f944c698a6d5e4f5c9555e6e482d113f23c185928726357badc0ff015f5e4671",
+      "bytes": 1544
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-ci-current-01e-adversarial-20261012/linux-test.log",
+      "sha256": "6800cf1b45584e0ee0517ad91735be31e0db6917baaf3812820625c64aeacd1b",
+      "bytes": 1003804
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-ci-current-01e-adversarial-20261012/staticpie-artifact.zip",
+      "sha256": "e41935c449027cc177ee128399a09516cbd11459d54ea9a7648559ac4b16d067",
+      "bytes": 10391429
+    }
+  ],
+  "limits": "each local command600s,4GiB aggregateRSS+swap,8GiB target,16GiB host reserve,8GiB scratch reserve,4workers; no guard stop",
+  "scope": "Source-bound local GNU qualification; repaired-tip quick/full and platform CI remain separate requirements. No new compiler behavior or larger model/test budget."
+}

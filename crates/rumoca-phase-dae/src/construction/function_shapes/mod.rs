@@ -101,6 +101,7 @@ const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
 #[derive(Clone, Debug, Default)]
 pub(super) struct ShapeEnvironment {
     shapes: HashMap<VarName, ValueShape>,
+    source_comprehension_binders: HashSet<DefId>,
     /// Conservative finite bounds for scalar Integer values whose exact value
     /// is not fixed at translation time (most notably compact loop binders).
     integer_bounds: HashMap<VarName, IntegerInterval>,
@@ -117,7 +118,7 @@ pub(super) struct ShapeEnvironment {
     /// a reference as an enumeration scalar; rendered spelling alone grants no
     /// semantic role.
     enumeration_literals: Arc<HashSet<VarName>>,
-    enumeration_type_declarations: Arc<HashSet<DefId>>,
+    enumeration_type_declarations: Arc<HashSet<rumoca_core::DefId>>,
     /// Exact identity/type/range plans for structural field projections.
     ///
     /// The immutable plan is shared by the model and every specialization;
@@ -179,6 +180,7 @@ impl ShapeEnvironment {
     pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             shapes: HashMap::with_capacity(capacity),
+            source_comprehension_binders: HashSet::new(),
             integer_bounds: HashMap::with_capacity(capacity),
             slice_binders: HashMap::new(),
             slice_constants: HashMap::new(),
@@ -266,6 +268,30 @@ impl ShapeEnvironment {
     /// every dimension recorded here is statically known; a coordinate whose
     /// extent is not statically known never reaches this scope with a concrete
     /// shape and so never folds.
+    pub(super) fn bind_comprehension_index(&mut self, index: &rumoca_core::ComprehensionIndex) {
+        match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => {
+                self.bind_source_comprehension_binder(id);
+            }
+            rumoca_core::IndexBinderProvenance::Generated => {
+                self.insert(VarName::new(&index.name), Vec::new())
+            }
+        }
+    }
+
+    pub(in crate::construction) fn bind_source_comprehension_binder(&mut self, id: DefId) {
+        self.source_comprehension_binders.insert(id);
+    }
+
+    pub(super) fn is_source_comprehension_binder(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> bool {
+        reference
+            .target_def_id()
+            .is_some_and(|id| self.source_comprehension_binders.contains(&id))
+    }
+
     pub(super) fn insert(&mut self, name: VarName, shape: ValueShape) {
         self.slice_binders.remove(&name);
         self.slice_constants.remove(&name);
@@ -426,6 +452,7 @@ impl ShapeEnvironment {
             values: &self.values,
             functions: self.functions.as_deref(),
             dimension_extents: &self.dimension_extents,
+            source_comprehension_binders: &self.source_comprehension_binders,
         }
     }
 
@@ -626,9 +653,13 @@ struct ShapeAwareValues<'a> {
     values: &'a EvalContext,
     functions: Option<&'a EvalContext>,
     dimension_extents: &'a HashMap<VarName, Vec<i64>>,
+    source_comprehension_binders: &'a HashSet<DefId>,
 }
 
 impl EvalEnvironment for ShapeAwareValues<'_> {
+    fn declaration_is_lexical(&self, id: DefId) -> bool {
+        self.source_comprehension_binders.contains(&id)
+    }
     fn get_value(&self, name: &str) -> Option<std::borrow::Cow<'_, EvalValue>> {
         self.values.get_value(name)
     }
@@ -1173,7 +1204,7 @@ impl ShapeAnalyzer<'_> {
             }
             let mut scoped = values.clone();
             for index in indices {
-                scoped.insert(VarName::new(&index.name), Vec::new());
+                scoped.bind_comprehension_index(index);
             }
             if let Some(filter) = filter {
                 self.discover_calls(filter, &scoped)?;

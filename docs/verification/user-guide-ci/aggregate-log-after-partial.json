@@ -1,0 +1,222 @@
+{
+  "source": "51398d4ab2e8ce900ebe2326e53f564f1ef152da",
+  "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012",
+  "recipeSha256": "e3796d0cce60253f7558d76ae740151d7314e99925213beab15f7b3e6c54b191",
+  "actual": {
+    "passed": 4,
+    "failed": 1,
+    "unrunSelectedTests": 3,
+    "overallExit": 101
+  },
+  "gates": [
+    {
+      "name": "aggregate-log-ranked-after-two",
+      "expectedTests": 2,
+      "summary": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 324 filtered out; finished in 0.00s",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "aggregate_logarithm_directional_",
+          "--",
+          "--nocapture"
+        ],
+        "log": "/mnt/scratch/jgoppert/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012/aggregate-log-ranked-after-two.log",
+        "elapsedMs": 47756.043927,
+        "peakRssKiB": 1112344,
+        "minimumAvailableKiB": 56527280,
+        "minimumScratchFreeBytes": 71133724672,
+        "scratchFreeFloorMiB": 8192,
+        "cacheDirectory": "/mnt/scratch/jgoppert/rumoca/workshop427-ci/target",
+        "peakCacheBytes": 7351795712,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 0
+      },
+      "files": {
+        "aggregate-log-ranked-after-two.log": "98ce2417921f79f8ef1b0fb965ca4e82f032825684c88ef9b2b570599e46bc91",
+        "aggregate-log-ranked-after-two.guardian.json": "736b6ca3b478e74ebe467826c9638f9693452d02b1789286cd3f34565f2da000",
+        "aggregate-log-ranked-after-two.test-count.json": "3243bdf22aa7ce86692265acd013a7b0fad1eb20b3763415e30617eddd95a5ae"
+      }
+    },
+    {
+      "name": "aggregate-log-checked-profile-one",
+      "expectedTests": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 605 filtered out; finished in 0.00s",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-ir-solve",
+          "--lib",
+          "aggregate_logarithm_directional_keeps_checked_index_profile_and_compact_map",
+          "--",
+          "--nocapture"
+        ],
+        "log": "/mnt/scratch/jgoppert/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012/aggregate-log-checked-profile-one.log",
+        "elapsedMs": 65948.361036,
+        "peakRssKiB": 1780060,
+        "minimumAvailableKiB": 56162428,
+        "minimumScratchFreeBytes": 71074480128,
+        "scratchFreeFloorMiB": 8192,
+        "cacheDirectory": "/mnt/scratch/jgoppert/rumoca/workshop427-ci/target",
+        "peakCacheBytes": 7366340608,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 0
+      },
+      "files": {
+        "aggregate-log-checked-profile-one.log": "81ce03c33ad5126f7cb595fcb5a7379d5ff7ea659009119e75dd4395e8784269",
+        "aggregate-log-checked-profile-one.guardian.json": "902f65246270b6af5fa539a3573313173daf6d0597235a6194f4ce774ab3c22f",
+        "aggregate-log-checked-profile-one.test-count.json": "552ee25c8d5342bd425ebe290624dc1063a6136bbd6bef867c53d6b7c3260c3c"
+      }
+    },
+    {
+      "name": "scalar-directional-singular-control-one",
+      "expectedTests": 1,
+      "summary": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 325 filtered out; finished in 0.00s",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "directional_scalar_guards_match_checked_ad_at_singular_values",
+          "--",
+          "--nocapture"
+        ],
+        "log": "/mnt/scratch/jgoppert/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012/scalar-directional-singular-control-one.log",
+        "elapsedMs": 953.749393,
+        "peakRssKiB": 45856,
+        "minimumAvailableKiB": 57921364,
+        "minimumScratchFreeBytes": 71115059200,
+        "scratchFreeFloorMiB": 8192,
+        "cacheDirectory": "/mnt/scratch/jgoppert/rumoca/workshop427-ci/target",
+        "peakCacheBytes": 7337140224,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 0
+      },
+      "files": {
+        "scalar-directional-singular-control-one.log": "d80521fd9fc692cfe491f90c51c0085cb1ecafd994c5cd3e59bfde986f402e45",
+        "scalar-directional-singular-control-one.guardian.json": "522ca48734cb1bb396b71c2c3b2294905cab122a46e9c70789b1ea6450ca7538",
+        "scalar-directional-singular-control-one.test-count.json": "3ee0fc8bce60047a03e19e5b66da4fce98e0d1106426bd7cf283e1aba6537e4b"
+      }
+    },
+    {
+      "name": "broadcast-quotient-rule-control-one",
+      "expectedTests": 1,
+      "summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 325 filtered out; finished in 0.00s",
+      "guardian": {
+        "command": [
+          "nix",
+          "develop",
+          ".#full",
+          "--command",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--jobs",
+          "4",
+          "-p",
+          "rumoca-eval-solve",
+          "--lib",
+          "scalar_broadcast_quotient_carries_the_elementwise_quotient_rule",
+          "--",
+          "--nocapture"
+        ],
+        "log": "/mnt/scratch/jgoppert/rumoca/slam-integration-cycle-20261010/pr427-aggregate-log-and-original-glycol-after-51398-20261012/broadcast-quotient-rule-control-one.log",
+        "elapsedMs": 902.8206389999999,
+        "peakRssKiB": 68484,
+        "minimumAvailableKiB": 57617240,
+        "minimumScratchFreeBytes": 71115038720,
+        "scratchFreeFloorMiB": 8192,
+        "cacheDirectory": "/mnt/scratch/jgoppert/rumoca/workshop427-ci/target",
+        "peakCacheBytes": 7337140224,
+        "cacheLimitMiB": 8192,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "rssScope": "owned process group and identified descendants, including detached browser groups",
+        "secondsLimit": 600,
+        "signal": null,
+        "exitCode": 101
+      },
+      "files": {
+        "broadcast-quotient-rule-control-one.log": "ad620a3fe6713db29244bb61faf3ab48cf256d415d3e7a9e9df03f074a5249db",
+        "broadcast-quotient-rule-control-one.guardian.json": "efe0afd76e99f35f27f8db99b16bd32db5512307d644fefc4782cc7948efa469"
+      }
+    },
+    {
+      "name": "broadcast-quotient-profile-control-one",
+      "status": "UNRUN",
+      "expectedTests": 1
+    },
+    {
+      "name": "original-glycol-and-viscosity-probe-one",
+      "status": "UNRUN",
+      "expectedTests": 1
+    },
+    {
+      "name": "nested-exponential-interface-one",
+      "status": "UNRUN",
+      "expectedTests": 1
+    }
+  ],
+  "terminal": {
+    "time": "2026-10-11T18:24:53.252Z",
+    "ownedReferences": 0,
+    "deniedReads": 2276,
+    "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only",
+    "leaseReleased": true
+  },
+  "terminalSha256": "496b4835e3fed5c4a448f5b1fe581658c99e4b3f447f0e7d663bce1d0b7df430",
+  "scope": "Rank1/rank2 Log+Log10 analytic+FD and nonfinite numeric controls now passed. Profile refusal/admission and scalar singular controls passed. Legacy reciprocal directional owner None assertion failed; reciprocal now supported by earlier division owner. No original Glycol/probe/nested/broadcast profile result yet.",
+  "independentRemainder": {
+    "source": "51398d4ab2e8ce900ebe2326e53f564f1ef152da",
+    "recipeSha256": "dabe1c7ebdd2963419f11ea1e7e3301ac689eb8f615af68f819a4a60a238ef17",
+    "status": "PENDING",
+    "purpose": "Independent original-model/profile qualification; does not erase failed legacy test."
+  }
+}

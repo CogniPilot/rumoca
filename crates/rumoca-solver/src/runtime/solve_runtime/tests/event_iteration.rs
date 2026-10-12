@@ -4,6 +4,7 @@ use super::*;
 fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: 0,
             display_name: "i".to_string(),
             lower: 1,
@@ -1014,8 +1015,9 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
 }
 
 fn algebraic_relation_partition_model() -> solve::SolveModel {
-    solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 2, 2),
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
                     vec![
@@ -1050,6 +1052,7 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
                     ..Default::default()
                 },
                 state_scalar_count: 1,
+                algebraic_scalar_count: 1,
                 compiled_parameter_len: 2,
                 relation_memory_parameter_indices: vec![0, 1],
                 ..Default::default()
@@ -1087,7 +1090,14 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
         initial_y: vec![0.0, -1.0],
         parameters: vec![-1.0, 0.0],
         ..Default::default()
-    }
+    };
+    set_test_implicit_jvp(
+        &mut model,
+        vec![affine_seed_row(&[]), affine_seed_row(&[])],
+        "algebraic_relation_assignment_jvp.mo",
+    );
+    derive_test_structural_artifacts(&mut model);
+    model
 }
 
 #[test]

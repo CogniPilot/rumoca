@@ -1,3 +1,8 @@
+mod known_runtime_access;
+mod nested_guard;
+mod projection_faults;
+mod scalar_update_address;
+
 use super::*;
 
 #[test]
@@ -12,6 +17,7 @@ fn compiled_function_fold_executes_a_retained_native_loop() {
                 rumoca_ir_solve::FunctionFoldProgram::checked(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".to_string(),
                             lower: 1,
@@ -57,6 +63,7 @@ fn compiled_function_fold_ends_at_its_first_false_continuation() {
     let program = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -141,6 +148,7 @@ fn compiled_function_fold_executes_matrix_multiply_as_a_native_loop() {
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -212,6 +220,7 @@ fn compiled_function_fold_executes_tensor_binary_as_a_native_loop() {
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -348,6 +357,7 @@ fn compiled_function_fold_executes_rank_three_tensor_transpose_as_a_native_loop(
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -427,6 +437,7 @@ fn compiled_function_fold_executes_tensor_concatenation_as_a_native_loop() {
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -501,6 +512,7 @@ fn compiled_function_fold_executes_tensor_update_without_scalar_selection() {
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -576,6 +588,7 @@ fn compiled_function_fold_executes_tensor_update_slice_as_retained_scan() {
         rumoca_ir_solve::FunctionFoldProgram::checked(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "i".to_string(),
                     lower: 1,
@@ -689,6 +702,7 @@ fn compiled_function_fold_projects_directly_from_carried_tensor_memory() {
                 rumoca_ir_solve::FunctionFoldProgram::checked(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "i".to_string(),
                             lower: 1,
@@ -765,6 +779,7 @@ fn compiled_function_fold_updates_a_tensor_slice_without_scalar_selects() {
                 rumoca_ir_solve::FunctionFoldProgram::checked(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "column".to_string(),
                             lower: 1,
@@ -836,6 +851,7 @@ fn compiled_nested_fold_copies_parent_tensor_ranges_without_register_expansion()
     let outer = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "outer".to_string(),
                 lower: 1,
@@ -893,6 +909,7 @@ fn four_lane_nested_fold() -> rumoca_ir_solve::FunctionFoldProgram {
     rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "inner".to_string(),
                 lower: 1,
@@ -949,6 +966,7 @@ fn compiled_guarded_nested_fold_selects_at_native_control_flow_boundary() {
     let nested = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "inner".to_string(),
                 lower: 1,
@@ -974,6 +992,7 @@ fn compiled_guarded_nested_fold_selects_at_native_control_flow_boundary() {
     let outer = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 1,
                 display_name: "outer".to_string(),
                 lower: 1,
@@ -1030,6 +1049,7 @@ fn compiled_guarded_function_fold_preserves_inactive_initial_tuple() {
     let fold = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -1301,6 +1321,7 @@ fn compiled_function_conditional_calls_fold_only_from_selected_region() {
     let fold = rumoca_ir_solve::FunctionFoldProgram::checked(
         rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
+                provenance: rumoca_core::IndexBinderProvenance::Generated,
                 id: 0,
                 display_name: "i".to_string(),
                 lower: 1,
@@ -1414,6 +1435,7 @@ fn compiled_function_fold_updates_a_run_time_window_of_a_tensor() {
                 rumoca_ir_solve::FunctionFoldProgram::checked(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
+                            provenance: rumoca_core::IndexBinderProvenance::Generated,
                             id: 0,
                             display_name: "start".to_string(),
                             lower: 1,

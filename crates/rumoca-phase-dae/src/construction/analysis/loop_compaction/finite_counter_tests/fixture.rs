@@ -66,6 +66,7 @@ pub(super) fn for_loop(
 ) -> rumoca_core::Statement {
     rumoca_core::Statement::For {
         indices: vec![rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
             ident: name.to_owned(),
             range: range(end),
         }],

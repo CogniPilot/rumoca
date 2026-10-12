@@ -7,10 +7,15 @@ mod conditional_emission;
 mod conditions;
 mod constants;
 mod coordinates;
+mod current_definitions;
+pub(in crate::lower) use current_definitions::DefinitionOwner;
 mod family_calls;
 mod functions;
+mod integer_quotient;
 mod literal_values;
 mod operators;
+mod quotient_activation;
+mod quotient_memory;
 mod region_catalog;
 mod register_folding;
 mod register_ledger;
@@ -149,6 +154,15 @@ enum ScalarContextFrame<'dae> {
     NoEvent {
         parent: u64,
     },
+    CurrentDefinitions {
+        parent: u64,
+    },
+    EntryDefinitions {
+        parent: u64,
+    },
+    RelationObservation {
+        parent: u64,
+    },
     Activation {
         parent: u64,
         condition: ActivationCondition<'dae>,
@@ -184,7 +198,10 @@ enum ScalarContextFrame<'dae> {
 impl ScalarContextFrame<'_> {
     const fn parent(&self) -> u64 {
         match self {
-            Self::NoEvent { parent }
+            Self::CurrentDefinitions { parent }
+            | Self::EntryDefinitions { parent }
+            | Self::NoEvent { parent }
+            | Self::RelationObservation { parent }
             | Self::Activation { parent, .. }
             | Self::Function { parent, .. }
             | Self::Domain { parent, .. }
@@ -256,6 +273,7 @@ pub(in crate::lower) struct DeferredCallAssertion<'dae> {
     activation_path: Vec<ActivationGuard<'dae>>,
     active_clock: dae::ClockId<'dae>,
     sampled_source: bool,
+    current_definitions: Option<current_definitions::DefinitionOwner<'dae>>,
     active_parameters: Vec<u32>,
     active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
 }
@@ -288,6 +306,7 @@ impl<'dae> DeferredCallAssertion<'dae> {
                     .map(|guard| (guard.condition, guard.expected)))
             && self.active_clock == other.active_clock
             && self.sampled_source == other.sampled_source
+            && self.current_definitions == other.current_definitions
     }
 }
 
@@ -415,6 +434,7 @@ struct FunctionConditionalOwnerKey<'dae> {
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
+    project_current_definitions: bool,
     active_parameters: Vec<u32>,
 }
 
@@ -481,6 +501,9 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     fold_guard_base: usize,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
+    same_tick_definitions: Option<current_definitions::DefinitionOwner<'dae>>,
+    project_current_definitions: bool,
+    active_current_definitions: Vec<u32>,
     derivative_definitions: Option<&'layout ContinuousRowIndex<'dae>>,
     affine_derivative_systems: Option<&'layout AffineDerivativeSystems<'dae>>,
     active_derivatives: Vec<(u32, usize)>,
@@ -562,6 +585,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             fold_guard_base: 0,
             active_clock: None,
             sampled_source: false,
+            same_tick_definitions: None,
+            project_current_definitions: false,
+            active_current_definitions: Vec::new(),
             derivative_definitions: None,
             affine_derivative_systems: None,
             active_derivatives: Vec::new(),
@@ -1325,19 +1351,56 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn buffered_relation_slot(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
         let slot = self.layout.buffered_relations.expression_slot(expression)?;
+        self.relation_buffering_enabled().then_some(slot)
+    }
+
+    fn context_contains(
+        &self,
+        mut predicate: impl FnMut(&ScalarContextFrame<'dae>) -> bool,
+    ) -> bool {
         let mut context = self.context_id;
-        while let Some((no_event, parent)) = self.contexts.borrow().frame(context, |frame| {
-            (
-                matches!(frame, ScalarContextFrame::NoEvent { .. }),
-                frame.parent(),
-            )
-        }) {
-            if no_event {
-                return None;
+        while let Some((found, parent)) = self
+            .contexts
+            .borrow()
+            .frame(context, |frame| (predicate(frame), frame.parent()))
+        {
+            if found {
+                return true;
             }
             context = parent;
         }
-        Some(slot)
+        false
+    }
+
+    fn event_buffering_enabled(&self) -> bool {
+        !self.context_contains(|frame| matches!(frame, ScalarContextFrame::NoEvent { .. }))
+    }
+
+    fn relation_buffering_enabled(&self) -> bool {
+        !self.context_contains(|frame| {
+            matches!(
+                frame,
+                ScalarContextFrame::NoEvent { .. } | ScalarContextFrame::RelationObservation { .. }
+            )
+        })
+    }
+
+    fn relation_observation_enabled(&self) -> bool {
+        self.context_contains(|frame| {
+            matches!(frame, ScalarContextFrame::RelationObservation { .. })
+        })
+    }
+
+    fn with_relation_observation<T>(
+        &mut self,
+        lower: impl FnOnce(&mut Self) -> Result<T, LowerError>,
+    ) -> Result<T, LowerError> {
+        self.enter_context(ScalarContextFrame::RelationObservation {
+            parent: self.context_id,
+        });
+        let result = lower(self);
+        self.leave_context();
+        result
     }
 
     fn with_no_event<T>(
@@ -1389,6 +1452,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
+        if let Some(result) = self.exact_integer_expression(expression, scalar)? {
+            self.expression_cache.insert(key, result);
+            return Ok(result);
+        }
         if !matches!(node.operation(), dae::ExpressionOperation::Literal(_))
             && let Some(value) = self.exact_literal(expression, scalar)
         {
@@ -1411,7 +1478,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.binary_expression(operator, lhs, rhs, scalar, node.provenance().span())
             }
             dae::ExpressionOperation::Conditional(operands)
-                if node.function_scope().is_none() && !self.conditional_is_total(operands) =>
+                if node.function_scope().is_none()
+                    && (self.relation_observation_enabled()
+                        || !self.conditional_is_total(operands)) =>
             {
                 self.selected_arm_conditional(operands, scalar, node.provenance().span())
             }
@@ -1445,13 +1514,27 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 value,
                 subscripts,
             } => self.array_update(expression, base, value, subscripts, scalar),
-            dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
-                builtin,
-                arguments,
-                node.value_type().dimensions(),
-                scalar,
-                node.provenance().span(),
-            ),
+            dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                if self.event_buffering_enabled()
+                    && let Some(memory) = self.layout.buffered_quotients.get(expression)
+                {
+                    self.buffered_quotient(
+                        builtin,
+                        arguments,
+                        scalar,
+                        memory,
+                        node.provenance().span(),
+                    )
+                } else {
+                    self.builtin(
+                        builtin,
+                        arguments,
+                        node.value_type().dimensions(),
+                        scalar,
+                        node.provenance().span(),
+                    )
+                }
+            }
             dae::ExpressionOperation::Call {
                 function,
                 output,
@@ -1524,6 +1607,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .borrow()
                 .frame(context, |frame| match frame {
                     ScalarContextFrame::NoEvent { .. }
+                    | ScalarContextFrame::RelationObservation { .. }
+                    | ScalarContextFrame::CurrentDefinitions { .. }
+                    | ScalarContextFrame::EntryDefinitions { .. }
                     | ScalarContextFrame::Function { .. }
                     | ScalarContextFrame::DerivativeSeed { .. } => None,
                     frame => Some(frame.parent()),

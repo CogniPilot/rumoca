@@ -33,6 +33,9 @@ pub(super) enum SolveRenderHandle {
     Standalone {
         problem: Arc<solve::SolveProblem>,
         artifacts: Arc<solve::SolveArtifacts>,
+        /// The model's pure-call owners, when the caller lowered them with
+        /// the problem, so scalar targets can inline `PureCall` ops.
+        pure_calls: Option<Arc<solve::SolvePureCallTable>>,
     },
     Fmi(Arc<solve::fmi::FmiCCodegenView>),
 }
@@ -42,7 +45,32 @@ impl SolveRenderHandle {
         problem: Arc<solve::SolveProblem>,
         artifacts: Arc<solve::SolveArtifacts>,
     ) -> Self {
-        Self::Standalone { problem, artifacts }
+        Self::Standalone {
+            problem,
+            artifacts,
+            pure_calls: None,
+        }
+    }
+
+    pub(super) fn standalone_with_calls(
+        problem: Arc<solve::SolveProblem>,
+        artifacts: Arc<solve::SolveArtifacts>,
+        pure_calls: Arc<solve::SolvePureCallTable>,
+    ) -> Self {
+        Self::Standalone {
+            problem,
+            artifacts,
+            pure_calls: Some(pure_calls),
+        }
+    }
+
+    /// The pure-call owners a standalone scalar target inlines; an FMI
+    /// component renders its owners as typed functions instead.
+    pub(super) fn inlined_pure_calls(&self) -> Option<&solve::SolvePureCallTable> {
+        match self {
+            Self::Standalone { pure_calls, .. } => pure_calls.as_deref(),
+            Self::Fmi(_) => None,
+        }
     }
 
     pub(super) fn fmi(component: solve::fmi::FmiCCodegenView) -> Self {
@@ -447,6 +475,21 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
 /// when the Solve owner was constructed or replayed from wire.
 #[must_use]
 pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> bool {
+    explicit_algebraic_assignment_complete_with_calls(problem, None)
+}
+
+/// [`explicit_algebraic_assignment_complete`] for a target that inlines the
+/// model's pure calls (`pure_calls`, from the same Solve lowering).
+#[must_use]
+pub fn explicit_algebraic_assignment_complete_with_calls(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> bool {
+    algebraic_assignment_ownership_complete(problem)
+        && materialized_assignment_programs(problem, pure_calls).is_some()
+}
+
+fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> bool {
     if problem.validate().is_err() {
         return false;
     }
@@ -512,23 +555,235 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
     assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
 }
 
+/// Every ordered exact assignment program, materialized and lowered to scalar
+/// ops, with the `y` slots it assigns. `None` when a program cannot be
+/// materialized or contains an op no scalar template renders.
+/// One materialized assignment program: its scalar ops, its provenance, and
+/// the `y` slots it assigns (in its store order).
+type MaterializedAssignment = (Vec<solve::LinearOp>, rumoca_core::Span, Vec<usize>);
+
+fn materialized_assignment_programs(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Option<Vec<MaterializedAssignment>> {
+    let assignments = ordered_exact_algebraic_assignments(&problem.continuous.refresh_owners)?;
+    let mut programs = Vec::new();
+    let mut previous: Option<&solve::ExactRefreshAssignmentProgram> = None;
+    for (program, _) in assignments {
+        // One owner contributes one consecutive entry per assigned target;
+        // materialize it once.
+        if previous.is_some_and(|seen| std::ptr::eq(seen, program)) {
+            continue;
+        }
+        previous = Some(program);
+        let block = program
+            .final_scalar_program(&problem.continuous.implicit_rhs)
+            .ok()?;
+        let [ops] = block.programs() else {
+            return None;
+        };
+        let span = block.program_span(0)?;
+        let lowered = rumoca_eval_solve::lower_scalar_ops(ops, pure_calls)?;
+        programs.push((lowered, span, program.target_indices().to_vec()));
+    }
+    Some(programs)
+}
+
+/// `block` with every scalar-program node's tensor register ops lowered to
+/// scalar ops; other nodes (MatMul, LinSolve, maps) are left for the
+/// template's scalar view. `None` when a program cannot be lowered.
+pub(super) fn scalar_lowered_block(
+    block: &solve::ComputeBlock,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Result<Option<solve::ComputeBlock>, CodegenError> {
+    block
+        .nodes
+        .iter()
+        .map(|node| scalar_lowered_node(node, pure_calls))
+        .collect::<Option<Vec<_>>>()
+        .map(|nodes| {
+            nodes
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map(|nodes| solve::ComputeBlock { nodes })
+        })
+        .transpose()
+}
+
+/// One node with its scalar programs lowered; `None` when a program cannot be.
+fn scalar_lowered_node(
+    node: &solve::ComputeNode,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Option<Result<solve::ComputeNode, CodegenError>> {
+    let solve::ComputeNode::ScalarPrograms(programs) = node else {
+        return Some(Ok(node.clone()));
+    };
+    let lowered = programs
+        .programs()
+        .iter()
+        .map(|program| rumoca_eval_solve::lower_scalar_ops(program, pure_calls))
+        .collect::<Option<Vec<_>>>()?;
+    Some(
+        solve::ScalarProgramBlock::with_output_indices(
+            lowered,
+            programs.program_spans().to_vec(),
+            programs.output_indices().to_vec(),
+        )
+        .map(solve::ComputeNode::ScalarPrograms)
+        .map_err(|error| CodegenError::template(error.to_string())),
+    )
+}
+
+/// Whether the explicit initialization's ordered parameter and state updates
+/// each assign one output and admit the final scalar projection, including
+/// the model's pure-call owners.
+#[must_use]
+pub fn explicit_initialization_renderable_with_calls(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> bool {
+    solve::solve_initialization_is_explicit(problem)
+        && problem
+            .initialization
+            .update_rhs()
+            .programs()
+            .iter()
+            .all(|program| {
+                solve::ScalarProgramBlock::program_output_count(program) == 1
+                    && rumoca_eval_solve::lower_scalar_ops(program, pure_calls).is_some()
+            })
+}
+
+/// The algebraic refresh as one scalar block a pure-RHS template can execute.
+///
+/// When every algebraic slot is owned by an issued exact assignment
+/// ([`explicit_algebraic_assignment_complete`]), the assignments are
+/// materialized in their checked construction order. Each block output is
+/// paired with the `y` slot it assigns, so a template that renders the block
+/// before `derivative_rhs` fills every algebraic slot the derivative rows read.
+/// `None` when the refresh is not a complete explicit assignment schedule;
+/// such a model is refused at the target capability gate.
+pub(super) fn explicit_algebraic_assignment_block(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Result<Option<solve::ComputeBlock>, CodegenError> {
+    if problem.solve_layout.algebraic_scalar_count() == 0
+        || !algebraic_assignment_ownership_complete(problem)
+    {
+        return Ok(unavailable_algebraic_assignment_block());
+    }
+    materialized_assignment_programs(problem, pure_calls)
+        .map(materialize_output_assignments)
+        .transpose()
+}
+
+fn unavailable_algebraic_assignment_block() -> Option<solve::ComputeBlock> {
+    None
+}
+
+pub(super) struct ScalarInitializationBlocks {
+    pub parameters: Option<solve::ComputeBlock>,
+    pub states: Option<solve::ComputeBlock>,
+}
+
+/// Prepare each explicit update once, then partition its checked program into
+/// parameter or state outputs while retaining construction order and provenance.
+/// An unsupported update leaves both scalar views absent.
+pub(super) fn initialization_blocks(
+    problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Result<ScalarInitializationBlocks, CodegenError> {
+    let absent = || ScalarInitializationBlocks {
+        parameters: None,
+        states: None,
+    };
+    if !solve::solve_initialization_is_explicit(problem) {
+        return Ok(absent());
+    }
+    let initialization = &problem.initialization;
+    let update = initialization.update_rhs();
+    let mut parameters = Vec::new();
+    let mut states = Vec::new();
+    for (index, (program, target)) in update
+        .programs()
+        .iter()
+        .zip(initialization.update_targets())
+        .enumerate()
+    {
+        if solve::ScalarProgramBlock::program_output_count(program) != 1 {
+            return Ok(absent());
+        }
+        let Some(lowered) = rumoca_eval_solve::lower_scalar_ops(program, pure_calls) else {
+            return Ok(absent());
+        };
+        let span = update.program_span(index).ok_or_else(|| {
+            CodegenError::template("initialization program has no provenance".to_string())
+        })?;
+        match target {
+            solve::ScalarSlot::P { index, .. } => parameters.push((lowered, span, vec![*index])),
+            solve::ScalarSlot::Y { index, .. } => states.push((lowered, span, vec![*index])),
+            _ => return Ok(absent()),
+        }
+    }
+    Ok(ScalarInitializationBlocks {
+        parameters: (!parameters.is_empty())
+            .then(|| materialize_output_assignments(parameters))
+            .transpose()?,
+        states: (!states.is_empty())
+            .then(|| materialize_output_assignments(states))
+            .transpose()?,
+    })
+}
+
+/// Build one scalar block whose outputs are the assigned slot indices.
+fn materialize_output_assignments(
+    programs: Vec<MaterializedAssignment>,
+) -> Result<solve::ComputeBlock, CodegenError> {
+    let mut ops = Vec::new();
+    let mut spans = Vec::new();
+    let mut output_indices = Vec::new();
+    for (program, span, targets) in programs {
+        ops.push(program);
+        spans.push(span);
+        output_indices.extend(targets);
+    }
+    let block = solve::ScalarProgramBlock::with_output_indices(ops, spans, output_indices)
+        .map_err(|error| CodegenError::template(error.to_string()))?;
+    Ok(solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::ScalarPrograms(block)],
+    })
+}
+
+/// Whether an issued exact assignment can run as straight-line scalar code.
+///
+/// Shapes materialize through the checked exact-assignment builder
+/// (`ExactRefreshAssignmentProgram::final_scalar_program`). Shapes that divide
+/// by a runtime coefficient (`Affine` with a coefficient register,
+/// `Reciprocal`) are materialized guarded: a zero or non-finite coefficient
+/// poisons the value to NaN, so a degenerate point fails loudly in the host
+/// integrator instead of producing a silently wrong derivative. Only a
+/// construction-constant coefficient must be a usable divisor.
+///
+/// `TensorAffine` materializes into tensor register ops (`TensorFill`, ...);
+/// those are lowered to scalar ops (`rumoca_eval_solve::lower_scalar_ops`), and a program that
+/// cannot be lowered fails `materialized_assignment_programs`.
 fn supported_explicit_assignment_shape(shape: &solve::TargetAssignmentShape) -> bool {
     match shape {
-        solve::TargetAssignmentShape::Zero { .. } | solve::TargetAssignmentShape::Direct { .. } => {
-            true
-        }
+        solve::TargetAssignmentShape::Zero { .. }
+        | solve::TargetAssignmentShape::Direct { .. }
+        | solve::TargetAssignmentShape::Reciprocal { .. }
+        | solve::TargetAssignmentShape::TensorAffine { .. } => true,
         solve::TargetAssignmentShape::Affine {
             coefficient_reg,
             coefficient_scale,
             ..
         } => {
-            coefficient_reg.is_none() && coefficient_scale.is_finite() && *coefficient_scale != 0.0
+            coefficient_reg.is_some()
+                || (coefficient_scale.is_finite() && *coefficient_scale != 0.0)
         }
         solve::TargetAssignmentShape::Additive { coefficient, .. } => {
             coefficient.is_finite() && *coefficient != 0.0
         }
-        solve::TargetAssignmentShape::TensorAffine { .. }
-        | solve::TargetAssignmentShape::Reciprocal { .. } => false,
     }
 }
 

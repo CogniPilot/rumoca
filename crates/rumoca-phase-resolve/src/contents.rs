@@ -32,13 +32,14 @@ impl ResolveTraversalCallbacks for Resolver {
         self.scope_tree.create_scope(enclosing, ScopeKind::ForLoop)
     }
 
-    fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) {
+    fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str) -> DefId {
         let def_id = self.alloc_local_def_id();
         self.scope_tree.add_member(
             loop_scope,
             ComponentPath::from_flat_path(index_name),
             def_id,
         );
+        def_id
     }
 
     fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {

@@ -184,6 +184,7 @@ fn later_reference_reserves_but_lexical_binders_do_not() {
         Expression::ArrayComprehension {
             expr: Box::new(reference("i", source.span("i", 0))),
             indices: vec![ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 name: "i".to_string(),
                 range: Expression::Range {
                     start: Box::new(Expression::Literal {

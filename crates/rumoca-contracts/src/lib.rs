@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! The MLS defines 465 contracts across 18 categories. This framework:
+//! SPEC_0022 defines 471 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status
@@ -38,7 +38,7 @@ pub use registry::{Contract, ContractCategory, ContractId, ContractRegistry, Con
 pub use report::ComplianceReport;
 pub use runner::{ContractResult, TestRunner};
 
-/// Contract IDs currently backed by explicit tests in `crates/rumoca-contracts/tests`.
+/// Contract IDs currently backed by explicit workspace tests.
 ///
 /// This list is intentionally strict and is validated by
 /// `tests/contract_coverage.rs` so registry status and test coverage stay aligned.
@@ -276,6 +276,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "EXPR-038",
     "EXPR-039",
     "EXPR-041",
+    "EXPR-042",
     "FUNC-001",
     "FUNC-002",
     "FUNC-003",
@@ -503,11 +504,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 470 contracts
+        // SPEC_0022 defines 471 contracts
         assert_eq!(
             registry.len(),
-            470,
-            "Expected 470 contracts, got {}",
+            471,
+            "Expected 471 contracts, got {}",
             registry.len()
         );
     }
@@ -530,7 +531,7 @@ mod tests {
         );
         assert_eq!(
             registry.by_category(ContractCategory::Expression).count(),
-            41
+            42
         );
         assert_eq!(registry.by_category(ContractCategory::Equation).count(), 41);
         assert_eq!(

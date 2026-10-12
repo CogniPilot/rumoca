@@ -1442,7 +1442,24 @@ use runtime::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{NavigationRequestPath, build_warm_latency_measurement, percentile_ms};
+    use super::{
+        NavigationRequestPath, VSCODE_SURFACE_SPECS, WASM_SURFACE_SPECS,
+        build_surface_coverage_report, build_warm_latency_measurement, percentile_ms,
+    };
+
+    #[test]
+    fn editor_surface_catalogs_resolve_actual_implementations_and_proofs() {
+        let root = crate::util::workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
+        for (area, specs) in [
+            ("WASM", WASM_SURFACE_SPECS),
+            ("VS Code", VSCODE_SURFACE_SPECS),
+        ] {
+            let report = build_surface_coverage_report(&root, area, specs)
+                .unwrap_or_else(|error| panic!("{area} surface catalog: {error:#}"));
+            assert!(!report.entries.is_empty(), "{area} has declared surfaces");
+            assert_eq!(report.entries.len(), specs.len());
+        }
+    }
 
     #[test]
     fn percentile_ms_uses_upper_rank_for_p95() {

@@ -1,0 +1,202 @@
+{
+  "artifact_root": "$HOME/scratch/rumoca/slam-integration-cycle-20261010",
+  "scope": "Original guard dependency BEFORE controls; no AFTER qualification",
+  "test_only_commits": [
+    "a8286477f320128f42353dd01a456de7cc627cfb",
+    "336cfe02f5b3aadd77f8c202d39c7cf1ea4f7cd7"
+  ],
+  "attempts": [
+    {
+      "label": "ir-original-two",
+      "source": "98a307a4e6d6cb72db4d2dda8f323f2dd6612b0d",
+      "artifact_directory": "pr427-arm-guard-dependencies-before-98a3-20261012",
+      "files": {
+        "recipe.json": "682e4af72280b585e7c142720a29c384f9794a34c5ab3a7eec7e8f50c8fb0bdb",
+        "arm-guard-construction-before-two.guardian.json": "9756a9066fcc2a6a7b15b14fafbdba47a5350487cfb001e9a1c516fbf38bc07f",
+        "arm-guard-construction-before-two.log": "cc41be2029d61ce8a0038e81867f64593a4ad88299c57018a41eff633126f304"
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-ir-dae",
+        "--lib",
+        "tests::model_conditionals::guard_dependencies::",
+        "--",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 2,
+      "observed_rust_summary": {
+        "status": "FAILED",
+        "passed": 1,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 216
+      },
+      "compiled_control_executed": true,
+      "guardian": {
+        "elapsedMs": 38157.958016,
+        "peakRssKiB": 1231804,
+        "minimumAvailableKiB": 40234232,
+        "minimumScratchFreeBytes": 59110518784,
+        "peakCacheBytes": 7362924544,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192,
+        "signal": null,
+        "exitCode": 101
+      },
+      "reported_resource_stop": null
+    },
+    {
+      "label": "clock-original-one",
+      "source": "98a307a4e6d6cb72db4d2dda8f323f2dd6612b0d",
+      "artifact_directory": "pr427-arm-guard-clock-before-98a3-20261012",
+      "files": {
+        "recipe.json": "49edb2851345e3f4dd3111c8e0a2f06e54d90db915e57970b40c6af34bbe6430",
+        "arm-guard-clock-before-one.guardian.json": "9eddad9a5d16e9f0b747fa36021a73df796206121b04d04277f9d265baac93ab",
+        "arm-guard-clock-before-one.log": "9530624009ffc3ebe57167def1d917dff23eaf81d5df48cec4319afe718c60cf"
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-phase-solve",
+        "--lib",
+        "tests::clocks::arm_relation_previous_guard_owns_its_condition_memory_clock",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 1,
+      "observed_rust_summary": {
+        "status": "FAILED",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 183
+      },
+      "compiled_control_executed": true,
+      "guardian": {
+        "elapsedMs": 67740.280363,
+        "peakRssKiB": 2331356,
+        "minimumAvailableKiB": 42831020,
+        "minimumScratchFreeBytes": 56978194432,
+        "peakCacheBytes": 7355707392,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192,
+        "signal": null,
+        "exitCode": 101
+      },
+      "reported_resource_stop": null
+    },
+    {
+      "label": "mixed-compile-failure",
+      "source": "7b8e3971ce61e3568f21c5cd471092705ce60edb",
+      "artifact_directory": "pr427-arm-mixed-clock-before-954-20261012",
+      "files": {
+        "recipe.json": "381bc57f875c9f64ead716237ce99acc2a774e1555b3bdf8c86524180e828eae",
+        "arm-mixed-clock-before-one.guardian.json": "c6aa86ef704acd76bf776cba2f758950f554c4b0de28ee5505f19f49283eaaf7",
+        "arm-mixed-clock-before-one.log": "fb5c1a4e2b92273f40bffe067302f697fac409d18679eb5c97b247ed0bbb8ad6"
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-phase-solve",
+        "--lib",
+        "tests::clocks::arm_relation_previous_guard_refuses_mixed_condition_memory_clocks",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 1,
+      "observed_rust_summary": null,
+      "compiled_control_executed": false,
+      "guardian": {
+        "elapsedMs": 29006.483648999998,
+        "peakRssKiB": 1117916,
+        "minimumAvailableKiB": 53295148,
+        "minimumScratchFreeBytes": 60179177472,
+        "peakCacheBytes": 7345299456,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192,
+        "signal": null,
+        "exitCode": 101
+      },
+      "reported_resource_stop": null
+    },
+    {
+      "label": "mixed-executed-before",
+      "source": "9a47e85b0ef58263b1a3070b58a40008d176f67d",
+      "artifact_directory": "pr427-arm-mixed-clock-before-954-compile-fix-20261012",
+      "files": {
+        "recipe.json": "4ac4f17ad0834849d4eae19ab45dfa3182f12349824ce193c82472ca169ab9bb",
+        "arm-mixed-clock-before-one.guardian.json": "f3c21189e9dbdcf54f0b7311d87a14190b3e141d68db52d4d428cc66a83af9b5",
+        "arm-mixed-clock-before-one.log": "254f4639872f1854d199d9844de3b95f908a2ada7adc2189eeab527e84695032"
+      },
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "rumoca-phase-solve",
+        "--lib",
+        "tests::clocks::arm_relation_previous_guard_refuses_mixed_condition_memory_clocks",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "expected_selected_tests": 1,
+      "observed_rust_summary": {
+        "status": "FAILED",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 184
+      },
+      "compiled_control_executed": true,
+      "guardian": {
+        "elapsedMs": 67047.728676,
+        "peakRssKiB": 2398192,
+        "minimumAvailableKiB": 54658960,
+        "minimumScratchFreeBytes": 58458202112,
+        "peakCacheBytes": 7358083072,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192,
+        "signal": null,
+        "exitCode": 101
+      },
+      "reported_resource_stop": null
+    }
+  ]
+}

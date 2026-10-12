@@ -418,7 +418,7 @@
       },
       "expect": {
         "outcome": "refused",
-        "diagnostic": "ED019"
+        "diagnostic": "EF036"
       }
     },
     {
@@ -429,13 +429,57 @@
       "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 0.09,
         "dt": 0.01,
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED019"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "backSample1.y",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "backSample1.y",
+            "time": 0.04,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "backSample1.y",
+            "time": 0.09,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "shiftSample1.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "shiftSample1.y",
+            "time": 0.09,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.09,
+            "value": 1.0,
+            "tolerance": 1e-9
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -501,13 +545,57 @@
       "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 0.09,
         "dt": 0.01,
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED019"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "backSample1.y",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "backSample1.y",
+            "time": 0.04,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "backSample1.y",
+            "time": 0.09,
+            "value": -0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "shiftSample1.y",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "shiftSample1.y",
+            "time": 0.09,
+            "value": -1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "sample1.y",
+            "time": 0.09,
+            "value": -1.0,
+            "tolerance": 1e-9
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -920,13 +1008,51 @@
       "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 1.6,
         "dt": 0.01,
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED010"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "Counter.q[1]",
+            "time": 0.0,
+            "value": 3.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Counter.q[1]",
+            "time": 1.6,
+            "value": 4.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Q0.y[1]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Q0.y[1]",
+            "time": 1.6,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Q1.y[1]",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Q1.y[1]",
+            "time": 1.6,
+            "value": 0.0,
+            "tolerance": 1e-9
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -942,8 +1068,46 @@
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED013"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "Adder1.Adder2.s",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Adder1.Adder2.s",
+            "time": 0.02,
+            "value": 3.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Adder1.Adder2.a",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Adder1.Adder2.a",
+            "time": 0.02,
+            "value": 3.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Adder1.Adder2.c",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "Adder1.Adder2.c",
+            "time": 0.02,
+            "value": 3.0,
+            "tolerance": 1e-9
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -976,8 +1140,46 @@
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED019"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "q",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "q",
+            "time": 0.02,
+            "value": 0.9994000599975851,
+            "tolerance": 1.0994000599975853e-05
+          },
+          {
+            "variable": "qd",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "qd",
+            "time": 0.02,
+            "value": -0.059988000719979305,
+            "tolerance": 1.5998800071997932e-06
+          },
+          {
+            "variable": "x",
+            "time": 0.0,
+            "value": 0.7080734182735713,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "x",
+            "time": 0.02,
+            "value": 0.7076486167053023,
+            "tolerance": 8.076486167053023e-06
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -988,13 +1190,51 @@
       "why": "SPEC_0033 Tier-1 canary roster (infra/verification/msl-canary-20.json)",
       "check": {
         "kind": "simulate",
-        "t_end": 0.02,
+        "t_end": 1.1,
         "dt": 0.01,
         "solver": "rk-like"
       },
       "expect": {
-        "outcome": "refused",
-        "diagnostic": "ED010"
+        "outcome": "succeeds",
+        "observations": [
+          {
+            "variable": "step0.active",
+            "time": 0.0,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "step0.active",
+            "time": 1.1,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "compositeStep.active",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "compositeStep.active",
+            "time": 1.1,
+            "value": 1.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "step1.active",
+            "time": 0.0,
+            "value": 0.0,
+            "tolerance": 1e-9
+          },
+          {
+            "variable": "step1.active",
+            "time": 1.1,
+            "value": 1.0,
+            "tolerance": 1e-9
+          }
+        ],
+        "artifacts": []
       }
     },
     {
@@ -1011,7 +1251,7 @@
       },
       "expect": {
         "outcome": "refused",
-        "diagnostic": "ED019"
+        "diagnostic": "ED001"
       }
     },
     {

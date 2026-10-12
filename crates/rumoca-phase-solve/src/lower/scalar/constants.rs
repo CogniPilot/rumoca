@@ -16,7 +16,7 @@ impl<'dae> ScalarSelector<'dae> {
     /// The exact Boolean guard fixed by immutable declarations and this
     /// lexical domain point. Runtime inputs and tunable parameter defaults
     /// never select an arm during lowering.
-    pub(super) fn translation_guard(
+    pub(in crate::lower) fn translation_guard(
         &self,
         condition: dae::ExprId<'dae>,
     ) -> Result<Option<bool>, LowerError> {
@@ -65,6 +65,9 @@ impl<'dae> ScalarSelector<'dae> {
                 ) && self.translation_guard_scalar(lhs, active)?
                     && self.translation_guard_scalar(rhs, active)?
             }
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.translation_conditional_guard(operands, span, active)?
+            }
             _ => false,
         };
         active.pop();
@@ -79,6 +82,31 @@ impl<'dae> ScalarSelector<'dae> {
             return Ok(value.unsigned_abs() <= (1_u64 << 53));
         }
         Ok(true)
+    }
+
+    // Eligibility follows the same lazy selection as the constant evaluator.
+    // An inactive runtime operand cannot disqualify an immutable guard.
+    fn translation_conditional_guard(
+        &self,
+        operands: dae::ExpressionOperands<'dae>,
+        span: Span,
+        active: &mut Vec<dae::ExprId<'dae>>,
+    ) -> Result<bool, LowerError> {
+        let selected = Self::select_conditional_branch(operands, span, |condition| {
+            if !self.translation_guard_scalar(condition, active)? {
+                return Err(LowerError::non_computable(
+                    "conditional guard is not fixed scalar arithmetic at translation time",
+                    self.node(condition).provenance().span(),
+                ));
+            }
+            self.constant_real_inner(condition, 0, ConstantReach::Translation, active)
+                .map(|value| value != 0.0)
+        });
+        match selected {
+            Ok(selected) => self.translation_guard_scalar(selected, active),
+            Err(LowerError::NonComputable { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     pub(in crate::lower) fn constant_real(
@@ -358,27 +386,30 @@ impl<'dae> ScalarSelector<'dae> {
         span: Span,
         active: &mut Vec<dae::ExprId<'dae>>,
     ) -> Result<dae::ExprId<'dae>, LowerError> {
-        if operands.len() < 3 || operands.len().is_multiple_of(2) {
-            return Err(LowerError::contract(
+        Self::select_conditional_branch(operands, span, |condition| {
+            let condition_scalar = scalar_operand(self.view, condition, scalar);
+            self.constant_real_inner(condition, condition_scalar, reach, active)
+                .map(|value| value != 0.0)
+        })
+    }
+
+    fn select_conditional_branch(
+        operands: dae::ExpressionOperands<'dae>,
+        span: Span,
+        mut condition_truth: impl FnMut(dae::ExprId<'dae>) -> Result<bool, LowerError>,
+    ) -> Result<dae::ExprId<'dae>, LowerError> {
+        let operands = operands.conditional().ok_or_else(|| {
+            LowerError::contract(
                 "conditional operands are not condition/value pairs plus a fallback",
                 span,
-            ));
-        }
-        let fallback = operands.len() - 1;
-        for index in (0..fallback).step_by(2) {
-            let condition = operands
-                .get(index)
-                .expect("checked conditional branch has a condition");
-            let condition_scalar = scalar_operand(self.view, condition, scalar);
-            if self.constant_real_inner(condition, condition_scalar, reach, active)? != 0.0 {
-                return Ok(operands
-                    .get(index + 1)
-                    .expect("checked conditional branch has a value"));
+            )
+        })?;
+        for (condition, value) in operands.branches() {
+            if condition_truth(condition)? {
+                return Ok(value);
             }
         }
-        Ok(operands
-            .get(fallback)
-            .expect("checked conditional has a fallback"))
+        Ok(operands.fallback())
     }
 
     /// Resolve the conditional selections the model fixes at translation time.

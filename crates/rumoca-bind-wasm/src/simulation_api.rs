@@ -197,6 +197,15 @@ fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError
     }
     let parsed: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| WasmError::new(format!("parameter override JSON error: {e}")))?;
+    parameter_overrides_from_value(&parsed)
+}
+
+pub(crate) fn parameter_overrides_from_value(
+    parsed: &serde_json::Value,
+) -> Result<Vec<(String, f64)>, WasmError> {
+    if parsed.is_null() {
+        return Ok(Vec::new());
+    }
     let Some(object) = parsed.as_object() else {
         return Err(WasmError::new("parameter overrides must be a JSON object"));
     };

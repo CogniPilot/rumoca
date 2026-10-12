@@ -12,6 +12,58 @@ use super::*;
 const MAXIMUM_DEPTH: usize = 64;
 
 impl<'dae> ScalarCompiler<'_, 'dae> {
+    pub(super) fn pack_typed_scalar_argument(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        scalar_type: dae::ScalarType,
+    ) -> Result<solve::Reg, LowerError> {
+        if scalar_type == dae::ScalarType::Integer
+            && let Some(start) = self.pack_literal_integer_argument(expression)?
+        {
+            return Ok(start);
+        }
+        self.pack_expression(expression)
+    }
+
+    /// Integer call captures cross the scalar ABI exactly. Evaluate only source
+    /// constants with the existing checked Integer owner; runtime parameters and
+    /// explicit Integer-to-Real conversions keep their ordinary lowering.
+    fn pack_literal_integer_argument(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        let node = self.node(expression);
+        if node.value_type().scalar_type() != dae::ScalarType::Integer
+            || (node.variability() != dae::ExpressionVariability::Constant
+                && !matches!(
+                    node.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_))
+                ))
+        {
+            return Ok(None);
+        }
+        let span = node.provenance().span();
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
+        let mut values = Vec::new();
+        for scalar in 0..scalar_count(self.view, expression) {
+            let value = match selector.integer(expression, scalar) {
+                Ok(value) => value,
+                Err(LowerError::NonComputable { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let value = rumoca_eval_solve::checked_scalar_payload_value(
+                solve::SolveValueKind::Integer(value),
+            )
+            .map_err(|error| LowerError::unsupported(error.to_string(), span))?;
+            values.push(value);
+        }
+        let registers = values
+            .into_iter()
+            .map(|value| self.constant(value, span))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.pack_registers(&registers, span).map(Some)
+    }
+
     /// The exact value of scalar `scalar` of a literal-only `expression`.
     pub(super) fn exact_literal(
         &self,

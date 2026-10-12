@@ -289,7 +289,8 @@ pub(super) struct MslQualityBaseline {
     msl_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     omc_version: Option<String>,
-    sim_timeout_seconds: f64,
+    #[serde(flatten)]
+    phase_budgets: PhaseBudgets,
     simulatable_attempted: usize,
     #[serde(default)]
     parse_models: usize,
@@ -1037,9 +1038,10 @@ pub(super) fn model_names_from_omc_models_map(payload: &serde_json::Value) -> Op
     Some(normalize_model_names(models.keys().cloned().collect()))
 }
 
-pub(super) fn current_msl_quality_baseline(
+fn current_msl_quality_baseline(
     summary: &MslSummary,
     parity_input: Option<&MslParityGateInput>,
+    phase_budgets: PhaseBudgets,
 ) -> MslQualityBaseline {
     let gate_input = MslQualityGateInput::from(summary);
     MslQualityBaseline {
@@ -1048,7 +1050,7 @@ pub(super) fn current_msl_quality_baseline(
         git_commit: summary.git_commit.clone(),
         msl_version: gate_input.msl_version.to_string(),
         omc_version: parity_input.and_then(|parity| parity.omc_version.clone()),
-        sim_timeout_seconds: SIM_TIMEOUT_SECS,
+        phase_budgets,
         simulatable_attempted: gate_input.simulatable_attempted,
         parse_models: gate_input.parse_models,
         flatten_models: gate_input.flatten_models,
@@ -1104,8 +1106,9 @@ fn current_msl_quality_snapshot_json(
     summary: &MslSummary,
     parity_input: Option<&MslParityGateInput>,
     partial: bool,
+    phase_budgets: PhaseBudgets,
 ) -> io::Result<serde_json::Value> {
-    let baseline = current_msl_quality_baseline(summary, parity_input);
+    let baseline = current_msl_quality_baseline(summary, parity_input, phase_budgets);
     let certified_simulations = parity_input
         .and_then(|parity| parity.trace_accuracy_stats.as_ref())
         .map_or(0, |trace| trace.agreement_high);
@@ -1210,10 +1213,12 @@ pub(super) fn write_current_msl_quality_snapshot(
         return Ok(());
     }
     let measurement = measure_msl_parity(stage, summary.sim_target_models.len());
+    let phase_budgets = PhaseBudgets::configured().map_err(io::Error::other)?;
     let snapshot = current_msl_quality_snapshot_json(
         summary,
         measurement.gate_input(),
         should_skip_msl_quality_gate(),
+        phase_budgets,
     )?;
     let mut snapshot = snapshot;
     if let Some(root) = snapshot.as_object_mut() {
@@ -1237,8 +1242,7 @@ pub(super) fn write_current_msl_quality_snapshot(
                 .iter()
                 .filter(|row| row.band == BandLabel::High)
                 .map(|row| row.model_name.as_str());
-            let timing_margin =
-                timing_margin_models(summary, strict_high.clone(), PhaseBudgets::configured());
+            let timing_margin = timing_margin_models(summary, strict_high.clone(), phase_budgets);
             let certified = strict_high
                 .filter(|model| !timing_margin.contains_key(*model))
                 .map(str::to_string)
@@ -1323,11 +1327,12 @@ pub(super) fn msl_quality_context_mismatch_reason(
             baseline_omc_version, current_omc_version
         ));
     }
-    if (baseline.sim_timeout_seconds - SIM_TIMEOUT_SECS).abs() > SIM_RATE_GATE_EPSILON {
-        return Some(format!(
-            "sim_timeout_seconds differs (baseline={:.3}, current={:.3})",
-            baseline.sim_timeout_seconds, SIM_TIMEOUT_SECS
-        ));
+    let phase_budgets = match PhaseBudgets::configured() {
+        Ok(budgets) => budgets,
+        Err(reason) => return Some(reason),
+    };
+    if let Some(reason) = baseline.phase_budgets.mismatch_reason(phase_budgets) {
+        return Some(reason);
     }
     if baseline.trace_accuracy_stats.is_none() {
         return Some("trace_accuracy_stats missing in baseline".to_string());
@@ -1970,16 +1975,7 @@ pub(super) fn selected_target_failures(summary: &MslSummary) -> Vec<String> {
 }
 
 pub(super) fn should_skip_msl_quality_gate() -> bool {
-    msl_target_scope() != MslTargetScope::RootExamples
-        || sim_targets_file_override().is_some()
-        || !sim_subset_patterns().is_empty()
-        || sim_subset_limit().is_some()
-        || sim_set_mode() != SimSetMode::Full
-        // A shard sees only its stripe of the model set, so the aggregate
-        // baseline ratchet + strict-high floor are meaningless here; the fan-in
-        // job runs the gate once on the merged results. Also stamps the snapshot
-        // partial:true, which promote-quality-baseline correctly refuses.
-        || sim_shard().is_some()
+    parity_config().is_partial_run()
 }
 
 /// Reject a run whose compile/balance KPIs are not measurable at all.

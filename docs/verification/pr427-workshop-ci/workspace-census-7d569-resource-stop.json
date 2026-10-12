@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "scope": "Partial census only; four in-flight tests may lack terminal records. No source of host memory dip identified; no attribution to other tasks.",
+  "source_head": "7d56996e4b2e5d127abd8b89d74a45a0372a6072",
+  "partial": true,
+  "selected": 10326,
+  "terminal_test_records": 1242,
+  "outcomes": {
+    "PASS": 1240,
+    "FAIL": 2
+  },
+  "observed_failures": [
+    {
+      "outcome": "FAIL",
+      "test": "rumoca::architecture_hardening_test test_event_threshold_analysis_is_owned_by_solve_lowering"
+    },
+    {
+      "outcome": "FAIL",
+      "test": "rumoca::suite_core derivative_reads_in_derivative_rows::a_when_equation_derivative_reads_the_current_same_tick_producer"
+    }
+  ],
+  "uncompleted_selected": 9084,
+  "stop_reason": "available-memory-floor",
+  "minimum_available_kib": 16739396,
+  "peak_owned_rss_plus_swap_kib": 5860652,
+  "log_sha256": "fc2bd43661c3387e83f429cb02a380a735504b7354ffb60866f56c449566fc49",
+  "source_unchanged": true,
+  "limits": {
+    "aggregate_seconds": 7200,
+    "rss_plus_swap_mib": 8192,
+    "host_reserve_mib": 16384,
+    "scratch_reserve_mib": 8192,
+    "jobs": 4,
+    "test_threads": 4,
+    "rayon_threads": 4,
+    "nextest_threads": 4,
+    "retries": 0
+  },
+  "artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/partial-test-census.json",
+      "sha256": "d02ab6b967c713a805788c15b45a3cb34725b49529cd30927a721861fe339525",
+      "bytes": 962
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/guardian.json",
+      "sha256": "927350d110f196e01ed1b90f6fea79fe7ebbe6c795f692ad75dad8bad29b7415",
+      "bytes": 114721
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/command.log",
+      "sha256": "fc2bd43661c3387e83f429cb02a380a735504b7354ffb60866f56c449566fc49",
+      "bytes": 184583
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/source-before.json",
+      "sha256": "da1c229a5efda1ab25464518e3a40dbe2ca655ba0df347e90761c848bf96199a",
+      "bytes": 758078
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/source-after.json",
+      "sha256": "da1c229a5efda1ab25464518e3a40dbe2ca655ba0df347e90761c848bf96199a",
+      "bytes": 758078
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-census-7d56996e4b2e-20261012T032111Z/exit-code.txt",
+      "sha256": "e3b9c2844b5a5c2677b3a2279db2ec8487491dd9a23d6b22fac153391b3bb63c",
+      "bytes": 4
+    }
+  ],
+  "followup": {
+    "architecture": "Reviewed relocation-aware ownership assertion now checks events/roots.rs; combined-source execution remains pending.",
+    "same_tick_derivative": "Qualified isolated source050609ac9 fixes the observed derivative regression; combined-source execution remains pending.",
+    "host_memory": "Source of host memory dip remains unidentified. Future stop snapshots add diagnostic process memory without changing resource limits."
+  }
+}

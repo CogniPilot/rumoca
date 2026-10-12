@@ -1,8 +1,15 @@
+mod builtin_nodes;
+use builtin_nodes::{lower_builtin_node, static_size};
+
 mod calls;
 mod clock_transfer;
 pub(super) mod conditional_guards;
 mod integer_steps;
+mod logical_values;
+mod model_conditionals;
 mod operators;
+mod queries;
+use model_conditionals::lower_conditional_expression;
 mod shared_record_calls;
 mod temporal;
 
@@ -15,6 +22,10 @@ use conditional_guards::{
     attribute_conditional_folds, guard_reads_tunable_parameter, retains_equation_guard,
 };
 use operators::*;
+pub(super) use queries::{
+    all_model_expressions, expression_children, expression_span, planned_input_variability,
+    require_span, variable_attribute_expressions,
+};
 use shared_record_calls::SharedRecordCalls;
 use temporal::*;
 
@@ -32,6 +43,7 @@ pub(super) fn lower_expression<'dae>(
         function_body: None,
         values: None,
         owner_clock: None,
+        source_comprehension_binders: None,
     };
     lower_expression_scoped(
         construction,
@@ -42,6 +54,12 @@ pub(super) fn lower_expression<'dae>(
     )
 }
 
+#[derive(Clone, Default)]
+pub(super) struct ComprehensionBindings<'dae> {
+    source: HashMap<rumoca_core::DefId, dae::DomainBinderId<'dae>>,
+    generated: HashMap<VarName, dae::DomainBinderId<'dae>>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
@@ -50,6 +68,7 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
     pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
     pub(super) owner_clock: Option<dae::ClockId<'dae>>,
+    pub(super) source_comprehension_binders: Option<&'symbols ComprehensionBindings<'dae>>,
 }
 
 pub(super) fn lower_clocked_expression<'dae>(
@@ -69,6 +88,7 @@ pub(super) fn lower_clocked_expression<'dae>(
             function_body: None,
             values: None,
             owner_clock: Some(owner_clock),
+            source_comprehension_binders: None,
         },
         &HashMap::new(),
         expression,
@@ -131,6 +151,7 @@ pub(super) fn lower_scoped_model_algorithm_expression<'dae>(
             function_body: None,
             values: Some(values),
             owner_clock,
+            source_comprehension_binders: None,
         },
         binders,
         expression,
@@ -175,6 +196,7 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             function_body: Some(body),
             values: None,
             owner_clock: None,
+            source_comprehension_binders: None,
         },
         binders,
         expression,
@@ -322,21 +344,19 @@ fn lower_expression_event<'dae>(
         {
             return Err(dae::DaeConstructionError::UnsupportedStructuredEvent { span });
         }
-        let domain = construction
-            .expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
-        if let Some(domain) = domain {
-            construction
-                .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))?;
-        } else {
-            lower_state_relation_root(construction, lowered, provenance)?;
-        }
-        return Ok(());
+        return lower_model_relation_root(construction, lowered, provenance);
     }
     match plan {
         Some(ExpressionEventPlan::StateRelation) => {
             lower_state_relation_root(construction, lowered, provenance)
         }
         Some(ExpressionEventPlan::DynamicTimeEvent(operand)) => {
+            if construction
+                .model_activation_guard(lowered, provenance)?
+                .is_some()
+            {
+                return lower_model_relation_root(construction, lowered, provenance);
+            }
             let deadline = match operand {
                 DynamicTimeEventOperand::Lhs => lhs.as_ref(),
                 DynamicTimeEventOperand::Rhs => rhs.as_ref(),
@@ -354,6 +374,21 @@ fn lower_expression_event<'dae>(
                 .map(|_| ())
         }
         _ => Ok(()),
+    }
+}
+
+fn lower_model_relation_root<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    lowered: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let domain =
+        construction.expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
+    match domain {
+        Some(domain) => construction
+            .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))
+            .map(|_| ()),
+        None => lower_state_relation_root(construction, lowered, provenance),
     }
 }
 
@@ -895,6 +930,36 @@ fn lower_variable_reference<'dae>(
                 .coordinate(dae::CoordinateInput::Time)
         });
     }
+    if let Some(id) = name.target_def_id()
+        && let Some(binder) = symbols
+            .source_comprehension_binders
+            .and_then(|scope| scope.source.get(&id))
+            .copied()
+        && subscripts.is_empty()
+    {
+        return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
+    }
+    if let Some(id) = name.target_def_id()
+        && symbols
+            .functions
+            .comprehension_plans
+            .is_source_declaration(id)
+    {
+        return Err(dae::DaeConstructionError::UnknownId {
+            kind: "Flat comprehension source binder",
+            index: id.index(),
+            span: provenance.span(),
+        });
+    }
+    if name.is_generated()
+        && let Some(binder) = symbols
+            .source_comprehension_binders
+            .and_then(|scope| scope.generated.get(name.var_name()))
+            .copied()
+        && subscripts.is_empty()
+    {
+        return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
+    }
     if let Some(binder) = binders.get(name.var_name()).copied()
         && subscripts.is_empty()
     {
@@ -937,6 +1002,24 @@ fn lower_variable_reference<'dae>(
             provenance,
         );
     }
+    lower_declared_coordinate_reference(
+        construction,
+        symbols,
+        binders,
+        name,
+        subscripts,
+        provenance,
+    )
+}
+
+fn lower_declared_coordinate_reference<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    name: &rumoca_core::Reference,
+    subscripts: &[Subscript],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let coordinate = symbols
         .coordinates
         .get(name.var_name())
@@ -1074,6 +1157,17 @@ fn lower_binary_expression<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let lhs = lower_expression_scoped(construction, symbols, binders, lhs, None)?;
+    if logical_values::is_scalar_boolean_operation(construction, operator, lhs, provenance)? {
+        return logical_values::lower_logical_value(
+            construction,
+            symbols,
+            binders,
+            operator,
+            lhs,
+            rhs,
+            provenance,
+        );
+    }
     let rhs = lower_expression_scoped(construction, symbols, binders, rhs, None)?;
     construction.expressions(|expressions| {
         expressions
@@ -1163,7 +1257,7 @@ fn lower_builtin_call<'dae>(
         });
     }
     let source_arguments = arguments;
-    let arguments = arguments
+    let mut arguments = arguments
         .iter()
         .enumerate()
         .map(|(index, argument)| {
@@ -1182,6 +1276,11 @@ fn lower_builtin_call<'dae>(
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if matches!(function, BuiltinFunction::Cross | BuiltinFunction::Skew) {
+        for argument in &mut arguments {
+            *argument = promote_integer_value_to_real(construction, *argument, provenance)?;
+        }
+    }
     let builtin = pure_builtin(function);
     // MLS §3.7.2 div/mod/rem generate events at quotient changes. The static
     // path folds a fully static call; a call the static proof refuses as a
@@ -1364,21 +1463,7 @@ pub(super) fn lower_call_operands<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<LoweredCallOperands<'dae>, dae::DaeConstructionError> {
-    // Function-shape discovery proves calls inside a compact loop with each
-    // loop index in scalar scope. Reconstruct that same lexical shape scope
-    // when selecting the immutable call certificate; the DAE binder map is
-    // the construction proof that these names are exactly the active locals.
-    let scoped_shapes = if binders.is_empty() {
-        None
-    } else {
-        let mut shapes = symbols.shapes.clone();
-        for (name, binder) in binders {
-            let (lower, upper) =
-                construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
-            shapes.bind_slice_binder(name.clone(), lower, upper);
-        }
-        Some(shapes)
-    };
+    let scoped_shapes = call_shape_scope(construction, symbols, binders, provenance)?;
     let call_shapes = scoped_shapes.as_ref().unwrap_or(symbols.shapes);
     let (call, function) = symbols.functions.select_with_call_certificate(
         name,
@@ -1434,6 +1519,41 @@ pub(super) fn lower_call_operands<'dae>(
     })
 }
 
+/// Project the active issued binders into the same shape scope call discovery
+/// uses. Source comprehension identities stay separate from generated names.
+fn call_shape_scope<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    provenance: dae::DaeProvenance,
+) -> Result<Option<ShapeEnvironment>, dae::DaeConstructionError> {
+    let comprehension = symbols.source_comprehension_binders;
+    if binders.is_empty()
+        && comprehension.is_none_or(|scope| scope.source.is_empty() && scope.generated.is_empty())
+    {
+        return Ok(None);
+    }
+    let mut shapes = symbols.shapes.clone();
+    for (name, binder) in binders {
+        let (lower, upper) =
+            construction.domains(|domains| domains.binder_bounds(*binder, provenance))?;
+        shapes.bind_slice_binder(name.clone(), lower, upper);
+    }
+    for name in comprehension
+        .into_iter()
+        .flat_map(|scope| scope.generated.keys())
+    {
+        shapes.insert(name.clone(), Vec::new());
+    }
+    for id in comprehension
+        .into_iter()
+        .flat_map(|scope| scope.source.keys())
+    {
+        shapes.bind_source_comprehension_binder(*id);
+    }
+    Ok(Some(shapes))
+}
+
 fn lower_vectorized_call_operands<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
@@ -1445,6 +1565,7 @@ fn lower_vectorized_call_operands<'dae>(
         .iter()
         .enumerate()
         .map(|(ordinal, extent)| StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id: ordinal,
             display_name: format!("vectorized_call_{ordinal}"),
             lower: 1,
@@ -1561,61 +1682,6 @@ fn lower_empty_function_argument<'dae>(
 /// exactly as written, and a proven-`true` branch reached only after an earlier
 /// unproven condition becomes the fallback, since MLS §11.5 would still test the
 /// earlier condition first.
-fn lower_conditional_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    (branches, else_branch, span): (&[(Expression, Expression)], &Expression, Span),
-    provenance: dae::DaeProvenance,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    // A variable's attribute or binding value keeps a conditional whose guard
-    // reads a tunable parameter unfolded, so a change to that parameter
-    // re-selects the branch after the code is generated (an eFMI `Recalibrate`
-    // runs the same statement). Folding it to the parameter's translation-time
-    // value silently freezes the branch. The conditional is preserved only when
-    // no arm calls a user function and every arm has one proven shape
-    // ([`attribute_conditional_folds`]): shape discovery prunes a dead arm's
-    // calls, so preserving an arm whose call carries no shape certificate could
-    // not be built, and arms of different sizes select structure. A structural
-    // guard, and any such conditional, keep folding.
-    // In an equation, such a guard is kept as a run-time branch when its arms
-    // are structurally equal (SPEC_0040 DAE-C22); only a structural selection
-    // is evaluated at translation.
-    let preserve_tunable_conditional = retained_conditional(symbols, branches, else_branch, span);
-    let mut lowered = Vec::with_capacity(branches.len());
-    for (condition, value) in branches {
-        let proven = if preserve_tunable_conditional {
-            None
-        } else {
-            symbols.shapes.proven_value(condition)
-        };
-        match proven {
-            Some(ProvenValue::Boolean(false)) => continue,
-            Some(ProvenValue::Boolean(true)) => {
-                let taken = lower_expression_scoped(construction, symbols, binders, value, None)?;
-                if lowered.is_empty() {
-                    return Ok(taken);
-                }
-                return construction.expressions(|expressions| {
-                    expressions.at(provenance).conditional(lowered, taken)
-                });
-            }
-            _ => {
-                lowered.push((
-                    lower_expression_scoped(construction, symbols, binders, condition, None)?,
-                    lower_expression_scoped(construction, symbols, binders, value, None)?,
-                ));
-            }
-        }
-    }
-    let fallback = lower_expression_scoped(construction, symbols, binders, else_branch, None)?;
-    if lowered.is_empty() {
-        return Ok(fallback);
-    }
-    construction
-        .expressions(|expressions| expressions.at(provenance).conditional(lowered, fallback))
-}
-
 /// The shared DAE-C22 authority used by ordinary and structured equations.
 pub(super) fn retained_conditional(
     symbols: LoweringSymbols<'_, '_>,
@@ -1696,19 +1762,52 @@ fn lower_array_comprehension<'dae>(
     };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(
-            enclosing_binders.values().copied(),
+            enclosing_binders.values().copied().chain(
+                symbols
+                    .source_comprehension_binders
+                    .into_iter()
+                    .flat_map(|scope| {
+                        scope
+                            .source
+                            .values()
+                            .chain(scope.generated.values())
+                            .copied()
+                    }),
+            ),
             plan.domain.clone(),
             provenance,
         )
     })?;
-    let mut binders = enclosing_binders.clone();
-    for (ordinal, (index, span)) in indices.iter().zip(&plan.binder_spans).enumerate() {
+    let binders = enclosing_binders.clone();
+    let mut source_binders = symbols
+        .source_comprehension_binders
+        .cloned()
+        .unwrap_or_default();
+    for (ordinal, (index, span)) in indices.iter().rev().zip(&plan.binder_spans).enumerate() {
         let binder_provenance = dae::DaeProvenance::source(*span)?;
         let binder =
             construction.domains(|domains| domains.binder(domain, ordinal, binder_provenance))?;
-        binders.insert(VarName::new(&index.name), binder);
+        match index.binder {
+            rumoca_core::IndexBinderProvenance::Source(id) => {
+                source_binders.source.insert(id, binder);
+            }
+            rumoca_core::IndexBinderProvenance::Generated => {
+                source_binders
+                    .generated
+                    .insert(VarName::new(&index.name), binder);
+            }
+        }
     }
-    let body = lower_expression_scoped(construction, symbols, &binders, body, None)?;
+    let body = lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            source_comprehension_binders: Some(&source_binders),
+            ..symbols
+        },
+        &binders,
+        body,
+        None,
+    )?;
     construction.expressions(|expressions| expressions.at(provenance).comprehension(domain, body))
 }
 
@@ -1775,165 +1874,4 @@ fn lower_subscript<'dae>(
             }
         }
     })
-}
-
-pub(super) fn planned_input_variability(variable: &flat::Variable) -> dae::InputVariability {
-    if matches!(variable.variability, Variability::Discrete(_)) || variable.is_discrete_type {
-        dae::InputVariability::Discrete
-    } else {
-        dae::InputVariability::Continuous
-    }
-}
-
-pub(super) fn expression_span(expression: &Expression) -> Result<Span, ToDaeError> {
-    expression
-        .span()
-        .ok_or_else(|| ToDaeError::MissingProvenance {
-            owner: format!("{expression:?}"),
-        })
-}
-
-pub(super) fn require_span(span: Span, owner: impl Into<String>) -> Result<(), ToDaeError> {
-    if span.is_dummy() {
-        return Err(ToDaeError::MissingProvenance {
-            owner: owner.into(),
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn variable_attribute_expressions(
-    variable: &flat::Variable,
-) -> impl Iterator<Item = &Expression> {
-    [
-        variable.start.as_ref(),
-        variable.min.as_ref(),
-        variable.max.as_ref(),
-        variable.nominal.as_ref(),
-        variable.binding.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-}
-
-pub(super) fn all_model_expressions(flat: &flat::Model) -> impl Iterator<Item = &Expression> {
-    flat.variables
-        .values()
-        .flat_map(variable_attribute_expressions)
-        .chain(flat.equations.iter().map(|equation| &equation.residual))
-        .chain(
-            flat.initial_equations
-                .iter()
-                .map(|equation| &equation.residual),
-        )
-}
-
-pub(super) fn expression_children(expression: &Expression) -> Vec<&Expression> {
-    match expression {
-        Expression::Binary { lhs, rhs, .. } => vec![lhs, rhs],
-        Expression::Unary { rhs, .. } => vec![rhs],
-        Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
-            args.iter().collect()
-        }
-        Expression::StringConversion { value, format, .. } => std::iter::once(value.as_ref())
-            .chain(format.operands())
-            .collect(),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => branches
-            .iter()
-            .flat_map(|(condition, value)| [condition, value])
-            .chain(std::iter::once(else_branch.as_ref()))
-            .collect(),
-        Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
-            elements.iter().collect()
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => std::iter::once(start.as_ref())
-            .chain(step.as_deref())
-            .chain(std::iter::once(end.as_ref()))
-            .collect(),
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => std::iter::once(expr.as_ref())
-            .chain(indices.iter().map(|index| &index.range))
-            .chain(filter.as_deref())
-            .collect(),
-        Expression::Index {
-            base, subscripts, ..
-        } => std::iter::once(base.as_ref())
-            .chain(subscripts.iter().filter_map(subscript_expression))
-            .collect(),
-        Expression::VarRef { subscripts, .. } => {
-            subscripts.iter().filter_map(subscript_expression).collect()
-        }
-        Expression::FieldAccess { base, .. } => vec![base],
-        Expression::Literal { .. } | Expression::Empty { .. } => Vec::new(),
-    }
-}
-
-/// MLS §10.3.1: `size(A, i)` is the extent of `A`, never its value. A
-/// function body proves that extent from the declaration (MLS §12.2), so the
-/// query folds to that Integer and reads nothing, which lets an output state
-/// its own extent before the algorithm defines it, as in
-/// `state := f(size(state, 1))`.
-fn lower_builtin_node<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    (expression, function, arguments): (&Expression, BuiltinFunction, &[Expression]),
-    provenance: dae::DaeProvenance,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let proven = (function == BuiltinFunction::Size
-        && arguments.len() == 2
-        && symbols.function_body.is_some())
-    .then(|| symbols.shapes.proven_extent(expression))
-    .flatten();
-    match proven {
-        Some(extent) => construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Integer(extent))
-        }),
-        None => lower_builtin_expression(
-            construction,
-            symbols,
-            binders,
-            function,
-            arguments,
-            provenance,
-        ),
-    }
-}
-
-/// The extent `size(a, k)` names when `k` is a translation-time Integer.
-///
-/// MLS §10.3.1: `size` reads only the shape of `a`, which the shape proof of
-/// the scope fixes (through the callee specialization for a call result), so
-/// the call is that Integer and `a` is not lowered: a call result `a` is never
-/// evaluated (nor its assertions checked) for a value no one uses.
-fn static_size(symbols: LoweringSymbols<'_, '_>, arguments: &[Expression]) -> Option<i64> {
-    let [array, axis] = arguments else {
-        return None;
-    };
-    let axis = match axis {
-        Expression::Literal {
-            value: Literal::Integer(axis),
-            ..
-        } => Some(*axis),
-        _ => symbols.shapes.proven_extent(axis),
-    };
-    let axis = usize::try_from(axis?).ok()?.checked_sub(1)?;
-    let shape = symbols
-        .functions
-        .shapes
-        .expression_shape(array, symbols.shapes)
-        .ok()?;
-    shape.get(axis).map(|extent| i64::from(*extent))
 }

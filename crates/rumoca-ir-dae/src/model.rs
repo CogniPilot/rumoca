@@ -10,7 +10,9 @@ mod function_loops;
 mod function_reads;
 mod function_scopes;
 pub(crate) mod initial_parameters;
+mod model_conditionals;
 mod runtime_quotients;
+pub use model_conditionals::{ModelArm, ModelConditional};
 mod storage;
 mod value_types;
 mod variable_types;
@@ -166,7 +168,10 @@ pub(crate) use construction_checks::{
 /// continuous-time definition, evaluated at every output point.
 /// 44 adds an optional continuation predicate to compact function folds: a
 /// bounded `while` loop is one fold that ends at its first false predicate.
-pub const DAE_SCHEMA_VERSION: u16 = 44;
+/// 45 requires source/generated provenance on every structured domain binder.
+/// 46 replays compact quotient boundaries through structured owner markers.
+/// 47 replays issued model conditional arm contexts and guarded quotient owners.
+pub const DAE_SCHEMA_VERSION: u16 = 47;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -187,12 +192,13 @@ pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
 pub use view::{
-    ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
-    ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
-    FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
-    FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
-    FunctionView, InitializationOwnerView, NativeBodyView, RangeBoundView, RangeView,
-    RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
+    ConditionalExpressionOperands, ContinuousOwnerView, CoordinateView, DaeView, DomainView,
+    ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView, ExternalArgumentView,
+    ExternalFunctionView, FunctionConditionalView, FunctionDefinitionValues,
+    FunctionDefinitionView, FunctionFoldView, FunctionParameterView, FunctionStatementView,
+    FunctionStatements, FunctionValueView, FunctionView, InitializationOwnerView,
+    ModelConditionalView, NativeBodyView, RangeBoundView, RangeView, RecordFieldLayout,
+    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
     StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
     ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };
@@ -354,6 +360,8 @@ pub struct VariableReservation<'dae> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionEntry {
+    construction_start: u32,
+    construction_end: u32,
     name: VarName,
     parameters: Vec<u32>,
     results: Vec<u32>,
@@ -527,6 +535,13 @@ struct DomainEntry {
 
 #[derive(Debug, Default)]
 pub(crate) struct Storage {
+    pub(crate) model_conditionals: Vec<model_conditionals::ModelConditionalEntry>,
+    pub(crate) model_arms: Vec<model_conditionals::ModelArmEntry>,
+    pub(crate) active_model_arm: Option<u32>,
+    pub(crate) active_model_ancestors: rustc_hash::FxHashSet<u32>,
+    pub(crate) closing_model_conditional: Option<u32>,
+    pub(crate) owned_quotient_surface: Option<DaeProvenance>,
+    pub(crate) active_function_boundary: bool,
     pub(crate) predefined_string_declaration: Option<rumoca_core::DefId>,
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
@@ -563,7 +578,6 @@ pub(crate) struct Storage {
     pub(crate) equation_family_bodies: Vec<u32>,
     pub(crate) relations: Vec<RelationEntry>,
     pub(crate) conditions: Vec<ConditionEntry>,
-    pub(crate) condition_owner_clocks: Vec<Option<u32>>,
     pub(crate) roots: Vec<RootEntry>,
     pub(crate) runtime_quotient_owners: Vec<runtime_quotients::RuntimeQuotientOwnerEntry>,
     pub(crate) runtime_quotient_owner_by_expression: rustc_hash::FxHashMap<u32, u32>,
@@ -590,6 +604,8 @@ pub(crate) struct Storage {
 
 #[derive(Debug, PartialEq)]
 struct FrozenStorage {
+    model_conditionals: Box<[model_conditionals::ClosedModelConditional]>,
+    model_arms: Box<[model_conditionals::ModelArmEntry]>,
     predefined_string_declaration: Option<rumoca_core::DefId>,
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,
@@ -665,8 +681,8 @@ impl Dae {
             };
             build(&mut construction)?;
         }
-        storage.finish_construction()?;
-        let storage = storage.freeze();
+        let model_conditionals = storage.finish_construction()?;
+        let storage = storage.freeze(model_conditionals);
         let active_discrete_scalar_count = active_discrete_scalar_count(&storage);
         Ok(Self {
             schema_version: DAE_SCHEMA_VERSION,
@@ -863,10 +879,18 @@ impl<'dae> DaeConstruction<'dae> {
     ) -> Result<(FunctionId<'dae>, R), DaeConstructionError> {
         let declaration = signature.declaration;
         let function = self.functions(|functions| functions.insert_header(signature))?;
-        let result = build(
-            self,
-            FunctionReservation::new(function, FunctionConstruction::Acyclic),
+        let result = self.without_model_arm(|construction| {
+            build(
+                construction,
+                FunctionReservation::new(function, FunctionConstruction::Acyclic),
+            )
+        })?;
+        let construction_end = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "function construction boundary",
+            declaration,
         )?;
+        self.storage.functions[function.index() as usize].construction_end = construction_end;
         expect_complete_function(self.storage, function, declaration)?;
         Ok((function, result))
     }
@@ -908,8 +932,14 @@ impl<'dae> DaeConstruction<'dae> {
             .copied()
             .map(|function| FunctionReservation::new(function, construction))
             .collect();
-        let result = build(self, reservations)?;
+        let result = self.without_model_arm(|construction| build(construction, reservations))?;
+        let construction_end = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "function construction boundary",
+            owner,
+        )?;
         for &function in &functions {
+            self.storage.functions[function.index() as usize].construction_end = construction_end;
             expect_complete_function(self.storage, function, owner)?;
         }
         validate_recursive_function_group(self.storage, &functions, owner)?;
@@ -1347,7 +1377,14 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.value_type_at(ty, declaration)?;
         }
         let raw = checked_u32(self.storage.functions.len(), "function arena", declaration)?;
+        let construction_start = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "function construction boundary",
+            declaration,
+        )?;
         self.storage.functions.push(FunctionEntry {
+            construction_start,
+            construction_end: construction_start,
             name,
             parameters,
             results,

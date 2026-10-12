@@ -548,6 +548,7 @@ fn binder_substitution_uses_the_exact_domain_value() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,

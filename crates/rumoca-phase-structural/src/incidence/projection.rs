@@ -53,16 +53,7 @@ pub(crate) fn visit_owner_rows<'dae>(
 }
 
 pub(crate) fn projection_error(error: rumoca_eval_dae::ProjectionError) -> StructuralError {
-    use rumoca_eval_dae::ProjectionError;
-    let span = match &error {
-        ProjectionError::ScalarOutOfBounds { span, .. }
-        | ProjectionError::DynamicSubscript { span }
-        | ProjectionError::IndexOutOfBounds { span, .. }
-        | ProjectionError::IntegerOverflow { span }
-        | ProjectionError::FunctionRecursion { span }
-        | ProjectionError::UnsupportedRecordOperation { span, .. }
-        | ProjectionError::ExternalFunction { span, .. } => *span,
-    };
+    let span = error.span();
     StructuralError::Projection {
         reason: error.to_string(),
         span,

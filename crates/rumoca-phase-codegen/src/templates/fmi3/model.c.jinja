@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function, integer_publication %}
 {%- set cs_integrate = cs_integrator(fmi) %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events %}
@@ -150,27 +150,40 @@ static bool rmc_request(const ModelInstance* m, const fmi3ValueReference vr[], s
     }
     return total == nvalues;
 }
-/* The settled numeric storage one reference reads; NULL on a failed refresh. */
+/* Pure storage access after all requested refreshes have completed. */
 static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref) {
-    if (settle_public_values(m) != fmi3OK) return NULL;
     switch (ref->column) {
     case RMC_COLUMN_TIME: return &m->time;
     case RMC_COLUMN_Y: return m->y;
     case RMC_COLUMN_P: return m->p;
-    case RMC_COLUMN_DERIVATIVE: return evaluate_derivatives(m) == fmi3OK ? m->derivative : NULL;
+    case RMC_COLUMN_DERIVATIVE: return m->derivative;
 {%- if fmi.scalar_events %}
-    case RMC_COLUMN_INDICATOR: return rmc_event_indicators(m, m->rmc_indicator) == fmi3OK ? m->rmc_indicator : NULL;
+    case RMC_COLUMN_INDICATOR: return m->rmc_indicator;
 {%- endif %}
     default: return NULL;
     }
 }
-#define RMC_GET_NUMERIC(Name, Type, KIND, CONVERT) \
+{{ integer_publication() }}
+#define RMC_GET_NUMERIC(Name, Type, KIND, VALID, CONVERT) \
 FMI_EXPORT fmi3Status fmi3Get##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, Type values[], size_t nvalues) { \
     ModelInstance* m = i; size_t cursor = 0; \
     if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, KIND, false)) return fmi3Error; \
+    bool derivatives = false, indicators = false; \
     for (size_t k = 0; k < nvr; ++k) { \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; \
+        derivatives |= ref->column == RMC_COLUMN_DERIVATIVE; \
+        indicators |= ref->column == RMC_COLUMN_INDICATOR; \
+    } \
+    if (nvr && (settle_public_values(m) != fmi3OK || (derivatives && evaluate_derivatives(m) != fmi3OK))) return fmi3Error; \
+{% if fmi.scalar_events %}    if (indicators && rmc_event_indicators(m, m->rmc_indicator) != fmi3OK) return fmi3Error; \
+{% else %}    (void)indicators; \
+{% endif %}    for (size_t k = 0; k < nvr; ++k) { \
         const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
         if (!source) return fmi3Error; \
+        for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; (void)value; if (!(VALID)) return fmi3Error; } \
+    } \
+    for (size_t k = 0; k < nvr; ++k) { \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
         for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; values[cursor++] = CONVERT; } \
     } \
     return fmi3OK; \
@@ -190,13 +203,13 @@ FMI_EXPORT fmi3Status fmi3Set##Name(fmi3Instance i, const fmi3ValueReference vr[
     } \
     return fmi3OK; \
 }
-RMC_GET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, value)
+RMC_GET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, true, value)
 RMC_SET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, isfinite(value), value)
-RMC_GET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, (fmi3Int32)value)
+RMC_GET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, rmc_integer_public_value(value, 32, ref->literals), (fmi3Int32)value)
 RMC_SET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, true, (double)value)
-RMC_GET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, (fmi3Int64)value)
+RMC_GET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, rmc_integer_public_value(value, 64, ref->literals), (fmi3Int64)value)
 RMC_SET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, rmc_ordinal_valid(ref, value), (double)value)
-RMC_GET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, value != 0.0)
+RMC_GET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, true, value != 0.0)
 RMC_SET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, true, value ? 1.0 : 0.0)
 FMI_EXPORT fmi3Status fmi3GetString(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3String values[], size_t nvalues) {
     ModelInstance* m = i; size_t cursor = 0;

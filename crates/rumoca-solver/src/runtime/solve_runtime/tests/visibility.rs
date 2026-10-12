@@ -671,3 +671,181 @@ fn visible_value_runtime_errors_keep_row_span() {
         "error should explain the missing visible input: {err}"
     );
 }
+
+fn unowned_sample_counter_program() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadP { dst: 0, index: 1 },
+        solve::LinearOp::Const { dst: 1, value: 1.0 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Add,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::LoadP { dst: 3, index: 2 },
+        solve::LinearOp::LoadP { dst: 4, index: 3 },
+        solve::LinearOp::Unary {
+            dst: 5,
+            op: solve::UnaryOp::Not,
+            arg: 4,
+        },
+        solve::LinearOp::Binary {
+            dst: 6,
+            op: solve::BinaryOp::And,
+            lhs: 3,
+            rhs: 5,
+        },
+        // Match the checked when producer's inactive fallback: hold the
+        // current target, not pre(counter). The pulse buffer settles inside
+        // this event pass after the increment has already been published.
+        solve::LinearOp::LoadP { dst: 8, index: 0 },
+        solve::LinearOp::Select {
+            dst: 7,
+            cond: 6,
+            if_true: 2,
+            if_false: 8,
+        },
+        solve::LinearOp::StoreOutput { src: 7 },
+    ]
+}
+
+fn unowned_zero_phase_sample_model() -> solve::SolveModel {
+    let schedule = solve::PeriodicEventSchedule::new(
+        rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap(),
+    )
+    .unwrap();
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 0, 4),
+            solve_layout: solve::SolveLayout {
+                compiled_parameter_len: 4,
+                discrete_valued_scalar_names: vec!["counter".to_owned()],
+                variable_storage_runs: vec![solve::SolveVariableStorageRun {
+                    base: solve::scalar_slot_p(0),
+                    scalar_count: 1,
+                    role: solve::SolveVariableStorageRole::DiscreteValue,
+                    value_kind: solve::SolveVariableValueKind::Integer,
+                }],
+                variable_declarations: vec![solve::SolveVariableDeclaration::new(
+                    solve::SolveVariableStorageRole::DiscreteValue,
+                    solve::SolveVariableValueKind::Integer,
+                )],
+                pre_param_bindings: vec![solve::PreParamBinding {
+                    dest_p_index: 1,
+                    source: solve::PreParamSource::P { index: 0 },
+                    clock_schedule: None,
+                }],
+                ..Default::default()
+            },
+            clocks: solve::SolveClockPartition {
+                periodic_event_schedules: vec![schedule],
+                activation_parameter_indices: vec![2],
+            },
+            discrete: solve::DiscreteSolveSystem {
+                // The checked iteration owner advances the ordinary pre lane
+                // between passes; a raw binding without its run cannot do so.
+                event_iteration_plan: solve::EventIterationPlan::new(vec![
+                    solve::EventIterationRun {
+                        variable: 0,
+                        pre_binding_start: 0,
+                        owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+                    },
+                ]),
+                rhs: spanned_block(
+                    vec![
+                        unowned_sample_counter_program(),
+                        vec![
+                            solve::LinearOp::LoadP { dst: 0, index: 2 },
+                            solve::LinearOp::StoreOutput { src: 0 },
+                        ],
+                    ],
+                    "unowned_zero_phase_sample.mo",
+                ),
+                update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(3)],
+                row_roles: vec![
+                    solve::DiscreteRowRole::Equation,
+                    solve::DiscreteRowRole::PulseConditionMemory,
+                ],
+                pre_modes: vec![
+                    solve::DiscreteEventPreMode::EventEntry,
+                    solve::DiscreteEventPreMode::FollowCurrent,
+                ],
+                observation_refresh: vec![false, false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
+                clock_owners: vec![None, None],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                condition_memory_parameter_indices: vec![3],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![0.0; 4],
+        visible_names: vec!["counter".to_owned()],
+        visible_value_rows: spanned_block(
+            vec![direct_param_visible_value_row(0)],
+            "unowned_zero_phase_visible.mo",
+        ),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn phase_zero_unowned_sample_waits_for_its_single_post_initial_tick() {
+    let model = unowned_zero_phase_sample_model();
+    assert_eq!(
+        model.problem.solve_layout.initial_event_parameter_index,
+        None
+    );
+    let runtime = SolveRuntime::new_fixture(&model).expect("unowned sample fixture prepares");
+    let mut p = model.parameters.clone();
+    let event_pre_p = p.clone();
+    let outcome = runtime
+        .apply_projected_initial_event_boundary(
+            ProjectedInitialEventInput {
+                y: &mut [],
+                p: &mut p,
+                t_start: 0.0,
+                t_end: 0.2,
+                tol: 1e-9,
+                event_pre_y: &[],
+                event_pre_p: &event_pre_p,
+                max_iters: 8,
+                dynamic_event: None,
+            },
+            |_, _, _| Ok(false),
+        )
+        .expect("initialization and the first sample tick settle");
+    assert_eq!(outcome.final_t, 0.0);
+    assert_eq!(outcome.observations.len(), 2);
+    assert_eq!(
+        outcome.observations[0].p[0], 0.0,
+        "sample is inactive during initialization"
+    );
+    assert_eq!(
+        outcome.observations[1].p[0], 1.0,
+        "exactly one post-initial sample tick"
+    );
+    assert_eq!(p[0], 1.0);
+    assert_eq!(p[3], 0.0, "the completed sample pulse is rearmed");
+    let action = runtime
+        .apply_projected_post_initial_event_update(
+            ProjectedPostInitialEventInput {
+                y: &mut [],
+                p: &mut p,
+                t: 0.1,
+                tol: 1e-9,
+                max_iters: 8,
+                row_filter: EventUpdateRowFilter::All,
+            },
+            |_, _| Ok(false),
+        )
+        .expect("next periodic tick settles");
+    assert_eq!(action, EventActionOutcome::Continue);
+    assert_eq!(
+        p[0], 2.0,
+        "one further tick, not a permanently disabled sample"
+    );
+    assert_eq!(p[3], 0.0);
+}

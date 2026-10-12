@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 18,750 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
-| `dae-wire-loc` | 3,250 | 5,750 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 24,500 | Both items above; total follows their sum |
+| `dae-core-loc` | 11,000 | 20,000 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-wire-loc` | 3,250 | 6,250 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
+| `dae-total-loc` | 14,250 | 26,250 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -154,6 +154,21 @@ core and wire ceilings, and totality-debt ceilings are unchanged.
 
 **2026-10-07 enumeration-declaration review:** measured production source moved to 18,684 core, 5,572 wire, and 24,256 total lines with the enumeration declaration attribute of an enumeration variable (DAE-C32) and its view and wire replay. The derived rule rounds the total up to the next 250-line step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers, core and wire ceilings, and totality-debt ceilings are unchanged.
 
+**2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification is pending in `docs/verification/pr427-main-dae-integer/structured-quotient-owner.md`.
+
+
+**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The [module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md) accounts for checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
+
+**2026-10-12 combined workshop review:** production at `d3f804491` measures
+19,937 core, 6,037 wire and 25,974 total lines. The refreshed
+[module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md)
+accounts for closed model-arm derivative proof transfer, constructor-issued
+clock facts and the shared read-only selected-value traversal. Solve's duplicate
+synchronous-condition owner analysis is removed. Derived acknowledgment steps
+are 20,000 / 6,250 / 26,000; thresholds and totality-debt
+ceilings remain unchanged. Final combined execution gates and maintainer review
+remain pending.
+
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
 Only the entries listed here may reserve a slot before its complete value
@@ -209,7 +224,8 @@ exists. Every other object inserts complete values in proven order.
 | Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Runtime binding equations contribute event owners by expression occurrence | Event analysis | MLS §4.4 binding syntax and equation-section syntax have the same MLS §8.5 event surface |
-| A dynamic scalar `div`/`mod`/`rem` quotient is admitted only with scalar operands and a divisor of at most parameter variability that is rejected when statically zero or non-finite, and constructs with exactly one recorded runtime owner; a model owner atomically issues the quotient, its six-node canonical continuous boundary indicator, exact relation, generated `Always` activation, and root, while a function-body owner names the exact open function and is event-free per MLS §3.7.2; the owner registry is canonical in quotient-expression order on every recording path; structural transformation and checked wire decode re-issue the one staged checked owner operation from typed identities at the exact claimed source stream positions, omit only construction-derived artifacts, and fail closed on any missing, duplicate, foreign, out-of-order, or partially replayed owner | DAE runtime-quotient construction, structural replay, and checked wire replay | A dynamic discontinuity cannot lose or duplicate its event surface, forge function event-freedom, become statically admitted through reconstruction, or expose owner or stream order that depends on replay timing |
+| A scalar `div`/`mod`/`rem` with both operands of at most parameter variability retains its pure expression and compact binder scope; statically zero or non-finite divisors remain rejected, and other invalid divisors retain the ordinary evaluation fault | Canonical quotient admission | Time-invariant values need no integration event |
+| A dynamic scalar `div`/`mod`/`rem` quotient has scalar operands and constructs with exactly one recorded runtime owner; model admission requires a divisor of at most parameter variability; a statically zero or non-finite divisor is rejected for either owner kind; a model owner atomically issues the quotient and its six-node canonical continuous boundary indicator, with either the exact scalar relation/generated `Always` activation/root or one compact structured root over the quotient's constructor-derived domain, while a function-body owner names the exact open function and is event-free per MLS §3.7.2 independently of operand variability; the owner registry is canonical in quotient-expression order on every recording path; structural transformation and checked wire decode re-issue the one staged checked owner operation from typed identities at the exact claimed source stream positions, omit only construction-derived artifacts, and fail closed on any missing, duplicate, foreign, out-of-order, or partially replayed owner | DAE runtime-quotient construction, structural replay, and checked wire replay | A dynamic discontinuity cannot lose or duplicate its event surface, forge function event-freedom, become statically admitted through reconstruction, or expose owner or stream order that depends on replay timing |
 | Whole-record equality derives leaf owners only from exact record/field identities and equal complete layouts; each array field remains one tensor equation | Flat-to-DAE record-equation analysis | Aggregate routing cannot depend on rendered names or source scalarization |
 | A row-major scalar family recovers its whole tensor only when every member is an exact full-rank integer projection of one identical base, in canonical coordinate order, and the base dimensions equal the claimed extents | DAE expression construction | Source scalarization cannot force backend scalarization, while reordered, partial, duplicate, or mixed-base families cannot forge aggregate identity |
 | Straight-line function-loop scratch elimination substitutes only scalar call-locals whose definitions dominate their uses, whose expression dependencies remain unchanged through every substituted use, whose name is not assigned again in the substituted suffix, whose final values are not read after the loop, and whose substitution has at most one use. A multiply-used nonescaping local instead becomes an explicit iteration-local SSA definition in the compact fold transition: construction clears its enclosing value on entry, requires a dominating per-iteration definition before every read, records it as region-owned but not loop-carried, and restores the enclosing reaching definition on exit. Unresolved self-reads remain explicit loop-carried transitions. | Flat-to-DAE function-loop analysis and DAE function-fold construction | Compact loop owners cannot erase loop-carried state, replace a snapshot with a later live tensor read, bypass a sequential redefinition, erase escaping values, or turn shared per-iteration work into a cloned expression tree |

@@ -530,3 +530,88 @@ fn a_branch_only_definition_is_completed_by_the_earlier_iteration_off_the_first_
         .value;
     assert_eq!(y, 1.0 + 3.0 + 6.0);
 }
+
+const OUTER_ITERATION_WRITES: &str = r#"
+function accumulate
+  input Real a[2, 2];
+  output Real n[2, 2];
+algorithm
+  for i in 1:2 loop
+    for k in 1:2 loop
+      n[i, k] := a[i, k];
+      for j in 1:2 loop
+        n[i, k] := n[i, k] + a[i, j];
+      end for;
+    end for;
+  end for;
+end accumulate;
+
+model OuterIterationWrite
+  input Real u = 1.0;
+  output Real y[2, 2];
+equation
+  y = accumulate({{1.0, 2.0}, {3.0, 4.0}} * u);
+end OuterIterationWrite;
+
+function readBeforeOuterWrite
+  input Real a[2];
+  output Real n[2];
+algorithm
+  for k in 1:2 loop
+    for j in 1:2 loop
+      n[k] := n[k] + a[j];
+    end for;
+    n[k] := a[k];
+  end for;
+end readBeforeOuterWrite;
+
+model ReadBeforeOuterWrite
+  input Real u = 1.0;
+  output Real y[2];
+equation
+  y = readBeforeOuterWrite({u, 2.0});
+end ReadBeforeOuterWrite;
+"#;
+
+/// A write earlier in the current iteration of an enclosing loop defines the
+/// element for every iteration of an inner loop (the accumulator shape of
+/// `LieGroups.SE23.Quat.exp_mixed`): `n[i, k] = a[i, k] + sum_j a[i, j]`.
+#[test]
+fn an_enclosing_iteration_write_defines_the_element_in_an_inner_loop() {
+    let compiled = Compiler::new()
+        .model("OuterIterationWrite")
+        .compile_str(OUTER_ITERATION_WRITES, "OuterIterationWrite.mo")
+        .unwrap_or_else(|error| panic!("OuterIterationWrite should compile: {error}"));
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .unwrap_or_else(|error| panic!("OuterIterationWrite should evaluate: {error}"));
+    assert!(probe.report.error.is_none(), "{:?}", probe.report.error);
+    let value = |name: &str| {
+        probe
+            .report
+            .solver_y
+            .iter()
+            .find(|slot| slot.name.replace(' ', "") == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .value
+    };
+    assert_eq!(
+        ["y[1,1]", "y[1,2]", "y[2,1]", "y[2,2]"].map(value),
+        [4.0, 5.0, 10.0, 11.0]
+    );
+}
+
+/// The enclosing write must precede the inner loop: a read before it stays refused.
+#[test]
+fn an_inner_loop_read_before_the_enclosing_write_is_refused() {
+    let error = Compiler::new()
+        .model("ReadBeforeOuterWrite")
+        .compile_str(OUTER_ITERATION_WRITES, "OuterIterationWrite.mo")
+        .map(|_| ())
+        .expect_err("n[k] is read before this iteration writes it");
+    assert!(
+        error
+            .to_string()
+            .contains("reads elements of `n` that do not all have a definition"),
+        "{error}"
+    );
+}

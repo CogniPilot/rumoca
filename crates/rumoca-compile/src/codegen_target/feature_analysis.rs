@@ -163,6 +163,7 @@ pub(super) fn dae_has_dynamic_derivative_subscripts(model: &dae::Dae) -> bool {
 /// certificate before producing any byte.
 pub(super) fn solve_requires_residual_equations(
     problem: &solve::SolveProblem,
+    pure_calls: Option<&solve::SolvePureCallTable>,
     exact_algebraic_assignments: Option<bool>,
     algebraic_projection: Option<bool>,
 ) -> bool {
@@ -172,7 +173,9 @@ pub(super) fn solve_requires_residual_equations(
         || !continuous.algebraic_projection_plan.is_empty()
         || algebraic_count != 0;
     let explicit = exact_algebraic_assignments == Some(true)
-        && rumoca_phase_codegen::explicit_algebraic_assignment_complete(problem);
+        && rumoca_phase_codegen::explicit_algebraic_assignment_complete_with_calls(
+            problem, pure_calls,
+        );
     let projected =
         algebraic_projection == Some(true) && rumoca_phase_codegen::me_refresh_admissible(problem);
     has_algebraic_system && !explicit && !projected
@@ -194,6 +197,12 @@ fn static_index<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -
         .is_some_and(|expression| match expression.operation() {
             dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(_))
             | dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(_)) => true,
+            // A parameter fixed at translation (not tunable: e.g. the `N` of
+            // `T[N]`, MLS 3.7 §10.1) cannot change at runtime, so a subscript
+            // reading it selects one fixed element.
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) => view
+                .variable(dae::VariableId::from(id))
+                .is_some_and(|variable| !variable.is_tunable()),
             dae::ExpressionOperation::Unary {
                 operator: dae::UnaryOperator::Negate | dae::UnaryOperator::Plus,
                 operand,

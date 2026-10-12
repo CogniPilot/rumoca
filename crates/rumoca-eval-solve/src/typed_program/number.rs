@@ -21,7 +21,7 @@ pub(super) fn eval_unary_typed(
     TypedValue::checked(value.value_type.clone(), elements, provenance)
 }
 
-fn eval_unary_element(
+pub(crate) fn eval_unary_element(
     operator: SolveUnaryOperator,
     value: SolveValueKind,
     scalar: SolveScalarType,
@@ -135,7 +135,7 @@ pub(super) fn eval_binary_typed(
     TypedValue::checked(lhs.value_type.clone(), elements, provenance)
 }
 
-pub(super) fn eval_binary_element(
+pub(crate) fn eval_binary_element(
     operator: SolveBinaryOperator,
     lhs: SolveValueKind,
     rhs: SolveValueKind,
@@ -269,7 +269,7 @@ pub(super) fn eval_compare_typed(
     )
 }
 
-fn compare_elements(
+pub(crate) fn compare_elements(
     operator: SolveCompareOperator,
     lhs: SolveValueKind,
     rhs: SolveValueKind,
@@ -326,7 +326,7 @@ pub(super) fn eval_convert_typed(
     TypedValue::checked(destination_type, elements, provenance)
 }
 
-fn convert_element(
+pub(crate) fn convert_element(
     operator: SolveConversionOperator,
     value: SolveValueKind,
     destination: SolveScalarType,

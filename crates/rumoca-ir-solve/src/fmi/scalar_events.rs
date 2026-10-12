@@ -34,6 +34,10 @@ pub(super) struct ScalarEventProfile {
     /// Per discrete output: whether it is a condition memory, the rows
     /// initialization seeds with `pre` following the current value.
     condition_memory_rows: Vec<bool>,
+    /// Pulse-memory outputs and their checked producing programs. Only these
+    /// programs are evaluated when the event releases its clock pulses.
+    pulse_rows: Vec<usize>,
+    pulse_programs: Vec<usize>,
     /// Per discrete output: whether a public observation recomputes it from
     /// the observed coordinate (an unread B.1c owner, SPEC_0022 EXPR-012).
     observation_rows: Vec<bool>,
@@ -136,21 +140,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
             _ => Err("a discrete row writes outside the parameters"),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if discrete.row_roles.iter().any(|role| {
-        !matches!(
-            role,
-            DiscreteRowRole::Equation | DiscreteRowRole::ConditionMemory
-        )
-    }) {
-        return Err("the C profile executes only discrete equations and condition memories");
-    }
-    if discrete
-        .pre_modes
-        .iter()
-        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
-    {
-        return Err("the C profile executes only discrete rows whose pre follows the current pass");
-    }
+    validate_scalar_discrete_rows(discrete)?;
     let layout = &problem.solve_layout;
     let pre_bindings = layout
         .pre_param_bindings
@@ -185,6 +175,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         }
         iteration_lanes.extend(lanes);
     }
+    let (pulse_rows, pulse_programs) = pulse_producers(discrete)?;
     Ok(ScalarEventProfile {
         roots,
         pre_bindings,
@@ -192,8 +183,10 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         condition_memory_rows: discrete
             .row_roles
             .iter()
-            .map(|role| *role == DiscreteRowRole::ConditionMemory)
+            .map(|role| role.is_condition_memory())
             .collect(),
+        pulse_rows,
+        pulse_programs,
         discrete_targets,
         observation_rows: discrete.observation_refresh.clone(),
         observation_reads_y: discrete.observation_refresh_reads_y,
@@ -211,6 +204,52 @@ pub(super) fn validate(model: &SolveModel) -> Result<ScalarEventProfile, &'stati
         root_neighborhoods: crate::root_neighborhoods(&events.root_conditions)
             .map_err(|_| "a root condition's coordinate reads cannot be derived")?,
     })
+}
+
+fn validate_scalar_discrete_rows(
+    discrete: &crate::DiscreteSolveSystem,
+) -> Result<(), &'static str> {
+    if discrete.row_roles.iter().any(|role| {
+        !matches!(
+            role,
+            DiscreteRowRole::Equation
+                | DiscreteRowRole::ConditionMemory
+                | DiscreteRowRole::PulseConditionMemory
+        )
+    }) {
+        return Err("the C profile executes only discrete equations and condition memories");
+    }
+    if discrete
+        .pre_modes
+        .iter()
+        .any(|mode| *mode != DiscreteEventPreMode::FollowCurrent)
+    {
+        return Err("the C profile executes only discrete rows whose pre follows the current pass");
+    }
+    Ok(())
+}
+
+fn pulse_producers(
+    discrete: &crate::DiscreteSolveSystem,
+) -> Result<(Vec<usize>, Vec<usize>), &'static str> {
+    let pulse_rows = discrete
+        .row_roles
+        .iter()
+        .enumerate()
+        .filter_map(|(row, role)| (*role == DiscreteRowRole::PulseConditionMemory).then_some(row))
+        .collect::<Vec<_>>();
+    let pulse_programs = pulse_rows
+        .iter()
+        .map(|row| {
+            discrete
+                .rhs
+                .program_index_for_output(*row)
+                .ok_or("a pulse condition memory has no checked producing program")
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+        .into_iter()
+        .collect();
+    Ok((pulse_rows, pulse_programs))
 }
 
 fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {

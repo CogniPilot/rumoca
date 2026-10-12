@@ -1,0 +1,102 @@
+{
+  "format_version": 1,
+  "source_base": "c85128c50cd6e65198a712578c80679afc01aeaf",
+  "current_test_status": "UNRUN",
+  "current_test_selector": "msl_glycol_viscosity_uses_its_checked_coefficient_interface",
+  "current_test_count": 1,
+  "old_compiler_source": "92f9169585948afafe8042ecb28b6c2763994930",
+  "old_wheel_sha256": "bcad4b62be6c820174691d6b735ad382e8dd48186d16432271e2af36e3b6b19a",
+  "msl_archive_sha256": "5409cfa17797c52d866dc9d2675badc1378b4bbf88066e60899a489cb1cb8a2d",
+  "original_incompressible_sha256": "b3a262b91134535f4f285b8300e79f241eb2f1849926f22b5fe2902f8f7adc42",
+  "raw_attempt_directory": "$HOME/scratch/rumoca/workshop427-exports/attempts",
+  "artifacts": {
+    "test-glycol-original-before-92f.py": {
+      "sha256": "7f25fa9001f59aa6a250802aa80a9a41021844d73b48bf471946c23d5ce8a4ba",
+      "bytes": 1157
+    },
+    "test-glycol-original-before-92f.json": {
+      "sha256": "2a1afc5d46e10e3d8ac14c190676e6ec3e82856d51a3cfd6b17b12c20d724b5b",
+      "bytes": 653
+    },
+    "test-glycol-original-before-92f.log": {
+      "sha256": "8f856301f358176a534296f1d32425320e07f3e3d92486e438328e6685726cfc",
+      "bytes": 1022
+    },
+    "test-glycol-original-before-92f.guardian.json": {
+      "sha256": "ae0b9542f34dd35da8877fd9a27cbb00ce408c93685ee48133210d90790a32e8",
+      "bytes": 800
+    },
+    "glycol-property-controls-before-92f.py": {
+      "sha256": "f11242dc6a3964e52dec959ae2f3e882dc9c002c9ce96e40a64734b7968dc252",
+      "bytes": 1636
+    },
+    "glycol-property-controls-before-92f.mo": {
+      "sha256": "d1f94254f41139e684c21ee9374f1d3f4cca400a2cfe477de85d7ecdbb296535",
+      "bytes": 1628
+    },
+    "glycol-property-controls-before-92f.json": {
+      "sha256": "2fdc70f1ba161c149146bb644cf9218596edcfaf199f9ffdbed8803ca3d75860",
+      "bytes": 1774
+    },
+    "glycol-property-controls-before-92f.log": {
+      "sha256": "b6c5b93215d0b55ea8fafc60caaef51f99d239bbb66a96902257f8828a835c99",
+      "bytes": 1157
+    },
+    "glycol-property-controls-before-92f.guardian.json": {
+      "sha256": "aaa13d1bef19b4a8f58f5221a1203e542abab68ee563423aae2e9efd9952ab28",
+      "bytes": 809
+    },
+    "glycol-nested-fit-controls-before-92f.py": {
+      "sha256": "b0cb3af82b803aa751a8ba9d4ae070aac95a1cea048512f7273142dbf6beb132",
+      "bytes": 1992
+    },
+    "glycol-nested-fit-controls-before-92f.mo": {
+      "sha256": "5f6a74b9aaac6b3223f864fad87e084b95ee7f984a06403cd1669a4be9c95cca",
+      "bytes": 891
+    },
+    "glycol-nested-fit-controls-before-92f.json": {
+      "sha256": "521339ef322a34747c8636e5fe7a632be5cd39af96854eb9a51c6b08bc602b5b",
+      "bytes": 774
+    },
+    "glycol-nested-fit-controls-before-92f.log": {
+      "sha256": "6cd0b5cf74d4aef97ce5419acc3a37853a89f9db0fe85e82ceb5a66053164c94",
+      "bytes": 436
+    },
+    "glycol-nested-fit-controls-before-92f.guardian.json": {
+      "sha256": "5ca7caad0d4caced90d5e582842090850dabe0599c3c2c11f3c08436538be518",
+      "bytes": 821
+    },
+    "glycol-inverse-temp-controls-before-92f.py": {
+      "sha256": "72f72b2c8b91bba3bed927190ba0d2121a078991087b7cc3eef85610727ff652",
+      "bytes": 1924
+    },
+    "glycol-inverse-temp-controls-before-92f.mo": {
+      "sha256": "daef5a7712f5b44e771933e1b736647ad5c7e48e0d83ff919fad0e239c5a1a03",
+      "bytes": 778
+    },
+    "glycol-inverse-temp-controls-before-92f.json": {
+      "sha256": "174f6ab1af4dab4b75aa60e1093880b9e5b91ccbaebf28bac4e2b49e0d59f880",
+      "bytes": 953
+    },
+    "glycol-inverse-temp-controls-before-92f.log": {
+      "sha256": "77e846618e3d203edfe619b703c3942d2ea96c6c3bd2d2c8440c693af4d2b5dd",
+      "bytes": 592
+    },
+    "glycol-inverse-temp-controls-before-92f.guardian.json": {
+      "sha256": "5982eaa7219d8db56b31463460579800455e50c3b34e6b5f763f4237ef976348",
+      "bytes": 817
+    },
+    "glycol-viscosity-dae-detail-92f.py": {
+      "sha256": "7a2f4cad90ab5b7af39d86f30e39d33d55c7f0a456167cd62ea64656fe726627",
+      "bytes": 1003
+    },
+    "glycol-viscosity-dae-detail-92f.log": {
+      "sha256": "dd0e8df7fbdeb7bed4be55ba9c07a07a1312e7f292453e88e029b8d0fa96c069",
+      "bytes": 419603
+    },
+    "glycol-viscosity-dae-detail-92f.guardian.json": {
+      "sha256": "fb06191ea6fd39c468e9db111d8e2463eb853a14cab94ac578857e91b12a542f",
+      "bytes": 802
+    }
+  }
+}

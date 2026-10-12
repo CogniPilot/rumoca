@@ -6,6 +6,8 @@
 
 use super::*;
 
+mod structured_selected_indices;
+
 #[test]
 fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
     let source = TestSource::new("input Integer m;");
@@ -304,6 +306,7 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,

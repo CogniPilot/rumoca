@@ -322,8 +322,9 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
         vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
         "fmi_me_right_limit_derivative_jvp.mo",
     );
-    solve::SolveModel {
+    let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(Default::default(), 2, 0),
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
                 implicit_row_targets: vec![
@@ -368,7 +369,9 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
         solver_nominals: vec![1.0, 1.0],
         visible_names: vec!["x".to_string(), "a".to_string()],
         ..Default::default()
-    }
+    };
+    crate::test_fixtures::derive_structural_artifacts(&mut model);
+    model
 }
 
 #[test]

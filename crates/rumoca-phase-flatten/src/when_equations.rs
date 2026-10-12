@@ -680,14 +680,14 @@ fn expand_when_for_indices(
         return Ok(all_when_eqs);
     };
 
-    let var_name = index.ident.text.to_string();
+    let var_name = crate::equations::IndexSubstitution::from_index(index)?;
     let range_values = expand_range_indices(ctx, &index.range, prefix, span)?;
     let mut all_when_eqs = Vec::new();
 
     for value in range_values {
         let substituted = equations
             .iter()
-            .map(|eq| substitute_index_in_equation(eq, &var_name, value))
+            .map(|eq| substitute_index_in_equation(eq, var_name, value))
             .collect();
         all_when_eqs.extend(expand_when_for_indices(
             ctx,

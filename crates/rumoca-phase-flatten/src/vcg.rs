@@ -263,7 +263,7 @@ fn collect_vcg_from_for(
     let index_values =
         crate::equations::expand_range_indices(ctx, &first.range, prefix, first.range.span())?;
 
-    let index_name = &first.ident.text;
+    let index_name = crate::equations::IndexSubstitution::from_index(first)?;
     for value in index_values {
         let substituted: Vec<ast::Equation> = equations
             .iter()
@@ -1269,6 +1269,7 @@ mod tests {
     fn for_equation_with_call(call: ast::ComponentReference, range_span: Span) -> ast::Equation {
         ast::Equation::For {
             indices: vec![ast::ForIndex {
+                binder: Some(rumoca_core::IndexBinderProvenance::Generated),
                 ident: token("i"),
                 range: bad_range(range_span),
             }],

@@ -1048,7 +1048,11 @@ fn trace_values<'a>(sim: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
     &sim.data[idx]
 }
 
-fn settled_trace_value_at_time(sim: &rumoca_sim::SimResult, name: &str, time: f64) -> f64 {
+pub(super) fn settled_trace_value_at_time(
+    sim: &rumoca_sim::SimResult,
+    name: &str,
+    time: f64,
+) -> f64 {
     let values = trace_values(sim, name);
     let index = sim
         .times

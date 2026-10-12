@@ -48,13 +48,13 @@
 {%- endif -%}
 {%- endmacro %}
 
-{%- macro scalar_op(op) %}
+{%- macro scalar_op(op, y="y", out="out") %}
 {%- if op.kind == "Const" %}
     let __r{{ op.dst }}: f64 = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}
     let __r{{ op.dst }}: f64 = time;
 {%- elif op.kind == "LoadY" %}
-    let __r{{ op.dst }}: f64 = y[{{ op.index }}];
+    let __r{{ op.dst }}: f64 = {{ y }}[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     let __r{{ op.dst }}: f64 = p[{{ op.index }}];
 {%- elif op.kind == "LoadIndexedP" %}
@@ -87,11 +87,44 @@
     let __r{{ op.dst }}: f64 = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}
     let __r{{ op.dst }}: f64 = if __r{{ op.cond }} != 0.0 { __r{{ op.if_true }} } else { __r{{ op.if_false }} };
+{%- elif op.kind == "LoadFunctionConditionalCapture" %}
+    let __r{{ op.dst }}: f64 = __captures[{{ op.index }}];
+{%- elif op.kind == "FunctionConditional" %}
+    let __result_{{ op.dst }} = {
+        let __captures: [f64; {{ op.capture_count }}] = [{% for offset in range(op.capture_count) %}__r{{ op.capture_start + offset }}{{ ", " if not loop.last else "" }}{% endfor %}];
+        let mut __result = [0.0; {{ op.result_count }}];
+        let mut __taken = false;
+{%- for arm in op.arms %}
+        if !__taken {
+            let mut __condition = [0.0; 1];
+            {
+{%- for child in arm.condition.ops %}
+{{ scalar_op(child, y=y, out="__condition") }}
+{%- endfor %}
+            }
+            if __condition[0] != 0.0 {
+                __taken = true;
+{%- for child in arm.result.ops %}
+{{ scalar_op(child, y=y, out="__result") }}
+{%- endfor %}
+            }
+        }
+{%- endfor %}
+        if !__taken {
+{%- for child in op.fallback.ops %}
+{{ scalar_op(child, y=y, out="__result") }}
+{%- endfor %}
+        }
+        __result
+    };
+{%- for offset in range(op.result_count) %}
+    let __r{{ op.dst + offset }}: f64 = __result_{{ op.dst }}[{{ offset }}];
+{%- endfor %}
 {%- elif op.kind == "StoreOutput" %}
-    out[{{ op.output_index }}] = __r{{ op.src }};
+    {{ out }}[{{ op.output_index }}] = __r{{ op.src }};
 {%- elif op.kind == "StoreOutputRange" %}
 {%- for output_index in op.output_indices %}
-    out[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }};
+    {{ out }}[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }};
 {%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
@@ -105,7 +138,7 @@ pub type Scalar = f64;
 
 pub const Y_LEN: usize = {{ solve.layout.y_scalars }};
 pub const P_LEN: usize = {{ solve.layout.p_scalars }};
-pub const DERIVATIVE_LEN: usize = {{ solve_blocks.continuous.derivative_rhs.output_count }};
+pub const DERIVATIVE_LEN: usize = {{ (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).output_count }};
 
 pub type State = [Scalar; Y_LEN];
 pub type Parameters = [Scalar; P_LEN];
@@ -113,6 +146,52 @@ pub type Derivative = [Scalar; DERIVATIVE_LEN];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SolveError;
+
+
+/// Default value of every compiled parameter slot (P layout). NaN marks a slot
+/// the host must supply (an input) or that `init_params` computes.
+pub const DEFAULT_P: [f64; P_LEN] = [
+{%- for value in solve_parameter_defaults %}
+    {{ value if value is not none else "f64::NAN" }}{{ "," if not loop.last else "" }}
+{%- endfor %}
+];
+
+/// Compute the parameters defined by other parameters (e.g. a weight matrix
+/// built from scalar parameters) in place, from the base parameters already in
+/// `p`. Call after changing any parameter, before `derivative_rhs`.
+pub fn init_params(p: &mut Parameters) -> Result<(), SolveError> {
+    let _ = &p;
+{%- set pinit = solve_blocks.parameter_initialization %}
+{%- if pinit and pinit.output_count > 0 %}
+{%- for program in pinit.scalar_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, out="p") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    Ok(())
+}
+
+
+/// Write the start values that are computed from parameters (e.g. trainable
+/// weights carried as states) into the state slots of `y`; other slots are left
+/// as given. Call after `init_params`.
+pub fn init_state(p: &Parameters, y: &mut State) -> Result<(), SolveError> {
+    let _ = (&p, &y);
+{%- set sinit = solve_blocks.state_initialization %}
+{%- if sinit and sinit.output_count > 0 %}
+{%- for program in sinit.scalar_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, y="y", out="y") }}
+{%- endfor %}
+    }
+{%- endfor %}
+{%- endif %}
+    Ok(())
+}
 
 #[inline]
 pub fn derivative_rhs(
@@ -133,10 +212,26 @@ pub fn derivative_rhs_into(
     out: &mut Derivative,
 ) -> Result<(), SolveError> {
     let _ = time;
-    let _ = y;
     let _ = p;
+{%- set alg = solve_blocks.continuous.algebraic_assignments %}
+{%- set alg_plan = alg.scalar_plan if alg else none %}
+{%- if alg_plan and alg_plan.output_count > 0 %}
+    // Algebraic refresh: the derivative rows read algebraic slots of y. Only
+    // the state slots of the input are read; every algebraic slot is assigned
+    // here first, in checked exact-assignment order (fixed-size, no heap).
+    let mut __y: State = *y;
+{%- for program in alg_plan.programs %}
+    {
+{%- for op in program.ops %}
+{{ scalar_op(op, y="__y", out="__y") }}
+{%- endfor %}
+    }
+{%- endfor %}
+    let y: &State = &__y;
+{%- endif %}
+    let _ = y;
     out.fill(0.0);
-{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
+{%- set plan = (solve_blocks.continuous.derivative_rhs_scalar or solve_blocks.continuous.derivative_rhs).scalar_plan %}
 {%- for program in plan.programs %}
 {%- for op in program.ops %}
 {{ scalar_op(op) }}

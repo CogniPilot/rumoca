@@ -418,7 +418,8 @@ fn a_der_read_target_stays_materialized_and_a_dependent_range_unrolls_its_outer_
 
 /// A consumer of the scalar equation view rejects a family whose interiors
 /// are placeholders at the family's span (SPEC_0043 §6c row 2); the same
-/// equations written as scalars render.
+/// equations written as scalars render, and so does a template that never
+/// reads the model or that reads the loop-aware `flat_equation_rows`.
 #[test]
 fn a_flat_template_over_placeholder_rows_rejects_the_family_at_its_span() {
     use rumoca_compile::codegen::{CodegenError, render_flat_template_with_name};
@@ -437,7 +438,7 @@ fn a_flat_template_over_placeholder_rows_rejects_the_family_at_its_span() {
             .unwrap_or_else(|error| panic!("placeholder compiles: {error:?}"))
             .flat
     };
-    let template = "{{ model_name }}";
+    let template = "{% for eq in flat.equations %}{{ eq.scalar_count }}{% endfor %}";
     match render_flat_template_with_name(&flat(true), template, "Placeholder") {
         Err(CodegenError::NonMaterializedStructuredFamily {
             partition, span, ..
@@ -449,4 +450,13 @@ fn a_flat_template_over_placeholder_rows_rejects_the_family_at_its_span() {
     }
     render_flat_template_with_name(&flat(false), template, "Placeholder")
         .expect("materialized rows render");
+    render_flat_template_with_name(&flat(true), "{{ model_name }}", "Placeholder")
+        .expect("a template that reads no equations reads no placeholder");
+    let loops = render_flat_template_with_name(
+        &flat(true),
+        "{% for row in flat_equation_rows.regular %}{{ row.loop.headers[0] if \"loop\" in row }}{% endfor %}{{ flat.variables | length }}",
+        "Placeholder",
+    )
+    .expect("the loop-aware rows print the family as a loop");
+    assert!(loops.starts_with("for i in 1:4 loop"), "{loops}");
 }

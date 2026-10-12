@@ -25,6 +25,9 @@ use super::selected_manifest;
 use super::trace::{Trace, split_csv_record};
 use super::verdict::judge;
 
+#[cfg(unix)]
+mod source_roots;
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -930,9 +933,7 @@ fn selecting_an_unknown_row_is_an_error() {
     );
 }
 
-/// An explicitly named models root is authoritative: when it is unusable the
-/// candidate list holds only it, so resolution falls through to "corpus
-/// unmeasured" instead of silently measuring a usable fallback.
+/// Both argv and config name authoritative roots, never fallback preferences.
 #[test]
 fn an_explicit_models_root_is_never_replaced_by_a_fallback() {
     let scratch = tempfile::tempdir().expect("temp dir for the probe");
@@ -941,13 +942,13 @@ fn an_explicit_models_root_is_never_replaced_by_a_fallback() {
         models_root: Some(scratch.path().join("some-other-corpus")),
         msl_root: None,
     };
-    let candidates =
-        super::roots::flight_model_candidates(scratch.path(), Some(&missing), Some(&config));
     assert_eq!(
-        candidates.len(),
-        1,
-        "an explicit root must be the only candidate, got: {candidates:?}"
+        super::roots::named_flight_root(Some(&missing), Some(&config)),
+        Some(missing.as_path())
     );
-    assert_eq!(candidates[0].0, "--models-root");
-    assert_eq!(candidates[0].1, missing);
+    assert_eq!(
+        super::roots::named_flight_root(None, Some(&config)),
+        config.models_root.as_deref()
+    );
+    assert!(super::roots::named_flight_root(None, None).is_none());
 }

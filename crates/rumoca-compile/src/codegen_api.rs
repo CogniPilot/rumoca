@@ -38,8 +38,8 @@ pub fn render_ast_template_with_name(
 }
 
 pub use rumoca_phase_codegen::{
-    SolveTemplateRenderer, render_algorithm_code_template_with_artifact,
-    render_solve_template_with_name,
+    AlgorithmCodeTemplateRenderer, SolveTemplateRenderer,
+    render_algorithm_code_template_with_artifact, render_solve_template_with_name,
 };
 
 /// Built-in target metadata, re-exported from the codegen crate.

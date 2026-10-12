@@ -89,10 +89,10 @@ impl<'dae> LoweredClocks<'dae> {
     }
 
     /// Define the tick condition of every MLS §16.3 event clock: the clock
-    /// ticks when `edge(pre(condition))` becomes true. The condition reads its
-    /// Boolean coordinate, and the tick programs read their conditions at the
-    /// entry of each event iteration (SOLVE-C58), so a rise of the coordinate
-    /// ticks the clock one iteration later, at the same instant.
+    /// ticks when `edge(pre(condition))` becomes true. Its checked pre
+    /// coordinate stays fixed while the ordinary equations settle, so transient
+    /// iterates cannot activate the clock. A settled rise ticks the clock one
+    /// event iteration later, at the same instant.
     pub(super) fn define_event_conditions(
         &mut self,
         construction: &mut dae::DaeConstruction<'dae>,
@@ -162,7 +162,7 @@ fn event_condition<'dae>(
     construction.expressions(|expressions| {
         expressions
             .at(provenance)
-            .coordinate(dae::CoordinateInput::DiscreteValue(variable))
+            .coordinate(dae::CoordinateInput::PreDiscreteValue(variable))
     })
 }
 

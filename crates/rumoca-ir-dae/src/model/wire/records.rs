@@ -75,6 +75,8 @@ pub(super) struct VariableAttributesInput {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
+    pub(super) construction_start: u32,
+    pub(super) construction_end: u32,
     pub(super) name: Name,
     pub(super) parameters: Vec<FunctionNamedValueWire<Name>>,
     pub(super) outputs: Vec<FunctionNamedValueWire<Name>>,
@@ -412,12 +414,17 @@ pub(super) enum RootEntryWire {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct StructuredRootEntryWire {
-    pub(super) domain: u32,
-    pub(super) expression: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    pub(super) provenance: DaeProvenance,
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum StructuredRootEntryWire {
+    Root {
+        domain: u32,
+        expression: u32,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+    QuotientOwner {
+        owner: u32,
+    },
 }
 
 #[derive(Deserialize)]

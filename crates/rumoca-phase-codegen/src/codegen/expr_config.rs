@@ -17,6 +17,14 @@ pub(crate) struct ExprConfig {
     pub(crate) if_style: IfStyle,
     /// When false, keep dots in variable/function names instead of replacing with underscores.
     pub(crate) sanitize_dots: bool,
+    /// When true, render a dotted variable name (a flattened hierarchical
+    /// component such as `src.p.v`) as a quoted Modelica identifier
+    /// (`'src.p.v'`). Function names keep their package path.
+    pub(crate) quote_dotted: bool,
+    /// The declared variables (a map keyed by name). With `quote_dotted`, only
+    /// names found here are quoted, so enumeration literals and other dotted
+    /// type paths (`Modelica.Blocks.Types.Init.InitialState`) stay unquoted.
+    pub(crate) quote_names: Option<Value>,
     /// When true, use 1-based indexing (Modelica) instead of 0-based (Python).
     pub(crate) one_based_index: bool,
     /// When true, use Modelica builtin names (abs, min, max) instead of Python (fabs, fmin, fmax).
@@ -75,6 +83,8 @@ impl Default for ExprConfig {
             array_end: "]".to_string(),
             if_style: IfStyle::Function,
             sanitize_dots: true,
+            quote_dotted: false,
+            quote_names: None,
             one_based_index: false,
             modelica_builtins: false,
             mul_elem_fn: None,
@@ -151,6 +161,12 @@ impl ExprConfig {
         }
         if let Some(enabled) = get_bool_attr(v, "sanitize_dots") {
             cfg.sanitize_dots = enabled;
+        }
+        if let Some(enabled) = get_bool_attr(v, "quote_dotted") {
+            cfg.quote_dotted = enabled;
+        }
+        if let Some(names) = get_present_attr(v, "quote_names") {
+            cfg.quote_names = Some(names);
         }
         if let Some(enabled) = get_bool_attr(v, "one_based_index") {
             cfg.one_based_index = enabled;

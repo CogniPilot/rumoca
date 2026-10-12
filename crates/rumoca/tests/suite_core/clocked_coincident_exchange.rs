@@ -18,8 +18,8 @@ use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 const SHIFT_TRANSFER_FIRST: &str = r#"
 model CoincidentShift
   Clock clk = Clock(20, 1000);
-  discrete Real xs(start = 0);
-  discrete Real ys(start = 0);
+  Real xs(start = 0);
+  Real ys(start = 0);
 equation
   ys = shiftSample(xs, 2, 1);
   xs = sample(sin(12.566370614359172 * time), clk);
@@ -29,8 +29,8 @@ end CoincidentShift;
 const SHIFT_SOURCE_FIRST: &str = r#"
 model CoincidentShift
   Clock clk = Clock(20, 1000);
-  discrete Real xs(start = 0);
-  discrete Real ys(start = 0);
+  Real xs(start = 0);
+  Real ys(start = 0);
 equation
   xs = sample(sin(12.566370614359172 * time), clk);
   ys = shiftSample(xs, 2, 1);
@@ -40,8 +40,8 @@ end CoincidentShift;
 const SUB_TRANSFER_FIRST: &str = r#"
 model CoincidentSub
   Clock clk = Clock(20, 1000);
-  discrete Real xs(start = 0);
-  discrete Real ys(start = 0);
+  Real xs(start = 0);
+  Real ys(start = 0);
 equation
   ys = subSample(xs, 2);
   xs = sample(sin(12.566370614359172 * time), clk);
@@ -51,8 +51,8 @@ end CoincidentSub;
 const SUB_SOURCE_FIRST: &str = r#"
 model CoincidentSub
   Clock clk = Clock(20, 1000);
-  discrete Real xs(start = 0);
-  discrete Real ys(start = 0);
+  Real xs(start = 0);
+  Real ys(start = 0);
 equation
   xs = sample(sin(12.566370614359172 * time), clk);
   ys = subSample(xs, 2);

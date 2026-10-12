@@ -139,6 +139,7 @@ pub(super) fn lower_algorithm_assignment<'dae>(
                 function_body: None,
                 values: Some(context.values),
                 owner_clock: guard.owner_clock,
+                source_comprehension_binders: None,
             };
             lower_array_update(
                 construction,
@@ -494,7 +495,7 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
     Ok(())
 }
 
-fn own_clocked_function_outputs<'dae>(
+pub(super) fn own_clocked_function_outputs<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     clock: dae::ClockId<'dae>,

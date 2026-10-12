@@ -9,6 +9,7 @@
 use super::preservation_values::{Environment, Refusal, Value};
 use super::*;
 use rumoca_core::{BuiltinFunction, ComponentReference, Literal, OpBinary, OpUnary};
+use std::ops::ControlFlow;
 
 /// Statements one interpretation may execute before it is declared divergent.
 const STATEMENT_BUDGET: u32 = 200_000;
@@ -42,7 +43,9 @@ pub(super) fn interpret_with_limits(
         fuel,
         extent_budget,
     };
-    interpreter.sequence(statements)?;
+    if interpreter.sequence(statements)?.is_break() {
+        return Err(Refusal::UnsupportedStatement);
+    }
     Ok(interpreter.environment)
 }
 
@@ -53,20 +56,29 @@ struct Interpreter {
 }
 
 impl Interpreter {
-    fn sequence(&mut self, statements: &[rumoca_core::Statement]) -> Result<(), Refusal> {
+    fn sequence(
+        &mut self,
+        statements: &[rumoca_core::Statement],
+    ) -> Result<ControlFlow<()>, Refusal> {
         for statement in statements {
-            self.statement(statement)?;
+            if self.statement(statement)?.is_break() {
+                return Ok(ControlFlow::Break(()));
+            }
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
-    fn statement(&mut self, statement: &rumoca_core::Statement) -> Result<(), Refusal> {
+    fn statement(
+        &mut self,
+        statement: &rumoca_core::Statement,
+    ) -> Result<ControlFlow<()>, Refusal> {
         self.fuel = self.fuel.checked_sub(1).ok_or(Refusal::FuelExhausted)?;
         match statement {
-            rumoca_core::Statement::Empty { .. } => Ok(()),
+            rumoca_core::Statement::Empty { .. } => Ok(ControlFlow::Continue(())),
+            rumoca_core::Statement::Break { .. } => Ok(ControlFlow::Break(())),
             rumoca_core::Statement::Assignment { comp, value, .. } => {
                 let value = self.expression(value)?;
-                self.store(comp, value)
+                self.store(comp, value).map(ControlFlow::Continue)
             }
             rumoca_core::Statement::For {
                 indices, equations, ..
@@ -84,7 +96,7 @@ impl Interpreter {
         &mut self,
         cond_blocks: &[rumoca_core::StatementBlock],
         else_block: Option<&[rumoca_core::Statement]>,
-    ) -> Result<(), Refusal> {
+    ) -> Result<ControlFlow<()>, Refusal> {
         for block in cond_blocks {
             if self.expression(&block.cond)?.as_boolean()? {
                 return self.sequence(&block.stmts);
@@ -92,7 +104,7 @@ impl Interpreter {
         }
         match else_block {
             Some(statements) => self.sequence(statements),
-            None => Ok(()),
+            None => Ok(ControlFlow::Continue(())),
         }
     }
 
@@ -102,7 +114,7 @@ impl Interpreter {
         &mut self,
         indices: &[rumoca_core::ForIndex],
         body: &[rumoca_core::Statement],
-    ) -> Result<(), Refusal> {
+    ) -> Result<ControlFlow<()>, Refusal> {
         let Some((index, rest)) = indices.split_first() else {
             return self.sequence(body);
         };
@@ -112,13 +124,15 @@ impl Interpreter {
         for coordinate in coordinates {
             self.environment
                 .insert(name.clone(), Value::Integer(coordinate));
-            self.for_statement(rest, body)?;
+            if self.for_statement(rest, body)?.is_break() {
+                break;
+            }
         }
         match shadowed {
             Some(value) => self.environment.insert(name, value),
             None => self.environment.remove(&name),
         };
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     fn range_coordinates(&mut self, range: &Expression) -> Result<Vec<i64>, Refusal> {

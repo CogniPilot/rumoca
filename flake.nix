@@ -114,6 +114,7 @@
             doCheck = false;
           }))
           ps.numpy
+          ps.matplotlib
           ps.pandas
           ps.pip
           ps.sympy
@@ -362,12 +363,15 @@
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
         );
-        docsShell = mkDevShell [
-          pkgs.binaryen
-          pkgs.mdbook
-          pkgs.nodejs_22
-          pkgs.wasm-pack
-        ];
+        docsShell = mkDevShell (
+          [
+            pkgs.binaryen
+            pkgs.mdbook
+            pkgs.nodejs_22
+            pkgs.wasm-pack
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ]
+        );
         fullShell = templateRuntimeShell (
           pkgs.lib.optionals pkgs.stdenv.isLinux [
             ciJulia
@@ -381,6 +385,7 @@
             pkgs.cargo-expand
             pkgs.cargo-llvm-cov
             pkgs.cargo-nextest
+            pkgs.cmake
             pkgs.hyperfine
             pkgs.jq
             pkgs.libxml2
@@ -454,6 +459,7 @@
         devShells.ci-python-wheel = mkDevShell [
           pkgs.maturin
           pkgs.python312
+          pkgs.cmake
           # `zig` lets `maturin build --zig` cross-link the Linux wheels
           # against an older glibc, so they carry a real manylinux platform
           # tag that PyPI accepts instead of a bare `linux_*` tag.

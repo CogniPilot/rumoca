@@ -817,6 +817,8 @@ pub struct StatementBlock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 
 pub struct ForIndex {
+    #[serde(default)]
+    pub binder: Option<rumoca_core::IndexBinderProvenance>,
     pub ident: Token,
     pub range: Expression,
 }

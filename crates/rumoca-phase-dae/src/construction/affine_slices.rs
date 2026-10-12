@@ -122,6 +122,7 @@ pub(super) fn lower<'dae>(
             binders.values().copied(),
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: name.clone(),
                     lower: 1,

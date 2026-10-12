@@ -1,8 +1,12 @@
+mod scalar_types;
+pub(super) use scalar_types::{effective_function_scalar_type, effective_variable_scalar_type};
+
 mod branch_snapshots;
 mod clocks;
 mod comprehensions;
 mod delays;
 mod derived_parameters;
+mod discrete_real_ownership;
 mod discrete_time_definitions;
 mod discrete_values;
 mod equation_partitions;
@@ -139,8 +143,11 @@ use initial_algorithms::{
     negate, reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
-use model_algorithm_calls::analyze_event_function_calls;
-pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
+pub(super) use model_algorithm_calls::{
+    ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, WhenFunctionCallKey,
+    when_function_call_key,
+};
+use model_algorithm_calls::{analyze_event_function_calls, analyze_when_function_calls};
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithm_statements::{collect_algorithm_writes, names_overlap};
 use model_algorithms::analyze_model_algorithm;
@@ -216,6 +223,8 @@ pub(super) struct Analysis {
     /// Owning clock of every runtime coordinate in a clocked partition.
     pub(super) clocked_coordinate_owners: HashMap<InstanceId, ClockPlan>,
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
+    /// The checked owner of each multi-output call in a `when` body.
+    pub(super) when_function_calls: HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: HashMap<VarName, Expression>,
     /// `final` or `Evaluate=true` parameters with evaluable bindings (MLS §18.6).
@@ -510,6 +519,7 @@ struct FunctionValidationContext<'scope> {
     flat: &'scope flat::Model,
     roles: &'scope HashMap<VarName, PlannedRole>,
     static_integers: &'scope HashMap<VarName, i64>,
+    comprehension_values: Option<&'scope function_definitions::ComprehensionValues>,
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
     generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],
@@ -714,6 +724,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &constants,
         &function_shapes,
     )?;
+    let when_function_calls = analyze_when_function_calls(flat, &roles, &function_shapes)?;
+    discrete_real_ownership::validate_declared_discrete_real(flat)?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &templates, &roles, &record_equations.continuous)?;
     let initial = analyze_initial_owners(
@@ -774,6 +786,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_when_owners: clock_domains.when_owners,
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
+        when_function_calls,
         initial_parameters: initial.algorithms.parameters,
         evaluable_parameters: evaluable,
         structural_selections,
@@ -1943,53 +1956,4 @@ pub(super) fn structured_assignment_names<'a>(
     }
     pairs.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
     Some(pairs)
-}
-
-pub(super) fn effective_function_scalar_type(
-    flat: &flat::Model,
-    value: &rumoca_core::FunctionParam,
-) -> Option<dae::ScalarType> {
-    let canonical = value.effective_type.canonical_type();
-    if canonical == flat.predefined_types.real {
-        Some(dae::ScalarType::Real)
-    } else if canonical == flat.predefined_types.integer {
-        Some(dae::ScalarType::Integer)
-    } else if canonical == flat.predefined_types.boolean {
-        Some(dae::ScalarType::Boolean)
-    } else if canonical == flat.predefined_types.string {
-        Some(dae::ScalarType::String)
-    } else if flat.enumeration_type_roots.contains(&canonical) {
-        Some(dae::ScalarType::Enumeration)
-    } else {
-        None
-    }
-}
-
-pub(super) fn effective_variable_scalar_type(
-    flat: &flat::Model,
-    variable: &flat::Variable,
-) -> Option<dae::ScalarType> {
-    let canonical = flat
-        .effective_types
-        .get(&variable.type_id)?
-        .canonical_type();
-    if canonical == flat.predefined_types.real {
-        Some(dae::ScalarType::Real)
-    } else if canonical == flat.predefined_types.integer {
-        Some(dae::ScalarType::Integer)
-    } else if canonical == flat.predefined_types.boolean {
-        Some(dae::ScalarType::Boolean)
-    } else if canonical == flat.predefined_types.string {
-        Some(dae::ScalarType::String)
-    } else if flat.enumeration_types.contains(&variable.type_id) {
-        Some(dae::ScalarType::Enumeration)
-    } else if crate::construction::native_tables::native_table_family_of_variable(flat, variable)
-        .is_some()
-    {
-        // MLS §12.9.7: a native standard-library table handle is an opaque
-        // ExternalObject, modeled as an integer table id (never a Real).
-        Some(dae::ScalarType::Integer)
-    } else {
-        None
-    }
 }

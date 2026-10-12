@@ -33,28 +33,30 @@ pub(super) struct WhenChainsRequest<'input, 'shape, 'dae> {
     sample_lattices: &'input [(Span, PeriodicClockSchedule)],
     clocks: &'input LoweredClocks<'dae>,
     chains: &'input [flat::WhenChain],
+    flat: &'input flat::Model,
     topology: &'input DiscreteValueTopologyPlan,
     when_owners: &'input HashMap<WhenBranchKey, ClockPlan>,
+    function_calls: &'input HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 }
 
 impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
-    pub(super) const fn new(
+    pub(super) fn new(
         coordinates: &'input HashMap<VarName, Coordinate<'dae>>,
         functions: &'input FunctionRegistry<'shape, 'dae>,
-        sample_lattices: &'input [(Span, PeriodicClockSchedule)],
         clocks: &'input LoweredClocks<'dae>,
-        chains: &'input [flat::WhenChain],
-        topology: &'input DiscreteValueTopologyPlan,
-        when_owners: &'input HashMap<WhenBranchKey, ClockPlan>,
+        flat: &'input flat::Model,
+        analysis: &'input Analysis,
     ) -> Self {
         Self {
             coordinates,
             functions,
-            sample_lattices,
+            sample_lattices: &analysis.sample_lattices,
             clocks,
-            chains,
-            topology,
-            when_owners,
+            chains: &flat.when_chains,
+            flat,
+            topology: &analysis.discrete_value_topology,
+            when_owners: &analysis.clocked_when_owners,
+            function_calls: &analysis.when_function_calls,
         }
     }
 }
@@ -163,10 +165,12 @@ pub(super) fn lower_when_chains<'dae>(
 fn when_chain_discrete_value_targets<'dae>(
     chain: &flat::WhenChain,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    flat: &flat::Model,
 ) -> Vec<VarName> {
     let mut targets = HashSet::new();
     for branch in chain.branches() {
-        collect_when_targets(&branch.equations, &mut targets);
+        collect_when_targets(&branch.equations, function_calls, &mut targets, flat);
     }
     let mut targets = targets
         .into_iter()
@@ -179,7 +183,12 @@ fn when_chain_discrete_value_targets<'dae>(
     targets
 }
 
-fn collect_when_targets(equations: &[flat::WhenEquation], targets: &mut HashSet<VarName>) {
+fn collect_when_targets(
+    equations: &[flat::WhenEquation],
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    targets: &mut HashSet<VarName>,
+    flat: &flat::Model,
+) {
     for equation in equations {
         match equation {
             flat::WhenEquation::Assign { target, .. } => {
@@ -189,11 +198,32 @@ fn collect_when_targets(equations: &[flat::WhenEquation], targets: &mut HashSet<
                 branches,
                 else_branch,
                 ..
-            } => collect_conditional_targets(branches, else_branch.as_deref(), targets),
+            } => collect_conditional_targets(
+                branches,
+                else_branch.as_deref(),
+                function_calls,
+                targets,
+                flat,
+            ),
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs: receivers,
+                span,
+                ..
+            } => {
+                let outputs = function_calls[&when_function_call_key(flat, receivers, *span)
+                    .expect("analysis checked the receiver InstanceIds")]
+                    .outputs
+                    .iter()
+                    .flatten();
+                targets.extend(
+                    outputs
+                        .flat_map(ModelEventFunctionOutputPlan::receivers)
+                        .map(|(target, _)| target.clone()),
+                );
+            }
             flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
-            | flat::WhenEquation::Terminate { .. }
-            | flat::WhenEquation::FunctionCallOutputs { .. } => {}
+            | flat::WhenEquation::Terminate { .. } => {}
         }
     }
 }
@@ -201,13 +231,15 @@ fn collect_when_targets(equations: &[flat::WhenEquation], targets: &mut HashSet<
 fn collect_conditional_targets(
     branches: &[(Expression, Vec<flat::WhenEquation>)],
     else_branch: Option<&[flat::WhenEquation]>,
+    function_calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
     targets: &mut HashSet<VarName>,
+    flat: &flat::Model,
 ) {
     for (_, equations) in branches {
-        collect_when_targets(equations, targets);
+        collect_when_targets(equations, function_calls, targets, flat);
     }
     if let Some(equations) = else_branch {
-        collect_when_targets(equations, targets);
+        collect_when_targets(equations, function_calls, targets, flat);
     }
 }
 
@@ -220,7 +252,12 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         let owner_provenance = dae::DaeProvenance::source(chain.span())?;
         let discrete_value = self.discrete_values.owner(
             owner_provenance,
-            when_chain_discrete_value_targets(chain, self.request.coordinates),
+            when_chain_discrete_value_targets(
+                chain,
+                self.request.coordinates,
+                self.request.function_calls,
+                self.request.flat,
+            ),
             self.request.coordinates,
             self.request.topology,
         )?;
@@ -302,12 +339,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     ) -> Result<(), dae::DaeConstructionError> {
         for (branch, guard) in chain.branches().zip(guards) {
             if let Some(clock) = guard.owner_clock {
-                own_clocked_targets(
-                    self.construction,
-                    self.request.coordinates,
-                    clock,
-                    &branch.equations,
-                )?;
+                own_clocked_targets(self.construction, self.request, clock, &branch.equations)?;
             }
         }
         Ok(())
@@ -316,10 +348,11 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
 
 fn own_clocked_targets<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    request: WhenChainsRequest<'_, '_, 'dae>,
     clock: dae::ClockId<'dae>,
     equations: &[flat::WhenEquation],
 ) -> Result<(), dae::DaeConstructionError> {
+    let coordinates = request.coordinates;
     for equation in equations {
         match equation {
             flat::WhenEquation::Assign { target, .. } => {
@@ -342,17 +375,33 @@ fn own_clocked_targets<'dae>(
                 ..
             } => {
                 for (_, branch) in branches {
-                    own_clocked_targets(construction, coordinates, clock, branch)?;
+                    own_clocked_targets(construction, request, clock, branch)?;
                 }
                 if let Some(else_branch) = else_branch {
-                    own_clocked_targets(construction, coordinates, clock, else_branch)?;
+                    own_clocked_targets(construction, request, clock, else_branch)?;
                 }
             }
             flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. } => {}
-            flat::WhenEquation::FunctionCallOutputs { .. } => {
-                unreachable!("analysis rejects unchecked event function calls")
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs: receivers,
+                span,
+                ..
+            } => {
+                own_clocked_function_outputs(
+                    construction,
+                    coordinates,
+                    clock,
+                    &request.function_calls[&when_function_call_key(
+                        request.flat,
+                        receivers,
+                        *span,
+                    )
+                    .expect("analysis checked the receiver InstanceIds")]
+                        .outputs,
+                    *span,
+                )?;
             }
         }
     }
@@ -368,13 +417,23 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     {
         let expression = &branch.condition;
         let Some((clock, span)) = self.branch_clock(branch, key)? else {
-            return lower_condition(
+            let (condition, periodic) = lower_condition(
                 self.construction,
                 self.request.coordinates,
                 self.request.functions,
                 self.request.sample_lattices,
                 expression,
-            );
+            )?;
+            // MLS §3.7.5/§8.3.5 Boolean sample when-equations retain their
+            // exact ticks without imposing a §16 value partition. Source
+            // Clock branches take the separately certified path below;
+            // DAE-C21 algorithm transactions keep their scheduled owner.
+            let condition = if periodic.is_some() {
+                unowned_tick_activation(self.construction, condition, branch.span)?
+            } else {
+                condition
+            };
+            return Ok((condition, None));
         };
         let provenance = dae::DaeProvenance::source(span)?;
         let condition = self
@@ -473,9 +532,12 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 else_branch.as_deref(),
                 equation.span(),
             ),
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
-                unreachable!("analysis explicitly rejects event function-call outputs at {span:?}")
-            }
+            flat::WhenEquation::FunctionCallOutputs {
+                function,
+                outputs,
+                span,
+                origin: _,
+            } => self.lower_function_call_outputs(owners, guard, function, outputs, *span),
         }
     }
 
@@ -493,7 +555,26 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             self.target_owners
                 .claim_discrete_real(target, owners.source, span)?;
         }
-        let value = match guard.owner_clock {
+        let value = self.lower_body_value(guard, value)?;
+        lower_when_assignment(
+            self.construction,
+            self.discrete_values,
+            owners.discrete_value,
+            coordinate,
+            guard,
+            value,
+            provenance,
+        )
+    }
+
+    /// A value the when body reads, in the owning partition's clock scope
+    /// when the body is clocked.
+    fn lower_body_value(
+        &mut self,
+        guard: EventGuard<'dae>,
+        value: &Expression,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+        match guard.owner_clock {
             Some(clock) => lower_clocked_expression(
                 self.construction,
                 self.request.coordinates,
@@ -501,15 +582,90 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 clock,
                 value,
                 None,
-            )?,
+            ),
             None => lower_expression(
                 self.construction,
                 self.request.coordinates,
                 self.request.functions,
                 value,
                 None,
-            )?,
+            ),
+        }
+    }
+
+    /// MLS §8.3.5 `(a, b) = f(x)` in a when body.
+    ///
+    /// The call is one canonical DAE call whose selected results are
+    /// projected by ordinal, and every receiver is then assigned under the
+    /// branch activation exactly like a single-target when equation. Analysis
+    /// proved each receiver's type and shape and that a call with several
+    /// receivers is pure, so the projections may be evaluated independently.
+    fn lower_function_call_outputs(
+        &mut self,
+        owners: WhenSemanticOwners,
+        guard: EventGuard<'dae>,
+        function: &Expression,
+        outputs: &[VarName],
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let Expression::FunctionCall { name, args, .. } = function else {
+            unreachable!("analysis proves when function-call outputs call one function")
         };
+        let key = when_function_call_key(self.request.flat, outputs, span)
+            .expect("analysis checked the receiver InstanceIds");
+        let plan = &self.request.function_calls[&key];
+        let selected = self.request.functions.select(
+            name,
+            args,
+            self.request.functions.shapes.model_values(),
+            span,
+        )?;
+        let arguments = args
+            .iter()
+            .map(|argument| self.lower_body_value(guard, argument))
+            .collect::<Result<Vec<_>, _>>()?;
+        let provenance = dae::DaeProvenance::source(span)?;
+        let receivers = plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, output)| output.as_ref().map(|output| (ordinal, output)))
+            .collect::<Vec<_>>();
+        let values = self.construction.expressions(|expressions| {
+            expressions.at(provenance).call_results(
+                selected,
+                receivers.iter().map(|(ordinal, _)| *ordinal),
+                arguments.iter().copied(),
+            )
+        })?;
+        for ((_, output), value) in receivers.into_iter().zip(values) {
+            for (target, projection) in output.receivers() {
+                self.lower_call_receiver(owners, guard, target, value, projection, span)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_call_receiver(
+        &mut self,
+        owners: WhenSemanticOwners,
+        guard: EventGuard<'dae>,
+        target: &VarName,
+        mut value: dae::ExprId<'dae>,
+        projection: &[usize],
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let provenance = dae::DaeProvenance::source(span)?;
+        for ordinal in projection {
+            value = self
+                .construction
+                .expressions(|expressions| expressions.at(provenance).field(value, *ordinal))?;
+        }
+        let coordinate = self.request.coordinates[target];
+        if let Coordinate::DiscreteReal(target) = coordinate {
+            self.target_owners
+                .claim_discrete_real(target, owners.source, span)?;
+        }
         lower_when_assignment(
             self.construction,
             self.discrete_values,
@@ -576,13 +732,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             })?;
             return Ok(());
         }
-        let (condition, _) = lower_condition(
-            self.construction,
-            self.request.coordinates,
-            self.request.functions,
-            self.request.sample_lattices,
-            condition,
-        )?;
+        let condition = self.lower_body_condition(guard, condition, span)?;
         let failed = negate_condition(self.construction, condition, span)?;
         let action_guard =
             combine_conditions(self.construction, guard.condition, failed, false, span)?;
@@ -705,32 +855,15 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     /// In a clocked body the condition is a clocked Boolean value of the
     /// partition (MLS §16.2.1): it reads the partition's `previous` and
     /// clocked coordinates and is evaluated once at the tick, so it is lowered
-    /// in the partition's clock scope and owns no event of its own. An
-    /// unclocked body keeps the ordinary event condition.
+    /// in the partition's clock scope. MLS §8.5 gives every when body
+    /// implicit `noEvent`, so its condition owns no activation relation.
     fn lower_body_condition(
         &mut self,
         parent: EventGuard<'dae>,
         condition: &Expression,
         span: Span,
     ) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
-        let Some(clock) = parent.owner_clock else {
-            let (condition, _) = lower_condition(
-                self.construction,
-                self.request.coordinates,
-                self.request.functions,
-                self.request.sample_lattices,
-                condition,
-            )?;
-            return Ok(condition);
-        };
-        let value = lower_clocked_expression(
-            self.construction,
-            self.request.coordinates,
-            self.request.functions,
-            clock,
-            condition,
-            None,
-        )?;
+        let value = self.lower_body_value(parent, condition)?;
         let provenance = dae::DaeProvenance::source(span)?;
         let lowered = self
             .construction

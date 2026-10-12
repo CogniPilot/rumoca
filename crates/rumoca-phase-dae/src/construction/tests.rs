@@ -1,3 +1,4 @@
+mod b1c_source_templates;
 mod boundary;
 mod clocks_temporal;
 mod conditional_fold;

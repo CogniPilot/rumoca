@@ -271,12 +271,17 @@ impl Context {
         var_bindings: &[ParamBinding<'_>],
     ) {
         const MAX_PASSES: usize = 10;
+        let scalar_params = params
+            .iter()
+            .copied()
+            .filter(|param| !param.aggregate)
+            .collect::<Vec<_>>();
         for _pass in 0..MAX_PASSES {
             let enum_progress = self.eval_enum_param_bindings(params);
             let aggregate_progress = self.eval_aggregate_param_bindings(params);
-            let real_progress = self.eval_real_params(params);
-            let int_progress = self.eval_integer_param_bindings(params);
-            let bool_progress = self.eval_boolean_params(params);
+            let real_progress = self.eval_real_params(&scalar_params);
+            let int_progress = self.eval_integer_param_bindings(&scalar_params);
+            let bool_progress = self.eval_boolean_params(&scalar_params);
             let dim_progress = self.eval_array_dimensions(var_bindings);
             let varref_dim_progress = self.propagate_varref_dimensions(var_bindings);
             let alias_progress = self.propagate_through_aliases(params);

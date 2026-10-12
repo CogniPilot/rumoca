@@ -716,6 +716,7 @@ fn declare_sum_function<'dae>(
         domains.structured(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "k".to_owned(),
                     lower: 1,

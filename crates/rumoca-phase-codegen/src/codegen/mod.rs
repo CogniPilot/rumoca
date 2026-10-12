@@ -20,6 +20,7 @@ mod dae_backend;
 mod dae_diagnostics;
 mod discrete_render_view;
 mod expr_config;
+mod flat_family_loops;
 mod fmi_c_assertions;
 #[cfg(test)]
 mod fmi_projection_tests;
@@ -72,11 +73,15 @@ use render_solve::{
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
-    allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
+    allocate_symbols_function, emitted_symbol, emitted_variable_symbol, lookup_symbol_value,
+    symbol_function,
 };
 
 pub use me_projection::me_refresh_admissible;
-pub use solve_lazy::explicit_algebraic_assignment_complete;
+pub use solve_lazy::{
+    explicit_algebraic_assignment_complete, explicit_algebraic_assignment_complete_with_calls,
+    explicit_initialization_renderable_with_calls,
+};
 
 /// Result type for internal render functions.
 pub(crate) type RenderResult = Result<String, minijinja::Error>;
@@ -169,7 +174,17 @@ fn render_with_input_context(
             render_solve_context(tmpl, problem, artifacts, name)?
         }
         (CodegenInput::Flat(flat_model), name) => {
-            require_materialized_flat_equation_view(flat_model)?;
+            // Only a template that reads the model can read a placeholder row
+            // (a file-path template reads just the name), and one that reads
+            // the loop-aware rows prints each unmaterialized `for` family as a
+            // loop instead of its rows.
+            let reads = tmpl.undeclared_variables(false);
+            if reads.contains("flat") || reads.contains("ir") {
+                require_materialized_flat_equation_view(
+                    flat_model,
+                    reads.contains(flat_family_loops::CONTEXT_KEY),
+                )?;
+            }
             render_flat_context(tmpl, flat_model, name)?
         }
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
@@ -195,7 +210,10 @@ fn render_with_input_context(
     Ok(rendered)
 }
 
-fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(), CodegenError> {
+fn require_materialized_flat_equation_view(
+    flat_model: &flat::Model,
+    prints_loops: bool,
+) -> Result<(), CodegenError> {
     for (partition, families) in [
         (
             "regular equations",
@@ -206,10 +224,10 @@ fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(
             flat_model.initial_structured_equations.as_slice(),
         ),
     ] {
-        if let Some(family) = families
-            .iter()
-            .find(|family| !family.interiors_materialized())
-        {
+        if let Some(family) = families.iter().find(|family| {
+            let printed_as_loop = prints_loops && flat_family_loops::printable(family);
+            !family.interiors_materialized() && !printed_as_loop
+        }) {
             return Err(CodegenError::NonMaterializedStructuredFamily {
                 partition,
                 origin: family.origin.to_string(),
@@ -255,21 +273,63 @@ fn render_solve_context(
     )?)?)
 }
 
+struct PreparedSolveBlocks {
+    value: Value,
+    scalar_derivative_programs: bool,
+}
+
 fn solve_template_blocks_value(
     solve_problem: &solve::SolveProblem,
     artifacts: &solve::SolveArtifacts,
-) -> Result<Value, CodegenError> {
-    Ok(minijinja::context! {
+    pure_calls: Option<&solve::SolvePureCallTable>,
+) -> Result<PreparedSolveBlocks, CodegenError> {
+    let derivative_scalar =
+        solve_lazy::scalar_lowered_block(&solve_problem.continuous.derivative_rhs, pure_calls)?;
+    let scalar_derivative_programs = derivative_scalar.is_some();
+    let initialization = solve_lazy::initialization_blocks(solve_problem, pure_calls)?;
+    let value = minijinja::context! {
         continuous => minijinja::context! {
             implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
             residual => solve_template_compute_block_json(&solve_problem.continuous.residual)?,
             derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
+            // The same rows with single-lane tensor register ops lowered to
+            // scalar ops, for templates that render scalar ops only. Absent
+            // (none) when a program holds an op no scalar template renders.
+            derivative_rhs_scalar => match derivative_scalar {
+                Some(block) => solve_template_compute_block_json(&block)?,
+                None => Value::from(()),
+            },
+            // Exact algebraic refresh for pure-RHS targets: render before
+            // `derivative_rhs` so every algebraic `y` slot it reads is set.
+            // Absent (none) unless every algebraic slot has an exact assignment.
+            algebraic_assignments => match solve_lazy::explicit_algebraic_assignment_block(solve_problem, pure_calls)? {
+                Some(block) => solve_template_compute_block_json(&block)?,
+                None => Value::from(()),
+            },
+        },
+        // The explicit initialization's parameter assignments (computed
+        // parameters such as a weight matrix built from other parameters) for
+        // targets without an initialization solver: render as
+        // `init_params(p)`. Absent (none) when there are none.
+        parameter_initialization => match initialization.parameters {
+            Some(block) => solve_template_compute_block_json(&block)?,
+            None => Value::from(()),
+        },
+        // Explicit state starts computed from parameters, rendered as
+        // `init_state(p)`; absent (none) when there are none.
+        state_initialization => match initialization.states {
+            Some(block) => solve_template_compute_block_json(&block)?,
+            None => Value::from(()),
         },
         artifacts => minijinja::context! {
             continuous => minijinja::context! {
                 implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
             },
         },
+    };
+    Ok(PreparedSolveBlocks {
+        value,
+        scalar_derivative_programs,
     })
 }
 
@@ -405,19 +465,48 @@ fn render_flat_context(
     model_name: Option<&str>,
 ) -> RenderResult {
     let flat_value = Value::from_serialize(flat_model);
+    let type_names = Value::from_serialize(qualified_enumeration_type_names(flat_model));
+    let equation_rows = Value::from_serialize(flat_family_loops::context_value(flat_model));
     match model_name {
         Some(name) => tmpl.render(minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
+            flat_type_names => type_names,
+            flat_equation_rows => equation_rows,
             model_name => name,
         }),
         None => tmpl.render(minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
+            flat_type_names => type_names,
+            flat_equation_rows => equation_rows,
         }),
     }
+}
+
+/// The fully qualified enumeration type of every enumeration-typed variable
+/// (MLS §4.9.5), keyed by variable name.
+///
+/// `variable_type_names` holds the declared short name (`Init`), which a
+/// re-parsed flat model cannot resolve outside its declaring package; the
+/// canonical declaration's qualified name (`Modelica.Blocks.Types.Init`) can.
+fn qualified_enumeration_type_names(
+    flat_model: &flat::Model,
+) -> std::collections::BTreeMap<String, String> {
+    flat_model
+        .variables
+        .iter()
+        .filter_map(|(name, variable)| {
+            let canonical = flat_model
+                .effective_types
+                .get(&variable.type_id)?
+                .canonical_type();
+            let declaration = flat_model.enumeration_declarations.get(&canonical)?;
+            Some((name.as_str().to_string(), declaration.name.clone()))
+        })
+        .collect()
 }
 
 fn render_ast_context(

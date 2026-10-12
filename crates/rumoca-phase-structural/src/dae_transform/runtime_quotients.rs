@@ -13,11 +13,24 @@ use rumoca_ir_dae as dae;
 use super::DirectStateConstraint;
 use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltIdentities};
+mod model_conditionals;
 
 #[derive(Clone, Copy)]
 enum ExpressionClaim {
     Quotient(usize),
     Generated,
+}
+
+enum ModelSurface {
+    Scalar {
+        relation: u32,
+        activation: u32,
+        root: u32,
+    },
+    Structured {
+        domain: u32,
+        root: u32,
+    },
 }
 
 enum ReplayOwner<'target> {
@@ -34,9 +47,7 @@ enum ReplayOwner<'target> {
         builtin: dae::PureBuiltin,
         arguments: [u32; 2],
         generated: [u32; 6],
-        relation: u32,
-        activation: u32,
-        root: u32,
+        surface: ModelSurface,
         provenance: dae::DaeProvenance,
         token: Option<dae::QuotientReplayToken<'target>>,
     },
@@ -44,11 +55,13 @@ enum ReplayOwner<'target> {
 
 /// Dense source-stream plan and the linear replay capabilities it stages.
 pub(super) struct RuntimeQuotientReplayPlan<'target> {
+    conditionals: model_conditionals::ModelConditionalReplay<'target>,
     owners: Vec<ReplayOwner<'target>>,
     expressions: Vec<Option<ExpressionClaim>>,
     relations: Vec<Option<usize>>,
     conditions: Vec<Option<usize>>,
     roots: Vec<Option<usize>>,
+    structured_roots: Vec<Option<usize>>,
 }
 
 #[derive(Clone, Copy)]
@@ -60,13 +73,40 @@ pub(super) struct QuotientExpressionContext<'source, 'borrow, 'target> {
 }
 
 impl<'target> RuntimeQuotientReplayPlan<'target> {
+    pub(super) fn owns_model_guard(&self, expression: dae::ExprId<'_>) -> bool {
+        self.conditionals.owns_guard(expression.index())
+    }
+
+    pub(super) fn prepare_model_expression(
+        &mut self,
+        source: dae::DaeView<'_>,
+        index: usize,
+        target: &mut dae::DaeConstruction<'target>,
+        rebuilt: &[Option<dae::ExprId<'target>>],
+    ) -> Result<(), dae::DaeConstructionError> {
+        let id = source.expression_id(index).expect("checked source ordinal");
+        self.conditionals.prepare(source, id, target, rebuilt)
+    }
+
+    pub(super) fn close_model_expression(
+        &mut self,
+        source: dae::DaeView<'_>,
+        index: usize,
+        target: &mut dae::DaeConstruction<'target>,
+        rebuilt: &mut [Option<dae::ExprId<'target>>],
+    ) -> Result<Option<dae::DaeProvenance>, dae::DaeConstructionError> {
+        let id = source.expression_id(index).expect("checked source ordinal");
+        self.conditionals.close(source, id, target, rebuilt)
+    }
     pub(super) fn collect(source: dae::DaeView<'_>) -> Result<Self, dae::DaeConstructionError> {
         let mut plan = Self {
+            conditionals: model_conditionals::ModelConditionalReplay::new(source),
             owners: Vec::with_capacity(source.runtime_quotient_owner_count()),
             expressions: vec![None; source.expression_count()],
             relations: vec![None; source.relation_count()],
             conditions: vec![None; source.condition_count()],
             roots: vec![None; source.root_count()],
+            structured_roots: vec![None; source.structured_root_count()],
         };
         for ordinal in 0..source.runtime_quotient_owner_count() {
             let owner = source
@@ -131,51 +171,118 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
                 activation,
                 root,
             } => {
-                for generated in generated {
-                    claim(
-                        &mut self.expressions,
-                        generated.index(),
-                        ExpressionClaim::Generated,
-                        "runtime quotient generated expression",
+                let surface = ModelSurface::Scalar {
+                    relation: relation.index(),
+                    activation: activation.index(),
+                    root: root.index(),
+                };
+                self.model_owner(
+                    (
+                        quotient.index(),
+                        builtin,
+                        arguments,
+                        generated.map(dae::ExprId::index),
                         provenance,
-                    )?;
-                }
+                    ),
+                    surface,
+                    ordinal,
+                )?
+            }
+            dae::RuntimeQuotientOwnerKind::StructuredModelEvent {
+                generated,
+                domain,
+                root,
+            } => {
+                let surface = ModelSurface::Structured {
+                    domain: domain.index(),
+                    root: root.index(),
+                };
+                self.model_owner(
+                    (
+                        quotient.index(),
+                        builtin,
+                        arguments,
+                        generated.map(dae::ExprId::index),
+                        provenance,
+                    ),
+                    surface,
+                    ordinal,
+                )?
+            }
+        };
+        self.owners.push(replay);
+        Ok(())
+    }
+
+    fn model_owner(
+        &mut self,
+        batch: (
+            u32,
+            dae::PureBuiltin,
+            [u32; 2],
+            [u32; 6],
+            dae::DaeProvenance,
+        ),
+        surface: ModelSurface,
+        ordinal: usize,
+    ) -> Result<ReplayOwner<'target>, dae::DaeConstructionError> {
+        let (quotient, builtin, arguments, generated, provenance) = batch;
+        for generated in generated {
+            claim(
+                &mut self.expressions,
+                generated,
+                ExpressionClaim::Generated,
+                "runtime quotient generated expression",
+                provenance,
+            )?;
+        }
+        match surface {
+            ModelSurface::Scalar {
+                relation,
+                activation,
+                root,
+            } => {
                 claim(
                     &mut self.relations,
-                    relation.index(),
+                    relation,
                     ordinal,
                     "runtime quotient relation",
                     provenance,
                 )?;
                 claim(
                     &mut self.conditions,
-                    activation.index(),
+                    activation,
                     ordinal,
                     "runtime quotient activation",
                     provenance,
                 )?;
                 claim(
                     &mut self.roots,
-                    root.index(),
+                    root,
                     ordinal,
                     "runtime quotient root",
                     provenance,
                 )?;
-                ReplayOwner::Model {
-                    quotient: quotient.index(),
-                    builtin,
-                    arguments,
-                    generated: generated.map(dae::ExprId::index),
-                    relation: relation.index(),
-                    activation: activation.index(),
-                    root: root.index(),
-                    provenance,
-                    token: None,
-                }
             }
-        };
-        self.owners.push(replay);
-        Ok(())
+            ModelSurface::Structured { root, .. } => {
+                claim(
+                    &mut self.structured_roots,
+                    root,
+                    ordinal,
+                    "runtime quotient structured root",
+                    provenance,
+                )?;
+            }
+        }
+        Ok(ReplayOwner::Model {
+            quotient,
+            builtin,
+            arguments,
+            generated,
+            surface,
+            provenance,
+            token: None,
+        })
     }
 
     /// Begin every model owner whose source quotient is at or before `through`.
@@ -228,6 +335,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         };
         let (quotient, builtin, arguments, generated, provenance) =
             (*quotient, *builtin, *arguments, *generated, *provenance);
+        self.prepare_model_expression(context.source, quotient as usize, target, rebuilt)?;
         let arguments = target.expressions(|expressions| {
             let mut rebuilder = ExpressionRebuilder::new(
                 context.source,
@@ -373,7 +481,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         target: &mut dae::DaeConstruction<'target>,
     ) -> Result<dae::RelationId<'target>, dae::DaeConstructionError> {
         let ReplayOwner::Model {
-            relation,
+            surface: ModelSurface::Scalar { relation, .. },
             token: Some(token),
             ..
         } = &mut self.owners[ordinal]
@@ -398,7 +506,11 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         target: &mut dae::DaeConstruction<'target>,
     ) -> Result<(), dae::DaeConstructionError> {
         let ReplayOwner::Model {
-            activation: expected,
+            surface:
+                ModelSurface::Scalar {
+                    activation: expected,
+                    ..
+                },
             token: Some(token),
             ..
         } = &mut self.owners[ordinal]
@@ -420,7 +532,7 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         target: &mut dae::DaeConstruction<'target>,
     ) -> Result<dae::RootId<'target>, dae::DaeConstructionError> {
         let ReplayOwner::Model {
-            root,
+            surface: ModelSurface::Scalar { root, .. },
             token: Some(token),
             ..
         } = &mut self.owners[ordinal]
@@ -432,6 +544,34 @@ impl<'target> RuntimeQuotientReplayPlan<'target> {
         expect_ordinal(
             "runtime quotient root",
             expected,
+            id.index(),
+            token.provenance(),
+        )?;
+        Ok(id)
+    }
+
+    pub(super) fn structured_root_owner(&self, index: usize) -> Option<usize> {
+        self.structured_roots.get(index).copied().flatten()
+    }
+
+    pub(super) fn replay_structured_root(
+        &mut self,
+        ordinal: usize,
+        domains: &[super::declarations::RebuiltDomain<'target>],
+        target: &mut dae::DaeConstruction<'target>,
+    ) -> Result<dae::StructuredRootId<'target>, dae::DaeConstructionError> {
+        let ReplayOwner::Model {
+            surface: ModelSurface::Structured { domain, root },
+            token: Some(token),
+            ..
+        } = &mut self.owners[ordinal]
+        else {
+            return Err(self.stage_error(ordinal, "structured root"));
+        };
+        let id = target.replay_quotient_structured_root(token, domains[*domain as usize].id)?;
+        expect_ordinal(
+            "runtime quotient structured root",
+            *root,
             id.index(),
             token.provenance(),
         )?;

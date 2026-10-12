@@ -1,0 +1,105 @@
+{
+  "format": "pr427-original-sampled-extrema-focused-v1",
+  "source": "117b2490b79a081fd21e87e028f19a29e5636296",
+  "scope": "original authored model, focused comparison only; not cohort parity or final combined quick/full proof",
+  "model": "Modelica.Blocks.Examples.DemonstrateSignalExtrema",
+  "authored": {
+    "start": 0,
+    "stop": 1.5,
+    "dt": 1e-05,
+    "atol": 1e-06,
+    "rtol": 1e-06
+  },
+  "solver_budget_seconds": 12,
+  "solve_budget_seconds": 10,
+  "worker_result": {
+    "status": "sim_ok",
+    "ic_status": "ic_ok",
+    "ic_seconds": 0.000136551,
+    "sim_seconds": 1.887447995,
+    "sim_build_seconds": 0.022688037,
+    "ir_solve_seconds": 0.0031191879999999997,
+    "ir_solve_structural_dae_seconds": 0.000156131,
+    "ir_solve_lower_seconds": 0.002963057,
+    "sim_backend_build_seconds": 0.019161915,
+    "sim_run_seconds": 1.864257443,
+    "trace_file": "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/after-native-worker-trace.json",
+    "solve_ir_bytes": 63645
+  },
+  "native_samples": 165001,
+  "native_channels": 18,
+  "metadata_channels": 18,
+  "models_compared": 1,
+  "skipped": 0,
+  "missing": 0,
+  "shared_channels": 16,
+  "high_channels": 16,
+  "minor_channels": 0,
+  "deviation_channels": 0,
+  "initial_high_channels": 16,
+  "initial_deviation_channels": 0,
+  "native_only": [
+    "sine.amplitude_internal",
+    "sine.f_internal"
+  ],
+  "omc_only": [
+    "der(sine.phi)"
+  ],
+  "source_manifests_match": true,
+  "omc_original_trace_bytes_unchanged": true,
+  "external_wall_timing_scope": "guardian outer native worker command, includes Nix environment and trace serialization; not compile-speed benchmark",
+  "diagnostics_retained": [
+    "comparator initially refused missing external wall timing in its carrier; actual guardian timing added without changing trace",
+    "one comparator invocation used wrong external working directory and did not execute comparator"
+  ],
+  "artifacts": {
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/rumoca-sim-worker-117b2490b": {
+      "bytes": 45998088,
+      "sha256": "bdd3b149e09277d0f3775c58bef1e1aec720fbe3dc3dbc26d149572c5710a0a5"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/rumoca-msl-tools-117b2490b": {
+      "bytes": 78376656,
+      "sha256": "5281ddde32f4c639694cdf4dd0228a7851ddbdd2aedb5c1728f13141b899112e"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/after-native-worker-result.json": {
+      "bytes": 472,
+      "sha256": "96defdeb79af69aae0389e037d214e7dc3b7b701f3b82ef836107ea10cc7a55d"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/after-native-worker-trace.json": {
+      "bytes": 48919552,
+      "sha256": "d38182995bea99c4d361683ef0df9fab5d261a3435f4073feaf2096f59afe99c"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/after-native-worker.guardian.json": {
+      "bytes": 1968,
+      "sha256": "26d4c79a3b556a87089cfb4244f5bc7d93f5d251985eec8694eae6b8aaca2b41"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/worker-build.guardian.json": {
+      "bytes": 46453,
+      "sha256": "25fa492631574308f0e5c0fc0e8d1bfeb6a531ed1b69bf57b0a9207d511c4fa0"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/source-after-worker-comparator.json": {
+      "bytes": 739751,
+      "sha256": "344b078c29087fe9410b0aebdd7cd635e229d309206fe7a5bb49fd2bfc600b11"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/sealed-after-dae.json": {
+      "bytes": 18541774,
+      "sha256": "cfef2f4b598fe881eb33b5115ba722c649a1d0b999e359d650dc2a1f20031c6c"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/evidence/focused-comparator-complete-carrier-correct-cwd.guardian.json": {
+      "bytes": 3062,
+      "sha256": "50af7f096536291920bdf11bf9c6b3c52372684f9ae997225798fbfaca921b89"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/focused-comparison/sim_trace_comparison.json": {
+      "bytes": 20091,
+      "sha256": "80e0ca64bf7f6a1bf18c8d0a5812ee2ca6b96f11ad1937c18e50d7db14079208"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/focused-comparison/omc_simulation_reference.json": {
+      "bytes": 9335,
+      "sha256": "a4bdb29c32564a4b3ae6da066e7f2478c21166c8eee2a4497d8da7f4dc6bfc3a"
+    },
+    "${HOME}/scratch/rumoca/workshop427-signal-extrema-after-plan-20261012/focused-comparison/sim_traces/omc/Modelica.Blocks.Examples.DemonstrateSignalExtrema.json": {
+      "bytes": 79214878,
+      "sha256": "38efa2b84806e74e7cdddf750f7633952a77cb9ae88ed716abbb0b919bbe8a98"
+    }
+  }
+}

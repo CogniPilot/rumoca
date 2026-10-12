@@ -11,6 +11,11 @@ Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}_ode.c"""
 [capabilities]
 continuous_states = true
 residual_equations = false
+# Algebraic slots are filled in-function from the issued exact assignments
+# (`solve_blocks.continuous.algebraic_assignments`) before the derivative rows.
+exact_algebraic_assignments = true
+# Parameter-only initialization renders as `<model>_init_params(p)`.
+parameter_initialization = true
 scalar_fallback = true
 external_functions = false
 external_tables = false

@@ -1,0 +1,89 @@
+{
+  "kind": "Actual focused original structured quotient root AFTER; whole attempt still active",
+  "source": "41b2b408c0c8c4ad6302ca0c9f034813d4cbd9c4",
+  "producerCommit": "7d33b3655a76f022572457c71d135549f1b5cb4d",
+  "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-structural-map-root-and-guide-after-41b2-20261012",
+  "recipeSha256": "ed5bfe386e324c18dea63b6db9464c9070a7bd59019883efdd7a04d54a565654",
+  "gate": {
+    "name": "original-structured-quotient-root-one",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca",
+      "--test",
+      "suite_core",
+      "real_quotient_structured_inactive_points_keep_their_own_step",
+      "--",
+      "--nocapture"
+    ],
+    "expectedTests": 1
+  },
+  "actual": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "rustSeconds": 0.02,
+    "acceptedCount": true
+  },
+  "guardian": {
+    "elapsedMs": 215886.23944799998,
+    "peakRssKiB": 3042536,
+    "peakCacheBytes": 7377686528,
+    "minimumAvailableKiB": 44319552,
+    "minimumScratchFreeBytes": 60441210880,
+    "exitCode": 0,
+    "signal": null
+  },
+  "guards": {
+    "seconds": 600,
+    "rssMiB": 4096,
+    "availableMiB": 16384,
+    "cacheMiB": 8192,
+    "scratchFreeFloorBytes": 8589934592
+  },
+  "originalModel": "model GuardedStructuredQuotient output Real y[2]; Real x[2](each start=0,each fixed=true); equation for i in 1:2 loop y[i]=if time<0.5 then mod(14*i+8*time+i,7.0) else i; end for; der(x)=y; end GuardedStructuredQuotient;",
+  "modelSha256": "e58c668e4038bba17e89650cc450bde5dbd690b04673455cc0dc5674fadd2bd7",
+  "testSource": {
+    "path": "crates/rumoca/tests/suite_core/reported_bug_runtime/main_dae_integer.rs",
+    "sha256": "b90e7e3a174bc693d07644d173361936c726fe04ccc4f2643836fc2c195d5458"
+  },
+  "oracle": {
+    "policies": [
+      "Interpreter",
+      "Auto"
+    ],
+    "samples": 11,
+    "times": "sample/10 for sample0..10",
+    "axes": [
+      1,
+      2
+    ],
+    "output": "time<0.5 ?8*time+axis :axis",
+    "integral": "4*min(time,0.5)^2+axis*time",
+    "errorBound": "20*(atol+rtol*abs(expected)) unchanged",
+    "engineClaim": "Auto exercised; this test does not force or independently attest native engine selection."
+  },
+  "rawFiles": {
+    "original-structured-quotient-root-one.log": "ffdef04aebf49bb1f929e8536f605e79f5790152eae0b5b51d6aaf045e3cfa9f",
+    "original-structured-quotient-root-one.guardian.json": "a58c74c8ab2f1e39a0541ce9aa0c04320e80dfce0ca494b7f7eab92b6d6d5eed",
+    "original-structured-quotient-root-one.test-count.json": "bf7c147fd7fa255875e276c75aab82c66f011ca3a73cd7a10f117844beedf24d"
+  },
+  "before": {
+    "source": "5b82462ea2b8a38530dca688a45c0cf1e08204cc",
+    "attempt": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-integrated-activation-public-remainder-5b824-20261012",
+    "firstDivergence": "SolveLowering event_iteration_plan row0: numericmemoryrootfamilydoesnotmonitoritsexactliveratios",
+    "containingRun": "2PASS2FAIL; other failure separately owned; original structured test stopped before simulation"
+  },
+  "remainingAttempt": {
+    "structuralControls": "3PASS accepted",
+    "guide20": "PENDING",
+    "wholeAttemptTerminalAudit": "NOT YET AVAILABLE",
+    "lease": "ACTIVE at receipt creation"
+  },
+  "scope": "Original certificate failure now passes unchanged model/full trace and unchangedchecker. Finalnativecompleteness/fulllibraries/guide20/quickfull/coverage/remoteCI/issueclosure notclaimed."
+}

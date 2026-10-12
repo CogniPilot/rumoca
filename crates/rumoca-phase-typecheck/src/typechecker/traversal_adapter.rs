@@ -42,7 +42,7 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     fn on_expression(&mut self, _expression: &Expression, _type_table: &TypeTable) {}
 
     /// Make a `for` iterator visible as an Integer while visiting its body.
-    fn push_integer_iterator(&mut self, _name: &str) {}
+    fn push_integer_iterator(&mut self, index: &ast::ForIndex);
 
     /// Leave one or more nested `for` iterator scopes.
     fn pop_integer_iterators(&mut self, _count: usize) {}
@@ -95,10 +95,9 @@ impl<C: TypeCheckTraversalCallbacks> TypeCheckTraversal<'_, C> {
         filter: Option<&Expression>,
     ) -> ControlFlow<()> {
         let mut pushed = 0;
-        for index in indices {
+        for index in indices.iter().rev() {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_integer_iterator(index);
             pushed += 1;
         }
         let result = self.visit_array_comprehension_body(expr, filter);
@@ -204,8 +203,7 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         let mut pushed = 0;
         for index in indices {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_integer_iterator(index);
             pushed += 1;
         }
         let result = self.visit_each(equations, Self::visit_equation);
@@ -221,8 +219,7 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         let mut pushed = 0;
         for index in indices {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_integer_iterator(index);
             pushed += 1;
         }
         let result = self.visit_each(statements, Self::visit_statement);

@@ -63,7 +63,9 @@ fn an_invalid_runtime_derivative_index_cannot_complete() {
         "{error}"
     );
     assert!(
-        error.to_string().contains("non-finite derivative"),
+        error
+            .to_string()
+            .contains("tensor index 3 on axis 1 is outside 1..=2"),
         "{error}"
     );
 }

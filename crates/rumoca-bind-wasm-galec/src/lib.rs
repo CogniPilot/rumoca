@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use lsp_types::{Position, Url};
 use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
+use rumoca_compile::source_roots::decode_source_root_snapshot;
 use rumoca_compile::{Session, SessionConfig};
 use rumoca_core::{PhaseError, SourceMap};
 use rumoca_phase_parse_galec::parse as parse_galec;
@@ -57,7 +58,33 @@ pub fn init() {
 /// (Algorithm Code only). Failure shape: `{ "ok": false, "error": "<msg>" }`.
 #[wasm_bindgen]
 pub fn render_galec(workspace_sources: &str, model_name: &str, target: &str) -> String {
-    let value = match render_galec_impl(workspace_sources, model_name, target) {
+    render_galec_response(render_galec_impl(
+        workspace_sources,
+        model_name,
+        target,
+        None,
+    ))
+}
+
+/// Render with a compiler-issued portable source-root snapshot.
+/// Invalid snapshots are refused before model compilation.
+#[wasm_bindgen]
+pub fn render_galec_with_source_roots_binary(
+    workspace_sources: &str,
+    model_name: &str,
+    target: &str,
+    source_roots: &[u8],
+) -> String {
+    render_galec_response(render_galec_impl(
+        workspace_sources,
+        model_name,
+        target,
+        Some(source_roots),
+    ))
+}
+
+fn render_galec_response(result: Result<Value, String>) -> String {
+    let value = match result {
         Ok(value) => value,
         Err(error) => json!({ "ok": false, "error": error }),
     };
@@ -188,6 +215,7 @@ fn render_galec_impl(
     workspace_sources: &str,
     model_name: &str,
     target: &str,
+    source_roots: Option<&[u8]>,
 ) -> Result<Value, String> {
     // 1. Load every workspace document into an in-memory Session, then compile
     //    the requested (resolved) model across all of them — a model defined in
@@ -200,6 +228,11 @@ fn render_galec_impl(
     }
     let mut session = Session::new(SessionConfig::default());
     let mut source_map = SourceMap::new();
+    if let Some(bytes) = source_roots {
+        let parsed = decode_source_root_snapshot(bytes)
+            .map_err(|error| format!("invalid source-root cache: {error:#}"))?;
+        session.add_in_memory_parsed_batch(parsed);
+    }
     for (path, content) in &documents {
         source_map.add(path, content);
         session
@@ -207,14 +240,19 @@ fn render_galec_impl(
             .map_err(|error| format!("failed to load `{path}`: {error}"))?;
     }
     let result = session
-        .compile_model(model_name)
+        .compile_model_dae_strict_reachable_uncached_with_recovery(model_name)
         .map_err(|error| format!("compilation error: {error}"))?;
 
     // 2. Delegate to the shared identity-free renderer (validates the target,
     //    projects to GALEC, and renders the .alg + C with the target's
     //    conformance header). GALEC identifiers/C names cannot contain dots.
     let model_id = model_name.replace('.', "_");
-    let sources = render_checked_sources(&result.dae, &source_map, &model_id, target)?;
+    let sources = render_checked_sources(
+        &result.dae,
+        result.source_map.as_ref().unwrap_or(&source_map),
+        &model_id,
+        target,
+    )?;
 
     Ok(json!({
         "ok": true,
@@ -394,6 +432,79 @@ end GalecWasmDemo;
             .rsplit_once('\n')
             .map_or(prefix.len(), |(_, tail)| tail.len()) as u32;
         (line, character)
+    }
+
+    #[test]
+    fn galec_source_root_snapshot_supplies_the_authored_function() {
+        let library = "package Imported function twice input Real x; output Real y; algorithm y := 2*x; end twice; model Broken extends Missing; end Broken; end Imported;";
+        let bytes = rumoca_compile::source_roots::encode_source_root_snapshot(&[(
+            "library/Imported.mo".to_owned(),
+            library.to_owned(),
+        )])
+        .unwrap();
+        let source = DISCRETE_SOURCE.replace("gain * count", "Imported.twice(count)");
+        let documents = workspace("input.mo", &source);
+        let missing = parse(&render_galec(
+            &documents,
+            "GalecWasmDemo",
+            GALEC_PRODUCTION_TARGET,
+        ));
+        assert_eq!(
+            missing["ok"], false,
+            "a missing authored library must not resolve"
+        );
+        let imported = parse(&render_galec_with_source_roots_binary(
+            &documents,
+            "GalecWasmDemo",
+            GALEC_PRODUCTION_TARGET,
+            &bytes,
+        ));
+        assert_eq!(imported["ok"], true, "{imported}");
+        let selected_invalid = parse(&render_galec_with_source_roots_binary(
+            &documents,
+            "Imported.Broken",
+            GALEC_PRODUCTION_TARGET,
+            &bytes,
+        ));
+        assert_eq!(
+            selected_invalid["ok"], false,
+            "reachable invalid sources must remain refused"
+        );
+        assert!(
+            selected_invalid["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("compilation error:")),
+            "the selected invalid class must fail compilation before target projection: {selected_invalid}"
+        );
+
+        assert!(
+            imported["alg"]
+                .as_str()
+                .is_some_and(|text| text.contains("DoStep"))
+        );
+        assert!(
+            imported["c_source"]
+                .as_str()
+                .is_some_and(|text| text.contains("_dostep("))
+        );
+    }
+
+    #[test]
+    fn galec_source_root_snapshot_rejects_corrupt_or_empty_bytes() {
+        for bytes in [&[][..], &[0, 1, 2][..]] {
+            let refused = parse(&render_galec_with_source_roots_binary(
+                &workspace("input.mo", DISCRETE_SOURCE),
+                "GalecWasmDemo",
+                GALEC_TARGET,
+                bytes,
+            ));
+            assert_eq!(refused["ok"], false, "{refused}");
+            assert!(
+                refused["error"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("invalid source-root cache"))
+            );
+        }
     }
 
     #[test]

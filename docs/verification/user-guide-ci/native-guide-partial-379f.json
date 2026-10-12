@@ -1,0 +1,186 @@
+{
+  "status": "ACTUAL_NATIVE_GUIDE_PARTIAL:19PASS1FAIL. Final authored browser/runtime qualification UNRUN.",
+  "source": "379f3d56ad90e1f6046275c3af752672cdc42706",
+  "comparison": {
+    "previous_source": "41b2b408c0c8c4ad6302ca0c9f034813d4cbd9c4",
+    "previous": {
+      "passed": 17,
+      "failed": 3,
+      "ignored": 0
+    },
+    "current": {
+      "passed": 19,
+      "failed": 1,
+      "ignored": 0
+    },
+    "same_20_authored_roster": true,
+    "now_passing": [
+      "HotAirBalloon original inline compilation",
+      "HotAirBalloon original finite CPU samples",
+      "FixedWing original scenario compilation"
+    ],
+    "remaining_models": [
+      "QuadrotorAcro",
+      "ReusableBoosterLanding"
+    ],
+    "remaining_first_phase": "ToDae",
+    "remaining_fault": "model expression escaped its construction-issued conditional arm"
+  },
+  "gate": {
+    "name": "native-guide-twenty",
+    "command": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca-bind-wasm",
+      "--features",
+      "full-web",
+      "--lib",
+      "user_guide_",
+      "--",
+      "--nocapture"
+    ],
+    "expectedTests": 20,
+    "actual_summary": "test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 148 filtered out; finished in 182.72s",
+    "passed": [
+      "tests::user_guide_config_fragment_tests::user_guide_toml_fragments_parse_in_their_documented_configuration_context",
+      "tests::user_guide_examples_tests::user_guide_airfoil_aoa_slider_reseeds_the_airfoil_frame",
+      "tests::user_guide_examples_tests::user_guide_gpu_examples_simulate_on_the_cpu_path",
+      "tests::user_guide_examples_tests::user_guide_gpu_examples_prepare_for_webgpu",
+      "tests::user_guide_fragment_tests::user_guide_latent_width_variants_use_the_full_authored_source",
+      "tests::user_guide_fragment_tests::user_guide_neural_fragments_compile_in_the_complete_authored_models",
+      "tests::user_guide_fragment_tests::user_guide_predator_width_313_uses_the_full_authored_source",
+      "tests::user_guide_fragment_tests::user_guide_state_and_experiment_fragments_preserve_start_and_full_curve",
+      "tests::user_guide_fragment_tests::user_guide_tank_composition_uses_the_documented_connector_and_modifications",
+      "tests::user_guide_inline_tests::user_guide_coffee_full_horizon_and_supplied_plant_match_independent_curves",
+      "tests::user_guide_inline_tests::user_guide_scenarios_keep_their_actual_model_and_settings",
+      "tests::user_guide_inline_tests::user_guide_inline_models_compile_as_authored",
+      "tests::user_guide_inventory::user_guide_inventory_rejects_unknown_or_missing_execution_owners",
+      "tests::user_guide_inventory::user_guide_other_language_inventory_rejects_unclassified_or_changed_examples",
+      "tests::user_guide_samples::user_guide_numerical_observers_reject_incomplete_or_invalid_payloads",
+      "tests::user_guide_inline_tests::user_guide_inline_cpu_samples_are_finite",
+      "tests::user_guide_sources::user_guide_fence_inventory_preserves_every_embedded_source",
+      "tests::user_guide_inline_tests::user_guide_rover_host_step_matches_the_authored_bicycle_model",
+      "tests::user_guide_inline_tests::user_guide_thermostat_heats_and_cools_through_independent_hysteresis_cycles"
+    ],
+    "failed": [
+      "tests::user_guide_scenario_tests::user_guide_scenarios_compile_the_authored_models_with_pinned_libraries"
+    ],
+    "diagnostics": [
+      "QuadrotorAcro examples/interactive/quadrotor/rumoca-scenario.acro.toml: Compilation error: QuadrotorAcro failed in ToDae: canonical DAE construction rejected an invalid operation: model expression escaped its construction-issued conditional arm",
+      "ReusableBoosterLanding examples/interactive/reusable_booster/rumoca-scenario.toml: Compilation error: ReusableBoosterLanding failed in ToDae: canonical DAE construction rejected an invalid operation: model expression escaped its construction-issued conditional arm"
+    ],
+    "test_count_file_exists": false,
+    "test_count_note": "Counted runner stops on nonzero child; no accepted=true count outcome is fabricated. Actual20 is raw Rustsummary19+1."
+  },
+  "resources": {
+    "command": [
+      "nix",
+      "develop",
+      ".#full",
+      "--command",
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--jobs",
+      "4",
+      "-p",
+      "rumoca-bind-wasm",
+      "--features",
+      "full-web",
+      "--lib",
+      "user_guide_",
+      "--",
+      "--nocapture"
+    ],
+    "log": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/native-guide-twenty.log",
+    "elapsedMs": 358648.506256,
+    "peakRssKiB": 3536516,
+    "minimumAvailableKiB": 53712156,
+    "minimumScratchFreeBytes": 48037240832,
+    "scratchFreeFloorMiB": 8192,
+    "cacheDirectory": "$HOME/scratch/rumoca/workshop427-ci/target",
+    "peakCacheBytes": 7364304896,
+    "cacheLimitMiB": 8192,
+    "rssLimitMiB": 4096,
+    "availableFloorMiB": 16384,
+    "rssScope": "owned process group and identified descendants, including detached browser groups",
+    "secondsLimit": 600,
+    "signal": null,
+    "exitCode": 101
+  },
+  "terminal_audit": {
+    "time": "2026-10-11T19:38:06.132Z",
+    "owned_cache_references": 0,
+    "denied_reads": 2295,
+    "visibility": "Denied reads explicitly unobserved; auditor ancestor cmdline literals excluded only",
+    "unrelated_native_tasks": 4
+  },
+  "raw_artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/recipe.json",
+      "sha256": "f0ac77e689c5148fa30fa3af0a1353ccb30a5f08c5e43ff281cf96658665a024",
+      "bytes": 1456664
+    },
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/native-guide-twenty.log",
+      "sha256": "0e1147f6c890ace1e05f8d0b0b2877f24cbb6fdfcece0b41ed7e6a2d12f4ed52",
+      "bytes": 13810
+    },
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/native-guide-twenty.guardian.json",
+      "sha256": "9dbbe005bcc60c548e2736c3eb68f09588f1562d92c80de7dbba17be0aea3fd2",
+      "bytes": 785
+    },
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/parallel-preflight.json",
+      "sha256": "c2b137130dbd7ddbe165bee21b587352520f27dac1c4ef5d77e7920045420ce7",
+      "bytes": 705
+    },
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/parallel-terminal.json",
+      "sha256": "04ec84621e266230844f179acb5eaa36ef195bc93d2d2371d5586f1eabd5230d",
+      "bytes": 645
+    },
+    {
+      "path": "$HOME/scratch/rumoca/slam-integration-cycle-20261010/pr427-native-guide-after-379f-independent-20261012/run-lease.json",
+      "sha256": "2a83211a54071924e734ca0acb2aa3f765662c0c4b2839275c2efb3600afe05a",
+      "bytes": 560
+    }
+  ],
+  "browser_prerequisite": {
+    "path": "$HOME/scratch/rumoca/workshop427-final-prerequisites-20261011/browser-admission-prerequisite-379f.json",
+    "sha256": "1ac16ea2aa5b4f60c602a7ae21390a49060856e782b124bc6c628189bc52dd21",
+    "scope": "PREREQUISITE ONLY, no authored guide examples; mandatoryWebGL2 available; hardwareWebGPU notadmitted software/fallback",
+    "source": "379f3d56ad90e1f6046275c3af752672cdc42706",
+    "browser": "154.0.8037.92",
+    "tmpdir": "$HOME/scratch/rumoca/browser-tmp",
+    "admission": {
+      "admitted": false,
+      "reason": "fallback/software adapter",
+      "info": {
+        "isFallbackAdapter": true,
+        "vendor": "google",
+        "architecture": "swiftshader",
+        "device": "",
+        "description": ""
+      }
+    },
+    "webgl": {
+      "available": true,
+      "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+    },
+    "previous_failure": {
+      "stage": "Chromium154 launch beforepage",
+      "reason": "long TMPDIR made UnixSingletonSocket path>108",
+      "raw_evidence": "toolsession36146 only; nofilesystemrawlog exists and nohash is claimed"
+    },
+    "future_canonical_four_scripts": "UNRUN"
+  },
+  "limits": "No final allguide/browser/JAX/CasADi/wheel/GPU execution or CI green claim; constructor repair peer remains pending exact after."
+}

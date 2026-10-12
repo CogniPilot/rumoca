@@ -27,7 +27,7 @@ use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
 
 /// Failure to derive one exact scalar view from a checked DAE expression.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ProjectionError {
     #[error("scalar projection {index} is outside an expression containing {count} scalars")]
     ScalarOutOfBounds {
@@ -60,6 +60,22 @@ pub enum ProjectionError {
         symbol: String,
         span: Span,
     },
+}
+
+impl ProjectionError {
+    /// The source span retained by the exact scalar projection owner.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::ScalarOutOfBounds { span, .. }
+            | Self::DynamicSubscript { span }
+            | Self::IndexOutOfBounds { span, .. }
+            | Self::IntegerOverflow { span }
+            | Self::FunctionRecursion { span }
+            | Self::UnsupportedRecordOperation { span, .. }
+            | Self::ExternalFunction { span, .. } => *span,
+        }
+    }
 }
 
 /// Report an MLS §12.9 external body that projection cannot look through.
@@ -201,7 +217,7 @@ pub fn for_each_scalar_coordinate_cached<'dae>(
         scalar_index,
         domain_point,
         cache,
-        None,
+        ProjectionQuery::default(),
         &mut visit,
     )
 }
@@ -234,9 +250,63 @@ pub fn for_each_scalar_coordinate_filtered_cached<'dae>(
         scalar_index,
         domain_point,
         cache,
-        Some(&relevant),
+        ProjectionQuery {
+            relevant: Some(&relevant),
+            omitted: None,
+        },
         &mut filtered,
     )
+}
+
+/// One dependency walk bound to its immutable issued-storage predicate.
+/// Its private cache cannot be reused under another executable storage context.
+pub struct PrunedScalarCoordinateProjection<'query, 'dae> {
+    view: dae::DaeView<'dae>,
+    omitted: &'query dyn Fn(dae::ExprId<'dae>) -> bool,
+    cache: ScalarCoordinateProjectionCache<'dae>,
+}
+
+impl<'query, 'dae> PrunedScalarCoordinateProjection<'query, 'dae> {
+    /// Bind one finalized DAE and one storage-leaf query for the complete walk.
+    #[must_use]
+    pub fn new(
+        view: dae::DaeView<'dae>,
+        omitted: &'query dyn Fn(dae::ExprId<'dae>) -> bool,
+    ) -> Self {
+        Self {
+            view,
+            omitted,
+            cache: ScalarCoordinateProjectionCache::default(),
+        }
+    }
+
+    /// Visit a scalar using the cache owned by this exact query.
+    pub fn project(
+        &mut self,
+        root: dae::ExprId<'dae>,
+        scalar_index: usize,
+        domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
+        mut visit: impl FnMut(dae::CoordinateView<'dae>, usize),
+    ) -> Result<(), ProjectionError> {
+        project_coordinates(
+            self.view,
+            root,
+            scalar_index,
+            domain_point,
+            &mut self.cache,
+            ProjectionQuery {
+                relevant: None,
+                omitted: Some(self.omitted),
+            },
+            &mut visit,
+        )
+    }
+}
+
+#[derive(Default)]
+struct ProjectionQuery<'visit, 'dae> {
+    relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
+    omitted: Option<&'visit dyn Fn(dae::ExprId<'dae>) -> bool>,
 }
 
 fn project_coordinates<'dae>(
@@ -245,7 +315,7 @@ fn project_coordinates<'dae>(
     scalar_index: usize,
     domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
     cache: &mut ScalarCoordinateProjectionCache<'dae>,
-    relevant: Option<&dyn Fn(dae::CoordinateView<'dae>) -> bool>,
+    query: ProjectionQuery<'_, 'dae>,
     visit: &mut dyn FnMut(dae::CoordinateView<'dae>, usize),
 ) -> Result<(), ProjectionError> {
     let mut projection = Projection {
@@ -264,7 +334,8 @@ fn project_coordinates<'dae>(
         frame_memos: Vec::new(),
         cache,
         visit,
-        relevant,
+        relevant: query.relevant,
+        omitted: query.omitted,
     };
     projection.expression(root, scalar_index)
 }
@@ -313,6 +384,7 @@ struct Projection<'visit, 'dae> {
     cache: &'visit mut ScalarCoordinateProjectionCache<'dae>,
     visit: &'visit mut dyn FnMut(dae::CoordinateView<'dae>, usize),
     relevant: Option<&'visit dyn Fn(dae::CoordinateView<'dae>) -> bool>,
+    omitted: Option<&'visit dyn Fn(dae::ExprId<'dae>) -> bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

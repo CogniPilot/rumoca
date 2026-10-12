@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "compiled_source": "c85128c50cd6e65198a712578c80679afc01aeaf",
+  "original_test": "tests::user_guide_fragment_tests::user_guide_latent_width_variants_use_the_full_authored_source",
+  "original_process_pid": 2692554,
+  "original_crashing_thread_tid": 2692559,
+  "outcome": "SIGABRT stack overflow during full documented width512 initialization; width256 completed",
+  "width256_parameters": 71435,
+  "width256_wall_seconds": 27.174211,
+  "width512_parameters": 273931,
+  "executable": {
+    "bytes": 96337816,
+    "sha256": "fb346c82a35d5d4daeb08b11762fad0ba0b88a346c3f44f4781e7d1c8630d276"
+  },
+  "core": {
+    "bytes": 3887218688,
+    "sha256": "8ad19ef2406ad3b814ddc9e925421ed1d4fd8dbf9d29136b48e8edda0046c6c9"
+  },
+  "raw_bindings": {
+    "core_info": {
+      "bytes": 19887,
+      "sha256": "3568e2eda3fe53584e01ad671b0696ddb1a80b486f5a0fb6047bff2f006a2277"
+    },
+    "gdb": {
+      "bytes": 20536,
+      "sha256": "4093ce2d285db2477eef9bb5738b1869f9f2ad1ce48f123ba5750dc546d1e228"
+    },
+    "jit_disassembly": {
+      "bytes": 2730,
+      "sha256": "91ce257f236c9d7825a2bec0b1fc51f95255f27bb4f15006c1a24d1385b1ad00"
+    },
+    "original_guide_log": {
+      "bytes": 1703,
+      "sha256": "3304201bde2d580a5411b25813005de175e2f67d14303216f7a9155e75d17fd6"
+    }
+  },
+  "offline_capture": {
+    "source": "c85128c50cd6e65198a712578c80679afc01aeaf",
+    "exit_status": 0,
+    "resource_stop": null,
+    "wall_seconds": 6.912269152002409,
+    "peak_rss_bytes": 36204544,
+    "raw_sha256": "f0a7b768cbc9653c2222350d2b58fdc89c937a541f89b033d4506c01068bfb2d"
+  },
+  "jit": {
+    "faulting_instruction": "vmovsd %xmm0,(%r8,%rcx,8)",
+    "faulting_instruction_address": "0x7ffee004147e",
+    "frame_bytes": 2253424,
+    "tensor_copy_cells": 262144,
+    "cell_ordinal_at_fault": 17416
+  },
+  "limitations": [
+    "No repeat of the failing simulation or increased stack setting",
+    "GDB reports missing build-id/core-match warning and blocked matching libthread_db",
+    "No unwind records cross anonymous generated JIT code; later raw frames are not evidence of Rust recursion",
+    "Candidate 9707b8d1f native build and tests have not run"
+  ]
+}

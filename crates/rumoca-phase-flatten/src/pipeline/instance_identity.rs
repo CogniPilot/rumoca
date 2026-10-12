@@ -72,6 +72,7 @@ pub(crate) fn attach_reference_scope(
     let mut rewriter = InstanceScopeRewriter {
         instance_scope,
         conflict: false,
+        binders: Vec::new(),
     };
     *expression = rewriter.rewrite_expression(expression);
     if rewriter.conflict {
@@ -89,6 +90,7 @@ pub(crate) fn attach_statement_reference_scopes(
     let mut rewriter = InstanceScopeRewriter {
         instance_scope,
         conflict: false,
+        binders: Vec::new(),
     };
     for statement in statements {
         *statement = rewriter.rewrite_statement(statement);
@@ -164,6 +166,7 @@ fn attach_when_equation_reference_scopes(
 struct InstanceScopeRewriter {
     instance_scope: rumoca_core::InstanceId,
     conflict: bool,
+    binders: Vec<rumoca_core::DefId>,
 }
 
 impl ExpressionRewriter for InstanceScopeRewriter {
@@ -173,7 +176,13 @@ impl ExpressionRewriter for InstanceScopeRewriter {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
-        let name = if name.component_ref().is_none() {
+        let is_binder = name
+            .target_def_id()
+            .is_some_and(|declaration| self.binders.contains(&declaration));
+        let name = if name.component_ref().is_none() || is_binder {
+            if is_binder && name.instance_id().is_some() {
+                self.conflict = true;
+            }
             name.clone()
         } else {
             if name
@@ -187,6 +196,32 @@ impl ExpressionRewriter for InstanceScopeRewriter {
         rumoca_core::Expression::VarRef {
             name,
             subscripts: self.rewrite_subscripts(subscripts),
+            span,
+        }
+    }
+
+    fn walk_array_comprehension_expression(
+        &mut self,
+        expr: &rumoca_core::Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&rumoca_core::Expression>,
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let depth = self.binders.len();
+        let mut indices = indices.to_vec();
+        for index in indices.iter_mut().rev() {
+            index.range = self.rewrite_expression(&index.range);
+            if let rumoca_core::IndexBinderProvenance::Source(declaration) = index.binder {
+                self.binders.push(declaration);
+            }
+        }
+        let expr = Box::new(self.rewrite_expression(expr));
+        let filter = filter.map(|filter| Box::new(self.rewrite_expression(filter)));
+        self.binders.truncate(depth);
+        rumoca_core::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
             span,
         }
     }
@@ -263,6 +298,7 @@ mod tests {
         let span = span();
         let mut statements = vec![Statement::For {
             indices: vec![ForIndex {
+                binder: rumoca_core::IndexBinderProvenance::Generated,
                 ident: "i".to_string(),
                 range: reference_expression("range", 10),
             }],
@@ -422,5 +458,85 @@ mod tests {
                 "the occurrence graph claimed the reserved unset identity"
             );
         }
+    }
+    fn source_constructor(body: Expression, id: u32, range: Expression) -> Expression {
+        Expression::ArrayComprehension {
+            expr: Box::new(body),
+            indices: vec![rumoca_core::ComprehensionIndex {
+                binder: rumoca_core::IndexBinderProvenance::Source(rumoca_core::DefId::new(id)),
+                name: "i".to_string(),
+                range,
+            }],
+            filter: None,
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn comprehension_scope_uses_declarations_not_same_spelling() {
+        let scope = rumoca_core::InstanceId::new(7);
+        let mut expression = source_constructor(
+            reference_expression("i", 42),
+            42,
+            reference_expression("i", 41),
+        );
+        attach_reference_scope(&mut expression, scope).expect("source scope");
+        let Expression::ArrayComprehension { expr, indices, .. } = expression else {
+            panic!("constructor")
+        };
+        assert_reference(&indices[0].range, scope, 41);
+        let Expression::VarRef { name, .. } = *expr else {
+            panic!("binder")
+        };
+        assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(42)));
+        assert_eq!(name.instance_id(), None);
+    }
+
+    #[test]
+    fn comprehension_scope_preserves_nested_shadowing_identity() {
+        let scope = rumoca_core::InstanceId::new(7);
+        let inner = source_constructor(
+            reference_expression("i", 43),
+            43,
+            reference_expression("i", 42),
+        );
+        let mut expression = source_constructor(inner, 42, reference_expression("i", 41));
+        attach_reference_scope(&mut expression, scope).expect("nested source scope");
+        let Expression::ArrayComprehension { expr, indices, .. } = expression else {
+            panic!("outer constructor")
+        };
+        assert_reference(&indices[0].range, scope, 41);
+        let Expression::ArrayComprehension { expr, indices, .. } = *expr else {
+            panic!("inner constructor")
+        };
+        let Expression::VarRef { name, .. } = &indices[0].range else {
+            panic!("outer iterator range")
+        };
+        assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(42)));
+        assert_eq!(name.instance_id(), None);
+        let Expression::VarRef { name, .. } = *expr else {
+            panic!("inner iterator body")
+        };
+        assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(43)));
+        assert_eq!(name.instance_id(), None);
+    }
+
+    #[test]
+    fn comprehension_scope_generated_axis_cannot_capture_source_declaration_by_name() {
+        let scope = rumoca_core::InstanceId::new(7);
+        let mut expression = source_constructor(
+            reference_expression("i", 41),
+            42,
+            reference_expression("n", 40),
+        );
+        let Expression::ArrayComprehension { indices, .. } = &mut expression else {
+            panic!("constructor")
+        };
+        indices[0].binder = rumoca_core::IndexBinderProvenance::Generated;
+        attach_reference_scope(&mut expression, scope).expect("generated scope");
+        let Expression::ArrayComprehension { expr, .. } = expression else {
+            panic!("constructor")
+        };
+        assert_reference(&expr, scope, 41);
     }
 }

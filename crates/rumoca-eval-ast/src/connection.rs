@@ -171,6 +171,7 @@ mod tests {
 
     fn binder(id: usize, upper: i64) -> StructuredIndexBinder {
         StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
             id,
             display_name: format!("i{id}"),
             lower: 1,

@@ -190,6 +190,7 @@ fn function<'dae>(
                     d.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
+                                provenance: rumoca_core::IndexBinderProvenance::Generated,
                                 id: 0,
                                 display_name: "i".into(),
                                 lower: case.lower,
@@ -247,6 +248,7 @@ fn summarize_mask<'dae>(
         d.structured(
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
+                    provenance: rumoca_core::IndexBinderProvenance::Generated,
                     id: 0,
                     display_name: "j".into(),
                     lower: 1,

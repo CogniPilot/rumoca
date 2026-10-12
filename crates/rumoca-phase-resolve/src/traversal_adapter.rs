@@ -12,7 +12,8 @@ type Statement = ast::Statement;
 /// Traversal is centralized here while semantic actions stay in callbacks.
 pub(crate) trait ResolveTraversalCallbacks {
     fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId;
-    fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str);
+    fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str)
+    -> rumoca_core::DefId;
     fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);
     fn on_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);
     /// Prove the projected member identity of `base.field` (MLS §3.7.3).
@@ -53,10 +54,13 @@ pub(crate) fn walk_equation<C: ResolveTraversalCallbacks>(
             callbacks.on_component_reference(rhs, scope);
         }
         Equation::For { indices, equations } => {
-            let loop_scope = callbacks.create_loop_scope(scope);
+            let mut loop_scope = scope;
             for index in indices {
-                callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref());
                 walk_expression(callbacks, &mut index.range, loop_scope);
+                loop_scope = callbacks.create_loop_scope(loop_scope);
+                index.binder = Some(rumoca_core::IndexBinderProvenance::Source(
+                    callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref()),
+                ));
             }
             walk_equations(callbacks, equations, loop_scope);
         }
@@ -139,10 +143,13 @@ pub(crate) fn walk_statement<C: ResolveTraversalCallbacks>(
             }
         }
         Statement::For { indices, equations } => {
-            let loop_scope = callbacks.create_loop_scope(scope);
+            let mut loop_scope = scope;
             for index in indices {
-                callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref());
                 walk_expression(callbacks, &mut index.range, loop_scope);
+                loop_scope = callbacks.create_loop_scope(loop_scope);
+                index.binder = Some(rumoca_core::IndexBinderProvenance::Source(
+                    callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref()),
+                ));
             }
             walk_statements(callbacks, equations, loop_scope);
         }
@@ -248,10 +255,13 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
             filter,
             ..
         } => {
-            let loop_scope = callbacks.create_loop_scope(scope);
-            for index in indices {
-                callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref());
+            let mut loop_scope = scope;
+            for index in indices.iter_mut().rev() {
                 walk_expression(callbacks, &mut index.range, loop_scope);
+                loop_scope = callbacks.create_loop_scope(loop_scope);
+                index.binder = Some(rumoca_core::IndexBinderProvenance::Source(
+                    callbacks.bind_loop_index_name(loop_scope, index.ident.text.as_ref()),
+                ));
             }
             walk_expression(callbacks, Arc::make_mut(expr), loop_scope);
             if let Some(filter_expr) = filter {

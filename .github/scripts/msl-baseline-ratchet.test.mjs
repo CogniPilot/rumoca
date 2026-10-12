@@ -76,6 +76,7 @@ function fullSnapshot(version = 4) {
     trace_exceptions_sha256: `digest-v${version}`,
     reference_boundary_migration: boundaryChain(version),
     unexcepted_non_high_models: ['Modelica.Open.Defect'],
+    certified_strict_high_models: ['High0', 'High1', 'High2'],
     runtime_ratio_stats: {
       system_ratio_both_success: { median: 2.0 },
       wall_ratio_both_success: { median: 10.0 },
@@ -120,6 +121,62 @@ function approvedOmcMigration(from, to) {
 function decide(current, baseline, checkedIn = fullSnapshot()) {
   return ratchetDecision(current, baseline, checkedIn);
 }
+
+test('promotion refuses dropped certification despite unchanged high aggregates', () => {
+  const baseline = fullSnapshot();
+  const current = fullSnapshot();
+  current.flatten_models += 1;
+  current.certified_strict_high_models.pop();
+  const decision = decide(current, baseline);
+  assert.equal(decision.promote, false);
+  assert.match(decision.reason, /baseline-certified strict-high model High2/);
+});
+
+test('promotion refuses equal-count certification swaps into timing holdbacks', () => {
+  const baseline = fullSnapshot();
+  baseline.timing_margin_models = { Slow: { phase: 'Sim', budget_share: 0.6 } };
+  const current = structuredClone(baseline);
+  current.flatten_models += 1;
+  current.certified_strict_high_models[0] = 'Slow';
+  current.timing_margin_models = { High0: { phase: 'Sim', budget_share: 0.6 } };
+  const decision = decide(current, baseline);
+  assert.equal(decision.promote, false);
+  assert.match(decision.reason, /baseline-certified strict-high model High0/);
+});
+
+test('reviewed context and schema transitions cannot waive certification loss', () => {
+  const oldOmc = 'OpenModelica 1.26.1';
+  const checkedIn = approvedOmcMigration(oldOmc, fullSnapshot().omc_version);
+  const baseline = fullSnapshot();
+  baseline.omc_version = oldOmc;
+  const current = fullSnapshot();
+  current.certified_strict_high_models.pop();
+  assert.equal(decide(current, baseline, checkedIn).promote, false);
+  assert.equal(decide(current, fullSnapshot(2)).promote, false);
+  current.compiler_contract_migration = {
+    from_contract: 'permissive-dae-v1',
+    to_contract: 'checked-dae-v1',
+    evidence_git_commit: 'reviewed-contract-evidence',
+    sim_target_models: current.sim_target_models,
+  };
+  assert.equal(decide(current, fullSnapshot()).promote, false);
+});
+
+test('promotion allows preserved certification and rejects absent or malformed rosters', () => {
+  const baseline = fullSnapshot();
+  const current = fullSnapshot();
+  current.flatten_models += 1;
+  current.certified_strict_high_models.push('NewHigh');
+  assert.equal(decide(current, baseline).promote, true);
+  for (const bad of [undefined, null, 'High0', [''], ['High0', 'High0']]) {
+    for (const side of ['current', 'baseline']) {
+      const candidate = structuredClone(current);
+      const previous = structuredClone(baseline);
+      (side === 'current' ? candidate : previous).certified_strict_high_models = bad;
+      assert.throws(() => decide(candidate, previous), /certified_strict_high_models/);
+    }
+  }
+});
 
 test('promotable snapshot accepts full non-partial artifacts', () => {
   const snapshot = fullSnapshot();

@@ -28,6 +28,7 @@ fn dae_with_placeholder_family() -> Dae {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_string(),
                         lower: 1,
@@ -1194,14 +1195,40 @@ fn explicit_rhs_target_accepts_issued_exact_algebraic_assignments() {
         .expect("an issued exact assignment schedule needs no residual solver");
 }
 
+/// The scalar ODE right-hand-side targets render the issued exact assignments
+/// (`solve_blocks.continuous.algebraic_assignments`) before the derivative rows.
+#[test]
+fn explicit_ode_targets_accept_issued_exact_algebraic_assignments() {
+    let solve = solve_with_issued_exact_algebraic_assignment();
+    for name in [
+        "c-ode",
+        "rust-ode",
+        "rust-fixed-ode",
+        "casadi-ode",
+        "jax-ode",
+        "cuda-ode",
+    ] {
+        let target = templates::builtin_targets()
+            .iter()
+            .find(|target| target.name == name)
+            .unwrap_or_else(|| panic!("{name} target is built in"));
+        let manifest = parse_target_manifest(target.manifest).expect("manifest is valid");
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+        validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .unwrap_or_else(|error| panic!("{name} renders exact assignments: {error}"));
+    }
+}
+
 #[test]
 fn target_without_exact_assignment_consumer_rejects_exact_algebraic_schedule() {
     let solve = solve_with_issued_exact_algebraic_assignment();
+    // wgsl-ode renders rows as read-only-`y` expressions and does not consume
+    // exact assignment schedules.
     let target = templates::builtin_targets()
         .iter()
-        .find(|target| target.name == "c-ode")
-        .expect("c-ode target is built in");
-    let manifest = parse_target_manifest(target.manifest).expect("c-ode manifest is valid");
+        .find(|target| target.name == "wgsl-ode")
+        .expect("wgsl-ode target is built in");
+    let manifest = parse_target_manifest(target.manifest).expect("wgsl-ode manifest is valid");
     let capabilities = manifest.capabilities.as_ref().expect("capabilities");
 
     let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)

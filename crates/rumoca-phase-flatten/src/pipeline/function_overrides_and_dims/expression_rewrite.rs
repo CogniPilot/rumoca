@@ -72,7 +72,7 @@ fn subscript_contains_function_call(subscript: &rumoca_core::Subscript) -> bool 
 
 pub(super) struct FunctionOverrideExpressionRewriter<'a> {
     ctx: &'a FunctionOverrideRewriteContext<'a>,
-    active_comprehension_binders: Vec<String>,
+    active_comprehension_binders: Vec<rumoca_core::DefId>,
     error: Option<FlattenError>,
 }
 
@@ -93,14 +93,9 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
     }
 
     fn reference_is_active_comprehension_binder(&self, reference: &rumoca_core::Reference) -> bool {
-        let path = ComponentPath::from_reference(reference);
-        let [part] = path.parts() else {
-            return false;
-        };
-        self.active_comprehension_binders
-            .iter()
-            .rev()
-            .any(|binder| binder == part)
+        reference
+            .target_def_id()
+            .is_some_and(|id| self.active_comprehension_binders.contains(&id))
     }
 
     fn rewrite_variable_reference(&mut self, expr: &Expression) -> Option<Expression> {
@@ -212,13 +207,12 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
         span: rumoca_core::Span,
     ) -> Expression {
         let binder_depth = self.active_comprehension_binders.len();
-        let mut rewritten_indices = Vec::with_capacity(indices.len());
-        for index in indices {
-            rewritten_indices.push(rumoca_core::ComprehensionIndex {
-                name: index.name.clone(),
-                range: self.rewrite_expression(&index.range),
-            });
-            self.active_comprehension_binders.push(index.name.clone());
+        let mut rewritten_indices = indices.to_vec();
+        for index in rewritten_indices.iter_mut().rev() {
+            index.range = self.rewrite_expression(&index.range);
+            if let rumoca_core::IndexBinderProvenance::Source(id) = index.binder {
+                self.active_comprehension_binders.push(id);
+            }
         }
         let rewritten_expr = Box::new(self.rewrite_expression(expr));
         let rewritten_filter = filter.map(|filter| Box::new(self.rewrite_expression(filter)));

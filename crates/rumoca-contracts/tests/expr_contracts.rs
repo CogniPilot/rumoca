@@ -1,6 +1,6 @@
 //! EXPR (Expression/Operator) contract tests - MLS §3
 //!
-//! Tests for the 41 expression contracts defined in SPEC_0022.
+//! Tests for the 42 expression contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{

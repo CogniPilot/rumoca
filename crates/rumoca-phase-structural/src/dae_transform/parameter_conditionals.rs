@@ -65,6 +65,9 @@ fn piecewise_constant_guard<'dae>(
             piecewise_constant_guard(view, &context, lhs)
                 && piecewise_constant_guard(view, &context, rhs)
         }
+        dae::ExpressionOperation::Conditional(operands) => operands
+            .iter()
+            .all(|operand| piecewise_constant_guard(view, &context, operand)),
         dae::ExpressionOperation::Binary {
             operator:
                 dae::BinaryOperator::Equal
@@ -129,6 +132,7 @@ fn invariant_guard<'dae>(
                 })
         }
         dae::ExpressionOperation::Array(operands)
+        | dae::ExpressionOperation::Conditional(operands)
         | dae::ExpressionOperation::Builtin {
             arguments: operands,
             ..
@@ -138,3 +142,6 @@ fn invariant_guard<'dae>(
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests;

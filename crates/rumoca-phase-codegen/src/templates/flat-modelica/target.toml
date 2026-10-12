@@ -6,6 +6,14 @@ readiness_level = 1
 execution_mode = "source-transform"
 deployment_class = "modelica"
 
+[capabilities]
+# The template renders regular/initial equations and assertions only. It does
+# not render `when` chains or algorithm sections, which would otherwise be
+# dropped silently (the emitted model still compiles, with different
+# dynamics). Declaring them unsupported turns that into a refusal.
+events = false
+algorithms = false
+
 [[files]]
 path = "{{ model_name }}_flat.mo"
 template = "flat_modelica.mo.jinja"

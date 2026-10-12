@@ -2,6 +2,9 @@
 //! gates. Extracted from `verify_cmd.rs` to keep that file within the source
 //! size budget; the logic is unchanged.
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Write};
@@ -74,7 +77,9 @@ pub(crate) fn run_wasm_browser_msl_smoke_report(
 }
 
 pub(crate) fn resolve_xtask_cli_executable(root: &Path) -> Result<PathBuf> {
-    let repo_debug_bin = root.join("target/debug").join(exe_name("xtask"));
+    let repo_debug_bin = crate::verify_cmd::cargo_target_dir(root)
+        .join("debug")
+        .join(exe_name("xtask"));
     if repo_debug_bin.is_file() {
         return Ok(repo_debug_bin);
     }

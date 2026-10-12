@@ -106,16 +106,19 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: self.model.problem.initialization.update_rhs(),
-            targets: self.model.problem.initialization.update_targets(),
-            y,
-            p,
-            t,
-            context: self.row_eval_context(),
-            max_iters,
-        })
-        .map_err(Into::into)
+        let scalar_changed =
+            solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
+                block: self.model.problem.initialization.update_rhs(),
+                targets: self.model.problem.initialization.update_targets(),
+                y,
+                p,
+                t,
+                context: self.row_eval_context(),
+                max_iters,
+            })
+            .map_err(RuntimeSolveError::from)?;
+        let structured_changed = self.apply_initial_quotient_maps(y, p, t, max_iters)?;
+        Ok(scalar_changed || structured_changed)
     }
 
     pub fn apply_runtime_assignments_until_stable(
@@ -210,11 +213,10 @@ impl SolveRuntime {
             root_relation_overrides,
         } = input;
         seed_event_entry_pre_params(&self.model, event_pre_y, event_pre_p, p)?;
-        // Hidden mixed-condition clock lanes are compiler-owned projections of
-        // their typed schedules. Materialize them in the canonical event P
-        // view before any row evaluates; row-wide clock owners are only an
-        // execution filter and cannot stand in for these expression leaves.
-        write_clock_activation_params(&self.model, p, t);
+        // Clock leaves and clock-owned rows share the same event-pass authority.
+        // An ordinary sample row has no partition owner, so its clock leaf must
+        // also remain cleared while initialization settles unowned rows.
+        self.write_event_pass_clock_params(p, t, row_filter);
         let window = self.event_schedule().relation_surface_window();
         let initial_event = self.initial_event_flag(p);
         // At the initialization event, pass 0 is the initialization instant
@@ -942,6 +944,24 @@ impl SolveRuntime {
         Ok(outcome)
     }
 
+    /// A clock leaf is active only in a pass that admits the clock's tick.
+    /// This also covers unowned Boolean sample expressions (MLS §3.7.5/§8.6):
+    /// an optional `initial()` slot cannot supply the pass's timing authority.
+    fn write_event_pass_clock_params(
+        &self,
+        p: &mut [f64],
+        t: f64,
+        row_filter: EventUpdateRowFilter,
+    ) -> bool {
+        let clocks_tick = row_filter.accepts(crate::EventPreMode::EventEntry, true);
+        if clocks_tick {
+            write_clock_activation_params(&self.model, p, t);
+        } else {
+            crate::runtime::solve_ops::write_observation_clock_activation_params(&self.model, p);
+        }
+        clocks_tick
+    }
+
     pub fn eval_event_actions(
         &self,
         y: &[f64],
@@ -956,15 +976,7 @@ impl SolveRuntime {
         // unowned rows (the initialization instant before a phase-zero tick,
         // a coincident root's right limit) or a held right limit reads every
         // clock lane, owner and `when` leaf alike, as not ticking.
-        let clocks_tick = row_filter.accepts(crate::EventPreMode::EventEntry, true);
-        if clocks_tick {
-            write_clock_activation_params(&self.model, &mut action_p, t);
-        } else {
-            crate::runtime::solve_ops::write_observation_clock_activation_params(
-                &self.model,
-                &mut action_p,
-            );
-        }
+        let clocks_tick = self.write_event_pass_clock_params(&mut action_p, t, row_filter);
         let mut values = vec![0.0; events.actions.len()];
         let mut active_rows = self.event_action_active_row_indices.borrow_mut();
         active_rows.clear();

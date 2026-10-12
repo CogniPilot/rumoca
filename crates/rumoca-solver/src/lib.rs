@@ -13,6 +13,8 @@ pub mod runtime;
 mod runtime;
 #[cfg(not(kani))]
 pub mod solver;
+#[cfg(all(test, not(kani)))]
+mod test_fixtures;
 #[cfg(not(kani))]
 pub mod timeline;
 mod verification;

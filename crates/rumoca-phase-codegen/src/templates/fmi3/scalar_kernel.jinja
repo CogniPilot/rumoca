@@ -618,6 +618,17 @@ static {{ prefix }}Status settle_assertion_event(ModelInstance* m) {
 {%- if variable.value_kind == "Real" %}RMC_KIND_FLOAT64{% elif variable.value_kind == "Enumeration" %}{{ enumeration_kind }}{% elif variable.value_kind == "Integer" %}RMC_KIND_INT32{% elif variable.value_kind == "Boolean" %}RMC_KIND_BOOLEAN{% elif variable.value_kind == "String" %}RMC_KIND_STRING{% else %}{{ fail("unsupported-feature:fmi.c.value-kind " ~ variable.value_kind) }}{% endif -%}
 {%- endmacro %}
 
+{#- Public signed Integer conversion is checked before any request output is written. -#}
+{%- macro integer_publication() %}
+static bool rmc_integer_public_value(double value, unsigned bits, size_t literals) {
+    if (!isfinite(value) || trunc(value) != value) return false;
+    /* INT64_MAX rounds to 2^63 as a double: its upper bound must be open. */
+    if (bits == 32 ? (value < -2147483648.0 || value > 2147483647.0)
+                   : (value < -0x1p63 || value >= 0x1p63)) return false;
+    return literals == 0 || (value >= 1.0 && value <= (double)literals);
+}
+{%- endmacro %}
+
 {#- Instance storage of the String texts: the current text of every String
     scalar and the owned copy an importer's set installed, if any. -#}
 {%- macro text_fields(texts) -%}

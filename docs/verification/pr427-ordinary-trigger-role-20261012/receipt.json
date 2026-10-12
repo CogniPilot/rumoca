@@ -1,0 +1,424 @@
+{
+  "schema": 1,
+  "scope": "Exact ordinary periodic trigger memory versus MLS16 variable ownership; constructor proof, not a full authored-model runtime result.",
+  "source_commits": {
+    "test": "18d81a294b60a9fb7da8f090d34840ece594d5ae",
+    "fix": "40243d81783df378c5010bbc19df68afb5c3fb5b"
+  },
+  "guardian": {
+    "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/guardian-resident-plus-swap-20261012.mjs",
+    "sha256": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c"
+  },
+  "limits": {
+    "seconds_per_gate": 600,
+    "aggregate_resident_plus_swap_mib": 4096,
+    "host_available_floor_mib": 16384,
+    "target_limit_mib": 8192,
+    "scratch_floor_mib": 8192,
+    "jobs": 4,
+    "test_threads": 4,
+    "rayon_threads": 4
+  },
+  "attempts": [
+    {
+      "attempt": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012",
+      "source": "8f7547fa80052b9e8e13a3a5c6bf0b8d0f117796",
+      "source_diff_sha256": "34b9e7a3a6bdf0da8875c8a3eb2846a4855a7335a8c256953e206c54868d9374",
+      "tracked_files": 4146,
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/recipe.json",
+        "sha256": "5dc5671f187a16fa210818e8d2b21c537652af0bf93ad53625f362b4c60ad8a3"
+      },
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/source-before.json",
+        "sha256": "25762b1909ffd92646ef5fdc9bc594d6d79a73f926780ab931098cea9f7b2b6c"
+      },
+      "source_pre_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/guard-before.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "source_post_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/guard-after.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "gates": [
+        {
+          "gate": "ordinary-trigger2",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "rumoca-phase-solve",
+            "--lib",
+            "periodic_trigger_memory_",
+            "--",
+            "--nocapture"
+          ],
+          "expected_tests": 2,
+          "exit_code": 101,
+          "last_summary": [
+            "FAILED",
+            "1",
+            "1",
+            "0"
+          ],
+          "count_qualified": false,
+          "raw_log_sha256": "959dd9700a364f52b9cc3d9fae1f1d1328340f2032557e806597a766f2a73a0d",
+          "guardian_sha256": "b9da6a6eff0c424bf21acf208e657d7169d759c5b35ebed33b813ef3c07a03ad",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/ordinary-trigger2.log",
+            "sha256": "959dd9700a364f52b9cc3d9fae1f1d1328340f2032557e806597a766f2a73a0d"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-before-wip-20261012/ordinary-trigger2.guardian.json",
+            "sha256": "b9da6a6eff0c424bf21acf208e657d7169d759c5b35ebed33b813ef3c07a03ad"
+          },
+          "resources": {
+            "elapsedMs": 69998.26646,
+            "peakRssKiB": 2048168,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 2048168,
+            "peakCacheBytes": 6215684096,
+            "minimumAvailableKiB": 52722348,
+            "minimumScratchFreeBytes": 94337703936,
+            "signal": null,
+            "exitCode": 101
+          }
+        }
+      ]
+    },
+    {
+      "attempt": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012",
+      "source": "8f7547fa80052b9e8e13a3a5c6bf0b8d0f117796",
+      "source_diff_sha256": "927f5a6f89cc0c63c2ca699cfe5a924224a4327453eca9d17cb6a3e73e397202",
+      "tracked_files": 4146,
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/recipe.json",
+        "sha256": "16fdb9637d59e98f94e0fddc01b6462923091415a8d4088e6e1e912aa4f65a54"
+      },
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/source-before.json",
+        "sha256": "43552553b8200fb4937d75e18ecd01f19f895eaf7e9d1c6b4c41fe510aaa038e"
+      },
+      "source_pre_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/guard-before.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "source_post_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/guard-after.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "gates": [
+        {
+          "gate": "ordinary-trigger2",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "rumoca-phase-solve",
+            "--lib",
+            "ordinary_periodic_trigger",
+            "--",
+            "--nocapture"
+          ],
+          "expected_tests": 2,
+          "exit_code": 101,
+          "last_summary": [
+            "FAILED",
+            "1",
+            "1",
+            "0"
+          ],
+          "count_qualified": false,
+          "raw_log_sha256": "20aa8ea6318461146cff59f5fc7726b779d7836f9a969191ee299eba15e009ef",
+          "guardian_sha256": "63ea025278bada1451ea7925a6b1cebc69d806e834e764b0477da25aadc08d93",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/ordinary-trigger2.log",
+            "sha256": "20aa8ea6318461146cff59f5fc7726b779d7836f9a969191ee299eba15e009ef"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-checked-before-20261012/ordinary-trigger2.guardian.json",
+            "sha256": "63ea025278bada1451ea7925a6b1cebc69d806e834e764b0477da25aadc08d93"
+          },
+          "resources": {
+            "elapsedMs": 73559.49018,
+            "peakRssKiB": 2039136,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 2039136,
+            "peakCacheBytes": 6210265088,
+            "minimumAvailableKiB": 44551688,
+            "minimumScratchFreeBytes": 92250009600,
+            "signal": null,
+            "exitCode": 101
+          }
+        }
+      ]
+    },
+    {
+      "attempt": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012",
+      "source": "8f7547fa80052b9e8e13a3a5c6bf0b8d0f117796",
+      "source_diff_sha256": "a4726c90f19fb5f7c7e0a2351ed3e1f55f10ff1aaf9b144e408c7696543a7eca",
+      "tracked_files": 4146,
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/recipe.json",
+        "sha256": "7ccc850ca589f4481fa708eed34c7fb7db5b3949bb8be83c7b99e1064e43ed5c"
+      },
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/source-before.json",
+        "sha256": "c5f568f56714d459d847ef27165573506d2e711c85f26c5fee1265a215af2168"
+      },
+      "source_pre_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/guard-before.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "source_post_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/guard-after.json",
+        "sha256": "104ff852e957da145aead27f24b58aa7ed2af1abfc460a1e1bb6f51cd5a6ef3b"
+      },
+      "gates": [
+        {
+          "gate": "ordinary-trigger2",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "rumoca-phase-solve",
+            "--lib",
+            "ordinary_periodic_trigger",
+            "--",
+            "--nocapture"
+          ],
+          "expected_tests": 2,
+          "exit_code": 0,
+          "last_summary": [
+            "ok",
+            "2",
+            "0",
+            "0"
+          ],
+          "count_qualified": true,
+          "raw_log_sha256": "f391d1c2fd8a7a2b5704fc21faf550baeb09e670b5b7a6aae0d02cafc14070e2",
+          "guardian_sha256": "ce43af97f39e522d9cbc0131f573da49ad59b54af783dfac4d620a4c6628b4a0",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/ordinary-trigger2.log",
+            "sha256": "f391d1c2fd8a7a2b5704fc21faf550baeb09e670b5b7a6aae0d02cafc14070e2"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/ordinary-trigger2.guardian.json",
+            "sha256": "ce43af97f39e522d9cbc0131f573da49ad59b54af783dfac4d620a4c6628b4a0"
+          },
+          "resources": {
+            "elapsedMs": 33114.413343,
+            "peakRssKiB": 1152384,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 1152384,
+            "peakCacheBytes": 6217601024,
+            "minimumAvailableKiB": 42204276,
+            "minimumScratchFreeBytes": 91706605568,
+            "signal": null,
+            "exitCode": 0
+          }
+        },
+        {
+          "gate": "solve-clippy",
+          "command": [
+            "cargo",
+            "clippy",
+            "-p",
+            "rumoca-phase-solve",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "expected_tests": null,
+          "exit_code": 0,
+          "last_summary": null,
+          "count_qualified": true,
+          "raw_log_sha256": "fe34c949d1902873a6044ce666d1330c005199be3e96bff270364d80b1f8e2e5",
+          "guardian_sha256": "f2c671aceafacc9ee4c7a71d1efccc73065fa0f938155de3635af63ec2f2a019",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/solve-clippy.log",
+            "sha256": "fe34c949d1902873a6044ce666d1330c005199be3e96bff270364d80b1f8e2e5"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/solve-clippy.guardian.json",
+            "sha256": "f2c671aceafacc9ee4c7a71d1efccc73065fa0f938155de3635af63ec2f2a019"
+          },
+          "resources": {
+            "elapsedMs": 35196.735319,
+            "peakRssKiB": 1202424,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 1202424,
+            "peakCacheBytes": 6201720832,
+            "minimumAvailableKiB": 41405036,
+            "minimumScratchFreeBytes": 91409874944,
+            "signal": null,
+            "exitCode": 0
+          }
+        },
+        {
+          "gate": "fmt",
+          "command": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--",
+            "--check"
+          ],
+          "expected_tests": null,
+          "exit_code": 0,
+          "last_summary": null,
+          "count_qualified": true,
+          "raw_log_sha256": "e725ee2f068d6673abc92178c00cc6d72056cf061eace1494bfb1be232e5a4bc",
+          "guardian_sha256": "3894dea6e8c45c4577c83a57f3a9be5df860287c666c922f9877b041c2cb8c90",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/fmt.log",
+            "sha256": "e725ee2f068d6673abc92178c00cc6d72056cf061eace1494bfb1be232e5a4bc"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-dirty-after-20261012/fmt.guardian.json",
+            "sha256": "3894dea6e8c45c4577c83a57f3a9be5df860287c666c922f9877b041c2cb8c90"
+          },
+          "resources": {
+            "elapsedMs": 16556.86728,
+            "peakRssKiB": 128452,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 128452,
+            "peakCacheBytes": 6201749504,
+            "minimumAvailableKiB": 40507724,
+            "minimumScratchFreeBytes": 91120414720,
+            "signal": null,
+            "exitCode": 0
+          }
+        }
+      ]
+    },
+    {
+      "attempt": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012",
+      "source": "40243d81783df378c5010bbc19df68afb5c3fb5b",
+      "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tracked_files": 4146,
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/recipe.json",
+        "sha256": "4ce7bcdf2a4f7d1b7ce3d4ba9253298836c5e44f8bc22dcc5614cc35c6f36582"
+      },
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/source-before.json",
+        "sha256": "6af3865c1b6b1e4b12a4dfb5e30c47ac603c95718d19743602f1a06d8198b964"
+      },
+      "source_pre_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/guard-before.json",
+        "sha256": "7b023e209668d30ef360d1fa4470b64a6ccbbdbbef287b57a583a88f8387f6da"
+      },
+      "source_post_guard": {
+        "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/guard-after.json",
+        "sha256": "7b023e209668d30ef360d1fa4470b64a6ccbbdbbef287b57a583a88f8387f6da"
+      },
+      "gates": [
+        {
+          "gate": "ordinary-trigger2",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "rumoca-phase-solve",
+            "--lib",
+            "ordinary_periodic_trigger",
+            "--",
+            "--nocapture"
+          ],
+          "expected_tests": 2,
+          "exit_code": 0,
+          "last_summary": [
+            "ok",
+            "2",
+            "0",
+            "0"
+          ],
+          "count_qualified": true,
+          "raw_log_sha256": "ee1fe16de111e055d6b15b2a0914f95dd71ebf6f4dca58765a348879544ccdbd",
+          "guardian_sha256": "f7389fb6ed68eb71a39ff29edd5e63f8596b3eaca868ca34bc8bfab8da77f40f",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/ordinary-trigger2.log",
+            "sha256": "ee1fe16de111e055d6b15b2a0914f95dd71ebf6f4dca58765a348879544ccdbd"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/ordinary-trigger2.guardian.json",
+            "sha256": "f7389fb6ed68eb71a39ff29edd5e63f8596b3eaca868ca34bc8bfab8da77f40f"
+          },
+          "resources": {
+            "elapsedMs": 87591.596793,
+            "peakRssKiB": 2037820,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 2037820,
+            "peakCacheBytes": 6216011776,
+            "minimumAvailableKiB": 42096844,
+            "minimumScratchFreeBytes": 90116710400,
+            "signal": null,
+            "exitCode": 0
+          }
+        },
+        {
+          "gate": "solve198",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "rumoca-phase-solve",
+            "--lib",
+            "--",
+            "--nocapture"
+          ],
+          "expected_tests": 198,
+          "exit_code": 101,
+          "last_summary": [
+            "FAILED",
+            "197",
+            "1",
+            "0"
+          ],
+          "count_qualified": false,
+          "raw_log_sha256": "dbcc1423a112fec5ca66bcb37540c129a99afd4e6417faf805d49c5a34a2a4a7",
+          "guardian_sha256": "aa236cd4ca422dd1f053efc1ff846c249e78377678d9a9957f0a6d795b7adb7f",
+          "log": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/solve198.log",
+            "sha256": "dbcc1423a112fec5ca66bcb37540c129a99afd4e6417faf805d49c5a34a2a4a7"
+          },
+          "guardian": {
+            "path": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/solve198.guardian.json",
+            "sha256": "aa236cd4ca422dd1f053efc1ff846c249e78377678d9a9957f0a6d795b7adb7f"
+          },
+          "resources": {
+            "elapsedMs": 5378.330178,
+            "peakRssKiB": 499852,
+            "peakSwapKiB": 0,
+            "peakResidentPlusSwapKiB": 499852,
+            "peakCacheBytes": 6201745408,
+            "minimumAvailableKiB": 41976944,
+            "minimumScratchFreeBytes": 89874640896,
+            "signal": null,
+            "exitCode": 101
+          }
+        }
+      ]
+    }
+  ],
+  "outcome_notes": [
+    "Initial direct-Clock ordinary fixture was rejected MissingClockOwnership before lowering; fixture-only and unqualified.",
+    "Corrected BEFORE is one owned control pass and one exact ordinary trigger-memory failure.",
+    "Dirty AFTER two controls, scoped all-target/all-feature phase-solve Clippy, and fmt pass.",
+    "Frozen repeat outcomes are recorded individually; the two focused controls are a subset of the full phase-solve suite.",
+    "Frozen full suite: 197 pass / 1 fail. The existing discrete_row_still_rejects_a_derivative_coordinate expects a refusal, but actual lowering succeeds. Its governing acceptance boundary is under investigation; no full-suite pass is claimed."
+  ],
+  "sealed_executable": {
+    "target": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target",
+    "references": [],
+    "lease_absent": true,
+    "allocated_bytes": 6201753600,
+    "sealed_executable": "$HOME/scratch/rumoca/pr427-ordinary-trigger-role-frozen-after-20261012/rumoca-phase-solve-40243d-tests",
+    "sealed_executable_sha256": "f854b4ac8a160a4a411fb72fbc5d46fad7c763f3df97a8ff874028357e543e4c",
+    "native_source": "40243d81783df378c5010bbc19df68afb5c3fb5b"
+  }
+}

@@ -1756,6 +1756,7 @@ fn comprehension_projects_checked_binder_values() {
             domains.structured(
                 rumoca_core::StructuredIndexDomain {
                     binders: vec![rumoca_core::StructuredIndexBinder {
+                        provenance: rumoca_core::IndexBinderProvenance::Generated,
                         id: 0,
                         display_name: "i".to_owned(),
                         lower: -1,

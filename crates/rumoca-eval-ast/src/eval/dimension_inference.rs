@@ -163,9 +163,11 @@ fn infer_dims_from_array_comprehension(
     if indices.is_empty() {
         return None;
     }
-    let range = &indices[0].range;
-    let outer_len = infer_range_length(range, ctx, scope)?;
-    let mut dims = vec![outer_len];
+    let mut dims = indices
+        .iter()
+        .rev()
+        .map(|index| infer_range_length(&index.range, ctx, scope))
+        .collect::<Option<Vec<_>>>()?;
     if let Some(inner_dims) = infer_dimensions_from_binding_with_scope(inner_expr, ctx, scope) {
         dims.extend(inner_dims);
     }

@@ -6,6 +6,161 @@
 
 use super::*;
 
+fn relation_with_previous_guard_model(mixed_clocks: bool, time_relation: bool) -> dae::Dae {
+    let text = if mixed_clocks {
+        "discrete Integer counterA, counterB; Clock cA=Clock(0.1), cB=Clock(0.2); if previous(counterA)<5 and previous(counterB)<5 then 1.0>0.0 else false;"
+    } else if time_relation {
+        "discrete Integer counter; Clock c=Clock(0.1); if previous(counter)<5 then time>0.45 else false;"
+    } else {
+        "discrete Integer counter; Clock c=Clock(0.1); if previous(counter)<5 then 1.0>0.0 else false;"
+    };
+    let source = TestSource::new(text);
+    let at = source.at(0, text.len());
+    dae::Dae::construct(source.map, |model| {
+        let integer = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
+        let specifications: &[(&str, i64)] = if mixed_clocks {
+            &[("counterA", 10), ("counterB", 5)]
+        } else {
+            &[("counter", 10)]
+        };
+        let mut counters = Vec::new();
+        let mut predicates = Vec::new();
+        for &(name, denominator) in specifications {
+            let counter = model.variables(|variables| {
+                variables.discrete_value(
+                    VarName::new(name),
+                    integer,
+                    at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            counters.push(counter);
+            let lattice = rumoca_core::ClockLattice::from_interval_counter(1, denominator).unwrap();
+            let clock = model.clocks(|clocks| clocks.periodic(lattice, at))?;
+            model.clocks(|clocks| clocks.own_discrete_value(clock.into(), counter, at))?;
+            let previous = model
+                .temporal(|temporal| temporal.previous_discrete_value(clock.into(), counter, at))?;
+            predicates.push(model.expressions(|e| {
+                let previous = e
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Previous(previous))?;
+                let limit = e.at(at).literal(dae::DaeLiteral::Integer(5))?;
+                e.at(at).binary(dae::BinaryOperator::Less, previous, limit)
+            })?);
+        }
+        let guard = if mixed_clocks {
+            model.expressions(|e| {
+                e.at(at)
+                    .binary(dae::BinaryOperator::And, predicates[0], predicates[1])
+            })?
+        } else {
+            predicates[0]
+        };
+        let owner = model.begin_model_conditional(guard, at)?;
+        let expression = model.model_conditional_arm(&owner, true, |model| {
+            model.expressions(|e| guarded_relation_expression(e, time_relation, at))
+        })?;
+        let fallback = model.model_conditional_arm(&owner, false, |model| {
+            model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Boolean(false)))
+        })?;
+        model.finish_model_conditional(owner, [expression, fallback])?;
+        model.conditions(|c| {
+            let relation = c.relation(expression, at)?;
+            let condition = c.reserve(at)?;
+            c.define(condition, dae::ConditionInput::Relation(relation), at)?;
+            c.root(relation, condition, at)
+        })?;
+        let one = model.expressions(|e| e.at(at).literal(dae::DaeLiteral::Integer(1)))?;
+        model.b1c(counters.iter().copied(), |topology| {
+            for &counter in &counters {
+                topology.owner(at, [counter], |owner| owner.always(at, [(one, at)]))?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .expect("the arm guard retains its exact issued Previous clocks")
+}
+
+fn guarded_relation_expression<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    time_relation: bool,
+    at: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let one = if time_relation {
+        expressions.at(at).coordinate(dae::CoordinateInput::Time)?
+    } else {
+        expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?
+    };
+    let zero = expressions
+        .at(at)
+        .literal(dae::DaeLiteral::Real(if time_relation {
+            0.45
+        } else {
+            0.0
+        }))?;
+    expressions
+        .at(at)
+        .binary(dae::BinaryOperator::Greater, one, zero)
+}
+
+#[test]
+fn arm_relation_previous_guard_owns_its_condition_memory_clock() {
+    let model = relation_with_previous_guard_model(false, false);
+    let problem = lower_solve_problem(&model)
+        .expect("the relation's guard must lower inside its Previous clock");
+    assert_eq!(problem.events.root_conditions.row_count(), 0);
+    let clocks = problem
+        .discrete
+        .row_roles
+        .iter()
+        .zip(&problem.discrete.clock_owners)
+        .filter_map(|(role, clock)| {
+            (*role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory).then_some(*clock)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(clocks.len(), 1, "one condition history row");
+    let clock = clocks[0].expect("the guard, not primitive constant operands, owns the row");
+    assert_eq!(
+        problem.clocks.periodic_schedule(clock).unwrap().lattice(),
+        rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap()
+    );
+}
+
+#[test]
+fn arm_relation_previous_guard_refuses_mixed_condition_memory_clocks() {
+    let model = relation_with_previous_guard_model(true, false);
+    let error = lower_solve_problem(&model)
+        .expect_err("two guard clocks cannot issue one condition-memory schedule");
+    let LowerError::NonComputable { reason, span } = error else {
+        panic!("the condition clock proof must refuse the mixed guard: {error:?}");
+    };
+    assert_eq!(
+        reason,
+        "condition mixes relations from different clock partitions"
+    );
+    assert!(
+        !span.is_dummy(),
+        "the refusal retains the source condition span"
+    );
+}
+
+#[test]
+fn guarded_time_relation_refuses_a_previous_coordinate_outside_its_clock() {
+    let model = relation_with_previous_guard_model(false, true);
+    let error = lower_solve_problem(&model)
+        .expect_err("a continuous time root cannot evaluate Previous outside its issued clock");
+    let LowerError::NonComputable { reason, span } = error else {
+        panic!("the clock coordinate boundary must refuse the root: {error:?}");
+    };
+    assert_eq!(
+        reason,
+        "previous coordinate escaped its owning clock schedule"
+    );
+    assert!(!span.is_dummy());
+}
+
 #[test]
 fn clocked_discrete_definition_lowers_with_exact_row_owner() {
     let source = TestSource::new("Real d; Clock c=Clock(0.1); d=sample(time);");

@@ -1,3 +1,4 @@
+use cranelift_codegen::ir::LibCall;
 use cranelift_jit::JITBuilder;
 use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
@@ -7,6 +8,9 @@ use rumoca_eval_solve::{
 use std::cell::Cell;
 
 use super::{CompileError, to_backend_err};
+
+#[cfg(test)]
+mod tests;
 
 /// Whether Cranelift's IR verifier runs on every function a JIT module
 /// defines. The verifier checks IR well-formedness and never changes the
@@ -20,11 +24,45 @@ const JIT_VERIFIER: &str = if cfg!(debug_assertions) {
 
 /// The single JIT configuration for every module this crate emits.
 pub(super) fn host_jit_builder() -> Result<JITBuilder, CompileError> {
-    JITBuilder::with_flags(
+    let libcall_names = cranelift_module::default_libcall_names();
+    let memory_symbols = [
+        (LibCall::Memcpy, memcpy as *const u8),
+        (LibCall::Memmove, memmove as *const u8),
+        (LibCall::Memset, memset as *const u8),
+        (LibCall::Memcmp, memcmp as *const u8),
+    ]
+    .map(|(call, address)| (libcall_names(call), address));
+    let mut builder = JITBuilder::with_flags(
         &[("opt_level", "speed"), ("enable_verifier", JIT_VERIFIER)],
-        cranelift_module::default_libcall_names(),
+        libcall_names,
     )
-    .map_err(to_backend_err)
+    .map_err(to_backend_err)?;
+    // Link the libcall directly: static PIE executables need not export libc symbols.
+    builder.symbols(memory_symbols);
+    Ok(builder)
+}
+
+unsafe extern "C" {
+    fn memcpy(
+        dst: *mut std::ffi::c_void,
+        src: *const std::ffi::c_void,
+        size: usize,
+    ) -> *mut std::ffi::c_void;
+    fn memmove(
+        dst: *mut std::ffi::c_void,
+        src: *const std::ffi::c_void,
+        size: usize,
+    ) -> *mut std::ffi::c_void;
+    fn memset(
+        dst: *mut std::ffi::c_void,
+        value: std::ffi::c_int,
+        size: usize,
+    ) -> *mut std::ffi::c_void;
+    fn memcmp(
+        lhs: *const std::ffi::c_void,
+        rhs: *const std::ffi::c_void,
+        size: usize,
+    ) -> std::ffi::c_int;
 }
 
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {

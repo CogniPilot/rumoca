@@ -2272,6 +2272,16 @@ notes = 'Rumoca takes the freedom except for a relation inside smooth(0, ..) who
 tier = 1
 
 [[contracts]]
+id = 'EXPR-042'
+category = 'Expression'
+name = 'Scalar Boolean value evaluation policy'
+mls_ref = '§3.3, §3.6.5'
+requirement = 'Rumoca chooses left-to-right short-circuit for primitive scalar Boolean value expressions: `L and R` becomes `if L then R else false`; `L or R` becomes `if L then true else R`. Phase-DAE issues the existing checked conditional before executable lowering; a skipped operand may execute only under the existing total, effect-free conditional proof (SOLVE-C61). Inactive faulting calls, computed indices and checked Integer operations remain selected; active faults retain source provenance. Boolean tensors keep compact element-wise operations without per-element short-circuit guarantees. Activation condition DAGs, vector `when`/`AnyRise`, clock eligibility and event observation keep their existing owners; this policy promises no lazy activation DAG evaluation. Static type/shape/profile refusals and explicit-if guarantees remain unchanged.'
+status = 'Implemented'
+notes = 'The existing suite_core reported_bug_runtime scalar Boolean regressions exercise selected and inactive faults, scalar shape, nested truth tables, native issued helpers, and model-arm JSON replay. contract_cases.toml maps those workspace-owned tests without duplicating their models.'
+tier = 1
+
+[[contracts]]
 id = 'FUNC-001'
 category = 'Function'
 name = 'Input/output only'

@@ -1,0 +1,447 @@
+{
+  "scope": "fixed20 Tier1 tripwire; not the 566-model cohort; five historical failures remain",
+  "source": "bd1027a423d536dfff76c56f161ff606e557aaba",
+  "historical_source": "13429f49687711a39a8fb63befc9c487544ac5a6",
+  "comparator_source": "117b2490b",
+  "comparator_sha256": "5281ddde32f4c639694cdf4dd0228a7851ddbdd2aedb5c1728f13141b899112e",
+  "worker_artifacts": {
+    "$HOME/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/rumoca-worker-bd102": "6690882a6ea06a5494e246f75c217862f15b30041b396ef224afe76762579bf4",
+    "$HOME/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/fixed-tier1-bd102": "6645941999c51ca6bdd67d9e6cbac9fa8cc0d9ead81919f08de55d6548e3eb8e",
+    "$HOME/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/sha256.txt": "65423ec1520183372ad4b89ef0736a7b724973ac5302377fd23e67f154cfa150"
+  },
+  "budgets": {
+    "phase_seconds": 10,
+    "solver_seconds": 12,
+    "parent_sim_seconds": 14,
+    "startup_seconds": 60
+  },
+  "canonical_native": {
+    "models": 20,
+    "sim_ok": 15,
+    "compile_failures": 3,
+    "solve_failures": 2,
+    "model_retries": 0,
+    "model_exclusions_requested": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-fixed20-canonical.sh"
+      ],
+      "log": "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/fixed20.log",
+      "elapsedMs": 18922.111496,
+      "peakRssKiB": 1359712,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 1359712,
+      "memoryLimitObservation": null,
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 49814520,
+      "minimumScratchFreeBytes": 68054683648,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 1
+    }
+  },
+  "fresh_omc": {
+    "models": 20,
+    "successful": 19,
+    "failed": 1,
+    "failed_model": "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+    "model_retries": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-fixed20-omc-fully-staged.sh"
+      ],
+      "log": "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/omc-fully-staged.log",
+      "elapsedMs": 65861.864895,
+      "peakRssKiB": 663140,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 663140,
+      "memoryLimitObservation": null,
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 56590416,
+      "minimumScratchFreeBytes": 66364002304,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    }
+  },
+  "comparison": {
+    "native_candidates": 15,
+    "models_compared": 14,
+    "shared_channels": 445,
+    "high": 14,
+    "bad_channels": 0,
+    "severe_channels": 0,
+    "missing_traces": 0,
+    "policy_excluded": {
+      "Modelica.Electrical.Digital.Examples.Counter": {
+        "kind": "policy_excluded",
+        "detail": "reference_failure: The default OMC reference (stopTime=100, 500 output intervals) reports a state event at t=0.4 on all eight integer(delay(xr, delayTime)) crossings of the flip-flop transport delays, although every delay source has been constant since t=0.001 and the next input change is the clock edge at t=0.5. From that event every flip-flop output is 'X' to the end. The OMC result depends on the output grid, not on the model: the same OMC executable with stopTime=10, 20, or 50, or with stopTime=100 and 1000 or 5000 output intervals, counts exactly as Counter3 and as this counter with n=3 do. The Rumoca trace agrees with the 1000- and 5000-interval OMC runs on every shared channel. This is a reference-generation failure, not strict-high credit."
+      }
+    },
+    "trace_nonidentifiable": 0,
+    "omc_reexecutions": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-omc-comparison.sh"
+      ],
+      "log": "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/omc-comparison.log",
+      "elapsedMs": 5357.745207,
+      "peakRssKiB": 78204,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 78204,
+      "memoryLimitObservation": null,
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 52897676,
+      "minimumScratchFreeBytes": 66605625344,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    }
+  },
+  "delta": {
+    "native_statuses_and_error_strings_identical": true,
+    "high_model_set_identical": true,
+    "per_model_shared_channel_counts_identical": true,
+    "policy_exclusion_identical": true,
+    "new_failures": 0,
+    "recovered_failures": 0,
+    "performance_delta": "unmeasured: historical msl-fast/four workers; current dev optimized/one worker",
+    "source_library_byte_comparison": "historical directory retired; identical committed corpus pin/roster and library version retained"
+  },
+  "instrumented_run": {
+    "canonical_canary": false,
+    "models": 20,
+    "sim_ok": 13,
+    "additional_artifact_write_timeouts": [
+      "Modelica.Electrical.Digital.Examples.Counter",
+      "Modelica.Electrical.Digital.Examples.FullAdder"
+    ],
+    "cause": "harness setup emit_json=true; canonical requests require false; runtime unreached for those two",
+    "not_semantic_regression_credit": true
+  },
+  "setup_only_attempts": {
+    "omc_missing_msl_stage": "zero models; immutable receipt retained",
+    "omc_missing_services_stage": "zero models; immutable receipt retained",
+    "initial_fresh_omc_comparison": "all20 OMC attempted; zero comparisons due absent msl_results.json carrier, parity unmeasured; exact worker records supplied to separate cached comparison carrier"
+  },
+  "models": [
+    {
+      "model": "Modelica.Blocks.Examples.BooleanNetwork1",
+      "native_status": "ToDae",
+      "error": "Modelica.Blocks.Examples.BooleanNetwork1 failed in ToDae: unsupported Flat semantic owner `function return`: in function `Modelica.Math.BooleanVectors.firstTrueIndex`: a non-guarded nested return requires a checked control-flow owner",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "native_status": "Flatten",
+      "error": "Modelica.Blocks.Examples.Noise.AutomaticSeed failed in Flatten: unordered foreign library state: `Modelica.Math.Random.Utilities.initializeImpureRandom` reaches library state from an equation or attribute, where the order of its state accesses is unspecified",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 10
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 10
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 5
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 26
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 21
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 45
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+      "native_status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 57 matched out of 58 equations and 58 unknowns",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 23
+    },
+    {
+      "model": "Modelica.Electrical.Digital.Examples.Counter",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "policy_excluded",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Electrical.Digital.Examples.FullAdder",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 194
+    },
+    {
+      "model": "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+      "native_status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE system is not computable: affine derivative coefficient is not compile-time numeric",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 46
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.Friction",
+      "native_status": "ToDae",
+      "error": "Modelica.Mechanics.Rotational.Examples.Friction failed in ToDae: unbalanced model: 104 equations, 102 unknowns (balance = 2); unknowns[state=12 algebraic=71 output=9 discrete_real=0 discrete_value=10] equations[continuous=94 discrete_real=0 b1c_definition=10]",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 53
+    }
+  ],
+  "bindings": {
+    "recipe.json": {
+      "sha256": "205b1f2b2fa6bd356f43f78bbccfed8e8e384411cc5d110da047ebb149278fb5",
+      "bytes": 5003
+    },
+    "outcomes.json": {
+      "sha256": "87d3e6bebdd9300e2da12d4c4e4cfefc0f28b391c598fa765035b49321e6234c",
+      "bytes": 46676
+    },
+    "native-delta.json": {
+      "sha256": "71a42102e3d871a5259d21e17a1a8cbd74bf3f78fc3b5f5860d5d0b53850acc5",
+      "bytes": 8381
+    },
+    "fixed20.log": {
+      "sha256": "2cef06e2ce57220baae5a2549a5ae034e54f735272d8173c19a44d31e7058629",
+      "bytes": 36411
+    },
+    "fixed20.guardian.json": {
+      "sha256": "d69919e82412be80c1688a3b9c45d4750ca11d80928506c12d59a236c9b1e033",
+      "bytes": 2501
+    },
+    "source-before.json": {
+      "sha256": "f5eb3d499374c619b07bdc528dd40ba50b35f89c5bc2f876d516f92698a84f05",
+      "bytes": 643642
+    },
+    "library-before.json": {
+      "sha256": "4a3741a36a6bd22a3fb40aa624c1a22d1624318c55da3e95a074bf401e257b8d",
+      "bytes": 754793
+    },
+    "services-before.json": {
+      "sha256": "027299110067f69ee6ba3891b705dc23547beef8390c4d17d416e138f04b76aa",
+      "bytes": 617086
+    },
+    "canonical-request-field-proof.json": {
+      "sha256": "44d796aed5096a7cba0a35df1bd4d893984b90306b38587ba5ac1b5e09a2d0b2",
+      "bytes": 8017
+    },
+    "guards-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-omc-comparison-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-omc-comparison-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "finite-trace-inventory.json": {
+      "sha256": "ce514b31edeaa9b8e7bb66142bc4c34a70f1e5af8bb023c6bcd45d14e8f1bf5a",
+      "bytes": 2741
+    },
+    "omc-recipe.json": {
+      "sha256": "694871080040ed3b07ce16c456b8ffd31a9b63c28cdf22eb7e09679294741623",
+      "bytes": 1098
+    },
+    "omc.log": {
+      "sha256": "823ea7a2e160120f04c1d5071bf687dc788806fe571730ba68fb7e145b77e685",
+      "bytes": 212
+    },
+    "omc.guardian.json": {
+      "sha256": "aef8b80fa09fc284ac2ed3fd4036b2fcc304032e1a21f2d9cdc3189657ebe771",
+      "bytes": 2188
+    },
+    "omc-staged-recipe.json": {
+      "sha256": "233878cf3490658c38874df3ad33ac442c2a63561f6676c39a213b37c2aa6e3c",
+      "bytes": 1702
+    },
+    "omc-staged.log": {
+      "sha256": "9646b0593496a2c8c076956c9df8d2de157ce459e165f093a319401f2707edcd",
+      "bytes": 891
+    },
+    "omc-staged.guardian.json": {
+      "sha256": "8ca3e0808828868af553a0433c4c42a7bba75240acfaddf6dd0353f2c7ca1bb1",
+      "bytes": 2160
+    },
+    "omc-fully-staged-recipe.json": {
+      "sha256": "e0d2d7918e67e03565e449663061590b7ea4124f485faf04a100dae8f513e63a",
+      "bytes": 2643
+    },
+    "omc-fully-staged.log": {
+      "sha256": "3a443cc946fab92f5850dfc3138382858fd78160e25b5ffada5e57f851889e27",
+      "bytes": 2027
+    },
+    "omc-fully-staged.guardian.json": {
+      "sha256": "43db15c0806a5ded490405dbccbd2e84cba1fa8bfe24efbec8a78cd9b823e600",
+      "bytes": 57754
+    },
+    "omc_simulation_reference.json": {
+      "sha256": "e383d256e7355d823c000b0f71de171f262841d0603f0dfc7527900e434a30e5",
+      "bytes": 42160
+    },
+    "omc-comparison-recipe.json": {
+      "sha256": "3ca469e7e673f9660cbcefbdf7bee76bf0f586375cc87ade0fc6bee304f6c63a",
+      "bytes": 1041
+    },
+    "omc-comparison.log": {
+      "sha256": "8dfa1b95023301a0218b7b0a4e9174df62a7449cb011307b97cce4d97add56a0",
+      "bytes": 2391
+    },
+    "omc-comparison.guardian.json": {
+      "sha256": "02149bc039fa8071808e5a33b4ed60c816c8fcf3c92f34d97ae34f3dd01ba106",
+      "bytes": 2748
+    },
+    "comparison/msl_results.json": {
+      "sha256": "ec04ca8409036d7512ce8fb669035bd57f348479c28254a394a6d8e38aaef2b3",
+      "bytes": 43161
+    },
+    "comparison/sim_trace_comparison.json": {
+      "sha256": "a6933b7000cd8d338a9bdc342d803d97b112482ee3bbb7ab44b84853be48837c",
+      "bytes": 193125
+    },
+    "comparison/omc_simulation_reference.json": {
+      "sha256": "d345a50581a6f833fe3a89131435ba2ab892818d566a7f95b7fe9b3ea2a98232",
+      "bytes": 37181
+    },
+    "instrumented/recipe.json": {
+      "sha256": "9cb84268704b7658ea32c5f5bf1baed22206eba9e34f4ae54c9bd5c0ff56cf46",
+      "bytes": 4077
+    },
+    "instrumented/outcomes.json": {
+      "sha256": "1cc730c98ccee4c162d85ffbcef4283376d4fdac84f225494dbcb0bb5e4a3ffb",
+      "bytes": 82977
+    },
+    "instrumented/fixed20.log": {
+      "sha256": "ba63c2c322fda8c071a01effe63b468543320b8cfea5a49da3f42c5c4e5925a4",
+      "bytes": 77157
+    },
+    "instrumented/fixed20.guardian.json": {
+      "sha256": "7cf1bc30c1c12b6e4639ed413f6241c5e6e4c9c324211d81e27bbe89d6d66e87",
+      "bytes": 10048
+    },
+    "instrumented/guards-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "instrumented/guards-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "instrumented/artifacts/sha256.txt": {
+      "sha256": "65423ec1520183372ad4b89ef0736a7b724973ac5302377fd23e67f154cfa150",
+      "bytes": 308
+    }
+  },
+  "raw_paths": {
+    "canonical": "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012",
+    "instrumented": "$HOME/scratch/rumoca/pr427-fixed20-bd102-20261012"
+  }
+}

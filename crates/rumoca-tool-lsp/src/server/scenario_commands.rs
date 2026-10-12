@@ -5,9 +5,10 @@ use anyhow::Context;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
     builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, render_dae_target_files,
-    validate_solve_target_capabilities,
+    validate_solve_target_capabilities, validate_solve_target_capabilities_with_calls,
 };
 use rumoca_compile::codegen::{SolveTemplateRenderer, render_dae_template_with_name};
+use rumoca_compile::scenario::resolve_scenario_codegen_target;
 
 fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
 {
@@ -16,6 +17,7 @@ fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::Built
     descriptors.extend(builtin_target_descriptors_for_ir(
         TargetTemplateIr::AlgorithmCode,
     ));
+    descriptors.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Fmi));
     descriptors
 }
 
@@ -273,20 +275,11 @@ impl ModelicaLanguageServer {
             Ok(manifest) => manifest,
             Err(error) => return Some(Self::simulation_error_value(error.to_string())),
         };
-        let rendered = match manifest.ir {
-            TargetTemplateIr::Dae => {
-                render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
-            }
-            TargetTemplateIr::Solve => {
-                render_solve_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
-            }
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&bundle, &manifest, &compiled, &model)
-            }
-            TargetTemplateIr::Fmi | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
+        let rendered = match render_manifest_target(&bundle, &manifest, &compiled, &model) {
+            Ok(rendered) => rendered,
+            Err(error) => {
                 return Some(Self::simulation_error_value(format!(
-                    "target '{}' uses {:?} IR; editor target rendering supports DAE, Solve, or Algorithm Code IR",
-                    target_name, manifest.ir
+                    "target '{target_name}' uses {error}; editor target rendering supports DAE, Solve, FMI, or Algorithm Code IR",
                 )));
             }
         };
@@ -517,11 +510,26 @@ fn render_solve_target_files(
         .capabilities
         .as_ref()
         .context("Solve target manifest must declare a [capabilities] table")?;
-    let problem = rumoca_sim::lower_solve_problem(dae).context("Lower checked DAE to Solve IR")?;
-    validate_solve_target_capabilities(&problem, manifest, capabilities)?;
-    let artifacts =
-        rumoca_sim::lower_solve_artifacts(&problem).context("Lower checked Solve artifacts")?;
-    let renderer = SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae)?;
+    // As in the CLI, the pure-call owners lowered with the problem let the
+    // scalar targets inline `PureCall` ops; the gate reads the same pair.
+    let package = rumoca_sim::lower_solve_package(dae).context("Lower checked DAE to Solve IR")?;
+    validate_solve_target_capabilities_with_calls(
+        &package.problem,
+        Some(&package.pure_calls),
+        manifest,
+        capabilities,
+    )?;
+    let artifacts = rumoca_sim::lower_solve_artifacts(&package.problem)
+        .context("Lower checked Solve artifacts")?;
+    let renderer = SolveTemplateRenderer::new_owned_with_dae_and_calls(
+        package.problem,
+        artifacts,
+        package.pure_calls,
+        dae,
+    )?;
+    if capabilities.scalar_fallback == Some(true) {
+        renderer.require_scalar_derivative_programs()?;
+    }
 
     manifest
         .files
@@ -536,6 +544,106 @@ fn render_solve_target_files(
                 .with_context(|| format!("Render target template '{}'", file.template))?;
             Ok(RenderedTargetFile {
                 path: path.trim().to_string(),
+                content,
+            })
+        })
+        .collect()
+}
+
+/// Render a manifest target by its IR, or the IR the editor cannot render.
+fn render_manifest_target(
+    bundle: &TargetBundle,
+    manifest: &TargetManifest,
+    compiled: &rumoca_compile::compile::DaeCompilationResult,
+    model: &str,
+) -> std::result::Result<anyhow::Result<Vec<RenderedTargetFile>>, String> {
+    Ok(match manifest.ir {
+        TargetTemplateIr::Dae => {
+            render_dae_target_files(bundle, manifest, compiled.dae.as_ref(), model)
+        }
+        TargetTemplateIr::Solve => {
+            render_solve_target_files(bundle, manifest, compiled.dae.as_ref(), model)
+        }
+        TargetTemplateIr::AlgorithmCode => {
+            render_algorithm_code_source_files(bundle, manifest, compiled, model)
+        }
+        TargetTemplateIr::Fmi => {
+            render_fmi_target_files(bundle, manifest, compiled.dae.as_ref(), model)
+        }
+        TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
+            return Err(format!("{:?} IR", manifest.ir));
+        }
+    })
+}
+
+/// Package metadata an FMI template reads (`artifact.identities.<file id>`),
+/// minted once per render like the CLI's artifact session.
+#[derive(serde::Serialize)]
+struct FmiArtifact {
+    generated_at: String,
+    generation_tool: String,
+    identities: std::collections::BTreeMap<String, String>,
+}
+
+/// The unpacked source FMU of an FMI target, each file under the package
+/// root (`<model>/modelDescription.xml`, `<model>/sources/...`).
+///
+/// The editor writes rendered files as text, so the zipped `.fmu` archive the
+/// CLI also writes is left out; the unpacked source FMU is the complete,
+/// standards-valid FMU content, and an importer such as FMPy builds it.
+fn render_fmi_target_files(
+    source: &impl TargetTemplateSource,
+    manifest: &TargetManifest,
+    dae: &rumoca_compile::compile::Dae,
+    model_name: &str,
+) -> anyhow::Result<Vec<RenderedTargetFile>> {
+    ensure_target_has_rendered_files(manifest)?;
+    let capabilities = manifest
+        .capabilities
+        .as_ref()
+        .context("FMI target manifest must declare a [capabilities] table")?;
+    let component =
+        rumoca_sim::lower_fmi_component(dae).context("Construct checked FMI component")?;
+    validate_solve_target_capabilities(component.problem(), manifest, capabilities)?;
+    let c_profile = component
+        .into_codegen_view()
+        .try_c()
+        .context("Project checked FMI component for a storage-backed target")?;
+    let renderer = SolveTemplateRenderer::new_owned_with_fmi(c_profile)?;
+    let artifact = FmiArtifact {
+        generated_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .context("Format artifact generation timestamp")?,
+        generation_tool: format!("rumoca {}", env!("CARGO_PKG_VERSION")),
+        identities: manifest
+            .files
+            .iter()
+            .filter_map(|file| file.id.clone())
+            .map(|id| (id, uuid::Uuid::new_v4().hyphenated().to_string()))
+            .collect(),
+    };
+    let render =
+        |template: &str| renderer.render_with_name_and_artifact(template, model_name, &artifact);
+    let root = match manifest.package.as_ref() {
+        Some(package) => render(&package.root)?.trim().to_string(),
+        None => String::new(),
+    };
+    manifest
+        .files
+        .iter()
+        .map(|file| {
+            let path = render(&file.path)
+                .with_context(|| format!("Render target output path '{}'", file.path))?;
+            let template = source.template_source(&file.template)?;
+            let content = render(template.as_ref())
+                .with_context(|| format!("Render target template '{}'", file.template))?;
+            let path = path.trim();
+            Ok(RenderedTargetFile {
+                path: if root.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{root}/{path}")
+                },
                 content,
             })
         })
@@ -562,17 +670,6 @@ fn load_codegen_target_bundle(
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("codegen target path is not UTF-8"))?,
     )
-}
-
-fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
-    let target_path = PathBuf::from(target);
-    if target_path.is_absolute() {
-        return target_path;
-    }
-    uri_path
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(target_path)
 }
 
 /// Render a GALEC codegen target's inspectable sources for the scenario

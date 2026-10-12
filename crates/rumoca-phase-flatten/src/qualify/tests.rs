@@ -276,6 +276,7 @@ fn make_int(value: i64) -> Expression {
 
 fn make_for_index(name: &str, range: Expression) -> ForIndex {
     ForIndex {
+        binder: Some(rumoca_core::IndexBinderProvenance::Generated),
         ident: Token {
             text: Arc::from(name.to_string()),
             ..Default::default()

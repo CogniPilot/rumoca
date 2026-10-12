@@ -17,10 +17,32 @@ pub(in crate::construction) enum ModelEventFunctionOutputPlan {
     Record(Vec<ModelEventRecordFieldPlan>),
 }
 
+impl ModelEventFunctionOutputPlan {
+    /// Every coordinate this receiver assigns, with the record-field
+    /// projection that selects its value from the call result.
+    pub(in crate::construction) fn receivers(&self) -> Vec<(&VarName, &[usize])> {
+        match self {
+            Self::Coordinate(target) => vec![(target, &[])],
+            Self::Record(fields) => fields
+                .iter()
+                .map(|field| (&field.target, &*field.projection))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(in crate::construction) struct ModelEventRecordFieldPlan {
     pub(in crate::construction) target: VarName,
     pub(in crate::construction) projection: Box<[usize]>,
+}
+
+/// One receiver of a multi-output event call: a source component reference
+/// (algorithm statements) or the resolved Flat name a `when` equation carries.
+#[derive(Clone, Copy)]
+enum EventCallReceiver<'a> {
+    Reference(&'a rumoca_core::ComponentReference),
+    Name(&'a VarName),
 }
 
 struct ModelEventCallContext<'flat> {
@@ -46,6 +68,133 @@ pub(super) fn analyze_event_function_calls(
     analyze_event_function_call_statements(&context, statements, plans)
 }
 
+/// A span records provenance, while receiver InstanceIds distinguish
+/// component instances that replay the same declaration and source location.
+#[derive(Hash, PartialEq, Eq)]
+pub(in crate::construction) struct WhenFunctionCallKey {
+    source: Span,
+    receivers: Box<[InstanceId]>,
+}
+
+pub(in crate::construction) fn when_function_call_key(
+    flat: &flat::Model,
+    outputs: &[VarName],
+    span: Span,
+) -> Result<WhenFunctionCallKey, ToDaeError> {
+    let receivers = outputs
+        .iter()
+        .map(|target| {
+            flat.variables
+                .get(target)
+                .map(|variable| variable.instance_id)
+                .or_else(|| {
+                    flat.record_instances
+                        .get(target)
+                        .map(|record| record.instance_id)
+                })
+                .ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "when function-call outputs",
+                        "a receiver must retain its resolved instance identity",
+                        span,
+                    )
+                })
+        })
+        .collect::<Result<Box<[_]>, _>>()?;
+    Ok(WhenFunctionCallKey {
+        source: span,
+        receivers,
+    })
+}
+
+/// The checked owner of every MLS §8.3.5 `(a, b) = f(x)` inside a `when`
+/// body, identified by its checked receivers and source provenance.
+///
+/// A when equation's receivers are proven exactly like an event algorithm's:
+/// each is one whole discrete coordinate or record whose resolved type and
+/// shape equal the function result's, and a call with more than one receiver
+/// must be pure so its result projections may be evaluated independently.
+pub(super) fn analyze_when_function_calls(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    shapes: &FunctionShapeAnalysis,
+) -> Result<HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>, ToDaeError> {
+    let context = ModelEventCallContext {
+        flat,
+        roles,
+        shapes,
+        records: ModelRecordIndex::new(flat),
+    };
+    let mut plans = HashMap::new();
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            analyze_when_function_call_equations(&context, &branch.equations, &mut plans)?;
+        }
+    }
+    Ok(plans)
+}
+
+fn analyze_when_function_call_equations(
+    context: &ModelEventCallContext<'_>,
+    equations: &[flat::WhenEquation],
+    plans: &mut HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+) -> Result<(), ToDaeError> {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::FunctionCallOutputs {
+                outputs,
+                function,
+                span,
+                ..
+            } => {
+                let Expression::FunctionCall {
+                    name,
+                    args,
+                    is_constructor: false,
+                    ..
+                } = function
+                else {
+                    return Err(ToDaeError::unsupported_flat(
+                        "when function-call outputs",
+                        "a tuple when equation must call one function",
+                        *span,
+                    ));
+                };
+                let receivers = outputs
+                    .iter()
+                    .map(|output| Some(EventCallReceiver::Name(output)))
+                    .collect::<Vec<_>>();
+                let plan = analyze_event_function_call(context, name, args, &receivers, *span)?;
+                let key = when_function_call_key(context.flat, outputs, *span)?;
+                if plans.insert(key, plan).is_some() {
+                    return Err(ToDaeError::unsupported_flat(
+                        "when function-call outputs",
+                        "event function calls require distinct semantic owners",
+                        *span,
+                    ));
+                }
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    analyze_when_function_call_equations(context, equations, plans)?;
+                }
+                if let Some(equations) = else_branch {
+                    analyze_when_function_call_equations(context, equations, plans)?;
+                }
+            }
+            flat::WhenEquation::Assign { .. }
+            | flat::WhenEquation::Reinit { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => {}
+        }
+    }
+    Ok(())
+}
+
 fn analyze_event_function_call_statements(
     context: &ModelEventCallContext<'_>,
     statements: &[rumoca_core::Statement],
@@ -69,7 +218,7 @@ fn analyze_event_function_call_statements(
                 if !context.flat.record_instances.contains_key(&target) {
                     continue;
                 }
-                let output = Some(comp.clone());
+                let output = Some(EventCallReceiver::Reference(comp));
                 let plan = analyze_event_function_call(
                     context,
                     name,
@@ -93,7 +242,11 @@ fn analyze_event_function_call_statements(
                         terminal_print: true,
                     }
                 } else {
-                    analyze_event_function_call(context, comp, args, outputs, *span)?
+                    let outputs = outputs
+                        .iter()
+                        .map(|output| output.as_ref().map(EventCallReceiver::Reference))
+                        .collect::<Vec<_>>();
+                    analyze_event_function_call(context, comp, args, &outputs, *span)?
                 };
                 insert_call_plan(plans, *span, plan)?;
             }
@@ -142,7 +295,7 @@ fn analyze_event_function_call(
     context: &ModelEventCallContext<'_>,
     component: &rumoca_core::Reference,
     arguments: &[Expression],
-    outputs: &[Option<rumoca_core::ComponentReference>],
+    outputs: &[Option<EventCallReceiver<'_>>],
     span: Span,
 ) -> Result<ModelEventFunctionCallPlan, ToDaeError> {
     let call = context.shapes.call_certificate(
@@ -192,7 +345,7 @@ fn analyze_event_function_call(
             .chain(certificate.results[ordinal].iter().copied())
             .collect::<Vec<_>>();
         output_plans.push(Some(analyze_event_function_output(
-            context, output, result, &shape, span,
+            context, *output, result, &shape, span,
         )?));
     }
     Ok(ModelEventFunctionCallPlan {
@@ -203,19 +356,24 @@ fn analyze_event_function_call(
 
 fn analyze_event_function_output(
     context: &ModelEventCallContext<'_>,
-    output: &rumoca_core::ComponentReference,
+    output: EventCallReceiver<'_>,
     result: &rumoca_core::FunctionParam,
     result_shape: &[u32],
     span: Span,
 ) -> Result<ModelEventFunctionOutputPlan, ToDaeError> {
-    if output.parts().iter().any(|part| !part.subs.is_empty()) {
-        return Err(ToDaeError::unsupported_algorithm(
-            "model",
-            "a function-call receiver must be one whole coordinate or record",
-            output.span(),
-        ));
-    }
-    let target = output.to_var_name();
+    let (target, output_span) = match output {
+        EventCallReceiver::Reference(output) => {
+            if output.parts().iter().any(|part| !part.subs.is_empty()) {
+                return Err(ToDaeError::unsupported_algorithm(
+                    "model",
+                    "a function-call receiver must be one whole coordinate or record",
+                    output.span(),
+                ));
+            }
+            (output.to_var_name(), output.span())
+        }
+        EventCallReceiver::Name(name) => (name.clone(), span),
+    };
     if let Some(variable) = context.flat.variables.get(&target) {
         validate_event_coordinate_result(
             context.flat,
@@ -231,17 +389,19 @@ fn analyze_event_function_output(
         ToDaeError::unsupported_algorithm(
             "model",
             format!("function-call receiver `{target}` has no exact Flat coordinate or record"),
-            output.span(),
+            output_span,
         )
     })?;
-    if !same_unsubscripted_reference(output, &record.component_ref) {
+    if let EventCallReceiver::Reference(output) = output
+        && !same_unsubscripted_reference(output, &record.component_ref)
+    {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
             format!("function-call receiver `{target}` disagrees with its resolved Flat identity"),
-            output.span(),
+            output_span,
         ));
     }
-    let record_shape = concrete_shape(&record.dims, output.span())?;
+    let record_shape = concrete_shape(&record.dims, output_span)?;
     if result.type_class != Some(rumoca_core::ClassType::Record)
         || result.type_def_id != Some(record.type_def_id)
         || result_shape != record_shape
@@ -251,10 +411,10 @@ fn analyze_event_function_output(
             format!(
                 "record receiver `{target}` does not match the function result's resolved type identity and shape"
             ),
-            output.span(),
+            output_span,
         ));
     }
-    let fields = context.records.record_fields(record, output.span())?;
+    let fields = context.records.record_fields(record, output_span)?;
     for field in &fields {
         if !matches!(
             context.roles.get(&field.target),
@@ -266,7 +426,7 @@ fn analyze_event_function_output(
                     "record receiver leaf `{}` is not a discrete event coordinate",
                     field.target
                 ),
-                output.span(),
+                output_span,
             ));
         }
     }

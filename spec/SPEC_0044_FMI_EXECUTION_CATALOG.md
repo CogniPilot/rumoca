@@ -111,6 +111,18 @@ obligation:
 | ME-CAP-001 | One Solve IR capability descriptor states which operations each backend executes and the verification tolerance of each executor against the interpreter; Cranelift, the Wasm kernels, and fmi-ls-wasm refuse an operation by reading it, never by a local list | `rumoca-ir-solve` | A refusal names the descriptor row; no backend keeps an operation denylist |
 | ME-LSW-001 | The fmi-ls-wasm target (non-normative upstream draft, modelica/fmi-ls-wasm pinned revision) is an FMI 3 Co-Simulation component rendered from the same Solve IR facts as the C profile: `instantiate_co_simulation`, `enter/exit_initialization_mode` running the settled initialization (ME-PARAM-001), `do_step` running the component's `CoSimulationStepPlan` (a Solve IR fact shared with the C profile: error-controlled Dormand-Prince 5(4) substeps within the setup tolerance, or the plan's default when the importer defines none, ending exactly at the communication point and at each `RootLocationPlan` scan where a state event is located; accuracy follows the tolerance, not the communication step, and a step the controller cannot complete within the plan's substep budget is rolled back and returns Discard), with algebraic projection (ME-PROJ-001; the per-block strategy of ME-PROJ-004 is pending, so the rendered projection follows the C profile's current cascade) and, where the draft maps them, event handling through `enter_event_mode`/`update_discrete_states` from ME-EVENT-004 to 007; a model whose events or calls the draft does not map is refused at export with a diagnostic naming the missing mapping. Its Rust template renders facts and holds no solve decision | `rumoca-phase-codegen` fmi-ls-wasm template | Fourbar1 and a bouncing ball run under wasmtime within trace tolerance of the native run; the `wasm32-wasip2` build is warning-clean; an unmapped event model is refused with the diagnostic |
 
+ME-EVENT-002 condition memories include checked `PulseConditionMemory` rows.
+They follow the current condition during the event iteration. Initialization
+seeds them with every clock activation lane cleared; after converged actions,
+before history commit, only their issued producer programs are reevaluated
+against one snapshot with those lanes cleared. Only pulse-memory targets are
+written, so ordinary condition memories and relation memories retain their
+settled values. FMI 2 and FMI 3 render this lifecycle from the same checked
+row/program projection. The generated-C pulse lifecycle control in
+`suite_core/fmi_event_c_warnings` checks successive sample ticks beside a state
+event and a time event; the existing packaged ME/CS sample controls remain
+required.
+
 FMI 2 and FMI 3 jobs use at least two independent compatible validators. At
 least one executes the FMU. Validator and schema versions are pinned, and the
 fixtures include valid controls plus deliberately broken archives proving that

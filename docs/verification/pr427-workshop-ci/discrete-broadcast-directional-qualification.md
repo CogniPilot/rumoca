@@ -1,0 +1,9 @@
+# Discrete broadcast directional qualification
+
+At `e3fff8a39dd443059c656ece4985eec06c5caeda`, the constructor-backed regression failed because the admitted Integer/Boolean broadcast had no directional owner. At `676073fcc9512cd23554ec2b6808678337df48c9`, that same unchanged test passed, all 610 IR-Solve unit tests passed, and all-target/all-feature IR-Solve Clippy passed with `-D warnings`. Adjacent JSON binds actual raw logs, guardians, full tracked-source seals and commands.
+
+The repair follows SOLVE-C56: canonical checked broadcast construction retains one compact primal operation, and discrete/control results have no variable tangent. Integer div/mod/rem and Boolean and/or reuse that operation; Real derivative admission remains unchanged. Ranked `[2,3]` and width 1,000,000 interfaces in both orientations retain the exact primal body and current JSON replay without per-point expansion. This is a constructor/representation proof, not a numerical broadcast execution receipt.
+
+Original `Frame` and `Dim` still fail (0/2 pass) at the same function-scoped Integer interface. Continuation controls pass 5/7 and runtime-slice controls pass 7/8; the original two outer-loop failures and selected-row failure remain visible. This patch therefore closes the independently demonstrated broadcast admission gap and does not claim those originating failures fixed.
+
+All six qualification gates used the unchanged 600-second, 4-GiB aggregate resident-plus-swap, 8-GiB owned-cache, 16-GiB host-reserve and 8-GiB scratch-reserve limits, with 4 build/test/Rayon workers. The completed source seals match every tracked entry. A premature second launch waited on the Cargo lock, was explicitly terminated before any compilation/test, and is retained separately as an unqualified attempt; the executed original-model gate has its own receipt. Subsequent TEMP directional logging is a separate dirty diagnostic and is excluded from these claims.
