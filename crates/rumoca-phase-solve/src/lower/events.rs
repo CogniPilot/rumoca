@@ -1483,7 +1483,7 @@ fn lower_guarded_targets<'dae>(
     // producer is issued before every target that reads its current value, and
     // the runtime evaluates the issued programs in that order.
     for target in targets.iter() {
-        if target.clock.is_none() && target.event_clock.is_none() {
+        if is_ordinary_target(clocks, target.variable) {
             rows.ordinary_trigger_edges
                 .extend(target.branches.iter().map(|branch| branch.0));
         }
