@@ -1,7 +1,8 @@
 //! The unchanged authored Booster scenario through the native session owner.
-use rumoca::{Compiler, SimExecutionEngine};
+use rumoca::Compiler;
 use rumoca_compile::scenario::parse_scenario_config_file;
 use rumoca_sim::{SimOptions, SimSolverMode, SimulationSession};
+use rumoca_solver::SimExecutionEngine;
 
 const CONFIG: &str =
     include_str!("../../../../examples/interactive/reusable_booster/rumoca-scenario.toml");
