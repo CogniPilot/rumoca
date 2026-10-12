@@ -236,10 +236,12 @@ pub(super) fn complete_derivative_residuals<'dae>(
     sources: &DerivativeSources<'dae>,
 ) -> BTreeSet<dae::ExprId<'dae>> {
     let mut scalars = BTreeMap::<_, BTreeSet<_>>::new();
-    for source in sources
-        .values()
-        .filter(|source| source.domain_point.is_none())
-    {
+    for source in sources.values().filter(|source| {
+        source.domain_point.is_none()
+            || view
+                .expression(source.expression)
+                .is_some_and(|node| node.binder_domain().is_none())
+    }) {
         scalars
             .entry(source.expression)
             .or_default()

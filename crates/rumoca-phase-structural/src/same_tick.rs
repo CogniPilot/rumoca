@@ -405,14 +405,22 @@ fn collect_continuous_writers<'dae>(
 ) -> Result<(), SameTickOrderError> {
     let derivative_rows = reads::complete_derivative_residuals(view, sources);
     for owner in view.continuous_owners() {
-        let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
-            continue;
+        let residual = match owner {
+            dae::ContinuousOwnerView::Residual { equation, .. } => equation.residual(),
+            dae::ContinuousOwnerView::Structured { family, .. } => {
+                let Some(body) =
+                    crate::causal_definitions::exact_row_major_family_body(view, family)
+                else {
+                    continue;
+                };
+                body
+            }
         };
-        if derivative_rows.contains(&equation.residual()) {
+        if derivative_rows.contains(&residual) {
             continue;
         }
         if let Some((target, value)) =
-            single_coordinate_definition(view, equation.residual(), CoordinateKinds::Algebraic)
+            single_coordinate_definition(view, residual, CoordinateKinds::Algebraic)
         {
             record_definition(view, sources, writers, target, value)?;
         }
