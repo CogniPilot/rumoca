@@ -1,0 +1,52 @@
+{
+  "command": "cargo xtask verify quick --early-exit",
+  "attempts": [
+    {
+      "elapsedMs": 122875.72789600001,
+      "peakResidentPlusSwapKiB": 2537712,
+      "rssLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "secondsLimit": 600,
+      "exitCode": 1,
+      "stopped": null,
+      "signal": null,
+      "name": "root-verify-quick-preflight-944df1d54",
+      "source": "944df1d543a33023b5b46259d8bb50b1bf7a7542",
+      "sourceUnchanged": true,
+      "artifacts": {
+        "command.log": "1a779fe5863426dfdc88048e64558b8094fe9076fa41ff328ed81b8aa195150e",
+        "guardian.json": "670a60e2aa1d3db949cfe433d114439b83850ce5b84e3892ffc5e4e6fca690ef",
+        "source-before.json": "c219f1088c05252e39cbbb6ae589e9ab71b79357db9c3a2eaa8fb24f02da11dc",
+        "source-after.json": "c219f1088c05252e39cbbb6ae589e9ab71b79357db9c3a2eaa8fb24f02da11dc"
+      }
+    },
+    {
+      "elapsedMs": 600263.998873,
+      "peakResidentPlusSwapKiB": 7473372,
+      "rssLimitMiB": 8192,
+      "availableFloorMiB": 16384,
+      "secondsLimit": 600,
+      "exitCode": 124,
+      "stopped": "timeout",
+      "signal": "SIGKILL",
+      "name": "root-verify-quick-after-census-lint",
+      "source": "3d6c5c73f30dce17b200a2dd50775fc926502336",
+      "sourceUnchanged": true,
+      "artifacts": {
+        "command.log": "60c87dca206d523b7bf645abaea8ca5d7d431436c166b29027b625f9927e1832",
+        "guardian.json": "dfc9039b149dd00f8e041723971b3ae2777a5ea40d02aa76529f02016140838f",
+        "source-before.json": "35179e141ce99cbfabdadea8281a3bb4ef05760b9aadbaccfc44b9ed607df6d2",
+        "source-after.json": "35179e141ce99cbfabdadea8281a3bb4ef05760b9aadbaccfc44b9ed607df6d2"
+      }
+    }
+  ],
+  "firstFailure": "Clippy excessive nesting in conditional_dag test helper; no later steps ran",
+  "afterLint": "Workspace format/traversal and all-target all-feature Clippy passed; 85s dev-profile check",
+  "afterSuite": "Unqualified: aggregate watchdog expired during complete566-model MSL stage; comparator and later quick steps did not finish",
+  "terminalWorkerResultFiles": 80,
+  "partialArchive": {
+    "sha256": "c9e58a9fcd01a43d638af801f236b804926b2bed535770157e58859be38d345e",
+    "bytes": 2012062302,
+    "scope": "Exact interrupted MSL results tree; no cohort parity/completion claim"
+  }
+}

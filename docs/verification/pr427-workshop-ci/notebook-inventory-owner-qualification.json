@@ -1,0 +1,69 @@
+{
+  "source": "bf9f18125a58322ab118c4285912eac73474030a",
+  "source_regular_files_unchanged": 4112,
+  "summary": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.00s",
+  "source_span_validation": {
+    "source": "bf9f18125a58322ab118c4285912eac73474030a",
+    "existing_reader_sha256": "cfdb13b71bfe5c0d0f516ec32218933ffabf149639917d348782e3ca8d97f33b",
+    "inventory_sha256": "02985e90ca300d4e0def65c5dd2f1fabb924a5284ef2086a358a4c394990733f",
+    "validated_spans": 117,
+    "execution_setup_template_contexts": 101,
+    "explanatory_outputs": 16,
+    "classification_counts": {
+      "project-template": 17,
+      "explanatory-output": 16,
+      "executable-command": 37,
+      "configuration-context": 16,
+      "environment-setup": 9,
+      "executable-visualizer": 4,
+      "executable-context": 14,
+      "executable-benchmark": 1,
+      "executable-tool": 2,
+      "executable-notebook": 1
+    }
+  },
+  "command": [
+    "bash",
+    "$HOME/scratch/rumoca/workshop427-conditional-operand-20261012/run-env.sh",
+    "nix",
+    "develop",
+    ".#full",
+    "--command",
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "--jobs",
+    "4",
+    "-p",
+    "rumoca-bind-wasm",
+    "--lib",
+    "--features",
+    "full-web",
+    "tests::user_guide_inventory::",
+    "--",
+    "--nocapture"
+  ],
+  "elapsed_ms": 309885.622782,
+  "peak_resident_plus_swap_kib": 2874080,
+  "peak_cache_bytes": 4149067776,
+  "limits": {
+    "secondsLimit": 600,
+    "rssLimitMiB": 4096,
+    "cacheLimitMiB": 8192,
+    "scratchFreeFloorMiB": 8192,
+    "availableFloorMiB": 16384
+  },
+  "exit_code": 0,
+  "signal": null,
+  "artifacts": {
+    "source-before.json": "4c69b6bfadaf17a1001e5702ab1acf906ff223d99920f3939b7285a330f70c46",
+    "source-after.json": "4c69b6bfadaf17a1001e5702ab1acf906ff223d99920f3939b7285a330f70c46",
+    "span-validation.json": "cfed3a31f25c966a1d4d0098f173b5ee30979e80e138127a2486a44317eb11d4",
+    "registry-two.log": "cfd1af33387d8a7a4453b4dde275b9aa2542e7a3caea73d825591d1053e08870",
+    "registry-two-guardian.json": "6ba3ebf7f00897d5d2e52754f02ba272e4ed72ba354075b444be50631212c6c7",
+    "registry-test-bf9f18125": "2a060543d23e718c92e0bc5d90d52ffe70f20128269468e14e73d1514e496951",
+    "cache-audit-pre.json": "a4e32c8c41fb511c866a875dd71a1b1fa9b60ca7e1cd9305d21454028b1d61f1"
+  },
+  "scope": "Existing2 registry tests and117 exact source spans; does not rerun notebook application, all guide runtimes or final CI."
+}
