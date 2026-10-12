@@ -119,26 +119,37 @@ fn region(
             .iter()
             .map(|program| &program[position])
             .collect::<Vec<_>>();
-        match base[position] {
-            solve::LinearOp::Const { .. } if capture_base.is_some() => {
-                literal(&ops, &mut output)?;
+        match &base[position] {
+            solve::LinearOp::Const { dst, .. } if capture_base.is_some() => {
+                literal(&ops, &mut output, dst)?;
             }
-            solve::LinearOp::LoadIndexedRegister { .. } => indexed(&ops, &mut output)?,
-            solve::LinearOp::FunctionConditional { .. } => conditional(&ops, &mut output)?,
+            solve::LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => indexed(&ops, &mut output, dst, base, stride, dimensions, indices)?,
+            solve::LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => conditional(&ops, &mut output, dst_start, capture_start, program)?,
             _ => output.append(ops.into_iter().cloned()),
         }
     }
     Ok(output.family)
 }
 
-fn literal(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerError> {
+fn literal(
+    ops: &[&solve::LinearOp],
+    output: &mut Region,
+    dst: &solve::Reg,
+) -> Result<(), LowerError> {
     if ops.iter().all(|op| *op == ops[0]) {
         output.append(ops.iter().map(|op| (*op).clone()));
         return Ok(());
     }
-    let solve::LinearOp::Const { dst, .. } = ops[0] else {
-        unreachable!()
-    };
     let values = ops
         .iter()
         .map(|op| match op {
@@ -154,17 +165,15 @@ fn literal(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerErr
     Ok(())
 }
 
-fn indexed(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerError> {
-    let solve::LinearOp::LoadIndexedRegister {
-        dst,
-        base,
-        stride,
-        dimensions,
-        indices,
-    } = ops[0]
-    else {
-        unreachable!()
-    };
+fn indexed(
+    ops: &[&solve::LinearOp],
+    output: &mut Region,
+    dst: &solve::Reg,
+    base: &solve::Reg,
+    stride: &usize,
+    dimensions: &[u32],
+    indices: &[solve::TensorIndex],
+) -> Result<(), LowerError> {
     let mut point_indices = Vec::with_capacity(ops.len());
     for op in ops {
         let solve::LinearOp::LoadIndexedRegister {
@@ -177,8 +186,12 @@ fn indexed(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerErr
         else {
             return Err(non_affine_structured_program(output.span));
         };
-        if (actual_dst, actual_base, actual_stride, actual_dimensions)
-            != (dst, base, stride, dimensions)
+        if (
+            actual_dst,
+            actual_base,
+            actual_stride,
+            actual_dimensions.as_ref(),
+        ) != (dst, base, stride, dimensions)
             || actual_indices.len() != indices.len()
         {
             return Err(non_affine_structured_program(output.span));
@@ -211,26 +224,24 @@ fn indexed(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerErr
                 dst: *dst,
                 base: *base,
                 stride: *stride,
-                dimensions: dimensions.clone(),
+                dimensions: dimensions.into(),
                 indices: indices.into_boxed_slice(),
             }),
     );
     Ok(())
 }
 
-fn conditional(ops: &[&solve::LinearOp], output: &mut Region) -> Result<(), LowerError> {
+fn conditional(
+    ops: &[&solve::LinearOp],
+    output: &mut Region,
+    dst_start: &solve::Reg,
+    capture_start: &solve::Reg,
+    program: &solve::FunctionConditionalProgram,
+) -> Result<(), LowerError> {
     if ops.iter().all(|op| *op == ops[0]) {
         output.append(ops.iter().map(|op| (*op).clone()));
         return Ok(());
     }
-    let solve::LinearOp::FunctionConditional {
-        dst_start,
-        capture_start,
-        program,
-    } = ops[0]
-    else {
-        unreachable!()
-    };
     let mut programs = Vec::with_capacity(ops.len());
     for op in ops {
         let solve::LinearOp::FunctionConditional {
