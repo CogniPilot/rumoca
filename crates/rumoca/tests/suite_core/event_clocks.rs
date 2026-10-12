@@ -180,8 +180,8 @@ model HeldCondition
   Boolean b = time > 0.05;
   Clock c = Clock(b);
   Real a = 10 * time + 10;
-  discrete Real off(start = 0);
-  discrete Real dir(start = 0);
+  Real off(start = 0);
+  Real dir(start = 0);
   Real s = a - hold(off);
   Integer n(start = 0);
   Integer late(start = 0);
