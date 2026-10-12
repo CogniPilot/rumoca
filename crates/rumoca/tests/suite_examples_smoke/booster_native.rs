@@ -49,7 +49,7 @@ fn original_booster_scenario_initializes_and_advances_the_authored_grid() {
         let state = session.state().unwrap();
         assert!(state.time.is_finite());
         assert!(
-            rumoca_solver::timeline::sample_time_match_with_tol(state.time, time),
+            (state.time - time).abs() <= rumoca_solver::fmi_me::accepted_step_roundoff(time, 0.0),
             "requested t={time:.17}, observed t={:.17}",
             state.time
         );
