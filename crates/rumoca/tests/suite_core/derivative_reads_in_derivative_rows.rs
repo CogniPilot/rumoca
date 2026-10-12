@@ -106,6 +106,16 @@ fn a_same_tick_derivative_preserves_its_previous_value_boundary() {
 }
 
 fn check_same_tick_derivative(source: &str, expected_a: [f64; 3]) {
+    check_same_tick_values(source, [("a", expected_a), ("z", [2.0, 3.0, 4.0])]);
+}
+
+#[test]
+fn independent_tensor_derivatives_do_not_issue_a_false_same_tick_cycle() {
+    let source = "model SameTickDerivative Real x[2](each start=0,each fixed=true); discrete Real a(start=0,fixed=true); discrete Real b(start=0,fixed=true); equation der(x)={10,b}; when sample(0,0.1) then b=a+1; a=der(x[1]); end when; end SameTickDerivative;";
+    check_same_tick_values(source, [("a", [10.0; 3]), ("b", [11.0; 3])]);
+}
+
+fn check_same_tick_values(source: &str, expected_values: [(&str, [f64; 3]); 2]) {
     let compiled = Compiler::new()
         .model("SameTickDerivative")
         .compile_str(source, "SameTickDerivative.mo")
@@ -126,7 +136,7 @@ fn check_same_tick_derivative(source: &str, expected_a: [f64; 3]) {
         )
         .unwrap_or_else(|error| panic!("{policy:?}: same-tick derivative {error}"));
         let grid = regular_grid(&result, 0.1);
-        for (name, expected) in [("a", expected_a), ("z", [2.0, 3.0, 4.0])] {
+        for (name, expected) in expected_values {
             let column = result.names.iter().position(|n| n == name).unwrap();
             for (&row, expected) in grid.iter().zip(expected) {
                 assert_eq!(result.data[column][row], expected, "{policy:?}: {name}");
