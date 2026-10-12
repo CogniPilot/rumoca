@@ -88,7 +88,7 @@ fn scheduled_current_cycles_require_a_history_boundary_at_coincident_ticks() {
     probe(Wiring::Aliases, |probe| {
         let mut producers = [
             ordinary(probe, "b", &["aAlias"], &[]),
-            ordinary(probe, "a", &["bAlias"], &[]),
+            ordinary(probe, "a", &["b"], &[]),
         ];
         producers[0].clock_domains = vec![1];
         producers[1].clock_domains = vec![2];
