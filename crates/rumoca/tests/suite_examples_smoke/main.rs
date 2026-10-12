@@ -4,3 +4,5 @@
 mod examples_smoke;
 mod guide_cli_contexts;
 mod tracked_models;
+
+mod booster_native;
