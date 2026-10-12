@@ -95,8 +95,7 @@ end ModelBooleanValue;";
         dae.inspect(|view| {
             assert!(view.model_conditional_count() >= 2);
             assert!(
-                (0..view.root_count()).any(|ordinal| {
-                    let root = view.root(view.root_id(ordinal).unwrap()).unwrap();
+                view.roots().any(|(_, root)| {
                     let expression = view.relation(root.relation()).unwrap().expression();
                     view.model_activation_guard(expression).is_some()
                 }),

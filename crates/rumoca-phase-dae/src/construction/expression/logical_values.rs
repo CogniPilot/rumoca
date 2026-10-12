@@ -76,6 +76,14 @@ fn lower_logical_arm<'dae>(
         });
     }
     let rhs = lower_expression_scoped(construction, symbols, binders, rhs, None)?;
+    require_scalar_boolean_operand(construction, rhs, provenance)
+}
+
+fn require_scalar_boolean_operand<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    rhs: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     // Both operands retain the checked binary vocabulary's type and shape
     // requirements, including for an unselected source operand.
     let ty = construction.expressions(|expressions| expressions.value_type(rhs, provenance))?;
@@ -105,49 +113,65 @@ mod tests {
         let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 13)).unwrap();
         dae::Dae::construct(sources, |construction| {
             for operator in [OpBinary::And, OpBinary::Or] {
-                let (scalar, tensor) = construction.expressions(|expressions| {
-                    let scalar = expressions
-                        .at(provenance)
-                        .literal(dae::DaeLiteral::Boolean(true))?;
-                    let tensor = expressions.at(provenance).array([scalar])?;
-                    Ok((scalar, tensor))
-                })?;
-                assert!(is_scalar_boolean_operation(
-                    construction,
-                    &operator,
-                    scalar,
-                    provenance
-                )?);
-                assert!(!is_scalar_boolean_operation(
-                    construction,
-                    &operator,
-                    tensor,
-                    provenance
-                )?);
-                let binary = construction.expressions(|expressions| {
-                    expressions
-                        .at(provenance)
-                        .binary(binary_operator(&operator), tensor, tensor)
-                })?;
-                let ty = construction
-                    .expressions(|expressions| expressions.value_type(binary, provenance))?;
-                assert_eq!(ty, dae::ValueType::array(dae::ScalarType::Boolean, [1]));
-                for (lhs, rhs) in [(scalar, tensor), (tensor, scalar)] {
-                    let error = construction
-                        .expressions(|expressions| {
-                            expressions
-                                .at(provenance)
-                                .binary(binary_operator(&operator), lhs, rhs)
-                        })
-                        .expect_err("Boolean and/or has no scalar/tensor broadcast");
-                    assert!(matches!(
-                        error,
-                        dae::DaeConstructionError::ShapeMismatch { .. }
-                    ));
-                }
+                assert_tensor_operator(construction, operator, provenance)?;
             }
             Ok(())
         })
         .unwrap();
+    }
+
+    fn assert_tensor_operator<'dae>(
+        construction: &mut dae::DaeConstruction<'dae>,
+        operator: OpBinary,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let (scalar, tensor) = construction.expressions(|expressions| {
+            let scalar = expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Boolean(true))?;
+            let tensor = expressions.at(provenance).array([scalar])?;
+            Ok((scalar, tensor))
+        })?;
+        assert!(is_scalar_boolean_operation(
+            construction,
+            &operator,
+            scalar,
+            provenance
+        )?);
+        assert!(!is_scalar_boolean_operation(
+            construction,
+            &operator,
+            tensor,
+            provenance
+        )?);
+        let binary = construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .binary(binary_operator(&operator), tensor, tensor)
+        })?;
+        let ty =
+            construction.expressions(|expressions| expressions.value_type(binary, provenance))?;
+        assert_eq!(ty, dae::ValueType::array(dae::ScalarType::Boolean, [1]));
+        for (lhs, rhs) in [(scalar, tensor), (tensor, scalar)] {
+            let error = construction
+                .expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .binary(binary_operator(&operator), lhs, rhs)
+                })
+                .expect_err("Boolean and/or has no scalar/tensor broadcast");
+            assert!(matches!(
+                error,
+                dae::DaeConstructionError::ShapeMismatch { .. }
+            ));
+        }
+        let error = require_scalar_boolean_operand(construction, tensor, provenance)
+            .expect_err("the scalar-LHS selected RHS path rejects rank one");
+        assert!(matches!(
+            error,
+            dae::DaeConstructionError::ShapeMismatch { .. }
+        ));
+
+        Ok(())
     }
 }
