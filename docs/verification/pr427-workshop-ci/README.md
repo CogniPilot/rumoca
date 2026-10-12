@@ -4,9 +4,17 @@ Latest focused checkpoints: the [function-definedness repair and original
 Booster prefix](function-definedness-compound-writer-qualification.md) pass;
 all 109 existing browser runtime/playground Node unit tests pass at `d4e415276`
 after canonical dependency staging and the configured-session assertion repair
-([receipt](browser-unit-configuration-qualification.json)). Full browser mission,
-final combined quick/full and remote CI remain pending. The inventory below
-records its named earlier checkpoints.
+([receipt](browser-unit-configuration-qualification.json)). The optimized FullWeb
+checkpoint at `e04d59ad1` passes all three artifact smokes, all four browser guide
+scripts and all 16 authored cells, including the full safely landed Booster
+mission ([receipt](fullweb-e04-checkpoint.md)). The two focused AD-only registry
+checks pass after registering the existing test-only verification batteries
+([before/after receipt](ad-verification-registry-79-qualification.json)). Complete
+combined workspace, quick/full and remote CI remain pending. Historical raw MSL
+results and OMC-cache data from the completed `2b50ac92a` run are preserved in
+verified archives; their [hashes and recovery paths](terminal-msl-storage-archives.json)
+remain available after the raw copies were retired. The inventory below records
+its named earlier checkpoints.
 
 Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
 replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.

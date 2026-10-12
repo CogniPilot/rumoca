@@ -24,6 +24,14 @@ const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
         "aggregate logarithm JVPs against independent primal differences",
     ),
     (
+        "crates/rumoca-eval-solve/src/typed_program/tests/broadcast_power.rs",
+        "broadcast power JVPs against analytic values and independent primal differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/reduction_extrema.rs",
+        "unique-extremum JVPs against analytic values and independent primal differences",
+    ),
+    (
         "crates/rumoca-eval-solve/src/typed_program/tests.rs",
         "ranked typed-program JVPs against independent primal differences",
     ),

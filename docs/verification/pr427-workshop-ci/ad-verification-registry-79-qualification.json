@@ -1,0 +1,63 @@
+{
+  "source_head": "79dca97c4c40fa18db3f8048f9586f70e04db25c",
+  "qualified_source": "HEAD plus exact frozen patch, including README wording",
+  "source_patch_sha256": "773f06d30fec50bd278d99b3e783a8c0fc68fd5ea807dbcbe4986313bfbe5f92",
+  "governing_rule": "SPEC_0043 AD-only Jacobian row permits explicitly registered independent test verification batteries; production quotients remain forbidden",
+  "change": "Register existing cfg(test) broadcast-power and unique-extremum independent AD verification batteries with explicit purposes. Production scan and needles unchanged.",
+  "independent_review": "Exact eight-line registry correction has no blocker; both batteries are test-only and compare independent primal differences with analytic JVP values.",
+  "workspace_before": {
+    "raw_directory": "scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/workspace-79dca97c4c40-20261012T024506Z",
+    "command_log_sha256": "b0635a50b2b40b252475d48c1623114d7b951e0e38de6e2a4997eff5ff14446e",
+    "guardian_sha256": "7dd4cab6dadf8e0b3baedf4c8ae81a4b9b0f5b75a935af7df059ed98f6211560",
+    "source_manifest_sha256": "272210123e798a7161e3c142855c5ee9e0f6bdc2dba4791efb698f7ad9dee4cc",
+    "source_unchanged": true,
+    "exit_code": 1,
+    "aggregate_seconds_limit": 7200,
+    "stopped": null,
+    "selected": 10326,
+    "executed": 157,
+    "passed": 156,
+    "failed": 1,
+    "unrun": 10169,
+    "failure": "ad_only_jacobians::no_source_differences_a_residual"
+  },
+  "after_compile_stop": {
+    "raw_directory": "scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/ad-verification-registry-after-79dca",
+    "command_log_sha256": "a1b1bf3e0f24ec7202e65582a75dac80ae29cf40fa5305b3fe6484d600296918",
+    "guardian_sha256": "87fdf1dab4538dd60456f1791dd480dfe579e1635623b68bd03cf6bc318f6794",
+    "source_manifest_sha256": "e1d3959d91abbbdd9dc71b36c9ef8681b005ba5749bba07d626d47281c3c2c28",
+    "source_unchanged": true,
+    "exit_code": 124,
+    "aggregate_seconds_limit": 600,
+    "stopped": "timeout",
+    "tests_executed": 0,
+    "note": "Diagnostic aggregate 600-second build limit; no test verdict."
+  },
+  "focused_after": {
+    "raw_directory": "scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/ad-registry-after-79dca97c4c40-20261012T031325Z",
+    "command_log_sha256": "e489efff9638bb2cdf06a207965c87ab1411750b7879586da5fc6be915924cc9",
+    "guardian_sha256": "669a8e1c25911156024aa31b62de8bd2c913d012eb561e71c9cefb0b31e0cfa0",
+    "source_manifest_sha256": "e1d3959d91abbbdd9dc71b36c9ef8681b005ba5749bba07d626d47281c3c2c28",
+    "source_unchanged": true,
+    "exit_code": 0,
+    "aggregate_seconds_limit": 1800,
+    "stopped": null,
+    "tests_executed": 2,
+    "passed": 2,
+    "failed": 0,
+    "tests_filtered_out": 245,
+    "binaries_filtered_out": 158,
+    "command": "cargo fmt --all --check; cargo nextest run --workspace --exclude rumoca-bind-python --exclude rumoca-bind-wasm --features rumoca/msl-sim-tests --no-fail-fast -E \"binary(architecture_hardening_test) & test(ad_only_jacobians::)\""
+  },
+  "limits": {
+    "cargo_build_jobs": 4,
+    "rust_test_threads": 4,
+    "rayon_threads": 4,
+    "nextest_threads": 4,
+    "retries": 0,
+    "rss_plus_swap_mib": 8192,
+    "host_available_floor_mib": 16384,
+    "scratch_free_floor_mib": 8192
+  },
+  "scope": "Focused registry proof only; complete combined workspace, quick/full and remote CI remain unqualified."
+}
