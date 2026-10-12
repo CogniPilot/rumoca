@@ -83,7 +83,7 @@ pub(super) fn collect_expression_reads<'dae>(
             continue;
         }
         let mut derivatives = Vec::new();
-        rumoca_eval_dae::projection::for_each_scalar_coordinate_pruned(
+        rumoca_eval_dae::for_each_scalar_coordinate_pruned(
             view,
             root,
             scalar,
