@@ -10,6 +10,19 @@ pub(super) fn validate_static_quotient(
         unreachable!("builtin result validation proves quotient arity")
     };
     let operator = quotient_name(builtin);
+    if discrete_integer_quotient(storage, [*lhs, *rhs], at)? {
+        // MLS §3.8.3: Integer expressions with discrete operands are already
+        // discrete-time. Their exact arithmetic needs no continuous root and
+        // must not be domain-proved through the Real static-value helper.
+        return if storage.static_integer(*rhs) == Some(0) {
+            Err(DaeConstructionError::UndefinedBuiltinDomain {
+                operator,
+                span: at.span(),
+            })
+        } else {
+            Ok(())
+        };
+    }
     let (Some(lhs), Some(rhs)) = (
         static_numeric_value(storage, lhs.index()),
         static_numeric_value(storage, rhs.index()),
@@ -31,6 +44,23 @@ pub(super) fn validate_static_quotient(
             span: at.span(),
         })
     }
+}
+
+fn discrete_integer_quotient(
+    storage: &Storage,
+    arguments: [ExprId<'_>; 2],
+    at: DaeProvenance,
+) -> Result<bool, DaeConstructionError> {
+    for argument in arguments {
+        let value_type = storage.expr_type(argument, at)?;
+        if !value_type.is_scalar()
+            || value_type.scalar_type() != ScalarType::Integer
+            || storage.expr_variability(argument, at)? == ExpressionVariability::Continuous
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Where a runtime quotient is evaluated.
