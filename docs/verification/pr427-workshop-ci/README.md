@@ -18,6 +18,30 @@ IR-DAE and 152 WASM tests pass, with scoped lint and formatting
 ([receipt](../pr427-reported-native-wasm-20261012/README.md)). These repairs
 are integrated, but their peer qualification does not certify the combined tip.
 
+The conditional-chain fixture now reaches its intended scalar emission path:
+its exact test passes at `822a0d5bd0ea`, retaining all 3,000 links, a 256 KiB
+lowering stack, the scalar-op census and the exact 3,000.5 result
+([receipt](conditional-chain-822-checkpoint.json)). Its earlier same-source
+attempt stopped before any test at the host reserve; that resource stop is
+preserved separately.
+
+The [declared discrete Real repair](../pr427-discrete-real-source-20261012/README.md)
+now rejects missing source when ownership with ED024 and retains legal when,
+input and clock distinctions. Full DAE444, Solve198 and compile439 pass at
+`fb0dafc724`; source17, scoped lint, formatting and the legal source-to-Solve
+CLI proof pass at `67deb142b`. Source17 overlaps compile439. Its numerical
+checked-DAE derivative control remains distinct from source validity. These
+repairs are integrated; the complete combined snapshot remains unqualified.
+
+The [scheduled-cycle and event-ordering repairs](../pr427-scheduled-current-cycles-20261012/README.md)
+pass structural288, the original two cycle refusals, all 45 simulation contracts,
+and both entry/rescheduling controls at `a6c70a34e`. Scoped lint and formatting
+also pass. All four ordinary ordering controls pass, including the unchanged
+entry-precedence oracle. Its standalone phase suite has 201 passes and the
+inherited derivative assertion failure; the separately qualified declaration
+repair corrects that assertion in the integrated branch. The combined 202-test
+phase suite and whole-workspace result still require execution.
+
 Earlier checkpoints: the [function-definedness repair and original Booster
 prefix](function-definedness-compound-writer-qualification.md) pass; all 109
 existing browser runtime/playground Node unit tests pass at `d4e415276`
