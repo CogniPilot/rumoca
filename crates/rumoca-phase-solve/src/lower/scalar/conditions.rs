@@ -316,6 +316,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut compiler = Self::new(self.view, self.layout, None);
         compiler.active_clock = clock;
         compiler.derivative_definitions = self.derivative_definitions;
+        compiler.affine_derivative_systems = self.affine_derivative_systems;
         compiler.active_derivatives = self.active_derivatives.clone();
         compiler.derivative_seeds = self.derivative_seeds.clone();
         compiler.same_tick_definitions = self.same_tick_definitions.clone();
