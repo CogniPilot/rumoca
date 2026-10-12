@@ -1525,14 +1525,16 @@ fn lower_guarded_targets<'dae>(
         // compiler forks. This preserves semantic identity before final
         // lowering instead of cloning and rediscovering equal branch bodies.
         let conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
-        let program = layout
+        let mut compiler = layout
             .scalar_compiler(view, None)
-            .with_function_conditional_owners(&conditional_owners)
-            .with_current_definitions(definition_owner.clone())
-            .guarded_assignment_group_program(
-                clock.map(|(clock, _)| clock).or(event_clock),
-                group,
-            )?;
+            .with_function_conditional_owners(&conditional_owners);
+        if is_ordinary_target(clocks, group[0].variable) {
+            compiler = compiler.with_current_definitions(definition_owner.clone());
+        }
+        let program = compiler.guarded_assignment_group_program(
+            clock.map(|(clock, _)| clock).or(event_clock),
+            group,
+        )?;
         let program_index = rows.guarded_assignments.len();
         rows.push_group(program, group, role)?;
         if let Some((_, clock_owner)) = clock {
