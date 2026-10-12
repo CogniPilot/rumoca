@@ -87,6 +87,40 @@ fn reinitialization_reads_the_matched_derivative_without_new_storage() {
     );
 }
 
+#[test]
+fn a_when_equation_derivative_reads_the_current_same_tick_producer() {
+    let source = "model SameTickDerivative Real x(start=0,fixed=true); discrete Real a(start=0,fixed=true); discrete Real z(start=1,fixed=true); equation der(x)=z; when sample(0,0.1) then a=der(x); z=pre(z)+1; end when; end SameTickDerivative;";
+    let compiled = Compiler::new()
+        .model("SameTickDerivative")
+        .compile_str(source, "SameTickDerivative.mo")
+        .unwrap();
+    for policy in [
+        rumoca_sim::SimExecutionPolicy::Interpreter,
+        rumoca_sim::SimExecutionPolicy::Auto,
+    ] {
+        let result = rumoca_sim::simulate_dae(
+            &compiled.dae,
+            &SimOptions {
+                t_end: 0.2,
+                dt: Some(0.1),
+                solver_mode: rumoca_sim::SimSolverMode::RkLike,
+                execution_policy: policy,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{policy:?}: same-tick derivative {error}"));
+        assert_eq!(result.times, vec![0.0, 0.1, 0.2]);
+        for name in ["a", "z"] {
+            let column = result.names.iter().position(|n| n == name).unwrap();
+            assert_eq!(
+                result.data[column],
+                vec![2.0, 3.0, 4.0],
+                "{policy:?}: {name}"
+            );
+        }
+    }
+}
+
 fn check_event_derivative(source: &str, name: &str, names: &[&str], expected: &[f64]) {
     let compiled = rumoca::Compiler::new()
         .model(name)
