@@ -470,6 +470,12 @@ end GalecWasmDemo;
             selected_invalid["ok"], false,
             "reachable invalid sources must remain refused"
         );
+        assert!(
+            selected_invalid["error"]
+                .as_str()
+                .is_some_and(|error| error.starts_with("compilation error:")),
+            "the selected invalid class must fail compilation before target projection: {selected_invalid}"
+        );
 
         assert!(
             imported["alg"]
