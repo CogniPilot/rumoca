@@ -246,7 +246,6 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// derivation adds the exact single-writer definitions that proof declines
     /// (a widening `Real x = integerDiscrete`, a `B.1c` value owner, an exact
     /// generated connection row) and records every other writer as opaque.
-    #[must_use]
     pub fn derive(
         view: dae::DaeView<'dae>,
         plan: &crate::CausalDiscretePlan<'dae>,
@@ -257,7 +256,6 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// Extend the exact dependency plan with source rows from structural matching.
     /// Solve supplies the same matched rows it substitutes for derivative reads;
     /// no matching or equation orientation is performed by this query.
-    #[must_use]
     pub fn derive_with_derivative_sources(
         view: dae::DaeView<'dae>,
         plan: &crate::CausalDiscretePlan<'dae>,
@@ -350,7 +348,6 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// Solve lowering uses this to decide *program granularity*: two targets
     /// may share one fused program only when neither can observe the other on
     /// the tick, so restoring fusion never reintroduces a stale same-tick read.
-    #[must_use]
     pub fn read_closure(
         &self,
         view: dae::DaeView<'dae>,
@@ -375,7 +372,6 @@ impl<'dae> SameTickDefinitions<'dae> {
 
     /// The coordinates `seeds` name, alias-followed through the exact
     /// definitions: everything a reader of `seeds` observes at the tick.
-    #[must_use]
     pub fn variable_read_closure(
         &self,
         view: dae::DaeView<'dae>,
