@@ -4531,10 +4531,12 @@ name = "rumoca-exec-wasm"
 version = "0.10.2"
 dependencies = [
  "js-sys",
+ "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",
  "rumoca-ir-solve",
+ "rumoca-phase-solve",
  "serde_json",
  "wasm-bindgen",
  "wasm-encoder",
