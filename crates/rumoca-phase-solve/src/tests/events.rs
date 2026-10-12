@@ -5,6 +5,7 @@
 //! span of the construct that made it uncomputable.
 
 mod constant_condition_memory;
+mod ordinary_trigger_memory;
 
 use super::*;
 
