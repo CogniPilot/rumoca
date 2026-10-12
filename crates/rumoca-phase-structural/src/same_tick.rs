@@ -424,10 +424,14 @@ fn collect_continuous_writers<'dae>(
     sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
 ) -> Result<(), SameTickOrderError> {
+    let derivative_rows = reads::complete_derivative_residuals(view, sources);
     for owner in view.continuous_owners() {
         let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
             continue;
         };
+        if derivative_rows.contains(&equation.residual()) {
+            continue;
+        }
         if let Some((target, value)) =
             single_coordinate_definition(view, equation.residual(), CoordinateKinds::Algebraic)
         {

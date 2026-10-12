@@ -215,6 +215,32 @@ fn visit_condition_expressions<'dae, E>(
     Ok(())
 }
 
+/// Whole residuals whose every scalar row is already assigned to a derivative.
+/// These are not additional algebraic writers merely because their opposite
+/// operand is algebraic. Partial or mixed matching never proves this exclusion.
+pub(super) fn complete_derivative_residuals<'dae>(
+    view: dae::DaeView<'dae>,
+    sources: &DerivativeSources<'dae>,
+) -> BTreeSet<dae::ExprId<'dae>> {
+    let mut scalars = BTreeMap::<_, BTreeSet<_>>::new();
+    for source in sources
+        .values()
+        .filter(|source| source.domain_point.is_none())
+    {
+        scalars
+            .entry(source.expression)
+            .or_default()
+            .insert(source.expression_scalar);
+    }
+    scalars
+        .into_iter()
+        .filter_map(|(expression, rows)| {
+            let count = view.expression(expression)?.value_type().scalar_count()?;
+            (rows.len() == count && rows.iter().copied().eq(0..count)).then_some(expression)
+        })
+        .collect()
+}
+
 impl<'dae> SameTickDefinitions<'dae> {
     /// Current expression reads after substituting the issued derivative rows.
     pub fn collect_expression_reads(
