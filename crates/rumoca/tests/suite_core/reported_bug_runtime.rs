@@ -76,7 +76,8 @@ fn issue_403_original_scalar_boolean_guard_short_circuits() {
 #[test]
 fn issue_403_original_guard_executes_natively_without_fallback() {
     let compiled = compile(GUARDED, "GuardedOperands");
-    let opts = options(SimExecutionPolicy::Auto);
+    let mut opts = options(SimExecutionPolicy::Auto);
+    opts.initial_inputs = vec![("k".into(), 4.0)];
     let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts).unwrap();
     assert_eq!(lowered.pure_calls.owners().len(), 1);
     let site = lowered.pure_calls.owners()[0].call_site();
