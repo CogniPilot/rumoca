@@ -1044,6 +1044,7 @@ mod tests {
     mod discrete_broadcast;
     mod dependencies;
     mod recursion;
+    mod reduction_extrema;
     mod shared_values;
     mod table_sharing;
     mod value_projections;
