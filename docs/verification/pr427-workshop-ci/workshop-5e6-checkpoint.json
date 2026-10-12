@@ -1,0 +1,1097 @@
+{
+  "schema": "PR427 source-qualified focused checkpoint v1",
+  "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+  "status": "all listed focused gates passed; not canonical quick/full/coverage or later-tip qualification",
+  "raw_evidence_root": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence",
+  "source_seal": {
+    "tracked_files": 4166,
+    "external_files": 6130,
+    "manifest_sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+    "before_after_unchanged": true
+  },
+  "guards": {
+    "focused_seconds": 600,
+    "compound_wheel_outer_seconds": 1800,
+    "resident_plus_swap_mib": 4096,
+    "target_cap_mib": 8192,
+    "scratch_floor_mib": 8192,
+    "host_available_floor_mib": 16384,
+    "jobs": 4,
+    "test_threads": 4,
+    "rayon_threads": 4,
+    "per_model_watchdogs_unchanged": true
+  },
+  "tools": {
+    "rustc": "1.95.0-nightly (6a979b3e3 2026-02-26)",
+    "cargo": "1.95.0-nightly (f298b8c82 2026-02-24)",
+    "python": "3.12.13",
+    "jax": "0.9.2",
+    "jaxlib": "0.9.2",
+    "casadi": "3.7.2",
+    "numpy": "2.4.3",
+    "maturin": "1.12.6",
+    "native_cmake": "4.1.2",
+    "fmpy": "0.3.30",
+    "chromium": "154.0.8037.92"
+  },
+  "phases": {
+    "web-build": {
+      "exitCode": 0,
+      "elapsedMs": 424237.012724,
+      "peakResidentPlusSwapKiB": 2856500,
+      "peakCacheBytes": 7192412160,
+      "minimumAvailableKiB": 45181812,
+      "minimumScratchFreeBytes": 69396873216,
+      "stopped": null
+    },
+    "simulate_smoke": {
+      "exitCode": 0,
+      "elapsedMs": 2271.49992,
+      "peakResidentPlusSwapKiB": 430716,
+      "peakCacheBytes": 7186128896,
+      "minimumAvailableKiB": 54519524,
+      "minimumScratchFreeBytes": 69030068224,
+      "stopped": null
+    },
+    "source_root_smoke": {
+      "exitCode": 0,
+      "elapsedMs": 3252.1516730000003,
+      "peakResidentPlusSwapKiB": 409612,
+      "peakCacheBytes": 7186128896,
+      "minimumAvailableKiB": 44821092,
+      "minimumScratchFreeBytes": 68966670336,
+      "stopped": null
+    },
+    "target_render_smoke": {
+      "exitCode": 0,
+      "elapsedMs": 4042.5437309999998,
+      "peakResidentPlusSwapKiB": 774292,
+      "peakCacheBytes": 7186128896,
+      "minimumAvailableKiB": 45674900,
+      "minimumScratchFreeBytes": 68938276864,
+      "stopped": null
+    },
+    "user_guide_browser": {
+      "exitCode": 0,
+      "elapsedMs": 377957.27494,
+      "peakResidentPlusSwapKiB": 3435844,
+      "peakCacheBytes": 7189450752,
+      "minimumAvailableKiB": 40565804,
+      "minimumScratchFreeBytes": 56853327872,
+      "stopped": null
+    },
+    "native-cpu2": {
+      "exitCode": 0,
+      "elapsedMs": 411575.362873,
+      "peakResidentPlusSwapKiB": 2867364,
+      "peakCacheBytes": 3850125312,
+      "minimumAvailableKiB": 47203512,
+      "minimumScratchFreeBytes": 53802897408,
+      "stopped": null
+    },
+    "wheel-build": {
+      "exitCode": 0,
+      "elapsedMs": 432055.715663,
+      "peakResidentPlusSwapKiB": 2992476,
+      "peakCacheBytes": 5470527488,
+      "minimumAvailableKiB": 47347808,
+      "minimumScratchFreeBytes": 37708070912,
+      "stopped": null
+    },
+    "cli-release-build": {
+      "exitCode": 0,
+      "elapsedMs": 318444.00434,
+      "peakResidentPlusSwapKiB": 3417184,
+      "peakCacheBytes": 5693042688,
+      "minimumAvailableKiB": 49512380,
+      "minimumScratchFreeBytes": 35934347264,
+      "stopped": null
+    },
+    "wheel-suite": {
+      "exitCode": 0,
+      "elapsedMs": 324646.547296,
+      "peakResidentPlusSwapKiB": 2941664,
+      "peakCacheBytes": 5900275712,
+      "minimumAvailableKiB": 54838188,
+      "minimumScratchFreeBytes": 40429223936,
+      "stopped": null
+    },
+    "jax-five": {
+      "exitCode": 0,
+      "elapsedMs": 512977.003618,
+      "peakResidentPlusSwapKiB": 3464940,
+      "peakCacheBytes": 6528888832,
+      "minimumAvailableKiB": 46454704,
+      "minimumScratchFreeBytes": 38282133504,
+      "stopped": null
+    },
+    "casadi-five": {
+      "exitCode": 0,
+      "elapsedMs": 25796.950765999998,
+      "peakResidentPlusSwapKiB": 2199644,
+      "peakCacheBytes": 6528888832,
+      "minimumAvailableKiB": 47932368,
+      "minimumScratchFreeBytes": 38128857088,
+      "stopped": null
+    },
+    "issue418": {
+      "exitCode": 0,
+      "elapsedMs": 2718.058597,
+      "peakResidentPlusSwapKiB": 406024,
+      "peakCacheBytes": 6528888832,
+      "minimumAvailableKiB": 50289760,
+      "minimumScratchFreeBytes": 37927182336,
+      "stopped": null
+    }
+  },
+  "web": {
+    "optimized_package": {
+      "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+      "items": [
+        {
+          "path": ".gitignore",
+          "bytes": 1,
+          "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 11356,
+          "sha256": "a4ef2d32e824253636e23a524aee2dd89ece92647ab1124452449c3c7729724d"
+        },
+        {
+          "path": "README.md",
+          "bytes": 723,
+          "sha256": "dfa8613853700c1b48637bf130965773d11e75785a26f660c12a899eee867fbb"
+        },
+        {
+          "path": "modelica_language.js",
+          "bytes": 3832,
+          "sha256": "12336b63edcfb3419bce2e4fdc9f5334d5b714951d2c7226620871b61a434539"
+        },
+        {
+          "path": "package.json",
+          "bytes": 1513,
+          "sha256": "2249bb735461c633a304cb57f42383e8e8a3f80bd9037ddc7eba38a42ffd4790"
+        },
+        {
+          "path": "parse_worker.js",
+          "bytes": 1349,
+          "sha256": "b6cef098ce452d7301638d3267bb04ad4d216ba623532c820bdf042a0ec396dd"
+        },
+        {
+          "path": "rumoca_bind_wasm.d.ts",
+          "bytes": 26696,
+          "sha256": "bf5d0c48dc42aa05ea61063326595289ba452f811db918aaf9f250380248b146"
+        },
+        {
+          "path": "rumoca_bind_wasm.js",
+          "bytes": 85403,
+          "sha256": "5f17e1488e4f7a106d7c9844112491750764e757626074a2f0151d6ee6ea961e"
+        },
+        {
+          "path": "rumoca_bind_wasm_bg.wasm",
+          "bytes": 33226044,
+          "sha256": "90498f8c75412ee76b67ea6b9ccbd15dff2da6d0539515c27ffccfc30500c1d4"
+        },
+        {
+          "path": "rumoca_bind_wasm_bg.wasm.d.ts",
+          "bytes": 9868,
+          "sha256": "e52f5de2070386a3ce91619c5c787f2d1d3a03fa411cf9d190593951c8382760"
+        },
+        {
+          "path": "rumoca_bind_wasm_diffsol.d.ts",
+          "bytes": 2136,
+          "sha256": "713a4d3d7df89afbdcdd90ec1a662fb44f1941b05e1c4c2a1d2eb6e340bc7fbe"
+        },
+        {
+          "path": "rumoca_bind_wasm_diffsol.js",
+          "bytes": 15910,
+          "sha256": "d7c22899d1b46826daee1386fc32ee8e57a9d43eabec02dd66c5bf7e0d60dd11"
+        },
+        {
+          "path": "rumoca_bind_wasm_diffsol_bg.wasm",
+          "bytes": 5755140,
+          "sha256": "206332432dc5fb2ad09f68902116c80dda88ace07aa7d834f34cfbbc307a38ba"
+        },
+        {
+          "path": "rumoca_bind_wasm_galec.d.ts",
+          "bytes": 4761,
+          "sha256": "8ef274ebd653a56c41e6b05fcfd67db5e5831fa81e23b2e4a68e259325979bdf"
+        },
+        {
+          "path": "rumoca_bind_wasm_galec.js",
+          "bytes": 15145,
+          "sha256": "ccca2f99b6c59092ceb5f43d9f4c6c95209376e1c68c42919e4cce1114295ccd"
+        },
+        {
+          "path": "rumoca_bind_wasm_galec_bg.wasm",
+          "bytes": 16224274,
+          "sha256": "2396f2bf0081469ae99fff46099f02341e1aa2f96de61444f8a2494d3861f20e"
+        },
+        {
+          "path": "rumoca_diffsol.js",
+          "bytes": 4658,
+          "sha256": "a012c7a233a1f888e336f78e040bcbddcf3e2ddfd2ccbb1f57b9e64d4fd7558f"
+        },
+        {
+          "path": "rumoca_galec.js",
+          "bytes": 9063,
+          "sha256": "1b24b0820a518e757c82ee281a32249032cab674782a419b3fa889f13d5dd792"
+        },
+        {
+          "path": "rumoca_gpu.js",
+          "bytes": 44297,
+          "sha256": "33a9bb454f028a255c9bba637626f3a4e78c20ebabdaab2201089b87465c5dc8"
+        },
+        {
+          "path": "rumoca_interactive.js",
+          "bytes": 54333,
+          "sha256": "ca075e416654dda0af89d743c74d7e781dd019857f30baa874bba99e77002437"
+        },
+        {
+          "path": "rumoca_package_meta.json",
+          "bytes": 52,
+          "sha256": "9f994d48ef1db51c82e7a174a2788e2068c8033e620745e5389e37af0f3e1007"
+        },
+        {
+          "path": "rumoca_runtime.js",
+          "bytes": 7419,
+          "sha256": "f1cb9c75122435a0d60a3a186f24bc4076efa6cce221b365a1a7b8674f546be8"
+        },
+        {
+          "path": "rumoca_touch_controls.js",
+          "bytes": 14983,
+          "sha256": "3cf463cac606a8091ccf44672b1e595620f0678b14ff1c3c528edacffa0d415d"
+        },
+        {
+          "path": "rumoca_worker.js",
+          "bytes": 31535,
+          "sha256": "738214cb775e8bd0e3a14e3d13fdec5553872f905a941d069121250d960d54bd"
+        }
+      ]
+    },
+    "downloaded_components": {
+      "observed_downloads": 16,
+      "unique_components": {
+        "rumoca_bind_wasm.js": "5f17e1488e4f7a106d7c9844112491750764e757626074a2f0151d6ee6ea961e",
+        "rumoca_bind_wasm_bg.wasm": "90498f8c75412ee76b67ea6b9ccbd15dff2da6d0539515c27ffccfc30500c1d4",
+        "rumoca_gpu.js": "33a9bb454f028a255c9bba637626f3a4e78c20ebabdaab2201089b87465c5dc8",
+        "rumoca_runtime.js": "f1cb9c75122435a0d60a3a186f24bc4076efa6cce221b365a1a7b8674f546be8",
+        "rumoca_interactive.js": "ca075e416654dda0af89d743c74d7e781dd019857f30baa874bba99e77002437",
+        "rumoca_bind_wasm_galec.js": "ccca2f99b6c59092ceb5f43d9f4c6c95209376e1c68c42919e4cce1114295ccd",
+        "rumoca_bind_wasm_galec_bg.wasm": "2396f2bf0081469ae99fff46099f02341e1aa2f96de61444f8a2494d3861f20e"
+      },
+      "all_match_fresh_sealed_package": true,
+      "main_live_build_identity": "5e6f9cb9afec",
+      "addons": "bound by exact build commands/source and downloaded hashes; no public addon identity API claimed"
+    },
+    "browser": {
+      "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+      "scope": "optimized FullWeb + artifact3 + mandatory guide browser4/16 checkpoint",
+      "scripts": 4,
+      "cells": 16,
+      "guardian_summary": {
+        "exitCode": 0,
+        "elapsedMs": 377957.27494,
+        "peakResidentPlusSwapKiB": 3435844,
+        "peakCacheBytes": 7189450752,
+        "minimumAvailableKiB": 40565804,
+        "minimumScratchFreeBytes": 56853327872,
+        "stopped": null
+      },
+      "mandatory_hardware_requirement": false,
+      "hardware_compute_skips": 2,
+      "booster": {
+        "phases": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "intervals": 551,
+        "samples": 552,
+        "landed_time": 27.7,
+        "touchdown_safe": 1,
+        "crash_indicator": 0,
+        "reset_calls": 1,
+        "post_reset_steps": 554
+      },
+      "cells_timing": [
+        {
+          "model": "GalecCounter",
+          "path": "examples/codegen/rumoca-scenario.galec_counter_production.toml",
+          "sourceSha256": "7a8398030c5a8ab6ad4449a1d2743031fe314d3ec355f73dd7a0d20e98b62e31",
+          "scenarioSha256": "0a8bf1b65e64ff671e155c0f90822916d83f13ad7e17007a8cc9c2f196dcc9b3",
+          "kind": "codegen",
+          "compileAndRuntimeWallMs": 2140.129632,
+          "sourceRootResolutionWallMs": 0.20000004768371582
+        },
+        {
+          "model": "FixedWing",
+          "path": "examples/interactive/fixedwing/rumoca-scenario.toml",
+          "sourceSha256": "c21ebdaaddd1d8e2f892c89628a55b60234085cb8c8a0d60016215794ca09939",
+          "scenarioSha256": "afd7126a1e7f714c30f4f3f2f30066bd8d3d2e8c189f5a891641f62325c81573",
+          "kind": "interactive",
+          "compileAndRuntimeWallMs": 16185.105531000001,
+          "sourceRootResolutionWallMs": 4.055000066757202,
+          "sessionConstructionWallMs": [
+            3891.710000038147
+          ],
+          "parsedSourceRootStagingWallMs": 11063.140000104904,
+          "samples": 8,
+          "sampledHorizon": [
+            0,
+            0.07
+          ]
+        },
+        {
+          "model": "QuadrotorAcro",
+          "path": "examples/interactive/quadrotor/rumoca-scenario.acro.toml",
+          "sourceSha256": "823fe3bfb69446133951abfc87cb32e4b3acc4ac6e3aa50f41e101b005affc55",
+          "scenarioSha256": "589f5be56e2c4f469613f8aec3f455b115da86f263d97cc934c4689d8db5f586",
+          "kind": "interactive",
+          "compileAndRuntimeWallMs": 2803.347538000002,
+          "sourceRootResolutionWallMs": 2.0899999141693115,
+          "sessionConstructionWallMs": [
+            2232.335000038147
+          ],
+          "parsedSourceRootStagingWallMs": 0.009999990463256836,
+          "samples": 8,
+          "sampledHorizon": [
+            0,
+            0.07
+          ]
+        },
+        {
+          "model": "ReusableBoosterEmbeddedControlLaw",
+          "path": "examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml",
+          "sourceSha256": "180760c31308ed7a49d6cedd9869e5f29619695b7e138f23feb5268939fdc38e",
+          "scenarioSha256": "b45d94fb594f199fec15b7dba8c431daa1a4dfce2ce4b6ae826c86728758cca9",
+          "kind": "codegen",
+          "compileAndRuntimeWallMs": 11560.428250000004,
+          "sourceRootResolutionWallMs": 1.554999828338623
+        },
+        {
+          "model": "ReusableBoosterLanding",
+          "path": "examples/interactive/reusable_booster/rumoca-scenario.toml",
+          "sourceSha256": "180760c31308ed7a49d6cedd9869e5f29619695b7e138f23feb5268939fdc38e",
+          "scenarioSha256": "148b5d78e979382587bc1571087cfe9d229b1d190c6b1136d2adf2b374ef1dd7",
+          "kind": "interactive",
+          "compileAndRuntimeWallMs": 21841.141219999998,
+          "sourceRootResolutionWallMs": 1.7800002098083496,
+          "sessionConstructionWallMs": [
+            2393.3099999427795
+          ],
+          "parsedSourceRootStagingWallMs": 0.009999990463256836,
+          "samples": 552,
+          "sampledHorizon": [
+            0.15,
+            27.7
+          ]
+        },
+        {
+          "model": "Rover",
+          "path": "examples/interactive/rover/rumoca-scenario.toml",
+          "sourceSha256": "1ca4915deee20b010957e6adf80d58aaa0982c65734d0c5a94500e816611f937",
+          "scenarioSha256": "314cbdc1f662df7b5f6721c8cb4aacc0dcd0b1d435a24a758e28ede4752a4564",
+          "kind": "interactive",
+          "compileAndRuntimeWallMs": 2655.783429999996,
+          "sourceRootResolutionWallMs": 0.019999980926513672,
+          "sessionConstructionWallMs": [
+            2139.800000190735
+          ],
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 4,
+          "sampledHorizon": [
+            0,
+            0.03
+          ]
+        },
+        {
+          "model": "Ball",
+          "path": "examples/simulation/rumoca-scenario.ball.toml",
+          "sourceSha256": "e7c121ddd4a633d662e1018853aaa7ca79a25f31e87952d1497a76e028d7c9c0",
+          "scenarioSha256": "b2afa4558dd6986b4ad8cde2fbf76c1e819fe787fad2bba323e02f621c90ebfb",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 1859.2955409999995,
+          "sourceRootResolutionWallMs": 0.015000104904174805,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 528,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        },
+        {
+          "model": "KalmanFilterStepTest",
+          "path": "examples/simulation/rumoca-scenario.kalman_filter_step_test.toml",
+          "sourceSha256": "ba6abde6969213e954053bca2a3cd9197543a96fd7f8f654098f51543b671dad",
+          "scenarioSha256": "20c81b812dcf73b6c5474fa8b0732012cdbb558ef5d09bfbe7ab5f6d3a036d56",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 2318.562279000005,
+          "sourceRootResolutionWallMs": 1.7999999523162842,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 501,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        },
+        {
+          "model": "NeuralLatentOscillator",
+          "path": "examples/simulation/rumoca-scenario.neural_latent_oscillator.toml",
+          "sourceSha256": "f424698839728ca792eccbef27c53bdc67878cc2e4514faedb4cb558fb991130",
+          "scenarioSha256": "b8f362e756669c5d90cb85291a77db5f97aad213608fa56d3543d1ef6521ea82",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 5862.4379439999975,
+          "sourceRootResolutionWallMs": 0.029999971389770508,
+          "parsedSourceRootStagingWallMs": 0,
+          "samples": 4,
+          "sampledHorizon": [
+            0,
+            0.18
+          ]
+        },
+        {
+          "model": "NeuralODEBackprop",
+          "path": "examples/simulation/rumoca-scenario.neural_ode_backprop.toml",
+          "sourceSha256": "158a75cf63d83c7592b459432f67ec90ef2e5c2ac3d372f5c73a9c11e0c02ddf",
+          "scenarioSha256": "54eba2433af319d605866454973e5f395dfc9f8a2193343f90cf49e34ffc6091",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 2425.2235640000144,
+          "sourceRootResolutionWallMs": 0.009999990463256836,
+          "parsedSourceRootStagingWallMs": 0.004999876022338867,
+          "samples": 4,
+          "sampledHorizon": [
+            0,
+            0.15000000000000002
+          ]
+        },
+        {
+          "model": "NeuralODETensor",
+          "path": "examples/simulation/rumoca-scenario.neural_ode_tensor.toml",
+          "sourceSha256": "f1e5fca9fcc28b91e941a2c637824e1fd72e00da925a1ebb0504677165a83cac",
+          "scenarioSha256": "8328c151a980b6cb5200079989d5c2ea2f187d94575ace0d9ad7e4182bb3ef08",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 1890.775192999994,
+          "sourceRootResolutionWallMs": 0.009999990463256836,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 4,
+          "sampledHorizon": [
+            0,
+            0.06
+          ]
+        },
+        {
+          "model": "NeuralPredatorPrey",
+          "path": "examples/simulation/rumoca-scenario.neural_predator_prey.toml",
+          "sourceSha256": "e05d7e768873dd0d5c4fd64671617ea1ab324943f4fb8a8b0618b41e86408c91",
+          "scenarioSha256": "f7d0277a9fdc65f96becf24200b7ed4603b8343af88e020f8f3150d6ea22edf3",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 1620.0866630000091,
+          "sourceRootResolutionWallMs": 0.004999876022338867,
+          "parsedSourceRootStagingWallMs": 0,
+          "samples": 4,
+          "sampledHorizon": [
+            0,
+            0.06
+          ]
+        },
+        {
+          "model": "PIDMSL",
+          "path": "examples/simulation/rumoca-scenario.pidmsl.toml",
+          "sourceSha256": "560455790c01e032b4aea27fbaca2c017161f0aa7e23c327878f37f6a7c79fbc",
+          "scenarioSha256": "7f1bf35fcf0491e650f0bf9702fdd0a01f8be4c05ec1edac7633cde3cf384653",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 2157.470193999994,
+          "sourceRootResolutionWallMs": 1.8050000667572021,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 501,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        },
+        {
+          "model": "SwitchedRLC",
+          "path": "examples/simulation/rumoca-scenario.switched_rlc.toml",
+          "sourceSha256": "20d217108780f0d65da39a994e0a774ee3d98fa568b73b804ffa27f2e1444723",
+          "scenarioSha256": "57b8c41d0dc3aa68ed13b0653c335fd7d9309cfd02fd142aee68967276d3823b",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 1660.8827759999986,
+          "sourceRootResolutionWallMs": 0.009999990463256836,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 502,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        },
+        {
+          "model": "SwitchedRLC_MSL",
+          "path": "examples/simulation/rumoca-scenario.switched_rlc_msl.toml",
+          "sourceSha256": "105ed4f74c69fe3d0fd29a593be5f884a360a04a12ee14cb1e568773e7959c15",
+          "scenarioSha256": "e1c092af21a7dbc7f5254fa3b7dfa76b7143a601c55c697ca19f42d5c9d39ee3",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 2027.7741810000007,
+          "sourceRootResolutionWallMs": 1.7650001049041748,
+          "parsedSourceRootStagingWallMs": 0.009999990463256836,
+          "samples": 502,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        },
+        {
+          "model": "SympyDecay",
+          "path": "examples/simulation/rumoca-scenario.sympy_decay.toml",
+          "sourceSha256": "847cd6aba7b2df72c7aac45f5a4651f61bc351e7d857698207053a36d049ae29",
+          "scenarioSha256": "b3f11623d8445cc720daa92f8a85699a6bcb13d0e2622a7d6c4d72ad70bb1c32",
+          "kind": "batch",
+          "compileAndRuntimeWallMs": 1566.658964000002,
+          "sourceRootResolutionWallMs": 0.03000020980834961,
+          "parsedSourceRootStagingWallMs": 0.005000114440917969,
+          "samples": 501,
+          "sampledHorizon": [
+            0,
+            10
+          ]
+        }
+      ],
+      "raw_qualification_sha256": "b669c4830352c120ef8c478c64ffe1c4f72f7e1c4f7a9b7b19b2a18e510dbe1f"
+    },
+    "native_cpu2": {
+      "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+      "tests_passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "binary": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/native-cpu2-test-elf",
+      "binary_sha256": "fda677916f082d0f33d6bf912843c68f716e494b5c0af9a21a8dd8072e45a6b2",
+      "binary_bytes": 97334128,
+      "embedded_commit_prefix_present": true,
+      "embedded_commit_scope": "string presence only; not a public runtime build-identity API",
+      "log_sha256": "759b8ab91d945a3257270adcfc369b84aa579ea65b6fc6aef26ade9f382bd496",
+      "guardian_sha256": "15da10bd49b33b800ef0096ff276b5724367ef3c5d6dee0d46ba4da404e570ea",
+      "guardian_summary": {
+        "exitCode": 0,
+        "elapsedMs": 411575.362873,
+        "peakResidentPlusSwapKiB": 2867364,
+        "peakCacheBytes": 3850125312,
+        "minimumAvailableKiB": 47203512,
+        "minimumScratchFreeBytes": 53802897408,
+        "stopped": null
+      }
+    },
+    "native_guide20_owner": "Root canonical verify full; not discharged by browser16 or CPU2",
+    "hardware": "Only two hardware WebGPU compute stages skipped after software/fallback admission; CPU, preparation and software WebGL remained mandatory"
+  },
+  "wheel": {
+    "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+    "scope": "canonical installed-wheel eight-script runtime checkpoint; not final all-gates qualification",
+    "required_scripts_passed": 8,
+    "failed": 0,
+    "wheel_sha256": "3fec02d16f0faa7d212a83275774e979cd26f87deb857f07dc964634c9dc3c18",
+    "live_build_identity": "5e6f9cb9afec",
+    "install_owner": "canonical cargo xtask python test isolated pip --target/PYTHONPATH; strict venv unchanged",
+    "guide_python_fences": 10,
+    "authored_scenario_configs": 4,
+    "cmake_contexts": 2,
+    "benchmark": {
+      "model": "NeuralODEBackprop1k",
+      "hidden": 30,
+      "batch": 8,
+      "horizon": 0.2,
+      "dt": 0.02,
+      "iterations": 3,
+      "warmups": 1,
+      "grid_points": 11,
+      "visible_observables": 6,
+      "jax_gradients": 1082,
+      "raw_temporary_csv_retained": false,
+      "actual_report": "actual-neural-benchmark-report.json"
+    },
+    "source_manifest_sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+    "guardian_summary": {
+      "exitCode": 0,
+      "elapsedMs": 324646.547296,
+      "peakResidentPlusSwapKiB": 2941664,
+      "peakCacheBytes": 5900275712,
+      "minimumAvailableKiB": 54838188,
+      "minimumScratchFreeBytes": 40429223936,
+      "stopped": null
+    },
+    "raw": {
+      "wheel-suite.log": "fe42436e5cd162102063ccd211d1eeee95c62b118a1a9627d06bf5ffacd7679c",
+      "wheel-suite.guardian.json": "09714e0f50d477f257c6fd02e4da031486587d083ca6f357555cb25537b938b1",
+      "actual-neural-benchmark-report.json": "74a47990eb6b32d55f96cefe03c1ae901704b8ad5c2868fe2ec17bf8294bd804",
+      "benchmark-report-extraction.json": "24d8f2c414b5debdfe8d461a74cc087e418aee663ea74c0eec6e3b85da2497dc"
+    }
+  },
+  "wheel_live_identity": {
+    "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+    "imported": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/identity-installed/rumoca/__init__.py",
+    "native_imported": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/identity-installed/rumoca/_native.abi3.so",
+    "live_build_identity": "5e6f9cb9afec",
+    "scope": "isolated pip --target live identity proof; canonical8 runtime qualification separate"
+  },
+  "cli": {
+    "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+    "live_build_identity": "5e6f9cb9afec",
+    "elf_sha256": "2152593d350e5b2fafc43095b0d03d7662e3ebfe3f883240cfc5bf7ea1d6c53b",
+    "bytes": 101657616,
+    "scope": "separately timed same-source release prerequisite; outside benchmark child clock",
+    "guardian_summary": {
+      "exitCode": 0,
+      "elapsedMs": 318444.00434,
+      "peakResidentPlusSwapKiB": 3417184,
+      "peakCacheBytes": 5693042688,
+      "minimumAvailableKiB": 49512380,
+      "minimumScratchFreeBytes": 35934347264,
+      "stopped": null
+    }
+  },
+  "strict_exports": [
+    {
+      "name": "jax-five",
+      "selector": "workshop_numerical_examples::jax_actual_workshop_examples_jit_initialize_and_differentiate",
+      "model_cells": 5,
+      "rust_runtime_seconds": 232.27,
+      "proof": {
+        "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+        "tests_passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "binary": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/jax-five-test-elf",
+        "binary_sha256": "a4b327a0cc3b945f8d25130c2308d6074f69d6ca75ded7c2ea3d6bb51f3d2c27",
+        "binary_bytes": 74722304,
+        "embedded_commit_prefix_present": false,
+        "embedded_commit_scope": "string presence only; not a public runtime build-identity API",
+        "log_sha256": "3d830a72e70e16ccaaecd4be24b441c32229f8e50143aaad2291f4a5c9682b58",
+        "guardian_sha256": "eddf3b017bbbb83eccd16ac56522d524653f5b73465b00efabb116ccac737235",
+        "guardian_summary": {
+          "exitCode": 0,
+          "elapsedMs": 512977.003618,
+          "peakResidentPlusSwapKiB": 3464940,
+          "peakCacheBytes": 6528888832,
+          "minimumAvailableKiB": 46454704,
+          "minimumScratchFreeBytes": 38282133504,
+          "stopped": null
+        }
+      }
+    },
+    {
+      "name": "casadi-five",
+      "selector": "workshop_numerical_examples::casadi_actual_workshop_examples_initialize_evaluate_and_differentiate",
+      "model_cells": 5,
+      "rust_runtime_seconds": 24.56,
+      "proof": {
+        "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+        "tests_passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "binary": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/casadi-five-test-elf",
+        "binary_sha256": "a4b327a0cc3b945f8d25130c2308d6074f69d6ca75ded7c2ea3d6bb51f3d2c27",
+        "binary_bytes": 74722304,
+        "embedded_commit_prefix_present": false,
+        "embedded_commit_scope": "string presence only; not a public runtime build-identity API",
+        "log_sha256": "0966ccba925ffb3f53ecf80595e532459dc85e89d50367070e0a77931f9a77e4",
+        "guardian_sha256": "3a102c22f9c8d96a806014703a296fb2e36e71f64b65f665f9616c2f8aa7f811",
+        "guardian_summary": {
+          "exitCode": 0,
+          "elapsedMs": 25796.950765999998,
+          "peakResidentPlusSwapKiB": 2199644,
+          "peakCacheBytes": 6528888832,
+          "minimumAvailableKiB": 47932368,
+          "minimumScratchFreeBytes": 38128857088,
+          "stopped": null
+        }
+      }
+    },
+    {
+      "name": "issue418",
+      "selector": "backend_template_runtime_regression::jax_ode_target_handles_reported_explicit_algebraic_assignments",
+      "model_cells": 1,
+      "rust_runtime_seconds": 1.63,
+      "proof": {
+        "source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+        "tests_passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "binary": "$HOME/scratch/rumoca/workshop427-final-rebind-5e6f-20261012/evidence/issue418-test-elf",
+        "binary_sha256": "a4b327a0cc3b945f8d25130c2308d6074f69d6ca75ded7c2ea3d6bb51f3d2c27",
+        "binary_bytes": 74722304,
+        "embedded_commit_prefix_present": false,
+        "embedded_commit_scope": "string presence only; not a public runtime build-identity API",
+        "log_sha256": "38f2d311ea7a4bb6a5a223c0591a747cad0ec62d6f5edca6888bff9720eb3490",
+        "guardian_sha256": "d15f027156f14c8f6504936180251c265b06040dff8441d840640098ebd253e9",
+        "guardian_summary": {
+          "exitCode": 0,
+          "elapsedMs": 2718.058597,
+          "peakResidentPlusSwapKiB": 406024,
+          "peakCacheBytes": 6528888832,
+          "minimumAvailableKiB": 50289760,
+          "minimumScratchFreeBytes": 37927182336,
+          "stopped": null
+        }
+      }
+    }
+  ],
+  "benchmark": {
+    "model": "NeuralODEBackprop1k",
+    "hidden": 30,
+    "batch": 8,
+    "t_end": 0.2,
+    "dt": 0.02,
+    "trainable_params": 1082,
+    "accuracy": {
+      "final_observable_max_abs_error": 1.1623731491217093e-14,
+      "final_observable_worst": [
+        {
+          "abs_error": 1.1623731491217093e-14,
+          "jax": -0.001378014864677226,
+          "name": "learnedDX[2]",
+          "rumoca": -0.0013780148646888497
+        },
+        {
+          "abs_error": 1.1525069093520912e-14,
+          "jax": -0.002066133337020812,
+          "name": "learnedDX[1]",
+          "rumoca": -0.002066133337032337
+        },
+        {
+          "abs_error": 4.440892098500626e-16,
+          "jax": 2.4356903616003303,
+          "name": "loss",
+          "rumoca": 2.4356903616003307
+        },
+        {
+          "abs_error": 2.220446049250313e-16,
+          "jax": 1.5606698438812516,
+          "name": "rmsError",
+          "rumoca": 1.5606698438812519
+        },
+        {
+          "abs_error": 5.551115123125783e-17,
+          "jax": -0.4204243594739901,
+          "name": "targetFirst[1]",
+          "rumoca": -0.42042435947399004
+        },
+        {
+          "abs_error": 0.0,
+          "jax": 2.166943321354042,
+          "name": "targetFirst[2]",
+          "rumoca": 2.166943321354042
+        }
+      ],
+      "initial_observable_max_abs_error": 4.336808689942018e-19,
+      "initial_observable_worst": [
+        {
+          "abs_error": 4.336808689942018e-19,
+          "jax": -0.0022752518169739315,
+          "name": "learnedDX[1]",
+          "rumoca": -0.002275251816973931
+        },
+        {
+          "abs_error": 2.168404344971009e-19,
+          "jax": -0.0016812902318489105,
+          "name": "learnedDX[2]",
+          "rumoca": -0.0016812902318489103
+        },
+        {
+          "abs_error": 0.0,
+          "jax": 2.4360289300006954,
+          "name": "loss",
+          "rumoca": 2.4360289300006954
+        },
+        {
+          "abs_error": 0.0,
+          "jax": 1.5607783090499097,
+          "name": "rmsError",
+          "rumoca": 1.5607783090499097
+        },
+        {
+          "abs_error": 0.0,
+          "jax": -0.18,
+          "name": "targetFirst[1]",
+          "rumoca": -0.18
+        },
+        {
+          "abs_error": 0.0,
+          "jax": 2.2,
+          "name": "targetFirst[2]",
+          "rumoca": 2.2
+        }
+      ],
+      "jax_final_manual_vs_reverse_grad_max_abs_error": 5.204170427930421e-18,
+      "jax_gradient_count": 1082,
+      "jax_manual_vs_reverse_grad_max_abs_error": 5.204170427930421e-18,
+      "rumoca_internal_state_gradient_parity": "unavailable in the visible-output CSV",
+      "rumoca_observable_count": 6
+    },
+    "bench": {
+      "average_realtime_factor": 0.28772342247651705,
+      "best_realtime_factor": 0.2942595740769516,
+      "compile_seconds": 0.342153999,
+      "dt": 0.02,
+      "hot_average_seconds": 0.6951119873333332,
+      "hot_best_seconds": 0.679672023,
+      "hot_total_seconds": 2.085335962,
+      "hot_worst_seconds": 0.704713916,
+      "iterations": 3,
+      "last_final_time": 0.2,
+      "last_points": 11,
+      "model": "NeuralODEBackprop1k",
+      "prepare_accounted_seconds": 4.414267905,
+      "prepare_backend_build_seconds": 0.994923993,
+      "prepare_ir_solve_lower_seconds": 3.401487538,
+      "prepare_ir_solve_seconds": 3.419335282,
+      "prepare_ir_solve_structural_dae_seconds": 0.017847744,
+      "prepare_other_seconds": 4.9640000000295004e-05,
+      "prepare_override_apply_seconds": 8.63e-06,
+      "prepare_seconds": 4.414317545,
+      "ready_seconds": 4.756471544,
+      "solver": "rk-like",
+      "t_end": 0.2,
+      "warmups": 1
+    },
+    "csv_retained": false,
+    "report_extraction": {
+      "raw_log": "wheel-suite.log",
+      "raw_log_sha256": "fe42436e5cd162102063ccd211d1eeee95c62b118a1a9627d06bf5ffacd7679c",
+      "character_start": 4466,
+      "character_length": 7630,
+      "report_sha256": "74a47990eb6b32d55f96cefe03c1ae901704b8ad5c2868fe2ec17bf8294bd804",
+      "scope": "Complete actual report extracted from canonical script stdout. Temporary CSV/report files were removed by its existing TemporaryDirectory; no retained CSV hash is claimed."
+    }
+  },
+  "terminal_native_cache_audit": {
+    "aliases": [
+      "$HOME/scratch/rumoca/workshop427-final-exports-20261012/target",
+      "$HOME/scratch/rumoca/workshop427-final-exports-20261012/target"
+    ],
+    "pids": 683,
+    "visible_references": [],
+    "denied_reads": 1682,
+    "denied_pids": 417,
+    "lease_files": [],
+    "scope": "target-specific; denied reads unobserved; unrelated targets/tasks allowed"
+  },
+  "raw_evidence": {
+    "web-build.log": {
+      "sha256": "fd6d405be24072b4bc84199f5b7b100bee983d136351286bd56057fb9b98b959",
+      "bytes": 8539
+    },
+    "web-build.guardian.json": {
+      "sha256": "fb4bd19aed0b949209fcd3901051d9fabece0a8a6afc5f3f303546f069fa09fe",
+      "bytes": 15122
+    },
+    "simulate_smoke.log": {
+      "sha256": "c2a9c063af313de4fc71f943c17f6f4b99217fcac794f83c7e6a1f34cb67a5d3",
+      "bytes": 183
+    },
+    "simulate_smoke.guardian.json": {
+      "sha256": "eb63ef15304960ca59450318b7dbb74f74ef3572d3401e058f83419fa33c94b9",
+      "bytes": 1313
+    },
+    "source_root_smoke.log": {
+      "sha256": "12324365e1814c9c6a5ad534b66f52daf6b38eabe2fa75a85049da3803783aab",
+      "bytes": 302
+    },
+    "source_root_smoke.guardian.json": {
+      "sha256": "a7e6a15df6a592f53e610716c2191d2a54bd1e3d71cdfda302823ae7cf6c42fd",
+      "bytes": 1348
+    },
+    "target_render_smoke.log": {
+      "sha256": "0c6dc1c16b0c9d3da8233871f23d10121f449c932b887c12618afbe6198dc8f9",
+      "bytes": 286
+    },
+    "target_render_smoke.guardian.json": {
+      "sha256": "4decd00002068f242c0f186c91a9e4eadd32967a511bb32a1b572e5783dafa74",
+      "bytes": 1331
+    },
+    "user_guide_browser.log": {
+      "sha256": "65f3dd96eeade2d644732d8664ed0e962457e7804239fd2d2bf5c3d21beb8844",
+      "bytes": 308449
+    },
+    "user_guide_browser.guardian.json": {
+      "sha256": "1f46d158e3f2aa0c8ba0f8d4bbee642f8f98e56cc1c53fca38be641e9cf01a90",
+      "bytes": 15843
+    },
+    "native-cpu2.log": {
+      "sha256": "759b8ab91d945a3257270adcfc369b84aa579ea65b6fc6aef26ade9f382bd496",
+      "bytes": 14109
+    },
+    "native-cpu2.guardian.json": {
+      "sha256": "15da10bd49b33b800ef0096ff276b5724367ef3c5d6dee0d46ba4da404e570ea",
+      "bytes": 58673
+    },
+    "wheel-build.log": {
+      "sha256": "83aed1a4adf14d3960574e4852287ebc37624d4ee215ea079dcf3cd9dce60a68",
+      "bytes": 17046
+    },
+    "wheel-build.guardian.json": {
+      "sha256": "422bf6d147785dd0dbcbcd51413762e922e2161190bb873a9a12ccd4ebc6a228",
+      "bytes": 64723
+    },
+    "cli-release-build.log": {
+      "sha256": "45096dc65b06ef3cb3753a91b563a55ef6d2168047103311b826c6efd38420d1",
+      "bytes": 6678
+    },
+    "cli-release-build.guardian.json": {
+      "sha256": "3f779c410afee07a7d1fa7a9abac3d6f0ab26de04d77332a0fa097dc9d62b50e",
+      "bytes": 16641
+    },
+    "wheel-suite.log": {
+      "sha256": "fe42436e5cd162102063ccd211d1eeee95c62b118a1a9627d06bf5ffacd7679c",
+      "bytes": 12218
+    },
+    "wheel-suite.guardian.json": {
+      "sha256": "09714e0f50d477f257c6fd02e4da031486587d083ca6f357555cb25537b938b1",
+      "bytes": 23526
+    },
+    "jax-five.log": {
+      "sha256": "3d830a72e70e16ccaaecd4be24b441c32229f8e50143aaad2291f4a5c9682b58",
+      "bytes": 17793
+    },
+    "jax-five.guardian.json": {
+      "sha256": "eddf3b017bbbb83eccd16ac56522d524653f5b73465b00efabb116ccac737235",
+      "bytes": 24478
+    },
+    "casadi-five.log": {
+      "sha256": "0966ccba925ffb3f53ecf80595e532459dc85e89d50367070e0a77931f9a77e4",
+      "bytes": 10130
+    },
+    "casadi-five.guardian.json": {
+      "sha256": "3a102c22f9c8d96a806014703a296fb2e36e71f64b65f665f9616c2f8aa7f811",
+      "bytes": 3252
+    },
+    "issue418.log": {
+      "sha256": "38f2d311ea7a4bb6a5a223c0591a747cad0ec62d6f5edca6888bff9720eb3490",
+      "bytes": 599
+    },
+    "issue418.guardian.json": {
+      "sha256": "d15f027156f14c8f6504936180251c265b06040dff8441d840640098ebd253e9",
+      "bytes": 2642
+    },
+    "browser-qualification.json": {
+      "sha256": "b669c4830352c120ef8c478c64ffe1c4f72f7e1c4f7a9b7b19b2a18e510dbe1f",
+      "bytes": 456544
+    },
+    "browser-summary.json": {
+      "sha256": "6f19b4996ee3e3df7941dc524ebce3836f7149a1ab107519564a32316f0f690b",
+      "bytes": 10118
+    },
+    "browser-downloaded-artifacts.json": {
+      "sha256": "74f9e319bd85d3e19badb85dd42ab7e28639a1de1e9b25c44f0e16b37836b8b9",
+      "bytes": 941
+    },
+    "web-artifact-manifest.json": {
+      "sha256": "eeeda2852fe027b8627feafb0127fc8067b1030cbdfaea60727fbd295f3ad556",
+      "bytes": 3813
+    },
+    "main-baked-identity.json": {
+      "sha256": "8c73b9dfe20ce0b31ff9c49d36f362a6096da098eac2630d25a762413fd06864",
+      "bytes": 153
+    },
+    "wheel-baked-identity.json": {
+      "sha256": "7e21b21c46b4c84a3318e22cac72112e2597321b02e18a2719c204a3fa99a21b",
+      "bytes": 475
+    },
+    "cli-identity.json": {
+      "sha256": "c553dfebc7ef4349902f424a08d271a55d13647c399593d378b1213b6493692b",
+      "bytes": 555
+    },
+    "native-tools.log": {
+      "sha256": "850a456c8f68766f978fd44b477b621629db22d16daed2104972dd349983cc03",
+      "bytes": 465
+    },
+    "actual-neural-benchmark-report.json": {
+      "sha256": "74a47990eb6b32d55f96cefe03c1ae901704b8ad5c2868fe2ec17bf8294bd804",
+      "bytes": 7631
+    },
+    "benchmark-report-extraction.json": {
+      "sha256": "24d8f2c414b5debdfe8d461a74cc087e418aee663ea74c0eec6e3b85da2497dc",
+      "bytes": 451
+    },
+    "wheel-suite-qualification.json": {
+      "sha256": "e1abd4cb28905359758f714457dec092426192a8841800d83a77c00e47cab6ae",
+      "bytes": 1662
+    },
+    "native-gates-recipe.json": {
+      "sha256": "b7b662eaa4529b96787adf336b49d89adf1fa2fafb0eb3c33ea19b44e62467d7",
+      "bytes": 1905
+    },
+    "native-idle-final.json": {
+      "sha256": "aeacab77dc9b57ad6992d03a23790c02fc9ec09396f43e0795401127790012e1",
+      "bytes": 377
+    },
+    "web-idle-before-dev-clean.json": {
+      "sha256": "73fffdcea87f060b2c285a64aedadcd8602d7655f8a68acde1a80c2f250c57f5",
+      "bytes": 407
+    },
+    "web-dev-clean-receipt.json": {
+      "sha256": "7261c57d888ad5ac922f218f976b4888f999ade7205817758bd90c3b6dc86181",
+      "bytes": 545
+    },
+    "source-after-browser.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-casadi-five.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-cli-release-build.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-issue418.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-jax-five.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-native-cpu2.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-web-build.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-wheel-build.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-after-wheel-suite.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "source-before.json": {
+      "sha256": "4b5ff1fa4ff8f2105773b88a6350452a701165e05cc308fc19f3e1fa28402739",
+      "bytes": 2101330
+    },
+    "web-build-recipe.json": {
+      "sha256": "885c4e79db17c9790e74ea12ce220fbf7d7631fa961fb0d8352bfcf2b05f4fac",
+      "bytes": 2462,
+      "location": "parent of evidence directory"
+    },
+    "web-gates-recipe.json": {
+      "sha256": "39366231b1ededd58085a68dad5dc8103b34a169338623a3b5f28c553b1ce5d0",
+      "bytes": 1817,
+      "location": "parent of evidence directory"
+    }
+  },
+  "scope_limits": [
+    "No hardware GPU execution claim",
+    "No later-source artifact or final landing qualification",
+    "No full cohort MSL/OMC parity claim",
+    "Canonical quick at this source had MSL/corpus failures; full and coverage need separate receipts",
+    "Session timings use staged source caches, not cold standalone compile-speed proof",
+    "Native internal-state gradient parity is unavailable through visible CSV",
+    "FMI source generation is not FMU conformance"
+  ]
+}
