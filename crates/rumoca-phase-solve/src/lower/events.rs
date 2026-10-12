@@ -76,6 +76,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     lower_guarded_targets(
         view,
         layout,
+        clocks,
         &mut discrete,
         &mut equation_targets,
         solve::DiscreteRowRole::Equation,
@@ -1403,7 +1404,7 @@ fn lower_guarded_updates<'dae>(
     role: solve::DiscreteRowRole,
 ) -> Result<(), LowerError> {
     let mut targets = guarded_targets_of(view, layout, clocks, updates)?;
-    lower_guarded_targets(view, layout, rows, &mut targets, role)
+    lower_guarded_targets(view, layout, clocks, rows, &mut targets, role)
 }
 
 fn guarded_targets_of<'dae>(
@@ -1466,6 +1467,7 @@ fn guarded_targets_of<'dae>(
 fn lower_guarded_targets<'dae>(
     view: dae::DaeView<'dae>,
     layout: &EventCompilationContext<'_, 'dae>,
+    clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     targets: &mut [GuardedTarget<'dae>],
     role: solve::DiscreteRowRole,
@@ -1484,7 +1486,8 @@ fn lower_guarded_targets<'dae>(
                 .extend(target.branches.iter().map(|branch| branch.0));
         }
     }
-    let exchange = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)?;
+    let exchange =
+        SameTickExchange::derive(view, layout, clocks, &rows.same_tick_definitions, targets)?;
     let order = exchange.producer_order();
     apply_permutation(targets, &order);
     let definition_targets = std::rc::Rc::new(

@@ -345,6 +345,7 @@ impl SameTickExchange {
     pub(super) fn derive<'dae>(
         view: dae::DaeView<'dae>,
         layout: &EventCompilationContext<'_, 'dae>,
+        clocks: &LoweredClocks<'dae>,
         definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
         targets: &[GuardedTarget<'dae>],
     ) -> Result<Self, LowerError> {
@@ -356,7 +357,7 @@ impl SameTickExchange {
         let members = targets
             .iter()
             .map(|target| {
-                if target.clock.is_none() && target.event_clock.is_none() {
+                if is_ordinary_target(clocks, target.variable) {
                     return unclocked_member(view, layout, definitions, target);
                 }
                 let (value_reads, condition_reads) =
