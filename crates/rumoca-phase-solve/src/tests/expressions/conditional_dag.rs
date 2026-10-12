@@ -83,28 +83,32 @@ struct OperationCensus {
 impl OperationCensus {
     fn typed_body(&mut self, body: &TypedProgram) {
         for operation in body.operations() {
-            self.total += 1;
-            match operation.operation() {
-                SolveOperation::Conditional {
-                    if_true, if_false, ..
-                } => {
-                    self.conditional += 1;
-                    self.typed_body(if_true.body());
-                    self.typed_body(if_false.body());
-                }
-                SolveOperation::Map { body, .. } => self.typed_body(body.body()),
-                SolveOperation::Fold {
-                    transition,
-                    continuation,
-                    ..
-                } => {
-                    self.typed_body(transition.body());
-                    if let Some(continuation) = continuation {
-                        self.typed_body(continuation.body());
-                    }
-                }
-                _ => {}
+            self.typed_operation(operation.operation());
+        }
+    }
+
+    fn typed_operation(&mut self, operation: &SolveOperation) {
+        self.total += 1;
+        match operation {
+            SolveOperation::Conditional {
+                if_true, if_false, ..
+            } => {
+                self.conditional += 1;
+                self.typed_body(if_true.body());
+                self.typed_body(if_false.body());
             }
+            SolveOperation::Map { body, .. } => self.typed_body(body.body()),
+            SolveOperation::Fold {
+                transition,
+                continuation,
+                ..
+            } => {
+                self.typed_body(transition.body());
+                if let Some(continuation) = continuation {
+                    self.typed_body(continuation.body());
+                }
+            }
+            _ => {}
         }
     }
 }
