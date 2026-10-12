@@ -25,6 +25,9 @@ use super::selected_manifest;
 use super::trace::{Trace, split_csv_record};
 use super::verdict::judge;
 
+#[cfg(unix)]
+mod source_roots;
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
