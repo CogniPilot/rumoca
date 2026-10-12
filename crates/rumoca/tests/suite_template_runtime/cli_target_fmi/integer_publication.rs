@@ -19,6 +19,7 @@ fn packaged_fmi_integer_publication_checks_the_whole_request_before_casting() {
     if !conformance_prerequisites_are_available() {
         return;
     }
+    assert_pinned_fmpy();
     let standards = standard_roots();
     let work = tempdir().expect("Integer publication work directory");
     let division = ORIGINAL.replace("mod(", "div(");
