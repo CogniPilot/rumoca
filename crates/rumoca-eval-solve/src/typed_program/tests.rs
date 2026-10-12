@@ -1,4 +1,5 @@
 mod aggregate_logarithms;
+mod broadcast_power;
 mod directional_map;
 mod immutable_payloads;
 mod index_bounds;
