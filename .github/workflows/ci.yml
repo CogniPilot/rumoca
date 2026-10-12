@@ -2119,6 +2119,10 @@ jobs:
   # ============================================================================
   build-rust-binaries:
     name: Build Rust (${{ matrix.target }})
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
     # Release-only: cross-platform binary artifacts are consumed solely by the
     # tag-time deploy job, so they are deferred off PRs (native build/test
     # coverage on PRs comes from the `test` job). A PR that breaks a cross
