@@ -1,0 +1,233 @@
+{
+  "source": "e04d59ad18ca422bab32e9bddb6139b22d3b305c",
+  "main_baked_identity": "e04d59ad18ca",
+  "tracked_files": 4127,
+  "tracked_source_unchanged": true,
+  "package_files": 24,
+  "package_bytes": 55400761,
+  "artifact_bytes_unchanged_after_browser": true,
+  "gates": [
+    {
+      "name": "simulate_smoke",
+      "exitCode": 0,
+      "elapsedMs": 2311.7351790000002,
+      "stopped": null,
+      "peakResidentPlusSwapKiB": 420192,
+      "peakCacheBytes": 7181103104,
+      "minimumAvailableKiB": 56370472,
+      "minimumScratchFreeBytes": 48663638016
+    },
+    {
+      "name": "source_root_smoke",
+      "exitCode": 0,
+      "elapsedMs": 2143.8190099999997,
+      "stopped": null,
+      "peakResidentPlusSwapKiB": 434128,
+      "peakCacheBytes": 7181103104,
+      "minimumAvailableKiB": 56670300,
+      "minimumScratchFreeBytes": 48476553216
+    },
+    {
+      "name": "target_render_smoke",
+      "exitCode": 0,
+      "elapsedMs": 2532.070035,
+      "stopped": null,
+      "peakResidentPlusSwapKiB": 735824,
+      "peakCacheBytes": 7181103104,
+      "minimumAvailableKiB": 56624756,
+      "minimumScratchFreeBytes": 48412409856
+    },
+    {
+      "name": "user_guide_browser",
+      "exitCode": 0,
+      "elapsedMs": 286312.560737,
+      "stopped": null,
+      "peakResidentPlusSwapKiB": 3472916,
+      "peakCacheBytes": 7188955136,
+      "minimumAvailableKiB": 54176292,
+      "minimumScratchFreeBytes": 43598381056
+    }
+  ],
+  "guide_scripts": 4,
+  "authored_cells_passed": 16,
+  "authored_cells_failed": 0,
+  "simulate_cells": 14,
+  "galec_cells": 2,
+  "hardware_compute_skips": [
+    "SKIP: Wave2D hardware-admitted WebGPU execution: fallback/software adapter; mandatory CPU compilation/preparation is a separate native gate",
+    "SKIP: AirfoilFlow hardware-admitted WebGPU execution: fallback/software adapter; mandatory CPU compilation/preparation is a separate native gate"
+  ],
+  "booster": {
+    "phases": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "physical_intervals": 551,
+    "trace_states": 552,
+    "landed_at": 27.7,
+    "coast_elapsed": 6,
+    "reset_calls": 1,
+    "post_reset_steps": 554,
+    "crash_indicator": 0
+  },
+  "cell_wall_times": [
+    {
+      "model": "GalecCounter",
+      "compile_and_runtime_wall_ms": 1794.4801819999998
+    },
+    {
+      "model": "FixedWing",
+      "compile_and_runtime_wall_ms": 10767.829553
+    },
+    {
+      "model": "QuadrotorAcro",
+      "compile_and_runtime_wall_ms": 2094.9394059999995
+    },
+    {
+      "model": "ReusableBoosterEmbeddedControlLaw",
+      "compile_and_runtime_wall_ms": 9146.513917
+    },
+    {
+      "model": "ReusableBoosterLanding",
+      "compile_and_runtime_wall_ms": 16764.914212
+    },
+    {
+      "model": "Rover",
+      "compile_and_runtime_wall_ms": 1767.609252000002
+    },
+    {
+      "model": "Ball",
+      "compile_and_runtime_wall_ms": 1451.695513999999
+    },
+    {
+      "model": "KalmanFilterStepTest",
+      "compile_and_runtime_wall_ms": 1391.9058770000047
+    },
+    {
+      "model": "NeuralLatentOscillator",
+      "compile_and_runtime_wall_ms": 4738.177123000001
+    },
+    {
+      "model": "NeuralODEBackprop",
+      "compile_and_runtime_wall_ms": 2157.822253999999
+    },
+    {
+      "model": "NeuralODETensor",
+      "compile_and_runtime_wall_ms": 1544.8395850000015
+    },
+    {
+      "model": "NeuralPredatorPrey",
+      "compile_and_runtime_wall_ms": 1519.7928229999961
+    },
+    {
+      "model": "PIDMSL",
+      "compile_and_runtime_wall_ms": 1825.0244010000024
+    },
+    {
+      "model": "SwitchedRLC",
+      "compile_and_runtime_wall_ms": 1368.8856099999975
+    },
+    {
+      "model": "SwitchedRLC_MSL",
+      "compile_and_runtime_wall_ms": 1490.3604810000033
+    },
+    {
+      "model": "SympyDecay",
+      "compile_and_runtime_wall_ms": 1360.5123929999972
+    }
+  ],
+  "raw_bindings": [
+    {
+      "file": "recipe.json",
+      "sha256": "11aaf0cf43aa3b31b93628d6dbadbf47256bad79328616c6f539c594210694eb"
+    },
+    {
+      "file": "build-continuation-2-recipe.json",
+      "sha256": "67057294a690c018f1bbc6bafc6ae09a008cc4c511285412ca930942b970c130"
+    },
+    {
+      "file": "build.guardian.json",
+      "sha256": "148986545ac256cd0c008e16a2f7f9b24f99491ddfe71a8ffa45f15c94459f02"
+    },
+    {
+      "file": "build.log",
+      "sha256": "f7582aa1a01723dbb365b1a694ddd1ffe842b549c880523a013ebc982ea0560d"
+    },
+    {
+      "file": "build-continuation.guardian.json",
+      "sha256": "bc06d50263b95eedd1a9f7160ac3366de5bc54d14857f323d79d1dada45cf9f2"
+    },
+    {
+      "file": "build-continuation.log",
+      "sha256": "901fd445a1e9084e8f539666a46327119d38423121ae71903cffd3b0339577e7"
+    },
+    {
+      "file": "build-continuation-2.guardian.json",
+      "sha256": "1257ccb2470bd2e55b017b4faeafcfbc857350aad315a84119928caef15e0145"
+    },
+    {
+      "file": "build-continuation-2.log",
+      "sha256": "87b305b7353972d24486332c069d62e5fed3929c7759f44aae200002b39e70b7"
+    },
+    {
+      "file": "source-before.json",
+      "sha256": "b0fbeb3ae833824a3af7a9246cbc756a2ebb2754af21c84b7eab2c5b91c6a66b"
+    },
+    {
+      "file": "source-after-all-gates.json",
+      "sha256": "b0fbeb3ae833824a3af7a9246cbc756a2ebb2754af21c84b7eab2c5b91c6a66b"
+    },
+    {
+      "file": "artifact-manifest.json",
+      "sha256": "8f9b6dfb7f2268bb0210147a81e7d813e2442436460b9f752b260f0da9371a83"
+    },
+    {
+      "file": "main-baked-identity.json",
+      "sha256": "458624e32da8a5b70d2dc411c6b88a47700ee4d463c5c2f9b118a499dc410bf4"
+    },
+    {
+      "file": "actual-guide-cells.json",
+      "sha256": "197ac8ea909d4f5858f1ca9d7a3c9cd6c913d87c359be91cd3c482cbe3ba4832"
+    },
+    {
+      "file": "terminal-all-gates-audit.json",
+      "sha256": "b122c6ac8558097ab85c661682f27b2a99c274550cf1f453140076a870b4d02c"
+    },
+    {
+      "file": "simulate_smoke.log",
+      "sha256": "d7117c5d55e7972faee1e3fff731a80f5fc37923eba0310c54a58b176ada85f1"
+    },
+    {
+      "file": "simulate_smoke.guardian.json",
+      "sha256": "8242879b5833a2e56c084caa187aba7114f7fe8cd925bf1623d78a7932a83191"
+    },
+    {
+      "file": "source_root_smoke.log",
+      "sha256": "e2b1235eba418c016459aee0f833cee0ef30dfa288062cb9e759808686c9d4c0"
+    },
+    {
+      "file": "source_root_smoke.guardian.json",
+      "sha256": "40170885c41d6ef0d73a265c5e9fdcd7dfee79366e483bea152a413784949376"
+    },
+    {
+      "file": "target_render_smoke.log",
+      "sha256": "26e211d85be322601cb1ac58416ab4d924329c745ead05014cdede947162309f"
+    },
+    {
+      "file": "target_render_smoke.guardian.json",
+      "sha256": "cdde249774e7dfab588c85b89e4e3ac6ebb30c5ed5581ac119d98c362f4622a6"
+    },
+    {
+      "file": "user_guide_browser.log",
+      "sha256": "22d735550d6f0786b0f04528a11b4a05aa5495e1f8bd6c73422426009bb452af"
+    },
+    {
+      "file": "user_guide_browser.guardian.json",
+      "sha256": "dfca67e0d94b5ac08638b63e6f1f5ad0971a18a738fb92fda4e8bd50cfe6348b"
+    }
+  ],
+  "scope": "Exact e04 combined checkpoint only. Prior two host-floor stops retained. Not later-tip, remote CI, installed-wheel, canonical quick/full, hardware GPU execution or isolated compile-latency proof."
+}
