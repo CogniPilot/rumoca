@@ -104,13 +104,12 @@ pub(super) fn issue_clock_partition_order<'dae>(
                 });
             }
             rumoca_phase_structural::SameTickStep::IntermediateDefinition {
+                identity,
                 variable,
                 definition,
                 read_boundary,
             } => {
-                let Some(consumers) =
-                    intermediate_consumers.get(&(variable.index(), read_boundary))
-                else {
+                let Some(consumers) = intermediate_consumers.get(&identity) else {
                     return Err(LowerError::contract(
                         "issued clock-partition intermediate has no consumer set",
                         intermediate_variable_span(view, variable),

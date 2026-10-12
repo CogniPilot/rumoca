@@ -57,8 +57,8 @@ pub use runtime_defined::{
 };
 pub use same_tick::{
     ClockCoincidence, EventReadFacts, MatchedDerivativeSource, SameTickDefinitions,
-    SameTickOrderError, SameTickProducer, SameTickReadBoundary, SameTickReadContext,
-    SameTickSchedule, SameTickStep, collect_condition_same_instant_reads,
+    SameTickIntermediateId, SameTickOrderError, SameTickProducer, SameTickReadBoundary,
+    SameTickReadContext, SameTickSchedule, SameTickStep, collect_condition_same_instant_reads,
     collect_condition_same_instant_reads_except, collect_condition_same_instant_reads_pruned,
     collect_same_instant_reads, issue_same_tick_schedule,
 };

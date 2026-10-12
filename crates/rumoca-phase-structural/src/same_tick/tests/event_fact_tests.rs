@@ -50,16 +50,21 @@ fn ordinary_and_clocked_alias_consumers_keep_separate_refresh_liveness() {
             &ClockCoincidence::never(),
         )
         .unwrap();
-        assert_eq!(
-            schedule.intermediate_consumers,
-            BTreeMap::from([(
-                (
-                    probe.variable("aAlias").index(),
-                    SameTickReadBoundary::ClockPartition
-                ),
-                vec![1]
-            )])
-        );
+        assert_eq!(schedule.intermediate_consumers.len(), 1);
+        let (identity, boundary) = schedule
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                SameTickStep::IntermediateDefinition {
+                    identity,
+                    read_boundary,
+                    ..
+                } => Some((*identity, *read_boundary)),
+                SameTickStep::Producer(_) => None,
+            })
+            .unwrap();
+        assert_eq!(boundary, SameTickReadBoundary::ClockPartition);
+        assert_eq!(schedule.intermediate_consumers[&identity], [1]);
         assert_eq!(probe.issue_names(&producers), ["a", "b", "<aAlias>", "n"]);
     });
 }
@@ -101,16 +106,21 @@ fn an_ordinary_non_inline_value_alias_gets_its_current_refresh() {
             &ClockCoincidence::never(),
         )
         .unwrap();
-        assert_eq!(
-            schedule.intermediate_consumers,
-            BTreeMap::from([(
-                (
-                    probe.variable("nAlias").index(),
-                    SameTickReadBoundary::Current
-                ),
-                vec![0]
-            )])
-        );
+        assert_eq!(schedule.intermediate_consumers.len(), 1);
+        let (identity, boundary) = schedule
+            .steps
+            .iter()
+            .find_map(|step| match step {
+                SameTickStep::IntermediateDefinition {
+                    identity,
+                    read_boundary,
+                    ..
+                } => Some((*identity, *read_boundary)),
+                SameTickStep::Producer(_) => None,
+            })
+            .unwrap();
+        assert_eq!(boundary, SameTickReadBoundary::Current);
+        assert_eq!(schedule.intermediate_consumers[&identity], [0]);
         assert_eq!(probe.issue_names(&producers), ["n", "<nAlias>", "b"]);
     });
 }
@@ -126,5 +136,42 @@ fn an_ordinary_opaque_producer_reachable_read_stays_unrefreshable() {
             probe.issue(&producers),
             Err(SameTickOrderError::UnrefreshableRead { .. })
         ));
+    });
+}
+
+#[test]
+fn an_entry_read_orders_a_non_inline_current_alias_before_its_rescheduler() {
+    probe(Wiring::Aliases, |probe| {
+        let producers = [
+            ordinary(probe, "b", &["nAlias"], &["n"]),
+            ordinary(probe, "n", &[], &[]),
+        ];
+        assert_eq!(probe.issue_names(&producers), ["<nAlias>", "b", "n"]);
+    });
+}
+
+#[test]
+fn distinct_ordinary_alias_consumers_retain_their_current_and_entry_contexts() {
+    probe(Wiring::Aliases, |probe| {
+        let producers = [
+            ordinary(probe, "b", &["nAlias"], &["n"]),
+            ordinary(probe, "a", &["nAlias"], &[]),
+            ordinary(probe, "n", &[], &[]),
+        ];
+        assert_eq!(
+            probe.issue_names(&producers),
+            ["<nAlias>", "b", "n", "<nAlias>", "a"]
+        );
+    });
+}
+
+#[test]
+fn an_ordinary_observation_cycle_through_a_non_inline_alias_retains_iteration_order() {
+    probe(Wiring::Aliases, |probe| {
+        let producers = [
+            ordinary(probe, "b", &["nAlias"], &[]),
+            ordinary(probe, "n", &["b"], &[]),
+        ];
+        assert_eq!(probe.issue_names(&producers), ["<nAlias>", "b", "n"]);
     });
 }

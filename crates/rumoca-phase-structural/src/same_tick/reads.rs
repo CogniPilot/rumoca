@@ -353,7 +353,7 @@ impl<'dae> SameTickDefinitions<'dae> {
         self.visit_variable_read_closure(view, seeds, role, |_, _| {})
     }
 
-    fn visit_variable_read_closure(
+    pub(super) fn visit_variable_read_closure(
         &self,
         view: dae::DaeView<'dae>,
         seeds: BTreeSet<u32>,

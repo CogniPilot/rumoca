@@ -131,6 +131,10 @@ impl ClockCoincidence {
     }
 }
 
+/// Identity issued with an intermediate's consumer-specific execution context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SameTickIntermediateId(usize);
+
 /// One issued step of the same-tick schedule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SameTickStep<'dae> {
@@ -140,6 +144,7 @@ pub enum SameTickStep<'dae> {
     /// work state. The definition travels with the step: the consumer lowers
     /// exactly the expression this module ordered, never one it re-derives.
     IntermediateDefinition {
+        identity: SameTickIntermediateId,
         variable: dae::VariableId<'dae>,
         definition: dae::ExprId<'dae>,
         /// This row refreshes an ordinary event value, not an MLS16 history view.
@@ -156,7 +161,7 @@ pub struct SameTickSchedule<'dae> {
     /// This is derived by the same dependency walk that issued `steps`. Solve
     /// lowering maps the consumers to their typed clock domains once; a
     /// runtime must not rediscover this liveness from programs or storage.
-    pub intermediate_consumers: BTreeMap<(u32, SameTickReadBoundary), Vec<usize>>,
+    pub intermediate_consumers: BTreeMap<SameTickIntermediateId, Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -765,6 +770,7 @@ fn emit_schedule<'dae>(
         steps.push(match graph.nodes[index] {
             Node::Producer(producer) => SameTickStep::Producer(producer),
             Node::Intermediate(variable) => SameTickStep::IntermediateDefinition {
+                identity: SameTickIntermediateId(graph.node_of_intermediate[&variable]),
                 variable: definitions
                     .variable_id(variable.variable)
                     .expect("a discovered intermediate has a DAE variable identity"),
@@ -782,7 +788,7 @@ fn emit_schedule<'dae>(
         .iter()
         .map(|(&variable, node)| {
             (
-                (variable.variable, variable.role),
+                SameTickIntermediateId(graph.node_of_intermediate[&variable]),
                 node.consumers.iter().copied().collect(),
             )
         })
@@ -815,9 +821,11 @@ impl ScheduleGraph<'_, '_> {
 
     fn owner_of(&self, consumer: Node, variable: u32) -> Option<usize> {
         if let Some(&producer) = self.producer_of.get(&variable) {
-            if let Node::Producer(reader) = consumer
-                && !self.event_order.requires_current(reader, producer)
-            {
+            let reader = match consumer {
+                Node::Producer(reader) => Some(reader),
+                Node::Intermediate(key) => key.current_consumer,
+            };
+            if reader.is_some_and(|reader| !self.event_order.requires_current(reader, producer)) {
                 return None;
             }
             return self
@@ -831,7 +839,15 @@ impl ScheduleGraph<'_, '_> {
                 SameTickReadContext::OrdinaryEvent(_) => ReadRole::Current,
             },
         };
-        let key = IntermediateKey { variable, role };
+        let current_consumer = match consumer {
+            Node::Producer(reader) => (role == ReadRole::Current).then_some(reader),
+            Node::Intermediate(key) => key.current_consumer,
+        };
+        let key = IntermediateKey {
+            variable,
+            role,
+            current_consumer,
+        };
         if let Node::Producer(reader) = consumer
             && !self.intermediates.get(&key)?.consumers.contains(&reader)
         {

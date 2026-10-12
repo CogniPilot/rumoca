@@ -6,6 +6,7 @@ use super::*;
 pub(super) struct IntermediateKey {
     pub(super) variable: u32,
     pub(super) role: ReadRole,
+    pub(super) current_consumer: Option<usize>,
 }
 
 fn intermediate_reads<'dae>(
@@ -36,6 +37,7 @@ fn discover_read_node<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &SameTickDefinitions<'dae>,
     producer: &SameTickProducer<'dae>,
+    consumer: usize,
     variable: u32,
 ) -> Option<(IntermediateKey, Option<dae::ExprId<'dae>>, BTreeSet<u32>)> {
     let role = match &producer.read_context {
@@ -58,7 +60,15 @@ fn discover_read_node<'dae>(
     else {
         return None;
     };
-    Some((IntermediateKey { variable, role }, definition, reads))
+    Some((
+        IntermediateKey {
+            variable,
+            role,
+            current_consumer: (role == ReadRole::Current).then_some(consumer),
+        },
+        definition,
+        reads,
+    ))
 }
 
 /// One discovered non-producer coordinate on a same-tick path.
@@ -98,7 +108,7 @@ pub(super) fn discover_intermediates<'dae>(
             continue;
         }
         let Some((key, definition, reads)) =
-            discover_read_node(view, definitions, &producers[consumer], variable)
+            discover_read_node(view, definitions, &producers[consumer], consumer, variable)
         else {
             continue;
         };
@@ -183,6 +193,7 @@ fn reaches_tick_refresh_definition(
                 IntermediateKey {
                     variable: read,
                     role: variable.role,
+                    current_consumer: variable.current_consumer,
                 },
                 definitions,
                 discovered,
@@ -241,6 +252,7 @@ fn reaches_producer_target(
                 IntermediateKey {
                     variable: read,
                     role: variable.role,
+                    current_consumer: variable.current_consumer,
                 },
                 producer_of,
                 discovered,
