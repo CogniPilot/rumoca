@@ -1,6 +1,7 @@
 //! Unit tests for the user-function interpreter.
 
 mod assertions;
+mod boolean_values;
 mod iterator_identity;
 
 use super::*;
