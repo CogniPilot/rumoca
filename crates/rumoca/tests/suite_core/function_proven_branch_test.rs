@@ -478,7 +478,11 @@ end TriangularComprehension;
     let failure = &failures[0];
     assert_eq!(failure.error_code.as_deref(), Some("ED019"));
     assert!(failure.error.contains("array comprehension domain"));
-    let span = failure.primary_label.as_ref().expect("index provenance").span;
+    let span = failure
+        .primary_label
+        .as_ref()
+        .expect("index provenance")
+        .span;
     let index = source.find("1:i").unwrap() + 2;
     assert_eq!((span.start.0, span.end.0), (index, index + 1));
 }
