@@ -1,0 +1,466 @@
+{
+  "compiler_commit": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
+  "compiler_elf_sha256": "27b9d580eca9493d203478953efccd3df2ecd98cbacf851c27602621b40baa04",
+  "source_modelica_version": "4.1.0",
+  "source_cohort_comparator_sha256": "42d276411435b6bec96c0685a5ae395acb2ea5748a7dc8f15a42b530a6515e8d",
+  "source_cohort_models_compared": 300,
+  "source_cohort_gate_passed": false,
+  "rules": "Last row at or before each probe; exact last zero-time row for initialization. StateGraph outputs are held discrete values; its OMC last sample before1.1 is1.08. Numeric tolerance follows existing corpus recorder; discrete probes use1e-9.",
+  "entries": [
+    {
+      "id": "msl/clocked-examples-elementary-booleansignals-backsample",
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "rumoca_csv_sha256": "9a77f67d8836843c34186e39a44ae1d554702b8e594023875037285d694f01c3",
+      "omc_csv_sha256": "69926a80899abb175a639f3b9ec2a5813e98f1df81dcbc707cb886f4bf53fa63",
+      "checks": [
+        {
+          "variable": "backSample1.y",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "backSample1.y",
+          "time": 0.04,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.04,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "backSample1.y",
+          "time": 0.09,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "shiftSample1.y",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "shiftSample1.y",
+          "time": 0.09,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "sample1.y",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "sample1.y",
+          "time": 0.09,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        }
+      ],
+      "complete_sweep_channels": 10,
+      "complete_sweep_high_channels": 10,
+      "complete_sweep_credit": true
+    },
+    {
+      "id": "msl/clocked-examples-elementary-integersignals-backsample",
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "rumoca_csv_sha256": "0bd20c8c763e2ab745d4cd49a5bc987bcc09b8fad5461e4b622dbb81b075b145",
+      "omc_csv_sha256": "d3f927a1ed87fe9fe61fbf49c115113ef92fac14107b3f25f262aabee5047034",
+      "checks": [
+        {
+          "variable": "backSample1.y",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "backSample1.y",
+          "time": 0.04,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.04,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "backSample1.y",
+          "time": 0.09,
+          "rumoca": -0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "shiftSample1.y",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "shiftSample1.y",
+          "time": 0.09,
+          "rumoca": -1.0,
+          "omc": -1.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "sample1.y",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "sample1.y",
+          "time": 0.09,
+          "rumoca": -1.0,
+          "omc": -1.0,
+          "omc_sample_time": 0.09,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        }
+      ],
+      "complete_sweep_channels": 10,
+      "complete_sweep_high_channels": 10,
+      "complete_sweep_credit": true
+    },
+    {
+      "id": "msl/electrical-digital-examples-counter",
+      "model": "Modelica.Electrical.Digital.Examples.Counter",
+      "rumoca_csv_sha256": "5204be2e0e1a15d1c6a77d49ecf9ad0b99b0a9c2ffaabe36b99838462173bae2",
+      "omc_csv_sha256": "8138d291f57e7e2a68c386b0dd7d1ba9524aed6f083262c6ceddf936afa1df03",
+      "checks": [
+        {
+          "variable": "Counter.q[1]",
+          "time": 0,
+          "rumoca": 3.0,
+          "omc": 3.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Counter.q[1]",
+          "time": 1.6,
+          "rumoca": 4.0,
+          "omc": 4.0,
+          "omc_sample_time": 1.6,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Q0.y[1]",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Q0.y[1]",
+          "time": 1.6,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 1.6,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Q1.y[1]",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Q1.y[1]",
+          "time": 1.6,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 1.6,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        }
+      ],
+      "complete_sweep_channels": null,
+      "complete_sweep_high_channels": null,
+      "complete_sweep_credit": false
+    },
+    {
+      "id": "msl/electrical-digital-examples-fulladder",
+      "model": "Modelica.Electrical.Digital.Examples.FullAdder",
+      "rumoca_csv_sha256": "719bef3d9879913911ae46b909c568368a317d82cacb86de3c0eebe70fb402b6",
+      "omc_csv_sha256": "29e275f24d0c3dd7b1a97829f6c27463c2276ad5712807f1acf0b683f5238538",
+      "checks": [
+        {
+          "variable": "Adder1.Adder2.s",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Adder1.Adder2.s",
+          "time": 0.02,
+          "rumoca": 3.0,
+          "omc": 3.0,
+          "omc_sample_time": 0.02,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Adder1.Adder2.a",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Adder1.Adder2.a",
+          "time": 0.02,
+          "rumoca": 3.0,
+          "omc": 3.0,
+          "omc_sample_time": 0.02,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Adder1.Adder2.c",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "Adder1.Adder2.c",
+          "time": 0.02,
+          "rumoca": 3.0,
+          "omc": 3.0,
+          "omc_sample_time": 0.02,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        }
+      ],
+      "complete_sweep_channels": 194,
+      "complete_sweep_high_channels": 194,
+      "complete_sweep_credit": true
+    },
+    {
+      "id": "msl/math-nonlinear-examples-quadraturelobatto3",
+      "model": "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "rumoca_csv_sha256": "5800b464ec49f3e7979432f1ebcffcce01b7aa3b925ed5d7e6aa4f46fff16296",
+      "omc_csv_sha256": "b72e81d0507c9346520a3cdfc9ac6bdfc025986c4fb7d3c69be0f22c8c0f8f95",
+      "checks": [
+        {
+          "variable": "q",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "q",
+          "time": 0.02,
+          "rumoca": 0.9994000599975851,
+          "omc": 0.9994000718913256,
+          "omc_sample_time": 0.02,
+          "absolute_error": 1.1893740547996856e-08,
+          "tolerance": 1.0994000599975853e-05
+        },
+        {
+          "variable": "qd",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "qd",
+          "time": 0.02,
+          "rumoca": -0.059988000719979305,
+          "omc": -0.05998734930044013,
+          "omc_sample_time": 0.02,
+          "absolute_error": 6.514195391715827e-07,
+          "tolerance": 1.5998800071997932e-06
+        },
+        {
+          "variable": "x",
+          "time": 0,
+          "rumoca": 0.7080734182735713,
+          "omc": 0.7080734182735713,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "x",
+          "time": 0.02,
+          "rumoca": 0.7076486167053023,
+          "omc": 0.7076486251269438,
+          "omc_sample_time": 0.02,
+          "absolute_error": 8.421641495282017e-09,
+          "tolerance": 8.076486167053023e-06
+        }
+      ],
+      "complete_sweep_channels": 3,
+      "complete_sweep_high_channels": 3,
+      "complete_sweep_credit": true
+    },
+    {
+      "id": "msl/stategraph-examples-showcompositestep",
+      "model": "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "rumoca_csv_sha256": "7061637b6944e546c2718242ab52fbde33da581d68e9d06afa86d32367b67a4a",
+      "omc_csv_sha256": "99916f1173351bf42bb8a172fd027400374e7207c03cf22113fbeba321c0ea13",
+      "checks": [
+        {
+          "variable": "step0.active",
+          "time": 0,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "step0.active",
+          "time": 1.1,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 1.08,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "compositeStep.active",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "compositeStep.active",
+          "time": 1.1,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 1.08,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "step1.active",
+          "time": 0,
+          "rumoca": 0.0,
+          "omc": 0.0,
+          "omc_sample_time": 0.0,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        },
+        {
+          "variable": "step1.active",
+          "time": 1.1,
+          "rumoca": 1.0,
+          "omc": 1.0,
+          "omc_sample_time": 1.08,
+          "absolute_error": 0.0,
+          "tolerance": 1e-09
+        }
+      ],
+      "complete_sweep_channels": 53,
+      "complete_sweep_high_channels": 53,
+      "complete_sweep_credit": true
+    }
+  ],
+  "raw_evidence": "$HOME/scratch/rumoca/pr427-final-msl-pin-adjudication-20261012",
+  "focused_after_pin_gate": {
+    "rows": 8,
+    "failed": 0,
+    "wall_seconds": 50.594451746,
+    "guardian_elapsed_seconds": 56.319278981000004,
+    "peak_rss_plus_swap_kib": 5893704,
+    "log_sha256": "b7497eaf9ceb3ae60672f064063fbac843038d3fa50463fe5ee5a766bed21e03",
+    "guardian_sha256": "c45fb4cd6080f571462bf60f8ca0f216646c609d32bd14eae053bcdd9c6c9022",
+    "summary_sha256": "4ebff468ca8531ea101d9469b154814583f83acc75a091866b623d33b13c23c4",
+    "manifest_semantics_unchanged_by_format_minimization": true
+  },
+  "source_cohort_models_candidate": 350,
+  "source_cohort_skipped_models": 49,
+  "source_cohort_missing_trace_models": 1,
+  "source_cohort_trace_nonidentifiable_models": 0,
+  "source_msl_results_sha256": "dfc4af0b418ad341d58d7a332e7f260f6827fb822a57dc1901670bbcfe55cd6d",
+  "refusal_changes": [
+    {
+      "model": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "old_manifest_diagnostic": "ED019",
+      "current_diagnostic": "EF036",
+      "phase": "Flatten",
+      "error": "Modelica.Blocks.Examples.Noise.AutomaticSeed failed in Flatten: unordered foreign library state: `Modelica.Math.Random.Utilities.initializeImpureRandom` reaches library state from an equation or attribute, where the order of its state accesses is unspecified",
+      "supported": false,
+      "compiler_changed_for_this_pin": false,
+      "historical_source_commit": "86c3bc1a6128e3d3174fefa169ae7bd5e03243e9",
+      "historical_msl_results_sha256": "9888e358a81093d9a23ba592441fbe0fb0d5130002f1df100328e774b5f88343"
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.Friction",
+      "old_manifest_diagnostic": "ED019",
+      "current_diagnostic": "ED001",
+      "phase": "ToDae",
+      "error": "Modelica.Mechanics.Rotational.Examples.Friction failed in ToDae: unbalanced model: 104 equations, 102 unknowns (balance = 2); unknowns[state=12 algebraic=71 output=9 discrete_real=0 discrete_value=10] equations[continuous=94 discrete_real=0 b1c_definition=10]",
+      "supported": false,
+      "compiler_changed_for_this_pin": false,
+      "historical_source_commit": "86c3bc1a6128e3d3174fefa169ae7bd5e03243e9",
+      "historical_msl_results_sha256": "9888e358a81093d9a23ba592441fbe0fb0d5130002f1df100328e774b5f88343"
+    }
+  ],
+  "counter_reference": {
+    "mos_sha256": "c43b64104666324d0b6926cd932d1d8d07ab748ae64d3679f9dfa3d1d8999686",
+    "log_sha256": "78556412471ff2e5b4c9e5e634c4d2e82d4ebf04fdc392f804570eb767fae179",
+    "guardian_sha256": "9af9da1c7c8e97358c3f1f449797378255330a64859c93470057d2bbc7aff74c",
+    "exit_code": 0
+  }
+}
