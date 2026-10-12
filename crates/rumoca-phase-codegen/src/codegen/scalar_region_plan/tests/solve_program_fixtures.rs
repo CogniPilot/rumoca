@@ -285,6 +285,8 @@ fn fixture(
 }
 
 #[test]
+// SPEC_0021: Exception - one regression renders the complete checked scalar fixture table.
+#[allow(clippy::too_many_lines)]
 fn checked_solve_fixture_export_matches_native_evaluation() {
     let mut fixtures = vec![
         fixture(
@@ -532,7 +534,4 @@ fn checked_solve_fixture_export_matches_native_evaluation() {
         .unwrap();
     let decoded: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.as_array().unwrap().len(), 96);
-    if let Some(path) = std::env::var_os("TASKYON_SOLVE_FIXTURE_PATH") {
-        std::fs::write(path, json).unwrap();
-    }
 }

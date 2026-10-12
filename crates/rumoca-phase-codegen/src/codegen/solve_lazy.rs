@@ -13,6 +13,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
 use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
@@ -939,8 +940,7 @@ fn ordered_exact_algebraic_assignments(
     Some(assignments)
 }
 
-// SPEC_0021: Exception - exhaustive lazy routing of the discrete render fields keeps each
-// checked program owner and its associated target/policy views at one boundary.
+// SPEC_0021: Exception - exhaustive lazy routing of the discrete render fields.
 #[allow(clippy::too_many_lines)]
 fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let scalar =
@@ -1040,7 +1040,7 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
                 "clock_owners" => Some(Value::from_serialize(&d.clock_owners)),
                 "row_roles" => Some(Value::from_serialize(&d.row_roles)),
                 "structured_row_roles" => Some(Value::from_serialize(
-                    &d.structured_updates
+                    d.structured_updates
                         .iter()
                         .map(|update| update.role)
                         .collect::<Vec<_>>(),
@@ -1061,7 +1061,7 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
                 "structured_rhs" => Some(structured_rhs.clone()),
                 "structured_assignments" => Some(structured_assignments.clone()),
                 "structured_clock_owners" => Some(Value::from_serialize(
-                    &d.structured_updates
+                    d.structured_updates
                         .iter()
                         .map(|update| update.clock_owner)
                         .collect::<Vec<_>>(),
@@ -1232,17 +1232,37 @@ fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
 pub(super) fn artifacts_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let continuous = continuous_artifacts_value(handle.clone())?;
     let initial = &handle.artifacts().initialization;
-    let initialization = minijinja::context! {
-        residual_jacobian_v => compute_block_value(Arc::new(initial.residual_jacobian_v.clone()))?,
-        update_jacobian_v => optional_scalar_plan(initial.update_jacobian_v.as_ref())?,
-    };
+    let initialization = resolved_artifact_map([
+        (
+            "residual_jacobian_v",
+            Some(compute_block_value(Arc::new(
+                initial.residual_jacobian_v.clone(),
+            ))?),
+        ),
+        (
+            "update_jacobian_v",
+            optional_scalar_plan(initial.update_jacobian_v.as_ref())?,
+        ),
+    ]);
     let discrete = &handle.artifacts().discrete;
-    let discrete = minijinja::context! {
-        rhs_jacobian_v => optional_scalar_plan(discrete.rhs_jacobian_v.as_ref())?,
-        runtime_assignment_jacobian_v => optional_scalar_plan(discrete.runtime_assignment_jacobian_v.as_ref())?,
-        guarded_jacobian_v => optional_scalar_plan(discrete.guarded_jacobian_v.as_ref())?,
-        structured_jacobian_v => optional_scalar_plan(discrete.structured_jacobian_v.as_ref())?,
-    };
+    let discrete = resolved_artifact_map([
+        (
+            "rhs_jacobian_v",
+            optional_scalar_plan(discrete.rhs_jacobian_v.as_ref())?,
+        ),
+        (
+            "runtime_assignment_jacobian_v",
+            optional_scalar_plan(discrete.runtime_assignment_jacobian_v.as_ref())?,
+        ),
+        (
+            "guarded_jacobian_v",
+            optional_scalar_plan(discrete.guarded_jacobian_v.as_ref())?,
+        ),
+        (
+            "structured_jacobian_v",
+            optional_scalar_plan(discrete.structured_jacobian_v.as_ref())?,
+        ),
+    ]);
     Ok(lazy_map(
         &["continuous", "initialization", "discrete"],
         move |k| match k {
@@ -1254,14 +1274,30 @@ pub(super) fn artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
     ))
 }
 
-fn optional_scalar_plan(block: Option<&solve::ScalarProgramBlock>) -> Result<Value, CodegenError> {
-    block
-        .map(|block| {
-            super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block.clone()))
-                .map(Value::from_object)
-        })
-        .transpose()
-        .map(Option::unwrap_or_default)
+/// Artifact maps enumerate only the entries that are present, so a template
+/// that walks the context never observes an unresolved optional plan.
+fn resolved_artifact_map(
+    entries: impl IntoIterator<Item = (&'static str, Option<Value>)>,
+) -> Value {
+    let present = entries
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect::<IndexMap<_, _>>();
+    Value::from_serialize(present)
+}
+
+/// The lazy plan object for a scalar program block that is always present.
+fn scalar_plan_value(block: &solve::ScalarProgramBlock) -> Result<Value, CodegenError> {
+    super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block.clone()))
+        .map(Value::from_object)
+}
+
+/// The lazy plan object for an optional scalar program block, or `None` when
+/// the artifact is absent.
+fn optional_scalar_plan(
+    block: Option<&solve::ScalarProgramBlock>,
+) -> Result<Option<Value>, CodegenError> {
+    block.map(scalar_plan_value).transpose()
 }
 
 /// Lazy `solve.artifacts.continuous` map: the continuous Jacobian / mass-matrix
@@ -1274,11 +1310,9 @@ fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
     let manifold_jacobian_v = compute_block_value(Arc::new(
         handle.artifacts().continuous.manifold_jacobian_v.clone(),
     ))?;
-    let full_jacobian_plan =
-        optional_scalar_plan(Some(&handle.artifacts().continuous.full_jacobian_v))?;
-    let implicit_full_jacobian_plan = optional_scalar_plan(Some(
-        &handle.artifacts().continuous.implicit_jacobian_v_scalar,
-    ))?;
+    let full_jacobian_plan = scalar_plan_value(&handle.artifacts().continuous.full_jacobian_v)?;
+    let implicit_full_jacobian_plan =
+        scalar_plan_value(&handle.artifacts().continuous.implicit_jacobian_v_scalar)?;
     Ok(lazy_map(
         &[
             "mass_matrix",
@@ -1358,7 +1392,7 @@ fn clock_render_schedule(schedule: &solve::PeriodicEventSchedule) -> Value {
         period_den => schedule.lattice().period().denominator().to_string(),
         phase_num => schedule.lattice().phase().numerator().to_string(),
         phase_den => schedule.lattice().phase().denominator().to_string(),
-        anchor => Value::from_serialize(&schedule.anchor()),
+        anchor => Value::from_serialize(schedule.anchor()),
     }
 }
 

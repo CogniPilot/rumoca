@@ -399,7 +399,7 @@ op:{{ op is mapping }}:{% for key in op %}{{ key }}={{ op[key] is defined }},{% 
         [
             "plan:true:programs,output_count,stored_output_count,uses_linear_solve_component",
             "programs:true:1",
-            "program:true:ops,span,output_count,temporary_count",
+            "program:true:ops,span,output_count,output_indices,temporary_count",
             "ops:true:6",
         ],
         "{rendered}"
