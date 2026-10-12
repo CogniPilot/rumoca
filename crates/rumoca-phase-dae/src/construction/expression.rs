@@ -5,6 +5,7 @@ mod calls;
 mod clock_transfer;
 pub(super) mod conditional_guards;
 mod integer_steps;
+mod logical_values;
 mod model_conditionals;
 mod operators;
 mod queries;
@@ -1156,6 +1157,17 @@ fn lower_binary_expression<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let lhs = lower_expression_scoped(construction, symbols, binders, lhs, None)?;
+    if logical_values::is_scalar_boolean_operation(construction, operator, lhs, provenance)? {
+        return logical_values::lower_logical_value(
+            construction,
+            symbols,
+            binders,
+            operator,
+            lhs,
+            rhs,
+            provenance,
+        );
+    }
     let rhs = lower_expression_scoped(construction, symbols, binders, rhs, None)?;
     construction.expressions(|expressions| {
         expressions

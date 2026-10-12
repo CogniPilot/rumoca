@@ -63,22 +63,24 @@ fn lower_model_conditional<'dae>(
         _ => {
             let condition =
                 lower_expression_scoped(construction, symbols, binders, condition, None)?;
-            let owner = construction.begin_model_conditional(condition, provenance)?;
-            let taken = construction.model_conditional_arm(&owner, true, |construction| {
-                lower_expression_scoped(construction, symbols, binders, value, None)
-            })?;
-            let fallback = construction.model_conditional_arm(&owner, false, |construction| {
-                lower_model_conditional(
-                    construction,
-                    symbols,
-                    binders,
-                    remaining,
-                    fallback,
-                    retain,
-                    provenance,
-                )
-            })?;
-            construction.finish_model_conditional(owner, [taken, fallback])
+            lower_value_conditional(
+                construction,
+                condition,
+                provenance,
+                false,
+                |construction| lower_expression_scoped(construction, symbols, binders, value, None),
+                |construction| {
+                    lower_model_conditional(
+                        construction,
+                        symbols,
+                        binders,
+                        remaining,
+                        fallback,
+                        retain,
+                        provenance,
+                    )
+                },
+            )
         }
     }
 }
@@ -136,4 +138,33 @@ fn lower_function_conditional_expression<'dae>(
     }
     construction
         .expressions(|expressions| expressions.at(provenance).conditional(lowered, fallback))
+}
+
+/// Share the existing selected-value owner without constructing a model RHS
+/// before its activation arm has been issued.
+pub(super) fn lower_value_conditional<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    condition: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+    function_value: bool,
+    taken: impl FnOnce(
+        &mut dae::DaeConstruction<'dae>,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError>,
+    fallback: impl FnOnce(
+        &mut dae::DaeConstruction<'dae>,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if function_value {
+        let taken = taken(construction)?;
+        let fallback = fallback(construction)?;
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .conditional([(condition, taken)], fallback)
+        });
+    }
+    let owner = construction.begin_model_conditional(condition, provenance)?;
+    let taken = construction.model_conditional_arm(&owner, true, taken)?;
+    let fallback = construction.model_conditional_arm(&owner, false, fallback)?;
+    construction.finish_model_conditional(owner, [taken, fallback])
 }
