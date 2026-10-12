@@ -8,6 +8,7 @@ mod class_member_query_tests;
 mod compile_diagnostics_tests;
 mod dae_model_query_tests;
 mod declaration_index_tests;
+mod discrete_real_ownership_tests;
 mod empty_reduction_tests;
 mod file_outline_tests;
 mod file_summary_tests;
