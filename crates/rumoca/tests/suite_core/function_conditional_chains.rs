@@ -4,7 +4,7 @@
 //! pending emission per link kept on the heap, so its length is not bounded by
 //! the native stack.
 //!
-//! The array-maximum reduction has no directional body, so scalar
+//! The array-product reduction has no directional body, so scalar
 //! differentiation expands the call and exercises conditional capture emission.
 
 use rumoca::Compiler;
@@ -48,7 +48,7 @@ function Chain
 protected
   Real x;
 algorithm
-  x := max({{s, 0.0}});
+  x := product({{s, 1.0}});
 {body}
   y := x;
 end Chain;
