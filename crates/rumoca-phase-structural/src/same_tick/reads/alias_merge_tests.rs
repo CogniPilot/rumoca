@@ -33,7 +33,7 @@ fn model() -> dae::Dae {
                 .at(at)
                 .coordinate(dae::CoordinateInput::Derivative(x))?;
             for lane in [1, 2] {
-                let expression = expr.at(at).integer(lane)?;
+                let expression = expr.at(at).literal(dae::DaeLiteral::Integer(lane))?;
                 expr.at(at).index(
                     derivative,
                     [dae::Subscript::Index {
@@ -48,7 +48,7 @@ fn model() -> dae::Dae {
             let b = expr
                 .at(at)
                 .coordinate(dae::CoordinateInput::DiscreteReal(b))?;
-            let ten = expr.at(at).real(10.0)?;
+            let ten = expr.at(at).literal(dae::DaeLiteral::Real(10.0))?;
             let value = expr.at(at).array([ten, b])?;
             Ok([
                 expr.at(at)
