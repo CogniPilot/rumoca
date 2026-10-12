@@ -81,6 +81,11 @@ impl ProgramLowerer<'_, '_> {
                 status::require_integer_quotient(self.builder, valid);
                 self.builder.ins().sdiv(lhs, rhs)
             }
+            solve::SolveBinaryOperator::IntegerRemainder => self.integer_remainder(lhs, rhs),
+            solve::SolveBinaryOperator::IntegerModulo => {
+                let remainder = self.integer_remainder(lhs, rhs);
+                self.integer_modulo(remainder, rhs)
+            }
             solve::SolveBinaryOperator::Min | solve::SolveBinaryOperator::Max => {
                 let code = if operator == solve::SolveBinaryOperator::Min {
                     IntCC::SignedLessThan
@@ -98,6 +103,36 @@ impl ProgramLowerer<'_, '_> {
         };
         self.require_integer_domain(result, domain);
         Ok(result)
+    }
+
+    fn integer_remainder(&mut self, lhs: Value, rhs: Value) -> Value {
+        let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, rhs, 0);
+        status::require_integer_arithmetic(self.builder, nonzero);
+        // The exact remainder is zero for divisor -1, including MIN/-1.
+        // Use divisor 1 so the machine remainder never traps on that pair.
+        let minus_one = self.builder.ins().icmp_imm(IntCC::Equal, rhs, -1);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let divisor = self.builder.ins().select(minus_one, one, rhs);
+        self.builder.ins().srem(lhs, divisor)
+    }
+
+    fn integer_modulo(&mut self, remainder: Value, rhs: Value) -> Value {
+        let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, remainder, 0);
+        let negative_remainder = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::SignedLessThan, remainder, 0);
+        let negative_divisor = self.builder.ins().icmp_imm(IntCC::SignedLessThan, rhs, 0);
+        let opposite_signs = self
+            .builder
+            .ins()
+            .bxor(negative_remainder, negative_divisor);
+        let adjust = self.builder.ins().band(nonzero, opposite_signs);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let adjustment = self.builder.ins().select(adjust, rhs, zero);
+        let (result, overflow) = self.builder.ins().sadd_overflow(remainder, adjustment);
+        self.require_no_integer_overflow(overflow);
+        result
     }
 
     fn require_no_integer_overflow(&mut self, overflow: Value) {
