@@ -356,12 +356,6 @@ impl<'dae> SameTickDefinitions<'dae> {
         self.exact.get(&variable).copied()
     }
 
-    /// What the writers of a coordinate this module cannot refresh read.
-    #[must_use]
-    pub fn opaque_reads(&self, variable: u32) -> Option<&BTreeSet<u32>> {
-        self.opaque.get(&variable).map(|reads| &reads.current)
-    }
-
     /// The branded identity of one variable index (no linear rescan).
     #[must_use]
     pub fn variable_id(&self, variable: u32) -> Option<dae::VariableId<'dae>> {
