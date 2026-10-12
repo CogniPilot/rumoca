@@ -68,10 +68,10 @@ fn call_guarded(index: i64) -> Expression {
 #[test]
 fn issue_403_constant_original_and_skips_the_inactive_index() {
     let context = context(rumoca_core::OpBinary::And);
-    for (index, expected) in [(4, 0.), (3, 1.), (2, 0.), (4, 0.)] {
+    for (index, expected) in [(4, 0), (3, 1), (2, 0), (4, 0)] {
         assert_eq!(
             crate::constant::eval_expr(&call_guarded(index), &context).unwrap(),
-            Value::Real(expected),
+            Value::Integer(expected),
             "original constant call with k={index}"
         );
     }
@@ -80,10 +80,10 @@ fn issue_403_constant_original_and_skips_the_inactive_index() {
 #[test]
 fn issue_403_constant_or_skips_the_inactive_index() {
     let context = context(rumoca_core::OpBinary::Or);
-    for (index, expected) in [(4, 1.), (3, 1.), (2, 0.), (4, 1.)] {
+    for (index, expected) in [(4, 1), (3, 1), (2, 0), (4, 1)] {
         assert_eq!(
             crate::constant::eval_expr(&call_guarded(index), &context).unwrap(),
-            Value::Real(expected),
+            Value::Integer(expected),
             "constant Or call with k={index}"
         );
     }
