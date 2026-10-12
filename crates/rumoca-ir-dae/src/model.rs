@@ -578,7 +578,6 @@ pub(crate) struct Storage {
     pub(crate) equation_family_bodies: Vec<u32>,
     pub(crate) relations: Vec<RelationEntry>,
     pub(crate) conditions: Vec<ConditionEntry>,
-    pub(crate) condition_owner_clocks: Vec<Option<u32>>,
     pub(crate) roots: Vec<RootEntry>,
     pub(crate) runtime_quotient_owners: Vec<runtime_quotients::RuntimeQuotientOwnerEntry>,
     pub(crate) runtime_quotient_owner_by_expression: rustc_hash::FxHashMap<u32, u32>,

@@ -103,6 +103,7 @@ fn condition_view(entry: &ConditionEntry) -> ConditionView<'_> {
         }
     };
     ConditionView {
+        synchronous_clock: entry.synchronous_clock.map(crate::ClockId::from_raw),
         clock_projection: entry.clock_projection,
         operation,
         provenance: entry.provenance,

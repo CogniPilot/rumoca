@@ -35,6 +35,8 @@ pub(crate) struct RelationEntry {
 pub(crate) struct ConditionEntry {
     pub(crate) node: Option<ConditionNode>,
     #[serde(skip)]
+    pub(crate) synchronous_clock: Option<u32>,
+    #[serde(skip)]
     pub(crate) clock_projection: ClockProjection,
     pub(crate) provenance: DaeProvenance,
 }
@@ -104,12 +106,18 @@ pub enum ConditionOperation<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConditionView<'dae> {
+    pub(crate) synchronous_clock: Option<ClockId<'dae>>,
     pub(crate) clock_projection: ClockProjection,
     pub(crate) operation: ConditionOperation<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
 impl<'dae> ConditionView<'dae> {
+    /// The synchronous owner issued by the condition constructor.
+    pub const fn synchronous_clock_owner(self) -> Option<ClockId<'dae>> {
+        self.synchronous_clock
+    }
+
     /// The checked Boolean condition cannot be true outside this clock's task.
     pub fn requires_clock(self, clock: ClockId<'dae>) -> bool {
         self.clock_projection.requires_clock(clock.index())
@@ -237,10 +245,10 @@ impl<'dae> Conditions<'_, 'dae> {
         let raw = checked_u32(self.storage.conditions.len(), "condition arena", provenance)?;
         self.storage.conditions.push(ConditionEntry {
             node: None,
+            synchronous_clock: None,
             clock_projection: ClockProjection::default(),
             provenance,
         });
-        self.storage.condition_owner_clocks.push(None);
         self.storage.unfilled_conditions += 1;
         Ok(ConditionId::from_raw(raw))
     }
@@ -262,8 +270,8 @@ impl<'dae> Conditions<'_, 'dae> {
             return Err(duplicate("condition", condition.index(), provenance));
         }
         entry.node = Some(node);
+        entry.synchronous_clock = owner_clock;
         entry.clock_projection = clock_projection;
-        self.storage.condition_owner_clocks[condition.index() as usize] = owner_clock;
         self.storage.unfilled_conditions -= 1;
         Ok(())
     }
@@ -446,10 +454,7 @@ pub(crate) fn condition_owner_clock(
             span: provenance.span(),
         });
     }
-    Ok(*storage
-        .condition_owner_clocks
-        .get(condition as usize)
-        .expect("condition owner-clock cache stays aligned with condition arena"))
+    Ok(entry.synchronous_clock)
 }
 
 fn owner_clock_for_node(

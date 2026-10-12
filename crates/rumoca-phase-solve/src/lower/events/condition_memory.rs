@@ -302,55 +302,17 @@ pub(super) fn condition_clock_owner<'dae>(
     view: dae::DaeView<'dae>,
     condition: dae::ConditionId<'dae>,
 ) -> Option<dae::ClockId<'dae>> {
-    synchronous_condition_clock_owner(view, condition).or_else(|| {
-        let clock = view.condition(condition)?.projected_task_clock()?;
+    let condition = view
+        .condition(condition)
+        .expect("checked condition identity resolves");
+    condition.synchronous_clock_owner().or_else(|| {
+        let clock = condition.projected_task_clock()?;
         matches!(
             view.clock(clock)?.operation(),
             dae::ClockOperation::Periodic(_)
         )
         .then_some(clock)
     })
-}
-
-pub(super) fn synchronous_condition_clock_owner<'dae>(
-    view: dae::DaeView<'dae>,
-    condition: dae::ConditionId<'dae>,
-) -> Option<dae::ClockId<'dae>> {
-    let condition = view
-        .condition(condition)
-        .expect("checked condition identity resolves");
-    match condition.operation() {
-        dae::ConditionOperation::Initial => None,
-        dae::ConditionOperation::Clock(clock) => Some(clock),
-        dae::ConditionOperation::And(lhs, rhs) => merge_condition_clocks(
-            synchronous_condition_clock_owner(view, lhs),
-            synchronous_condition_clock_owner(view, rhs),
-            false,
-        ),
-        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-            merge_condition_clocks(
-                synchronous_condition_clock_owner(view, lhs),
-                synchronous_condition_clock_owner(view, rhs),
-                true,
-            )
-        }
-        dae::ConditionOperation::Always
-        | dae::ConditionOperation::Relation(_)
-        | dae::ConditionOperation::Discrete(_)
-        | dae::ConditionOperation::Not(_) => None,
-    }
-}
-
-fn merge_condition_clocks<'dae>(
-    lhs: Option<dae::ClockId<'dae>>,
-    rhs: Option<dae::ClockId<'dae>>,
-    disjunction: bool,
-) -> Option<dae::ClockId<'dae>> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
-    }
 }
 
 pub(in crate::lower) fn condition_memory(

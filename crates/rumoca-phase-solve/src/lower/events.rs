@@ -1100,7 +1100,11 @@ fn checked_discrete_real_activation_clock<'dae>(
         (None, None) => Ok(None),
         (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
         (Some(activation), None)
-            if condition_memory::synchronous_condition_clock_owner(view, guard).is_none() =>
+            if view
+                .condition(guard)
+                .expect("checked condition identity resolves")
+                .synchronous_clock_owner()
+                .is_none() =>
         {
             // A checked Boolean periodic task is an MLS §8.5 schedule;
             // it does not mint MLS §16 synchronous variable ownership.

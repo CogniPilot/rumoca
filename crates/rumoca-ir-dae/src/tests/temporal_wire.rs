@@ -870,7 +870,7 @@ fn boolean_task_projection_survives_wire_without_synchronous_ownership() {
     model.inspect(assert_boolean_task_projection);
     let json = serde_json::to_string(&model).unwrap();
     assert!(
-        !json.contains("clock_projection"),
+        !json.contains("clock_projection") && !json.contains("synchronous_clock"),
         "derived proof is reissued by the constructor"
     );
     let json_model: Dae = serde_json::from_str(&json).unwrap();
@@ -887,6 +887,9 @@ fn assert_boolean_task_projection(view: DaeView<'_>) {
         .conditions()
         .map(|(_, condition)| condition)
         .collect::<Vec<_>>();
+    assert_eq!(conditions[0].synchronous_clock_owner(), Some(clock));
+    assert_eq!(conditions[3].synchronous_clock_owner(), None);
+    assert_eq!(conditions[5].synchronous_clock_owner(), Some(clock));
     assert_eq!(conditions[3].projected_task_clock(), Some(clock));
     assert!(conditions[3].requires_clock(clock));
     assert!(conditions[3].is_true_on_clock_tick(clock));
