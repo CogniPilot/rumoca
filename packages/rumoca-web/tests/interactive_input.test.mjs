@@ -14,7 +14,7 @@ test("interactive sessions are user-terminated instead of stopping at t_end", as
     "utf8",
   );
 
-  assert.match(runtime, /WasmSimulationSession\.withInteractiveOptions\(/);
+  assert.match(runtime, /WasmSimulationSession\.withInteractiveConfiguration\(/);
   assert.doesNotMatch(runtime, /simConfig\.t_end/);
   assert.doesNotMatch(runtime, /session\.end_time\(\)/);
   assert.doesNotMatch(runtime, /updateRunState\('Finished'/);
