@@ -29,6 +29,32 @@ fn dae_template_context_is_a_semantic_projection_not_wire_storage() {
 }
 
 #[test]
+fn dae_template_retains_loaded_external_table_descriptors() {
+    let table = rumoca_core::ExternalTableData {
+        id: 9_007_199_254_740_993,
+        data: vec![vec![0.0, 10.0, 20.0], vec![1.0, 12.0, 24.0]],
+        columns: vec![3, 2],
+        smoothness: 1,
+        extrapolation: 2,
+    };
+    let model = empty_checked_dae().with_external_tables(vec![table]);
+    let projected = dae_template_json(&model).expect("table descriptors project");
+    assert_eq!(
+        projected["external_tables"],
+        serde_json::json!(model.external_tables())
+    );
+    let rendered = render_template(
+        &model,
+        "{% for table in dae.external_tables %}{{ table.id }}:{{ table.columns|tojson }}{% endfor %}",
+    ).expect("table descriptors render without Solve lowering");
+    assert_eq!(rendered, "9007199254740993:[3,2]");
+    assert_eq!(
+        dae_template_json(&empty_checked_dae()).unwrap()["external_tables"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
 fn dae_render_context_accepts_only_a_finalized_checked_root() {
     let dae = empty_checked_dae();
     let rendered = render_template(&dae, "{{ ir_kind }}:{{ dae.schema.version }}")

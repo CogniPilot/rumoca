@@ -455,7 +455,11 @@ fn register_generated_boolean_values<'dae>(
     plan: &FunctionPlan,
     coordinates: &mut HashMap<VarName, Coordinate<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let mut registered = HashSet::new();
     for (name, span) in generated_boolean_values(plan) {
+        if !registered.insert(name.clone()) {
+            continue;
+        }
         let provenance = dae::DaeProvenance::source(*span)?;
         let value_type = construction.types(|types| {
             types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), provenance)

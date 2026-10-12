@@ -348,3 +348,90 @@ fn a_fold_patch_slice_selects_the_value_at_its_window_position() {
         .collect::<Vec<_>>();
     assert_eq!(offsets, [None, None, None, None, Some(0), Some(1)]);
 }
+
+#[test]
+fn short_prepared_rows_skip_inactive_gathers_and_check_active_addresses() {
+    let mut row = row();
+    row.truncate(7);
+    row.push(LinearOp::StoreOutput { src: 7 });
+    let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()]).unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    for (condition, index, expected) in [(1., 0., 7.), (0., 1., 42.), (1., 0., 7.), (0., 2., 64.)] {
+        assert_eq!(
+            prepared
+                .eval_row_with_context(0, &[], &[condition, index], 0., RowEvalContext::default())
+                .unwrap(),
+            expected
+        );
+    }
+    let error = prepared
+        .eval_row_with_context(0, &[], &[0., 0.], 0., RowEvalContext::default())
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        EvalSolveError::TensorIndexOutOfBounds { axis: 2, .. }
+    ));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+    assert_eq!(
+        prepared
+            .eval_row_with_context(0, &[], &[1., 0.], 0., RowEvalContext::default())
+            .unwrap(),
+        7.
+    );
+}
+
+#[test]
+fn short_conditional_regions_skip_inactive_captured_gathers() {
+    let mut region = row();
+    region.truncate(7);
+    region[0] = LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 1 };
+    region[5] = LinearOp::LoadFunctionConditionalCapture { dst: 6, index: 0 };
+    region.push(LinearOp::StoreOutput { src: 7 });
+    let program = FunctionConditionalProgram::checked(
+        2,
+        [1],
+        [(
+            vec![
+                LinearOp::Const { dst: 0, value: 1. },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            region,
+        )],
+        vec![
+            LinearOp::Const { dst: 0, value: -1. },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .unwrap();
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::LoadP { dst: 1, index: 1 },
+            LinearOp::FunctionConditional {
+                dst_start: 2,
+                capture_start: 0,
+                program: std::sync::Arc::new(program),
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]],
+        vec![fixture_span()],
+    )
+    .unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    for (condition, index, expected) in [(1., 0., 7.), (0., 1., 42.), (1., 0., 7.), (0., 2., 64.)] {
+        assert_eq!(
+            prepared
+                .eval_row_with_context(0, &[], &[condition, index], 0., RowEvalContext::default())
+                .unwrap(),
+            expected
+        );
+    }
+    let error = prepared
+        .eval_row_with_context(0, &[], &[0., 0.], 0., RowEvalContext::default())
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        EvalSolveError::TensorIndexOutOfBounds { axis: 2, .. }
+    ));
+    assert_eq!(error.source_span(), Some(fixture_span()));
+}

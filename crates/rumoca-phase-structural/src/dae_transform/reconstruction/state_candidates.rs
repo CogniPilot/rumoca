@@ -17,7 +17,7 @@ pub(in crate::dae_transform) fn rebuild_state_candidate(
     let rebuilt = model
         .inspect(|source| {
             let facts = DifferentiationFacts::collect(source);
-            dae::Dae::construct(model.source_map().clone(), |target| {
+            construct_replay(model, |target| {
                 prepare_rebuild(
                     source,
                     target,

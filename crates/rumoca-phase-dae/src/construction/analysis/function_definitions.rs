@@ -387,7 +387,7 @@ impl FunctionDefinitions {
                 !reseeded.contains(target)
                     && generated
                         .iter()
-                        .any(|generated| &generated.target == target)
+                        .any(|generated| !generated.mutable && &generated.target == target)
             });
             if !invariant {
                 definition.guard = None;
@@ -990,7 +990,7 @@ pub(super) fn generated_boolean_value<'expression>(
     context
         .generated_booleans
         .iter()
-        .find(|definition| definition.target == *name.var_name())
+        .find(|definition| !definition.mutable && definition.target == *name.var_name())
         .map(|definition| &definition.value)
 }
 
@@ -1582,7 +1582,7 @@ pub(super) fn reads_only_immutable(
             || context
                 .generated_booleans
                 .iter()
-                .any(|definition| &definition.target == reference)
+                .any(|definition| !definition.mutable && &definition.target == reference)
     })
 }
 

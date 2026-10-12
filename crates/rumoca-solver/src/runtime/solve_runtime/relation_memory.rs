@@ -559,7 +559,11 @@ impl SolveRuntime {
         for ((_, index), side) in candidates.iter().zip(sides) {
             input.p[*index] = *side;
         }
-        if project_algebraics(input.y, input.p).is_err() {
+        // Candidate relation memory feeds runtime aliases used by the projection.
+        // Evaluate those aliases in this mode before certifying its coordinates.
+        if self.run_runtime_assignments(input).is_err()
+            || project_algebraics(input.y, input.p).is_err()
+        {
             return Ok(false);
         }
         let roots = self.eval_root_conditions_from_solver_y(input.t, input.y, input.p)?;
@@ -621,7 +625,30 @@ impl SolveRuntime {
                     root_relation_overrides,
                     event_iteration,
                 };
-                self.settle_discrete_rows_for_pre_snapshot(&snapshot, input, project_algebraics)?
+                match self.settle_discrete_rows_for_pre_snapshot(
+                    &snapshot,
+                    input,
+                    project_algebraics,
+                ) {
+                    Ok(changed) => changed,
+                    Err(fault @ RuntimeSolveError::SourceFault { .. }) => {
+                        // A source operation can be invalid under a relation side
+                        // inherited from the preceding discrete iterate. Refresh
+                        // current relation truth before treating it as a fault of
+                        // the settled event solution; retain strict checked reads.
+                        if !self.refresh_event_relation_memory(
+                            input.t,
+                            input.y,
+                            input.p,
+                            input.tol,
+                            root_relation_overrides,
+                        )? {
+                            return Err(fault);
+                        }
+                        true
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             // MLS Appendix B: condition equations belong to the same solve as
             // current discrete values. Advancing pre before these relations

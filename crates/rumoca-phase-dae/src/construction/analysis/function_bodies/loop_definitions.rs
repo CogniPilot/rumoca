@@ -40,10 +40,13 @@ pub(super) fn resolve_function_loop_definitions(
             // A statically decided condition is selected inside the fold, and a
             // condition over an enclosing binder is a binder-range selection the
             // generic iteration narrows exactly.
-            let selection = invariant_selection(&flat_indices, flat_body).filter(|condition| {
-                !matches!(static_boolean_expression(condition, context), Ok(Some(_)))
-                    && !reads_enclosing_binder(condition, context, 0)
-            });
+            let selection =
+                invariant_selection(&flat_indices, flat_body, context.generated_booleans).filter(
+                    |condition| {
+                        !matches!(static_boolean_expression(condition, context), Ok(Some(_)))
+                            && !reads_enclosing_binder(condition, context, 0)
+                    },
+                );
             let Some(condition) = selection else {
                 return resolve_fold_definitions(
                     (indices, statements, span),
@@ -449,13 +452,14 @@ fn seed_undefined_whole_loop_value(
 fn invariant_selection<'a>(
     binders: &[&rumoca_core::ForIndex],
     body: &'a [rumoca_core::Statement],
+    generated: &[function_returns::GeneratedBooleanDefinition],
 ) -> Option<&'a Expression> {
     let mut bound = binders
         .iter()
         .map(|binder| binder.ident.clone())
         .collect::<Vec<_>>();
     let condition = sequence_selection(body, &mut bound)?;
-    let written = function_ranges::assigned_function_targets(body);
+    let written = function_ranges::assigned_function_targets_with_generated(body, generated);
     let mut reads = Vec::new();
     condition.collect_var_refs(&mut reads);
     reads

@@ -564,6 +564,11 @@ fn delayed_value(
 ) -> f64 {
     let query_time = time - delay_time;
     let points = active_points(channel);
+    // During forward trial evaluation, a zero delay is the current source,
+    // including discrete source changes whose accepted point is not committed yet.
+    if delay_time == 0.0 && points.last().is_none_or(|point| point.time <= time) {
+        return current_source;
+    }
     let Some(first) = points.first().copied() else {
         return current_source;
     };
@@ -1359,6 +1364,42 @@ mod tests {
             runtime.accepted_step_limit(),
             Some(0.2),
             "only an accepted point may change the method-of-steps limit"
+        );
+    }
+    #[test]
+    fn variable_zero_delay_reads_current_discrete_source() {
+        let runtime = DelayRuntime::new(&solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_max_rhs: scalar_row(vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        })
+        .unwrap();
+        let mut params = vec![0.0, 0.0, 0.2];
+        runtime
+            .initialize(0.0, &[], &mut params, RowEvalContext::default())
+            .unwrap();
+        runtime
+            .commit(0.0, &[], &params, RowEvalContext::default())
+            .unwrap();
+        params[0] = 1.0;
+        params[2] = 0.0;
+        runtime
+            .refresh(0.1, &[], &mut params, RowEvalContext::default())
+            .unwrap();
+        assert_eq!(
+            params[1], 1.0,
+            "zero delay must read the current source before accepting its point"
         );
     }
 }

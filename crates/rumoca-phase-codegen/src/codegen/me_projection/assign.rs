@@ -17,7 +17,7 @@ use super::super::scalar_program_plan::ScalarProgramPlan;
 use crate::errors::CodegenError;
 
 #[derive(Default)]
-pub(super) struct AssignmentCatalog {
+pub(in crate::codegen) struct AssignmentCatalog {
     /// Emitted segment functions of each (chart, issued schedule).
     schedules: BTreeMap<(usize, solve::RefreshSequenceId), Vec<usize>>,
     /// Emitted functions keyed by their content, so a segment every schedule
@@ -32,7 +32,7 @@ pub(super) struct AssignmentCatalog {
 impl AssignmentCatalog {
     /// The call-sequence range (first, count) of one issued schedule of
     /// `chart`: one call per shared-value segment (SPEC_0043 §6a).
-    pub(super) fn schedule(
+    pub(in crate::codegen) fn schedule(
         &mut self,
         (chart, problem): (usize, &solve::SolveProblem),
         schedule: &solve::ExactRefreshAssignmentSchedule,
@@ -81,7 +81,7 @@ impl AssignmentCatalog {
 
     /// The emitted programs (each storing into its solver-Y targets) and the
     /// shared call sequence.
-    pub(super) fn into_value(self) -> Result<Value, CodegenError> {
+    pub(in crate::codegen) fn into_value(self) -> Result<Value, CodegenError> {
         let block =
             solve::ScalarProgramBlock::with_output_indices(self.programs, self.spans, self.targets)
                 .map_err(|error| CodegenError::template(error.to_string()))?;

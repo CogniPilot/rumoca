@@ -76,7 +76,12 @@ impl PathSet {
         statement: &rumoca_core::Statement,
         scope: FactScope<'_>,
     ) {
-        self.split_correlated(&assigned_function_targets(std::slice::from_ref(statement)));
+        self.split_correlated(
+            &super::super::function_ranges::assigned_function_targets_with_generated(
+                std::slice::from_ref(statement),
+                scope.generated,
+            ),
+        );
         self.map_paths(|facts| facts.after(statement, scope));
     }
 
@@ -99,7 +104,12 @@ impl PathSet {
         scope: FactScope<'_>,
     ) -> Self {
         let mut entry = self.clone();
-        entry.split_correlated(&assigned_function_targets(body));
+        entry.split_correlated(
+            &super::super::function_ranges::assigned_function_targets_with_generated(
+                body,
+                scope.generated,
+            ),
+        );
         entry.map_paths(|facts| *facts = facts.loop_entry_on_path(body, binders, scope));
         entry
     }

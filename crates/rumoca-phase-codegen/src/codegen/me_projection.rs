@@ -618,3 +618,32 @@ fn importer_seed_rule(problem: &solve::SolveProblem) -> String {
             .seed_rule(solve::RefreshExecutor::ImporterDriven)
     )
 }
+
+/// Replay the issued exact algebraic schedule for an explicit-assignment target.
+/// No residual inspection or assignment-shape derivation happens in codegen.
+pub(super) fn exact_algebraic_assignments_value(
+    problem: &solve::SolveProblem,
+) -> Result<minijinja::Value, crate::errors::CodegenError> {
+    if !super::solve_lazy::explicit_algebraic_assignment_complete(problem)
+        || unsupported_runtime_shape(problem).is_some()
+    {
+        return Ok(minijinja::Value::from(()));
+    }
+    let owners = &problem.continuous.refresh_owners;
+    let mut catalog = AssignmentCatalog::default();
+    for stage in &owners.algebraic().value_stages {
+        if let solve::RefreshStage::ExactAssignments {
+            static_sequence,
+            dynamic_sequence,
+            ..
+        } = stage
+        {
+            for sequence in [*static_sequence, *dynamic_sequence] {
+                if let Some(schedule) = owners.exact_assignment_schedule(sequence) {
+                    catalog.schedule((0, problem), schedule)?;
+                }
+            }
+        }
+    }
+    catalog.into_value()
+}

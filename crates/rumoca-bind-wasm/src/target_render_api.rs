@@ -31,7 +31,7 @@ use rumoca_compile::compile::{Dae, FlatModel};
 use crate::source_root_api::load_workspace_sources_in_session;
 use crate::{WasmError, compile_requested_model, qualify_input_model_name};
 #[cfg(target_arch = "wasm32")]
-use crate::{serialize_js_value, with_singleton_session};
+use crate::{WasmRenderedTarget, serialize_js_value, with_singleton_session};
 
 /// Solve lowering ships with the simulation runtime; light builds without it
 /// cannot render Solve targets.
@@ -41,14 +41,6 @@ const SOLVE_TARGETS_AVAILABLE: bool = cfg!(any(
     feature = "sim-rk45",
     feature = "native-assignments"
 ));
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WasmRenderedTarget {
-    ok: bool,
-    files: Vec<RenderedTargetFile>,
-}
 
 enum TargetTemplates {
     Builtin(TargetBundle),

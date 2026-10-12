@@ -36,7 +36,11 @@ pub(super) fn snapshot_loop_conditionals(
     guards: &mut Vec<GeneratedBooleanDefinition>,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     let mut snapshots = Snapshots {
-        immutable: guards.iter().map(|guard| guard.target.clone()).collect(),
+        immutable: guards
+            .iter()
+            .filter(|guard| !guard.mutable)
+            .map(|guard| guard.target.clone())
+            .collect(),
         guards,
     };
     let normalized = snapshots.sequence(statements, None)?;
@@ -244,6 +248,7 @@ impl Snapshots<'_> {
         let target = rumoca_core::function_branch_guard_name(span.start.0);
         normalized.push(rumoca_core::Statement::Empty { span });
         self.guards.push(GeneratedBooleanDefinition {
+            mutable: false,
             target: target.clone(),
             value,
             span,
@@ -352,7 +357,7 @@ impl ScopeCertificate<'_> {
                     return Ok(());
                 };
                 self.reads_in_scope(&guard.value, scope, *span)?;
-                if !scope.insert(guard.target.clone()) {
+                if !scope.insert(guard.target.clone()) && !guard.mutable {
                     return Err(scope_error("is defined twice in one scope", *span));
                 }
                 Ok(())

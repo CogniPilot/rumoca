@@ -346,9 +346,10 @@ pub(super) enum FunctionStatementPlan {
     /// A default-level MLS §8.3.7 assertion owned by the top-level function
     /// statement sequence and evaluated once for every call.
     RuntimeAssertion,
-    /// One compiler-owned immutable Boolean that captures a return predicate
-    /// at its source statement before later mutable values can change.
+    /// A checked Boolean store: an immutable selection snapshot, or the mutable
+    /// function-exit state carried between iterations of return-bearing loops.
     GeneratedBooleanAssignment {
+        mutable: bool,
         target: VarName,
         value: Expression,
         span: Span,

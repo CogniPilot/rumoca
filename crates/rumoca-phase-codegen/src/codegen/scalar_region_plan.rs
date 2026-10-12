@@ -259,6 +259,7 @@ fn local_output_targets(ops: &[solve::LinearOp]) -> Vec<Option<Box<[usize]>>> {
 
 #[cfg(test)]
 mod tests {
+    mod solve_program_fixtures;
     use super::*;
 
     /// `if y[1] > 0 then 2 else y[2]`: one arm and a fallback, one output.

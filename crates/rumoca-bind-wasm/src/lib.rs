@@ -20,6 +20,10 @@ pub use native_assignment_api::prepare_native_assignments;
 #[cfg(feature = "native-assignments")]
 pub use native_program_api::{prepare_native_program, read_native_integer_lane};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+mod compiled_model_api;
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+pub use compiled_model_api::{WasmCompiledModel, compile_with_options};
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod gpu_api;
 mod scenario_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
@@ -287,6 +291,19 @@ struct WasmSimulationModelState {
     models: Vec<String>,
     selected_model: Option<String>,
     error: Option<String>,
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    feature = "sim-wasm",
+    feature = "sim-diffsol",
+    feature = "sim-rk45"
+))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmRenderedTarget {
+    ok: bool,
+    files: Vec<rumoca_compile::codegen::targets::RenderedTargetFile>,
 }
 
 #[derive(Serialize, Deserialize)]

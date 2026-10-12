@@ -2081,3 +2081,11 @@ fn random_opcode_helper_rejects_non_random_op() {
 
 // SPEC_0021 file-size exception: this file is 2059 lines, over the 2000-line
 // action threshold; split plan: group the eval-solve tests by subsystem (projection, dense-basis, refresh) into sibling test modules.
+
+#[test]
+fn event_real_messages_preserve_integer_trailing_zeros() {
+    assert_eq!(format_significant_digits(120.0, 3), "120");
+    assert_eq!(format_significant_digits(1000.0, 4), "1000");
+    assert_eq!(format_significant_digits(12.0, 4), "12");
+    assert_eq!(format_significant_digits(12000.0, 3), "1.2e4");
+}

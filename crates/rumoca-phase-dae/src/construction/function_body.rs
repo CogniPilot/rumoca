@@ -56,6 +56,7 @@ fn lower_loop_action_statement<'dae>(
             target,
             value,
             span,
+            ..
         } => (target, value, *span),
         _ => return Ok(false),
     };
@@ -632,6 +633,27 @@ fn lower_one_conditional_statement<'dae>(
             lower_branch_assertion(construction, body, symbols, binders, statement, state)
         }
         (
+            _,
+            FunctionStatementPlan::GeneratedBooleanAssignment {
+                target,
+                value,
+                span,
+                ..
+            },
+        ) => lower_conditional_assignment(
+            construction,
+            body,
+            ConditionalAssignment {
+                symbols,
+                binders,
+                target,
+                subscripts: &[],
+                value,
+                span: *span,
+            },
+            &mut state.values,
+        ),
+        (
             rumoca_core::Statement::Assignment { value, span, .. },
             FunctionStatementPlan::Assignment(assignment),
         ) => lower_conditional_assignment(
@@ -640,7 +662,8 @@ fn lower_one_conditional_statement<'dae>(
             ConditionalAssignment {
                 symbols,
                 binders,
-                assignment,
+                target: assignment.target(),
+                subscripts: assignment.subscripts(),
                 value,
                 span: *span,
             },
@@ -826,7 +849,8 @@ fn lower_conditional_multi_output_call<'dae>(
 struct ConditionalAssignment<'scope, 'statement, 'dae> {
     symbols: FunctionSymbols<'scope, 'dae>,
     binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
-    assignment: &'statement FunctionAssignmentPlan,
+    target: &'statement VarName,
+    subscripts: &'statement [Subscript],
     value: &'statement Expression,
     span: Span,
 }
@@ -840,11 +864,12 @@ fn lower_conditional_assignment<'dae>(
     let ConditionalAssignment {
         symbols,
         binders,
-        assignment,
+        target: target_name,
+        subscripts,
         value,
         span,
     } = input;
-    let target = function_value_coordinate(symbols.coordinates, assignment.target());
+    let target = function_value_coordinate(symbols.coordinates, target_name);
     let provenance = dae::DaeProvenance::source(span)?;
     let mut lowered = lower_expression_scoped(
         construction,
@@ -863,16 +888,15 @@ fn lower_conditional_assignment<'dae>(
     )?;
     // A branch value stands in for the target until the join, so a read of it
     // sees the declared type, as a read of the assigned target would.
-    if assignment.subscripts().is_empty() {
+    if subscripts.is_empty() {
         lowered = conform_to_declared_type(construction, target, lowered, provenance)?;
     }
-    let subscripts = assignment.subscripts();
     // A branch updates the value in scope: a write earlier in this branch, or
     // else the enclosing definition. An element write's seed is assigned once
     // where its enclosing sequence or compact loop begins
     // (`collect_function_sequence_seeds`); reseeding inside a loop body would
     // discard what earlier iterations wrote.
-    let base = values.get(assignment.target()).copied();
+    let base = values.get(target_name).copied();
     if !subscripts.is_empty() {
         lowered = lower_function_array_update(
             construction,
@@ -895,7 +919,7 @@ fn lower_conditional_assignment<'dae>(
             },
         )?;
     }
-    values.insert(assignment.target().clone(), lowered);
+    values.insert(target_name.clone(), lowered);
     Ok(())
 }
 

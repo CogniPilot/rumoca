@@ -1193,3 +1193,114 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![0, 1]);
     assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![0, 1]);
 }
+
+#[test]
+fn discrete_gather_retries_after_relation_refresh_and_preserves_settled_faults() {
+    for index in [0.0, 3.0] {
+        let mut model = event_relation_cascade_model();
+        model.parameters = vec![0.0, 0.0, 1.0, -9.0];
+        model.problem.solve_layout.compiled_parameter_len = 4;
+        model.problem.events.root_conditions = spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::Const { dst: 1, value: 0.0 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Eq,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Const {
+                    dst: 3,
+                    value: -1.0,
+                },
+                solve::LinearOp::Const { dst: 4, value: 1.0 },
+                solve::LinearOp::Select {
+                    dst: 5,
+                    cond: 2,
+                    if_true: 3,
+                    if_false: 4,
+                },
+                solve::LinearOp::StoreOutput { src: 5 },
+            ]],
+            "discrete_index_relation.mo",
+        );
+        model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
+        model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous];
+        model.problem.events.root_relation_refresh_roles =
+            vec![solve::RootRelationRefreshRole::Frozen];
+        model.problem.discrete.rhs = spanned_block(
+            vec![
+                vec![
+                    solve::LinearOp::Const {
+                        dst: 0,
+                        value: index,
+                    },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 2 },
+                    solve::LinearOp::Const {
+                        dst: 1,
+                        value: 42.0,
+                    },
+                    solve::LinearOp::Const {
+                        dst: 2,
+                        value: 64.0,
+                    },
+                    solve::LinearOp::LoadIndexedRegister {
+                        dst: 3,
+                        base: 1,
+                        stride: 1,
+                        dimensions: vec![2].into_boxed_slice(),
+                        indices: vec![solve::TensorIndex::Runtime(0)].into_boxed_slice(),
+                    },
+                    solve::LinearOp::Const { dst: 4, value: 7.0 },
+                    solve::LinearOp::LoadP { dst: 5, index: 0 },
+                    solve::LinearOp::Select {
+                        dst: 6,
+                        cond: 5,
+                        if_true: 4,
+                        if_false: 3,
+                    },
+                    solve::LinearOp::StoreOutput { src: 6 },
+                ],
+            ],
+            "discrete_index_read.mo",
+        );
+        model.problem.discrete.update_targets =
+            vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)];
+        model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation; 2];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent; 2];
+        model.problem.discrete.observation_refresh = vec![false; 2];
+        model.problem.discrete.integrator_history_effects =
+            vec![solve::IntegratorHistoryEffect::Preserve; 2];
+        model.problem.discrete.clock_owners = vec![None; 2];
+        let runtime = SolveRuntime::new_fixture(&model).unwrap();
+        let mut p = model.parameters.clone();
+        let pre = p.clone();
+        let outcome = runtime.apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut model.initial_y.clone(),
+                p: &mut p,
+                t: 0.0,
+                tol: 1e-12,
+                event_pre_y: &model.initial_y,
+                event_pre_p: &pre,
+                max_iters: 8,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &mut Vec::new(),
+            },
+            |_, _| Ok(false),
+        );
+        if index == 0.0 {
+            outcome.expect("refresh the stale relation before rejecting the inactive gather");
+            assert_eq!(p[3], 7.0);
+        } else {
+            assert!(matches!(
+                outcome,
+                Err(RuntimeSolveError::SourceFault { .. })
+            ));
+        }
+    }
+}

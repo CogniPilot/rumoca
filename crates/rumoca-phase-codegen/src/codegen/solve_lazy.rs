@@ -38,6 +38,7 @@ pub(super) enum SolveRenderHandle {
         pure_calls: Option<Arc<solve::SolvePureCallTable>>,
     },
     Fmi(Arc<solve::fmi::FmiCCodegenView>),
+    Model(Arc<solve::SolveModel>),
 }
 
 impl SolveRenderHandle {
@@ -81,6 +82,7 @@ impl SolveRenderHandle {
         match self {
             Self::Standalone { problem, .. } => problem,
             Self::Fmi(component) => component.problem(),
+            Self::Model(model) => &model.problem,
         }
     }
 
@@ -88,6 +90,7 @@ impl SolveRenderHandle {
         match self {
             Self::Standalone { artifacts, .. } => artifacts,
             Self::Fmi(component) => component.artifacts(),
+            Self::Model(model) => &model.artifacts,
         }
     }
 
@@ -101,10 +104,49 @@ impl SolveRenderHandle {
     /// exists, so there is no case to reject here.
     pub(super) fn fmi_value(&self) -> Value {
         match self {
-            Self::Standalone { .. } => Value::default(),
+            Self::Standalone { .. } | Self::Model(_) => Value::default(),
             Self::Fmi(component) => Value::from_serialize(component.as_ref()),
         }
     }
+}
+
+/// Runtime values of a complete lowered model. Large program inventories keep
+/// the same lazy program views as the canonical Solve problem.
+pub(super) fn model_value(model: Arc<solve::SolveModel>) -> Result<Value, CodegenError> {
+    let visible_rows = Arc::new(model.visible_value_rows.clone());
+    let visible = scalar_program_block_value(visible_rows.clone());
+    let visible_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+        visible_rows,
+    )?);
+    Ok(lazy_map(
+        &[
+            "initial_y",
+            "parameters",
+            "solver_nominals",
+            "visible_names",
+            "visible_value_rows",
+            "visible_value_plan",
+            "variable_meta",
+            "external_tables",
+            "pure_calls",
+            "pure_call_directional_owners",
+        ],
+        move |key| match key {
+            "initial_y" => Some(Value::from_serialize(&model.initial_y)),
+            "parameters" => Some(Value::from_serialize(&model.parameters)),
+            "solver_nominals" => Some(Value::from_serialize(&model.solver_nominals)),
+            "visible_names" => Some(Value::from_serialize(&model.visible_names)),
+            "visible_value_rows" => Some(visible.clone()),
+            "visible_value_plan" => Some(visible_plan.clone()),
+            "variable_meta" => Some(Value::from_serialize(&model.variable_meta)),
+            "external_tables" => Some(Value::from_serialize(&model.external_tables)),
+            "pure_calls" => Some(Value::from_serialize(&model.pure_calls)),
+            "pure_call_directional_owners" => Some(
+                super::pure_call_families::directional_owners_value(&model.pure_calls),
+            ),
+            _ => None,
+        },
+    ))
 }
 
 // ── Generic lazy Map / Seq ───────────────────────────────────────────────────
@@ -441,23 +483,40 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
 
 fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let problem = handle.problem();
+    let exact_assignments = super::me_projection::exact_algebraic_assignments_value(problem)?;
     let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
     let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
     let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
+    let manifold = compute_block_value(Arc::new(problem.continuous.manifold_residual.clone()))?;
+    let algebraic_tearing = algebraic_tearing_value(problem)?;
     Ok(lazy_map(
         &[
             "implicit_rhs",
             "implicit_row_targets",
+            "exact_algebraic_assignments",
             "algebraic_projection_plan",
+            "algebraic_tearing",
             "residual",
             "derivative_rhs",
+            "manifold_residual",
+            "manifold_projection_plan",
+            "reduced_chart_set",
+            "refresh_owners",
         ],
         move |k| {
             let c = &handle.problem().continuous;
             match k {
+                "algebraic_tearing" => Some(algebraic_tearing.clone()),
                 "implicit_rhs" => Some(implicit_rhs.clone()),
+                "exact_algebraic_assignments" => Some(exact_assignments.clone()),
                 "derivative_rhs" => Some(derivative_rhs.clone()),
                 "residual" => Some(residual.clone()),
+                "manifold_residual" => Some(manifold.clone()),
+                "manifold_projection_plan" => {
+                    Some(Value::from_serialize(&c.manifold_projection_plan))
+                }
+                "reduced_chart_set" => Some(Value::from_serialize(&c.reduced_chart_set)),
+                "refresh_owners" => Some(Value::from_serialize(&c.refresh_owners)),
                 "implicit_row_targets" => Some(Value::from_serialize(&c.implicit_row_targets)),
                 "algebraic_projection_plan" => {
                     Some(Value::from_serialize(&c.algebraic_projection_plan))
@@ -466,6 +525,71 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             }
         },
     ))
+}
+
+/// Reuse the evaluator's certified isolators and causal order; no target infers assignments.
+fn algebraic_tearing_value(problem: &solve::SolveProblem) -> Result<Value, CodegenError> {
+    let prepared = rumoca_eval_solve::PreparedScalarProgramBlock::from_compute_block(
+        &problem.continuous.implicit_rhs,
+    )
+    .map_err(|error| CodegenError::template(error.to_string()))?;
+    let blocks = problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .iter()
+        .map(|block| torn_block_value(&prepared, block))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::from(blocks))
+}
+
+fn torn_block_value(
+    prepared: &rumoca_eval_solve::PreparedScalarProgramBlock,
+    block: &solve::AlgebraicProjectionBlock,
+) -> Result<Value, CodegenError> {
+    let Some(tearing) = &block.tearing else {
+        return Ok(Value::from(()));
+    };
+    let causal = tearing
+        .causal_steps
+        .iter()
+        .map(|step| (step.row, step.y_index))
+        .collect::<Vec<_>>();
+    let Some(composite) = prepared
+        .prepare_torn_sweep(&causal, &tearing.residual_rows)
+        .and_then(|sweep| prepared.torn_sweep_composite(&sweep))
+    else {
+        return Ok(Value::from(()));
+    };
+    let Some(outputs) = composite
+        .residual_outputs
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(Value::from(()));
+    };
+    let spans = causal
+        .iter()
+        .map(|(row, _)| {
+            let (program, _) = prepared.row_output_position(*row)?;
+            prepared.block().program_span(program)
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| CodegenError::template("Torn causal row has no source provenance"))?;
+    let assignments =
+        solve::ScalarProgramBlock::with_program_spans(composite.assignment_rows, spans)
+            .map_err(|error| CodegenError::template(error.to_string()))?;
+    let assignments = super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(assignments))?;
+    let residuals =
+        super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(composite.residual_block))?;
+    Ok(minijinja::context! {
+        tear_y_indices => tearing.tear_y_indices,
+        assignment_targets => composite.assignment_targets,
+        residual_outputs => outputs,
+        assignment_plan => Value::from_object(assignments),
+        residual_plan => Value::from_object(residuals),
+    })
 }
 
 /// Target-local explicit algebraic execution profile.
@@ -815,6 +939,9 @@ fn ordered_exact_algebraic_assignments(
     Some(assignments)
 }
 
+// SPEC_0021: Exception - exhaustive lazy routing of the discrete render fields keeps each
+// checked program owner and its associated target/policy views at one boundary.
+#[allow(clippy::too_many_lines)]
 fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let scalar =
         super::discrete_render_view::DiscreteRenderView::checked(&handle.problem().discrete)?;
@@ -831,6 +958,32 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             Arc::new(handle.problem().discrete.post_commit_assignment_rhs.clone()),
         )?);
     let guarded_assignment_plan = guarded_assignment_plan(&handle.problem().discrete)?;
+    let structured_rhs =
+        compute_block_value(Arc::new(handle.problem().discrete.structured_rhs.clone()))?;
+    let structured_assignments = handle
+        .problem()
+        .discrete
+        .structured_updates
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            handle
+                .problem()
+                .discrete
+                .structured_assignments(index)
+                .map_err(|error| CodegenError::template(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let structured_assignments = Value::from_serialize(&structured_assignments);
+    let clock_intermediate_plan = Value::from_object(
+        super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(
+            handle
+                .problem()
+                .discrete
+                .clock_partition_intermediates
+                .clone(),
+        ))?,
+    );
     let targets = scalar.targets;
     let pre_modes = scalar.pre_modes;
     let observation_refresh = scalar.observation_refresh;
@@ -843,6 +996,22 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             "post_commit_assignment_rhs",
             "post_commit_assignment_plan",
             "guarded_assignment_plan",
+            "guarded_assignment_targets",
+            "event_iteration_plan",
+            "event_transactions",
+            "clock_partition_order",
+            "clock_owners",
+            "row_roles",
+            "structured_row_roles",
+            "guarded_assignment_clock_owners",
+            "structured_update_count",
+            "structured_rhs",
+            "structured_assignments",
+            "structured_clock_owners",
+            "clock_partition_intermediate_count",
+            "clock_partition_intermediate_plan",
+            "clock_partition_intermediate_targets",
+            "clock_partition_intermediate_clocks",
             "post_commit_assignment_targets",
             "post_commit_assignment_runtime_rows",
             "rhs",
@@ -859,6 +1028,48 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
                 "runtime_assignment_plan" => Some(runtime_assignment_plan.clone()),
                 "post_commit_assignment_plan" => Some(post_commit_assignment_plan.clone()),
                 "guarded_assignment_plan" => Some(guarded_assignment_plan.clone()),
+                "guarded_assignment_targets" => Some(Value::from_serialize(
+                    d.guarded_assignments
+                        .iter()
+                        .map(|program| program.target_ranges())
+                        .collect::<Vec<_>>(),
+                )),
+                "event_iteration_plan" => Some(Value::from_serialize(&d.event_iteration_plan)),
+                "event_transactions" => Some(Value::from_serialize(&d.event_transactions)),
+                "clock_partition_order" => Some(Value::from_serialize(&d.clock_partition_order)),
+                "clock_owners" => Some(Value::from_serialize(&d.clock_owners)),
+                "row_roles" => Some(Value::from_serialize(&d.row_roles)),
+                "structured_row_roles" => Some(Value::from_serialize(
+                    &d.structured_updates
+                        .iter()
+                        .map(|update| update.role)
+                        .collect::<Vec<_>>(),
+                )),
+                "guarded_assignment_clock_owners" => Some(Value::from_serialize(
+                    d.guarded_assignments
+                        .iter()
+                        .map(|program| program.clock_owner())
+                        .collect::<Vec<_>>(),
+                )),
+                "clock_partition_intermediate_plan" => Some(clock_intermediate_plan.clone()),
+                "clock_partition_intermediate_targets" => Some(Value::from_serialize(
+                    &d.clock_partition_intermediate_targets,
+                )),
+                "clock_partition_intermediate_clocks" => Some(Value::from_serialize(
+                    &d.clock_partition_intermediate_clocks,
+                )),
+                "structured_rhs" => Some(structured_rhs.clone()),
+                "structured_assignments" => Some(structured_assignments.clone()),
+                "structured_clock_owners" => Some(Value::from_serialize(
+                    &d.structured_updates
+                        .iter()
+                        .map(|update| update.clock_owner)
+                        .collect::<Vec<_>>(),
+                )),
+                "structured_update_count" => Some(Value::from(d.structured_updates.len())),
+                "clock_partition_intermediate_count" => {
+                    Some(Value::from(d.clock_partition_intermediates.len()))
+                }
                 "runtime_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
                     d.runtime_assignment_rhs.clone(),
                 ))),
@@ -886,25 +1097,90 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     ))
 }
 
+fn delay_value(partition: &solve::SolveDelayPartition) -> Result<Value, CodegenError> {
+    let plans = [
+        &partition.source_rhs,
+        &partition.delay_time_rhs,
+        &partition.delay_max_rhs,
+    ]
+    .into_iter()
+    .map(|block| {
+        super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block.clone()))
+            .map(Value::from_object)
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    let partition = Arc::new(partition.clone());
+    Ok(lazy_map(
+        &[
+            "source_rhs",
+            "delay_time_rhs",
+            "delay_max_rhs",
+            "source_plan",
+            "delay_time_plan",
+            "delay_max_plan",
+            "value_parameter_indices",
+            "source_is_discrete",
+        ],
+        move |key| match key {
+            "source_plan" => Some(plans[0].clone()),
+            "delay_time_plan" => Some(plans[1].clone()),
+            "delay_max_plan" => Some(plans[2].clone()),
+            "source_rhs" => Some(scalar_program_block_value(Arc::new(
+                partition.source_rhs.clone(),
+            ))),
+            "delay_time_rhs" => Some(scalar_program_block_value(Arc::new(
+                partition.delay_time_rhs.clone(),
+            ))),
+            "delay_max_rhs" => Some(scalar_program_block_value(Arc::new(
+                partition.delay_max_rhs.clone(),
+            ))),
+            "value_parameter_indices" => {
+                Some(Value::from_serialize(&partition.value_parameter_indices))
+            }
+            "source_is_discrete" => Some(Value::from_serialize(&partition.source_is_discrete)),
+            _ => None,
+        },
+    ))
+}
+
 fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let problem = handle.problem();
+    let delays = delay_value(&problem.events.delays)?;
+    let root_neighborhoods = Value::from_serialize(
+        solve::root_neighborhoods(&problem.events.root_conditions)
+            .map_err(|error| CodegenError::template(error.to_string()))?,
+    );
     let root_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
         Arc::new(problem.events.root_conditions.clone()),
     )?);
     let action_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
         Arc::new(problem.events.action_conditions.clone()),
     )?);
+    let dynamic_time_event_plan =
+        Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+            Arc::new(problem.events.dynamic_time_event_rhs.clone()),
+        )?);
+    let messages = super::fmi_c_assertions::messages(problem)?;
+    let message_plan = messages.rows_value()?;
+    let message_parts = Value::from_serialize(&messages.parts);
     Ok(lazy_map(
         &[
+            "action_message_plan",
+            "action_message_parts",
             "root_conditions",
+            "condition_memory_parameter_indices",
+            "has_terminal_event",
+            "delays",
             "root_plan",
             "root_relation_memory_targets",
             "root_zero_domains",
             "root_relation_refresh_roles",
+            "root_neighborhoods",
             "scheduled_root_conditions",
             "scheduled_time_events",
             "dynamic_time_event_names",
             "dynamic_time_event_rhs",
+            "dynamic_time_event_plan",
             "action_conditions",
             "action_plan",
             "actions",
@@ -912,17 +1188,26 @@ fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
         move |k| {
             let e = &handle.problem().events;
             match k {
+                "condition_memory_parameter_indices" => {
+                    Some(Value::from_serialize(&e.condition_memory_parameter_indices))
+                }
+                "has_terminal_event" => Some(Value::from(e.has_terminal_event)),
+                "delays" => Some(delays.clone()),
                 "root_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.root_conditions.clone(),
                 ))),
                 "root_plan" => Some(root_plan.clone()),
+                "root_neighborhoods" => Some(root_neighborhoods.clone()),
                 "dynamic_time_event_rhs" => Some(scalar_program_block_value(Arc::new(
                     e.dynamic_time_event_rhs.clone(),
                 ))),
                 "action_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.action_conditions.clone(),
                 ))),
+                "dynamic_time_event_plan" => Some(dynamic_time_event_plan.clone()),
                 "action_plan" => Some(action_plan.clone()),
+                "action_message_plan" => Some(message_plan.clone()),
+                "action_message_parts" => Some(message_parts.clone()),
                 "root_relation_memory_targets" => {
                     Some(Value::from_serialize(&e.root_relation_memory_targets))
                 }
@@ -946,9 +1231,37 @@ fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
 
 pub(super) fn artifacts_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let continuous = continuous_artifacts_value(handle.clone())?;
-    Ok(lazy_map(&["continuous"], move |k| {
-        (k == "continuous").then(|| continuous.clone())
-    }))
+    let initial = &handle.artifacts().initialization;
+    let initialization = minijinja::context! {
+        residual_jacobian_v => compute_block_value(Arc::new(initial.residual_jacobian_v.clone()))?,
+        update_jacobian_v => optional_scalar_plan(initial.update_jacobian_v.as_ref())?,
+    };
+    let discrete = &handle.artifacts().discrete;
+    let discrete = minijinja::context! {
+        rhs_jacobian_v => optional_scalar_plan(discrete.rhs_jacobian_v.as_ref())?,
+        runtime_assignment_jacobian_v => optional_scalar_plan(discrete.runtime_assignment_jacobian_v.as_ref())?,
+        guarded_jacobian_v => optional_scalar_plan(discrete.guarded_jacobian_v.as_ref())?,
+        structured_jacobian_v => optional_scalar_plan(discrete.structured_jacobian_v.as_ref())?,
+    };
+    Ok(lazy_map(
+        &["continuous", "initialization", "discrete"],
+        move |k| match k {
+            "continuous" => Some(continuous.clone()),
+            "initialization" => Some(initialization.clone()),
+            "discrete" => Some(discrete.clone()),
+            _ => None,
+        },
+    ))
+}
+
+fn optional_scalar_plan(block: Option<&solve::ScalarProgramBlock>) -> Result<Value, CodegenError> {
+    block
+        .map(|block| {
+            super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block.clone()))
+                .map(Value::from_object)
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 /// Lazy `solve.artifacts.continuous` map: the continuous Jacobian / mass-matrix
@@ -958,12 +1271,30 @@ fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
     let implicit_jacobian_v = compute_block_value(Arc::new(
         handle.artifacts().continuous.implicit_jacobian_v.clone(),
     ))?;
+    let manifold_jacobian_v = compute_block_value(Arc::new(
+        handle.artifacts().continuous.manifold_jacobian_v.clone(),
+    ))?;
+    let full_jacobian_plan =
+        optional_scalar_plan(Some(&handle.artifacts().continuous.full_jacobian_v))?;
+    let implicit_full_jacobian_plan = optional_scalar_plan(Some(
+        &handle.artifacts().continuous.implicit_jacobian_v_scalar,
+    ))?;
     Ok(lazy_map(
-        &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
+        &[
+            "mass_matrix",
+            "manifold_jacobian_v",
+            "implicit_jacobian_v",
+            "full_jacobian_v",
+            "full_jacobian_plan",
+            "implicit_full_jacobian_plan",
+        ],
         move |k| {
             let c = &handle.artifacts().continuous;
             match k {
+                "manifold_jacobian_v" => Some(manifold_jacobian_v.clone()),
                 "implicit_jacobian_v" => Some(implicit_jacobian_v.clone()),
+                "full_jacobian_plan" => Some(full_jacobian_plan.clone()),
+                "implicit_full_jacobian_plan" => Some(implicit_full_jacobian_plan.clone()),
                 "full_jacobian_v" => Some(scalar_program_block_value(Arc::new(
                     c.full_jacobian_v.clone(),
                 ))),
@@ -980,6 +1311,7 @@ fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
 /// sub-systems are produced lazily.
 pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let initialization = minijinja::context! {
+        residual => compute_block_value(Arc::new(handle.problem().initialization.residual().clone()))?,
         update_plan => Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
             Arc::new(handle.problem().initialization.update_rhs().clone()),
         )?),
@@ -1009,11 +1341,25 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "discrete" => Some(discrete.clone()),
             "events" => Some(events.clone()),
             "initialization" => Some(initialization.clone()),
-            "clocks" => Some(Value::from_serialize(&handle.problem().clocks)),
+            "clocks" => Some(minijinja::context! {
+                render_schedules => handle.problem().clocks.periodic_event_schedules.iter().map(clock_render_schedule).collect::<Vec<_>>(),
+                pre_binding_schedules => handle.problem().solve_layout.pre_param_bindings.iter().map(|binding| binding.clock_schedule.as_ref().map(clock_render_schedule)).collect::<Vec<_>>(),
+                ..Value::from_serialize(&handle.problem().clocks)
+            }),
             "artifacts" => Some(artifacts_value.clone()),
             _ => None,
         },
     ))
+}
+
+fn clock_render_schedule(schedule: &solve::PeriodicEventSchedule) -> Value {
+    minijinja::context! {
+        period_num => schedule.lattice().period().numerator().to_string(),
+        period_den => schedule.lattice().period().denominator().to_string(),
+        phase_num => schedule.lattice().phase().numerator().to_string(),
+        phase_den => schedule.lattice().phase().denominator().to_string(),
+        anchor => Value::from_serialize(&schedule.anchor()),
+    }
 }
 
 /// Lazy `nodes` Seq of a `ComputeBlock` (each `ComputeNode` materialized on

@@ -9,7 +9,7 @@ homepage.workspace = true
 
 [dependencies]
 indexmap = { workspace = true }
-minijinja = { workspace = true }
+minijinja = { workspace = true, features = ["json"] }
 miette = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }

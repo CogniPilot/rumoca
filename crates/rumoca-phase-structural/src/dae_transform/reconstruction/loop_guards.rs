@@ -4,7 +4,8 @@ use rumoca_ir_dae as dae;
 
 use super::{
     DifferentiationFacts, PreparedRebuild, RebuildRequest, RebuiltOwnerIdentities,
-    construction_failure, define_variables, prepare_rebuild, rebuild_semantic_owners,
+    construct_replay, construction_failure, define_variables, prepare_rebuild,
+    rebuild_semantic_owners,
 };
 use crate::StructuralError;
 
@@ -18,7 +19,7 @@ pub(in crate::dae_transform) fn rebuild_loop_guards(
 ) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
     let mut manifold = Vec::with_capacity(prior_manifold.len());
     let rebuilt = model.inspect(|source| {
-        dae::Dae::construct(model.source_map().clone(), |target| {
+        construct_replay(model, |target| {
             let facts = DifferentiationFacts::collect(source);
             prepare_rebuild(
                 source,

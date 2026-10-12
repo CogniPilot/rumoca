@@ -599,7 +599,7 @@ pub(super) fn is_immutable_guard(
                 || context
                     .generated_booleans
                     .iter()
-                    .any(|definition| &definition.target == target)
+                    .any(|definition| !definition.mutable && &definition.target == target)
         })
 }
 
@@ -629,6 +629,7 @@ fn validate_conditional_branch_shape(
             (_, FunctionStatementPlan::ProvenAssertion) => continue,
             (_, FunctionStatementPlan::RuntimeAssertion) => continue,
             (_, FunctionStatementPlan::Assignment(_)) => continue,
+            (_, FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => continue,
             (_, FunctionStatementPlan::RecordAssembly(_))
             | (_, FunctionStatementPlan::RecordAssemblyMember) => continue,
             (_, FunctionStatementPlan::MultiOutputCall { .. }) => continue,
@@ -686,6 +687,9 @@ fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<Var
         match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 collect_branch_target(assignment.target(), ordered);
+            }
+            FunctionStatementPlan::GeneratedBooleanAssignment { target, .. } => {
+                collect_branch_target(target, ordered);
             }
             FunctionStatementPlan::RecordAssembly(assembly) => {
                 collect_branch_target(&assembly.target, ordered);

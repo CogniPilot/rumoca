@@ -23,7 +23,7 @@ pub(in crate::dae_transform) fn rebuild_formal(
     let mut coordinates = Vec::new();
     let mut equations = Vec::new();
     let mut refused = None;
-    let rebuilt = dae::Dae::construct(model.source_map().clone(), |target| {
+    let rebuilt = construct_replay(model, |target| {
         prepare_rebuild(
             source,
             target,

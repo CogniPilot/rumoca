@@ -1043,6 +1043,7 @@ mod tests {
     mod broadcast_division;
     mod dependencies;
     mod discrete_broadcast;
+    mod integer_tensors;
     mod recursion;
     mod reduction_extrema;
     mod shared_values;

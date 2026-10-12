@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 6;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 7;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -35,10 +35,13 @@ impl DaeBackendError {
 }
 
 pub(super) fn project(model: &dae::Dae) -> Result<Value, DaeBackendError> {
-    model.inspect(project_view)
+    model.inspect(|view| project_view(view, model.external_tables()))
 }
 
-fn project_view(view: dae::DaeView<'_>) -> Result<Value, DaeBackendError> {
+fn project_view(
+    view: dae::DaeView<'_>,
+    external_tables: &[rumoca_core::ExternalTableData],
+) -> Result<Value, DaeBackendError> {
     Ok(json!({
         "schema": {
             "name": "rumoca.checked-dae-template",
@@ -47,6 +50,7 @@ fn project_view(view: dae::DaeView<'_>) -> Result<Value, DaeBackendError> {
         "value_types": project_value_types(view),
         "variables": project_variables(view)?,
         "functions": project_functions(view),
+        "external_tables": external_tables,
         "domains": project_domains(view),
         "expressions": project_expressions(view),
         "systems": {
@@ -261,6 +265,17 @@ fn project_external_interface(external: dae::ExternalFunctionView<'_>) -> Value 
         },
         "language": external.language().as_str(),
         "symbol": external.symbol().as_str(),
+        "native_table_operator": if external.language().as_str() == "C" {
+            dae::NativeTableOperator::from_symbol(external.symbol().as_str()).map(|operator| match operator {
+                dae::NativeTableOperator::Lookup => "lookup",
+                dae::NativeTableOperator::Slope => "slope",
+                dae::NativeTableOperator::BoundsMin => "bounds_min",
+                dae::NativeTableOperator::BoundsMax => "bounds_max",
+                dae::NativeTableOperator::NextEvent => "next_event",
+            })
+        } else {
+            None
+        },
         "arguments": external
             .arguments()
             .map(|argument| match argument {

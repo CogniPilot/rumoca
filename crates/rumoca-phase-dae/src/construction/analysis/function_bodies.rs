@@ -151,7 +151,7 @@ fn validate_statement_function(
     let mut definitions = FunctionDefinitions::new(function);
     let mut entry_seeds = certified_return_output_seeds(
         function,
-        normalized.has_returns,
+        normalized.has_returns && !normalized.guards.iter().any(|guard| guard.mutable),
         normalized_context,
         &mut definitions,
     )?;
@@ -216,7 +216,20 @@ fn normalize_function_source(
     context: FunctionValidationContext<'_>,
     certify_nonreturn_path: bool,
 ) -> Result<function_returns::NormalizedFunctionReturns, ToDaeError> {
-    let returned = normalize_function_returns(body)?;
+    // Mutable exit stores must not be hidden from source compaction's write analysis.
+    // Compact the source first; branch snapshots then see the checked exit state.
+    let returned = if function_returns::contains_for_return(body) {
+        let compacted = compact_function_loops(
+            body,
+            context.static_integers,
+            context.shapes,
+            function,
+            context.flat,
+        )?;
+        normalize_function_returns(&compacted, function.span)?
+    } else {
+        normalize_function_returns(body, function.span)?
+    };
     let roles = roles_with_guards(context.roles, &returned.guards);
     let shapes = shapes_with_guards(context.shapes, &returned.guards);
     let returned_context = FunctionValidationContext {
@@ -226,16 +239,23 @@ fn normalize_function_source(
         ..context
     };
     check_function_assignment_shapes(&returned.statements, returned_context)?;
-    if certify_nonreturn_path && returned.has_returns {
+    if certify_nonreturn_path
+        && returned.has_returns
+        && !returned.guards.iter().any(|guard| guard.mutable)
+    {
         validate_nonreturn_path(function, context)?;
     }
-    let compacted = compact_function_loops(
-        &returned.statements,
-        context.static_integers,
-        &shapes,
-        function,
-        context.flat,
-    )?;
+    let compacted = if returned.guards.iter().any(|guard| guard.mutable) {
+        returned.statements.clone()
+    } else {
+        compact_function_loops(
+            &returned.statements,
+            context.static_integers,
+            &shapes,
+            function,
+            context.flat,
+        )?
+    };
     let mut guards = returned.guards.clone();
     let statements = branch_snapshots::snapshot_loop_conditionals(&compacted, &mut guards)?;
     Ok(function_returns::NormalizedFunctionReturns {
@@ -418,6 +438,7 @@ fn annotate_iteration_locals<'a>(
     let generated = context
         .generated_booleans
         .iter()
+        .filter(|guard| !guard.mutable)
         .map(|guard| guard.target.clone())
         .collect::<HashSet<_>>();
     for index in 0..statements.len() {
@@ -630,6 +651,7 @@ pub(super) fn plan_function_statements(
                 statement_context.shapes,
             )?;
             plans.push(FunctionStatementPlan::GeneratedBooleanAssignment {
+                mutable: guard.mutable,
                 target: guard.target.clone(),
                 value: guard.value.clone(),
                 span: guard.span,

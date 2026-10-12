@@ -19,8 +19,7 @@ use serde_json::Value as Json;
 
 use crate::errors::CodegenError;
 
-/// The C view of one owner (primal or directional), exactly the fields the
-/// typed-function templates read.
+/// Target-neutral view of a checked typed function owner.
 #[derive(serde::Serialize)]
 struct OwnerView<'a> {
     id: solve::SolvePureCallOwnerId,
@@ -103,6 +102,27 @@ impl PureCallFamilies {
     }
 }
 
+/// Derived directional bodies stay in the retained model, outside canonical wire JSON.
+pub(super) fn directional_owners_value(table: &solve::SolvePureCallTable) -> Value {
+    Value::from_serialize(
+        table
+            .owners()
+            .iter()
+            .filter_map(directional_owner_view)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn directional_owner_view(owner: &solve::SolvePureCallOwner) -> Option<OwnerView<'_>> {
+    let directional = owner.directional()?;
+    Some(OwnerView {
+        id: owner.id(),
+        inputs: directional.inputs(),
+        outputs: directional.outputs(),
+        body: directional.body(),
+    })
+}
+
 fn owner_json(
     position: usize,
     owner: &solve::SolvePureCallOwner,
@@ -118,16 +138,8 @@ fn owner_json(
         outputs: owner.outputs(),
         body: owner.body(),
     })?;
-    let directional = owner
-        .directional()
-        .map(|directional| {
-            to_json(&OwnerView {
-                id: owner.id(),
-                inputs: directional.inputs(),
-                outputs: directional.outputs(),
-                body: directional.body(),
-            })
-        })
+    let directional = directional_owner_view(owner)
+        .map(|view| to_json(&view))
         .transpose()?;
     Ok(OwnerJson {
         primal,

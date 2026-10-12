@@ -485,6 +485,7 @@ fn a_captured_boolean_holds_its_definition_after_its_statement() {
     let names = Names::new();
     let scope = names.scope();
     let definition = crate::construction::analysis::function_returns::GeneratedBooleanDefinition {
+        mutable: false,
         target: VarName::new("g"),
         value: binary(OpBinary::Gt, var("r"), integer(4)),
         span: span(),
@@ -573,4 +574,33 @@ fn a_chain_proves_only_what_every_branch_proves() {
     assert!(!held(chain("b", "d"), "d"));
     // The first branch's condition is no fact of the chain.
     assert!(!held(chain("b", "b"), "a"));
+}
+
+#[test]
+fn a_mutable_generated_store_invalidates_a_loop_entry_selection() {
+    let names = Names::new();
+    let generated = [function_returns::GeneratedBooleanDefinition {
+        mutable: true,
+        target: VarName::new("g"),
+        value: Expression::Literal {
+            value: Literal::Boolean(true),
+            span: span(),
+        },
+        span: span(),
+    }];
+    let scope = FactScope {
+        generated: &generated,
+        ..names.scope()
+    };
+    let entry = GuardFacts::entry().assuming(&var("g"), false, scope);
+    let body = [branch(
+        vec![(
+            not(var("g")),
+            vec![rumoca_core::Statement::Empty { span: span() }],
+        )],
+        None,
+    )];
+    let head = entry.loop_entry_on_path(&body, &[], scope);
+    assert!(!head.assuming(&var("g"), true, scope).is_unreachable());
+    assert!(!head.assuming(&var("g"), false, scope).is_unreachable());
 }

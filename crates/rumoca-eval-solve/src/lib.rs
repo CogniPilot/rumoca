@@ -856,7 +856,8 @@ pub struct SpecializedRowProgram {
 
 impl PreparedLazyRowPlan {
     pub(crate) fn new(row: &[LinearOp], register_count: usize) -> Option<Self> {
-        if row.len() < 64 || !row.iter().any(|op| matches!(op, LinearOp::Select { .. })) {
+        // Branch reachability owns demanded gathers, regardless of row size.
+        if !row.iter().any(|op| matches!(op, LinearOp::Select { .. })) {
             return None;
         }
         if !row.iter().all(lazy_row_op_supported) {
@@ -893,6 +894,8 @@ impl PreparedLazyRowPlan {
                 || matches!(
                     operation,
                     LinearOp::FunctionConditional { .. } | LinearOp::GuardedFunctionFold { .. }
+                        | LinearOp::LoadFunctionConditionalCapture { .. }
+                        | LinearOp::LoadFunctionConditionalCaptureRange { .. }
                 )
             }),
         })
@@ -1073,6 +1076,8 @@ fn lazy_row_op_supported(op: &LinearOp) -> bool {
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadY { .. }
             | LinearOp::LoadP { .. }
+            | LinearOp::LoadFunctionConditionalCapture { .. }
+            | LinearOp::LoadFunctionConditionalCaptureRange { .. }
             | LinearOp::LoadIndexedP { .. }
             | LinearOp::LoadIndexedRegister { .. }
             | LinearOp::Move { .. }
@@ -1470,6 +1475,9 @@ fn trim_fraction_zeros(value: &mut String, exponent_marker: char) {
         .then(|| value.find(exponent_marker))
         .flatten()
         .unwrap_or(value.len());
+    if !value[..exponent].contains('.') {
+        return;
+    }
     let mut end = exponent;
     while end > 0 && value.as_bytes()[end - 1] == b'0' {
         end -= 1;
@@ -1809,6 +1817,8 @@ fn push_lazy_dependencies(tasks: &mut Vec<LazyEvalTask>, op: LinearOp) {
         | LinearOp::LoadTime { .. }
         | LinearOp::LoadY { .. }
         | LinearOp::LoadP { .. }
+        | LinearOp::LoadFunctionConditionalCapture { .. }
+        | LinearOp::LoadFunctionConditionalCaptureRange { .. }
         | LinearOp::TensorIdentity { .. }
         | LinearOp::TensorLoad { .. } => {}
         LinearOp::LoadIndexedP { index, .. } => push_lazy_register(tasks, index),
@@ -2074,6 +2084,10 @@ fn eval_lazy_pure_op(
         | LinearOp::Unary { .. }
         | LinearOp::Binary { .. }
         | LinearOp::Compare { .. }) => eval_lazy_scalar_op(input, regs, op)?,
+        op @ (LinearOp::LoadFunctionConditionalCapture { .. }
+        | LinearOp::LoadFunctionConditionalCaptureRange { .. }) => {
+            eval_conditional_capture_op(input, regs, &op)?
+        }
         op @ (LinearOp::MatrixMultiply { .. }
         | LinearOp::TensorBinary { .. }
         | LinearOp::TensorTranspose { .. }
@@ -2088,6 +2102,35 @@ fn eval_lazy_pure_op(
         | LinearOp::FunctionConditional { .. }) => eval_lazy_region_op(input, regs, op)?,
         _ => unreachable!("unsupported operations do not receive a lazy apply task"),
     }
+    Ok(())
+}
+
+fn eval_conditional_capture_op(
+    input: PreparedRowEval<'_, '_>,
+    regs: &mut [f64],
+    op: &LinearOp,
+) -> Result<(), EvalSolveError> {
+    let (destination, start, count) = match *op {
+        LinearOp::LoadFunctionConditionalCapture { dst, index } => (dst, index, 1),
+        LinearOp::LoadFunctionConditionalCaptureRange {
+            dst_start,
+            index_start,
+            count,
+        } => (dst_start, index_start, count),
+        _ => unreachable!("conditional capture dispatch has exactly its two checked load owners"),
+    };
+    let captures = input
+        .conditional_captures
+        .and_then(|values| {
+            start
+                .checked_add(count)
+                .and_then(|end| values.get(start..end))
+        })
+        .ok_or_else(|| {
+            invalid_row("invalid function-conditional capture load")
+                .with_source_span(input.source_span)
+        })?;
+    regs[destination as usize..destination as usize + count].copy_from_slice(captures);
     Ok(())
 }
 
@@ -3147,23 +3190,9 @@ fn eval_row_prepared_fast(
                     .copied()
                     .ok_or_else(|| invalid_row("invalid function-fold capture load"))?;
             }
-            LinearOp::LoadFunctionConditionalCapture { dst, index } => {
-                regs[*dst as usize] = input
-                    .conditional_captures
-                    .and_then(|values| values.get(*index))
-                    .copied()
-                    .ok_or_else(|| invalid_row("invalid function-conditional capture load"))?;
-            }
-            LinearOp::LoadFunctionConditionalCaptureRange {
-                dst_start,
-                index_start,
-                count,
-            } => {
-                let captures = input.conditional_captures.ok_or_else(|| {
-                    invalid_row("invalid function-conditional capture range load")
-                })?;
-                regs[*dst_start as usize..*dst_start as usize + *count]
-                    .copy_from_slice(&captures[*index_start..*index_start + *count]);
+            op @ (LinearOp::LoadFunctionConditionalCapture { .. }
+            | LinearOp::LoadFunctionConditionalCaptureRange { .. }) => {
+                eval_conditional_capture_op(input, regs, op)?
             }
             LinearOp::Move { dst, src } => regs[*dst as usize] = regs[*src as usize],
             LinearOp::LinearSolveComponent {
@@ -3713,10 +3742,12 @@ fn eval_function_conditional_region(
     nested.fold_carried = input.fold_carried;
     nested.fold_indices = input.fold_indices;
     nested.fold_captures = input.fold_captures;
+    let lazy_plan = PreparedLazyRowPlan::new(region, register_count);
+    nested = nested.with_lazy_plan(lazy_plan.as_ref());
     let mut values = vec![0.0; output_count];
     let mut scratch = RowEvalScratch::default();
     let mut sink = OutputCursor::new(&mut values);
-    eval_row_prepared_fast(nested, &mut scratch, &mut sink)?;
+    eval_row_prepared_maybe_fast(nested, true, &mut scratch, &mut sink)?;
     Ok(values)
 }
 

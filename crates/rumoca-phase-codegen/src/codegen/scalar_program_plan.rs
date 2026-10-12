@@ -114,13 +114,28 @@ impl Object for PlanProgramValue {
                 .program_span(self.index)
                 .map(Value::from_serialize),
             "output_count" => Some(Value::from(metadata.output_count)),
+            "output_indices" => Some(Value::from_serialize(
+                metadata
+                    .output_targets
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            )),
             "temporary_count" => Some(Value::from(metadata.temporary_count)),
             _ => None,
         }
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Str(&["ops", "span", "output_count", "temporary_count"])
+        Enumerator::Str(&[
+            "ops",
+            "span",
+            "output_count",
+            "output_indices",
+            "temporary_count",
+        ])
     }
 }
 
@@ -246,11 +261,7 @@ fn take_output_target(
     output_ordinal: &mut usize,
     output_count: &mut usize,
 ) -> Result<Option<Box<[usize]>>, CodegenError> {
-    let count = match op {
-        solve::LinearOp::StoreOutput { .. } => 1,
-        solve::LinearOp::StoreOutputRange { count, .. } => *count,
-        _ => 0,
-    };
+    let count = output_arity(op);
     if count == 0 {
         return no_output_target();
     }
@@ -272,6 +283,25 @@ fn take_output_target(
         .checked_add(count)
         .ok_or_else(|| CodegenError::template("scalar program output count exceeds host range"))?;
     Ok(Some(targets))
+}
+
+/// Width of one checked output instruction, shared by blocks and nested regions.
+pub(super) fn output_arity(op: &solve::LinearOp) -> usize {
+    match op {
+        solve::LinearOp::StoreOutput { .. } => 1,
+        solve::LinearOp::StoreOutputRange { count, .. }
+        | solve::LinearOp::StoreOutputFunctionFold { count, .. } => *count,
+        solve::LinearOp::StoreOutputFoldTensorUpdate {
+            dimensions, lanes, ..
+        } => {
+            dimensions
+                .iter()
+                .map(|extent| *extent as usize)
+                .product::<usize>()
+                * lanes
+        }
+        _ => 0,
+    }
 }
 
 fn no_output_target() -> Result<Option<Box<[usize]>>, CodegenError> {
@@ -303,6 +333,9 @@ pub(super) fn op_field(
                 .map(|v| Value::from(*v));
         }
         _ => {}
+    }
+    if key == "output_indices" && output_arity(op) > 0 {
+        return output_targets.map(Value::from_serialize);
     }
     load_field(op, key)
         .or_else(|| match op {
@@ -1004,6 +1037,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "nodes",
             "result",
             "lanes",
+            "output_indices",
         ],
         LinearOp::StoreOutputFunctionFold { .. } => &[
             "kind",
@@ -1020,6 +1054,7 @@ pub(super) fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "count",
             "condition",
             "nested_when_true",
+            "output_indices",
         ],
     }
 }

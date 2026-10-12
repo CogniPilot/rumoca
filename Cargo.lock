@@ -2832,6 +2832,7 @@ dependencies = [
  "indexmap 2.14.0",
  "memo-map",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -37,6 +37,11 @@ pub fn is_pre_slot(name: &str) -> bool {
     pre_slot_base(name).is_some()
 }
 
+/// Mutable function-local state for returns inside finite loops.
+pub fn function_return_state_name(source_start: usize) -> VarName {
+    VarName::new(format!("__rumoca_return_state_{source_start}"))
+}
+
 /// Boolean snapshot inserted at one non-leading function return.
 pub fn function_return_guard_name(source_start: usize) -> VarName {
     VarName::new(format!("__rumoca_return_guard_{source_start}"))

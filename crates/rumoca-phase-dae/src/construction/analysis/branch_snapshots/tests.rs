@@ -129,6 +129,7 @@ fn a_conditional_inside_a_loop_body_is_captured_in_that_body() {
 #[test]
 fn an_immutable_selection_issues_no_capture() {
     let mut guards = vec![GeneratedBooleanDefinition {
+        mutable: false,
         target: VarName::new("returned"),
         value: boolean(true, span(5)),
         span: span(5),
@@ -158,6 +159,7 @@ fn an_immutable_selection_issues_no_capture() {
 
 fn capture(name: &str, at: Span) -> GeneratedBooleanDefinition {
     GeneratedBooleanDefinition {
+        mutable: false,
         target: VarName::new(name),
         value: boolean(true, at),
         span: at,

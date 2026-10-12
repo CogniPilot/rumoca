@@ -132,7 +132,13 @@ impl GuardFacts {
         self.clone()
             .collect_running_writes(body, scope, (&mut runs, &mut relied_on));
         if relied_on.iter().any(|name| runs.contains(name)) {
-            return self.loop_entry(body, binders);
+            return self.entry_forgetting(
+                super::super::function_ranges::assigned_function_targets_with_generated(
+                    body,
+                    scope.generated,
+                ),
+                binders,
+            );
         }
         self.entry_forgetting(runs, binders)
     }
@@ -200,7 +206,16 @@ impl GuardFacts {
     ) {
         for statement in statements {
             match statement {
-                rumoca_core::Statement::Empty { .. } => self.after(statement, scope),
+                rumoca_core::Statement::Empty { span } => {
+                    if let Some(store) = scope
+                        .generated
+                        .iter()
+                        .find(|store| store.span == *span && store.mutable)
+                    {
+                        runs.insert(store.target.as_str().to_string());
+                    }
+                    self.after(statement, scope);
+                }
                 rumoca_core::Statement::If {
                     cond_blocks,
                     else_block,
@@ -660,7 +675,7 @@ fn reads_through_captures(
             && let Some(definition) = scope
                 .generated
                 .iter()
-                .find(|guard| guard.target == reference)
+                .find(|guard| !guard.mutable && guard.target == reference)
         {
             reads_through_captures(&definition.value, scope, reads, depth + 1);
         }

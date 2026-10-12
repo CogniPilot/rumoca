@@ -1371,6 +1371,26 @@ fn is_signed_definition<'dae>(
 }
 
 #[test]
+fn structural_reconstruction_preserves_retained_table_resources() {
+    let model = alias_chain_model().with_external_tables(vec![rumoca_core::ExternalTableData {
+        id: 1,
+        data: vec![vec![0.0, 2.0], vec![1.0, 4.0]],
+        columns: vec![2],
+        smoothness: 1,
+        extrapolation: 2,
+    }]);
+    let prepared = prepare_for_solve(&model).expect("alias chain rebuilds");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("fixture must exercise reconstruction"),
+    };
+    assert_eq!(
+        serde_json::to_value(transformed.external_tables()).unwrap(),
+        serde_json::to_value(model.external_tables()).unwrap(),
+    );
+}
+
+#[test]
 fn connector_alias_chain_demotes_the_redundant_state_and_matches() {
     let model = alias_chain_model();
     assert!(

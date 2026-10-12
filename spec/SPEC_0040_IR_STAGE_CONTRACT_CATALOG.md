@@ -163,6 +163,14 @@ product requirements use §4.
 These are the transformations that are in scope for DAE-to-DAE structural
 lowering. Anything absent from this catalog requires a SPEC_0007 update.
 
+Every checked structural reconstruction retains the source DAE's external-table
+resources unchanged, including IDs, data, selected columns, smoothness, and
+extrapolation. These are model-wide resources, not arena-local owner IDs. The
+shared `dae_transform::reconstruction::construct_replay` boundary preserves them
+for every replay; downstream template projection consumes the retained registry
+rather than rediscovering tables from variable names. The focused regression is
+`structural_reconstruction_preserves_retained_table_resources`.
+
 | ID | Transformation | Owning module | Notes |
 |---|---|---|---|
 | STRUCT-T01 | Source pre-lowering (`pre(v)` → typed paired pre-coordinate) | `rumoca-phase-dae` | Runs before finalized DAE construction and applies to every Appendix-B partition. See `DAE-C01`/`DAE-C04`. |

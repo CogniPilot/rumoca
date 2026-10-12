@@ -157,7 +157,7 @@ fn normalized_return_predicate_skips_an_inactive_invalid_elseif() {
     )
     .unwrap();
     assert_eq!(oracle, Value::Real(1.0));
-    let normalized = normalize_function_returns(&function.body).unwrap();
+    let normalized = normalize_function_returns(&function.body, function.span).unwrap();
     let value = evaluate_predicate(normalized.guards[0].value.clone(), true, 5.0, 2);
     assert_eq!(value.unwrap(), Value::Bool(true));
 }
@@ -165,14 +165,14 @@ fn normalized_return_predicate_skips_an_inactive_invalid_elseif() {
 #[test]
 fn normalized_return_predicate_keeps_an_active_invalid_elseif_fault() {
     let (function, _) = fixture();
-    let normalized = normalize_function_returns(&function.body).unwrap();
+    let normalized = normalize_function_returns(&function.body, function.span).unwrap();
     assert!(evaluate_predicate(normalized.guards[0].value.clone(), false, 5.0, 2).is_err());
 }
 
 #[test]
 fn normalized_return_predicate_keeps_the_valid_second_branch_and_fallthrough() {
     let (function, _) = fixture();
-    let normalized = normalize_function_returns(&function.body).unwrap();
+    let normalized = normalize_function_returns(&function.body, function.span).unwrap();
     for (sample, expected) in [(5.0, true), (-5.0, false)] {
         assert_eq!(
             evaluate_predicate(normalized.guards[0].value.clone(), false, sample, 1).unwrap(),

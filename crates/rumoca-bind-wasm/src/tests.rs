@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::source_root_api::sync_workspace_sources_with_cache_root_for_tests;
 
 mod compile_wire_tests;
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+mod compiled_model_tests;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
 mod function_fold_scope_tests;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-assignments"))]
@@ -26,6 +28,7 @@ mod portable_source_root_tests;
 mod scenario_config_tests;
 mod session_recovery_tests;
 mod simulation_runtime_tests;
+mod solve_render_tests;
 mod source_modelica_roundtrip_tests;
 mod source_root_api_tests;
 mod user_guide_config_fragment_tests;

@@ -42,6 +42,17 @@ use super::variables::{
 use super::{DirectStateConstraint, HolonomicConstraint, LiftedManifoldOwner, ManifoldConstraint};
 use crate::StructuralError;
 
+/// Replay checked owners while retaining model-wide external resources.
+fn construct_replay<F>(model: &dae::Dae, build: F) -> Result<dae::Dae, dae::DaeConstructionError>
+where
+    F: for<'target> FnOnce(
+        &mut dae::DaeConstruction<'target>,
+    ) -> Result<(), dae::DaeConstructionError>,
+{
+    dae::Dae::construct(model.source_map().clone(), build)
+        .map(|rebuilt| rebuilt.with_external_tables(model.external_tables().to_vec()))
+}
+
 pub(super) fn rebuild_derivative_aliases(
     model: &dae::Dae,
     selected: &[u32],
@@ -49,7 +60,7 @@ pub(super) fn rebuild_derivative_aliases(
 ) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
     let mut manifold = Vec::with_capacity(prior_manifold.len());
     let rebuilt = model.inspect(|source| {
-        dae::Dae::construct(model.source_map().clone(), |target| {
+        construct_replay(model, |target| {
             let facts = DifferentiationFacts::collect(source);
             prepare_rebuild(
                 source,
@@ -116,7 +127,7 @@ pub(super) fn rebuild_requested_states(
             if requested.is_empty() {
                 return Ok(None);
             }
-            dae::Dae::construct(model.source_map().clone(), |target| {
+            construct_replay(model, |target| {
                 let facts = DifferentiationFacts::collect(source);
                 prepare_rebuild(
                     source,
@@ -165,7 +176,7 @@ pub(super) fn rebuild_holonomic_constraint(
     let model = analysis.model();
     let mut manifold = Vec::with_capacity(prior_manifold.len() + 2);
     let rebuilt = analysis.inspect(|source, facts| {
-        dae::Dae::construct(model.source_map().clone(), |target| {
+        construct_replay(model, |target| {
             prepare_rebuild(
                 source,
                 target,
@@ -276,7 +287,7 @@ pub(super) fn rebuild_with_state_demotion_and_manifold(
     let model = analysis.model();
     let mut manifold = Vec::with_capacity(prior_manifold.len());
     let rebuilt = analysis.inspect(|source, facts| {
-        dae::Dae::construct(model.source_map().clone(), |target| {
+        construct_replay(model, |target| {
             prepare_rebuild(
                 source,
                 target,

@@ -4,11 +4,14 @@ use rumoca_core::Reference;
 #[cfg(test)]
 mod tests;
 
+mod loop_returns;
+pub(super) use loop_returns::contains_for_return;
+
 pub(super) fn validate_guarded_function_return(
     function: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<FunctionPlan>, ToDaeError> {
-    if !contains_return(&function.body) {
+    if !contains_return(&function.body) || loop_returns::contains_for_return(&function.body) {
         return Ok(None);
     }
     let Some((first, tail)) = function.body.split_first() else {
@@ -100,6 +103,7 @@ pub(super) struct NormalizedFunctionReturns {
 
 #[derive(Clone, Debug)]
 pub(super) struct GeneratedBooleanDefinition {
+    pub(super) mutable: bool,
     pub(super) target: VarName,
     pub(super) value: Expression,
     pub(super) span: Span,
@@ -117,7 +121,11 @@ fn reachable_prefix(statements: &[rumoca_core::Statement]) -> &[rumoca_core::Sta
 
 pub(super) fn normalize_function_returns(
     statements: &[rumoca_core::Statement],
+    function_span: Span,
 ) -> Result<NormalizedFunctionReturns, ToDaeError> {
+    if loop_returns::contains_for_return(statements) {
+        return loop_returns::normalize(statements, function_span);
+    }
     let statements = reachable_prefix(statements);
     let has_returns = contains_return(statements);
     let mut normalized = Vec::new();
@@ -145,6 +153,7 @@ pub(super) fn normalize_function_returns(
             );
             normalized.push(rumoca_core::Statement::Empty { span: guard_span });
             guards.push(GeneratedBooleanDefinition {
+                mutable: false,
                 target: target.clone(),
                 value,
                 span: guard_span,

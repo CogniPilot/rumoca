@@ -19,6 +19,25 @@ pub struct SolveTemplateRenderer {
 }
 
 impl SolveTemplateRenderer {
+    /// Complete solver-model view for custom execution templates. Callers keep
+    /// the original DAE separately for source analysis; the optional DAE view
+    /// supplied here is the exact prepared source used during lowering.
+    pub fn new_owned_model_with_dae(
+        model: std::sync::Arc<solve::SolveModel>,
+        dae_model: &dae::Dae,
+    ) -> Result<Self, CodegenError> {
+        let model_entry = super::solve_lazy::model_value(model.clone())?;
+        let handle = super::solve_lazy::SolveRenderHandle::Model(model);
+        let context = solve_render_context_value_with_handles(
+            handle,
+            None,
+            checked_dae_template_value(dae_model)?,
+        )?;
+        Ok(Self {
+            context: minijinja::context! { solve_model => model_entry, ..context },
+        })
+    }
+
     pub fn new(
         problem: &solve::SolveProblem,
         artifacts: &solve::SolveArtifacts,
