@@ -56,7 +56,12 @@ fn check_directional(
     let input = tensor(table, values);
     let owner = &table.owners()[0];
     let primal = eval_pure_call(table, owner.id(), std::slice::from_ref(&input)).unwrap();
-    assert_eq!(number(&primal[0]), expected[0]);
+    let value = number(&primal[0]);
+    if expected[0].is_nan() {
+        assert!(value.is_nan());
+    } else {
+        assert_eq!(value.to_bits(), expected[0].to_bits());
+    }
     let outputs = eval_pure_call_directional(table, owner.id(), &[input, tensor(table, seeds)])
         .expect("same checked owner supplies the directional relation");
     assert_eq!(
@@ -145,6 +150,23 @@ fn reduction_extrema_directional_preserves_ordered_primal_bits_and_scalar_kink_p
             &[1.0, f64::NAN, 3.0, 4.0],
             &[11.0, 13.0, 17.0, 19.0],
             [primal, tangent],
+        );
+        check_directional(
+            &table,
+            &[f64::NAN; 4],
+            &[11.0, 13.0, 17.0, 19.0],
+            [f64::NAN, 19.0],
+        );
+        let expected = if operator == SolveReductionOperator::Minimum {
+            [2.0, 17.0]
+        } else {
+            [f64::INFINITY, 11.0]
+        };
+        check_directional(
+            &table,
+            &[f64::INFINITY, 4.0, 2.0, f64::INFINITY],
+            &[11.0, 13.0, 17.0, 19.0],
+            expected,
         );
         let singleton = table_singleton(operator);
         check_directional(&singleton, &[2.0], &[7.0], [2.0, 7.0]);
