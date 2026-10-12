@@ -1,0 +1,56 @@
+{
+  "source_commit": "a104510d0578cd677937caff99c3eec8cb359128",
+  "source_files": 4122,
+  "source_before_after_equal": true,
+  "command": "cargo nextest run -p rumoca --test architecture_hardening_test --test suite_core --test suite_examples_smoke --features rumoca/msl-sim-tests,rumoca/examples-smoke-tests --no-fail-fast --test-threads 4 -E \"test(test_rs_files_stay_under_spec_0021_hard_limit) | test(test_backend_totality_debt_does_not_increase) | test(sample_tick_pulses::) | test(derivative_reads_in_derivative_rows::) | test(booster_native::)\"",
+  "format_check": "pass",
+  "selected_tests": 12,
+  "passed": 10,
+  "failed": 2,
+  "unselected": 1708,
+  "ignored_within_selected_tests": 0,
+  "failures": [
+    {
+      "test": "a_when_equation_derivative_reads_the_current_same_tick_producer",
+      "expected": "a=z=2 at first sampled instant",
+      "actual": "Interpreter a=1 versus expected2",
+      "repair": "pending coordinate-aware same-tick derivative dependency projection"
+    },
+    {
+      "test": "original_booster_scenario_initializes_and_advances_the_authored_grid",
+      "native_initialization": {
+        "time": 0,
+        "finite_values": 612,
+        "engine": "Cranelift",
+        "refusal": null,
+        "declined": []
+      },
+      "first_advance_error_time": 0.040795571,
+      "error": "Modelica assert failed: margin used without a value; executed path never assigned it",
+      "source_total_assignment": "loadedFootSupportMargin assigns margin in every arm; fallback initializes it before the fold",
+      "repair": "pending first-divergent definedness/control producer proof"
+    }
+  ],
+  "elapsed_ms": 276922.886816,
+  "peak_resident_plus_swap_kib": 2988612,
+  "guards": {
+    "seconds": 600,
+    "rss_mib": 8192,
+    "available_host_mib": 16384,
+    "scratch_floor_mib": 8192,
+    "workers": 4
+  },
+  "resource_stop": null,
+  "raw_directory": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/evidence/root-native-context-integration-a104",
+  "raw_artifact_sha256": {
+    "command.log": "ce281f9486f23ae0e29edc45c35c0e06f59452700282068dc75416a4fe841db6",
+    "guardian.json": "202d3478847286ad3d496c439c2000a64c9c6400781f7f000d1b7f323534afd8",
+    "source-before.json": "6ae218d3aef28e8d9a5097e9e65bc1088568b1d14f8446b662895363ac963fb6",
+    "source-after.json": "6ae218d3aef28e8d9a5097e9e65bc1088568b1d14f8446b662895363ac963fb6",
+    "exit-code.txt": "eea8254c7500ba3de996aa8ad6af399183f04e17d4a8102fde539dbc93a90012"
+  },
+  "recipe_sha256": "6a546a08de7b42cc8e2aa7b6fbeaa55894702ef03caa82b56c4e5f2dda8faa3b",
+  "booster_source_sha256": "180760c31308ed7a49d6cedd9869e5f29619695b7e138f23feb5268939fdc38e",
+  "booster_config_sha256": "148b5d78e979382587bc1571087cfe9d229b1d190c6b1136d2adf2b374ef1dd7",
+  "qualification": "focused composition only; neither full-guide lifecycle nor quick/full/cohort/remote qualification"
+}
