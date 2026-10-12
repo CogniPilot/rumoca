@@ -105,6 +105,12 @@ fn a_same_tick_derivative_preserves_its_previous_value_boundary() {
     check_same_tick_derivative(source, [1.0, 2.0, 3.0]);
 }
 
+#[test]
+fn a_same_tick_algebraic_derivative_result_retains_its_matched_writer() {
+    let source = "model SameTickDerivative Real x(start=0,fixed=true); Real rhs; discrete Real a(start=0,fixed=true); discrete Real z(start=1,fixed=true); equation der(x)=z; rhs=der(x); when sample(0,0.1) then a=rhs; z=pre(z)+1; end when; end SameTickDerivative;";
+    check_same_tick_derivative(source, [2.0, 3.0, 4.0]);
+}
+
 fn check_same_tick_derivative(source: &str, expected_a: [f64; 3]) {
     check_same_tick_values(source, [("a", expected_a), ("z", [2.0, 3.0, 4.0])]);
 }
