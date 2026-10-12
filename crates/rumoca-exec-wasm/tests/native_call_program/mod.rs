@@ -259,6 +259,11 @@ impl ProgramRunner {
         assert_eq!(&lanes[..inputs.len()], inputs, "typed inputs are read-only");
         if status != 0 {
             assert_eq!(
+                &lanes[inputs.len()..],
+                vec![0x7f; self.lane_bytes - inputs.len()],
+                "a failed typed program publishes no output lane"
+            );
+            assert_eq!(
                 output,
                 vec![0xa5; self.p],
                 "late failure published an earlier stage"
