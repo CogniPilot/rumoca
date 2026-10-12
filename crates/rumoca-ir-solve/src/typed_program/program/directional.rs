@@ -129,15 +129,10 @@ fn program_supports_directional(
                 }),
             SolveOperation::BroadcastBinary {
                 operator:
-                    SolveBinaryOperator::IntegerQuotient
-                    | SolveBinaryOperator::Power
+                    SolveBinaryOperator::Power
                     | SolveBinaryOperator::Atan2
                     | SolveBinaryOperator::Min
-                    | SolveBinaryOperator::Max
-                    | SolveBinaryOperator::And
-                    | SolveBinaryOperator::Or
-                    | SolveBinaryOperator::IntegerModulo
-                    | SolveBinaryOperator::IntegerRemainder,
+                    | SolveBinaryOperator::Max,
                 ..
             } => false,
             SolveOperation::Reduce {
@@ -261,7 +256,12 @@ fn program_supports_directional(
                 operator:
                     SolveBinaryOperator::Add
                     | SolveBinaryOperator::Subtract
-                    | SolveBinaryOperator::Multiply,
+                    | SolveBinaryOperator::Multiply
+                    | SolveBinaryOperator::IntegerQuotient
+                    | SolveBinaryOperator::And
+                    | SolveBinaryOperator::Or
+                    | SolveBinaryOperator::IntegerModulo
+                    | SolveBinaryOperator::IntegerRemainder,
                 ..
             }
             | SolveOperation::Reduce {
@@ -1388,8 +1388,17 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             provenance,
         )?;
         let value_type = self.primal.register_types()[destination.index()].clone();
-        if let Some(directional) = self.integer_valued(primal, &value_type, provenance)? {
-            return self.bind(destination, directional, provenance);
+        // SOLVE-C56: checked discrete/control payloads retain their primal only.
+        // The canonical broadcast constructor has already checked operator/type equality.
+        if !is_real(&value_type) {
+            return self.bind(
+                destination,
+                Directional {
+                    primal,
+                    tangent: None,
+                },
+                provenance,
+            );
         }
         let aggregate_tangent = self.tangent_or_zero(aggregate, &value_type, provenance)?;
         let scalar_type = SolveValueType::scalar(value_type.element_type());
