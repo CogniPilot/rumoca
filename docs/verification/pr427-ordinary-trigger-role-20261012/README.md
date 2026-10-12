@@ -20,9 +20,9 @@ sample-alias runtime evidence.
 - Corrected BEFORE: **1 pass / 1 fail**, missing the ordinary exact memory row.
 - Dirty AFTER: **2 pass**, scoped all-target/all-feature Clippy and fmt pass.
 - Frozen `40243d817`: **2 pass**; complete phase-solve **197 pass / 1 fail**.
-  Its existing unconditional discrete derivative negative expects a refusal
-  now superseded by the integrated canonical event derivative context. That
-  separate observer failure remains visible; no full-suite pass is claimed.
+  The existing unconditional discrete derivative test expects a refusal, but
+  actual lowering succeeds. Its governing acceptance boundary is under
+  investigation; no full-suite pass is claimed.
 - The initial direct-Clock ordinary fixture was refused before lowering with
   `MissingClockOwnership`. Its immutable receipt is retained as a harness
   error, distinct from the corrected BEFORE counterexample.

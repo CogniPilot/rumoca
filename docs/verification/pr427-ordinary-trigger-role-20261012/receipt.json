@@ -410,7 +410,7 @@
     "Corrected BEFORE is one owned control pass and one exact ordinary trigger-memory failure.",
     "Dirty AFTER two controls, scoped all-target/all-feature phase-solve Clippy, and fmt pass.",
     "Frozen repeat outcomes are recorded individually; the two focused controls are a subset of the full phase-solve suite.",
-    "Frozen full suite: 197 pass / 1 fail, the existing discrete_row_still_rejects_a_derivative_coordinate expects a refusal despite the integrated event derivative context. The trigger fixture and predicate do not affect that unconditional no-clock discrete row. Full-suite qualification remains open."
+    "Frozen full suite: 197 pass / 1 fail. The existing discrete_row_still_rejects_a_derivative_coordinate expects a refusal, but actual lowering succeeds. Its governing acceptance boundary is under investigation; no full-suite pass is claimed."
   ],
   "sealed_executable": {
     "target": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target",
