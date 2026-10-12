@@ -1,0 +1,397 @@
+{
+  "schema": 1,
+  "scope": "Source-declared discrete Real when obligation; direct checked B.1b derivative substitution remains a separate IR capability.",
+  "production_commits": [
+    "dc8fb0a90256971afa4068815d82cd748c5c7d60",
+    "fb0dafc724306b9bb8bbdeaa3324adeb2cb67ddc",
+    "67deb142b1d0f8a74c91dd3a6c3185f061a7d279"
+  ],
+  "governing_mls": "MLS 3.7 section 4.5.3; source declarations are distinct from Appendix B.1b residual operands.",
+  "guardian": {
+    "path": "$HOME/scratch/rumoca/workshop427-c-modelica-86c-20261012/guardian-resident-plus-swap-20261012.mjs",
+    "sha256": "0c707dc6d3b6b139cea1cd1ae33e91672aadcb4b09161293bb5f8b70b22a0c1c"
+  },
+  "limits": {
+    "seconds_per_gate": 600,
+    "aggregate_rss_plus_swap_mib": 4096,
+    "host_available_floor_mib": 16384,
+    "cache_mib": 8192,
+    "scratch_floor_mib": 8192,
+    "jobs": 4,
+    "test_threads": 4,
+    "rayon_threads": 4,
+    "incremental": false,
+    "debug_info": 0
+  },
+  "attempts": [
+    {
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/recipe.json",
+        "sha256": "d5bf4a81717aecb9d1be019a878aca011b2e0c35c3969c81f347abef37e19387"
+      },
+      "source": "301b4d5668382bf73826ef55f5f3d4a4ca7494b0",
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/source-before.json",
+        "sha256": "a35e59b4df14d895b18664394945822071e094560dfa42e80f9f3e6357fc2cca"
+      },
+      "source_diff": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/source.diff",
+        "sha256": "72fe4480a59d47fc0dac76b2a87a7f71f02655ec29df3b9774041f27968d7751"
+      },
+      "gates": [
+      {"gate": "check", "expected_tests": null, "exit_code": 0, "last_summary": null, "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/check.sh", "sha256": "8c2a6b075692a161edb5dae872d0812cfc3ba7527accf83f10e161a08c35f0c8"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/check.log", "sha256": "f8e2d30fc0d0f75351ede177b5e7f8d30718b4eeb38e9b7a2fd4ddf466e7ca97"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/check.guardian.json", "sha256": "dd28eaa3a641d1812995539781b03610e53e99caba77f4acd88ebd3edf7f568c"}, "resources": {"elapsedMs": 78596.790009, "peakRssKiB": 2093540, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2093540, "peakCacheBytes": 5791027200, "minimumAvailableKiB": 50317168, "minimumScratchFreeBytes": 82326446080, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "source13", "expected_tests": 13, "exit_code": 0, "last_summary": ["ok", "13", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/source13.sh", "sha256": "a48f5ed5307858a057a894843965aad4b27c5dbbecb023ee7a625ebf31d01ca9"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/source13.log", "sha256": "3fe193a174b669875df9249b5fb8fd11f2f9eb999595f69922e64aaa3b6e0e33"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/source13.guardian.json", "sha256": "ade9cd3f59d3751b5b8bcbe8bb88653074613144fe7ff5a4b4a0c6bf54e6e94f"}, "resources": {"elapsedMs": 254976.631538, "peakRssKiB": 2493160, "peakSwapKiB": 56720, "peakResidentPlusSwapKiB": 2493160, "peakCacheBytes": 6278717440, "minimumAvailableKiB": 43938684, "minimumScratchFreeBytes": 79517671424, "signal": null, "exitCode": 0}, "resource_stop": null}
+    ],
+      "unrun_gates": [],
+      "runner": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/run.py",
+        "sha256": "b33bbeaf3c58038568c4abeff22ded4dca897b5f56573b25dee4769dc944d979"
+      },
+      "results": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/results.json",
+        "sha256": "66ef6e6f8d6f859f111019c0b0b74f4a7d76222b28e14aac2b48e24d880583e2"
+      },
+      "source_guards": [
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/guard-after-check.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/guard-after-source13.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/guard-after.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-dirty-after-20261012/guard-before.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"}
+    ]
+    },
+    {
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/recipe.json",
+        "sha256": "f41fc4c5e7454059ddc2b106f6b37a858512f4e485c8753fa8199b1367d79b65"
+      },
+      "source": "301b4d5668382bf73826ef55f5f3d4a4ca7494b0",
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/source-before.json",
+        "sha256": "a35e59b4df14d895b18664394945822071e094560dfa42e80f9f3e6357fc2cca"
+      },
+      "source_diff": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/source.diff",
+        "sha256": "72fe4480a59d47fc0dac76b2a87a7f71f02655ec29df3b9774041f27968d7751"
+      },
+      "gates": [
+      {"gate": "full-dae", "expected_tests": null, "exit_code": 101, "last_summary": ["FAILED", "442", "2", "0"], "count_qualified": false, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/full-dae.sh", "sha256": "c6893ca7aaca7f588e1a0d642e23992aed70b980a206c1c55512f9effd364fc8"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/full-dae.log", "sha256": "68f8e685a8623fcdb4d3433be9fa5fa38e99f175fc83b2ced11dee5d68c7404f"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/full-dae.guardian.json", "sha256": "2984e8bd8aaf6be3864c7ddad72d15bce8ac0f046a042adcd1220c5528235957"}, "resources": {"elapsedMs": 108194.851379, "peakRssKiB": 1222408, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 1222408, "peakCacheBytes": 6411436032, "minimumAvailableKiB": 44785452, "minimumScratchFreeBytes": 78987128832, "signal": null, "exitCode": 101}, "resource_stop": null}
+    ],
+      "unrun_gates": [],
+      "runner": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/run.py",
+        "sha256": "b33bbeaf3c58038568c4abeff22ded4dca897b5f56573b25dee4769dc944d979"
+      },
+      "results": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/results.json",
+        "sha256": "e2a7fcf0dc367d91064c9d368d59b53817fcb2fb2098907cfd11f270d1d72dd7"
+      },
+      "source_guards": [
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/guard-after-full-dae.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/guard-after.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-full-dae-before-fixture-repair-20261012/guard-before.json", "sha256": "80616c11772b5781f759d9bda9e2d1cf1d35f133db94a3941c3f187a8a69d6d5"}
+    ]
+    },
+    {
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/recipe.json",
+        "sha256": "acbe8ccc14a8bac6c186e30e5b554c56c84aac953325c43dd880a36d6e2b4ba2"
+      },
+      "source": "dc8fb0a90256971afa4068815d82cd748c5c7d60",
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/source-before.json",
+        "sha256": "5e32b1b16b23ecfdb21c3948e213cabe6c437900ffadbde0ff269c62ffa35913"
+      },
+      "source_diff": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/source.diff",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "gates": [
+      {"gate": "source14", "expected_tests": 14, "exit_code": 0, "last_summary": ["ok", "14", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/source14.sh", "sha256": "875bf75271cc0882535f7b02dbc45ec160e8752e6c07cce42e4b059ba7b46b15"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/source14.log", "sha256": "000784174af44a2b32e36ad25df003cc4ad245a86d60d327efdcc91071429b9c"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/source14.guardian.json", "sha256": "6716a4bc9637d0ad5120eba6ca1740a56067093016690254173432817b37e90d"}, "resources": {"elapsedMs": 218697.852899, "peakRssKiB": 2698276, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2698276, "peakCacheBytes": 6445441024, "minimumAvailableKiB": 49187052, "minimumScratchFreeBytes": 76338327552, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "dae444", "expected_tests": 444, "exit_code": 0, "last_summary": ["ok", "444", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/dae444.sh", "sha256": "8735807d1b7ac50c1fbb7bf176a82555cb21b33fb9b557d972543d419e3ccead"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/dae444.log", "sha256": "a7d442a55c258fe553a3be238f72bfe36c5cc5c00bfeee9c63773545b24baaef"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/dae444.guardian.json", "sha256": "15025237d8dcacf602865c66a00df8e76afebaa4e8d3a168e9e583da51c2d941"}, "resources": {"elapsedMs": 60322.181674, "peakRssKiB": 1227488, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 1227488, "peakCacheBytes": 6426128384, "minimumAvailableKiB": 52436472, "minimumScratchFreeBytes": 76363583488, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "solve198", "expected_tests": 198, "exit_code": 0, "last_summary": ["ok", "198", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/solve198.sh", "sha256": "d801ce2596b149aa0260e48aae6677f4b868fa747df77f1346a366f2022456c0"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/solve198.log", "sha256": "bce2425e8c1a5f5b01f8e80fdd74ed4ff6144b94cd79d59ede8067a1cec3cc97"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/solve198.guardian.json", "sha256": "5bcdc28efcf7bdb31d240129d4f07ad340f5ad80a7ef2b18458985aa01904f1b"}, "resources": {"elapsedMs": 68116.65757299999, "peakRssKiB": 2047056, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2047056, "peakCacheBytes": 6528114688, "minimumAvailableKiB": 28520272, "minimumScratchFreeBytes": 77011640320, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "compile436", "expected_tests": 436, "exit_code": 101, "last_summary": ["FAILED", "435", "1", "0"], "count_qualified": false, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/compile436.sh", "sha256": "20021593bbb4dcf0a2a8f02814cdcf9d2aa9f2ba5e2837b1bb96f2e3718e1f2c"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/compile436.log", "sha256": "13174193c1a31c96dc6d2136587490513d07290d5921816bf80c0cd9e1dea495"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/compile436.guardian.json", "sha256": "63c03beb4362ceb926abd9be5abeb58fcc4e592ee7e29b91e346a99212a9468c"}, "resources": {"elapsedMs": 56472.763652, "peakRssKiB": 243168, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 243168, "peakCacheBytes": 6544560128, "minimumAvailableKiB": 23664076, "minimumScratchFreeBytes": 76888645632, "signal": null, "exitCode": 101}, "resource_stop": null}
+    ],
+      "unrun_gates": [
+        "clippy",
+        "fmt"
+      ],
+      "runner": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/run.py",
+        "sha256": "b33bbeaf3c58038568c4abeff22ded4dca897b5f56573b25dee4769dc944d979"
+      },
+      "results": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/results.json",
+        "sha256": "513e4fda72ad6d0d81e7d72f06b50dcf7f06920eb942189237fa1cb473b04e49"
+      },
+      "source_guards": [
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-after-compile436.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-after-dae444.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-after-solve198.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-after-source14.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-after.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-frozen-after-dc8-20261012/guard-before.json", "sha256": "c0b391e8629e7682643bddbe201fd138b28e94cc71d717d147729afe9f3f91f4"}
+    ]
+    },
+    {
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/recipe.json",
+        "sha256": "198ffaa1e33c92693fea1a769f1f4324cea94064172680e82d2fb0fdd3375d5a"
+      },
+      "source": "fb0dafc724306b9bb8bbdeaa3324adeb2cb67ddc",
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/source-before.json",
+        "sha256": "475c3d1eee1c7de589db2007006c19c508232652c9d6e70e58658421656cb2bb"
+      },
+      "source_diff": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/source.diff",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "gates": [
+      {"gate": "source17", "expected_tests": 17, "exit_code": 0, "last_summary": ["ok", "17", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/source17.sh", "sha256": "bd23a6259af30cbcb3af1bee11acb430aa2bdd4553fe2b99d65a119e12adb30f"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/source17.log", "sha256": "1ab91cfee9ddbffd8084c6af9b89fe52c0703f622d0773daaaf5fa04323742ae"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/source17.guardian.json", "sha256": "1ea3e995fa791f2739c84e59d6dfae2382d8b32d410332e02dd038ba85969c79"}, "resources": {"elapsedMs": 155607.465792, "peakRssKiB": 2701504, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2701504, "peakCacheBytes": 6585085952, "minimumAvailableKiB": 54177184, "minimumScratchFreeBytes": 75457241088, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "dae444", "expected_tests": 444, "exit_code": 0, "last_summary": ["ok", "444", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/dae444.sh", "sha256": "71cbeb83536d03087452992ac4c68a93739803e989e23a685dea656dbe00551c"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/dae444.log", "sha256": "a0c0c8f750d7b88da8d6a2abeab997722b80c578d7a2ca025e7e31a881b6c00a"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/dae444.guardian.json", "sha256": "e08df20320c79ceaf3fce0209848f95999ca89d55a1416f514284f3bf603cd10"}, "resources": {"elapsedMs": 61105.140891999996, "peakRssKiB": 1215304, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 1215304, "peakCacheBytes": 6562996224, "minimumAvailableKiB": 51411788, "minimumScratchFreeBytes": 75153870848, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "solve198", "expected_tests": 198, "exit_code": 0, "last_summary": ["ok", "198", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/solve198.sh", "sha256": "8d10c677ce92dfbd20ecb9185cd497f9fc37e3766121c649e58c020d99c4da6b"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/solve198.log", "sha256": "c95e93c8d7f66ec284d57784aecd127265f2bd8d606815523932136992fc9fa6"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/solve198.guardian.json", "sha256": "7fbb127832ab45658c7cd03df7e8f145079f34bd7e427b91b8a79e4fb7e8965b"}, "resources": {"elapsedMs": 68724.017305, "peakRssKiB": 2065588, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2065588, "peakCacheBytes": 6553542656, "minimumAvailableKiB": 47396040, "minimumScratchFreeBytes": 75093995520, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "compile439", "expected_tests": 439, "exit_code": 0, "last_summary": ["ok", "439", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/compile439.sh", "sha256": "598b4d9f44ed98bae1a5df239f71586c46633361caf88bf9f6e9a020932daf2d"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/compile439.log", "sha256": "a54d57594707650f51d96c5e68b466cefc71902f620a6d8feb3a17177f2787fc"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/compile439.guardian.json", "sha256": "80990def89e1bef9f18329cc746afbef048a7245a10a297084cef4edb8bee068"}, "resources": {"elapsedMs": 2387.2570640000004, "peakRssKiB": 174696, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 174696, "peakCacheBytes": 6544580608, "minimumAvailableKiB": 53640292, "minimumScratchFreeBytes": 75109212160, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "clippy", "expected_tests": null, "exit_code": 101, "last_summary": null, "count_qualified": false, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/clippy.sh", "sha256": "a49fb1a3643a001fa81eedd123e1af179c8a427bdb4af87f4433fef394956231"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/clippy.log", "sha256": "0685fea65d2e98e84c2cfe2b43b23ea9b44d487c5a3c5e79c09b00f0e75e31a7"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/clippy.guardian.json", "sha256": "3ce5b6e9cb71681142f75c75dc204784a281642341b0192ed6756140d0f3f0de"}, "resources": {"elapsedMs": 33522.977801999994, "peakRssKiB": 2289424, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2289424, "peakCacheBytes": 6602149888, "minimumAvailableKiB": 52019664, "minimumScratchFreeBytes": 75010600960, "signal": null, "exitCode": 101}, "resource_stop": null}
+    ],
+      "unrun_gates": [
+        "fmt"
+      ],
+      "runner": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/run.py",
+        "sha256": "b33bbeaf3c58038568c4abeff22ded4dca897b5f56573b25dee4769dc944d979"
+      },
+      "results": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/results.json",
+        "sha256": "900fe01b9789577c53ffe6f6adf20baf979221d8229b9d90a7a8c06c8a97e993"
+      },
+      "source_guards": [
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after-clippy.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after-compile439.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after-dae444.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after-solve198.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after-source17.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-after.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-strict-frozen-after-fb0-20261012/guard-before.json", "sha256": "56770ca65f5610f76f28159d5ad00378ed0e8453ed82517fa24d161bf81157f0"}
+    ]
+    },
+    {
+      "recipe": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/recipe.json",
+        "sha256": "af7720a3e93f17ab0a88abaa5e795431498bf601270e8678b63ee192e36a1fb8"
+      },
+      "source": "67deb142b1d0f8a74c91dd3a6c3185f061a7d279",
+      "source_manifest": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/source-before.json",
+        "sha256": "afabc7de6ab42f5e6282621b13cf5c87e3a533e7aed40795aec4416f9e5146a9"
+      },
+      "source_diff": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/source.diff",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "gates": [
+      {"gate": "source17", "expected_tests": 17, "exit_code": 0, "last_summary": ["ok", "17", "0", "0"], "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/source17.sh", "sha256": "4be2caa01c3908ec7dc6df95d49d5e3fe3ad95095cebd8bcd44456fef8aa42c6"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/source17.log", "sha256": "0ce501a168f6927a54a71bbc2d026e434ef7bab84fcad04d0508a97ce3a7f2ba"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/source17.guardian.json", "sha256": "ddd47a178204610447a9f97b326f1d3db2dc0a2008a2613f90313e6fb1c7501d"}, "resources": {"elapsedMs": 161364.727021, "peakRssKiB": 2628144, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2628144, "peakCacheBytes": 6642675712, "minimumAvailableKiB": 52635936, "minimumScratchFreeBytes": 74783981568, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "clippy", "expected_tests": null, "exit_code": 0, "last_summary": null, "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/clippy.sh", "sha256": "a2f535042e7f63cdfb186e6b361f02bc8ca7869633d0dec7251b5f4e784f72c2"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/clippy.log", "sha256": "cb1060574737fb008b5e5c9c42d37d52da0ce323b0f628abc2f4eb2ae931cfbc"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/clippy.guardian.json", "sha256": "986fef8e386fafd845052a86a56d6a226431c78ed16640277df4b6e0bb7c14af"}, "resources": {"elapsedMs": 33674.304221, "peakRssKiB": 2299944, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2299944, "peakCacheBytes": 6602158080, "minimumAvailableKiB": 53762920, "minimumScratchFreeBytes": 74746925056, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "fmt", "expected_tests": null, "exit_code": 0, "last_summary": null, "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/fmt.sh", "sha256": "eb69df4a4b0e7a622f72eacaf604a5eb3ae76bfb3ab53307261a27b282d61f80"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/fmt.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/fmt.guardian.json", "sha256": "af50023340f9b225994f3dca9df3438e274b03803448964e44f939107bbb283f"}, "resources": {"elapsedMs": 12676.24058, "peakRssKiB": 128992, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 128992, "peakCacheBytes": 6602170368, "minimumAvailableKiB": 56139648, "minimumScratchFreeBytes": 74754953216, "signal": null, "exitCode": 0}, "resource_stop": null},
+      {"gate": "legal_source_solve", "expected_tests": null, "exit_code": 0, "last_summary": null, "count_qualified": true, "wrapper": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/legal_source_solve.sh", "sha256": "a58a208887fb9b77262f2a7f5f6290143180eb55a43a5cd6caeb986e1f3e3212"}, "raw_log": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/legal_source_solve.log", "sha256": "a63aee649f9169ae6cff754d88b6f678fa17f239eeaca0d2dde39a856fb7a24c"}, "guardian": {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/legal_source_solve.guardian.json", "sha256": "a58c0b362474ec6ee430b957cf8a401a1f46c714b7aca9cc571dc69678e5f636"}, "resources": {"elapsedMs": 242783.32637599998, "peakRssKiB": 2912276, "peakSwapKiB": 0, "peakResidentPlusSwapKiB": 2912276, "peakCacheBytes": 7285039104, "minimumAvailableKiB": 51828432, "minimumScratchFreeBytes": 73456107520, "signal": null, "exitCode": 0}, "resource_stop": null}
+    ],
+      "unrun_gates": [],
+      "runner": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/run.py",
+        "sha256": "b33bbeaf3c58038568c4abeff22ded4dca897b5f56573b25dee4769dc944d979"
+      },
+      "results": {
+        "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/results.json",
+        "sha256": "bb22e7af66d466ce85415b9bdbd30f9f6c4e2119c4d17308754fe4188972003e"
+      },
+      "source_guards": [
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-after-clippy.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-after-fmt.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-after-legal_source_solve.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-after-source17.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-after.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"},
+      {"path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/guard-before.json", "sha256": "dfc58a809dfa5aa47ef0f85bc225be330c86f89b4b4bf5ec8bfe047aa722f5e9"}
+    ]
+    }
+  ],
+  "independent_probes": [
+    {
+      "verdict": "Historical sealed a5 source frontdoor accepted the invalid unconditional declared discrete Real derivative alias.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/DiscreteDerivativeFixture.mo",
+          "sha256": "845293e3fd36134a9753f54aad6d62fefe0578888012e63df2b5c70d7cc429c1"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/input.json",
+          "sha256": "ea1d38e8964145a623af46d8942d3e4a29a9da8dc96e93b0b84e5012d95f6779"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/compile.sh",
+          "sha256": "0be3eeb3a0d0b154e257a81088d05442260471df7590928e54fb1c54578aa50e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/compile.log",
+          "sha256": "b68967ca8b8aed4e5fb56f80a77a43cd6c1a2816d88f6afd56c112915c54fd4d"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/compile.guardian.json",
+          "sha256": "0165767d3729b072bedf22ef53fe4ad566224720f6c33dbbf6e6577426fb91b7"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-source-a5-before-20261012/solve.json",
+          "sha256": "d7fae39d12644d447a116b619d7495369516db470095920e63142512f2510090"
+        }
+      ]
+    },
+    {
+      "verdict": "OMC checkModel and instantiateModel reject that full source: declared discrete Real lacks when ownership.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-variability-omc-context-20261012/DiscreteDerivativeFixture.mo",
+          "sha256": "845293e3fd36134a9753f54aad6d62fefe0578888012e63df2b5c70d7cc429c1"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-variability-omc-context-20261012/input.json",
+          "sha256": "fd7d9e5b356585a7fa044269aeacf367fd4698321dfcbdbacef433fac4d100aa"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-variability-omc-context-20261012/check.mos",
+          "sha256": "89441e2fe8ae20d61a168810110a88e2c7a1147e0480b926eb311f7f27cd12ad"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-variability-omc-context-20261012/omc.log",
+          "sha256": "20daf05d846e6c4a850682602bd3c5e4aa5718b2b9c6689f517ef0c25e264d2e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-derivative-variability-omc-context-20261012/omc.guardian.json",
+          "sha256": "aae5938665950a3cc2a9292b83d407bbdb0a11d95a50ebf0536a7863189b9c69"
+        }
+      ]
+    },
+    {
+      "verdict": "OMC rejects explicit discrete Real binding, time equation and external input without when; no captured guardian JSON for this older probe.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-binding-omc-20261012/Cases.mo",
+          "sha256": "9003bc728b3885ad1dbe08cf6f8dc6278ac2d2cae16321ed651f2807e3330e4b"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-binding-omc-20261012/check.mos",
+          "sha256": "be9122d2777f9ab10eb21af3283ca419bca2bf6743a169ced1dbebe74f3302bf"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-binding-omc-20261012/omc.log",
+          "sha256": "e97509bf85423671a5b8b81f16fecee7de259d5541273ee24d557605c4538d9a"
+        }
+      ]
+    },
+    {
+      "verdict": "OMC rejects explicit discrete Real sampled-clock equation outside when.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-clock-source-omc-20261012/ClockCase.mo",
+          "sha256": "bd1a777bf3a3f51aae74879e60968660efe092d6abf65aafbd04a75bf3caec13"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-clock-source-omc-20261012/check.mos",
+          "sha256": "dccf947cbf607dcec908c324bb91144e2b50ef39ff62ae712eb09997012650c3"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-clock-source-omc-20261012/omc.log",
+          "sha256": "33240465e2892bac8acc25b2362d7ae4f34cb31089291cc13c0152b3fb639132"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-clock-source-omc-20261012/omc.guardian.json",
+          "sha256": "4c7fc62ffa935c97ac5299ef54d9e25dad4adf7189cbae302d34cc5a8d22f33f"
+        }
+      ]
+    },
+    {
+      "verdict": "OMC accepts/instantiates plain clocked Real and explicitly discrete Real assigned inside actual when c.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-legal-clock-sources-omc-20261012/ClockCases.mo",
+          "sha256": "2c1c3edbf61e8fec41e26f87a86dc53fe826c6a08a11147c812a00f3280986c5"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-legal-clock-sources-omc-20261012/check.mos",
+          "sha256": "d27777cc373056820985fd1f3842f6f4bbab270a70522e0173b4b8d64f1f40b5"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-legal-clock-sources-omc-20261012/omc.log",
+          "sha256": "fcd4c14cbf30d832ff8ec14cddb4dc635c11664ac8050751c4df2d6fcf046879"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-legal-clock-sources-omc-20261012/omc.guardian.json",
+          "sha256": "ccdcd60f6919c101b98cf7e56357033b7da2dea8f9b95b31f45190eeb352ebdf"
+        }
+      ]
+    },
+    {
+      "verdict": "OMC accepts/instantiates literal-false when and preserves one equation/one variable.",
+      "artifacts": [
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-false-when-omc-20261012/FalseWhen.mo",
+          "sha256": "d5133b7830f38055a725b222fa6539df8e22cd22c88b7a1d9af01a0348d938a2"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-false-when-omc-20261012/check.mos",
+          "sha256": "8c231505fe32967c10b4c88f32056c97abad1e6a81d9f92d30d3c5f7e5ca4a3e"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-false-when-omc-20261012/omc.log",
+          "sha256": "98ac1b688332f77d755de950ab958e86130bcc31e3b32ee34fa042d192eaa710"
+        },
+        {
+          "path": "$HOME/scratch/rumoca/pr427-discrete-real-false-when-omc-20261012/omc.guardian.json",
+          "sha256": "d426d25b130d7ddc1d06786cfadd2bb813b69e29c7aae979b9780557a425bf51"
+        }
+      ]
+    }
+  ],
+  "qualification_limits": [
+    "Source17 is a subset of full compile439, not additional unique tests.",
+    "The clean dc8 run retains a known unsupported source clock exemption; fb0 supersedes its policy, not its immutable observations.",
+    "Dirty full DAE442/2 and clean dc8 compile435/1 failures were source-invalid fixtures; their raw failures remain unchanged.",
+    "Compile source controls prove ToDAE; the separate current CLI invocation proves legal source-to-Solve only, not numerical simulation.",
+    "No final Root head, browser, complete workspace or issue closure is claimed."
+  ],
+  "final_cli_artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/Input.mo",
+      "sha256": "19a07849e5c5fea3e2f94039b338a02030f4730c5a89cb3a4ae8ba51fe829504"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/solve.json",
+      "sha256": "45ba09864a1f9bc2feb91dd0abba140394fba4588f52cf81576d631513c72d0a"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/cli-build-info.json",
+      "sha256": "bfde2327c6923492e141bde182e5df84ff098e5183a8f7ac71cea5bf49a52c6e"
+    },
+    {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/sealed-artifacts.json",
+      "sha256": "100ac2bd1ed3cc50a9282701a2e536cae9c2f88cd9d428a9d4519e143b28e097"
+    }
+  ],
+  "cache_release": {
+    "audit": {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/cache-idle-final.json",
+      "sha256": "c1095a508924c5e9ab14f008fd9c31eade515be3623a09b4887caa62d8f3b7a0"
+    },
+    "auditor": {
+      "path": "$HOME/scratch/rumoca/pr427-discrete-real-final-after-67d-20261012/audit-cache-idle-final.py",
+      "sha256": "ab421ee181ee77c2a33a28bcf6653db2431c2afa3f917ddb682c14dc7ac02d77"
+    },
+    "checked_pids": 670,
+    "visible_references": 0,
+    "denied_pids": 417,
+    "lease_files": 0,
+    "limitations": "Denied process fields unobserved; no global-idleness claim. Loan returned after terminal, source guards and executable sealing.",
+    "prior_audit_setup": "First audit counted target/release directory as a lease; raw record retained, corrected audit counts files."
+  },
+  "production_equivalence": {
+    "from": "fb0dafc724306b9bb8bbdeaa3324adeb2cb67ddc",
+    "to": "67deb142b1d0f8a74c91dd3a6c3185f061a7d279",
+    "only_change": "The diagnostic test helper removes redundant usize casts; all production files unchanged."
+  }
+}
