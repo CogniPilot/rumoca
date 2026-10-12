@@ -3,6 +3,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use rumoca_sim::{SessionCommand, SessionEvent};
+use rumoca_solver::SimExecutionEngine;
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
@@ -23,17 +25,25 @@ struct Served {
 
 impl Served {
     fn spawn() -> Self {
+        Self::spawn_source(
+            PLANT,
+            "Plant",
+            &[
+                "--solver", "bdf", "--atol", "1e-10", "--rtol", "1e-10", "--input", "u=0",
+            ],
+        )
+    }
+
+    fn spawn_source(source: &str, model: &str, options: &[&str]) -> Self {
         let dir = tempdir().unwrap();
-        let file = dir.path().join("Plant.mo");
-        std::fs::write(&file, PLANT).unwrap();
+        let file = dir.path().join(format!("{model}.mo"));
+        std::fs::write(&file, source).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_rumoca"))
             .arg("sim")
             .arg("--serve-stdio")
             .arg(&file)
-            .args([
-                "-m", "Plant", "--solver", "bdf", "--atol", "1e-10", "--rtol", "1e-10", "--input",
-                "u=0",
-            ])
+            .args(["-m", model])
+            .args(options)
             .arg("--cache-dir")
             .arg(dir.path().join("cache"))
             .stdin(Stdio::piped())
@@ -74,11 +84,69 @@ impl Served {
         self.read()
     }
 
+    fn command(&mut self, command: SessionCommand) -> SessionEvent {
+        serde_json::from_value(self.call(serde_json::to_value(command).unwrap())).unwrap()
+    }
+
     fn y(&mut self) -> f64 {
         self.call(json!({"command": "get", "name": "y"}))["value"]
             .as_f64()
             .unwrap()
     }
+}
+
+#[test]
+fn issue_422_release_cli_runs_original_u4_without_native_fallback() {
+    let source = include_str!(
+        "../../../rumoca-compile/src/session/tests/fixtures/reported_bugs/issue_422.mo"
+    );
+    let mut served = Served::spawn_source(
+        source,
+        "U4",
+        &[
+            "--solver", "rk-like", "--t-end", "1", "--dt", "0.1", "--atol", "1e-9", "--rtol",
+            "1e-9",
+        ],
+    );
+    for sample in 0..=10 {
+        let time = f64::from(sample) / 10.0;
+        if sample != 0 {
+            assert_eq!(
+                served.command(SessionCommand::AdvanceTo { time }),
+                SessionEvent::Ok { time }
+            );
+        }
+        let SessionEvent::State {
+            time: actual_time,
+            values,
+        } = served.command(SessionCommand::State)
+        else {
+            panic!("original U4 must return its state");
+        };
+        assert_eq!(actual_time, time);
+        let actual = values["y"];
+        let expected = (-time).exp();
+        let bound = 20.0 * (1e-9 + 1e-9 * expected.abs());
+        assert!(
+            actual.is_finite() && (actual - expected).abs() <= bound,
+            "original U4/{sample}: y={actual}, expected {expected}, bound {bound}"
+        );
+        let SessionEvent::Hello { engine, .. } = served.command(SessionCommand::Hello {
+            protocol_version: 1,
+        }) else {
+            panic!("original U4 must return its execution receipt");
+        };
+        assert_eq!(engine.engine, SimExecutionEngine::Cranelift, "{engine:?}");
+        assert_eq!(engine.refusal, None, "{engine:?}");
+        assert!(engine.declined.is_empty(), "{engine:?}");
+        eprintln!("original U4 release CLI/{sample} time={time} y={actual}: {engine:?}");
+    }
+    assert_eq!(
+        served.command(SessionCommand::Close),
+        SessionEvent::Closed { time: 1.0 }
+    );
+    drop(served.stdin.take());
+    assert!(served.child.wait().unwrap().success());
 }
 
 /// Exact sampled-data solution of `y' = -2y + 4u` under `u = 0.8 (1 - y)` held

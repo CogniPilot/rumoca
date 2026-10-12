@@ -2192,6 +2192,14 @@ jobs:
           key: ${{ matrix.target }}
           cache-on-failure: true
 
+      - name: Prepare Linux musl native regression executables
+        if: contains(matrix.target, 'musl')
+        run: |
+          cargo test --locked --release --target ${{ matrix.target }} \
+            -p rumoca-exec-cranelift --lib --no-run --message-format=json > release-native-cranelift.jsonl
+          cargo test --locked --release --target ${{ matrix.target }} \
+            -p rumoca --test suite_core --no-run --message-format=json > release-native-core.jsonl
+
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --bin rumoca --bin rumoca-lsp
 
@@ -2241,6 +2249,42 @@ jobs:
           fi
           ldd "$lsp_bin" || true
           "$lsp_bin" --version
+          for artifact in "$rumoca_bin" "$lsp_bin"; do
+            if readelf -d "$artifact" | grep -F '(NEEDED)' >/dev/null; then
+              echo "::error::$artifact unexpectedly depends on a shared library"
+              exit 1
+            fi
+          done
+
+      - name: Qualify native execution in Linux musl release artifacts
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Test executables were prepared before the final default-feature
+          # build and strip. Their CARGO_BIN_EXE_rumoca points at this artifact.
+          test_executable() {
+            jq -s -er --arg target "$2" '
+              [ .[] | select(.reason == "compiler-artifact")
+                | select(.target.name == $target and .profile.test == true
+                  and (.executable | type) == "string") | .executable ]
+              | if length == 1 then .[0] else error("expected one test executable") end
+            ' "$1"
+          }
+          cranelift_test="$(test_executable release-native-cranelift.jsonl rumoca_exec_cranelift)"
+          core_test="$(test_executable release-native-core.jsonl suite_core)"
+          sha256sum target/${{ matrix.target }}/release/{rumoca,rumoca-lsp} > release-artifact-sha256.txt
+          for selector in \
+            emit::host_runtime::tests::issue_422_memcmp_relocation_needs_no_process_symbol_export \
+            emit::host_runtime::tests::issue_422_memory_libcalls_relocate_without_process_symbol_export; do
+            "$cranelift_test" "$selector" --exact --nocapture
+          done
+          for selector in \
+            reported_bug_runtime::issue_422_original_array_function_runs_without_native_fallback \
+            cli_sim_serve_stdio::issue_422_release_cli_runs_original_u4_without_native_fallback; do
+            "$core_test" "$selector" --exact --nocapture
+          done
+          sha256sum --check release-artifact-sha256.txt
 
       - name: Strip binaries (macOS)
         if: runner.os == 'macOS'
