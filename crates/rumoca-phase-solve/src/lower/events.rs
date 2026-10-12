@@ -20,6 +20,7 @@ mod observation_refresh;
 mod periodic_schedule;
 mod pre_mode;
 mod quotient_memory;
+mod roots;
 pub(super) mod structured;
 
 use clock_partition::{
@@ -30,10 +31,14 @@ pub(in crate::lower) use condition_memory::condition_memory;
 use condition_memory::{condition_clock_owner, lower_condition_memory};
 use messages::{MessageActionContext, push_message_action};
 use observation_refresh::derive_observation_refresh;
-use periodic_schedule::{common_periodic_clock, is_ordinary_target, ordinary_update_clocks};
+use periodic_schedule::{
+    checked_discrete_real_activation_clock, common_periodic_clock, is_ordinary_target,
+    ordinary_update_clocks,
+};
 use pre_mode::{condition_pre_mode, expression_pre_mode, merge_pre_mode};
 
 use quotient_memory::lower_quotient_memory;
+use roots::{expression_clock_owner, lower_roots};
 
 use integrator_history::{
     HistoryDependencySlot, apply_integrator_history_effects, collect_linear_op_dependencies,
@@ -286,6 +291,9 @@ struct DiscreteRows<'dae> {
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
     same_tick_definitions: std::rc::Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
+    /// Issued ordinary guarded branches consume rising edges even when a
+    /// branch's Boolean condition selects a periodic task (MLS §8.3.5.1).
+    ordinary_trigger_edges: BTreeSet<dae::ConditionId<'dae>>,
     /// Every guarded equation target, retained until B.1b and B.1c have both
     /// contributed their owners. SOLVE-C58 order spans source value kinds.
     guarded_equation_targets: Vec<GuardedTarget<'dae>>,
@@ -1089,41 +1097,6 @@ fn lower_discrete_real_equations<'dae>(
     Ok(())
 }
 
-fn checked_discrete_real_activation_clock<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    variable: dae::VariableId<'dae>,
-    guard: dae::ConditionId<'dae>,
-    span: Span,
-) -> Result<Option<dae::ClockId<'dae>>, LowerError> {
-    let guard_view = view.condition(guard).ok_or_else(|| {
-        LowerError::contract("discrete Real activation has no checked condition", span)
-    })?;
-    let activation = condition_memory::checked_condition_clock_owner(view, guard_view);
-    let owner = clocks.variable_owner(variable).map(|(clock, _)| clock);
-    match (activation, owner) {
-        (None, None) => Ok(None),
-        (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
-        (Some(activation), None) if guard_view.synchronous_clock_owner().is_none() => {
-            // A checked Boolean periodic task is an MLS §8.5 schedule;
-            // it does not mint MLS §16 synchronous variable ownership.
-            Ok(Some(activation))
-        }
-        (Some(_), None) => Err(LowerError::non_computable(
-            "clock-activated discrete Real definition has no matching target clock owner",
-            span,
-        )),
-        (None, Some(_)) => Err(LowerError::non_computable(
-            "clock-owned discrete Real target has a non-clock event activation",
-            span,
-        )),
-        (Some(_), Some(_)) => Err(LowerError::non_computable(
-            "discrete Real definition activation does not match its target clock owner",
-            span,
-        )),
-    }
-}
-
 /// One unconditional discrete Real definition unit: the whole coordinate
 /// (`None`) or one row-major scalar element of an array coordinate.
 type DefinitionUnit<'dae> = (Option<u32>, dae::ExprId<'dae>);
@@ -1488,6 +1461,12 @@ fn lower_guarded_targets<'dae>(
     // SOLVE-C58 / MLS §8.5: the equations of one event instant are simultaneous, so a
     // producer is issued before every target that reads its current value, and
     // the runtime evaluates the issued programs in that order.
+    for target in targets.iter() {
+        if target.clock.is_none() && target.event_clock.is_none() {
+            rows.ordinary_trigger_edges
+                .extend(target.branches.iter().map(|branch| branch.0));
+        }
+    }
     let order = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)
         .producer_order();
     apply_permutation(targets, &order);
@@ -1669,180 +1648,6 @@ fn plan_guarded_targets<'dae>(view: dae::DaeView<'dae>, targets: &mut [GuardedTa
         });
         target.dynamic_branch_count = unconditional.unwrap_or(target.branches.len());
         target.fallback_branch = unconditional;
-    }
-}
-
-struct LoweredRoots {
-    programs: solve::ScalarProgramBlock,
-    zero_domains: Vec<solve::RootZeroDomain>,
-    relation_memory_targets: Vec<Option<solve::ScalarSlot>>,
-}
-
-fn lower_roots<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    clocks: &LoweredClocks<'dae>,
-) -> Result<LoweredRoots, LowerError> {
-    let mut rows = ScalarRows::default();
-    let mut zero_domains = Vec::with_capacity(view.root_count());
-    let mut relation_memory_targets = Vec::with_capacity(view.root_count());
-    let mut owner_relations = Vec::new();
-    let mut owner_span = None;
-    for (_, root) in view.roots() {
-        let relation = view
-            .relation(root.relation())
-            .expect("checked root relation resolves");
-        if super::clock_ownership::relation_clock_owner(view, relation.expression(), |variable| {
-            clocks.variable_clock(variable)
-        })
-        .is_some()
-        {
-            continue;
-        }
-        let span = root.provenance().span();
-        if owner_span.is_some_and(|owner| owner != span) {
-            flush_root_owner(view, layout, &mut rows, &mut owner_relations, owner_span)?;
-        }
-        owner_span = Some(span);
-        owner_relations.push((
-            root.relation(),
-            view.model_activation_guard(relation.expression()),
-        ));
-        zero_domains.push(root_zero_domain(view, relation.expression()));
-        relation_memory_targets.push(layout.buffered_relations.target(root.relation()));
-    }
-    flush_root_owner(view, layout, &mut rows, &mut owner_relations, owner_span)?;
-    lower_structured_roots(
-        view,
-        layout,
-        clocks,
-        &mut rows,
-        &mut zero_domains,
-        &mut relation_memory_targets,
-    )?;
-    Ok(LoweredRoots {
-        programs: rows.into_scalar_block()?,
-        zero_domains,
-        relation_memory_targets,
-    })
-}
-
-fn flush_root_owner<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    rows: &mut ScalarRows,
-    relations: &mut Vec<(dae::RelationId<'dae>, Option<dae::ExprId<'dae>>)>,
-    span: Option<Span>,
-) -> Result<(), LowerError> {
-    if relations.is_empty() {
-        return Ok(());
-    }
-    let span = span.expect("a nonempty root owner group has provenance");
-    let output_start = rows.output_indices.len();
-    let output_end = output_start
-        .checked_add(relations.len())
-        .ok_or_else(|| LowerError::contract("root output ordinal overflow", span))?;
-    let program =
-        ScalarCompiler::new(view, layout, None).root_program_outputs(relations.iter().copied())?;
-    rows.push_outputs(program, span, output_start..output_end);
-    relations.clear();
-    Ok(())
-}
-
-fn lower_structured_roots<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    rows: &mut ScalarRows,
-    zero_domains: &mut Vec<solve::RootZeroDomain>,
-    relation_memory_targets: &mut Vec<Option<solve::ScalarSlot>>,
-) -> Result<(), LowerError> {
-    for (_, root) in view.structured_roots() {
-        if expression_clock_owner(view, clocks, root.expression()).is_some() {
-            return Err(LowerError::non_computable(
-                "clocked structured root families are not continuously monitored",
-                root.provenance().span(),
-            ));
-        }
-        let domain = view
-            .domain(root.domain())
-            .expect("checked structured-root domain resolves")
-            .structured();
-        let points = domain.index_tuples().map_err(|error| {
-            LowerError::contract(
-                format!("structured root domain is invalid: {error}"),
-                root.provenance().span(),
-            )
-        })?;
-        let memory = layout.buffered_quotients.entries().iter().find(|memory| {
-            memory.domain == Some(root.domain()) && memory.root_index == zero_domains.len()
-        });
-        for point in points {
-            let row = zero_domains.len();
-            let program = if let Some(&memory) = memory {
-                ScalarCompiler::new(view, layout, None).quotient_root_program(
-                    memory,
-                    &point,
-                    root.expression(),
-                    root.activation_guard(),
-                    root.provenance().span(),
-                )?
-            } else {
-                ScalarCompiler::new(view, layout, Some((root.domain(), &point)))
-                    .root_expression_program(
-                        root.expression(),
-                        root.activation_guard(),
-                        root.provenance().span(),
-                    )?
-            };
-            rows.push(program, root.provenance().span(), row);
-            zero_domains.push(root_zero_domain(view, root.expression()));
-            relation_memory_targets.push(None);
-        }
-    }
-    Ok(())
-}
-
-/// The clock whose partition an expression's operands belong to, if any.
-///
-/// MLS §16.5 confines `previous(x)` and every clock-owned declaration to their owning
-/// partition, so an operand that names one is decisive: the expression is evaluated on
-/// that clock's ticks and nowhere else. That is what keeps a clocked relation out of the
-/// continuous root set (MLS §16.8.1 raises no state event for it — the tick already is
-/// the event) and what tells the condition-memory row which schedule to compile under.
-///
-/// The first owner found wins; a clocked partition cannot mix clocks, and the callers
-/// that must reject a mix check for it explicitly.
-fn expression_clock_owner<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> Option<(dae::ClockId<'dae>, Option<solve::PeriodicClockId>)> {
-    let owner = super::clock_ownership::expression_clock_owner(view, expression, |variable| {
-        clocks.variable_clock(variable)
-    })?;
-    // An MLS §16.3 event clock owns a partition but has no periodic schedule.
-    Some((owner, clocks.clock(owner).ok()))
-}
-
-fn root_zero_domain<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> solve::RootZeroDomain {
-    let operation = view
-        .expression(expression)
-        .expect("checked relation expression resolves")
-        .operation();
-    match operation {
-        dae::ExpressionOperation::Binary {
-            operator: dae::BinaryOperator::LessEqual | dae::BinaryOperator::GreaterEqual,
-            ..
-        } => solve::RootZeroDomain::NonPositive,
-        dae::ExpressionOperation::Binary {
-            operator: dae::BinaryOperator::Less | dae::BinaryOperator::Greater,
-            ..
-        } => solve::RootZeroDomain::Positive,
-        _ => solve::RootZeroDomain::Previous,
     }
 }
 

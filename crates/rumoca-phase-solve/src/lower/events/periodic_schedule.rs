@@ -43,3 +43,38 @@ pub(super) fn ordinary_update_clocks<'dae>(
     }
     schedules
 }
+
+pub(super) fn checked_discrete_real_activation_clock<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    variable: dae::VariableId<'dae>,
+    guard: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<Option<dae::ClockId<'dae>>, LowerError> {
+    let guard_view = view.condition(guard).ok_or_else(|| {
+        LowerError::contract("discrete Real activation has no checked condition", span)
+    })?;
+    let activation = condition_memory::checked_condition_clock_owner(view, guard_view);
+    let owner = clocks.variable_owner(variable).map(|(clock, _)| clock);
+    match (activation, owner) {
+        (None, None) => Ok(None),
+        (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
+        (Some(activation), None) if guard_view.synchronous_clock_owner().is_none() => {
+            // A checked Boolean periodic task is an MLS §8.5 schedule;
+            // it does not mint MLS §16 synchronous variable ownership.
+            Ok(Some(activation))
+        }
+        (Some(_), None) => Err(LowerError::non_computable(
+            "clock-activated discrete Real definition has no matching target clock owner",
+            span,
+        )),
+        (None, Some(_)) => Err(LowerError::non_computable(
+            "clock-owned discrete Real target has a non-clock event activation",
+            span,
+        )),
+        (Some(_), Some(_)) => Err(LowerError::non_computable(
+            "discrete Real definition activation does not match its target clock owner",
+            span,
+        )),
+    }
+}

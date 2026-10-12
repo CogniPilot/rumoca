@@ -8,14 +8,14 @@ pub(super) fn lower_condition_memory<'dae>(
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
-    let vector_elements = unowned_vector_elements(view);
+    let edge_conditions = unowned_edge_conditions(view, &rows.ordinary_trigger_edges);
     let mut internal_constants = BTreeMap::new();
     for (condition, condition_view) in view.conditions() {
         // A clock-owned condition is the activation of its partition and needs
-        // no edge buffer, unless it is an element `bi` of a vector `when` that
-        // no partition owns: §8.3.5.1 activates that `when` on `edge(bi)`, so
-        // each element keeps its own buffer.
-        if condition_clock_owner(view, condition).is_some() && !vector_elements.contains(&condition)
+        // no edge buffer, unless an issued ordinary branch consumes its edge
+        // or it is an element `bi` of an unowned vector `when`. MLS §8.3.5.1
+        // requires the buffer in both cases.
+        if condition_clock_owner(view, condition).is_some() && !edge_conditions.contains(&condition)
         {
             continue;
         }
@@ -165,10 +165,13 @@ fn condition_reads_previous<'dae>(
     reads
 }
 
-/// The elements `bi` of every vector activation `{b1, ..., bn}` that no clock
-/// partition owns (the leaves of each such `AnyRise` tree).
-fn unowned_vector_elements<'dae>(view: dae::DaeView<'dae>) -> BTreeSet<dae::ConditionId<'dae>> {
-    let mut elements = BTreeSet::new();
+/// Exact issued ordinary trigger edges and the leaves of unowned vector
+/// activations. A selected Boolean task does not remove an ordinary edge.
+fn unowned_edge_conditions<'dae>(
+    view: dae::DaeView<'dae>,
+    issued: &BTreeSet<dae::ConditionId<'dae>>,
+) -> BTreeSet<dae::ConditionId<'dae>> {
+    let mut elements = issued.clone();
     for (condition, condition_view) in view.conditions() {
         if !matches!(
             condition_view.operation(),
