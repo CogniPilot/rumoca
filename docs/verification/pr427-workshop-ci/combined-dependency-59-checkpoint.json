@@ -1,0 +1,79 @@
+{
+  "source": "59bc5fd74493deee9a1e4f486d259ad0b6a0baf5",
+  "scope": "Combined dependency/root-ownership focused proof before separate trigger-buffer repair; not a workspace/quick/full gate.",
+  "selected": 80,
+  "passed": 80,
+  "failed": 0,
+  "filtered_out": 2344,
+  "source_unchanged": true,
+  "elapsed_ms": 313570.706903,
+  "peak_owned_rss_plus_swap_kib": 3468472,
+  "minimum_host_available_kib": 40497776,
+  "resource_stop": null,
+  "log_sha256": "36a3e530d9ac8fde10f493f201968df5909917f5afdf631cd51a35e8d40802c7",
+  "schema": 1,
+  "command": [
+    "nix",
+    "develop",
+    ".#full",
+    "--command",
+    "bash",
+    "-c",
+    "\n  set -euo pipefail\n  export GIT_OPTIONAL_LOCKS=0\n  export CARGO_HOME=\"$HOME/.cargo\"\n  export CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-ci/target\"\n  export TMPDIR=\"$HOME/scratch/rumoca/browser-tmp\"\n  export CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4\n  export NEXTEST_TEST_THREADS=4 NEXTEST_RETRIES=0 NEXTEST_USER_CONFIG_FILE=none\n  export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\n  nix_cmake_bin=\"$(dirname \"$(command -v cmake)\")\"\n  export PATH=\"$nix_cmake_bin:/nix/store/sbpwbz3cvj70xklillfpm7zsy1x8n10x-chromium-154.0.8037.92/bin:/nix/store/ghg26s56psy960379vyr7hkgdi7y8ms2-openjdk-minimal-jre-21.0.12+2/bin:$HOME/scratch/rumoca/workshop427-exports/cache/venv/bin:$PATH\"\n  export PYO3_PYTHON=\"$HOME/scratch/rumoca/workshop427-exports/cache/venv/bin/python\"\n  cargo nextest run -p rumoca -p rumoca-phase-structural -p rumoca-phase-solve -p rumoca-eval-dae --lib --test suite_core --test architecture_hardening_test --features rumoca/examples-smoke-tests --no-fail-fast -E \"test(same_tick::) | test(derivative_reads_in_derivative_rows::) | test(clocked_partition_semantics::) | test(clocked_coincident_exchange::) | test(held_sample_relations::) | test(issued_storage_leaves_do_not_poison_later_projection_queries) | test(an_ordinary_intermediate_program_projects_its_current_algebraic_definition) | test(test_event_threshold_analysis_is_owned_by_solve_lowering) | test(periodic_clock_session::) | test(sample_tick_pulses::) | test(ordinary_periodic_trigger)\"\n",
+    "bash",
+    "combined-focused"
+  ],
+  "limits": {
+    "aggregate_seconds": 1800,
+    "rss_plus_swap_mib": 8192,
+    "host_reserve_mib": 16384,
+    "scratch_reserve_mib": 8192,
+    "jobs": 4,
+    "test_threads": 4,
+    "rayon_threads": 4,
+    "nextest_threads": 4,
+    "retries": 0
+  },
+  "artifacts": [
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/qualification.json",
+      "sha256": "ed7259cb84c6584f01a04af8db7f341e2c1b96a4e0bc43f1518cc74ce707ba2a",
+      "bytes": 9672
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/command.log",
+      "sha256": "36a3e530d9ac8fde10f493f201968df5909917f5afdf631cd51a35e8d40802c7",
+      "bytes": 16453
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/guardian.json",
+      "sha256": "e8d8ec026d6b87fd4fa1a177f08a71997abc7c5dd257cd03a9960d40cf7e9156",
+      "bytes": 15802
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/source-before.json",
+      "sha256": "137a0067ec4576139264d120b1da5d9b5a82f2174ee3ea7acfe078aed5b9c52a",
+      "bytes": 760389
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/source-after.json",
+      "sha256": "137a0067ec4576139264d120b1da5d9b5a82f2174ee3ea7acfe078aed5b9c52a",
+      "bytes": 760389
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/combined-focused-59bc5fd74493-20261012T035114Z/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/run-combined-focused.sh",
+      "sha256": "80e3d779273fb5b62b1234a1fa27a3875690f7de1e979bf1e0ca4e1f7531b101",
+      "bytes": 2877
+    },
+    {
+      "path": "$HOME/scratch/rumoca/workshop427-final-broad-20261012/aggregate-validation/aggregate-guardian-observed.mjs",
+      "sha256": "02ade3c80b9e6bae961200aec9dbff05727066f3ea621635b71f72322defdf86",
+      "bytes": 10874
+    }
+  ]
+}

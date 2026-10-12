@@ -14,8 +14,16 @@ checks pass after registering the existing test-only verification batteries
 after 1,240 passes and two failures; 9,084 selected tests had no terminal result
 ([partial census](workspace-census-7d569-resource-stop.json)). The reviewed root
 ownership-test update and [event dependency fixes](../pr427-event-derivative-dependencies-20261012/README.md)
-address those two failures; combined execution remains pending. Complete
-combined workspace, quick/full and remote CI remain pending. Historical raw MSL
+address those two failures; the combined focused checkpoint at `59bc5fd74493`
+passes all 80 selected tests ([receipt](combined-dependency-59-checkpoint.json)).
+The separate [ordinary trigger-buffer repair](../pr427-ordinary-trigger-role-20261012/README.md)
+passes its two constructor controls. Its wider phase suite reports 197 passes
+and one failure; source validation for the discrete-Real derivative case remains
+under investigation. These are focused checkpoints, not complete workspace
+qualification. Complete combined workspace, quick/full and remote CI remain
+pending. The unpublished signoff rewrite preserves all 433 source trees and
+subjects ([equivalence receipt](dco-source-equivalence-59.json)); it does not
+relabel earlier baked artifact identities as current-tip results. Historical raw MSL
 results and OMC-cache data from the completed `2b50ac92a` run are preserved in
 verified archives; their [hashes and recovery paths](terminal-msl-storage-archives.json)
 remain available after the raw copies were retired. The inventory below records
