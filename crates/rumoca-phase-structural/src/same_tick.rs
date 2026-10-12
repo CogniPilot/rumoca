@@ -716,8 +716,7 @@ fn emit_schedule<'dae>(
     intermediates: &BTreeMap<IntermediateKey, IntermediateNode<'dae>>,
     coincidence: &ClockCoincidence,
 ) -> Result<SameTickSchedule<'dae>, SameTickOrderError> {
-    let event_order =
-        event_reads::EventOrdering::derive(producers, producer_of, direct_reads, coincidence);
+    let event_order = event_reads::EventOrdering::derive(producers, producer_of, coincidence);
     let graph = ScheduleGraph {
         event_order,
         producers,
@@ -753,7 +752,6 @@ fn emit_schedule<'dae>(
             .position(|(index, node)| {
                 !emitted[index]
                     && graph.entry_readers_emitted(node, &emitted)
-                    && graph.ordinary_iteration_ready(node, &emitted)
                     && graph.node_reads(node).iter().all(|&read| {
                         graph
                             .owner_of(node, read)
@@ -859,34 +857,6 @@ impl ScheduleGraph<'_, '_> {
             .entry_readers(producer)
             .iter()
             .all(|&reader| emitted[reader])
-    }
-
-    /// Alias preparation must not let a later ready observation-cycle member
-    /// overtake an earlier member whose only remaining work is its refreshes.
-    /// An actual unplaced entry reader or producer keeps the later member free.
-    fn ordinary_iteration_ready(&self, node: Node, emitted: &[bool]) -> bool {
-        let Node::Producer(producer) = node else {
-            return true;
-        };
-        !self
-            .event_order
-            .earlier_observation_members(producer)
-            .any(|earlier| {
-                !emitted[earlier]
-                    && self.entry_readers_emitted(Node::Producer(earlier), emitted)
-                    && self.producer_ready_except_refreshes(earlier, emitted)
-            })
-    }
-
-    fn producer_ready_except_refreshes(&self, producer: usize, emitted: &[bool]) -> bool {
-        self.direct_reads[producer].iter().all(|&read| {
-            self.owner_of(Node::Producer(producer), read)
-                .is_none_or(|owner| {
-                    owner == producer
-                        || emitted[owner]
-                        || matches!(self.nodes[owner], Node::Intermediate(_))
-                })
-        })
     }
 
     fn node_overlaps_producer(&self, node: Node, producer: usize) -> bool {

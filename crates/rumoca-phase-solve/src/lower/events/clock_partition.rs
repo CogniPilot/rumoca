@@ -587,3 +587,6 @@ pub(super) fn guarded_definition_owner<'dae>(
         definition_targets,
     )
 }
+
+#[cfg(test)]
+mod event_order_tests;

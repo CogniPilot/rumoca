@@ -180,9 +180,8 @@ impl<'dae> SameTickDefinitions<'dae> {
     }
 }
 
-/// Preserve ordinary observation cycles while retaining mandatory entry edges.
+/// Retain mandatory entry edges in the periodic same-tick schedule.
 pub(super) struct EventOrdering {
-    observations: Vec<BTreeSet<usize>>,
     entry_readers: Vec<BTreeSet<usize>>,
 }
 
@@ -190,37 +189,8 @@ impl EventOrdering {
     pub(super) fn derive(
         producers: &[SameTickProducer<'_>],
         producer_of: &BTreeMap<u32, usize>,
-        direct_reads: &[BTreeSet<u32>],
         coincidence: &ClockCoincidence,
     ) -> Self {
-        let direct = producers
-            .iter()
-            .enumerate()
-            .map(|(consumer, producer)| {
-                if !matches!(producer.read_context, SameTickReadContext::OrdinaryEvent(_)) {
-                    return BTreeSet::new();
-                }
-                direct_reads[consumer]
-                    .iter()
-                    .filter_map(|read| {
-                        let &owner = producer_of.get(read)?;
-                        (owner != consumer
-                            && coincidence.domains_overlap(
-                                &producer.clock_domains,
-                                &producers[owner].clock_domains,
-                            )
-                            && matches!(
-                                producers[owner].read_context,
-                                SameTickReadContext::OrdinaryEvent(_)
-                            ))
-                        .then_some(owner)
-                    })
-                    .collect()
-            })
-            .collect::<Vec<BTreeSet<usize>>>();
-        let observations = (0..producers.len())
-            .map(|start| observation_closure(&direct, start))
-            .collect();
         let mut entry_readers = vec![BTreeSet::new(); producers.len()];
         for (reader, producer) in producers.iter().enumerate() {
             let SameTickReadContext::OrdinaryEvent(facts) = &producer.read_context else {
@@ -238,40 +208,14 @@ impl EventOrdering {
                 entry_readers[owner].insert(reader);
             }
         }
-        Self {
-            observations,
-            entry_readers,
-        }
+        Self { entry_readers }
     }
 
     pub(super) fn requires_current(&self, consumer: usize, producer: usize) -> bool {
-        !(self.entry_readers[producer].contains(&consumer)
-            || self.observations[consumer].contains(&producer)
-                && self.observations[producer].contains(&consumer))
+        !self.entry_readers[producer].contains(&consumer)
     }
 
     pub(super) fn entry_readers(&self, producer: usize) -> &BTreeSet<usize> {
         &self.entry_readers[producer]
     }
-
-    pub(super) fn earlier_observation_members(
-        &self,
-        producer: usize,
-    ) -> impl Iterator<Item = usize> + '_ {
-        (0..producer).filter(move |&earlier| {
-            self.observations[producer].contains(&earlier)
-                && self.observations[earlier].contains(&producer)
-        })
-    }
-}
-
-fn observation_closure(direct: &[BTreeSet<usize>], start: usize) -> BTreeSet<usize> {
-    let mut seen = BTreeSet::new();
-    let mut pending = direct[start].iter().copied().collect::<Vec<_>>();
-    while let Some(next) = pending.pop() {
-        if seen.insert(next) {
-            pending.extend(direct[next].iter().copied());
-        }
-    }
-    seen
 }

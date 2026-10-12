@@ -70,13 +70,16 @@ fn ordinary_and_clocked_alias_consumers_keep_separate_refresh_liveness() {
 }
 
 #[test]
-fn ordinary_observation_cycles_retain_event_iteration_order() {
+fn periodic_observation_cycles_are_rejected_instead_of_iterated() {
     probe(Wiring::Aliases, |probe| {
         let producers = [
             ordinary(probe, "b", &["a"], &[]),
             ordinary(probe, "a", &["b"], &[]),
         ];
-        assert_eq!(probe.issue_names(&producers), ["b", "a"]);
+        assert!(matches!(
+            probe.issue(&producers),
+            Err(SameTickOrderError::Cycle { .. })
+        ));
     });
 }
 
@@ -191,24 +194,30 @@ fn distinct_ordinary_alias_consumers_retain_their_current_and_entry_contexts() {
 }
 
 #[test]
-fn an_ordinary_observation_cycle_through_a_non_inline_alias_retains_iteration_order() {
+fn a_periodic_observation_cycle_through_a_non_inline_alias_is_rejected() {
     probe(Wiring::Aliases, |probe| {
         let producers = [
             ordinary(probe, "b", &["nAlias"], &[]),
             ordinary(probe, "n", &["b"], &[]),
         ];
-        assert_eq!(probe.issue_names(&producers), ["<nAlias>", "b", "n"]);
+        assert!(matches!(
+            probe.issue(&producers),
+            Err(SameTickOrderError::Cycle { .. })
+        ));
     });
 }
 
 #[test]
-fn an_external_entry_reader_precedes_the_observation_cycles_stable_order() {
+fn an_external_entry_reader_does_not_admit_a_periodic_observation_cycle() {
     probe(Wiring::Aliases, |probe| {
         let producers = [
             ordinary(probe, "b", &["nAlias"], &[]),
             ordinary(probe, "n", &["b"], &[]),
             ordinary(probe, "a", &["n"], &["b"]),
         ];
-        assert_eq!(probe.issue_names(&producers), ["n", "a", "<nAlias>", "b"]);
+        assert!(matches!(
+            probe.issue(&producers),
+            Err(SameTickOrderError::Cycle { .. })
+        ));
     });
 }
