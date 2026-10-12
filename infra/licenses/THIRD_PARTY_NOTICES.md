@@ -115,6 +115,31 @@ Every excerpt is short, is attributed to its section, and is quoted rather than
 adapted. The same applies to the FMI and eFMI specification sections cited in
 the FMI and GALEC crates.
 
+### Linux musl static libudev
+
+The Linux musl release binaries statically link [libudev-zero 1.0.3](https://github.com/illiliti/libudev-zero/tree/1.0.3)
+for the default gamepad feature. The release workflow verifies its source archive
+SHA-256 `0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5`
+before building it. Its ISC notice follows:
+
+```text
+ISC License
+
+Copyright (c) 2020-2021 illiliti <illiliti@protonmail.com>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
 ### Tools invoked but not redistributed
 
 The verification and benchmark rigs invoke external tools as separate
@@ -8761,61 +8786,61 @@ limitations under the License.
 
 Used by:
 
-- [rumoca 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-allocator 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-bind-python 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-bind-wasm 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-bind-wasm-diffsol 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-bind-wasm-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-codec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-codec-flatbuffers 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-compile 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-contracts 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-core 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-eval-ast 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-eval-dae 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-eval-flat 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-eval-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-eval-solve 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-exec-cranelift 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-exec-mlir 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-exec-wasm 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-input 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-input-gamepad 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-input-keyboard 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-ir-ast 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-ir-dae 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-ir-flat 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-ir-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-ir-solve 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-opt 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-autodiff 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-codegen 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-dae 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-flatten 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-instantiate 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-parse 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-parse-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-resolve 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-solve 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-structural 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-phase-typecheck 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-reference 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-signal-frame 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-sim 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-solver 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-solver-diffsol 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-solver-rk45 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-tool-fmt 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-tool-lint 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-tool-lsp 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-tool-lsp-galec 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-transport-udp 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-transport-websocket 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-transport-zenoh 0.10.1](https://github.com/CogniPilot/rumoca)
-- [rumoca-worker 0.10.1](https://github.com/CogniPilot/rumoca)
-- [xtask 0.10.1](https://github.com/CogniPilot/rumoca)
+- [rumoca 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-allocator 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-bind-python 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-bind-wasm 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-bind-wasm-diffsol 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-bind-wasm-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-codec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-codec-flatbuffers 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-compile 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-contracts 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-core 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-eval-ast 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-eval-dae 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-eval-flat 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-eval-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-eval-solve 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-exec-cranelift 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-exec-mlir 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-exec-wasm 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-input 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-input-gamepad 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-input-keyboard 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-ir-ast 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-ir-dae 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-ir-flat 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-ir-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-ir-solve 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-opt 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-autodiff 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-codegen 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-dae 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-flatten 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-instantiate 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-parse 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-parse-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-resolve 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-solve 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-structural 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-phase-typecheck 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-reference 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-signal-frame 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-sim 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-solver 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-solver-diffsol 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-solver-rk45 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-tool-fmt 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-tool-lint 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-tool-lsp 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-tool-lsp-galec 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-transport-udp 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-transport-websocket 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-transport-zenoh 0.10.2](https://github.com/CogniPilot/rumoca)
+- [rumoca-worker 0.10.2](https://github.com/CogniPilot/rumoca)
+- [xtask 0.10.2](https://github.com/CogniPilot/rumoca)
 - [allocator-api2 0.2.21](https://github.com/zakarumych/allocator-api2)
 - [anyhow 1.0.103](https://github.com/dtolnay/anyhow)
 - [asn1-rs-impl 0.2.0](https://github.com/rusticata/asn1-rs.git)
