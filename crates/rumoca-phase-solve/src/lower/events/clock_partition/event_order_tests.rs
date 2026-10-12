@@ -16,6 +16,19 @@ fn ordinary_observation_cycles_retain_event_iteration_order() {
     let exchange = SameTickExchange::new(&[member(0, &[1], &[]), member(1, &[0], &[])]);
     assert_eq!(exchange.producer_order(), [0, 1]);
     assert!(!exchange.all_fusable());
+    let reversed = SameTickExchange::new(&[member(1, &[0], &[]), member(0, &[1], &[])]);
+    assert_eq!(reversed.producer_order(), [0, 1]);
+}
+
+#[test]
+fn acyclic_transitive_chains_remain_producer_before_reader() {
+    let exchange = SameTickExchange::new(&[
+        member(2, &[1], &[]),
+        member(1, &[0], &[]),
+        member(0, &[], &[]),
+    ]);
+    assert_eq!(exchange.producer_order(), [2, 1, 0]);
+    assert!(!exchange.all_fusable());
 }
 
 #[test]

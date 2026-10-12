@@ -472,7 +472,7 @@ impl<'dae> SameTickExchange<'dae> {
         order
     }
 
-    /// Whether every member `member` observes is placed or observes it back,
+    /// Whether every member `member` reads directly is placed or observes it back,
     /// and every entry reader of its targets is placed.
     fn producers_placed(&self, member: usize, placed: &[bool]) -> bool {
         self.direct[member]
