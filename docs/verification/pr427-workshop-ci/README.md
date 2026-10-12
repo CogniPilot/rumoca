@@ -1,33 +1,47 @@
 # PR 427 workshop CI coverage inventory
 
-Latest focused checkpoints: the [function-definedness repair and original
-Booster prefix](function-definedness-compound-writer-qualification.md) pass;
-all 109 existing browser runtime/playground Node unit tests pass at `d4e415276`
-after canonical dependency staging and the configured-session assertion repair
-([receipt](browser-unit-configuration-qualification.json)). The optimized FullWeb
-checkpoint at `e04d59ad1` passes all three artifact smokes, all four browser guide
-scripts and all 16 authored cells, including the full safely landed Booster
-mission ([receipt](fullweb-e04-checkpoint.md)). The two focused AD-only registry
-checks pass after registering the existing test-only verification batteries
-([before/after receipt](ad-verification-registry-79-qualification.json)). The
-`7d56996e4` no-fail-fast workspace census stopped at the host memory reserve
-after 1,240 passes and two failures; 9,084 selected tests had no terminal result
-([partial census](workspace-census-7d569-resource-stop.json)). The reviewed root
-ownership-test update and [event dependency fixes](../pr427-event-derivative-dependencies-20261012/README.md)
-address those two failures; the combined focused checkpoint at `59bc5fd74493`
-passes all 80 selected tests ([receipt](combined-dependency-59-checkpoint.json)).
-The separate [ordinary trigger-buffer repair](../pr427-ordinary-trigger-role-20261012/README.md)
-passes its two constructor controls. Its wider phase suite reports 197 passes
-and one failure; source validation for the discrete-Real derivative case remains
-under investigation. These are focused checkpoints, not complete workspace
-qualification. Complete combined workspace, quick/full and remote CI remain
-pending. The unpublished signoff rewrite preserves all 433 source trees and
-subjects ([equivalence receipt](dco-source-equivalence-59.json)); it does not
-relabel earlier baked artifact identities as current-tip results. Historical raw MSL
-results and OMC-cache data from the completed `2b50ac92a` run are preserved in
-verified archives; their [hashes and recovery paths](terminal-msl-storage-archives.json)
-remain available after the raw copies were retired. The inventory below records
-its named earlier checkpoints.
+The complete selected workspace census at `301b4d566838` ran all 10,352 tests
+across 159 binaries: **10,347 passed, five failed, none skipped**. No resource
+stop occurred ([receipt](workspace-census-301-complete.json)). The failures are
+the unused public accessor, a conditional-chain fixture whose routing premise
+changed, the discrete-Real derivative distinction, and two same-tick cycle
+models that incorrectly simulate. The cycle failures are correctness blockers;
+they are not expected successes. Canonical lint passed at the same snapshot
+([receipt](canonical-lint-301-checkpoint.json)). Final combined qualification,
+quick/full and fresh remote CI remain pending.
+
+The unused accessor is removed; its existing API ratchet and removed-surface
+guard both pass at `bab791f3e`, along with scoped Clippy and formatting
+([receipt](unused-same-tick-api-qualification.json)). The reported #403/#411
+source paths now pass actual native-WASM execution at `9aa5511d8`: all 228
+IR-DAE and 152 WASM tests pass, with scoped lint and formatting
+([receipt](../pr427-reported-native-wasm-20261012/README.md)). These repairs
+are integrated, but their peer qualification does not certify the combined tip.
+
+Earlier checkpoints: the [function-definedness repair and original Booster
+prefix](function-definedness-compound-writer-qualification.md) pass; all 109
+existing browser runtime/playground Node unit tests pass at `d4e415276`
+([receipt](browser-unit-configuration-qualification.json)). FullWeb at
+`e04d59ad1` passes three artifact smokes, four browser guide scripts and all 16
+authored cells, including the safely landed Booster mission
+([receipt](fullweb-e04-checkpoint.md)). The AD-only registry checks pass
+([receipt](ad-verification-registry-79-qualification.json)). The combined
+[event dependency](../pr427-event-derivative-dependencies-20261012/README.md)
+checkpoint passes 80 selected tests at `59bc5fd74493`
+([receipt](combined-dependency-59-checkpoint.json)); the
+[ordinary trigger-buffer repair](../pr427-ordinary-trigger-role-20261012/README.md)
+passes its two constructor controls. Its phase suite reports 197 passes and the
+one discrete-Real derivative failure now seen in the complete census.
+
+The earlier `7d56996e4` census stopped at the host memory reserve after 1,240
+passes and two failures, leaving 9,084 selected tests without a terminal result
+([receipt](workspace-census-7d569-resource-stop.json)). The unpublished signoff
+rewrite preserves all 433 source trees and subjects
+([receipt](dco-source-equivalence-59.json)); earlier baked artifact identities
+remain attached to their actual runs. Historical raw MSL results and OMC-cache
+data from `2b50ac92a` remain recoverable from
+[verified archives](terminal-msl-storage-archives.json). The inventory below
+records its named earlier checkpoints.
 
 Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
 replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.

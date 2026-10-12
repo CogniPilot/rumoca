@@ -1,0 +1,33 @@
+{
+  "source": "bab791f3e8e03036611fa22c3ca00af62dcf6fdf",
+  "before_source": "301b4d5668382bf73826ef55f5f3d4a4ca7494b0",
+  "before_excerpt_sha256": "3ef1f464a197ef0791fa432dde599bd1d82a1a5c66172a8aa6ad77a04644561a",
+  "after_test_summaries": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 246 filtered out; finished in 7.22s",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 246 filtered out; finished in 7.02s"
+  ],
+  "source_unchanged": true,
+  "tracked_entries": 4151,
+  "sha256": {
+    "command.log": "9d8fdb781a2a6f221408bc4ac3d3bea3eb98d3d94370eb0c279e6283309be8ee",
+    "guardian.json": "9669cdf07775e711ec0a6514a5ff82329b66f1f0c60c02beb08029253129265a",
+    "source-before.json": "7be11f20a398d9917de3bf7ff7c3f65481fb334572463c858ac9ab45bffbf7f5",
+    "source-after.json": "7be11f20a398d9917de3bf7ff7c3f65481fb334572463c858ac9ab45bffbf7f5",
+    "tools.sha256": "af0e77563b6c3e84652148ef4c4894d96a642b43947a6187b3b44055574e3e1f",
+    "exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "sealed_elf": {
+    "name": "architecture-bab791f3e",
+    "sha256": "570ccc4f7c16a4cda1b7ab11142c5168fbe264f6326d3101d9189b8ef0eb13c4"
+  },
+  "recipe": "#!/usr/bin/env bash\nset -euo pipefail\nexport GIT_OPTIONAL_LOCKS=0\nexport CARGO_TARGET_DIR=\"$HOME/scratch/rumoca/workshop427-staticpie-20261012/target\" CARGO_HOME=\"$HOME/.cargo\"\nexport TMPDIR=\"$HOME/scratch/rumoca/pr427-unused-same-tick-api-20261012/tmp\" CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\ncd \"$HOME/scratch/rumoca/worktrees/pr427-unused-same-tick-api-20261012\"\ncargo test --locked --offline --jobs 4 -p rumoca --no-default-features --test architecture_hardening_test public_api_surface::new_declaration_only_public_surfaces_require_explicit_disposition -- --exact --nocapture\ncargo test --locked --offline --jobs 4 -p rumoca --no-default-features --test architecture_hardening_test public_api_surface::removed_declaration_only_public_items_do_not_return -- --exact --nocapture\ncargo clippy --locked --offline -p rumoca-phase-structural --all-targets --all-features -- -D warnings\ncargo fmt --all -- --check\n",
+  "guardian": {
+    "elapsedMs": 274007.35345500003,
+    "peakResidentPlusSwapKiB": 2708952,
+    "peakCacheBytes": 6953115648,
+    "signal": null,
+    "exitCode": 0
+  },
+  "scope": "Exact existing architecture ratchet and removed-item pin; scoped structural all-target/all-feature Clippy and full fmt. No full workspace claim.",
+  "artifacts_root": "$HOME/scratch/rumoca/pr427-unused-same-tick-api-20261012/after-bab791f3e"
+}
