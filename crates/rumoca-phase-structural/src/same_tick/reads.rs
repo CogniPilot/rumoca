@@ -522,6 +522,8 @@ impl<'dae> SameTickDefinitions<'dae> {
 }
 
 #[cfg(test)]
+mod alias_merge_tests;
+#[cfg(test)]
 mod family_tests;
 #[cfg(test)]
 mod tests;
