@@ -38,8 +38,13 @@ directions: a row pinned to compile that stops compiling, and equally a row
 pinned to be refused that starts compiling, because the manifest is the
 reviewed record of what the compiler accepts.
 
-The flight corpus is out of tree, so its path never appears in this
-repository. Give it at run time, either way:
+The numerical flight corpus is provisioned automatically from the immutable
+revision and ZIP checksum in `infra/verification/corpus-dependencies.toml`.
+Its cache under `target/verification/corpus-dependencies` is separate from the
+compatibility CI checkout and the example CMM library. The gate verifies all
+source bytes and the complete file inventory before launching workers.
+
+An existing byte-identical checkout can instead be named at run time:
 
 ```bash
 cargo xtask verify corpus-pin --models-root /path/to/modelica_models
@@ -51,6 +56,8 @@ printf '{"models_root": "/path/to/modelica_models"}\n' > target/verification/cor
 A missing corpus is a hard failure with the headline
 `corpus unmeasured: the pinned corpus is not on this machine`, never a skip:
 a green run that compared nothing would report the corpus as correct.
+An explicit argv/config root is authoritative: a wrong revision, edited source,
+missing file or extra source file is refused rather than replaced by the cache.
 
 #### What each row is judged on
 

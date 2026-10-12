@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "source": "bca63578e52a5e23c8df7fdda3d694a6daa706de",
+  "productionCommits": [
+    "d66668cc1546a080e36f05717ea7be5245d4fb54",
+    "bca63578e52a5e23c8df7fdda3d694a6daa706de"
+  ],
+  "archive": {
+    "url": "https://github.com/CogniPilot/modelica_models/archive/3d6204e7a907e452e08c46cd63352d6365089a38.zip",
+    "file": "modelica_models-3d6204e7.zip",
+    "bytes": 931464,
+    "sha256": "9475fdc2e27df233a1c8b8debddbbc56765c9559c69938a1583df2210c3aec6f",
+    "revision": "3d6204e7a907e452e08c46cd63352d6365089a38",
+    "payloadFileCount": 747,
+    "allPayloadBytesMatchedPreviouslyQualifiedSnapshot": true
+  },
+  "qualification": {
+    "dependencyOwnerTests": 8,
+    "argvConfigAuthorityTests": 1,
+    "failedTests": 0,
+    "ignoredTests": 0,
+    "clippy": "PASS: cargo clippy --locked --offline --jobs 4 -p xtask --all-targets -- -D warnings",
+    "formatter": "PASS",
+    "publicDefaultCubs2Row": "PASS: unchanged pin using sealed 5e6 CLI; 2.1 seconds",
+    "actualA41Root": "REFUSED before compiler; pinned source differs at .github/workflows/ci.yml",
+    "whole28": "UNRUN",
+    "canonicalQuickFull": "UNRUN"
+  },
+  "guard": {
+    "exitCode": 0,
+    "signal": null,
+    "elapsedMs": 42943.394462000004,
+    "peakResidentPlusSwapKiB": 1229256,
+    "peakCacheBytes": 6612140032,
+    "minimumAvailableKiB": 56813572,
+    "minimumScratchFreeBytes": 46513778688,
+    "secondsLimit": 600,
+    "rssLimitMiB": 4096,
+    "cacheLimitMiB": 8192,
+    "availableFloorMiB": 16384,
+    "scratchFreeFloorMiB": 8192
+  },
+  "artifacts": {
+    "command.log": {
+      "file": "command.log",
+      "bytes": 3252,
+      "sha256": "8ddb44d88522a5ef1fdc907f688a971609ed1fa05f278b0c2462f7d3a29c3715"
+    },
+    "guardian.json": {
+      "file": "guardian.json",
+      "bytes": 4722,
+      "sha256": "7e00dfcbc8725fdcf5369336fa7daac8db55406ebbb1c37a6e27e80b880d6eff"
+    },
+    "source-before.json": {
+      "file": "source-before.json",
+      "bytes": 804494,
+      "sha256": "6073a460f446f1727d7eee60c52578d04e87b387e7aa06c159a82f606cc36c00"
+    },
+    "source-after.json": {
+      "file": "source-after.json",
+      "bytes": 804494,
+      "sha256": "6073a460f446f1727d7eee60c52578d04e87b387e7aa06c159a82f606cc36c00"
+    },
+    "xtask-bca63578": {
+      "file": "xtask-bca63578",
+      "bytes": 14115424,
+      "sha256": "d4260437321ae1179b3484f6471907e77e656352496291eb4d5a4169cae14bbf"
+    },
+    "wrong-a41-root.log": {
+      "file": "wrong-a41-root.log",
+      "bytes": 269,
+      "sha256": "4a10d9d8dcbbefc5bae4b0a5138223c6bce035069842491c4b75fedb6f6a9f71"
+    },
+    "default-cubs2-summary.json": {
+      "file": "default-cubs2-summary.json",
+      "bytes": 1119,
+      "sha256": "8eddf331e7a4d88bf265839e4d3fd50e5d46045c7707c592d4b5336c74456781"
+    },
+    "cache-idle-final.json": {
+      "file": "cache-idle-final.json",
+      "bytes": 51014,
+      "sha256": "cf30b6bb3936722fc4445423afed48a4e0e827b509d1b0add9e8760abe63ed73"
+    }
+  },
+  "sourceSealsEqual": true,
+  "initialAttempt": {
+    "source": "d66668cc1546a080e36f05717ea7be5245d4fb54",
+    "nineTests": "PASS",
+    "clippy": "FAIL: one needless borrow; corrected in bca63578",
+    "formatter": "UNRUN",
+    "exitCode": 101,
+    "artifacts": {
+      "command.log": {
+        "file": "command.log",
+        "bytes": 6078,
+        "sha256": "e79415c03942d56a9eb112c8c8bd0a6bb0dc21594b1d779e1573f2a993cb0dbd"
+      },
+      "guardian.json": {
+        "file": "guardian.json",
+        "bytes": 12352,
+        "sha256": "9caacc8b8e0b622f050982a4bfb6c0bbd1e56b615c1c7e400ff37abb10f6ff69"
+      },
+      "source-before.json": {
+        "file": "source-before.json",
+        "bytes": 804494,
+        "sha256": "0cfdc3e666083b21065b0e9f5ac7555c7e7055f3c055c412ca4433dc24eff594"
+      },
+      "source-after.json": {
+        "file": "source-after.json",
+        "bytes": 804494,
+        "sha256": "0cfdc3e666083b21065b0e9f5ac7555c7e7055f3c055c412ca4433dc24eff594"
+      }
+    }
+  },
+  "limits": [
+    "No compiler/model/pin/tolerance changes",
+    "No global CMM or compatibility corpus repin",
+    "One default numerical row is not full 28-row qualification",
+    "Denied process reads are disclosed by the idle audit; no global idle assertion"
+  ]
+}
