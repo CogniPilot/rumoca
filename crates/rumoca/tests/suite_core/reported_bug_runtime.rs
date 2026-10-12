@@ -4,6 +4,7 @@ mod guarded_time_deadlines;
 mod integer_call_comparison;
 mod integer_quotient_comparison;
 mod main_dae_integer;
+mod scalar_boolean_values;
 mod scalar_modulo_integral;
 mod static_integer_capture;
 

@@ -179,6 +179,31 @@ fn issue_403_active_invalid_access_keeps_its_typed_wasm_fault() {
 }
 
 #[test]
+fn issue_403_or_short_circuits_the_original_dynamic_access_in_wasm() {
+    let source = GUARDED.replace("k <= n and", "k > n or");
+    let mut program = SourceProgram::new(&source, "GuardedOperands");
+    for (input, expected) in [(4, 1.), (3, 1.), (2, 0.), (4, 1.)] {
+        let (status, values, _) = program.run(input);
+        assert_eq!(status, 0);
+        assert_eq!(program.real_output(&values), expected);
+    }
+}
+
+#[test]
+fn issue_403_independently_demanded_rhs_keeps_its_wasm_fault() {
+    let source = GUARDED.replace(
+        "if k <= n and a[k] > 5 then 1 else 0",
+        "(if k <= n and a[k] > 5 then 1 else 0) + a[k]",
+    );
+    let mut program = SourceProgram::new(&source, "GuardedOperands");
+    let (status, _, _) = program.run(4);
+    program.fault(status, TypedCallFaultKind::IndexBounds);
+    let (status, values, _) = program.run(3);
+    assert_eq!(status, 0);
+    assert_eq!(program.real_output(&values), 10.);
+}
+
+#[test]
 fn issue_411_main_integer_mod_and_div_publish_exact_i64_wasm_lanes() {
     for modulo in [true, false] {
         let source = if modulo {
