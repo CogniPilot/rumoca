@@ -9,7 +9,12 @@ checkpoint at `e04d59ad1` passes all three artifact smokes, all four browser gui
 scripts and all 16 authored cells, including the full safely landed Booster
 mission ([receipt](fullweb-e04-checkpoint.md)). The two focused AD-only registry
 checks pass after registering the existing test-only verification batteries
-([before/after receipt](ad-verification-registry-79-qualification.json)). Complete
+([before/after receipt](ad-verification-registry-79-qualification.json)). The
+`7d56996e4` no-fail-fast workspace census stopped at the host memory reserve
+after 1,240 passes and two failures; 9,084 selected tests had no terminal result
+([partial census](workspace-census-7d569-resource-stop.json)). The reviewed root
+ownership-test update and [event dependency fixes](../pr427-event-derivative-dependencies-20261012/README.md)
+address those two failures; combined execution remains pending. Complete
 combined workspace, quick/full and remote CI remain pending. Historical raw MSL
 results and OMC-cache data from the completed `2b50ac92a` run are preserved in
 verified archives; their [hashes and recovery paths](terminal-msl-storage-archives.json)
