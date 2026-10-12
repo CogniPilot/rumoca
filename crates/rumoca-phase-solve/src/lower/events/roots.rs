@@ -74,8 +74,9 @@ fn flush_root_owner<'dae>(
     let output_end = output_start
         .checked_add(relations.len())
         .ok_or_else(|| LowerError::contract("root output ordinal overflow", span))?;
-    let program =
-        layout.scalar_compiler(view, None).root_program_outputs(relations.iter().copied())?;
+    let program = layout
+        .scalar_compiler(view, None)
+        .root_program_outputs(relations.iter().copied())?;
     rows.push_outputs(program, span, output_start..output_end);
     relations.clear();
     Ok(())
@@ -120,7 +121,8 @@ fn lower_structured_roots<'dae>(
                     root.provenance().span(),
                 )?
             } else {
-                layout.scalar_compiler(view, Some((root.domain(), &point)))
+                layout
+                    .scalar_compiler(view, Some((root.domain(), &point)))
                     .root_expression_program(
                         root.expression(),
                         root.activation_guard(),
