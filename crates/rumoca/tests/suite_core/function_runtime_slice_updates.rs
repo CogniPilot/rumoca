@@ -5,8 +5,8 @@
 //! range on a compact tensor update (or a fold patch of the carried tensor),
 //! never one select per base element.
 //!
-//! The function inputs are model inputs, so the call has no derivative
-//! relation and Solve lowering expands its body in place.
+//! The function inputs are model inputs; the checked typed owner retains its
+//! compact window operations and directional relation.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, eval_dae_at};
