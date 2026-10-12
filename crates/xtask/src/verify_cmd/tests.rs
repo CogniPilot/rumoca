@@ -21,6 +21,30 @@ fn step_argvs(suite: VerifySuite) -> Vec<Vec<&'static str>> {
 }
 
 #[test]
+fn canonical_parity_steps_use_the_ci_measurement_budgets() {
+    use clap::Parser;
+
+    for suite in [VerifySuite::Quick, VerifySuite::Full] {
+        let steps = step_argvs(suite);
+        let mut argv = vec!["xtask"];
+        argv.extend(&steps[1]);
+        let parsed = crate::Cli::try_parse_from(argv).expect("canonical parity command");
+        let crate::Commands::Verify(super::VerifyArgs {
+            command: super::VerifyCommand::MslParity(args),
+        }) = parsed.command
+        else {
+            panic!("canonical step must invoke MSL parity");
+        };
+        let config = args.to_parity_config_json();
+        assert_eq!(config.get("sim_timeout_secs"), Some(&serde_json::json!(45.0)));
+        assert_eq!(
+            config.get("model_attempt_timeout_secs"),
+            Some(&serde_json::json!(20.0))
+        );
+    }
+}
+
+#[test]
 fn parity_config_lock_serializes_fixed_path_harness_configuration() {
     let temp = tempfile::tempdir().expect("tempdir");
     let first = ParityConfigLock::acquire(temp.path()).expect("first lock");
