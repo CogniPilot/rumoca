@@ -47,7 +47,7 @@ use crate::CausalDefinitions;
 
 mod event_reads;
 mod intermediates;
-pub use event_reads::{EventReadFacts, SameTickReadContext};
+pub use event_reads::{EventReadCollector, EventReadFacts, SameTickReadContext};
 use intermediates::{IntermediateKey, IntermediateNode, discover_intermediates};
 
 /// One clocked producer described by the Solve construction.

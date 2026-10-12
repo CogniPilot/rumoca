@@ -61,29 +61,116 @@ pub enum SameTickReadContext<'dae> {
     OrdinaryEvent(EventReadFacts<'dae>),
 }
 
+/// A source-root collection that retains each exact projected alias adjacency.
+/// Fields stay private: only the checked definition owner issues read facts.
+pub struct EventReadCollector<'owner, 'dae> {
+    definitions: &'owner SameTickDefinitions<'dae>,
+    view: dae::DaeView<'dae>,
+    current: reads::ReadSeeds,
+    entry: reads::ReadSeeds,
+}
+
+impl<'dae> EventReadCollector<'_, 'dae> {
+    pub fn expression(&mut self, expression: dae::ExprId<'dae>) -> Result<(), SameTickOrderError> {
+        self.current.merge(reads::expression_read_seeds(
+            self.view,
+            expression,
+            &self.definitions.derivative_sources,
+            Some(self.definitions),
+            &|_| false,
+        )?);
+        Ok(())
+    }
+
+    pub fn condition(
+        &mut self,
+        condition: dae::ConditionId<'dae>,
+        excluded: &BTreeSet<dae::ConditionId<'dae>>,
+    ) -> Result<(), SameTickOrderError> {
+        self.condition_seeds(condition, excluded, &|_| false, false)
+    }
+
+    pub fn entry_condition(
+        &mut self,
+        condition: dae::ConditionId<'dae>,
+        projected: impl Fn(dae::ExprId<'dae>) -> bool,
+    ) -> Result<(), SameTickOrderError> {
+        self.condition_seeds(condition, &BTreeSet::new(), &projected, true)
+    }
+
+    fn condition_seeds(
+        &mut self,
+        condition: dae::ConditionId<'dae>,
+        excluded: &BTreeSet<dae::ConditionId<'dae>>,
+        projected: &impl Fn(dae::ExprId<'dae>) -> bool,
+        entry: bool,
+    ) -> Result<(), SameTickOrderError> {
+        reads::visit_condition_expressions(self.view, condition, excluded, |expression| {
+            let seeds = reads::expression_read_seeds(
+                self.view,
+                expression,
+                &self.definitions.derivative_sources,
+                Some(self.definitions),
+                projected,
+            )?;
+            if entry {
+                self.entry.merge(seeds);
+            } else {
+                self.current.merge(seeds);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn finish(self) -> Result<EventReadFacts<'dae>, SameTickOrderError> {
+        let mut dependencies = BTreeMap::new();
+        let current = self.definitions.visit_read_seed_closure(
+            self.view,
+            self.current,
+            ReadRole::Current,
+            |variable, reads| {
+                dependencies.insert(variable, reads.clone());
+            },
+        )?;
+        let entry = self.definitions.visit_read_seed_closure(
+            self.view,
+            self.entry,
+            ReadRole::Current,
+            |_, _| {},
+        )?;
+        Ok(EventReadFacts {
+            current,
+            entry,
+            dependencies,
+            brand: std::marker::PhantomData,
+        })
+    }
+}
+
 impl<'dae> SameTickDefinitions<'dae> {
-    /// Close the checked direct body and entry reads once at event construction.
+    pub fn event_read_collector(&self, view: dae::DaeView<'dae>) -> EventReadCollector<'_, 'dae> {
+        EventReadCollector {
+            definitions: self,
+            view,
+            current: reads::ReadSeeds::default(),
+            entry: reads::ReadSeeds::default(),
+        }
+    }
+
+    /// Close declaration seeds, retaining the whole-value meaning of each seed.
     pub fn issue_event_read_facts(
         &self,
         view: dae::DaeView<'dae>,
         current: BTreeSet<u32>,
         entry: BTreeSet<u32>,
     ) -> Result<EventReadFacts<'dae>, SameTickOrderError> {
-        let mut dependencies = BTreeMap::new();
-        let current = self.visit_variable_read_closure(
+        EventReadCollector {
+            definitions: self,
             view,
-            current,
-            ReadRole::Current,
-            |variable, reads| {
-                dependencies.insert(variable, reads.clone());
-            },
-        )?;
-        Ok(EventReadFacts {
-            current,
-            dependencies,
-            entry: self.variable_read_closure(view, entry)?,
-            brand: std::marker::PhantomData,
-        })
+            current: reads::ReadSeeds::raw(current),
+            entry: reads::ReadSeeds::raw(entry),
+        }
+        .finish()
     }
 }
 

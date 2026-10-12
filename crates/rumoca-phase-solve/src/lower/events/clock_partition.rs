@@ -500,28 +500,20 @@ fn unclocked_member<'dae>(
         .iter()
         .map(|branch| branch.0)
         .collect::<Vec<_>>();
-    let mut direct = BTreeSet::new();
+    let mut collector = definitions.event_read_collector(view);
     for &(trigger, guard, value, _) in &target.branches {
-        let excluded = BTreeSet::from([trigger]);
-        definitions.collect_expression_reads(view, value, &mut direct)?;
-        definitions.collect_condition_reads(view, guard, &excluded, |_| false, &mut direct)?;
+        collector.expression(value)?;
+        collector.condition(guard, &BTreeSet::from([trigger]))?;
     }
-    let mut entry_reads = BTreeSet::new();
     for trigger in triggers {
-        definitions.collect_condition_reads(
-            view,
-            trigger,
-            &BTreeSet::new(),
-            |expression| {
-                layout
-                    .buffered_relations
-                    .expression_slot(expression)
-                    .is_some()
-            },
-            &mut entry_reads,
-        )?;
+        collector.entry_condition(trigger, |expression| {
+            layout
+                .buffered_relations
+                .expression_slot(expression)
+                .is_some()
+        })?;
     }
-    let facts = definitions.issue_event_read_facts(view, direct, entry_reads)?;
+    let facts = collector.finish()?;
     Ok(SameTickExchangeMember {
         targets: vec![target.variable.index()],
         reads: facts.current().clone(),

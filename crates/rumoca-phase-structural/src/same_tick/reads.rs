@@ -49,6 +49,39 @@ fn current_variable(operation: dae::ExpressionOperation<'_>) -> Option<dae::Vari
     }
 }
 
+#[derive(Default)]
+pub(super) struct ReadSeeds {
+    variables: BTreeSet<u32>,
+    raw: BTreeSet<u32>,
+    aliases: BTreeMap<u32, BTreeSet<u32>>,
+}
+
+impl ReadSeeds {
+    pub(super) fn raw(variables: BTreeSet<u32>) -> Self {
+        Self {
+            raw: variables.clone(),
+            variables,
+            aliases: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn merge(&mut self, other: Self) -> Vec<u32> {
+        let mut changed = other.variables.iter().copied().collect::<Vec<_>>();
+        changed.extend(other.raw.iter().copied());
+        self.variables.extend(other.variables);
+        self.raw.extend(other.raw);
+        for (variable, reads) in other.aliases {
+            let entry = self.aliases.entry(variable).or_default();
+            let previous = entry.len();
+            entry.extend(reads);
+            if entry.len() != previous {
+                changed.push(variable);
+            }
+        }
+        changed
+    }
+}
+
 pub(super) fn collect_expression_reads<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
@@ -56,9 +89,21 @@ pub(super) fn collect_expression_reads<'dae>(
     projected: &impl Fn(dae::ExprId<'dae>) -> bool,
     reads: &mut BTreeSet<u32>,
 ) -> Result<(), SameTickOrderError> {
+    reads.extend(expression_read_seeds(view, expression, sources, None, projected)?.variables);
+    Ok(())
+}
+
+pub(super) fn expression_read_seeds<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    sources: &DerivativeSources<'dae>,
+    definitions: Option<&SameTickDefinitions<'dae>>,
+    projected: &impl Fn(dae::ExprId<'dae>) -> bool,
+) -> Result<ReadSeeds, SameTickOrderError> {
     if sources.is_empty() || !has_derivative_demand(view, expression, projected) {
-        collect_raw_reads(view, expression, projected, reads);
-        return Ok(());
+        let mut reads = BTreeSet::new();
+        collect_raw_reads(view, expression, projected, &mut reads);
+        return Ok(ReadSeeds::raw(reads));
     }
     let node = view
         .expression(expression)
@@ -71,14 +116,15 @@ pub(super) fn collect_expression_reads<'dae>(
             })?;
     let mut projection = rumoca_eval_dae::PrunedScalarCoordinateProjection::new(view, projected);
     let mut pending = (0..count)
-        .map(|scalar| (expression, scalar, None))
+        .map(|scalar| (expression, scalar, None, None))
         .collect::<Vec<_>>();
     let mut seen = BTreeSet::new();
-    while let Some((root, scalar, point)) = pending.pop() {
-        if !seen.insert((root, scalar, point.clone())) {
+    let mut reads = ReadSeeds::default();
+    while let Some((root, scalar, point, parent)) = pending.pop() {
+        if !seen.insert((root, scalar, point.clone(), parent)) {
             continue;
         }
-        let mut derivatives = Vec::new();
+        let mut coordinates = Vec::new();
         projection.project(
             root,
             scalar,
@@ -87,16 +133,20 @@ pub(super) fn collect_expression_reads<'dae>(
                 .map(|(domain, indices): &(dae::DomainId<'dae>, Vec<i64>)| {
                     (*domain, indices.as_slice())
                 }),
-            |coordinate, scalar| {
-                if let dae::CoordinateView::Derivative(state) = coordinate {
-                    derivatives.push((state.index(), scalar));
-                } else if let Some(variable) =
-                    current_variable(dae::ExpressionOperation::Coordinate(coordinate))
-                {
-                    reads.insert(variable.index());
-                }
-            },
+            |coordinate, scalar| coordinates.push((coordinate, scalar)),
         )?;
+        let mut derivatives = Vec::new();
+        for (coordinate, scalar) in coordinates {
+            if let dae::CoordinateView::Derivative(state) = coordinate {
+                derivatives.push((state.index(), scalar));
+                continue;
+            }
+            if let Some((variable, definition)) =
+                record_projected_read(&mut reads, definitions, coordinate, parent)
+            {
+                pending.push((definition, scalar, point.clone(), Some(variable)));
+            }
+        }
         for derivative in derivatives {
             let source =
                 sources
@@ -112,10 +162,32 @@ pub(super) fn collect_expression_reads<'dae>(
                 source.expression,
                 source.expression_scalar,
                 source.domain_point.clone(),
+                parent,
             ));
         }
     }
-    Ok(())
+    Ok(reads)
+}
+
+fn record_projected_read<'dae>(
+    reads: &mut ReadSeeds,
+    definitions: Option<&SameTickDefinitions<'dae>>,
+    coordinate: dae::CoordinateView<'dae>,
+    parent: Option<u32>,
+) -> Option<(u32, dae::ExprId<'dae>)> {
+    let variable = current_variable(dae::ExpressionOperation::Coordinate(coordinate))?.index();
+    reads.variables.insert(variable);
+    if let Some(parent) = parent {
+        reads.aliases.entry(parent).or_default().insert(variable);
+    }
+    if let dae::CoordinateView::Algebraic(_) = coordinate
+        && let Some(definition) = definitions.and_then(|owner| owner.definition(variable))
+    {
+        reads.aliases.entry(variable).or_default();
+        return Some((variable, definition));
+    }
+    reads.raw.insert(variable);
+    None
 }
 
 fn has_derivative_demand<'dae>(
@@ -187,7 +259,7 @@ fn collect_condition_reads<'dae>(
     })
 }
 
-fn visit_condition_expressions<'dae, E>(
+pub(super) fn visit_condition_expressions<'dae, E>(
     view: dae::DaeView<'dae>,
     root: dae::ConditionId<'dae>,
     excluded: &BTreeSet<dae::ConditionId<'dae>>,
@@ -289,39 +361,46 @@ impl<'dae> SameTickDefinitions<'dae> {
         condition_reads: &[dae::ConditionId<'dae>],
         role: ReadRole,
     ) -> Result<BTreeSet<u32>, SameTickOrderError> {
-        let mut direct = BTreeSet::new();
+        let mut seeds = ReadSeeds::default();
         for &value in value_reads {
-            self.expression_reads_with_role(view, value, role, &mut direct)?;
+            seeds.merge(self.expression_seeds_with_role(view, value, role)?);
         }
         for &condition in condition_reads {
             match role {
-                ReadRole::Current => self.collect_condition_reads(
-                    view,
-                    condition,
-                    &BTreeSet::new(),
-                    |_| false,
-                    &mut direct,
-                )?,
+                ReadRole::Current => {
+                    visit_condition_expressions(view, condition, &BTreeSet::new(), |expression| {
+                        seeds.merge(self.expression_seeds_with_role(view, expression, role)?);
+                        Ok::<(), SameTickOrderError>(())
+                    })?
+                }
                 ReadRole::ClockPartition => {
-                    collect_condition_same_instant_reads(view, condition, &mut direct)
+                    let mut reads = BTreeSet::new();
+                    collect_condition_same_instant_reads(view, condition, &mut reads);
+                    seeds.merge(ReadSeeds::raw(reads));
                 }
             }
         }
-        self.variable_read_closure_with_role(view, direct, role)
+        self.visit_read_seed_closure(view, seeds, role, |_, _| {})
     }
 
-    fn expression_reads_with_role(
+    fn expression_seeds_with_role(
         &self,
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
         role: ReadRole,
-        reads: &mut BTreeSet<u32>,
-    ) -> Result<(), SameTickOrderError> {
+    ) -> Result<ReadSeeds, SameTickOrderError> {
         match role {
-            ReadRole::Current => self.collect_expression_reads(view, expression, reads),
+            ReadRole::Current => expression_read_seeds(
+                view,
+                expression,
+                &self.derivative_sources,
+                Some(self),
+                &|_| false,
+            ),
             ReadRole::ClockPartition => {
-                collect_same_instant_reads(view, expression, reads);
-                Ok(())
+                let mut reads = BTreeSet::new();
+                collect_same_instant_reads(view, expression, &mut reads);
+                Ok(ReadSeeds::raw(reads))
             }
         }
     }
@@ -358,26 +437,45 @@ impl<'dae> SameTickDefinitions<'dae> {
         view: dae::DaeView<'dae>,
         seeds: BTreeSet<u32>,
         role: ReadRole,
+        visit: impl FnMut(u32, &BTreeSet<u32>),
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.visit_read_seed_closure(view, ReadSeeds::raw(seeds), role, visit)
+    }
+
+    pub(super) fn visit_read_seed_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        mut seeds: ReadSeeds,
+        role: ReadRole,
         mut visit: impl FnMut(u32, &BTreeSet<u32>),
     ) -> Result<BTreeSet<u32>, SameTickOrderError> {
-        let mut pending = seeds.into_iter().collect::<Vec<_>>();
+        let mut pending = seeds.variables.iter().copied().collect::<Vec<_>>();
+        let mut processed = BTreeMap::new();
         let mut closure = BTreeSet::new();
         while let Some(variable) = pending.pop() {
-            if !closure.insert(variable) {
+            let projected = (!seeds.raw.contains(&variable))
+                .then(|| seeds.aliases.get(&variable))
+                .flatten()
+                .cloned();
+            if processed.get(&variable) == Some(&projected) {
                 continue;
             }
-            if let Some(definition) = self.definition(variable) {
-                let mut reads = BTreeSet::new();
-                self.expression_reads_with_role(view, definition, role, &mut reads)?;
+            processed.insert(variable, projected.clone());
+            closure.insert(variable);
+            if let Some(reads) = projected {
                 visit(variable, &reads);
                 pending.extend(reads);
+            } else if let Some(definition) = self.definition(variable) {
+                let next = self.expression_seeds_with_role(view, definition, role)?;
+                visit(variable, &next.variables);
+                pending.extend(seeds.merge(next));
             } else if let Some(reads) = self.opaque.get(&variable) {
                 let reads = match role {
                     ReadRole::Current => &reads.current,
                     ReadRole::ClockPartition => &reads.clock_partition,
                 };
                 visit(variable, reads);
-                pending.extend(reads.iter().copied());
+                pending.extend(seeds.merge(ReadSeeds::raw(reads.clone())));
             }
         }
         Ok(closure)
@@ -390,13 +488,17 @@ impl<'dae> SameTickDefinitions<'dae> {
         expression: dae::ExprId<'dae>,
         reads: &mut BTreeSet<u32>,
     ) -> Result<(), SameTickOrderError> {
-        collect_expression_reads(
-            view,
-            expression,
-            &self.derivative_sources,
-            &|_| false,
-            reads,
-        )
+        reads.extend(
+            expression_read_seeds(
+                view,
+                expression,
+                &self.derivative_sources,
+                Some(self),
+                &|_| false,
+            )?
+            .variables,
+        );
+        Ok(())
     }
 
     /// Current condition reads, retaining the caller's exact entry/storage exclusions.
