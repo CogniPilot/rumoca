@@ -608,6 +608,43 @@ impl SolveRuntime {
         })
     }
 
+    /// Settle the discrete rows, recovering one refreshable source fault.
+    fn settle_discrete_step(
+        &self,
+        input: &mut DiscreteRowsSettleInput<'_>,
+        row_filter: EventUpdateRowFilter,
+        event_iteration: usize,
+        root_relation_overrides: &mut Vec<(usize, f64)>,
+        project_algebraics: &mut ProjectAlgebraics<'_>,
+    ) -> Result<bool, RuntimeSolveError> {
+        let snapshot = DiscretePreSnapshot {
+            row_filter,
+            root_relation_overrides,
+            event_iteration,
+        };
+        match self.settle_discrete_rows_for_pre_snapshot(&snapshot, input, project_algebraics) {
+            Ok(changed) => Ok(changed),
+            Err(fault @ RuntimeSolveError::SourceFault { .. }) => {
+                // A source operation can be invalid under a relation side
+                // inherited from the preceding discrete iterate. Refresh
+                // current relation truth before treating it as a fault of
+                // the settled event solution; retain strict checked reads.
+                if self.refresh_event_relation_memory(
+                    input.t,
+                    input.y,
+                    input.p,
+                    input.tol,
+                    root_relation_overrides,
+                )? {
+                    Ok(true)
+                } else {
+                    Err(fault)
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Run one relation-pass step; `None` when the pass has settled.
     fn run_relation_step(
         &self,
@@ -619,37 +656,13 @@ impl SolveRuntime {
         project_algebraics: &mut ProjectAlgebraics<'_>,
     ) -> Result<Option<bool>, RuntimeSolveError> {
         let changed = match step {
-            solve::RelationPassStep::DiscreteSettle => {
-                let snapshot = DiscretePreSnapshot {
-                    row_filter,
-                    root_relation_overrides,
-                    event_iteration,
-                };
-                match self.settle_discrete_rows_for_pre_snapshot(
-                    &snapshot,
-                    input,
-                    project_algebraics,
-                ) {
-                    Ok(changed) => changed,
-                    Err(fault @ RuntimeSolveError::SourceFault { .. }) => {
-                        // A source operation can be invalid under a relation side
-                        // inherited from the preceding discrete iterate. Refresh
-                        // current relation truth before treating it as a fault of
-                        // the settled event solution; retain strict checked reads.
-                        if !self.refresh_event_relation_memory(
-                            input.t,
-                            input.y,
-                            input.p,
-                            input.tol,
-                            root_relation_overrides,
-                        )? {
-                            return Err(fault);
-                        }
-                        true
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
+            solve::RelationPassStep::DiscreteSettle => self.settle_discrete_step(
+                input,
+                row_filter,
+                event_iteration,
+                root_relation_overrides,
+                project_algebraics,
+            )?,
             // MLS Appendix B: condition equations belong to the same solve as
             // current discrete values. Advancing pre before these relations
             // settle would preserve a transient latch value in event history.

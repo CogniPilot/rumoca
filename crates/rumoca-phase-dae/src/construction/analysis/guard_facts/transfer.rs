@@ -207,13 +207,13 @@ impl GuardFacts {
         for statement in statements {
             match statement {
                 rumoca_core::Statement::Empty { span } => {
-                    if let Some(store) = scope
-                        .generated
-                        .iter()
-                        .find(|store| store.span == *span && store.mutable)
-                    {
-                        runs.insert(store.target.as_str().to_string());
-                    }
+                    runs.extend(
+                        scope
+                            .generated
+                            .iter()
+                            .find(|store| store.span == *span && store.mutable)
+                            .map(|store| store.target.as_str().to_string()),
+                    );
                     self.after(statement, scope);
                 }
                 rumoca_core::Statement::If {

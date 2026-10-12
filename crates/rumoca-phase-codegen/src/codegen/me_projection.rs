@@ -632,17 +632,19 @@ pub(super) fn exact_algebraic_assignments_value(
     let owners = &problem.continuous.refresh_owners;
     let mut catalog = AssignmentCatalog::default();
     for stage in &owners.algebraic().value_stages {
-        if let solve::RefreshStage::ExactAssignments {
+        let solve::RefreshStage::ExactAssignments {
             static_sequence,
             dynamic_sequence,
             ..
         } = stage
-        {
-            for sequence in [*static_sequence, *dynamic_sequence] {
-                if let Some(schedule) = owners.exact_assignment_schedule(sequence) {
-                    catalog.schedule((0, problem), schedule)?;
-                }
-            }
+        else {
+            continue;
+        };
+        for sequence in [*static_sequence, *dynamic_sequence] {
+            let Some(schedule) = owners.exact_assignment_schedule(sequence) else {
+                continue;
+            };
+            catalog.schedule((0, problem), schedule)?;
         }
     }
     catalog.into_value()
