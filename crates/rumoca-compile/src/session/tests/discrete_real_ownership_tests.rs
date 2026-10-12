@@ -53,7 +53,7 @@ fn assert_missing_when(source: &str) {
         label.span.source,
         rumoca_core::SourceId::from_source_name("DiscreteReal.mo")
     );
-    let declaration = &source[label.span.start.0 as usize..label.span.end.0 as usize];
+    let declaration = &source[label.span.start.0..label.span.end.0];
     assert!(
         declaration.contains('d'),
         "diagnostic labels the declaration: {declaration}"
