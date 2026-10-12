@@ -433,7 +433,7 @@ fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
 fn checked_b1b_row_substitutes_its_matched_derivative_definition() {
     // This checked DAE row tests Appendix B.1b's residual capability. The
     // source declaration obligation is tested independently in rumoca-compile;
-    // a source discrete Real still needs an actual when or synchronous owner.
+    // a declared source discrete Real still needs an actual when owner.
     let model = derivative_alias_model(true, &[]);
     let solve =
         lower_solve_problem(&model).expect("the matched derivative has an issued definition");

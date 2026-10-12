@@ -725,7 +725,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &function_shapes,
     )?;
     let when_function_calls = analyze_when_function_calls(flat, &roles, &function_shapes)?;
-    discrete_real_ownership::validate_declared_discrete_real(flat, &clock_domains)?;
+    discrete_real_ownership::validate_declared_discrete_real(flat)?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &templates, &roles, &record_equations.continuous)?;
     let initial = analyze_initial_owners(

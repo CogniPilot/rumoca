@@ -101,6 +101,15 @@ fn discrete_real_when_algorithm_may_read_the_continuous_derivative() {
 }
 
 #[test]
+fn discrete_real_literal_false_when_retains_its_source_owner() {
+    let compiled = compile_source(
+        "model M discrete Real d(start=0,fixed=true); equation when false then d=1; end when; end M;",
+    );
+    assert_eq!(compiled.balance_detail.equations_unknowns(), (1, 1));
+    assert_eq!(compiled.dae.active_discrete_scalar_count(), 1);
+}
+
+#[test]
 fn discrete_real_inherited_whole_array_keeps_when_ownership() {
     let compiled = compile_source(
         "model Base discrete Real d[2](each start=0); end Base; model M extends Base; Real x; equation der(x)=-x; when sample(0,0.1) then d={1.0,2.0}; end when; end M;",
@@ -134,9 +143,9 @@ fn integer_external_input_keeps_its_input_owner() {
 }
 
 #[test]
-fn discrete_real_synchronous_equation_has_its_actual_partition_owner() {
+fn clocked_real_equation_has_its_actual_partition_owner() {
     let compiled = compile_source(
-        "model M Clock c=Clock(0.1); discrete Real d(start=0); Real x; equation der(x)=-x; d=sample(x,c); end M;",
+        "model M Clock c=Clock(0.1); Real d(start=0); Real x; equation der(x)=-x; d=sample(x,c); end M;",
     );
     compiled
         .dae
@@ -173,4 +182,21 @@ fn discrete_real_mixed_array_equation_and_when_algorithm_remains_overdetermined(
             panic!("the atomic algorithm owns both lanes, leaving three definitions: {other:?}")
         }
     }
+}
+
+#[test]
+fn discrete_real_clock_coordinate_still_requires_a_source_when_owner() {
+    assert_missing_when(
+        "model M Clock c=Clock(0.1); discrete Real d(start=0); Real x; equation der(x)=-x; d=sample(x,c); end M;",
+    );
+}
+
+#[test]
+fn discrete_real_clock_when_keeps_its_actual_partition_owner() {
+    let compiled = compile_source(
+        "model M Clock c=Clock(0.1); discrete Real d(start=0); Real x; equation der(x)=-x; when c then d=sample(x,c); end when; end M;",
+    );
+    compiled
+        .dae
+        .inspect(|view| assert!(view.clock_ownership_count() > 0));
 }

@@ -162,12 +162,10 @@ pub enum ToDaeError {
         span: Span,
     },
 
-    #[error("declared discrete Real `{name}` has no when-clause or synchronous owner")]
+    #[error("declared discrete Real `{name}` has no when-clause owner")]
     #[diagnostic(
         code(rumoca::todae::ED024),
-        help(
-            "MLS 3.7 §4.5.3: assign a discrete Real in a when-clause; checked synchronous partitions retain their clock ownership"
-        )
+        help("MLS 3.7 §4.5.3: assign a declared discrete Real in a when-clause")
     )]
     DiscreteRealWithoutWhen {
         name: String,
