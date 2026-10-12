@@ -85,13 +85,23 @@ fn integer_fault(
 
 #[test]
 fn main_dae_integer_quotients_refuse_zero_divisors_and_checked_arithmetic_overflow() {
-    // Model-level dynamic divisors need a different discontinuity owner;
-    // retain their typed admission refusal instead of pretending they run.
+    // MLS §§3.7.2/3.8.5: Integer inputs change only at events, so their
+    // quotient needs no continuous boundary and retains checked domain faults.
     let dynamic = "model IntegerFault input Integer n(start=0); input Integer d(start=7); output Integer y; equation y=mod(9007199254740993+n,d); end IntegerFault;";
+    integer_fault(
+        dynamic,
+        &[("n", 0.0), ("d", 7.0)],
+        5.0,
+        &[("n", 0.0), ("d", 0.0)],
+        None,
+    );
+    // A continuously varying Real divisor still needs a different checked
+    // discontinuity owner; the Integer capability does not admit this form.
+    let continuous = "model IntegerFault input Real n(start=0); input Real d(start=7); output Real y; equation y=mod(9007199254740993+n,d); end IntegerFault;";
     let error = Compiler::new()
         .model("IntegerFault")
-        .compile_str(dynamic, "ReportedBug.mo")
-        .expect_err("a changing model divisor is outside the checked DAE profile");
+        .compile_str(continuous, "ReportedBug.mo")
+        .expect_err("a continuous Real divisor is outside the checked DAE profile");
     let rumoca::CompilerError::CompileDiagnosticsError { failures, .. } = error else {
         panic!("dynamic divisor must retain a typed phase diagnostic: {error:?}");
     };
