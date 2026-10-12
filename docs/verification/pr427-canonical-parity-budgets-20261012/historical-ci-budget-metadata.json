@@ -1,0 +1,307 @@
+{
+  "promoted_asset": {
+    "bytes": 209892,
+    "id": 618765768,
+    "sha256": "6c6d3a77fff81fc8f328321ca1b0d0e8cf7825900e4848cd07801bb141baa4eb",
+    "source_sha": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+    "stored_sim_timeout_seconds": 12.0
+  },
+  "runs": [
+    {
+      "artifact_git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+      "artifacts": [
+        {
+          "bytes": 79135,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-1/msl_band_table.json",
+          "sha256": "99f772e6e675da50e9b086ae1f99656c62844013a567ac9cd069326d523c3f3a"
+        },
+        {
+          "bytes": 250938,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "model_rows": 142,
+          "path": "ci37457263123/shard-1/msl_results.json",
+          "sha256": "25ebed8684cea462f9e8a9ffdeece3eb06d175ed5eac31dcec5a7e34e72ca98b",
+          "summary_counts": {
+            "balanced_models": 107,
+            "compiled_models": 108,
+            "sim_ok": 88,
+            "sim_solver_fail": 14,
+            "sim_timeout": 3,
+            "total_models": 142
+          }
+        },
+        {
+          "bytes": 220274,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-1/omc_simulation_reference.json",
+          "sha256": "b08efc868faeb70466d02ddcc379f6107f8cade73bfc4c17d4a533b3e6fdd6a4"
+        },
+        {
+          "bytes": 917282,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "git_worktree_dirty": true,
+          "path": "ci37457263123/shard-1/sim_trace_comparison.json",
+          "sha256": "3471efc6ebd9ad1de35658b764ef0269b200a9ef966282a5d3e9a0df58547393"
+        },
+        {
+          "bytes": 92057,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-2/msl_band_table.json",
+          "sha256": "0f1c832d0f42ecf768a4144c46fee5ea3e698fb6e3fbe546f96aa0a693066994"
+        },
+        {
+          "bytes": 272080,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "model_rows": 142,
+          "path": "ci37457263123/shard-2/msl_results.json",
+          "sha256": "9c106f0000dfd26a82ada4a6213b785d277185e1065da19735d557aa3807d2a0",
+          "summary_counts": {
+            "balanced_models": 106,
+            "compiled_models": 107,
+            "sim_ok": 86,
+            "sim_solver_fail": 16,
+            "sim_timeout": 2,
+            "total_models": 142
+          }
+        },
+        {
+          "bytes": 229240,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-2/omc_simulation_reference.json",
+          "sha256": "f5c518149762c18466b3b4ce95a1946a0fbdf2db610b34ca65bcd29f3793689b"
+        },
+        {
+          "bytes": 875911,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "git_worktree_dirty": true,
+          "path": "ci37457263123/shard-2/sim_trace_comparison.json",
+          "sha256": "e913b58645ccde1816e8f517ccba90790186a3d6e6e37753fce4489f4be545ef"
+        },
+        {
+          "bytes": 81068,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-3/msl_band_table.json",
+          "sha256": "c4e48fb34be4ac269b8e3f7c5cc74e2e18dda1a1c1825ea6678ab0d8ea6ad79c"
+        },
+        {
+          "bytes": 248949,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "model_rows": 141,
+          "path": "ci37457263123/shard-3/msl_results.json",
+          "sha256": "05fb425caf0616c9afa2d949b95a06cd801fd9fa3eb4e59e3b5e63c4f2e9259e",
+          "summary_counts": {
+            "balanced_models": 108,
+            "compiled_models": 113,
+            "sim_ok": 91,
+            "sim_solver_fail": 14,
+            "sim_timeout": 1,
+            "total_models": 141
+          }
+        },
+        {
+          "bytes": 223327,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-3/omc_simulation_reference.json",
+          "sha256": "bc151567afa86e0d2b38d607efc99b33fd1a9ef8298fe682ef04a1185e261122"
+        },
+        {
+          "bytes": 859665,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "git_worktree_dirty": true,
+          "path": "ci37457263123/shard-3/sim_trace_comparison.json",
+          "sha256": "6b6ac32698183c9b4742d34b409f4b87568aec1eeddeb3bd60232dba62f90269"
+        },
+        {
+          "bytes": 81782,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-4/msl_band_table.json",
+          "sha256": "a9ade5f427fbf3972d43f8e22ae319a09b358314b5f6c36de476d8aac71c12a3"
+        },
+        {
+          "bytes": 244603,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "model_rows": 141,
+          "path": "ci37457263123/shard-4/msl_results.json",
+          "sha256": "0ef9406fb1a49c74730c8775925ab8538ba57eb6cefe2ac8674713772dfb998e",
+          "summary_counts": {
+            "balanced_models": 105,
+            "compiled_models": 111,
+            "sim_ok": 96,
+            "sim_solver_fail": 6,
+            "sim_timeout": 1,
+            "total_models": 141
+          }
+        },
+        {
+          "bytes": 229788,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "path": "ci37457263123/shard-4/omc_simulation_reference.json",
+          "sha256": "067a920fd905fa94ac298e278b8c16bb38696d07bbb6ba9f89e99def8630e653"
+        },
+        {
+          "bytes": 845714,
+          "git_commit": "4dc555662188ef8e42075d0b4100ed7205492724",
+          "git_worktree_dirty": true,
+          "path": "ci37457263123/shard-4/sim_trace_comparison.json",
+          "sha256": "55446aa73e100a2a4910074fcfafd0c6f1f1753d9d12bfd8c6718ebfb3b7d52e"
+        }
+      ],
+      "model_attempt_timeout_seconds": 20,
+      "run_head_sha": "db4d45baf172ff2b9a4a0e12d93a4f372249dfd3",
+      "run_id": 37457263123,
+      "sim_timeout_seconds": 45,
+      "workflow": "ci-4dc5556.yml",
+      "workflow_sha256": "e417822b62d631e5ddcd6f7831f8117a9fa5dee678375ff01cdf4d157e20af50"
+    },
+    {
+      "artifact_git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+      "artifacts": [
+        {
+          "bytes": 79414,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-1/msl_band_table.json",
+          "sha256": "345e0416689c78e952bdcc449db28c910101382a781d67b2e4894c49717aef0a"
+        },
+        {
+          "bytes": 251514,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "model_rows": 142,
+          "path": "ci37620374298/shard-1/msl_results.json",
+          "sha256": "5fb4adb7a51e3bb70647f4750b8576eb5da04d2117c4cc424233d1902168c02b",
+          "summary_counts": {
+            "balanced_models": 108,
+            "compiled_models": 109,
+            "sim_ok": 88,
+            "sim_solver_fail": 14,
+            "sim_timeout": 4,
+            "total_models": 142
+          }
+        },
+        {
+          "bytes": 220480,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-1/omc_simulation_reference.json",
+          "sha256": "9c57c52901ae9674f1e9b51cb91da466633870fc57898d5535125f20da8e6e50"
+        },
+        {
+          "bytes": 917390,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "git_worktree_dirty": true,
+          "path": "ci37620374298/shard-1/sim_trace_comparison.json",
+          "sha256": "cda22dd98d8af4f95da6324173f7cb07635b83968230657e8effb616a285922b"
+        },
+        {
+          "bytes": 92085,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-2/msl_band_table.json",
+          "sha256": "e8b6209a65142118904d5137622ae572d922a57c8cbf48916470dfc1bad4244b"
+        },
+        {
+          "bytes": 271967,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "model_rows": 142,
+          "path": "ci37620374298/shard-2/msl_results.json",
+          "sha256": "8c68759ce34717c99b5b1383595b2864a3b447c6f59931a802dd27b4d9a9e4a5",
+          "summary_counts": {
+            "balanced_models": 107,
+            "compiled_models": 108,
+            "sim_ok": 86,
+            "sim_solver_fail": 16,
+            "sim_timeout": 2,
+            "total_models": 142
+          }
+        },
+        {
+          "bytes": 229412,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-2/omc_simulation_reference.json",
+          "sha256": "ffa4a33b099ffffca91d9f06bd0af5c7764671b1c12fcb6db3b9cd80e475927c"
+        },
+        {
+          "bytes": 875910,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "git_worktree_dirty": true,
+          "path": "ci37620374298/shard-2/sim_trace_comparison.json",
+          "sha256": "a99ef149bfa0bf1ba5d7ded9abe5fdb4d683220ee829178705f22aebe8ba37aa"
+        },
+        {
+          "bytes": 81701,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-3/msl_band_table.json",
+          "sha256": "5e6cc461cd20d1493e39e1aee50279bd96cb5a463fa3df60a6ea83283f1b73bd"
+        },
+        {
+          "bytes": 249535,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "model_rows": 141,
+          "path": "ci37620374298/shard-3/msl_results.json",
+          "sha256": "9bfb578d738edb99e9282c1980f7a8dd874acd1b82a6c9eced60baa890dfae0d",
+          "summary_counts": {
+            "balanced_models": 107,
+            "compiled_models": 112,
+            "sim_ok": 91,
+            "sim_solver_fail": 13,
+            "sim_timeout": 1,
+            "total_models": 141
+          }
+        },
+        {
+          "bytes": 223286,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-3/omc_simulation_reference.json",
+          "sha256": "6364c00cd527a35854138949fffd004ad009477024c2056a63e71fd712b22211"
+        },
+        {
+          "bytes": 859974,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "git_worktree_dirty": true,
+          "path": "ci37620374298/shard-3/sim_trace_comparison.json",
+          "sha256": "bf77d9187d69a23938d598b6cf163df0b11b18f24577b901afa6bfe5bae6646d"
+        },
+        {
+          "bytes": 82128,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-4/msl_band_table.json",
+          "sha256": "a0af0e3e9fe80f4a572e86f2a95b48484f953908baf2222445d0bc72218648bb"
+        },
+        {
+          "bytes": 245078,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "model_rows": 141,
+          "path": "ci37620374298/shard-4/msl_results.json",
+          "sha256": "5a01ec32493dadbabe247101c80bf796f97a728a2d55a0f3b4a8e8ca4ccb4eb1",
+          "summary_counts": {
+            "balanced_models": 105,
+            "compiled_models": 111,
+            "sim_ok": 96,
+            "sim_solver_fail": 6,
+            "sim_timeout": 1,
+            "total_models": 141
+          }
+        },
+        {
+          "bytes": 229616,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "path": "ci37620374298/shard-4/omc_simulation_reference.json",
+          "sha256": "cb672ea8b9820219187b4a1f3cc4e4993d84a14ad2c4b31f2c0ced32da2212f3"
+        },
+        {
+          "bytes": 845687,
+          "git_commit": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+          "git_worktree_dirty": true,
+          "path": "ci37620374298/shard-4/sim_trace_comparison.json",
+          "sha256": "5efe7257bee33b581ae84b8e57432fac8ebb0832fd457dce3b4761976fc76df0"
+        }
+      ],
+      "model_attempt_timeout_seconds": 20,
+      "run_head_sha": "da9d7ca4708e6b5d694a0163d07d5007d61a86eb",
+      "run_id": 37620374298,
+      "sim_timeout_seconds": 45,
+      "workflow": "ci-da9d7ca.yml",
+      "workflow_sha256": "94b87dc2aeafc6e8dc5a9fe9563053dd6b4514a57ee7c7d4e633e5724eb5fed9"
+    }
+  ],
+  "schema": "pr427_budget_metadata_evidence_v1",
+  "scope": "Immutable workflow commands and downloaded shard artifact identities; no new simulation or PR gate verdict. Correcting two budget metadata fields preserves existing metrics and model rosters. Historical comparator artifacts report dirty worktrees; the first run measures a synthetic merge rather than its nominal head. Neither is claimed to be clean candidate evidence."
+}
