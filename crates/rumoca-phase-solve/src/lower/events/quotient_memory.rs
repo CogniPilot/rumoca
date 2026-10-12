@@ -3,7 +3,7 @@
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use super::{DiscreteRows, LowerError, LoweredLayout, ScalarCompiler};
+use super::{DiscreteRows, EventCompilationContext, LowerError};
 
 pub(super) fn lower_quotient_memory<'dae>(
     view: dae::DaeView<'dae>,
