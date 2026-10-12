@@ -40,3 +40,13 @@ The initial short-revision Nix refusal is retained as preparation-only evidence.
 No production change, cache mutation, test waiver or tolerance change was made
 for these corrections. A corrected combined workspace and canonical quick/full
 qualification remain required.
+
+The corrected original Integer-divisor selector subsequently passed at combined source
+`2cf232f490ae1bd76ee2341f51be3a40ad1ff74f`: one test passed, zero failed,
+with 1,468 unrelated tests filtered. Both execution policies measured valid
+`n=0, d=7` as `y=5`, followed by the checked domain fault at `d=0`.
+The same test retains continuous-Real ED018 and all prior overflow controls.
+Its 0.034-second execution followed a 234-second test build; the complete
+wrapper took 240.592 seconds without a guardian stop and with matching source
+seals. The [combined receipt](combined-integer-qualification.json) binds the
+actual command and hashes. Broad quick/full and remote CI remain separate.
