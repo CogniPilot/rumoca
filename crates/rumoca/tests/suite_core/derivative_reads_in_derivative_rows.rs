@@ -68,29 +68,56 @@ fn an_affine_row_reads_another_states_derivative_in_its_offset() {
 #[test]
 fn a_when_equation_reads_the_matched_tensor_derivative() {
     let source = "model EventDerivative Real x[2](start={1,2},each fixed=true); discrete Real sampled[2](each start=0,each fixed=true); equation der(x)={-x[1],-2*x[2]}; when time>=0.1 then sampled=der(x); end when; end EventDerivative;";
-    check_event_derivative(source, "EventDerivative", &["sampled[1]", "sampled[2]"],
-        &[-(-0.1_f64).exp(), -4.0*(-0.2_f64).exp()]);
+    check_event_derivative(
+        source,
+        "EventDerivative",
+        &["sampled[1]", "sampled[2]"],
+        &[-(-0.1_f64).exp(), -4.0 * (-0.2_f64).exp()],
+    );
 }
 
 #[test]
 fn reinitialization_reads_the_matched_derivative_without_new_storage() {
     let source = "model EventDerivative Real x(start=1,fixed=true); Real sampled(start=0,fixed=true); equation der(x)=-x; der(sampled)=0; when time>=0.1 then reinit(sampled,der(x)); end when; end EventDerivative;";
-    check_event_derivative(source, "EventDerivative", &["sampled"], &[-(-0.1_f64).exp()]);
+    check_event_derivative(
+        source,
+        "EventDerivative",
+        &["sampled"],
+        &[-(-0.1_f64).exp()],
+    );
 }
 
 fn check_event_derivative(source: &str, name: &str, names: &[&str], expected: &[f64]) {
-    let compiled = rumoca::Compiler::new().model(name).compile_str(source,"EventDerivative.mo").unwrap();
-    for policy in [rumoca_sim::SimExecutionPolicy::Interpreter, rumoca_sim::SimExecutionPolicy::Auto] {
-        let result=rumoca_sim::simulate_dae(&compiled.dae,&rumoca_sim::SimOptions {
-            t_end:0.2,dt:Some(0.05),atol:1e-10,rtol:1e-10,
-            solver_mode:rumoca_sim::SimSolverMode::RkLike,execution_policy:policy,..Default::default()
-        }).unwrap_or_else(|error|panic!("{policy:?}: event derivative {error}"));
-        assert_eq!(result.times.len(),5);
-        for (&name,&expected) in names.iter().zip(expected) {
-            let column=result.names.iter().position(|n|n==name).unwrap();
-            assert_eq!(result.data[column][0],0.0);
-            let actual=*result.data[column].last().unwrap();
-            assert!(actual.is_finite() && (actual-expected).abs()<1e-7,"{policy:?}: {name}={actual}, expected {expected}");
+    let compiled = rumoca::Compiler::new()
+        .model(name)
+        .compile_str(source, "EventDerivative.mo")
+        .unwrap();
+    for policy in [
+        rumoca_sim::SimExecutionPolicy::Interpreter,
+        rumoca_sim::SimExecutionPolicy::Auto,
+    ] {
+        let result = rumoca_sim::simulate_dae(
+            &compiled.dae,
+            &rumoca_sim::SimOptions {
+                t_end: 0.2,
+                dt: Some(0.05),
+                atol: 1e-10,
+                rtol: 1e-10,
+                solver_mode: rumoca_sim::SimSolverMode::RkLike,
+                execution_policy: policy,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{policy:?}: event derivative {error}"));
+        assert_eq!(result.times.len(), 5);
+        for (&name, &expected) in names.iter().zip(expected) {
+            let column = result.names.iter().position(|n| n == name).unwrap();
+            assert_eq!(result.data[column][0], 0.0);
+            let actual = *result.data[column].last().unwrap();
+            assert!(
+                actual.is_finite() && (actual - expected).abs() < 1e-7,
+                "{policy:?}: {name}={actual}, expected {expected}"
+            );
         }
     }
 }
