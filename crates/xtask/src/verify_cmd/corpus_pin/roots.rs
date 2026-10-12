@@ -170,13 +170,10 @@ fn describe_miss(missing: &[String]) -> String {
 fn remedy(root: &Path, corpus: Corpus) -> String {
     match corpus {
         Corpus::FlightModels => format!(
-            "  Point the gate at your checkout, either way:\n    \
-             cargo xtask verify corpus-pin --models-root /path/to/modelica_models\n  or write \
-             the path once:\n    mkdir -p {parent} && printf '{{\"models_root\": \
-             \"/path/to/modelica_models\"}}\\n' > {config}\n  This is a hard failure rather \
-             than a skip: a green run that compared nothing would report the corpus as correct.",
-            parent = root.join("target/verification").display(),
-            config = config_path(root).display(),
+            "  Without --models-root or a models_root in {}, the gate provisions the immutable \
+             numerical flight input from infra/verification/corpus-dependencies.toml. An explicit \
+             root must match every source file in that archive; it is never replaced by a fallback.",
+            config_path(root).display(),
         ),
         Corpus::Msl => format!(
             "  The MSL release is normally provisioned into {}. Run any MSL gate once to \

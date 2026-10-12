@@ -160,7 +160,7 @@ fn load_manifest(root: &Path) -> Result<DependencyManifest> {
 
 fn load_manifest_file(path: &Path) -> Result<DependencyManifest> {
     let raw =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let manifest: DependencyManifest =
         toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
     ensure!(
