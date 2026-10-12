@@ -48,7 +48,13 @@ impl<'dae> EventReadFacts<'dae> {
         for facts in rest {
             combined.current.extend(&facts.current);
             combined.entry.extend(&facts.entry);
-            combined.dependencies.extend(facts.dependencies.clone());
+            for (variable, reads) in &facts.dependencies {
+                combined
+                    .dependencies
+                    .entry(*variable)
+                    .or_default()
+                    .extend(reads);
+            }
         }
         combined
     }
