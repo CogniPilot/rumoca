@@ -1,5 +1,18 @@
 use super::*;
-use rumoca_core::{SourceMap, TypeId, VarName};
+use rumoca_core::{SourceMap, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName};
+
+fn array_domain() -> StructuredIndexDomain {
+    StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".to_owned(),
+            lower: 1,
+            upper: 2,
+            step: 1,
+        }],
+    }
+}
 
 fn model() -> dae::Dae {
     let mut sources = SourceMap::new();
@@ -7,6 +20,7 @@ fn model() -> dae::Dae {
     let source = sources.add("projected-alias-merge.mo", text);
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
     dae::Dae::construct(sources, |model| {
+        let domain = model.domains(|domains| domains.structured(array_domain(), at))?;
         let (real, vector) = model.types(|types| {
             Ok((
                 types.intern(
@@ -59,7 +73,12 @@ fn model() -> dae::Dae {
         })?;
         model.continuous(|equations| {
             for value in rows {
-                equations.equation(at, |row| row.residual(value))?;
+                equations.structured_family(
+                    at,
+                    domain,
+                    rumoca_core::ComprehensionScalarView::RowMajorProjection,
+                    |family| family.body(value),
+                )?;
             }
             Ok(())
         })
@@ -69,21 +88,22 @@ fn model() -> dae::Dae {
 
 fn definitions(view: dae::DaeView<'_>) -> SameTickDefinitions<'_> {
     let (_, state) = super::tests::derivative(view);
-    let dae::ContinuousOwnerView::Residual { equation, .. } =
+    let dae::ContinuousOwnerView::Structured { family, .. } =
         view.continuous_owners().next().unwrap()
     else {
         panic!("whole-array derivative row");
     };
     let plan = crate::CausalDiscretePlan::derive(view).unwrap();
+    let body = family.bodies().iter().next().unwrap();
     SameTickDefinitions::derive_with_derivative_sources(
         view,
         &plan,
         (0..2).map(|scalar| MatchedDerivativeSource {
             state,
             state_scalar: scalar,
-            expression: equation.residual(),
+            expression: body,
             expression_scalar: scalar,
-            domain_point: None,
+            domain_point: Some((family.domain(), vec![i64::try_from(scalar).unwrap() + 1])),
         }),
     )
     .unwrap()
