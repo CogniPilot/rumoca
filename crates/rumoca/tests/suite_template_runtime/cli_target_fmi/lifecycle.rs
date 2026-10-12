@@ -33,7 +33,7 @@ pub(super) fn validate(version: &str, fmu_root: &Path, standard: &Path, xml: &st
     assert_command_succeeded(&output, "execute FMI lifecycle driver");
 }
 
-fn attribute<'a>(xml: &'a str, name: &str) -> &'a str {
+pub(super) fn attribute<'a>(xml: &'a str, name: &str) -> &'a str {
     let prefix = format!("{name}=\"");
     let start = xml
         .find(&prefix)
@@ -224,7 +224,7 @@ int main(void) {{
 "#;
 
 /// Every C translation unit the package declares, in name order.
-fn source_units(fmu_root: &Path) -> Vec<std::path::PathBuf> {
+pub(super) fn source_units(fmu_root: &Path) -> Vec<std::path::PathBuf> {
     let mut units = fs::read_dir(fmu_root.join("sources"))
         .expect("read FMU sources")
         .map(|entry| entry.expect("read FMU source entry").path())

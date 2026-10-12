@@ -17,6 +17,7 @@ mod derivative_kinks;
 mod enumerations;
 mod integer_parameter;
 mod integer_quotients;
+mod integer_publication;
 mod lifecycle;
 mod mass_matrix;
 mod projection;
