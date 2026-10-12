@@ -303,10 +303,7 @@
                 const base = resolvedPkgBase || await locatePkgBase();
                 const packageRuntime = base + 'rumoca_runtime.js';
                 const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_runtime.js');
-                const localPreview = isLocalPreviewHost();
-                const candidates = localPreview
-                    ? [sourceRuntime, packageRuntime]
-                    : [packageRuntime, sourceRuntime];
+                const candidates = [packageRuntime, sourceRuntime];
                 let lastError = null;
                 for (const candidate of candidates) {
                     try {
@@ -332,10 +329,7 @@
                 const base = resolvedPkgBase || await locatePkgBase();
                 const packageRuntime = base + 'rumoca_interactive.js';
                 const sourceRuntime = pageUrl(bookRoot() + '../../../packages/rumoca-web/runtime/rumoca_interactive.js');
-                const localPreview = isLocalPreviewHost();
-                const candidates = localPreview
-                    ? [sourceRuntime, packageRuntime]
-                    : [packageRuntime, sourceRuntime];
+                const candidates = [packageRuntime, sourceRuntime];
                 let lastError = null;
                 for (const candidate of candidates) {
                     try {
