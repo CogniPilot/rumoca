@@ -22,12 +22,23 @@ changed, no test skipped and no assertion weakened. The wheel installation and
 all its bytes remained the same. This is compositional evidence across two
 attempts, not a first-attempt seven-script pass.
 
-The full neural benchmark is not covered by this checkpoint. Its original
-1082-parameter owner and simulation/gradient oracle remain required; a separate
-release CLI build keeps build time out of that runtime budget. Its first
-600-second attempt timed out before executing the benchmark (exit124, peak
-resident plus swap 3,155,600 KiB, all tracked source entries unchanged). A
-separately recorded same-source warm build is in progress; no runtime result
-is inferred from the completed compilation stages.
+The unchanged full CPU neural benchmark also passes at the same source:
+`NeuralODEBackprop1k`, hidden 30/batch 8, 1082 trainable parameters, 0–0.2 s
+with 0.02 s outputs, one warmup and three timed iterations. The test checks
+all eleven samples of six native/JAX output channels and all 1082 JAX
+manual/reverse gradients without changing tolerances. Final output error is
+1.16e-14; JAX gradient agreement error is 5.20e-18. Native internal-state and
+gradient parity is unavailable from the output CSV and is not claimed.
+
+The first release CLI build timed out at 600 seconds before runtime (exit124,
+peak resident plus swap 3,155,600 KiB, tracked source unchanged). A distinct
+same-source warm build completed in 346.84 s. The full benchmark then completed
+in 25.87 s, exit 0, peak resident plus swap 394,416 KiB; the sealed CLI bytes
+and every tracked source entry matched afterward. Both attempts remain visible.
+The benchmark's raw native timings are 0.764 s frontend compilation and 10.863 s
+preparation, 11.628 s total ready time, and 0.707 s average hot run for 0.2 s
+simulated time (0.283× real time). This proves numerical behavior, not the
+separate 10× real-time performance goal or an OMC speed comparison.
+
 Later combined-source changes, the remaining browser guide routes, full/quick,
 MSL/OMC and remote CI still need qualification.
