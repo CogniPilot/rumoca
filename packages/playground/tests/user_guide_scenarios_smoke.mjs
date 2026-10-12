@@ -55,11 +55,13 @@ try {
         const sourceUrl = new URL(config.model.file, scenarioUrl);
         const source = await text(sourceUrl);
         const cache = runtime.createSourceRootCacheResolver({ manifestUrl: new URL("source-roots/manifest.json", root).href });
+        const sourceRootResolutionStarted = performance.now();
         const sourceRootCacheUrl = await cache.cacheUrlFor(config.source_roots ?? []);
+        const sourceRootResolutionWallMs = performance.now() - sourceRootResolutionStarted;
         const common = { path, model: config.model.name, sourcePath: "examples/" + sourceUrl.href.slice(root.href.length),
           scenarioSha256: await sha(scenarioText), sourceSha256: await sha(source),
           authoredHorizon: config.sim?.t_end ?? null, authoredDt: config.sim?.dt ?? null,
-          solver: config.sim?.solver ?? "auto" };
+          solver: config.sim?.solver ?? "auto", sourceRootResolutionWallMs };
         if (config.rumoca.task === "codegen") {
           const files = await runtime.renderGalecFilesWithRuntime({ pkgBase,
             workspaceSources: JSON.stringify({ [common.sourcePath]: source }),
@@ -76,6 +78,9 @@ try {
           if (!Number.isFinite(state.time) || !values.length || !values.every(Number.isFinite)) throw new Error("nonfinite/empty session state");
           return state;
         }
+        const sourceRootStagingStarted = performance.now();
+        await runtime.ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
+        common.parsedSourceRootStagingWallMs = performance.now() - sourceRootStagingStarted;
         if (interactive.scenarioUsesInputRuntime(config)) {
           if (!(config.sim?.dt > 0)) throw new Error("interactive scenario lacks an authored positive interval");
           const host = document.createElement("div");
@@ -84,10 +89,18 @@ try {
           const construct = wasm.WasmSimulationSession.withInteractiveConfiguration;
           let session;
           let configuredSessions = 0;
+          // This actual call includes compilation, preparation and initialization,
+          // while source-root staging and controller simulation are timed separately.
+          const sessionConstructionWallMs = [];
           wasm.WasmSimulationSession.withInteractiveConfiguration = (...args) => {
             configuredSessions++;
-            session = construct(...args);
-            return session;
+            const constructionStarted = performance.now();
+            try {
+              session = construct(...args);
+              return session;
+            } finally {
+              sessionConstructionWallMs.push(performance.now() - constructionStarted);
+            }
           };
           let controller;
           let timer;
@@ -110,7 +123,7 @@ try {
                   return session;
                 },
                 dt: config.sim.dt, setRuntimeReject: (reject) => { rejectRuntime = reject; } });
-              return { ...common, kind: "interactive", sessionConstructions: configuredSessions, boosterMission: mission, samples };
+              return { ...common, kind: "interactive", sessionConstructions: configuredSessions, sessionConstructionWallMs, boosterMission: mission, samples };
             }
             await new Promise((resolve, reject) => {
               rejectRuntime = reject;
@@ -124,7 +137,7 @@ try {
               controller.start();
             });
             controller.stop();
-            return { ...common, kind: "interactive", samples };
+            return { ...common, kind: "interactive", sessionConstructions: configuredSessions, sessionConstructionWallMs, samples };
           } finally {
             clearTimeout(timer);
             controller?.dispose();
@@ -211,6 +224,15 @@ try {
           "controller uses every authored interval");
         receipt.sampledHorizon = [receipt.samples[0].time, receipt.samples.at(-1).time];
         receipt.samples = receipt.samples.length;
+      }
+      assert(Number.isFinite(receipt.sourceRootResolutionWallMs) && receipt.sourceRootResolutionWallMs >= 0);
+      if (receipt.kind !== "codegen") {
+        assert(Number.isFinite(receipt.parsedSourceRootStagingWallMs) && receipt.parsedSourceRootStagingWallMs >= 0);
+      }
+      if (receipt.kind === "interactive") {
+        assert.equal(receipt.sessionConstructionWallMs.length, receipt.sessionConstructions);
+        assert(receipt.sessionConstructionWallMs.length > 0);
+        assert(receipt.sessionConstructionWallMs.every((elapsed) => Number.isFinite(elapsed) && elapsed > 0));
       }
       receipt.compileAndRuntimeWallMs = performance.now() - started;
       receipts.push(receipt);
