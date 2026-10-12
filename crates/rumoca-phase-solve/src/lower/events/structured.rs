@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 pub(super) fn lower_discrete_value_owners<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
@@ -62,7 +62,7 @@ pub(super) fn lower_discrete_value_owners<'dae>(
 #[allow(clippy::too_many_lines)]
 fn lower_unconditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -139,11 +139,13 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             .all(|entry| entry.4 == Some((clock_id, solve_clock)) && entry.5 == owner_values[0].5)
     {
         let sampled = owner_values[0].5;
-        let program = ScalarCompiler::new(view, layout, None).clocked_aggregate_programs(
-            clock_id,
-            owner_values.iter().map(|entry| entry.1),
-            sampled,
-        )?;
+        let program = layout
+            .scalar_compiler(view, None)
+            .clocked_aggregate_programs(
+                clock_id,
+                owner_values.iter().map(|entry| entry.1),
+                sampled,
+            )?;
         let mut outputs = Vec::with_capacity(total_outputs);
         for &(_, value, span, variable, _, _, scalar_count) in &owner_values {
             let pre_mode = expression_pre_mode(view, value, sampled);
@@ -201,7 +203,7 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         if let Some((clock_id, solve_clock)) = clock
             && scalar_count > 1
         {
-            let compiler = ScalarCompiler::new(view, layout, None);
+            let compiler = layout.scalar_compiler(view, None);
             let program = if sampled {
                 compiler.sampled_aggregate_program(clock_id, value)?
             } else {
@@ -237,14 +239,15 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         }
         let first_row = rows.targets.len();
         for scalar in 0..scalar_count {
-            let program =
-                match clock {
-                    Some((clock, _)) if sampled => ScalarCompiler::new(view, layout, None)
-                        .sampled_program(clock, value, scalar)?,
-                    Some((clock, _)) => ScalarCompiler::new(view, layout, None)
-                        .clocked_program(clock, value, scalar)?,
-                    None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
-                };
+            let program = match clock {
+                Some((clock, _)) if sampled => layout
+                    .scalar_compiler(view, None)
+                    .sampled_program(clock, value, scalar)?,
+                Some((clock, _)) => layout
+                    .scalar_compiler(view, None)
+                    .clocked_program(clock, value, scalar)?,
+                None => layout.scalar_compiler(view, None).program(value, scalar)?,
+            };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.claim_scalar_event_owner(variable, target, span)?;
             let pre_mode = expression_pre_mode(view, value, sampled);
@@ -302,7 +305,7 @@ struct CallProjectionValue<'dae> {
 /// Returns, per value, whether it was lowered here.
 fn lower_call_projection_values<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut DiscreteRows<'dae>,
     observed: bool,
     values: &[CallProjectionValue<'dae>],
@@ -331,7 +334,8 @@ fn lower_call_projection_values<'dae>(
         if scalars <= 1 {
             continue;
         }
-        let program = ScalarCompiler::new(view, layout, None)
+        let program = layout
+            .scalar_compiler(view, None)
             .aggregate_program(members.iter().map(|&index| values[index].value))?;
         let mut outputs = Vec::with_capacity(scalars);
         for &index in &members {
@@ -361,7 +365,7 @@ fn lower_call_projection_values<'dae>(
 
 fn lower_structured_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -401,6 +405,7 @@ fn lower_structured_discrete_value_owner<'dae>(
             structured_map_program(StructuredMapProgramInput {
                 view,
                 layout,
+                derivatives: layout.derivatives,
                 domain_id: structure.domain(),
                 domain: &domain,
                 scalar_view: structure.scalar_view(),
@@ -462,6 +467,7 @@ fn lower_structured_discrete_value_owner<'dae>(
 struct StructuredMapProgramInput<'scope, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'scope LoweredLayout<'dae>,
+    derivatives: &'scope super::super::ContinuousRowIndex<'dae>,
     domain_id: dae::DomainId<'dae>,
     domain: &'scope rumoca_core::StructuredIndexDomain,
     scalar_view: rumoca_core::ComprehensionScalarView,
@@ -516,7 +522,8 @@ fn structured_map_program(
                 LowerError::contract("structured B.1c scalar view overflow", input.span)
             })?;
         let mut compiler =
-            ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)));
+            ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)))
+                .with_derivative_definitions(input.derivatives);
         compiler.bind_symbolic_domain(input.domain_id, Some(values), input.span)?;
         programs.push(match input.clock {
             Some((clock, _)) if input.sampled => {
@@ -533,8 +540,7 @@ fn structured_map_program(
 }
 
 pub(in crate::lower) fn unclocked_structured_program<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    context: super::super::ContinuousContext<'_, 'dae>,
     domain_id: dae::DomainId<'dae>,
     domain: &rumoca_core::StructuredIndexDomain,
     scalar_view: rumoca_core::ComprehensionScalarView,
@@ -542,8 +548,9 @@ pub(in crate::lower) fn unclocked_structured_program<'dae>(
     span: Span,
 ) -> Result<AffineProgramCertificate, LowerError> {
     structured_map_program(StructuredMapProgramInput {
-        view,
-        layout,
+        view: context.view,
+        layout: context.layout,
+        derivatives: context.derivatives,
         domain_id,
         domain,
         scalar_view,
@@ -864,7 +871,7 @@ fn non_affine_structured_program(span: Span) -> LowerError {
 
 fn lower_conditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -924,7 +931,7 @@ fn lower_conditional_discrete_value_owner<'dae>(
 /// guarded update whose trigger and guard are the tick condition.
 fn lower_triggered_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
@@ -988,7 +995,7 @@ struct LoweredDiscreteValueBranch<'dae> {
 
 fn lower_checked_discrete_value_branch<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     target: dae::DiscreteValueId<'dae>,
     target_ordinal: usize,

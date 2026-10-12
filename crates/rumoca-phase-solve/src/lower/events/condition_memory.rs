@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn lower_condition_memory<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
@@ -55,9 +55,12 @@ pub(super) fn lower_condition_memory<'dae>(
                 || condition_reads_previous(view, condition)
         });
         let program = match clock {
-            Some((clock, _)) => ScalarCompiler::new(view, layout, None)
+            Some((clock, _)) => layout
+                .scalar_compiler(view, None)
                 .clocked_condition_program(clock, condition)?,
-            None => ScalarCompiler::new(view, layout, None).condition_program(condition)?,
+            None => layout
+                .scalar_compiler(view, None)
+                .condition_program(condition)?,
         };
         let row = rows.targets.len();
         rows.push(

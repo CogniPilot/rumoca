@@ -10,7 +10,7 @@ pub(super) struct LoweredRoots {
 
 pub(super) fn lower_roots<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
 ) -> Result<LoweredRoots, LowerError> {
     let mut rows = ScalarRows::default();
@@ -61,7 +61,7 @@ pub(super) fn lower_roots<'dae>(
 
 fn flush_root_owner<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut ScalarRows,
     relations: &mut Vec<(dae::RelationId<'dae>, Option<dae::ExprId<'dae>>)>,
     span: Option<Span>,
@@ -75,7 +75,7 @@ fn flush_root_owner<'dae>(
         .checked_add(relations.len())
         .ok_or_else(|| LowerError::contract("root output ordinal overflow", span))?;
     let program =
-        ScalarCompiler::new(view, layout, None).root_program_outputs(relations.iter().copied())?;
+        layout.scalar_compiler(view, None).root_program_outputs(relations.iter().copied())?;
     rows.push_outputs(program, span, output_start..output_end);
     relations.clear();
     Ok(())
@@ -83,7 +83,7 @@ fn flush_root_owner<'dae>(
 
 fn lower_structured_roots<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut ScalarRows,
     zero_domains: &mut Vec<solve::RootZeroDomain>,
@@ -112,7 +112,7 @@ fn lower_structured_roots<'dae>(
         for point in points {
             let row = zero_domains.len();
             let program = if let Some(&memory) = memory {
-                ScalarCompiler::new(view, layout, None).quotient_root_program(
+                layout.scalar_compiler(view, None).quotient_root_program(
                     memory,
                     &point,
                     root.expression(),
@@ -120,7 +120,7 @@ fn lower_structured_roots<'dae>(
                     root.provenance().span(),
                 )?
             } else {
-                ScalarCompiler::new(view, layout, Some((root.domain(), &point)))
+                layout.scalar_compiler(view, Some((root.domain(), &point)))
                     .root_expression_program(
                         root.expression(),
                         root.activation_guard(),

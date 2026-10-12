@@ -7,7 +7,7 @@ use super::{DiscreteRows, LowerError, LoweredLayout, ScalarCompiler};
 
 pub(super) fn lower_quotient_memory<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     for memory in layout.buffered_quotients.entries() {
@@ -21,7 +21,9 @@ pub(super) fn lower_quotient_memory<'dae>(
             .provenance()
             .span();
         rows.push(
-            ScalarCompiler::new(view, layout, None).quotient_memory_program(memory.quotient)?,
+            layout
+                .scalar_compiler(view, None)
+                .quotient_memory_program(memory.quotient)?,
             span,
             solve::scalar_slot_p(memory.parameter),
             solve::DiscreteRowRole::QuotientMemory {
@@ -37,14 +39,15 @@ pub(super) fn lower_quotient_memory<'dae>(
 
 fn lower_structured_quotient_memory<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut DiscreteRows<'dae>,
     memory: crate::layout::QuotientMemory<'dae>,
 ) -> Result<(), LowerError> {
     if memory.count == 0 {
         return Ok(());
     }
-    let node = ScalarCompiler::new(view, layout, None)
+    let node = layout
+        .scalar_compiler(view, None)
         .quotient_memory_map(memory, rows.structured_output_cursor)?;
     let solve::ComputeNode::Map { domain, span, .. } = &node else {
         return Err(LowerError::contract(

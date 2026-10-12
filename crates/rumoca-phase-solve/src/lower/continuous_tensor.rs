@@ -151,8 +151,7 @@ fn build_explicit_tensor_derivative<'dae>(
     let span = family.provenance().span();
     let Ok((base_ops, load_strides, const_strides)) =
         events::structured::unclocked_structured_program(
-            context.view,
-            context.layout,
+            context,
             family.domain(),
             domain,
             family.scalar_view(),

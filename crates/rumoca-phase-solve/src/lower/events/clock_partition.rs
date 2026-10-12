@@ -24,7 +24,7 @@ use crate::lower::clocks::clocks_share_a_tick;
 /// boundary is rejected here, at construction, at the blocked producer's span.
 pub(super) fn issue_clock_partition_order<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     discrete: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
@@ -132,7 +132,7 @@ struct IntermediateDefinitionIssue<'a, 'dae> {
 
 fn issue_intermediate_definition<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     discrete: &mut DiscreteRows<'dae>,
     admitted: &[&PendingClockedProducer<'dae>],
     issue: IntermediateDefinitionIssue<'_, 'dae>,
@@ -179,7 +179,9 @@ fn issue_intermediate_definition<'dae>(
         .expect("checked intermediate variable resolves")
         .scalar_count();
     for scalar in 0..scalar_count {
-        let program = ScalarCompiler::new(view, layout, None).program(issue.definition, scalar)?;
+        let program = layout
+            .scalar_compiler(view, None)
+            .program(issue.definition, scalar)?;
         let target = variable_scalar_slot(layout, issue.variable.index(), scalar, definition_span)?;
         let row = discrete.clock_partition_intermediate_targets.len();
         discrete
@@ -335,7 +337,7 @@ impl SameTickExchange {
 
     pub(super) fn derive<'dae>(
         view: dae::DaeView<'dae>,
-        layout: &LoweredLayout<'dae>,
+        layout: &EventCompilationContext<'_, 'dae>,
         definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
         targets: &[GuardedTarget<'dae>],
     ) -> Self {
@@ -421,7 +423,7 @@ impl SameTickExchange {
 /// equations' same-instant values (MLS §8.5 / SOLVE-C58).
 fn unclocked_member<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
     target: &GuardedTarget<'dae>,
 ) -> SameTickExchangeMember {

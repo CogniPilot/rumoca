@@ -13,6 +13,7 @@ use super::{
 use crate::LowerError;
 
 mod clock_partition;
+mod compiler_context;
 mod condition_memory;
 mod integrator_history;
 mod messages;
@@ -27,6 +28,7 @@ use clock_partition::{
     PendingClockedProducer, PendingClockedStep, SameTickExchange, SameTickExchangeMember,
     guarded_group_same_tick_reads, issue_clock_partition_order,
 };
+use compiler_context::EventCompilationContext;
 pub(in crate::lower) use condition_memory::condition_memory;
 use condition_memory::{condition_clock_owner, lower_condition_memory};
 use messages::{MessageActionContext, push_message_action};
@@ -52,6 +54,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
     continuous: &solve::ContinuousSolveSystem,
+    derivatives: &super::ContinuousRowIndex<'dae>,
 ) -> Result<
     (
         solve::DiscreteSolveSystem,
@@ -60,6 +63,11 @@ pub(super) fn lower_discrete_and_events<'dae>(
     ),
     LowerError,
 > {
+    let context = EventCompilationContext {
+        layout,
+        derivatives,
+    };
+    let layout = &context;
     let mut discrete = DiscreteRows::new(view)?;
     lower_quotient_memory(view, layout, &mut discrete)?;
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
@@ -127,7 +135,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
 
 fn build_event_iteration_plan<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     discrete: &DiscreteRows<'dae>,
 ) -> Result<solve::EventIterationPlan, LowerError> {
     let mut runs = Vec::new();
@@ -213,7 +221,7 @@ fn build_event_iteration_plan<'dae>(
 
 fn lower_delays<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
 ) -> Result<solve::SolveDelayPartition, LowerError> {
     let mut source_rhs = ScalarRows::default();
     let mut delay_time_rhs = ScalarRows::default();
@@ -240,17 +248,19 @@ fn lower_delays<'dae>(
         for scalar in 0..scalar_count {
             let channel = value_parameter_indices.len();
             source_rhs.push(
-                ScalarCompiler::new(view, layout, None).program(delay.source(), scalar)?,
+                layout
+                    .scalar_compiler(view, None)
+                    .program(delay.source(), scalar)?,
                 span,
                 channel,
             );
             delay_time_rhs.push(
-                ScalarCompiler::new(view, layout, None).program(delay_time, 0)?,
+                layout.scalar_compiler(view, None).program(delay_time, 0)?,
                 span,
                 channel,
             );
             delay_max_rhs.push(
-                ScalarCompiler::new(view, layout, None).program(delay_max, 0)?,
+                layout.scalar_compiler(view, None).program(delay_max, 0)?,
                 span,
                 channel,
             );
@@ -1012,7 +1022,7 @@ struct RootRefreshCandidate {
 
 fn lower_discrete_real_equations<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
@@ -1107,7 +1117,7 @@ type DefinitionUnit<'dae> = (Option<u32>, dae::ExprId<'dae>);
 /// coordinate (SOLVE-C57).
 fn lower_unconditional_discrete_real<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     variable: dae::VariableId<'dae>,
@@ -1124,7 +1134,7 @@ fn lower_unconditional_discrete_real<'dae>(
     if let (Some((clock_id, solve_clock)), [(None, value)]) = (clock, units)
         && scalar_count(view, *value) > 1
     {
-        let compiler = ScalarCompiler::new(view, layout, None);
+        let compiler = layout.scalar_compiler(view, None);
         let program = if sampled {
             compiler.sampled_aggregate_program(clock_id, *value)?
         } else {
@@ -1160,7 +1170,7 @@ fn lower_unconditional_discrete_real<'dae>(
     let first_row = rows.targets.len();
     for &(element, value) in units {
         for scalar in 0..scalar_count(view, value) {
-            let compiler = ScalarCompiler::new(view, layout, None);
+            let compiler = layout.scalar_compiler(view, None);
             let program = match clock {
                 Some((clock, _)) if sampled => compiler.sampled_program(clock, value, scalar)?,
                 Some((clock, _)) => compiler.clocked_program(clock, value, scalar)?,
@@ -1244,7 +1254,7 @@ fn causal_discrete_plan<'dae>(
 
 fn lower_event_actions<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     discrete: &mut DiscreteRows<'dae>,
     actions: &mut Vec<solve::SolveEventAction>,
@@ -1379,7 +1389,7 @@ pub(in crate::lower) struct GuardedTarget<'dae> {
 
 fn lower_guarded_updates<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows<'dae>,
     updates: &[EventUpdate<'dae>],
@@ -1391,7 +1401,7 @@ fn lower_guarded_updates<'dae>(
 
 fn guarded_targets_of<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
     updates: &[EventUpdate<'dae>],
 ) -> Result<Vec<GuardedTarget<'dae>>, LowerError> {
@@ -1448,7 +1458,7 @@ fn guarded_targets_of<'dae>(
 
 fn lower_guarded_targets<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
     rows: &mut DiscreteRows<'dae>,
     targets: &mut [GuardedTarget<'dae>],
     role: solve::DiscreteRowRole,
@@ -1511,7 +1521,8 @@ fn lower_guarded_targets<'dae>(
         // compiler forks. This preserves semantic identity before final
         // lowering instead of cloning and rediscovering equal branch bodies.
         let conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
-        let program = ScalarCompiler::new(view, layout, None)
+        let program = layout
+            .scalar_compiler(view, None)
             .with_function_conditional_owners(&conditional_owners)
             .with_current_definitions(definition_owner.clone())
             .guarded_assignment_group_program(
@@ -1653,7 +1664,7 @@ fn plan_guarded_targets<'dae>(view: dae::DaeView<'dae>, targets: &mut [GuardedTa
 
 fn lower_time_events<'dae>(
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
+    layout: &EventCompilationContext<'_, 'dae>,
 ) -> Result<(Vec<f64>, solve::ScalarProgramBlock), LowerError> {
     let mut scheduled = Vec::new();
     let mut dynamic = ScalarRows::default();
@@ -1661,7 +1672,7 @@ fn lower_time_events<'dae>(
         match event.operation() {
             dae::TimeEventOperation::Static(instant) => scheduled.push(instant.to_f64()),
             dae::TimeEventOperation::Dynamic(deadline) => dynamic.push(
-                ScalarCompiler::new(view, layout, None).program(deadline, 0)?,
+                layout.scalar_compiler(view, None).program(deadline, 0)?,
                 event.provenance().span(),
                 dynamic.len(),
             ),
