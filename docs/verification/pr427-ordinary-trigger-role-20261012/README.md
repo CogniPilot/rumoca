@@ -9,7 +9,7 @@ The fix reuses `is_ordinary_target(clocks, target.variable)` at that admission
 site. It forwards the same branch condition IDs and preserves synchronous
 ownership exclusions, the existing clock schedule, and pulse memory semantics.
 This follows SOLVE-C58 and MLS §8.3.5.1/§8.5; synchronous ownership remains
-separate under §16.5.1. No IR schema or condition construction changed.
+separate under §16.2.1 (CLK-005/006). No IR schema or condition construction changed.
 
 The two constructor controls use the existing checked Boolean task projection
 `Or(Clock, Not(Always))` and a genuine clock-owned negative. Both prove periodic
