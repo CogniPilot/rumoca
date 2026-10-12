@@ -36,7 +36,10 @@ fn canonical_parity_steps_use_the_ci_measurement_budgets() {
             panic!("canonical step must invoke MSL parity");
         };
         let config = args.to_parity_config_json();
-        assert_eq!(config.get("sim_timeout_secs"), Some(&serde_json::json!(45.0)));
+        assert_eq!(
+            config.get("sim_timeout_secs"),
+            Some(&serde_json::json!(45.0))
+        );
         assert_eq!(
             config.get("model_attempt_timeout_secs"),
             Some(&serde_json::json!(20.0))
@@ -81,6 +84,8 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
             vec![
                 "verify",
                 "msl-parity",
+                "--budget-profile",
+                "ci",
                 "--no-remote-quality-baseline",
                 "--stage-parallelism",
                 "4",
@@ -110,6 +115,8 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
         Some(&vec![
             "verify",
             "msl-parity",
+            "--budget-profile",
+            "ci",
             "--no-remote-quality-baseline",
             "--stage-parallelism",
             "4",
@@ -129,6 +136,8 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     assert!(steps.contains(&vec![
         "verify",
         "msl-parity",
+        "--budget-profile",
+        "ci",
         "--no-remote-quality-baseline",
         "--stage-parallelism",
         "4",

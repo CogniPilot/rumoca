@@ -508,6 +508,8 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
         args: &[
             "verify",
             "msl-parity",
+            "--budget-profile",
+            "ci",
             "--no-remote-quality-baseline",
             "--stage-parallelism",
             "4",

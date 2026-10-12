@@ -1,19 +1,37 @@
 //! Wall-budget knobs for `cargo xtask verify msl-parity`.
 //!
-//! These exist for the long-budget diagnostic lanes (the nightly event cohort),
-//! where models that legitimately need minutes rather than seconds are being
-//! investigated. Every budget is *raise-only* on the harness side: the committed
-//! quality baseline was measured with the default budgets, so shortening them
-//! would silently make the gate easier by turning real failures into timeouts.
+//! Canonical verification and CI use the same named measurement profile.
+//! Unprofiled invocations retain the harness defaults; explicit budgets support
+//! isolated diagnostics such as the nightly event cohort.
 //!
 //! Budgets are whole seconds — sub-second precision is meaningless for a wall
 //! budget and `f64` would block the `Eq` derive the CLI arg structs rely on.
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde_json::{Map, Value};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MslParityBudgetProfile {
+    Ci,
+}
+
+impl MslParityBudgetProfile {
+    fn wall_budgets(self) -> (u64, u64) {
+        match self {
+            Self::Ci => (45, 20),
+        }
+    }
+}
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
 pub(crate) struct MslParityBudgetArgs {
+    /// Shared measurement budgets for canonical verification and CI.
+    #[arg(
+        long,
+        value_enum,
+        conflicts_with_all = ["sim_timeout_secs", "ir_solve_timeout_secs", "model_attempt_timeout_secs"]
+    )]
+    budget_profile: Option<MslParityBudgetProfile>,
     /// Per-model solver wall budget in seconds (raise-only; clamped to at least
     /// the harness default)
     #[arg(long, value_name = "SECS")]
@@ -35,19 +53,24 @@ pub(crate) struct MslParityBudgetArgs {
 impl MslParityBudgetArgs {
     /// Set the solver and per-phase wall budgets of an isolated rerun.
     pub(crate) fn set_wall_budgets(&mut self, secs: u64) {
+        self.budget_profile = None;
         self.sim_timeout_secs = Some(secs);
         self.model_attempt_timeout_secs = Some(secs);
     }
 
-    /// Write the explicitly set budgets into the harness config map.
+    /// Write the selected profile or explicit budgets into the harness config map.
     pub(crate) fn insert_into(&self, config: &mut Map<String, Value>) {
+        let (sim_timeout_secs, model_attempt_timeout_secs) = self.budget_profile.map_or(
+            (self.sim_timeout_secs, self.model_attempt_timeout_secs),
+            |profile| {
+                let (sim, model) = profile.wall_budgets();
+                (Some(sim), Some(model))
+            },
+        );
         for (key, value) in [
-            ("sim_timeout_secs", self.sim_timeout_secs),
+            ("sim_timeout_secs", sim_timeout_secs),
             ("ir_solve_timeout_secs", self.ir_solve_timeout_secs),
-            (
-                "model_attempt_timeout_secs",
-                self.model_attempt_timeout_secs,
-            ),
+            ("model_attempt_timeout_secs", model_attempt_timeout_secs),
         ] {
             if let Some(secs) = value {
                 config.insert(key.into(), (secs as f64).into());
@@ -98,5 +121,43 @@ mod tests {
         assert_eq!(config["ir_solve_timeout_secs"], Value::from(60.0));
         assert_eq!(config["model_attempt_timeout_secs"], Value::from(420.0));
         assert_eq!(config["all_omc_targets"], Value::from(true));
+    }
+
+    #[test]
+    fn ci_profile_writes_the_shared_measurement_budgets() {
+        let config = config_for(&["verify-msl-parity", "--budget-profile", "ci"]);
+        assert_eq!(config["sim_timeout_secs"], Value::from(45.0));
+        assert_eq!(config["model_attempt_timeout_secs"], Value::from(20.0));
+        assert_eq!(config.len(), 2);
+    }
+
+    #[test]
+    fn named_profile_rejects_every_explicit_timeout_before_execution() {
+        for option in [
+            "--sim-timeout-secs",
+            "--ir-solve-timeout-secs",
+            "--model-attempt-timeout-secs",
+        ] {
+            let error = Harness::try_parse_from([
+                "verify-msl-parity",
+                "--budget-profile",
+                "ci",
+                option,
+                "60",
+            ])
+            .expect_err("profile and explicit timeout must conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn isolated_rerun_replaces_the_named_profile_with_its_wall_budget() {
+        let mut parsed = Harness::parse_from(["verify-msl-parity", "--budget-profile", "ci"]);
+        parsed.budgets.set_wall_budgets(300);
+        let mut config = Map::new();
+        parsed.budgets.insert_into(&mut config);
+        assert_eq!(config["sim_timeout_secs"], Value::from(300.0));
+        assert_eq!(config["model_attempt_timeout_secs"], Value::from(300.0));
+        assert!(parsed.budgets.budget_profile.is_none());
     }
 }
