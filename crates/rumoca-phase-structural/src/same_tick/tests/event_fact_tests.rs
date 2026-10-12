@@ -175,3 +175,15 @@ fn an_ordinary_observation_cycle_through_a_non_inline_alias_retains_iteration_or
         assert_eq!(probe.issue_names(&producers), ["<nAlias>", "b", "n"]);
     });
 }
+
+#[test]
+fn an_external_entry_reader_precedes_the_observation_cycles_stable_order() {
+    probe(Wiring::Aliases, |probe| {
+        let producers = [
+            ordinary(probe, "b", &["nAlias"], &[]),
+            ordinary(probe, "n", &["b"], &[]),
+            ordinary(probe, "a", &["n"], &["b"]),
+        ];
+        assert_eq!(probe.issue_names(&producers), ["n", "a", "<nAlias>", "b"]);
+    });
+}

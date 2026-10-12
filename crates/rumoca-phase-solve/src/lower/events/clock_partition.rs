@@ -195,7 +195,7 @@ fn issue_intermediate_definition<'dae>(
         let program =
             if issue.read_boundary == rumoca_phase_structural::SameTickReadBoundary::Current {
                 compiler.current_definition_program(
-                    super::scalar::DefinitionOwner::new(
+                    crate::lower::scalar::DefinitionOwner::new(
                         std::rc::Rc::clone(&discrete.same_tick_definitions),
                         std::rc::Rc::new(
                             admitted
@@ -578,7 +578,7 @@ fn transitive_observations(start: usize, direct: &[BTreeSet<usize>]) -> BTreeSet
 pub(super) fn guarded_definition_owner<'dae>(
     rows: &DiscreteRows<'dae>,
     targets: &[GuardedTarget<'dae>],
-) -> super::scalar::DefinitionOwner<'dae> {
+) -> crate::lower::scalar::DefinitionOwner<'dae> {
     let definition_targets = std::rc::Rc::new(
         targets
             .iter()
@@ -590,7 +590,7 @@ pub(super) fn guarded_definition_owner<'dae>(
             )
             .collect::<BTreeSet<_>>(),
     );
-    super::scalar::DefinitionOwner::new(
+    crate::lower::scalar::DefinitionOwner::new(
         std::rc::Rc::clone(&rows.same_tick_definitions),
         definition_targets,
     )

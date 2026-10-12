@@ -167,4 +167,14 @@ impl EventOrdering {
     pub(super) fn entry_readers(&self, producer: usize) -> &BTreeSet<usize> {
         &self.entry_readers[producer]
     }
+
+    pub(super) fn earlier_observation_members(
+        &self,
+        producer: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        (0..producer).filter(move |&earlier| {
+            self.observations[producer].contains(&earlier)
+                && self.observations[earlier].contains(&producer)
+        })
+    }
 }
