@@ -51,6 +51,11 @@
       "owner": "protocol-output",
       "scope": "Expected hello response, not a command or source; exact CLI protocol replay pending."
     },
+    "executable-notebook-text": {
+      "classification": "executable-notebook",
+      "owner": "python-guide",
+      "scope": "The exact %%modelica cell executes through the installed-wheel IPython extension; guide_test.py checks its Model, analytic trace and SolveExport."
+    },
     "executable-context-python": {
       "classification": "executable-context",
       "owner": "python-guide",
@@ -203,7 +208,7 @@
     {"page": "tools/python.md", "line": 149, "language": "python", "source_sha256": "a7ca7ed04816a01251e92feac7c57ade53eed07e21504595a2abd3987fee8d19", "profile": "executable-context-python", "source_line_count": 7},
     {"page": "tools/python.md", "line": 169, "language": "cmake", "source_sha256": "04ef8edd8a78afd2a37aab4d0b7aeafdfdcc2aa9b06c8f67c3df12aa1959ff75", "profile": "project-template-cmake", "source_line_count": 17},
     {"page": "tools/python.md", "line": 192, "language": "cmake", "source_sha256": "aaa5744bc1327489cb37fe1ef2b45ccc8438c7e66b918373dfd4485871a51186", "profile": "project-template-cmake", "source_line_count": 5},
-    {"page": "tools/python.md", "line": 209, "language": "text", "source_sha256": "9a4675c83281dcb9507cb3bfe0f0889588db66fb540a1ac7abe13049ea6ab1eb", "profile": "explanatory-output-text", "source_line_count": 2},
+    {"page": "tools/python.md", "line": 209, "language": "text", "source_sha256": "9a4675c83281dcb9507cb3bfe0f0889588db66fb540a1ac7abe13049ea6ab1eb", "profile": "executable-notebook-text", "source_line_count": 2},
     {"page": "tools/python.md", "line": 225, "language": "python", "source_sha256": "bc1861f0e9c3567a213dd04113650cdc76519c4a2c2e59563fadafbc596a7d8b", "profile": "executable-context-python", "source_line_count": 2},
     {"page": "tools/vscode.md", "line": 22, "language": "toml", "source_sha256": "047a3344a41395fbed0eeb44fa3dc5489360cb1de5a7d9aa5f36960dbec8d214", "profile": "configuration-context-toml", "source_line_count": 4}
   ]

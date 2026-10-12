@@ -18,6 +18,7 @@ fn profile_owner(profile: &Value, language: &str, page: &str) -> Result<&'static
         ("rust", "executable-context") => "opt-rhs",
         ("python", "executable-context") if page == "simulation/stdio-session.md" => "cli-stdio",
         ("python" | "cmake", "executable-context") => "python-guide",
+        ("text", "executable-notebook") if page == "tools/python.md" => "python-guide",
         ("text", "explanatory-output") => "displayed-output",
         ("xml", "explanatory-output") => "metadata-output",
         ("json", "explanatory-output") => "protocol-output",
@@ -164,6 +165,10 @@ fn require_execution_owner(owner: &str) {
                 "def test_guide_python_fences(",
             );
             require_source(
+                "crates/rumoca-bind-python/tests/guide_test.py",
+                "def test_guide_notebook_cell(",
+            );
+            require_source(
                 "crates/rumoca-bind-python/tests/wheel_test.py",
                 "\"guide_test.py\", \"guide_scenario_test.py\"",
             );
@@ -247,10 +252,13 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
         let digest = format!("{:x}", Sha256::digest(fence.source.as_bytes()));
         assert_eq!(entry["source_sha256"], digest, "{page}:{}", fence.line);
         let key = entry["profile"].as_str().expect("classified example");
-        owners.insert(
-            profile_owner(&inventory["profiles"][key], &fence.language, page)
-                .unwrap_or_else(|error| panic!("{page}:{}: {error}", fence.line)),
-        );
+        let owner = profile_owner(&inventory["profiles"][key], &fence.language, page)
+            .unwrap_or_else(|error| panic!("{page}:{}: {error}", fence.line));
+        if fence.source.starts_with("%%modelica ") {
+            assert_eq!(key, "executable-notebook-text");
+            assert_eq!(owner, "python-guide");
+        }
+        owners.insert(owner);
     }
     for owner in owners {
         require_execution_owner(owner);
@@ -259,6 +267,12 @@ fn user_guide_other_language_inventory_rejects_unclassified_or_changed_examples(
 
 #[test]
 fn user_guide_inventory_rejects_unknown_or_missing_execution_owners() {
+    let notebook = serde_json::json!({"classification":"executable-notebook", "owner":"python-guide", "scope":"actual IPython cell"});
+    assert_eq!(
+        profile_owner(&notebook, "text", "tools/python.md"),
+        Ok("python-guide")
+    );
+    assert!(profile_owner(&notebook, "text", "simulation/running.md").is_err());
     let syntax_only = serde_json::json!({"classification":"executable-benchmark", "owner":"cli-context", "scope":"syntax alone"});
     assert!(profile_owner(&syntax_only, "bash", "language/neural-odes.md").is_err());
     let profile = serde_json::json!({"classification": "executable-context", "owner": "someone", "scope": "not proof"});

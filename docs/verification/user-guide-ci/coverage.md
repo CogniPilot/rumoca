@@ -61,8 +61,10 @@ this is separate from generated JAX/CasADi proof.
 
 
 All other fenced examples are hash-bound in
-[non-modelica-inventory.json](non-modelica-inventory.json):102 code fences and15
-explanatory outputs. The inventory records each exact page/line/language,
+[non-modelica-inventory.json](non-modelica-inventory.json):117 entries, comprising
+101 execution/setup/template contexts and16 explanatory outputs, counted from
+the current finite profiles. The executable notebook cell has the same required
+Python owner as the ten Python fences, even though its Markdown language is `text`. The inventory records each exact page/line/language,
 exact body line count, classification, finite execution owner and proof scope.
 The inventory rejects unknown owners, language/classification mismatches, missing
 source spans, and absent required test or CI registrations. Source registration
