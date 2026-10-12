@@ -1,4 +1,5 @@
 mod derived_wire;
+mod discrete_integer_quotients;
 mod expression_children;
 mod external_functions;
 mod function_conditionals;
