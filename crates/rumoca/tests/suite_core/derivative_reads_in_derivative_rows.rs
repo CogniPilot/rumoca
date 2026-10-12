@@ -90,6 +90,22 @@ fn reinitialization_reads_the_matched_derivative_without_new_storage() {
 #[test]
 fn a_when_equation_derivative_reads_the_current_same_tick_producer() {
     let source = "model SameTickDerivative Real x(start=0,fixed=true); discrete Real a(start=0,fixed=true); discrete Real z(start=1,fixed=true); equation der(x)=z; when sample(0,0.1) then a=der(x); z=pre(z)+1; end when; end SameTickDerivative;";
+    check_same_tick_derivative(source, [2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn a_same_tick_derivative_follows_an_exact_algebraic_alias() {
+    let source = "model SameTickDerivative Real x(start=0,fixed=true); Real rhs; discrete Real a(start=0,fixed=true); discrete Real z(start=1,fixed=true); equation rhs=z; der(x)=rhs; when sample(0,0.1) then a=der(x); z=pre(z)+1; end when; end SameTickDerivative;";
+    check_same_tick_derivative(source, [2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn a_same_tick_derivative_preserves_its_previous_value_boundary() {
+    let source = "model SameTickDerivative Real x(start=0,fixed=true); discrete Real a(start=0,fixed=true); discrete Real z(start=1,fixed=true); equation der(x)=pre(z); when sample(0,0.1) then a=der(x); z=pre(z)+1; end when; end SameTickDerivative;";
+    check_same_tick_derivative(source, [1.0, 2.0, 3.0]);
+}
+
+fn check_same_tick_derivative(source: &str, expected_a: [f64; 3]) {
     let compiled = Compiler::new()
         .model("SameTickDerivative")
         .compile_str(source, "SameTickDerivative.mo")
@@ -110,9 +126,9 @@ fn a_when_equation_derivative_reads_the_current_same_tick_producer() {
         )
         .unwrap_or_else(|error| panic!("{policy:?}: same-tick derivative {error}"));
         let grid = regular_grid(&result, 0.1);
-        for name in ["a", "z"] {
+        for (name, expected) in [("a", expected_a), ("z", [2.0, 3.0, 4.0])] {
             let column = result.names.iter().position(|n| n == name).unwrap();
-            for (&row, expected) in grid.iter().zip([2.0, 3.0, 4.0]) {
+            for (&row, expected) in grid.iter().zip(expected) {
                 assert_eq!(result.data[column][row], expected, "{policy:?}: {name}");
             }
         }
