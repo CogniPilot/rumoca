@@ -1,0 +1,4487 @@
+{
+  "scope": "fixed20 Tier1 tripwire; not the 566-model cohort; five historical failures remain",
+  "source": "bd1027a423d536dfff76c56f161ff606e557aaba",
+  "historical_source": "13429f49687711a39a8fb63befc9c487544ac5a6",
+  "comparator_source": "117b2490b",
+  "comparator_sha256": "5281ddde32f4c639694cdf4dd0228a7851ddbdd2aedb5c1728f13141b899112e",
+  "worker_artifacts": {
+    "/home/jgoppert/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/rumoca-worker-bd102": "6690882a6ea06a5494e246f75c217862f15b30041b396ef224afe76762579bf4",
+    "/home/jgoppert/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/fixed-tier1-bd102": "6645941999c51ca6bdd67d9e6cbac9fa8cc0d9ead81919f08de55d6548e3eb8e",
+    "/home/jgoppert/scratch/rumoca/pr427-fixed20-bd102-20261012/artifacts/sha256.txt": "65423ec1520183372ad4b89ef0736a7b724973ac5302377fd23e67f154cfa150"
+  },
+  "budgets": {
+    "phase_seconds": 10,
+    "solver_seconds": 12,
+    "parent_sim_seconds": 14,
+    "startup_seconds": 60
+  },
+  "canonical_native": {
+    "models": 20,
+    "sim_ok": 15,
+    "compile_failures": 3,
+    "solve_failures": 2,
+    "model_retries": 0,
+    "model_exclusions_requested": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-fixed20-canonical.sh"
+      ],
+      "log": "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/fixed20.log",
+      "elapsedMs": 18922.111496,
+      "peakRssKiB": 1359712,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 1359712,
+      "peakMemoryObservation": {
+        "observedAtMs": 15268.285187000001,
+        "rssKiB": 1359712,
+        "swapKiB": 0,
+        "residentPlusSwapKiB": 1359712,
+        "processes": [
+          {
+            "pid": 402504,
+            "birth": "130037751",
+            "parent": 402494,
+            "group": 402504,
+            "observedAtMs": 15268.285187000001,
+            "rssKiB": 4208,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 4208
+          },
+          {
+            "pid": 402688,
+            "birth": "130037866",
+            "parent": 402504,
+            "group": 402504,
+            "observedAtMs": 15268.285187000001,
+            "rssKiB": 3260,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 3260
+          },
+          {
+            "pid": 402849,
+            "birth": "130037938",
+            "parent": 402688,
+            "group": 402504,
+            "observedAtMs": 15268.285187000001,
+            "rssKiB": 1352244,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 1352244
+          }
+        ]
+      },
+      "memoryLimitObservation": null,
+      "processMemoryPeaks": [
+        {
+          "pid": 402504,
+          "birth": "130037751",
+          "parent": 402494,
+          "group": 402504,
+          "observedAtMs": 1255.28067,
+          "rssKiB": 4208,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4208
+        },
+        {
+          "pid": 402509,
+          "birth": "130037758",
+          "parent": 402504,
+          "group": 402504,
+          "observedAtMs": 1004.454253,
+          "rssKiB": 36676,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 36676
+        },
+        {
+          "pid": 402520,
+          "birth": "130037763",
+          "parent": 402509,
+          "group": 402504,
+          "observedAtMs": 253.78718099999998,
+          "rssKiB": 15256,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 15256
+        },
+        {
+          "pid": 402688,
+          "birth": "130037866",
+          "parent": 402504,
+          "group": 402504,
+          "observedAtMs": 1505.464974,
+          "rssKiB": 46284,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 46284
+        },
+        {
+          "pid": 402849,
+          "birth": "130037938",
+          "parent": 402688,
+          "group": 402504,
+          "observedAtMs": 15268.285187000001,
+          "rssKiB": 1352244,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 1352244
+        },
+        {
+          "pid": 404429,
+          "birth": "130039520",
+          "parent": 402504,
+          "group": 402504,
+          "observedAtMs": 18772.728399,
+          "rssKiB": 37072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 37072
+        },
+        {
+          "pid": 404432,
+          "birth": "130039525",
+          "parent": 404429,
+          "group": 402504,
+          "observedAtMs": 18020.444062000002,
+          "rssKiB": 20904,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 20904
+        }
+      ],
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 49814520,
+      "minimumScratchFreeBytes": 68054683648,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "/home/jgoppert/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 1
+    }
+  },
+  "fresh_omc": {
+    "models": 20,
+    "successful": 19,
+    "failed": 1,
+    "failed_model": "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+    "model_retries": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-fixed20-omc-fully-staged.sh"
+      ],
+      "log": "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/omc-fully-staged.log",
+      "elapsedMs": 65861.864895,
+      "peakRssKiB": 663140,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 663140,
+      "peakMemoryObservation": {
+        "observedAtMs": 44547.866237999995,
+        "rssKiB": 663140,
+        "swapKiB": 0,
+        "residentPlusSwapKiB": 663140,
+        "processes": [
+          {
+            "pid": 412010,
+            "birth": "130054589",
+            "parent": 412003,
+            "group": 412010,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 4216,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 4216
+          },
+          {
+            "pid": 412100,
+            "birth": "130054733",
+            "parent": 412010,
+            "group": 412010,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 28092,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 28092
+          },
+          {
+            "pid": 412192,
+            "birth": "130054811",
+            "parent": 412100,
+            "group": 412192,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 549056,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 549056
+          },
+          {
+            "pid": 415452,
+            "birth": "130058683",
+            "parent": 412192,
+            "group": 412192,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 2964,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 2964
+          },
+          {
+            "pid": 415554,
+            "birth": "130058918",
+            "parent": 415452,
+            "group": 412192,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 4020,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 4020
+          },
+          {
+            "pid": 415571,
+            "birth": "130058919",
+            "parent": 415554,
+            "group": 412192,
+            "observedAtMs": 44547.866237999995,
+            "rssKiB": 74792,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 74792
+          }
+        ]
+      },
+      "memoryLimitObservation": null,
+      "processMemoryPeaks": [
+        {
+          "pid": 412010,
+          "birth": "130054589",
+          "parent": 412003,
+          "group": 412010,
+          "observedAtMs": 1504.155297,
+          "rssKiB": 4216,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4216
+        },
+        {
+          "pid": 412013,
+          "birth": "130054590",
+          "parent": 412010,
+          "group": 412010,
+          "observedAtMs": 1003.8201959999999,
+          "rssKiB": 37308,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 37308
+        },
+        {
+          "pid": 412016,
+          "birth": "130054594",
+          "parent": 412013,
+          "group": 412010,
+          "observedAtMs": 253.77862200000004,
+          "rssKiB": 19592,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 19592
+        },
+        {
+          "pid": 412086,
+          "birth": "130054693",
+          "parent": 412010,
+          "group": 412010,
+          "observedAtMs": 1253.943191,
+          "rssKiB": 21740,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 21740
+        },
+        {
+          "pid": 412100,
+          "birth": "130054733",
+          "parent": 412010,
+          "group": 412010,
+          "observedAtMs": 61067.512362999994,
+          "rssKiB": 58064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 58064
+        },
+        {
+          "pid": 412192,
+          "birth": "130054811",
+          "parent": 412100,
+          "group": 412192,
+          "observedAtMs": 57560.629327999995,
+          "rssKiB": 549224,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 549224
+        },
+        {
+          "pid": 412325,
+          "birth": "130055067",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 7512.747007,
+          "rssKiB": 2940,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2940
+        },
+        {
+          "pid": 412326,
+          "birth": "130055068",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 5009.491437,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412327,
+          "birth": "130055069",
+          "parent": 412326,
+          "group": 412192,
+          "observedAtMs": 5009.491437,
+          "rssKiB": 55568,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 55568
+        },
+        {
+          "pid": 412340,
+          "birth": "130055139",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 5511.636835,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412341,
+          "birth": "130055140",
+          "parent": 412340,
+          "group": 412192,
+          "observedAtMs": 5511.636835,
+          "rssKiB": 23272,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23272
+        },
+        {
+          "pid": 412356,
+          "birth": "130055188",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 6012.146957,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412357,
+          "birth": "130055190",
+          "parent": 412356,
+          "group": 412192,
+          "observedAtMs": 6012.146957,
+          "rssKiB": 23420,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23420
+        },
+        {
+          "pid": 412385,
+          "birth": "130055233",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 6511.708214,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412386,
+          "birth": "130055234",
+          "parent": 412385,
+          "group": 412192,
+          "observedAtMs": 6511.708214,
+          "rssKiB": 35096,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35096
+        },
+        {
+          "pid": 412394,
+          "birth": "130055260",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 6762.1381599999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412400,
+          "birth": "130055261",
+          "parent": 412394,
+          "group": 412192,
+          "observedAtMs": 6762.1381599999995,
+          "rssKiB": 32356,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32356
+        },
+        {
+          "pid": 412411,
+          "birth": "130055290",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 7012.262365,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412417,
+          "birth": "130055308",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 7262.526811,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412419,
+          "birth": "130055309",
+          "parent": 412417,
+          "group": 412192,
+          "observedAtMs": 7262.526811,
+          "rssKiB": 38144,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 38144
+        },
+        {
+          "pid": 412425,
+          "birth": "130055326",
+          "parent": 412325,
+          "group": 412192,
+          "observedAtMs": 7512.747007,
+          "rssKiB": 4080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4080
+        },
+        {
+          "pid": 412430,
+          "birth": "130055327",
+          "parent": 412425,
+          "group": 412192,
+          "observedAtMs": 7512.747007,
+          "rssKiB": 3076,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3076
+        },
+        {
+          "pid": 412431,
+          "birth": "130055327",
+          "parent": 412430,
+          "group": 412192,
+          "observedAtMs": 7512.747007,
+          "rssKiB": 3904,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3904
+        },
+        {
+          "pid": 412453,
+          "birth": "130055331",
+          "parent": 412431,
+          "group": 412192,
+          "observedAtMs": 7512.747007,
+          "rssKiB": 35232,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35232
+        },
+        {
+          "pid": 412470,
+          "birth": "130055352",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 10265.538948000001,
+          "rssKiB": 2948,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2948
+        },
+        {
+          "pid": 412471,
+          "birth": "130055352",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 7763.224553,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412472,
+          "birth": "130055353",
+          "parent": 412471,
+          "group": 412192,
+          "observedAtMs": 8013.0517469999995,
+          "rssKiB": 60124,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 60124
+        },
+        {
+          "pid": 412484,
+          "birth": "130055412",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 8263.409233,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412486,
+          "birth": "130055413",
+          "parent": 412484,
+          "group": 412192,
+          "observedAtMs": 8263.409233,
+          "rssKiB": 26916,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26916
+        },
+        {
+          "pid": 412525,
+          "birth": "130055438",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 8514.338762000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412526,
+          "birth": "130055439",
+          "parent": 412525,
+          "group": 412192,
+          "observedAtMs": 8514.338762000001,
+          "rssKiB": 26016,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26016
+        },
+        {
+          "pid": 412537,
+          "birth": "130055455",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 8763.831054,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412538,
+          "birth": "130055456",
+          "parent": 412537,
+          "group": 412192,
+          "observedAtMs": 8763.831054,
+          "rssKiB": 49180,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 49180
+        },
+        {
+          "pid": 412561,
+          "birth": "130055468",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 9014.412681000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412562,
+          "birth": "130055469",
+          "parent": 412561,
+          "group": 412192,
+          "observedAtMs": 9014.412681000002,
+          "rssKiB": 51692,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 51692
+        },
+        {
+          "pid": 412581,
+          "birth": "130055515",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 9264.705627000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412602,
+          "birth": "130055560",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 9765.073047000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412603,
+          "birth": "130055561",
+          "parent": 412602,
+          "group": 412192,
+          "observedAtMs": 9765.073047000002,
+          "rssKiB": 33592,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33592
+        },
+        {
+          "pid": 412635,
+          "birth": "130055587",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 10015.257552000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412636,
+          "birth": "130055588",
+          "parent": 412635,
+          "group": 412192,
+          "observedAtMs": 10015.257552000001,
+          "rssKiB": 27044,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27044
+        },
+        {
+          "pid": 412646,
+          "birth": "130055615",
+          "parent": 412470,
+          "group": 412192,
+          "observedAtMs": 10265.538948000001,
+          "rssKiB": 2872,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2872
+        },
+        {
+          "pid": 412697,
+          "birth": "130055637",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 13018.866450000001,
+          "rssKiB": 2964,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2964
+        },
+        {
+          "pid": 412698,
+          "birth": "130055638",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 10515.862554000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412699,
+          "birth": "130055639",
+          "parent": 412698,
+          "group": 412192,
+          "observedAtMs": 10766.092179000001,
+          "rssKiB": 57720,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 57720
+        },
+        {
+          "pid": 412720,
+          "birth": "130055686",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 11015.817772,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412721,
+          "birth": "130055687",
+          "parent": 412720,
+          "group": 412192,
+          "observedAtMs": 11015.817772,
+          "rssKiB": 30644,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 30644
+        },
+        {
+          "pid": 412757,
+          "birth": "130055712",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 11265.858227,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412758,
+          "birth": "130055713",
+          "parent": 412757,
+          "group": 412192,
+          "observedAtMs": 11265.858227,
+          "rssKiB": 27312,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27312
+        },
+        {
+          "pid": 412829,
+          "birth": "130055761",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 11766.558959,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412830,
+          "birth": "130055762",
+          "parent": 412829,
+          "group": 412192,
+          "observedAtMs": 11766.558959,
+          "rssKiB": 30716,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 30716
+        },
+        {
+          "pid": 412874,
+          "birth": "130055786",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 12017.184846,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412876,
+          "birth": "130055787",
+          "parent": 412874,
+          "group": 412192,
+          "observedAtMs": 12017.184846,
+          "rssKiB": 31116,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31116
+        },
+        {
+          "pid": 412900,
+          "birth": "130055815",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 12267.13571,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412910,
+          "birth": "130055835",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 12517.623486,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412911,
+          "birth": "130055836",
+          "parent": 412910,
+          "group": 412192,
+          "observedAtMs": 12517.623486,
+          "rssKiB": 33056,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33056
+        },
+        {
+          "pid": 412933,
+          "birth": "130055876",
+          "parent": 412697,
+          "group": 412192,
+          "observedAtMs": 13018.866450000001,
+          "rssKiB": 4080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4080
+        },
+        {
+          "pid": 412938,
+          "birth": "130055878",
+          "parent": 412933,
+          "group": 412192,
+          "observedAtMs": 13018.866450000001,
+          "rssKiB": 3080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3080
+        },
+        {
+          "pid": 412941,
+          "birth": "130055878",
+          "parent": 412938,
+          "group": 412192,
+          "observedAtMs": 13018.866450000001,
+          "rssKiB": 3912,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3912
+        },
+        {
+          "pid": 412966,
+          "birth": "130055882",
+          "parent": 412941,
+          "group": 412192,
+          "observedAtMs": 13018.866450000001,
+          "rssKiB": 35204,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35204
+        },
+        {
+          "pid": 412985,
+          "birth": "130055910",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 15520.248609,
+          "rssKiB": 2972,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2972
+        },
+        {
+          "pid": 412986,
+          "birth": "130055910",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 13269.185976,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 412987,
+          "birth": "130055911",
+          "parent": 412986,
+          "group": 412192,
+          "observedAtMs": 13519.108300000002,
+          "rssKiB": 57932,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 57932
+        },
+        {
+          "pid": 413004,
+          "birth": "130055960",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 13769.294595000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413005,
+          "birth": "130055961",
+          "parent": 413004,
+          "group": 412192,
+          "observedAtMs": 13769.294595000001,
+          "rssKiB": 33532,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33532
+        },
+        {
+          "pid": 413022,
+          "birth": "130055986",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 14019.289929,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413023,
+          "birth": "130055987",
+          "parent": 413022,
+          "group": 412192,
+          "observedAtMs": 14019.289929,
+          "rssKiB": 32244,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32244
+        },
+        {
+          "pid": 413033,
+          "birth": "130056014",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 14269.116643000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413034,
+          "birth": "130056015",
+          "parent": 413033,
+          "group": 412192,
+          "observedAtMs": 14269.116643000001,
+          "rssKiB": 25736,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25736
+        },
+        {
+          "pid": 413049,
+          "birth": "130056033",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 14519.106787,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413050,
+          "birth": "130056034",
+          "parent": 413049,
+          "group": 412192,
+          "observedAtMs": 14519.106787,
+          "rssKiB": 43564,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 43564
+        },
+        {
+          "pid": 413064,
+          "birth": "130056059",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 14769.373532000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413065,
+          "birth": "130056060",
+          "parent": 413064,
+          "group": 412192,
+          "observedAtMs": 14769.373532000001,
+          "rssKiB": 34876,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34876
+        },
+        {
+          "pid": 413077,
+          "birth": "130056089",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 15019.791668000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413078,
+          "birth": "130056090",
+          "parent": 413077,
+          "group": 412192,
+          "observedAtMs": 15019.791668000002,
+          "rssKiB": 25780,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25780
+        },
+        {
+          "pid": 413085,
+          "birth": "130056110",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 15270.200414,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413086,
+          "birth": "130056111",
+          "parent": 413085,
+          "group": 412192,
+          "observedAtMs": 15270.200414,
+          "rssKiB": 33416,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33416
+        },
+        {
+          "pid": 413109,
+          "birth": "130056128",
+          "parent": 412985,
+          "group": 412192,
+          "observedAtMs": 15520.248609,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 413115,
+          "birth": "130056130",
+          "parent": 413109,
+          "group": 412192,
+          "observedAtMs": 15520.248609,
+          "rssKiB": 3072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3072
+        },
+        {
+          "pid": 413118,
+          "birth": "130056130",
+          "parent": 413115,
+          "group": 412192,
+          "observedAtMs": 15520.248609,
+          "rssKiB": 3876,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3876
+        },
+        {
+          "pid": 413152,
+          "birth": "130056133",
+          "parent": 413118,
+          "group": 412192,
+          "observedAtMs": 15520.248609,
+          "rssKiB": 34284,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34284
+        },
+        {
+          "pid": 413172,
+          "birth": "130056149",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 18020.759882000002,
+          "rssKiB": 2980,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2980
+        },
+        {
+          "pid": 413173,
+          "birth": "130056149",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 15769.925101,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413174,
+          "birth": "130056150",
+          "parent": 413173,
+          "group": 412192,
+          "observedAtMs": 15769.925101,
+          "rssKiB": 53948,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 53948
+        },
+        {
+          "pid": 413191,
+          "birth": "130056186",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 16020.483928000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413192,
+          "birth": "130056187",
+          "parent": 413191,
+          "group": 412192,
+          "observedAtMs": 16020.483928000001,
+          "rssKiB": 31824,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31824
+        },
+        {
+          "pid": 413223,
+          "birth": "130056208",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 16271.097155000001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413224,
+          "birth": "130056209",
+          "parent": 413223,
+          "group": 412192,
+          "observedAtMs": 16271.097155000001,
+          "rssKiB": 0,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 0
+        },
+        {
+          "pid": 413236,
+          "birth": "130056234",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 16521.36256,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413237,
+          "birth": "130056235",
+          "parent": 413236,
+          "group": 412192,
+          "observedAtMs": 16521.36256,
+          "rssKiB": 35716,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35716
+        },
+        {
+          "pid": 413244,
+          "birth": "130056255",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 16770.960973,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413245,
+          "birth": "130056256",
+          "parent": 413244,
+          "group": 412192,
+          "observedAtMs": 16770.960973,
+          "rssKiB": 0,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 0
+        },
+        {
+          "pid": 413265,
+          "birth": "130056310",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 17270.7069,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413267,
+          "birth": "130056311",
+          "parent": 413265,
+          "group": 412192,
+          "observedAtMs": 17270.7069,
+          "rssKiB": 33172,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33172
+        },
+        {
+          "pid": 413277,
+          "birth": "130056339",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 17520.837924,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413278,
+          "birth": "130056340",
+          "parent": 413277,
+          "group": 412192,
+          "observedAtMs": 17520.837924,
+          "rssKiB": 25080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25080
+        },
+        {
+          "pid": 413285,
+          "birth": "130056360",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 17771.022089000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413286,
+          "birth": "130056361",
+          "parent": 413285,
+          "group": 412192,
+          "observedAtMs": 17771.022089000002,
+          "rssKiB": 33268,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33268
+        },
+        {
+          "pid": 413301,
+          "birth": "130056387",
+          "parent": 413172,
+          "group": 412192,
+          "observedAtMs": 18020.759882000002,
+          "rssKiB": 4080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4080
+        },
+        {
+          "pid": 413306,
+          "birth": "130056389",
+          "parent": 413301,
+          "group": 412192,
+          "observedAtMs": 18020.759882000002,
+          "rssKiB": 3080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3080
+        },
+        {
+          "pid": 413307,
+          "birth": "130056389",
+          "parent": 413306,
+          "group": 412192,
+          "observedAtMs": 18020.759882000002,
+          "rssKiB": 3900,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3900
+        },
+        {
+          "pid": 413350,
+          "birth": "130056407",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 20274.405355000003,
+          "rssKiB": 2956,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2956
+        },
+        {
+          "pid": 413351,
+          "birth": "130056407",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 18271.53892,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413352,
+          "birth": "130056408",
+          "parent": 413351,
+          "group": 412192,
+          "observedAtMs": 18271.53892,
+          "rssKiB": 42168,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 42168
+        },
+        {
+          "pid": 413363,
+          "birth": "130056440",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 18522.280287,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413364,
+          "birth": "130056441",
+          "parent": 413363,
+          "group": 412192,
+          "observedAtMs": 18522.280287,
+          "rssKiB": 24804,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 24804
+        },
+        {
+          "pid": 413395,
+          "birth": "130056465",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 18772.278691,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413423,
+          "birth": "130056490",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 19022.418896,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413431,
+          "birth": "130056509",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 19273.088483,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413432,
+          "birth": "130056509",
+          "parent": 413431,
+          "group": 412192,
+          "observedAtMs": 19273.088483,
+          "rssKiB": 0,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 0
+        },
+        {
+          "pid": 413448,
+          "birth": "130056536",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 19522.855636,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413449,
+          "birth": "130056537",
+          "parent": 413448,
+          "group": 412192,
+          "observedAtMs": 19522.855636,
+          "rssKiB": 33076,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33076
+        },
+        {
+          "pid": 413463,
+          "birth": "130056563",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 19772.683929000003,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413464,
+          "birth": "130056564",
+          "parent": 413463,
+          "group": 412192,
+          "observedAtMs": 19772.683929000003,
+          "rssKiB": 26732,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26732
+        },
+        {
+          "pid": 413471,
+          "birth": "130056582",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 20023.385016,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413472,
+          "birth": "130056583",
+          "parent": 413471,
+          "group": 412192,
+          "observedAtMs": 20023.385016,
+          "rssKiB": 48152,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 48152
+        },
+        {
+          "pid": 413487,
+          "birth": "130056611",
+          "parent": 413350,
+          "group": 412192,
+          "observedAtMs": 20274.405355000003,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413498,
+          "birth": "130056611",
+          "parent": 413487,
+          "group": 412192,
+          "observedAtMs": 20274.405355000003,
+          "rssKiB": 33400,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33400
+        },
+        {
+          "pid": 413558,
+          "birth": "130056638",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 22527.819865,
+          "rssKiB": 2952,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2952
+        },
+        {
+          "pid": 413559,
+          "birth": "130056638",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 20525.218022,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413560,
+          "birth": "130056639",
+          "parent": 413559,
+          "group": 412192,
+          "observedAtMs": 20775.418737,
+          "rssKiB": 57684,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 57684
+        },
+        {
+          "pid": 413574,
+          "birth": "130056688",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 21026.271605,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413575,
+          "birth": "130056689",
+          "parent": 413574,
+          "group": 412192,
+          "observedAtMs": 21026.271605,
+          "rssKiB": 28364,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 28364
+        },
+        {
+          "pid": 413593,
+          "birth": "130056713",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 21276.029088,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413595,
+          "birth": "130056714",
+          "parent": 413593,
+          "group": 412192,
+          "observedAtMs": 21276.029088,
+          "rssKiB": 27672,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27672
+        },
+        {
+          "pid": 413614,
+          "birth": "130056760",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 21776.522588,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413615,
+          "birth": "130056761",
+          "parent": 413614,
+          "group": 412192,
+          "observedAtMs": 21776.522588,
+          "rssKiB": 36992,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 36992
+        },
+        {
+          "pid": 413631,
+          "birth": "130056786",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 22027.372925,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413633,
+          "birth": "130056787",
+          "parent": 413631,
+          "group": 412192,
+          "observedAtMs": 22027.372925,
+          "rssKiB": 33304,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33304
+        },
+        {
+          "pid": 413645,
+          "birth": "130056815",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 22278.104103,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413646,
+          "birth": "130056816",
+          "parent": 413645,
+          "group": 412192,
+          "observedAtMs": 22278.104103,
+          "rssKiB": 25072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25072
+        },
+        {
+          "pid": 413654,
+          "birth": "130056835",
+          "parent": 413558,
+          "group": 412192,
+          "observedAtMs": 22527.819865,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413655,
+          "birth": "130056835",
+          "parent": 413654,
+          "group": 412192,
+          "observedAtMs": 22527.819865,
+          "rssKiB": 38176,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 38176
+        },
+        {
+          "pid": 413702,
+          "birth": "130056870",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 25032.403843,
+          "rssKiB": 2984,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2984
+        },
+        {
+          "pid": 413703,
+          "birth": "130056870",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 23029.574881,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413704,
+          "birth": "130056871",
+          "parent": 413703,
+          "group": 412192,
+          "observedAtMs": 23029.574881,
+          "rssKiB": 56336,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 56336
+        },
+        {
+          "pid": 413720,
+          "birth": "130056911",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 23280.200457000003,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413721,
+          "birth": "130056912",
+          "parent": 413720,
+          "group": 412192,
+          "observedAtMs": 23280.200457000003,
+          "rssKiB": 33660,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33660
+        },
+        {
+          "pid": 413732,
+          "birth": "130056936",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 23530.440072,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413733,
+          "birth": "130056937",
+          "parent": 413732,
+          "group": 412192,
+          "observedAtMs": 23530.440072,
+          "rssKiB": 33572,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33572
+        },
+        {
+          "pid": 413750,
+          "birth": "130056962",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 23781.173949,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413751,
+          "birth": "130056963",
+          "parent": 413750,
+          "group": 412192,
+          "observedAtMs": 23781.173949,
+          "rssKiB": 32296,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32296
+        },
+        {
+          "pid": 413771,
+          "birth": "130056990",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 24030.721241,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413772,
+          "birth": "130056991",
+          "parent": 413771,
+          "group": 412192,
+          "observedAtMs": 24030.721241,
+          "rssKiB": 25996,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25996
+        },
+        {
+          "pid": 413784,
+          "birth": "130057015",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 24281.408968,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413785,
+          "birth": "130057016",
+          "parent": 413784,
+          "group": 412192,
+          "observedAtMs": 24281.408968,
+          "rssKiB": 25220,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25220
+        },
+        {
+          "pid": 413796,
+          "birth": "130057036",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 24532.260926000003,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413797,
+          "birth": "130057036",
+          "parent": 413796,
+          "group": 412192,
+          "observedAtMs": 24532.260926000003,
+          "rssKiB": 34876,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34876
+        },
+        {
+          "pid": 413814,
+          "birth": "130057066",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 24782.201119,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413819,
+          "birth": "130057067",
+          "parent": 413814,
+          "group": 412192,
+          "observedAtMs": 24782.201119,
+          "rssKiB": 23364,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23364
+        },
+        {
+          "pid": 413868,
+          "birth": "130057083",
+          "parent": 413702,
+          "group": 412192,
+          "observedAtMs": 25032.403843,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 413874,
+          "birth": "130057085",
+          "parent": 413868,
+          "group": 412192,
+          "observedAtMs": 25032.403843,
+          "rssKiB": 3072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3072
+        },
+        {
+          "pid": 413876,
+          "birth": "130057085",
+          "parent": 413874,
+          "group": 412192,
+          "observedAtMs": 25032.403843,
+          "rssKiB": 3872,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3872
+        },
+        {
+          "pid": 413892,
+          "birth": "130057088",
+          "parent": 413876,
+          "group": 412192,
+          "observedAtMs": 25032.403843,
+          "rssKiB": 32684,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32684
+        },
+        {
+          "pid": 413911,
+          "birth": "130057102",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 27284.072096,
+          "rssKiB": 2972,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2972
+        },
+        {
+          "pid": 413912,
+          "birth": "130057102",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 25283.301993,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413913,
+          "birth": "130057103",
+          "parent": 413912,
+          "group": 412192,
+          "observedAtMs": 25283.301993,
+          "rssKiB": 53252,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 53252
+        },
+        {
+          "pid": 413921,
+          "birth": "130057138",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 25533.080315,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413922,
+          "birth": "130057139",
+          "parent": 413921,
+          "group": 412192,
+          "observedAtMs": 25533.080315,
+          "rssKiB": 29468,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 29468
+        },
+        {
+          "pid": 413933,
+          "birth": "130057164",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 25782.792018,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413934,
+          "birth": "130057164",
+          "parent": 413933,
+          "group": 412192,
+          "observedAtMs": 25782.792018,
+          "rssKiB": 28456,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 28456
+        },
+        {
+          "pid": 413948,
+          "birth": "130057188",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 26032.926822,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413949,
+          "birth": "130057189",
+          "parent": 413948,
+          "group": 412192,
+          "observedAtMs": 26032.926822,
+          "rssKiB": 29960,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 29960
+        },
+        {
+          "pid": 413956,
+          "birth": "130057210",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 26283.429718,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413977,
+          "birth": "130057238",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 26534.280666000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413978,
+          "birth": "130057239",
+          "parent": 413977,
+          "group": 412192,
+          "observedAtMs": 26534.280666000002,
+          "rssKiB": 31224,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31224
+        },
+        {
+          "pid": 413990,
+          "birth": "130057266",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 26783.805867,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 413991,
+          "birth": "130057267",
+          "parent": 413990,
+          "group": 412192,
+          "observedAtMs": 26783.805867,
+          "rssKiB": 23484,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23484
+        },
+        {
+          "pid": 414003,
+          "birth": "130057284",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 27034.303933,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414006,
+          "birth": "130057285",
+          "parent": 414003,
+          "group": 412192,
+          "observedAtMs": 27034.303933,
+          "rssKiB": 46276,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 46276
+        },
+        {
+          "pid": 414021,
+          "birth": "130057314",
+          "parent": 413911,
+          "group": 412192,
+          "observedAtMs": 27284.072096,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414022,
+          "birth": "130057315",
+          "parent": 414021,
+          "group": 412192,
+          "observedAtMs": 27284.072096,
+          "rssKiB": 27684,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27684
+        },
+        {
+          "pid": 414068,
+          "birth": "130057343",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 30037.17381,
+          "rssKiB": 2984,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2984
+        },
+        {
+          "pid": 414069,
+          "birth": "130057344",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 27783.923333000002,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414070,
+          "birth": "130057344",
+          "parent": 414069,
+          "group": 412192,
+          "observedAtMs": 27783.923333000002,
+          "rssKiB": 57188,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 57188
+        },
+        {
+          "pid": 414096,
+          "birth": "130057390",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 28034.409768,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414097,
+          "birth": "130057391",
+          "parent": 414096,
+          "group": 412192,
+          "observedAtMs": 28034.409768,
+          "rssKiB": 25200,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25200
+        },
+        {
+          "pid": 414108,
+          "birth": "130057408",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 28285.204126,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414109,
+          "birth": "130057408",
+          "parent": 414108,
+          "group": 412192,
+          "observedAtMs": 28285.204126,
+          "rssKiB": 47496,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 47496
+        },
+        {
+          "pid": 414125,
+          "birth": "130057442",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 28535.126679,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414132,
+          "birth": "130057454",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 28785.190223,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414133,
+          "birth": "130057455",
+          "parent": 414132,
+          "group": 412192,
+          "observedAtMs": 28785.190223,
+          "rssKiB": 51112,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 51112
+        },
+        {
+          "pid": 414160,
+          "birth": "130057492",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 29034.916115,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414189,
+          "birth": "130057536",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 29536.042977,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414190,
+          "birth": "130057537",
+          "parent": 414189,
+          "group": 412192,
+          "observedAtMs": 29536.042977,
+          "rssKiB": 35656,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35656
+        },
+        {
+          "pid": 414208,
+          "birth": "130057563",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 29786.404583,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414210,
+          "birth": "130057564",
+          "parent": 414208,
+          "group": 412192,
+          "observedAtMs": 29786.404583,
+          "rssKiB": 30972,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 30972
+        },
+        {
+          "pid": 414225,
+          "birth": "130057589",
+          "parent": 414068,
+          "group": 412192,
+          "observedAtMs": 30037.17381,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 414230,
+          "birth": "130057591",
+          "parent": 414225,
+          "group": 412192,
+          "observedAtMs": 30037.17381,
+          "rssKiB": 3072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3072
+        },
+        {
+          "pid": 414231,
+          "birth": "130057591",
+          "parent": 414230,
+          "group": 412192,
+          "observedAtMs": 30037.17381,
+          "rssKiB": 3852,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3852
+        },
+        {
+          "pid": 414272,
+          "birth": "130057619",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 32789.937631,
+          "rssKiB": 2996,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2996
+        },
+        {
+          "pid": 414273,
+          "birth": "130057620",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 30537.404618,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414274,
+          "birth": "130057621",
+          "parent": 414273,
+          "group": 412192,
+          "observedAtMs": 30537.404618,
+          "rssKiB": 57212,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 57212
+        },
+        {
+          "pid": 414290,
+          "birth": "130057666",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 30787.992644,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414292,
+          "birth": "130057667",
+          "parent": 414290,
+          "group": 412192,
+          "observedAtMs": 30787.992644,
+          "rssKiB": 24432,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 24432
+        },
+        {
+          "pid": 414329,
+          "birth": "130057692",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 31038.57964,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414439,
+          "birth": "130057713",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 31288.883085,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414442,
+          "birth": "130057714",
+          "parent": 414439,
+          "group": 412192,
+          "observedAtMs": 31288.883085,
+          "rssKiB": 32096,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32096
+        },
+        {
+          "pid": 414450,
+          "birth": "130057740",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 31538.965089,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414451,
+          "birth": "130057741",
+          "parent": 414450,
+          "group": 412192,
+          "observedAtMs": 31538.965089,
+          "rssKiB": 26300,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26300
+        },
+        {
+          "pid": 414462,
+          "birth": "130057765",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 31789.324454,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414463,
+          "birth": "130057766",
+          "parent": 414462,
+          "group": 412192,
+          "observedAtMs": 31789.324454,
+          "rssKiB": 26252,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26252
+        },
+        {
+          "pid": 414475,
+          "birth": "130057792",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 32039.087736,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414476,
+          "birth": "130057793",
+          "parent": 414475,
+          "group": 412192,
+          "observedAtMs": 32039.087736,
+          "rssKiB": 22628,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 22628
+        },
+        {
+          "pid": 414486,
+          "birth": "130057816",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 32288.679348,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414487,
+          "birth": "130057816",
+          "parent": 414486,
+          "group": 412192,
+          "observedAtMs": 32288.679348,
+          "rssKiB": 25884,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25884
+        },
+        {
+          "pid": 414501,
+          "birth": "130057860",
+          "parent": 414272,
+          "group": 412192,
+          "observedAtMs": 32789.937631,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 414506,
+          "birth": "130057862",
+          "parent": 414501,
+          "group": 412192,
+          "observedAtMs": 32789.937631,
+          "rssKiB": 3072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3072
+        },
+        {
+          "pid": 414507,
+          "birth": "130057862",
+          "parent": 414506,
+          "group": 412192,
+          "observedAtMs": 32789.937631,
+          "rssKiB": 3868,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3868
+        },
+        {
+          "pid": 414522,
+          "birth": "130057865",
+          "parent": 414507,
+          "group": 412192,
+          "observedAtMs": 32789.937631,
+          "rssKiB": 22528,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 22528
+        },
+        {
+          "pid": 414539,
+          "birth": "130057882",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 35292.357165999994,
+          "rssKiB": 3008,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3008
+        },
+        {
+          "pid": 414540,
+          "birth": "130057883",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 33039.899483999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414541,
+          "birth": "130057884",
+          "parent": 414540,
+          "group": 412192,
+          "observedAtMs": 33290.50436,
+          "rssKiB": 59360,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 59360
+        },
+        {
+          "pid": 414905,
+          "birth": "130057938",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 33541.371997999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414906,
+          "birth": "130057939",
+          "parent": 414905,
+          "group": 412192,
+          "observedAtMs": 33541.371997999995,
+          "rssKiB": 31300,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31300
+        },
+        {
+          "pid": 414917,
+          "birth": "130057962",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 33792.321664999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414918,
+          "birth": "130057963",
+          "parent": 414917,
+          "group": 412192,
+          "observedAtMs": 33792.321664999996,
+          "rssKiB": 33848,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33848
+        },
+        {
+          "pid": 414961,
+          "birth": "130057989",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 34042.053728,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414963,
+          "birth": "130057990",
+          "parent": 414961,
+          "group": 412192,
+          "observedAtMs": 34042.053728,
+          "rssKiB": 30340,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 30340
+        },
+        {
+          "pid": 414974,
+          "birth": "130058013",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 34292.060611,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414975,
+          "birth": "130058014",
+          "parent": 414974,
+          "group": 412192,
+          "observedAtMs": 34292.060611,
+          "rssKiB": 32328,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32328
+        },
+        {
+          "pid": 414987,
+          "birth": "130058042",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 34542.338515999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414988,
+          "birth": "130058043",
+          "parent": 414987,
+          "group": 412192,
+          "observedAtMs": 34542.338515999996,
+          "rssKiB": 23276,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23276
+        },
+        {
+          "pid": 414997,
+          "birth": "130058063",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 34792.130868,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 414998,
+          "birth": "130058064",
+          "parent": 414997,
+          "group": 412192,
+          "observedAtMs": 34792.130868,
+          "rssKiB": 32268,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32268
+        },
+        {
+          "pid": 415009,
+          "birth": "130058091",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 35041.673818999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415010,
+          "birth": "130058092",
+          "parent": 415009,
+          "group": 412192,
+          "observedAtMs": 35041.673818999996,
+          "rssKiB": 25060,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25060
+        },
+        {
+          "pid": 415022,
+          "birth": "130058117",
+          "parent": 414539,
+          "group": 412192,
+          "observedAtMs": 35292.357165999994,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 415060,
+          "birth": "130058165",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 40545.97225,
+          "rssKiB": 2996,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2996
+        },
+        {
+          "pid": 415061,
+          "birth": "130058165",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 35791.7449,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415062,
+          "birth": "130058166",
+          "parent": 415061,
+          "group": 412192,
+          "observedAtMs": 36292.133987999994,
+          "rssKiB": 66164,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 66164
+        },
+        {
+          "pid": 415113,
+          "birth": "130058261",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 36792.405026,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415114,
+          "birth": "130058262",
+          "parent": 415113,
+          "group": 412192,
+          "observedAtMs": 36792.405026,
+          "rssKiB": 39108,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 39108
+        },
+        {
+          "pid": 415122,
+          "birth": "130058286",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 37043.179323,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415123,
+          "birth": "130058287",
+          "parent": 415122,
+          "group": 412192,
+          "observedAtMs": 37043.179323,
+          "rssKiB": 36988,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 36988
+        },
+        {
+          "pid": 415164,
+          "birth": "130058312",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 37292.690453999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415181,
+          "birth": "130058313",
+          "parent": 415164,
+          "group": 412192,
+          "observedAtMs": 37292.690453999996,
+          "rssKiB": 32516,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32516
+        },
+        {
+          "pid": 415289,
+          "birth": "130058354",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 37793.432944,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415290,
+          "birth": "130058355",
+          "parent": 415289,
+          "group": 412192,
+          "observedAtMs": 37793.432944,
+          "rssKiB": 51852,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 51852
+        },
+        {
+          "pid": 415292,
+          "birth": "130058385",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 38043.957968999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415293,
+          "birth": "130058386",
+          "parent": 415292,
+          "group": 412192,
+          "observedAtMs": 38043.957968999996,
+          "rssKiB": 40752,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 40752
+        },
+        {
+          "pid": 415295,
+          "birth": "130058396",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 38294.235774,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415296,
+          "birth": "130058397",
+          "parent": 415295,
+          "group": 412192,
+          "observedAtMs": 39544.879602999994,
+          "rssKiB": 75372,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 75372
+        },
+        {
+          "pid": 415383,
+          "birth": "130058565",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 39795.418798,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415384,
+          "birth": "130058566",
+          "parent": 415383,
+          "group": 412192,
+          "observedAtMs": 39795.418798,
+          "rssKiB": 27984,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27984
+        },
+        {
+          "pid": 415390,
+          "birth": "130058587",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 40045.931734,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415391,
+          "birth": "130058588",
+          "parent": 415390,
+          "group": 412192,
+          "observedAtMs": 40045.931734,
+          "rssKiB": 34956,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34956
+        },
+        {
+          "pid": 415405,
+          "birth": "130058614",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 40295.772425999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415406,
+          "birth": "130058615",
+          "parent": 415405,
+          "group": 412192,
+          "observedAtMs": 40295.772425999996,
+          "rssKiB": 31404,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31404
+        },
+        {
+          "pid": 415411,
+          "birth": "130058632",
+          "parent": 415060,
+          "group": 412192,
+          "observedAtMs": 40545.97225,
+          "rssKiB": 4064,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4064
+        },
+        {
+          "pid": 415416,
+          "birth": "130058633",
+          "parent": 415411,
+          "group": 412192,
+          "observedAtMs": 40545.97225,
+          "rssKiB": 3072,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3072
+        },
+        {
+          "pid": 415417,
+          "birth": "130058633",
+          "parent": 415416,
+          "group": 412192,
+          "observedAtMs": 40545.97225,
+          "rssKiB": 3864,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3864
+        },
+        {
+          "pid": 415432,
+          "birth": "130058636",
+          "parent": 415417,
+          "group": 412192,
+          "observedAtMs": 40545.97225,
+          "rssKiB": 34480,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34480
+        },
+        {
+          "pid": 415452,
+          "birth": "130058683",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 45047.833503999995,
+          "rssKiB": 2972,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2972
+        },
+        {
+          "pid": 415453,
+          "birth": "130058683",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 41046.409239,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415454,
+          "birth": "130058684",
+          "parent": 415453,
+          "group": 412192,
+          "observedAtMs": 41546.801897,
+          "rssKiB": 67180,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 67180
+        },
+        {
+          "pid": 415510,
+          "birth": "130058811",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 42296.950827,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415511,
+          "birth": "130058812",
+          "parent": 415510,
+          "group": 412192,
+          "observedAtMs": 42296.950827,
+          "rssKiB": 41140,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 41140
+        },
+        {
+          "pid": 415514,
+          "birth": "130058828",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 42547.329351,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415515,
+          "birth": "130058828",
+          "parent": 415514,
+          "group": 412192,
+          "observedAtMs": 42547.329351,
+          "rssKiB": 51760,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 51760
+        },
+        {
+          "pid": 415518,
+          "birth": "130058865",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 42796.848072,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415519,
+          "birth": "130058866",
+          "parent": 415518,
+          "group": 412192,
+          "observedAtMs": 42796.848072,
+          "rssKiB": 28136,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 28136
+        },
+        {
+          "pid": 415521,
+          "birth": "130058875",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 43047.254046999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415522,
+          "birth": "130058876",
+          "parent": 415521,
+          "group": 412192,
+          "observedAtMs": 43047.254046999995,
+          "rssKiB": 54992,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 54992
+        },
+        {
+          "pid": 415554,
+          "birth": "130058918",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 43296.817837999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415571,
+          "birth": "130058919",
+          "parent": 415554,
+          "group": 412192,
+          "observedAtMs": 44547.866237999995,
+          "rssKiB": 74792,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 74792
+        },
+        {
+          "pid": 415604,
+          "birth": "130059060",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 44798.123422,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415605,
+          "birth": "130059061",
+          "parent": 415604,
+          "group": 412192,
+          "observedAtMs": 44798.123422,
+          "rssKiB": 44480,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 44480
+        },
+        {
+          "pid": 415615,
+          "birth": "130059089",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 45047.833503999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415616,
+          "birth": "130059090",
+          "parent": 415615,
+          "group": 412192,
+          "observedAtMs": 45047.833503999995,
+          "rssKiB": 32388,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32388
+        },
+        {
+          "pid": 415631,
+          "birth": "130059115",
+          "parent": 415452,
+          "group": 412192,
+          "observedAtMs": 45297.790077,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415632,
+          "birth": "130059116",
+          "parent": 415631,
+          "group": 412192,
+          "observedAtMs": 45297.790077,
+          "rssKiB": 28472,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 28472
+        },
+        {
+          "pid": 415672,
+          "birth": "130059149",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 48300.207812,
+          "rssKiB": 2988,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2988
+        },
+        {
+          "pid": 415673,
+          "birth": "130059150",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 45798.956148,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415674,
+          "birth": "130059151",
+          "parent": 415673,
+          "group": 412192,
+          "observedAtMs": 46049.275671999996,
+          "rssKiB": 62668,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 62668
+        },
+        {
+          "pid": 415688,
+          "birth": "130059213",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 46299.283605,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415689,
+          "birth": "130059213",
+          "parent": 415688,
+          "group": 412192,
+          "observedAtMs": 46299.283605,
+          "rssKiB": 34260,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34260
+        },
+        {
+          "pid": 415697,
+          "birth": "130059237",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 46549.302897999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415699,
+          "birth": "130059238",
+          "parent": 415697,
+          "group": 412192,
+          "observedAtMs": 46549.302897999994,
+          "rssKiB": 34724,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34724
+        },
+        {
+          "pid": 415709,
+          "birth": "130059265",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 46798.711478,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415710,
+          "birth": "130059266",
+          "parent": 415709,
+          "group": 412192,
+          "observedAtMs": 46798.711478,
+          "rssKiB": 28448,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 28448
+        },
+        {
+          "pid": 415717,
+          "birth": "130059287",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 47048.867532,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415718,
+          "birth": "130059288",
+          "parent": 415717,
+          "group": 412192,
+          "observedAtMs": 47048.867532,
+          "rssKiB": 34760,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 34760
+        },
+        {
+          "pid": 415720,
+          "birth": "130059296",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 47298.805655,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 415721,
+          "birth": "130059297",
+          "parent": 415720,
+          "group": 412192,
+          "observedAtMs": 47298.805655,
+          "rssKiB": 56484,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 56484
+        },
+        {
+          "pid": 416002,
+          "birth": "130059338",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 47549.513140999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416003,
+          "birth": "130059339",
+          "parent": 416002,
+          "group": 412192,
+          "observedAtMs": 47549.513140999996,
+          "rssKiB": 33348,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33348
+        },
+        {
+          "pid": 416041,
+          "birth": "130059366",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 47799.717344,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416042,
+          "birth": "130059367",
+          "parent": 416041,
+          "group": 412192,
+          "observedAtMs": 47799.717344,
+          "rssKiB": 26364,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26364
+        },
+        {
+          "pid": 416057,
+          "birth": "130059412",
+          "parent": 415672,
+          "group": 412192,
+          "observedAtMs": 48300.207812,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416058,
+          "birth": "130059413",
+          "parent": 416057,
+          "group": 412192,
+          "observedAtMs": 48300.207812,
+          "rssKiB": 38180,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 38180
+        },
+        {
+          "pid": 416093,
+          "birth": "130059436",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 48550.051993999994,
+          "rssKiB": 16308,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 16308
+        },
+        {
+          "pid": 416109,
+          "birth": "130059449",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 50302.067673,
+          "rssKiB": 2984,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2984
+        },
+        {
+          "pid": 416110,
+          "birth": "130059449",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 48800.420998999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416111,
+          "birth": "130059450",
+          "parent": 416110,
+          "group": 412192,
+          "observedAtMs": 48800.420998999994,
+          "rssKiB": 55952,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 55952
+        },
+        {
+          "pid": 416121,
+          "birth": "130059483",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 49051.035545,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416122,
+          "birth": "130059484",
+          "parent": 416121,
+          "group": 412192,
+          "observedAtMs": 49051.035545,
+          "rssKiB": 49772,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 49772
+        },
+        {
+          "pid": 416144,
+          "birth": "130059517",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 49300.944357,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416145,
+          "birth": "130059517",
+          "parent": 416144,
+          "group": 412192,
+          "observedAtMs": 49300.944357,
+          "rssKiB": 26144,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26144
+        },
+        {
+          "pid": 416154,
+          "birth": "130059542",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 49550.783408999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416155,
+          "birth": "130059543",
+          "parent": 416154,
+          "group": 412192,
+          "observedAtMs": 49550.783408999996,
+          "rssKiB": 25720,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25720
+        },
+        {
+          "pid": 416179,
+          "birth": "130059589",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 50052.185790999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416180,
+          "birth": "130059590",
+          "parent": 416179,
+          "group": 412192,
+          "observedAtMs": 50052.185790999996,
+          "rssKiB": 31624,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 31624
+        },
+        {
+          "pid": 416192,
+          "birth": "130059618",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 50302.067673,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416221,
+          "birth": "130059637",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 50551.668183999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416222,
+          "birth": "130059638",
+          "parent": 416221,
+          "group": 412192,
+          "observedAtMs": 50551.668183999995,
+          "rssKiB": 39264,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 39264
+        },
+        {
+          "pid": 416232,
+          "birth": "130059664",
+          "parent": 416109,
+          "group": 412192,
+          "observedAtMs": 50802.4065,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416233,
+          "birth": "130059665",
+          "parent": 416232,
+          "group": 412192,
+          "observedAtMs": 50802.4065,
+          "rssKiB": 33124,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 33124
+        },
+        {
+          "pid": 416274,
+          "birth": "130059695",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 51804.008488,
+          "rssKiB": 2992,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 2992
+        },
+        {
+          "pid": 416275,
+          "birth": "130059696",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 51303.4001,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416276,
+          "birth": "130059696",
+          "parent": 416275,
+          "group": 412192,
+          "observedAtMs": 51554.162586,
+          "rssKiB": 64420,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 64420
+        },
+        {
+          "pid": 416283,
+          "birth": "130059764",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 51804.008488,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416293,
+          "birth": "130059765",
+          "parent": 416283,
+          "group": 412192,
+          "observedAtMs": 51804.008488,
+          "rssKiB": 32500,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32500
+        },
+        {
+          "pid": 416312,
+          "birth": "130059789",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 52053.77357,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416313,
+          "birth": "130059790",
+          "parent": 416312,
+          "group": 412192,
+          "observedAtMs": 52053.77357,
+          "rssKiB": 32468,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32468
+        },
+        {
+          "pid": 416318,
+          "birth": "130059806",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 52303.895532999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416319,
+          "birth": "130059807",
+          "parent": 416318,
+          "group": 412192,
+          "observedAtMs": 52303.895532999995,
+          "rssKiB": 50872,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 50872
+        },
+        {
+          "pid": 416327,
+          "birth": "130059821",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 52553.659304999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416328,
+          "birth": "130059822",
+          "parent": 416327,
+          "group": 412192,
+          "observedAtMs": 52553.659304999994,
+          "rssKiB": 53436,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 53436
+        },
+        {
+          "pid": 416335,
+          "birth": "130059868",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 52804.438600999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416349,
+          "birth": "130059912",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 53306.226833999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416350,
+          "birth": "130059913",
+          "parent": 416349,
+          "group": 412192,
+          "observedAtMs": 53306.226833999994,
+          "rssKiB": 40328,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 40328
+        },
+        {
+          "pid": 416363,
+          "birth": "130059942",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 53556.225457,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416365,
+          "birth": "130059943",
+          "parent": 416363,
+          "group": 412192,
+          "observedAtMs": 53556.225457,
+          "rssKiB": 26944,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 26944
+        },
+        {
+          "pid": 416374,
+          "birth": "130059969",
+          "parent": 416274,
+          "group": 412192,
+          "observedAtMs": 53805.953868,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416405,
+          "birth": "130059993",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 54056.216422,
+          "rssKiB": 15296,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 15296
+        },
+        {
+          "pid": 416429,
+          "birth": "130060002",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 57059.219106,
+          "rssKiB": 3040,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3040
+        },
+        {
+          "pid": 416430,
+          "birth": "130060002",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 54305.830293,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416431,
+          "birth": "130060003",
+          "parent": 416430,
+          "group": 412192,
+          "observedAtMs": 54556.619789,
+          "rssKiB": 61356,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 61356
+        },
+        {
+          "pid": 416449,
+          "birth": "130060069",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 54807.204723999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416452,
+          "birth": "130060078",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 55056.714074999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416453,
+          "birth": "130060079",
+          "parent": 416452,
+          "group": 412192,
+          "observedAtMs": 55056.714074999996,
+          "rssKiB": 54776,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 54776
+        },
+        {
+          "pid": 416462,
+          "birth": "130060118",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 55307.41312,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416463,
+          "birth": "130060118",
+          "parent": 416462,
+          "group": 412192,
+          "observedAtMs": 55307.41312,
+          "rssKiB": 25720,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25720
+        },
+        {
+          "pid": 416469,
+          "birth": "130060135",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 55557.684193999994,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416470,
+          "birth": "130060136",
+          "parent": 416469,
+          "group": 412192,
+          "observedAtMs": 55557.684193999994,
+          "rssKiB": 49432,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 49432
+        },
+        {
+          "pid": 416479,
+          "birth": "130060179",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 56058.087780999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416480,
+          "birth": "130060180",
+          "parent": 416479,
+          "group": 412192,
+          "observedAtMs": 56058.087780999995,
+          "rssKiB": 52088,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 52088
+        },
+        {
+          "pid": 416488,
+          "birth": "130060218",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 56307.700622,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416489,
+          "birth": "130060219",
+          "parent": 416488,
+          "group": 412192,
+          "observedAtMs": 56307.700622,
+          "rssKiB": 23444,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23444
+        },
+        {
+          "pid": 416525,
+          "birth": "130060238",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 56557.744954999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416526,
+          "birth": "130060239",
+          "parent": 416525,
+          "group": 412192,
+          "observedAtMs": 56557.744954999995,
+          "rssKiB": 35052,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 35052
+        },
+        {
+          "pid": 416537,
+          "birth": "130060266",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 56808.529000999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416538,
+          "birth": "130060267",
+          "parent": 416537,
+          "group": 412192,
+          "observedAtMs": 56808.529000999995,
+          "rssKiB": 29836,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 29836
+        },
+        {
+          "pid": 416552,
+          "birth": "130060293",
+          "parent": 416429,
+          "group": 412192,
+          "observedAtMs": 57059.219106,
+          "rssKiB": 4080,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4080
+        },
+        {
+          "pid": 416557,
+          "birth": "130060294",
+          "parent": 416552,
+          "group": 412192,
+          "observedAtMs": 57059.219106,
+          "rssKiB": 3076,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3076
+        },
+        {
+          "pid": 416558,
+          "birth": "130060294",
+          "parent": 416557,
+          "group": 412192,
+          "observedAtMs": 57059.219106,
+          "rssKiB": 3896,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3896
+        },
+        {
+          "pid": 416581,
+          "birth": "130060311",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 57309.619131,
+          "rssKiB": 15384,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 15384
+        },
+        {
+          "pid": 416597,
+          "birth": "130060342",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 58062.177489999995,
+          "rssKiB": 3012,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 3012
+        },
+        {
+          "pid": 416598,
+          "birth": "130060343",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 57560.629327999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416599,
+          "birth": "130060344",
+          "parent": 416598,
+          "group": 412192,
+          "observedAtMs": 57811.370224,
+          "rssKiB": 58148,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 58148
+        },
+        {
+          "pid": 416610,
+          "birth": "130060390",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 58062.177489999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416611,
+          "birth": "130060391",
+          "parent": 416610,
+          "group": 412192,
+          "observedAtMs": 58062.177489999995,
+          "rssKiB": 32172,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32172
+        },
+        {
+          "pid": 416621,
+          "birth": "130060415",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 58311.62977,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416622,
+          "birth": "130060416",
+          "parent": 416621,
+          "group": 412192,
+          "observedAtMs": 58311.62977,
+          "rssKiB": 32392,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 32392
+        },
+        {
+          "pid": 416637,
+          "birth": "130060438",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 58561.782423,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416638,
+          "birth": "130060439",
+          "parent": 416637,
+          "group": 412192,
+          "observedAtMs": 58561.782423,
+          "rssKiB": 40392,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 40392
+        },
+        {
+          "pid": 416649,
+          "birth": "130060469",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 58812.489678,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416650,
+          "birth": "130060469",
+          "parent": 416649,
+          "group": 412192,
+          "observedAtMs": 58812.489678,
+          "rssKiB": 25096,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 25096
+        },
+        {
+          "pid": 416660,
+          "birth": "130060492",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 59063.424054999996,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416661,
+          "birth": "130060493",
+          "parent": 416660,
+          "group": 412192,
+          "observedAtMs": 59063.424054999996,
+          "rssKiB": 27680,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 27680
+        },
+        {
+          "pid": 416675,
+          "birth": "130060509",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 59314.094229999995,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416676,
+          "birth": "130060510",
+          "parent": 416675,
+          "group": 412192,
+          "observedAtMs": 59314.094229999995,
+          "rssKiB": 49828,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 49828
+        },
+        {
+          "pid": 416688,
+          "birth": "130060544",
+          "parent": 416597,
+          "group": 412192,
+          "observedAtMs": 59563.765121,
+          "rssKiB": 4020,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4020
+        },
+        {
+          "pid": 416689,
+          "birth": "130060545",
+          "parent": 416688,
+          "group": 412192,
+          "observedAtMs": 59563.765121,
+          "rssKiB": 23248,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23248
+        },
+        {
+          "pid": 416730,
+          "birth": "130060595",
+          "parent": 412192,
+          "group": 412192,
+          "observedAtMs": 60065.238643,
+          "rssKiB": 14708,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 14708
+        },
+        {
+          "pid": 416781,
+          "birth": "130060642",
+          "parent": 412100,
+          "group": 412010,
+          "observedAtMs": 60816.535396,
+          "rssKiB": 24780,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 24780
+        },
+        {
+          "pid": 416834,
+          "birth": "130060690",
+          "parent": 412100,
+          "group": 412010,
+          "observedAtMs": 62319.413643,
+          "rssKiB": 299000,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 299000
+        },
+        {
+          "pid": 416868,
+          "birth": "130060915",
+          "parent": 412100,
+          "group": 412010,
+          "observedAtMs": 63570.492118999995,
+          "rssKiB": 68128,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 68128
+        },
+        {
+          "pid": 416881,
+          "birth": "130060927",
+          "parent": 416868,
+          "group": 412010,
+          "observedAtMs": 64321.188688999995,
+          "rssKiB": 77668,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 77668
+        },
+        {
+          "pid": 416892,
+          "birth": "130060933",
+          "parent": 416881,
+          "group": 412010,
+          "observedAtMs": 64070.821415,
+          "rssKiB": 185692,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 185692
+        },
+        {
+          "pid": 416957,
+          "birth": "130061032",
+          "parent": 412010,
+          "group": 412010,
+          "observedAtMs": 65321.949670999995,
+          "rssKiB": 36600,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 36600
+        },
+        {
+          "pid": 416959,
+          "birth": "130061036",
+          "parent": 416957,
+          "group": 412010,
+          "observedAtMs": 64570.802099,
+          "rssKiB": 15016,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 15016
+        },
+        {
+          "pid": 416987,
+          "birth": "130061135",
+          "parent": 412010,
+          "group": 412010,
+          "observedAtMs": 65823.324382,
+          "rssKiB": 22176,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 22176
+        }
+      ],
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 56590416,
+      "minimumScratchFreeBytes": 66364002304,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "/home/jgoppert/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    }
+  },
+  "comparison": {
+    "native_candidates": 15,
+    "models_compared": 14,
+    "shared_channels": 445,
+    "high": 14,
+    "bad_channels": 0,
+    "severe_channels": 0,
+    "missing_traces": 0,
+    "policy_excluded": {
+      "Modelica.Electrical.Digital.Examples.Counter": {
+        "kind": "policy_excluded",
+        "detail": "reference_failure: The default OMC reference (stopTime=100, 500 output intervals) reports a state event at t=0.4 on all eight integer(delay(xr, delayTime)) crossings of the flip-flop transport delays, although every delay source has been constant since t=0.001 and the next input change is the clock edge at t=0.5. From that event every flip-flop output is 'X' to the end. The OMC result depends on the output grid, not on the model: the same OMC executable with stopTime=10, 20, or 50, or with stopTime=100 and 1000 or 5000 output intervals, counts exactly as Counter3 and as this counter with n=3 do. The Rumoca trace agrees with the 1000- and 5000-interval OMC runs on every shared channel. This is a reference-generation failure, not strict-high credit."
+      }
+    },
+    "trace_nonidentifiable": 0,
+    "omc_reexecutions": 0,
+    "guardian": {
+      "command": [
+        "bash",
+        "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/run-omc-comparison.sh"
+      ],
+      "log": "/home/jgoppert/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012/omc-comparison.log",
+      "elapsedMs": 5357.745207,
+      "peakRssKiB": 78204,
+      "peakSwapKiB": 0,
+      "peakResidentPlusSwapKiB": 78204,
+      "peakMemoryObservation": {
+        "observedAtMs": 3757.177188,
+        "rssKiB": 78204,
+        "swapKiB": 0,
+        "residentPlusSwapKiB": 78204,
+        "processes": [
+          {
+            "pid": 421976,
+            "birth": "130074059",
+            "parent": 421969,
+            "group": 421976,
+            "observedAtMs": 3757.177188,
+            "rssKiB": 4172,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 4172
+          },
+          {
+            "pid": 422112,
+            "birth": "130074235",
+            "parent": 421976,
+            "group": 421976,
+            "observedAtMs": 3757.177188,
+            "rssKiB": 50528,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 50528
+          },
+          {
+            "pid": 422296,
+            "birth": "130074409",
+            "parent": 422112,
+            "group": 421976,
+            "observedAtMs": 3757.177188,
+            "rssKiB": 23504,
+            "swapKiB": 0,
+            "residentPlusSwapKiB": 23504
+          }
+        ]
+      },
+      "memoryLimitObservation": null,
+      "processMemoryPeaks": [
+        {
+          "pid": 421976,
+          "birth": "130074059",
+          "parent": 421969,
+          "group": 421976,
+          "observedAtMs": 1753.6440069999999,
+          "rssKiB": 4172,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 4172
+        },
+        {
+          "pid": 421979,
+          "birth": "130074060",
+          "parent": 421976,
+          "group": 421976,
+          "observedAtMs": 1253.532491,
+          "rssKiB": 37268,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 37268
+        },
+        {
+          "pid": 421982,
+          "birth": "130074065",
+          "parent": 421979,
+          "group": 421976,
+          "observedAtMs": 252.86694100000003,
+          "rssKiB": 14948,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 14948
+        },
+        {
+          "pid": 422097,
+          "birth": "130074191",
+          "parent": 421976,
+          "group": 421976,
+          "observedAtMs": 1503.96563,
+          "rssKiB": 21580,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 21580
+        },
+        {
+          "pid": 422112,
+          "birth": "130074235",
+          "parent": 421976,
+          "group": 421976,
+          "observedAtMs": 3506.832607,
+          "rssKiB": 50528,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 50528
+        },
+        {
+          "pid": 422296,
+          "birth": "130074409",
+          "parent": 422112,
+          "group": 421976,
+          "observedAtMs": 3757.177188,
+          "rssKiB": 23504,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 23504
+        },
+        {
+          "pid": 422353,
+          "birth": "130074445",
+          "parent": 421976,
+          "group": 421976,
+          "observedAtMs": 4759.951997,
+          "rssKiB": 36492,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 36492
+        },
+        {
+          "pid": 422357,
+          "birth": "130074450",
+          "parent": 422353,
+          "group": 421976,
+          "observedAtMs": 4008.18723,
+          "rssKiB": 14776,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 14776
+        },
+        {
+          "pid": 422400,
+          "birth": "130074552",
+          "parent": 421976,
+          "group": 421976,
+          "observedAtMs": 5259.87572,
+          "rssKiB": 22060,
+          "swapKiB": 0,
+          "residentPlusSwapKiB": 22060
+        }
+      ],
+      "memoryLimitScope": "aggregate resident RSS plus swapped private pages",
+      "minimumAvailableKiB": 52897676,
+      "minimumScratchFreeBytes": 66605625344,
+      "scratchFreeFloorMiB": 8192,
+      "cacheDirectory": "/home/jgoppert/scratch/rumoca/workshop427-staticpie-20261012/target",
+      "peakCacheBytes": 5257588736,
+      "cacheLimitMiB": 8192,
+      "rssLimitMiB": 4096,
+      "availableFloorMiB": 16384,
+      "rssScope": "owned process group and identified descendants, including detached browser groups",
+      "secondsLimit": 600,
+      "signal": null,
+      "exitCode": 0
+    }
+  },
+  "delta": {
+    "native_statuses_and_error_strings_identical": true,
+    "high_model_set_identical": true,
+    "per_model_shared_channel_counts_identical": true,
+    "policy_exclusion_identical": true,
+    "new_failures": 0,
+    "recovered_failures": 0,
+    "performance_delta": "unmeasured: historical msl-fast/four workers; current dev optimized/one worker",
+    "source_library_byte_comparison": "historical directory retired; identical committed corpus pin/roster and library version retained"
+  },
+  "instrumented_run": {
+    "canonical_canary": false,
+    "models": 20,
+    "sim_ok": 13,
+    "additional_artifact_write_timeouts": [
+      "Modelica.Electrical.Digital.Examples.Counter",
+      "Modelica.Electrical.Digital.Examples.FullAdder"
+    ],
+    "cause": "harness setup emit_json=true; canonical requests require false; runtime unreached for those two",
+    "not_semantic_regression_credit": true
+  },
+  "setup_only_attempts": {
+    "omc_missing_msl_stage": "zero models; immutable receipt retained",
+    "omc_missing_services_stage": "zero models; immutable receipt retained",
+    "initial_fresh_omc_comparison": "all20 OMC attempted; zero comparisons due absent msl_results.json carrier, parity unmeasured; exact worker records supplied to separate cached comparison carrier"
+  },
+  "models": [
+    {
+      "model": "Modelica.Blocks.Examples.BooleanNetwork1",
+      "native_status": "ToDae",
+      "error": "Modelica.Blocks.Examples.BooleanNetwork1 failed in ToDae: unsupported Flat semantic owner `function return`: in function `Modelica.Math.BooleanVectors.firstTrueIndex`: a non-guarded nested return requires a checked control-flow owner",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "native_status": "Flatten",
+      "error": "Modelica.Blocks.Examples.Noise.AutomaticSeed failed in Flatten: unordered foreign library state: `Modelica.Math.Random.Utilities.initializeImpureRandom` reaches library state from an equation or attribute, where the order of its state accesses is unspecified",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 10
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 10
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 5
+    },
+    {
+      "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 26
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 21
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 45
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+      "native_status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE structural proof failed: structurally singular system: 57 matched out of 58 equations and 58 unknowns",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 23
+    },
+    {
+      "model": "Modelica.Electrical.Digital.Examples.Counter",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "policy_excluded",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Electrical.Digital.Examples.FullAdder",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 194
+    },
+    {
+      "model": "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+      "native_status": "sim_solver_fail",
+      "error": "solve-IR evaluation failed: [EL005] DAE system is not computable: affine derivative coefficient is not compile-time numeric",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 3
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 46
+    },
+    {
+      "model": "Modelica.Mechanics.Rotational.Examples.Friction",
+      "native_status": "ToDae",
+      "error": "Modelica.Mechanics.Rotational.Examples.Friction failed in ToDae: unbalanced model: 104 equations, 102 unknowns (balance = 2); unknowns[state=12 algebraic=71 output=9 discrete_real=0 discrete_value=10] equations[continuous=94 discrete_real=0 b1c_definition=10]",
+      "comparison": "native_failure",
+      "channels": null
+    },
+    {
+      "model": "Modelica.StateGraph.Examples.ShowCompositeStep",
+      "native_status": "sim_ok",
+      "error": null,
+      "comparison": "high",
+      "channels": 53
+    }
+  ],
+  "bindings": {
+    "recipe.json": {
+      "sha256": "205b1f2b2fa6bd356f43f78bbccfed8e8e384411cc5d110da047ebb149278fb5",
+      "bytes": 5003
+    },
+    "outcomes.json": {
+      "sha256": "87d3e6bebdd9300e2da12d4c4e4cfefc0f28b391c598fa765035b49321e6234c",
+      "bytes": 46676
+    },
+    "native-delta.json": {
+      "sha256": "71a42102e3d871a5259d21e17a1a8cbd74bf3f78fc3b5f5860d5d0b53850acc5",
+      "bytes": 8381
+    },
+    "fixed20.log": {
+      "sha256": "2cef06e2ce57220baae5a2549a5ae034e54f735272d8173c19a44d31e7058629",
+      "bytes": 36411
+    },
+    "fixed20.guardian.json": {
+      "sha256": "d69919e82412be80c1688a3b9c45d4750ca11d80928506c12d59a236c9b1e033",
+      "bytes": 2501
+    },
+    "source-before.json": {
+      "sha256": "f5eb3d499374c619b07bdc528dd40ba50b35f89c5bc2f876d516f92698a84f05",
+      "bytes": 643642
+    },
+    "library-before.json": {
+      "sha256": "4a3741a36a6bd22a3fb40aa624c1a22d1624318c55da3e95a074bf401e257b8d",
+      "bytes": 754793
+    },
+    "services-before.json": {
+      "sha256": "027299110067f69ee6ba3891b705dc23547beef8390c4d17d416e138f04b76aa",
+      "bytes": 617086
+    },
+    "canonical-request-field-proof.json": {
+      "sha256": "44d796aed5096a7cba0a35df1bd4d893984b90306b38587ba5ac1b5e09a2d0b2",
+      "bytes": 8017
+    },
+    "guards-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-omc-comparison-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "guards-omc-comparison-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "finite-trace-inventory.json": {
+      "sha256": "ce514b31edeaa9b8e7bb66142bc4c34a70f1e5af8bb023c6bcd45d14e8f1bf5a",
+      "bytes": 2741
+    },
+    "omc-recipe.json": {
+      "sha256": "694871080040ed3b07ce16c456b8ffd31a9b63c28cdf22eb7e09679294741623",
+      "bytes": 1098
+    },
+    "omc.log": {
+      "sha256": "823ea7a2e160120f04c1d5071bf687dc788806fe571730ba68fb7e145b77e685",
+      "bytes": 212
+    },
+    "omc.guardian.json": {
+      "sha256": "aef8b80fa09fc284ac2ed3fd4036b2fcc304032e1a21f2d9cdc3189657ebe771",
+      "bytes": 2188
+    },
+    "omc-staged-recipe.json": {
+      "sha256": "233878cf3490658c38874df3ad33ac442c2a63561f6676c39a213b37c2aa6e3c",
+      "bytes": 1702
+    },
+    "omc-staged.log": {
+      "sha256": "9646b0593496a2c8c076956c9df8d2de157ce459e165f093a319401f2707edcd",
+      "bytes": 891
+    },
+    "omc-staged.guardian.json": {
+      "sha256": "8ca3e0808828868af553a0433c4c42a7bba75240acfaddf6dd0353f2c7ca1bb1",
+      "bytes": 2160
+    },
+    "omc-fully-staged-recipe.json": {
+      "sha256": "e0d2d7918e67e03565e449663061590b7ea4124f485faf04a100dae8f513e63a",
+      "bytes": 2643
+    },
+    "omc-fully-staged.log": {
+      "sha256": "3a443cc946fab92f5850dfc3138382858fd78160e25b5ffada5e57f851889e27",
+      "bytes": 2027
+    },
+    "omc-fully-staged.guardian.json": {
+      "sha256": "43db15c0806a5ded490405dbccbd2e84cba1fa8bfe24efbec8a78cd9b823e600",
+      "bytes": 57754
+    },
+    "omc_simulation_reference.json": {
+      "sha256": "e383d256e7355d823c000b0f71de171f262841d0603f0dfc7527900e434a30e5",
+      "bytes": 42160
+    },
+    "omc-comparison-recipe.json": {
+      "sha256": "3ca469e7e673f9660cbcefbdf7bee76bf0f586375cc87ade0fc6bee304f6c63a",
+      "bytes": 1041
+    },
+    "omc-comparison.log": {
+      "sha256": "8dfa1b95023301a0218b7b0a4e9174df62a7449cb011307b97cce4d97add56a0",
+      "bytes": 2391
+    },
+    "omc-comparison.guardian.json": {
+      "sha256": "02149bc039fa8071808e5a33b4ed60c816c8fcf3c92f34d97ae34f3dd01ba106",
+      "bytes": 2748
+    },
+    "comparison/msl_results.json": {
+      "sha256": "ec04ca8409036d7512ce8fb669035bd57f348479c28254a394a6d8e38aaef2b3",
+      "bytes": 43161
+    },
+    "comparison/sim_trace_comparison.json": {
+      "sha256": "a6933b7000cd8d338a9bdc342d803d97b112482ee3bbb7ab44b84853be48837c",
+      "bytes": 193125
+    },
+    "comparison/omc_simulation_reference.json": {
+      "sha256": "d345a50581a6f833fe3a89131435ba2ab892818d566a7f95b7fe9b3ea2a98232",
+      "bytes": 37181
+    },
+    "instrumented/recipe.json": {
+      "sha256": "9cb84268704b7658ea32c5f5bf1baed22206eba9e34f4ae54c9bd5c0ff56cf46",
+      "bytes": 4077
+    },
+    "instrumented/outcomes.json": {
+      "sha256": "1cc730c98ccee4c162d85ffbcef4283376d4fdac84f225494dbcb0bb5e4a3ffb",
+      "bytes": 82977
+    },
+    "instrumented/fixed20.log": {
+      "sha256": "ba63c2c322fda8c071a01effe63b468543320b8cfea5a49da3f42c5c4e5925a4",
+      "bytes": 77157
+    },
+    "instrumented/fixed20.guardian.json": {
+      "sha256": "7cf1bc30c1c12b6e4639ed413f6241c5e6e4c9c324211d81e27bbe89d6d66e87",
+      "bytes": 10048
+    },
+    "instrumented/guards-before.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "instrumented/guards-after.json": {
+      "sha256": "3c84d5c4d2636b089b4c1ca78ea5120c5261f4ca4a0aab8bf006323a05d6ed04",
+      "bytes": 122
+    },
+    "instrumented/artifacts/sha256.txt": {
+      "sha256": "65423ec1520183372ad4b89ef0736a7b724973ac5302377fd23e67f154cfa150",
+      "bytes": 308
+    }
+  },
+  "raw_paths": {
+    "canonical": "$HOME/scratch/rumoca/pr427-fixed20-canonical-bd102-20261012",
+    "instrumented": "$HOME/scratch/rumoca/pr427-fixed20-bd102-20261012"
+  }
+}
