@@ -3,11 +3,15 @@ use super::*;
 
 fn assert_value(source: &str, model: &str, cases: &[(f64, f64)]) {
     let compiled = compile(source, model);
+    assert_dae_value(&compiled.dae, model, cases);
+}
+
+fn assert_dae_value(dae: &rumoca_ir_dae::Dae, model: &str, cases: &[(f64, f64)]) {
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         for &(input, expected) in cases {
             let mut opts = options(policy);
             opts.initial_inputs = vec![("k".into(), input)];
-            let result = simulate_dae(&compiled.dae, &opts)
+            let result = simulate_dae(dae, &opts)
                 .unwrap_or_else(|error| panic!("{model}/{policy:?}/k={input}: {error:?}"));
             assert_eq!(last(&result, "y"), expected, "{model}/{policy:?}/k={input}");
         }
@@ -77,16 +81,30 @@ fn scalar_boolean_index_of_shape_one_remains_a_scalar_value() {
 fn ordinary_model_boolean_value_issues_guarded_arms_and_replays() {
     let source = "model ModelBooleanValue
  input Integer k(start=4);
- Real a[3]={1,2,9};
+ Real a[3](start={1,2,9}, each fixed=true);
  Real y;
  equation
+ der(a)=zeros(3);
  y=if k<=3 and a[k]>5 then 1 else 0;
 end ModelBooleanValue;";
     let compiled = compile(source, "ModelBooleanValue");
     let json = serde_json::to_vec(&compiled.dae).unwrap();
     let replayed: rumoca_ir_dae::Dae = serde_json::from_slice(&json).unwrap();
     assert_eq!(json, serde_json::to_vec(&replayed).unwrap());
-    assert_value(source, "ModelBooleanValue", &[(4., 0.), (3., 1.), (2., 0.)]);
+    for (label, dae) in [("source", &compiled.dae), ("JSON replay", &replayed)] {
+        dae.inspect(|view| {
+            assert!(view.model_conditional_count() >= 2);
+            assert!(
+                (0..view.root_count()).any(|ordinal| {
+                    let root = view.root(view.root_id(ordinal).unwrap()).unwrap();
+                    let expression = view.relation(root.relation()).unwrap().expression();
+                    view.model_activation_guard(expression).is_some()
+                }),
+                "the actual RHS state relation retains its issued arm"
+            );
+        });
+        assert_dae_value(dae, label, &[(4., 0.), (3., 1.), (2., 0.)]);
+    }
 }
 
 #[test]
