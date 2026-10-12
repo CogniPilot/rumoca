@@ -177,7 +177,7 @@ fn eval_flat_logical(
     }
 }
 
-fn logical_value_determines_result(op: &OpBinary, value: bool) -> bool {
+pub(super) fn logical_value_determines_result(op: &OpBinary, value: bool) -> bool {
     matches!((op, value), (OpBinary::And, false) | (OpBinary::Or, true))
 }
 

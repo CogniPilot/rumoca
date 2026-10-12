@@ -1390,6 +1390,11 @@ fn eval_binary(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let lhs_val = eval_expr_in_function(lhs, env, eval)?;
+    if let Value::Bool(value) = &lhs_val
+        && super::expr_eval::logical_value_determines_result(op, *value)
+    {
+        return Ok(Value::Bool(*value));
+    }
     let rhs_val = eval_expr_in_function(rhs, env, eval)?;
     super::operators::eval_binary_op(op, &lhs_val, &rhs_val, eval.span)
 }
