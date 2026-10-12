@@ -108,11 +108,12 @@ fn issue_403_constant_selected_and_independent_indices_still_fault() {
         Value::Array(vec![Value::Real(1.), Value::Real(2.), Value::Real(9.)]),
     );
     context.add_parameter("k", Value::Integer(4));
-    let independent = binary(
-        rumoca_core::OpBinary::Add,
-        call_guarded(4),
-        indexed("a", "k"),
-    );
+    let independent = Expression::Binary {
+        op: rumoca_core::OpBinary::Add,
+        lhs: Box::new(call_guarded(4)),
+        rhs: Box::new(indexed("a", "k")),
+        span: test_span(),
+    };
     assert!(matches!(
         crate::constant::eval_expr(&independent, &context),
         Err(EvalError::IndexOutOfBounds {
