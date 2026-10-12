@@ -314,3 +314,59 @@ fn scalar_integer_payload_native_unary_checks_minimum_and_asymmetric_result_doma
         &[(&[2], None)],
     );
 }
+
+#[test]
+fn scalar_integer_payload_native_modulo_checks_signed_extremes_and_domains() {
+    arithmetic_cases(
+        SolveIntegerDomain::FULL,
+        Arithmetic::Binary(SolveBinaryOperator::IntegerModulo),
+        &[
+            (&[8, 3], Some(2)),
+            (&[-8, 3], Some(1)),
+            (&[8, -3], Some(-1)),
+            (&[-8, -3], Some(-2)),
+            (&[0, -3], Some(0)),
+            (&[9_007_199_254_740_993, 7], Some(5)),
+            (&[i64::MIN, -1], Some(0)),
+            (&[i64::MIN, 7], Some(6)),
+            (&[i64::MIN, i64::MAX], Some(i64::MAX - 1)),
+            (&[i64::MAX, i64::MIN], Some(-1)),
+            (&[i64::MIN, i64::MIN], Some(0)),
+            (&[i64::MAX, 0], None),
+            (&[i64::MIN, 0], None),
+        ],
+    );
+    arithmetic_cases(
+        SolveIntegerDomain::construct(-10, -1).unwrap(),
+        Arithmetic::Binary(SolveBinaryOperator::IntegerModulo),
+        &[(&[-8, -5], Some(-3)), (&[-10, -5], None)],
+    );
+}
+
+#[test]
+fn scalar_integer_payload_native_remainder_checks_signed_extremes_and_domains() {
+    arithmetic_cases(
+        SolveIntegerDomain::FULL,
+        Arithmetic::Binary(SolveBinaryOperator::IntegerRemainder),
+        &[
+            (&[8, 3], Some(2)),
+            (&[-8, 3], Some(-2)),
+            (&[8, -3], Some(2)),
+            (&[-8, -3], Some(-2)),
+            (&[0, -3], Some(0)),
+            (&[9_007_199_254_740_993, 7], Some(5)),
+            (&[i64::MIN, -1], Some(0)),
+            (&[i64::MIN, 7], Some(-1)),
+            (&[i64::MIN, i64::MAX], Some(-1)),
+            (&[i64::MAX, i64::MIN], Some(i64::MAX)),
+            (&[i64::MIN, i64::MIN], Some(0)),
+            (&[i64::MAX, 0], None),
+            (&[i64::MIN, 0], None),
+        ],
+    );
+    arithmetic_cases(
+        SolveIntegerDomain::construct(-10, -1).unwrap(),
+        Arithmetic::Binary(SolveBinaryOperator::IntegerRemainder),
+        &[(&[-8, -5], Some(-3)), (&[-10, -5], None)],
+    );
+}
