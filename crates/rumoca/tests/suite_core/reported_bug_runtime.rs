@@ -59,25 +59,35 @@ fn last(result: &SimResult, name: &str) -> f64 {
 }
 
 #[test]
-fn issue_403_boolean_operand_order_is_a_profile_observation() {
-    // MLS §3.3 permits short-circuiting; only an if arm guarantees protection.
+fn issue_403_original_scalar_boolean_guard_short_circuits() {
     let compiled = compile(GUARDED, "GuardedOperands");
     for policy in [SimExecutionPolicy::Interpreter, SimExecutionPolicy::Auto] {
         for (index, expected) in [(3.0, 1.0), (4.0, 0.0)] {
             let mut opts = options(policy);
             opts.initial_inputs = vec![("k".into(), index)];
-            match simulate_dae(&compiled.dae, &opts) {
-                Ok(result) => {
-                    assert_eq!(last(&result, "y"), expected, "{policy:?}, k={index}");
-                    eprintln!("Boolean profile {policy:?}, k={index}: value {expected}");
-                }
-                Err(error) if index == 4.0 => {
-                    eprintln!("Boolean profile {policy:?}: eager inactive operand {error:?}");
-                    assert_index_fault(error);
-                }
-                Err(error) => panic!("in-bounds operand {policy:?}: {error:?}"),
-            }
+            let result = simulate_dae(&compiled.dae, &opts)
+                .unwrap_or_else(|error| panic!("original guard {policy:?}, k={index}: {error:?}"));
+            assert_eq!(last(&result, "y"), expected, "{policy:?}, k={index}");
         }
+    }
+}
+
+#[test]
+fn issue_403_original_guard_executes_natively_without_fallback() {
+    let compiled = compile(GUARDED, "GuardedOperands");
+    let opts = options(SimExecutionPolicy::Auto);
+    let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts).unwrap();
+    let _calls = rumoca_exec_cranelift::compile_pure_call_table(&lowered.pure_calls)
+        .expect("the actual guarded function has a native helper");
+    let mut session = SimulationSession::new(&compiled.dae, opts).expect("k=4 skips invalid RHS");
+    for (step, index, expected) in [(1, 3.0, 1.0), (2, 4.0, 0.0), (3, 2.0, 0.0)] {
+        session.set_input("k", index).unwrap();
+        session.advance_to(f64::from(step) / 10.0).unwrap();
+        assert_eq!(session.state().unwrap().values["y"], expected);
+        let receipt = session.execution_receipt();
+        assert_eq!(receipt.engine, SimExecutionEngine::Cranelift, "{receipt:?}");
+        assert_eq!(receipt.refusal, None, "{receipt:?}");
+        assert!(receipt.declined.is_empty(), "{receipt:?}");
     }
 }
 

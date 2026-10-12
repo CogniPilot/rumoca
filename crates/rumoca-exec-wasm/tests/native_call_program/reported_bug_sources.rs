@@ -138,17 +138,17 @@ impl SourceProgram {
 }
 
 #[test]
-fn issue_403_original_boolean_profile_preserves_permitted_eager_faults() {
+fn issue_403_original_scalar_boolean_guard_short_circuits_in_wasm() {
     let mut program = SourceProgram::new(GUARDED, "GuardedOperands");
     let (status, values, _) = program.run(3);
     assert_eq!(status, 0);
     assert_eq!(program.real_output(&values), 1.);
     let (status, values, _) = program.run(4);
-    if status == 0 {
-        assert_eq!(program.real_output(&values), 0.);
-    } else {
-        program.fault(status, TypedCallFaultKind::IndexBounds);
-    }
+    assert_eq!(
+        status, 0,
+        "the inactive original a[4] access must not execute"
+    );
+    assert_eq!(program.real_output(&values), 0.);
 }
 
 #[test]
