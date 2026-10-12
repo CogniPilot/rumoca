@@ -37,7 +37,7 @@ fn family_model(binder_read: bool) -> dae::Dae {
             ))
         })?;
         let body = model.expressions(|expressions| {
-            let mut target = expressions
+            let target = expressions
                 .at(at)
                 .coordinate(dae::CoordinateInput::Algebraic(target))?;
             let mut derivative = expressions
@@ -49,8 +49,8 @@ fn family_model(binder_read: bool) -> dae::Dae {
                     expression: index,
                     provenance: at,
                 };
-                target = expressions.at(at).index(target, [subscript.clone()])?;
                 derivative = expressions.at(at).index(derivative, [subscript])?;
+                derivative = expressions.at(at).array([derivative, derivative])?;
             }
             expressions
                 .at(at)
@@ -81,11 +81,7 @@ fn matched_sources<'dae>(
             state,
             state_scalar: scalar,
             expression: body,
-            expression_scalar: if view.expression(body).unwrap().binder_domain().is_some() {
-                0
-            } else {
-                scalar
-            },
+            expression_scalar: scalar,
             domain_point: Some((family.domain(), vec![i64::try_from(scalar).unwrap() + 1])),
         })
         .collect()
