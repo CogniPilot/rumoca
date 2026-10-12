@@ -70,9 +70,11 @@ fn reduce_step<'program>(
         },
         |builder, captures, outputs| reduce_pair(builder, captures, outputs, minimum, provenance),
     )?;
-    for (output, value) in outputs.iter().zip(values) {
-        builder.store(*output, value, provenance)?;
-    }
+    let [primal, tangent] = values.as_slice() else {
+        return Err(SolveProgramConstructionError::InvalidRegion { provenance });
+    };
+    builder.store(outputs[0], *primal, provenance)?;
+    builder.store(outputs[1], *tangent, provenance)?;
     let next_pass = builder.constant(SolveValue::boolean(false), provenance)?;
     builder.store(outputs[2], next_pass, provenance)
 }

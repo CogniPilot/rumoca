@@ -6,7 +6,9 @@
 //! lowering instead of folding at translation.
 
 use rumoca::Compiler;
-use rumoca_ir_solve::{LinearOp, LinearOpSliceKind, SolveVisitor};
+use rumoca_ir_solve::{
+    LinearOp, LinearOpSliceKind, SolveModel, SolveOperation, SolveVisitor, TypedProgram,
+};
 use rumoca_sim::{SimOptions, simulate_dae};
 
 const MODELS: &str = r#"
@@ -309,8 +311,48 @@ impl SolveVisitor for FoldCensus {
     }
 }
 
+fn assert_typed_region(
+    model: &SolveModel,
+    census: &FoldCensus,
+    predicate: fn(&SolveOperation) -> bool,
+) {
+    assert!(census.typed_calls > 0, "the call uses its checked owner");
+    assert_eq!(
+        census.continued_folds, 0,
+        "no scalar inlining of the continued body"
+    );
+    assert!(
+        model
+            .pure_calls
+            .owners()
+            .iter()
+            .any(|owner| { contains_typed_region(owner.body(), predicate) }),
+        "the checked owner preserves its structured region"
+    );
+}
+
+fn contains_typed_region(body: &TypedProgram, predicate: fn(&SolveOperation) -> bool) -> bool {
+    body.operations().iter().any(|operation| {
+        let operation = operation.operation();
+        predicate(operation)
+            || match operation {
+                SolveOperation::Fold { transition, .. } => {
+                    contains_typed_region(transition.body(), predicate)
+                }
+                SolveOperation::Conditional {
+                    if_true, if_false, ..
+                } => {
+                    contains_typed_region(if_true.body(), predicate)
+                        || contains_typed_region(if_false.body(), predicate)
+                }
+                SolveOperation::Map { body, .. } => contains_typed_region(body.body(), predicate),
+                _ => false,
+            }
+    })
+}
+
 #[test]
-fn a_continued_fold_in_a_callee_without_a_directional_body_lowers_inline() {
+fn a_continued_fold_with_an_extremum_uses_its_typed_directional_owner() {
     let compiled = Compiler::new()
         .model("UndirectedGates")
         .compile_str(UNDIRECTED_GATES, "undirected_gates.mo")
@@ -326,11 +368,15 @@ fn a_continued_fold_in_a_callee_without_a_directional_body_lowers_inline() {
     census
         .visit_solve_model(&model)
         .expect("the census walk is infallible");
-    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
-    assert!(
-        census.continued_folds > 0,
-        "the inline path carries the fold continuation"
-    );
+    assert_typed_region(&model, &census, |operation| {
+        matches!(
+            operation,
+            SolveOperation::Fold {
+                continuation: Some(_),
+                ..
+            }
+        )
+    });
     let simulation =
         simulate_dae(&compiled.dae, &options).expect("the continuation lowers to Solve rows");
     for (name, expected) in [("k", 3.0), ("peak", 4.0)] {
@@ -414,7 +460,15 @@ fn a_continued_fold_under_outer_loops_reads_the_outer_binders() {
     census
         .visit_solve_model(&model)
         .expect("the census walk is infallible");
-    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
+    assert_typed_region(&model, &census, |operation| {
+        matches!(
+            operation,
+            SolveOperation::Fold {
+                continuation: Some(_),
+                ..
+            }
+        )
+    });
     let simulation =
         simulate_dae(&compiled.dae, &options).expect("the nested continuation simulates");
     let value = |name: &str| {
@@ -487,7 +541,7 @@ end Sweep;
 "#;
 
 #[test]
-fn a_guarded_fold_in_a_callee_under_an_outer_loop_lowers_inline() {
+fn a_guarded_fold_in_a_callee_under_an_outer_loop_uses_its_typed_owner() {
     let compiled = Compiler::new()
         .model("Sweep")
         .compile_str(GUARDED_FOLDS_UNDER_LOOP, "sweep.mo")
@@ -503,11 +557,9 @@ fn a_guarded_fold_in_a_callee_under_an_outer_loop_lowers_inline() {
     census
         .visit_solve_model(&model)
         .expect("the census walk is infallible");
-    assert_eq!(census.typed_calls, 0, "the call is expanded in place");
-    assert!(
-        census.conditional_regions > 0,
-        "the guarded folds lower as conditional regions"
-    );
+    assert_typed_region(&model, &census, |operation| {
+        matches!(operation, SolveOperation::Conditional { .. })
+    });
     let simulation = simulate_dae(&compiled.dae, &options).expect("the sweep simulates");
     let first = |name: &str| {
         let variable = simulation
