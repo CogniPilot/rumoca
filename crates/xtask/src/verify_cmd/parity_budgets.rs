@@ -33,14 +33,14 @@ pub(crate) struct MslParityBudgetArgs {
     )]
     budget_profile: Option<MslParityBudgetProfile>,
     /// Per-model solver wall budget in seconds (raise-only; clamped to at least
-    /// the harness default)
+    /// the focused harness floor)
     #[arg(long, value_name = "SECS")]
     sim_timeout_secs: Option<u64>,
     /// Per-model Solve-IR lowering wall budget in seconds (raise-only)
     #[arg(long, value_name = "SECS")]
     ir_solve_timeout_secs: Option<u64>,
-    /// Per-model, per-phase wall budget in seconds (10s default, raise-only;
-    /// one attempt per model)
+    /// Per-model, per-phase wall budget in seconds (raise-only diagnostic
+    /// override; one attempt per model)
     #[arg(long, value_name = "SECS")]
     model_attempt_timeout_secs: Option<u64>,
     /// Build the OMC reference for every simulation target rather than only the
