@@ -214,7 +214,7 @@ pub struct SameTickDefinitions<'dae> {
     derivative_sources: DerivativeSources<'dae>,
     ids: Vec<Option<dae::VariableId<'dae>>>,
     exact: BTreeMap<u32, dae::ExprId<'dae>>,
-    opaque: BTreeMap<u32, BTreeSet<u32>>,
+    opaque: BTreeMap<u32, OwnerReadViews>,
     /// Exact always-active discrete definitions must execute inside a clock
     /// partition when one of its producers reads them. Their stored entry
     /// value predates the tick, even when they do not depend on another
@@ -227,7 +227,20 @@ pub struct SameTickDefinitions<'dae> {
 struct WriterAccumulator<'dae> {
     count: usize,
     definition: Option<dae::ExprId<'dae>>,
-    reads: BTreeSet<u32>,
+    reads: OwnerReadViews,
+}
+
+/// Executable read facts for the two existing semantic boundaries.
+#[derive(Default)]
+struct OwnerReadViews {
+    current: BTreeSet<u32>,
+    clock_partition: BTreeSet<u32>,
+}
+
+#[derive(Clone, Copy)]
+enum ReadRole {
+    Current,
+    ClockPartition,
 }
 
 mod reads;
@@ -329,7 +342,7 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// What the writers of a coordinate this module cannot refresh read.
     #[must_use]
     pub fn opaque_reads(&self, variable: u32) -> Option<&BTreeSet<u32>> {
-        self.opaque.get(&variable)
+        self.opaque.get(&variable).map(|reads| &reads.current)
     }
 
     /// The branded identity of one variable index (no linear rescan).
@@ -344,58 +357,6 @@ impl<'dae> SameTickDefinitions<'dae> {
     pub fn refreshes_on_tick(&self, variable: u32) -> bool {
         self.refresh_on_tick.contains(&variable)
     }
-
-    /// The complete set of coordinates one prospective producer observes at its
-    /// tick, alias-followed through the exact definitions.
-    ///
-    /// Solve lowering uses this to decide *program granularity*: two targets
-    /// may share one fused program only when neither can observe the other on
-    /// the tick, so restoring fusion never reintroduces a stale same-tick read.
-    pub fn read_closure(
-        &self,
-        view: dae::DaeView<'dae>,
-        value_reads: &[dae::ExprId<'dae>],
-        condition_reads: &[dae::ConditionId<'dae>],
-    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
-        let mut direct = BTreeSet::new();
-        for &value in value_reads {
-            self.collect_expression_reads(view, value, &mut direct)?;
-        }
-        for &condition in condition_reads {
-            self.collect_condition_reads(
-                view,
-                condition,
-                &BTreeSet::new(),
-                |_| false,
-                &mut direct,
-            )?;
-        }
-        self.variable_read_closure(view, direct)
-    }
-
-    /// The coordinates `seeds` name, alias-followed through the exact
-    /// definitions: everything a reader of `seeds` observes at the tick.
-    pub fn variable_read_closure(
-        &self,
-        view: dae::DaeView<'dae>,
-        seeds: BTreeSet<u32>,
-    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
-        let mut pending = seeds.into_iter().collect::<Vec<_>>();
-        let mut closure = BTreeSet::new();
-        while let Some(variable) = pending.pop() {
-            if !closure.insert(variable) {
-                continue;
-            }
-            if let Some(definition) = self.definition(variable) {
-                let mut reads = BTreeSet::new();
-                self.collect_expression_reads(view, definition, &mut reads)?;
-                pending.extend(reads);
-            } else if let Some(reads) = self.opaque_reads(variable) {
-                pending.extend(reads.iter().copied());
-            }
-        }
-        Ok(closure)
-    }
 }
 
 fn record_definition<'dae>(
@@ -408,15 +369,30 @@ fn record_definition<'dae>(
     let entry = writers.entry(target).or_default();
     entry.count += 1;
     entry.definition = (entry.count == 1).then_some(value);
-    reads::collect_expression_reads(view, value, sources, &|_| false, &mut entry.reads)?;
+    collect_writer_reads(view, value, sources, &mut entry.reads)?;
     Ok(())
 }
 
-fn record_opaque_writer<'dae>(writers: &mut Writers<'dae>, target: u32, reads: &BTreeSet<u32>) {
+fn collect_writer_reads<'dae>(
+    view: dae::DaeView<'dae>,
+    value: dae::ExprId<'dae>,
+    sources: &DerivativeSources<'dae>,
+    reads: &mut OwnerReadViews,
+) -> Result<(), SameTickOrderError> {
+    reads::collect_expression_reads(view, value, sources, &|_| false, &mut reads.current)?;
+    collect_same_instant_reads(view, value, &mut reads.clock_partition);
+    Ok(())
+}
+
+fn record_opaque_writer<'dae>(writers: &mut Writers<'dae>, target: u32, reads: &OwnerReadViews) {
     let entry = writers.entry(target).or_default();
     entry.count += 1;
     entry.definition = None;
-    entry.reads.extend(reads.iter().copied());
+    entry.reads.current.extend(reads.current.iter().copied());
+    entry
+        .reads
+        .clock_partition
+        .extend(reads.clock_partition.iter().copied());
 }
 
 /// Continuous residual owners contribute a definition only in the exact
@@ -474,14 +450,8 @@ fn collect_discrete_real_writers<'dae>(
             // One element of an array coordinate is not an exact definition of
             // the whole coordinate: it is one of several writers.
             if oriented.element().is_some() {
-                let mut reads = BTreeSet::new();
-                reads::collect_expression_reads(
-                    view,
-                    oriented.value(),
-                    sources,
-                    &|_| false,
-                    &mut reads,
-                )?;
+                let mut reads = OwnerReadViews::default();
+                collect_writer_reads(view, oriented.value(), sources, &mut reads)?;
                 record_opaque_writer(writers, target, &reads);
                 None
             } else {
@@ -531,10 +501,10 @@ fn collect_discrete_value_writers<'dae>(
             }
             continue;
         }
-        let mut reads = BTreeSet::new();
+        let mut reads = OwnerReadViews::default();
         for branch in branches.iter() {
             for (value, _) in branch.values().iter() {
-                reads::collect_expression_reads(view, value, sources, &|_| false, &mut reads)?;
+                collect_writer_reads(view, value, sources, &mut reads)?;
             }
         }
         for target in owner.targets().iter() {
@@ -642,7 +612,7 @@ pub fn issue_same_tick_schedule<'dae>(
         });
     }
     let producer_of = map_producer_targets(view, producers)?;
-    let direct_reads = collect_producer_reads(view, definitions, producers)?;
+    let direct_reads = collect_producer_reads(view, producers)?;
     let intermediates = discover_intermediates(
         view,
         definitions,
@@ -687,7 +657,6 @@ fn map_producer_targets<'dae>(
 /// The same-instant reads of each producer's values and conditions.
 fn collect_producer_reads<'dae>(
     view: dae::DaeView<'dae>,
-    definitions: &SameTickDefinitions<'dae>,
     producers: &[SameTickProducer<'dae>],
 ) -> Result<Vec<BTreeSet<u32>>, SameTickOrderError> {
     producers
@@ -695,16 +664,10 @@ fn collect_producer_reads<'dae>(
         .map(|producer| {
             let mut reads = BTreeSet::new();
             for &value in &producer.value_reads {
-                definitions.collect_expression_reads(view, value, &mut reads)?;
+                collect_same_instant_reads(view, value, &mut reads);
             }
             for &condition in &producer.condition_reads {
-                definitions.collect_condition_reads(
-                    view,
-                    condition,
-                    &BTreeSet::new(),
-                    |_| false,
-                    &mut reads,
-                )?;
+                collect_condition_same_instant_reads(view, condition, &mut reads);
             }
             Ok(reads)
         })
@@ -749,10 +712,10 @@ fn discover_intermediates<'dae>(
         }
         let (definition, reads) = if let Some(definition) = definitions.definition(variable) {
             let mut reads = BTreeSet::new();
-            definitions.collect_expression_reads(view, definition, &mut reads)?;
+            collect_same_instant_reads(view, definition, &mut reads);
             (Some(definition), reads)
-        } else if let Some(reads) = definitions.opaque_reads(variable) {
-            (None, reads.clone())
+        } else if let Some(reads) = definitions.opaque.get(&variable) {
+            (None, reads.clock_partition.clone())
         } else {
             // No writer at all: a state, parameter, input, or history lane.
             // Its tick-entry value *is* its value for the whole tick.

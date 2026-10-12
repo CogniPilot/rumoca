@@ -255,6 +255,120 @@ pub(super) fn complete_derivative_residuals<'dae>(
 }
 
 impl<'dae> SameTickDefinitions<'dae> {
+    /// The complete set of coordinates one prospective producer observes at its
+    /// tick, alias-followed through the exact definitions.
+    ///
+    /// Solve lowering uses this to decide *program granularity*: two targets
+    /// may share one fused program only when neither can observe the other on
+    /// the tick, so restoring fusion never reintroduces a stale same-tick read.
+    pub fn read_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        value_reads: &[dae::ExprId<'dae>],
+        condition_reads: &[dae::ConditionId<'dae>],
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.read_closure_with_role(view, value_reads, condition_reads, ReadRole::Current)
+    }
+
+    /// Clock-partition dependency closure: state derivatives retain SOLVE-C28.
+    pub fn clock_partition_read_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        value_reads: &[dae::ExprId<'dae>],
+        condition_reads: &[dae::ConditionId<'dae>],
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.read_closure_with_role(view, value_reads, condition_reads, ReadRole::ClockPartition)
+    }
+
+    fn read_closure_with_role(
+        &self,
+        view: dae::DaeView<'dae>,
+        value_reads: &[dae::ExprId<'dae>],
+        condition_reads: &[dae::ConditionId<'dae>],
+        role: ReadRole,
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        let mut direct = BTreeSet::new();
+        for &value in value_reads {
+            self.expression_reads_with_role(view, value, role, &mut direct)?;
+        }
+        for &condition in condition_reads {
+            match role {
+                ReadRole::Current => self.collect_condition_reads(
+                    view,
+                    condition,
+                    &BTreeSet::new(),
+                    |_| false,
+                    &mut direct,
+                )?,
+                ReadRole::ClockPartition => {
+                    collect_condition_same_instant_reads(view, condition, &mut direct)
+                }
+            }
+        }
+        self.variable_read_closure_with_role(view, direct, role)
+    }
+
+    fn expression_reads_with_role(
+        &self,
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+        role: ReadRole,
+        reads: &mut BTreeSet<u32>,
+    ) -> Result<(), SameTickOrderError> {
+        match role {
+            ReadRole::Current => self.collect_expression_reads(view, expression, reads),
+            ReadRole::ClockPartition => {
+                collect_same_instant_reads(view, expression, reads);
+                Ok(())
+            }
+        }
+    }
+
+    /// Alias-followed current reads of declaration seeds.
+    pub fn variable_read_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        seeds: BTreeSet<u32>,
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.variable_read_closure_with_role(view, seeds, ReadRole::Current)
+    }
+
+    /// Alias-followed entry reads, including opaque owners, at a clock boundary.
+    pub fn clock_partition_variable_read_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        seeds: BTreeSet<u32>,
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.variable_read_closure_with_role(view, seeds, ReadRole::ClockPartition)
+    }
+
+    fn variable_read_closure_with_role(
+        &self,
+        view: dae::DaeView<'dae>,
+        seeds: BTreeSet<u32>,
+        role: ReadRole,
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        let mut pending = seeds.into_iter().collect::<Vec<_>>();
+        let mut closure = BTreeSet::new();
+        while let Some(variable) = pending.pop() {
+            if !closure.insert(variable) {
+                continue;
+            }
+            if let Some(definition) = self.definition(variable) {
+                let mut reads = BTreeSet::new();
+                self.expression_reads_with_role(view, definition, role, &mut reads)?;
+                pending.extend(reads);
+            } else if let Some(reads) = self.opaque.get(&variable) {
+                let reads = match role {
+                    ReadRole::Current => &reads.current,
+                    ReadRole::ClockPartition => &reads.clock_partition,
+                };
+                pending.extend(reads.iter().copied());
+            }
+        }
+        Ok(closure)
+    }
+
     /// Current expression reads after substituting the issued derivative rows.
     pub fn collect_expression_reads(
         &self,
@@ -290,3 +404,6 @@ impl<'dae> SameTickDefinitions<'dae> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests;

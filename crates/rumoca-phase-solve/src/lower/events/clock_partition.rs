@@ -372,7 +372,11 @@ impl SameTickExchange {
                 }
                 Ok(SameTickExchangeMember {
                     targets: vec![target.variable.index()],
-                    reads: definitions.read_closure(view, &value_reads, &condition_reads)?,
+                    reads: definitions.clock_partition_read_closure(
+                        view,
+                        &value_reads,
+                        &condition_reads,
+                    )?,
                     entry_reads: BTreeSet::new(),
                 })
             })
@@ -490,16 +494,10 @@ fn event_clock_member<'dae>(
 ) -> Result<SameTickExchangeMember, LowerError> {
     let mut direct = BTreeSet::new();
     for &value in value_reads {
-        definitions.collect_expression_reads(view, value, &mut direct)?;
+        rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
     }
     for &condition in condition_reads {
-        definitions.collect_condition_reads(
-            view,
-            condition,
-            &BTreeSet::new(),
-            |_| false,
-            &mut direct,
-        )?;
+        rumoca_phase_structural::collect_condition_same_instant_reads(view, condition, &mut direct);
     }
     let (reads, sampled): (BTreeSet<u32>, BTreeSet<u32>) = direct
         .into_iter()
@@ -507,7 +505,7 @@ fn event_clock_member<'dae>(
     Ok(SameTickExchangeMember {
         targets: vec![target.variable.index()],
         reads,
-        entry_reads: definitions.variable_read_closure(view, sampled)?,
+        entry_reads: definitions.clock_partition_variable_read_closure(view, sampled)?,
     })
 }
 
