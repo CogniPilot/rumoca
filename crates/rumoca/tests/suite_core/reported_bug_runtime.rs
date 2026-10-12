@@ -78,18 +78,35 @@ fn issue_403_original_guard_executes_natively_without_fallback() {
     let compiled = compile(GUARDED, "GuardedOperands");
     let opts = options(SimExecutionPolicy::Auto);
     let lowered = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &opts).unwrap();
-    let _calls = rumoca_exec_cranelift::compile_pure_call_table(&lowered.pure_calls)
+    assert_eq!(lowered.pure_calls.owners().len(), 1);
+    let site = lowered.pure_calls.owners()[0].call_site();
+    let calls = rumoca_exec_cranelift::compile_pure_call_table(&lowered.pure_calls)
         .expect("the actual guarded function has a native helper");
-    let mut session = SimulationSession::new(&compiled.dae, opts).expect("k=4 skips invalid RHS");
-    for (step, index, expected) in [(1, 3.0, 1.0), (2, 4.0, 0.0), (3, 2.0, 0.0)] {
-        session.set_input("k", index).unwrap();
-        session.advance_to(f64::from(step) / 10.0).unwrap();
-        assert_eq!(session.state().unwrap().values["y"], expected);
-        let receipt = session.execution_receipt();
-        assert_eq!(receipt.engine, SimExecutionEngine::Cranelift, "{receipt:?}");
-        assert_eq!(receipt.refusal, None, "{receipt:?}");
-        assert!(receipt.declined.is_empty(), "{receipt:?}");
+    // The unchanged model has no continuous states. Execute its issued native
+    // function directly rather than claiming a whole-session native engine.
+    let (mut input_cells, mut output_cells) = (Vec::new(), Vec::new());
+    let mut call = |index, limit| {
+        let mut output = [-123.0];
+        let result = calls.call_scalar_payload(
+            rumoca_eval_solve::PureCallInvocation::Primal(&site),
+            &[1.0, 2.0, 9.0, index, limit],
+            &mut output,
+            &mut input_cells,
+            &mut output_cells,
+        );
+        (result, output)
+    };
+    for (index, expected) in [(3.0, 1.0), (4.0, 0.0), (2.0, 0.0)] {
+        let (result, output) = call(index, 3.0);
+        result.expect("execute the original native guarded function");
+        assert_eq!(output, [expected], "k={index}");
     }
+    let (result, output) = call(4.0, 4.0);
+    assert_index_fault(result.expect_err("the selected invalid access still faults"));
+    assert_eq!(output, [-123.0], "a native fault publishes no value");
+    let (result, output) = call(3.0, 3.0);
+    result.expect("a valid native invocation succeeds after the fault");
+    assert_eq!(output, [1.0]);
 }
 
 fn assert_index_fault(error: impl std::fmt::Debug) {

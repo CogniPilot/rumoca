@@ -91,7 +91,10 @@ end ModelBooleanValue;";
     let json = serde_json::to_vec(&compiled.dae).unwrap();
     let replayed: rumoca_ir_dae::Dae = serde_json::from_slice(&json).unwrap();
     assert_eq!(json, serde_json::to_vec(&replayed).unwrap());
-    for (label, dae) in [("source", &compiled.dae), ("JSON replay", &replayed)] {
+    for (label, dae) in [
+        ("source", compiled.dae.as_ref()),
+        ("JSON replay", &replayed),
+    ] {
         dae.inspect(|view| {
             assert!(view.model_conditional_count() >= 2);
             assert!(
