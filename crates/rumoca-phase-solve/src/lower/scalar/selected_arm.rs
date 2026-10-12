@@ -39,7 +39,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         match self.node(expression).operation() {
             dae::ExpressionOperation::Coordinate(coordinate) => {
-                if let Some((_, definition)) = self.current_definition(coordinate) {
+                if let Ok(Some((_, definition))) = self.current_definition(coordinate) {
                     self.mark_evaluated(definition, visited);
                 }
             }
@@ -79,12 +79,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         match self.node(expression).operation() {
             dae::ExpressionOperation::Literal(_) => true,
-            dae::ExpressionOperation::Coordinate(coordinate) => self
-                .current_definition(coordinate)
-                .is_none_or(|(variable, definition)| {
-                    self.current_definition_is_acyclic(variable, definition)
-                        && self.is_total(definition, visited)
-                }),
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                self.current_definition(coordinate).is_ok_and(|definition| {
+                    definition.is_none_or(|(variable, definition)| {
+                        self.current_definition_is_acyclic(variable, definition)
+                            && self.is_total(definition, visited)
+                    })
+                })
+            }
             dae::ExpressionOperation::Unary { operand, .. } => self.is_total(operand, visited),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 self.is_total(lhs, visited) && self.is_total(rhs, visited)

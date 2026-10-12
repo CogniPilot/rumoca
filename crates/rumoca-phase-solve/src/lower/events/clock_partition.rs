@@ -10,6 +10,21 @@ use super::*;
 
 use crate::lower::clocks::clocks_share_a_tick;
 
+impl From<rumoca_phase_structural::SameTickOrderError> for LowerError {
+    fn from(error: rumoca_phase_structural::SameTickOrderError) -> Self {
+        use rumoca_phase_structural::SameTickOrderError;
+        match &error {
+            SameTickOrderError::Cycle { .. } | SameTickOrderError::UnrefreshableRead { .. } => {
+                Self::non_computable(error.to_string(), error.span())
+            }
+            SameTickOrderError::DuplicateOwner { .. }
+            | SameTickOrderError::InvalidClockDomains { .. }
+            | SameTickOrderError::MissingDerivative { .. }
+            | SameTickOrderError::Projection(_) => Self::contract(error.to_string(), error.span()),
+        }
+    }
+}
+
 /// Issue the SOLVE-C57 clock-partition same-tick schedule.
 ///
 /// The structural engine (`rumoca_phase_structural::issue_same_tick_schedule`)
@@ -65,16 +80,7 @@ pub(super) fn issue_clock_partition_order<'dae>(
         &excluded,
         &coincidence,
     );
-    let schedule = schedule_result.map_err(|error| match &error {
-        rumoca_phase_structural::SameTickOrderError::Cycle { .. }
-        | rumoca_phase_structural::SameTickOrderError::UnrefreshableRead { .. } => {
-            LowerError::non_computable(error.to_string(), error.span())
-        }
-        rumoca_phase_structural::SameTickOrderError::DuplicateOwner { .. }
-        | rumoca_phase_structural::SameTickOrderError::InvalidClockDomains { .. } => {
-            LowerError::contract(error.to_string(), error.span())
-        }
-    })?;
+    let schedule = schedule_result?;
     let mut order = Vec::with_capacity(schedule.steps.len());
     let intermediate_consumers = schedule.intermediate_consumers;
     for step in schedule.steps {
@@ -340,7 +346,7 @@ impl SameTickExchange {
         layout: &EventCompilationContext<'_, 'dae>,
         definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
         targets: &[GuardedTarget<'dae>],
-    ) -> Self {
+    ) -> Result<Self, LowerError> {
         let event_clocked = targets
             .iter()
             .filter(|target| target.event_clock.is_some())
@@ -363,14 +369,14 @@ impl SameTickExchange {
                         |variable| event_clocked.contains(&variable),
                     );
                 }
-                SameTickExchangeMember {
+                Ok(SameTickExchangeMember {
                     targets: vec![target.variable.index()],
-                    reads: definitions.read_closure(view, &value_reads, &condition_reads),
+                    reads: definitions.read_closure(view, &value_reads, &condition_reads)?,
                     entry_reads: BTreeSet::new(),
-                }
+                })
             })
-            .collect::<Vec<_>>();
-        Self::new(&members)
+            .collect::<Result<Vec<_>, LowerError>>()?;
+        Ok(Self::new(&members))
     }
 
     fn fusable(&self, left: usize, right: usize) -> bool {
@@ -426,7 +432,7 @@ fn unclocked_member<'dae>(
     layout: &EventCompilationContext<'_, 'dae>,
     definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
     target: &GuardedTarget<'dae>,
-) -> SameTickExchangeMember {
+) -> Result<SameTickExchangeMember, LowerError> {
     let triggers = target
         .branches
         .iter()
@@ -435,8 +441,8 @@ fn unclocked_member<'dae>(
     let mut direct = BTreeSet::new();
     for &(trigger, guard, value, _) in &target.branches {
         let excluded = BTreeSet::from([trigger]);
-        definitions.collect_expression_reads(view, value, &mut direct);
-        definitions.collect_condition_reads(view, guard, &excluded, |_| false, &mut direct);
+        definitions.collect_expression_reads(view, value, &mut direct)?;
+        definitions.collect_condition_reads(view, guard, &excluded, |_| false, &mut direct)?;
     }
     let mut entry_reads = BTreeSet::new();
     for trigger in triggers {
@@ -451,13 +457,13 @@ fn unclocked_member<'dae>(
                     .is_some()
             },
             &mut entry_reads,
-        );
+        )?;
     }
-    SameTickExchangeMember {
+    Ok(SameTickExchangeMember {
         targets: vec![target.variable.index()],
-        reads: definitions.variable_read_closure(view, direct),
-        entry_reads: definitions.variable_read_closure(view, entry_reads),
-    }
+        reads: definitions.variable_read_closure(view, direct)?,
+        entry_reads: definitions.variable_read_closure(view, entry_reads)?,
+    })
 }
 
 /// The same-tick relation of one target of an MLS §16.3 event clock.
@@ -475,10 +481,10 @@ fn event_clock_member<'dae>(
     target: &GuardedTarget<'dae>,
     (value_reads, condition_reads): (&[dae::ExprId<'dae>], &[dae::ConditionId<'dae>]),
     event_clocked: impl Fn(u32) -> bool,
-) -> SameTickExchangeMember {
+) -> Result<SameTickExchangeMember, LowerError> {
     let mut direct = BTreeSet::new();
     for &value in value_reads {
-        definitions.collect_expression_reads(view, value, &mut direct);
+        definitions.collect_expression_reads(view, value, &mut direct)?;
     }
     for &condition in condition_reads {
         definitions.collect_condition_reads(
@@ -487,16 +493,16 @@ fn event_clock_member<'dae>(
             &BTreeSet::new(),
             |_| false,
             &mut direct,
-        );
+        )?;
     }
     let (reads, sampled): (BTreeSet<u32>, BTreeSet<u32>) = direct
         .into_iter()
         .partition(|&variable| event_clocked(variable));
-    SameTickExchangeMember {
+    Ok(SameTickExchangeMember {
         targets: vec![target.variable.index()],
         reads,
-        entry_reads: definitions.variable_read_closure(view, sampled),
-    }
+        entry_reads: definitions.variable_read_closure(view, sampled)?,
+    })
 }
 
 fn transitive_observations(start: usize, direct: &[BTreeSet<usize>]) -> BTreeSet<usize> {

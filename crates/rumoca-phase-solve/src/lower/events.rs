@@ -425,7 +425,7 @@ impl<'dae> DiscreteRows<'dae> {
                     view,
                     &plan,
                     derivatives.derivative_sources(),
-                ),
+                )?,
             ),
             event_iteration_owners: vec![None; view.variable_count()],
             ..Self::default()
@@ -1484,10 +1484,10 @@ fn lower_guarded_targets<'dae>(
                 .extend(target.branches.iter().map(|branch| branch.0));
         }
     }
-    let order = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)
+    let order = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)?
         .producer_order();
     apply_permutation(targets, &order);
-    let exchange = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets);
+    let exchange = SameTickExchange::derive(view, layout, &rows.same_tick_definitions, targets)?;
     let definition_targets = std::rc::Rc::new(
         targets
             .iter()

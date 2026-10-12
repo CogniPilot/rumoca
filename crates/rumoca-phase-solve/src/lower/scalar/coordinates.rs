@@ -351,7 +351,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         {
             return self.substituted_parameter_value(parameter.index(), binding, scalar, span);
         }
-        if let Some(value) = self.current_definition(coordinate) {
+        if let Some(value) = self.current_definition(coordinate)? {
             return self.current_definition_value(value, scalar, span);
         }
         let slot = if self.sampled_source

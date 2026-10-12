@@ -383,3 +383,56 @@ fn query_free_calls_contribute_no_queried_dependency_over_a_record_body() {
         assert_eq!(project(view, root, &mut mixed, true).unwrap(), []);
     });
 }
+
+#[test]
+fn issued_storage_leaves_do_not_poison_later_projection_queries() {
+    selector_model(Nested::None).inspect(|view| {
+        let roots = calls(view);
+        let root = roots[0];
+        let dae::ExpressionOperation::Call { arguments, .. } =
+            view.expression(root).unwrap().operation()
+        else {
+            panic!("checked selector call");
+        };
+        let actual = arguments.get(0).unwrap();
+        let mut reference = Vec::new();
+        for_each_scalar_coordinate(view, root, 0, None, |coordinate, scalar| {
+            reference.push((coordinate, scalar));
+        })
+        .unwrap();
+        assert!(!reference.is_empty());
+        let mut stored = Vec::new();
+        for_each_scalar_coordinate_pruned(
+            view,
+            root,
+            0,
+            None,
+            &std::collections::BTreeSet::from([actual]),
+            |coordinate, scalar| stored.push((coordinate, scalar)),
+        )
+        .unwrap();
+        assert!(stored.is_empty());
+        let mut restored = Vec::new();
+        for_each_scalar_coordinate_pruned(
+            view,
+            root,
+            0,
+            None,
+            &std::collections::BTreeSet::new(),
+            |coordinate, scalar| restored.push((coordinate, scalar)),
+        )
+        .unwrap();
+        assert_eq!(restored, reference);
+        assert!(matches!(
+            for_each_scalar_coordinate_pruned(
+                view,
+                roots[2],
+                0,
+                None,
+                &std::collections::BTreeSet::new(),
+                |_, _| {}
+            ),
+            Err(ProjectionError::IndexOutOfBounds { index: 4, .. })
+        ));
+    });
+}

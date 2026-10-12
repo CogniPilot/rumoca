@@ -110,30 +110,32 @@ fn lower_unconditional_discrete_value_owner<'dae>(
     // program whenever no member observes another member on the tick. Where a
     // member *does* observe another, the members stay separate producers and
     // the SOLVE-C57 issued order sequences them.
-    let fusable = || {
-        SameTickExchange::new(
+    let fusable = || -> Result<bool, LowerError> {
+        Ok(SameTickExchange::new(
             &owner_values
                 .iter()
-                .map(|entry| SameTickExchangeMember {
-                    targets: vec![entry.3.index()],
-                    entry_reads: BTreeSet::new(),
-                    reads: if entry.5 {
-                        BTreeSet::new()
-                    } else {
-                        rows.same_tick_definitions.read_closure(
-                            view,
-                            std::slice::from_ref(&entry.1),
-                            &[],
-                        )
-                    },
+                .map(|entry| {
+                    Ok(SameTickExchangeMember {
+                        targets: vec![entry.3.index()],
+                        entry_reads: BTreeSet::new(),
+                        reads: if entry.5 {
+                            BTreeSet::new()
+                        } else {
+                            rows.same_tick_definitions.read_closure(
+                                view,
+                                std::slice::from_ref(&entry.1),
+                                &[],
+                            )?
+                        },
+                    })
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, LowerError>>()?,
         )
-        .all_fusable()
+        .all_fusable())
     };
     if let Some((clock_id, solve_clock)) = owner_values.first().and_then(|entry| entry.4)
         && total_outputs > 1
-        && fusable()
+        && fusable()?
         && owner_values
             .iter()
             .all(|entry| entry.4 == Some((clock_id, solve_clock)) && entry.5 == owner_values[0].5)

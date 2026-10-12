@@ -124,9 +124,8 @@ fn inactive_current_alias_with_unproven_subscript_remains_lazy() {
             .0
             .index();
         let plan = rumoca_phase_structural::CausalDiscretePlan::derive(view).unwrap();
-        let definitions = Rc::new(rumoca_phase_structural::SameTickDefinitions::derive(
-            view, &plan,
-        ));
+        let definitions =
+            Rc::new(rumoca_phase_structural::SameTickDefinitions::derive(view, &plan).unwrap());
         let layout = crate::layout::lower_layout(view).unwrap();
         let mut compiler = ScalarCompiler::new(view, &layout, None).with_current_definitions(
             DefinitionOwner::new(definitions, Rc::new(BTreeSet::from([producer]))),

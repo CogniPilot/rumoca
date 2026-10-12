@@ -19,9 +19,17 @@ pub(super) struct ContinuousRowIndex<'dae> {
 impl<'dae> ContinuousRowIndex<'dae> {
     pub(super) fn derivative_sources(
         &self,
-    ) -> impl Iterator<Item = (dae::StateId<'dae>, dae::ExprId<'dae>)> + '_ {
+    ) -> impl Iterator<Item = rumoca_phase_structural::MatchedDerivativeSource<'dae>> + '_ {
         self.rows.iter().filter_map(|(unknown, row)| match unknown {
-            UnknownId::Derivative { state, .. } => Some((*state, row.expression)),
+            UnknownId::Derivative { state, scalar } => {
+                Some(rumoca_phase_structural::MatchedDerivativeSource {
+                    state: *state,
+                    state_scalar: *scalar as usize,
+                    expression: row.expression,
+                    expression_scalar: row.scalar,
+                    domain_point: row.domain_point.clone(),
+                })
+            }
             UnknownId::Algebraic { .. } | UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
                 None
             }

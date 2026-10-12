@@ -152,6 +152,10 @@ pub struct SameTickSchedule<'dae> {
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SameTickOrderError {
+    #[error(transparent)]
+    Projection(#[from] rumoca_eval_dae::ProjectionError),
+    #[error("derivative dependency has no structurally matched scalar source row")]
+    MissingDerivative { span: Span },
     #[error("same-tick producer clock domains are not a nonempty canonical set")]
     InvalidClockDomains { span: Span },
     #[error(
@@ -172,13 +176,27 @@ impl SameTickOrderError {
     #[must_use]
     pub const fn span(&self) -> Span {
         match self {
-            Self::InvalidClockDomains { span }
+            Self::Projection(error) => error.span(),
+            Self::MissingDerivative { span }
+            | Self::InvalidClockDomains { span }
             | Self::Cycle { span, .. }
             | Self::DuplicateOwner { span, .. }
             | Self::UnrefreshableRead { span, .. } => *span,
         }
     }
 }
+
+/// One ephemeral scalar view of the actual structurally matched derivative row.
+#[derive(Clone)]
+pub struct MatchedDerivativeSource<'dae> {
+    pub state: dae::StateId<'dae>,
+    pub state_scalar: usize,
+    pub expression: dae::ExprId<'dae>,
+    pub expression_scalar: usize,
+    pub domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+}
+
+type DerivativeSources<'dae> = BTreeMap<(u32, usize), MatchedDerivativeSource<'dae>>;
 
 /// Exact same-tick definitions, derived once per DAE.
 ///
@@ -190,7 +208,7 @@ impl SameTickOrderError {
 /// therefore genuinely current at tick entry.
 #[derive(Default)]
 pub struct SameTickDefinitions<'dae> {
-    derivative_sources: BTreeMap<u32, BTreeSet<dae::ExprId<'dae>>>,
+    derivative_sources: DerivativeSources<'dae>,
     ids: Vec<Option<dae::VariableId<'dae>>>,
     exact: BTreeMap<u32, dae::ExprId<'dae>>,
     opaque: BTreeMap<u32, BTreeSet<u32>>,
@@ -229,7 +247,10 @@ impl<'dae> SameTickDefinitions<'dae> {
     /// (a widening `Real x = integerDiscrete`, a `B.1c` value owner, an exact
     /// generated connection row) and records every other writer as opaque.
     #[must_use]
-    pub fn derive(view: dae::DaeView<'dae>, plan: &crate::CausalDiscretePlan<'dae>) -> Self {
+    pub fn derive(
+        view: dae::DaeView<'dae>,
+        plan: &crate::CausalDiscretePlan<'dae>,
+    ) -> Result<Self, SameTickOrderError> {
         Self::derive_with_derivative_sources(view, plan, std::iter::empty())
     }
 
@@ -240,15 +261,12 @@ impl<'dae> SameTickDefinitions<'dae> {
     pub fn derive_with_derivative_sources(
         view: dae::DaeView<'dae>,
         plan: &crate::CausalDiscretePlan<'dae>,
-        sources: impl IntoIterator<Item = (dae::StateId<'dae>, dae::ExprId<'dae>)>,
-    ) -> Self {
-        let mut derivative_sources = BTreeMap::<_, BTreeSet<_>>::new();
-        for (state, expression) in sources {
-            derivative_sources
-                .entry(state.index())
-                .or_default()
-                .insert(expression);
-        }
+        sources: impl IntoIterator<Item = MatchedDerivativeSource<'dae>>,
+    ) -> Result<Self, SameTickOrderError> {
+        let derivative_sources = sources
+            .into_iter()
+            .map(|source| ((source.state.index(), source.state_scalar), source))
+            .collect::<DerivativeSources<'dae>>();
         let causal: &CausalDefinitions<'dae> = plan.causal_definitions();
         let mut ids = vec![None; view.variable_count()];
         for (id, _) in view.variables() {
@@ -258,20 +276,20 @@ impl<'dae> SameTickDefinitions<'dae> {
         }
         let mut writers = Writers::new();
         let mut refresh_on_tick = BTreeSet::new();
-        collect_continuous_writers(view, &derivative_sources, &mut writers);
+        collect_continuous_writers(view, &derivative_sources, &mut writers)?;
         collect_discrete_real_writers(
             view,
             plan,
             &derivative_sources,
             &mut writers,
             &mut refresh_on_tick,
-        );
+        )?;
         collect_discrete_value_writers(
             view,
             &derivative_sources,
             &mut writers,
             &mut refresh_on_tick,
-        );
+        )?;
 
         let mut exact = BTreeMap::new();
         let mut opaque = BTreeMap::new();
@@ -292,13 +310,13 @@ impl<'dae> SameTickDefinitions<'dae> {
             }
         }
         refresh_on_tick.retain(|variable| exact.contains_key(variable));
-        Self {
+        Ok(Self {
             derivative_sources,
             ids,
             exact,
             opaque,
             refresh_on_tick,
-        }
+        })
     }
 
     /// The exact definition a same-tick consumer refreshes this coordinate from.
@@ -338,13 +356,19 @@ impl<'dae> SameTickDefinitions<'dae> {
         view: dae::DaeView<'dae>,
         value_reads: &[dae::ExprId<'dae>],
         condition_reads: &[dae::ConditionId<'dae>],
-    ) -> BTreeSet<u32> {
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
         let mut direct = BTreeSet::new();
         for &value in value_reads {
-            self.collect_expression_reads(view, value, &mut direct);
+            self.collect_expression_reads(view, value, &mut direct)?;
         }
         for &condition in condition_reads {
-            self.collect_condition_reads(view, condition, &BTreeSet::new(), |_| false, &mut direct);
+            self.collect_condition_reads(
+                view,
+                condition,
+                &BTreeSet::new(),
+                |_| false,
+                &mut direct,
+            )?;
         }
         self.variable_read_closure(view, direct)
     }
@@ -356,7 +380,7 @@ impl<'dae> SameTickDefinitions<'dae> {
         &self,
         view: dae::DaeView<'dae>,
         seeds: BTreeSet<u32>,
-    ) -> BTreeSet<u32> {
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
         let mut pending = seeds.into_iter().collect::<Vec<_>>();
         let mut closure = BTreeSet::new();
         while let Some(variable) = pending.pop() {
@@ -365,27 +389,28 @@ impl<'dae> SameTickDefinitions<'dae> {
             }
             if let Some(definition) = self.definition(variable) {
                 let mut reads = BTreeSet::new();
-                self.collect_expression_reads(view, definition, &mut reads);
+                self.collect_expression_reads(view, definition, &mut reads)?;
                 pending.extend(reads);
             } else if let Some(reads) = self.opaque_reads(variable) {
                 pending.extend(reads.iter().copied());
             }
         }
-        closure
+        Ok(closure)
     }
 }
 
 fn record_definition<'dae>(
     view: dae::DaeView<'dae>,
-    sources: &BTreeMap<u32, BTreeSet<dae::ExprId<'dae>>>,
+    sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
     target: u32,
     value: dae::ExprId<'dae>,
-) {
+) -> Result<(), SameTickOrderError> {
     let entry = writers.entry(target).or_default();
     entry.count += 1;
     entry.definition = (entry.count == 1).then_some(value);
-    reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut entry.reads);
+    reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut entry.reads)?;
+    Ok(())
 }
 
 fn record_opaque_writer<'dae>(writers: &mut Writers<'dae>, target: u32, reads: &BTreeSet<u32>) {
@@ -400,9 +425,9 @@ fn record_opaque_writer<'dae>(writers: &mut Writers<'dae>, target: u32, reads: &
 /// [`CausalDefinitions`], which owns its orientation proof.
 fn collect_continuous_writers<'dae>(
     view: dae::DaeView<'dae>,
-    sources: &BTreeMap<u32, BTreeSet<dae::ExprId<'dae>>>,
+    sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
-) {
+) -> Result<(), SameTickOrderError> {
     for owner in view.continuous_owners() {
         let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
             continue;
@@ -410,9 +435,10 @@ fn collect_continuous_writers<'dae>(
         if let Some((target, value)) =
             single_coordinate_definition(view, equation.residual(), CoordinateKinds::Algebraic)
         {
-            record_definition(view, sources, writers, target, value);
+            record_definition(view, sources, writers, target, value)?;
         }
     }
+    Ok(())
 }
 
 /// Always-active discrete Real equations (the generated connection rows) may
@@ -420,10 +446,10 @@ fn collect_continuous_writers<'dae>(
 fn collect_discrete_real_writers<'dae>(
     view: dae::DaeView<'dae>,
     plan: &crate::CausalDiscretePlan<'dae>,
-    sources: &BTreeMap<u32, BTreeSet<dae::ExprId<'dae>>>,
+    sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
     refresh_on_tick: &mut BTreeSet<u32>,
-) {
+) -> Result<(), SameTickOrderError> {
     for index in 0..view.discrete_real_equation_count() {
         let equation = view
             .discrete_real_equation(index)
@@ -437,9 +463,10 @@ fn collect_discrete_real_writers<'dae>(
             view,
             equation.residual(),
             CoordinateKinds::AlgebraicOrDiscreteReal,
-        )
-        .or_else(|| {
-            let oriented = plan.discrete_real_definition(index)?;
+        );
+        let definition = if definition.is_some() {
+            definition
+        } else if let Some(oriented) = plan.discrete_real_definition(index) {
             let target = dae::VariableId::from(oriented.target()).index();
             // One element of an array coordinate is not an exact definition of
             // the whole coordinate: it is one of several writers.
@@ -451,17 +478,21 @@ fn collect_discrete_real_writers<'dae>(
                     sources,
                     &mut |_| false,
                     &mut reads,
-                );
+                )?;
                 record_opaque_writer(writers, target, &reads);
-                return None;
+                None
+            } else {
+                Some((target, oriented.value()))
             }
-            Some((target, oriented.value()))
-        });
+        } else {
+            None
+        };
         if let Some((target, value)) = definition {
-            record_definition(view, sources, writers, target, value);
+            record_definition(view, sources, writers, target, value)?;
             refresh_on_tick.insert(target);
         }
     }
+    Ok(())
 }
 
 /// `B.1c` value owners name their targets explicitly, so both their exact
@@ -469,10 +500,10 @@ fn collect_discrete_real_writers<'dae>(
 /// recorded without guessing an orientation.
 fn collect_discrete_value_writers<'dae>(
     view: dae::DaeView<'dae>,
-    sources: &BTreeMap<u32, BTreeSet<dae::ExprId<'dae>>>,
+    sources: &DerivativeSources<'dae>,
     writers: &mut Writers<'dae>,
     refresh_on_tick: &mut BTreeSet<u32>,
-) {
+) -> Result<(), SameTickOrderError> {
     for index in 0..view.discrete_value_owner_count() {
         let id = view
             .discrete_value_owner_id(index)
@@ -492,7 +523,7 @@ fn collect_discrete_value_writers<'dae>(
             let branch = first.expect("checked unconditional B.1c branch resolves");
             for (target, (value, _)) in owner.targets().iter().zip(branch.values().iter()) {
                 let target = dae::VariableId::from(target).index();
-                record_definition(view, sources, writers, target, value);
+                record_definition(view, sources, writers, target, value)?;
                 refresh_on_tick.insert(target);
             }
             continue;
@@ -500,13 +531,14 @@ fn collect_discrete_value_writers<'dae>(
         let mut reads = BTreeSet::new();
         for branch in branches.iter() {
             for (value, _) in branch.values().iter() {
-                reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut reads);
+                reads::collect_expression_reads(view, value, sources, &mut |_| false, &mut reads)?;
             }
         }
         for target in owner.targets().iter() {
             record_opaque_writer(writers, dae::VariableId::from(target).index(), &reads);
         }
     }
+    Ok(())
 }
 
 /// Which whole-coordinate kinds may appear as the *target* side of an exact
@@ -607,7 +639,7 @@ pub fn issue_same_tick_schedule<'dae>(
         });
     }
     let producer_of = map_producer_targets(view, producers)?;
-    let direct_reads = collect_producer_reads(view, definitions, producers);
+    let direct_reads = collect_producer_reads(view, definitions, producers)?;
     let intermediates = discover_intermediates(
         view,
         definitions,
@@ -654,13 +686,13 @@ fn collect_producer_reads<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &SameTickDefinitions<'dae>,
     producers: &[SameTickProducer<'dae>],
-) -> Vec<BTreeSet<u32>> {
+) -> Result<Vec<BTreeSet<u32>>, SameTickOrderError> {
     producers
         .iter()
         .map(|producer| {
             let mut reads = BTreeSet::new();
             for &value in &producer.value_reads {
-                definitions.collect_expression_reads(view, value, &mut reads);
+                definitions.collect_expression_reads(view, value, &mut reads)?;
             }
             for &condition in &producer.condition_reads {
                 definitions.collect_condition_reads(
@@ -669,9 +701,9 @@ fn collect_producer_reads<'dae>(
                     &BTreeSet::new(),
                     |_| false,
                     &mut reads,
-                );
+                )?;
             }
-            reads
+            Ok(reads)
         })
         .collect()
 }
@@ -714,7 +746,7 @@ fn discover_intermediates<'dae>(
         }
         let (definition, reads) = if let Some(definition) = definitions.definition(variable) {
             let mut reads = BTreeSet::new();
-            definitions.collect_expression_reads(view, definition, &mut reads);
+            definitions.collect_expression_reads(view, definition, &mut reads)?;
             (Some(definition), reads)
         } else if let Some(reads) = definitions.opaque_reads(variable) {
             (None, reads.clone())
@@ -1392,7 +1424,7 @@ mod tests {
             let body = view.condition_id(1).unwrap();
             let guard = view.condition_id(3).unwrap();
             assert_ne!(trigger, body, "independently issued predicates");
-            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view));
+            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view)).unwrap();
             let probe = Probe { view, definitions };
             let expected = BTreeSet::from([probe.index("a")]);
             let mut reads = BTreeSet::new();
@@ -1455,7 +1487,7 @@ mod tests {
 
     fn probe<R>(wiring: Wiring, body: impl for<'dae> FnOnce(&Probe<'dae>) -> R) -> R {
         fixture(wiring).inspect(|view| {
-            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view));
+            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view)).unwrap();
             body(&Probe { view, definitions })
         })
     }
@@ -1872,10 +1904,10 @@ mod tests {
     #[test]
     fn the_read_closure_follows_aliases_to_their_producers() {
         probe(Wiring::Aliases, |probe| {
-            let closure =
-                probe
-                    .definitions
-                    .read_closure(probe.view, &[probe.read_of("nAlias")], &[]);
+            let closure = probe
+                .definitions
+                .read_closure(probe.view, &[probe.read_of("nAlias")], &[])
+                .unwrap();
             assert!(closure.contains(&probe.index("nAlias")));
             assert!(
                 closure.contains(&probe.index("n")),
@@ -1883,7 +1915,8 @@ mod tests {
             );
             let unrelated = probe
                 .definitions
-                .read_closure(probe.view, &[probe.read_of("b")], &[]);
+                .read_closure(probe.view, &[probe.read_of("b")], &[])
+                .unwrap();
             assert_eq!(unrelated, BTreeSet::from([probe.index("b")]));
         });
     }

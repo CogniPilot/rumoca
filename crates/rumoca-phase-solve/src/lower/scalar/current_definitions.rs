@@ -10,7 +10,9 @@ mod tests;
 pub(in crate::lower) struct DefinitionOwner<'dae> {
     definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
     targets: Rc<BTreeSet<u32>>,
-    facts: Rc<RefCell<BTreeMap<u32, (bool, bool)>>>,
+    facts: Rc<
+        RefCell<BTreeMap<u32, Result<(bool, bool), rumoca_phase_structural::SameTickOrderError>>>,
+    >,
 }
 
 impl PartialEq for DefinitionOwner<'_> {
@@ -38,16 +40,20 @@ impl<'dae> DefinitionOwner<'dae> {
         view: dae::DaeView<'dae>,
         variable: u32,
         definition: dae::ExprId<'dae>,
-    ) -> (bool, bool) {
+    ) -> Result<(bool, bool), rumoca_phase_structural::SameTickOrderError> {
         if let Some(facts) = self.facts.borrow().get(&variable) {
-            return *facts;
+            return facts.clone();
         }
-        let reads = self.definitions.read_closure(view, &[definition], &[]);
-        let facts = (
-            !reads.is_disjoint(&self.targets),
-            !reads.contains(&variable),
-        );
-        self.facts.borrow_mut().insert(variable, facts);
+        let facts = self
+            .definitions
+            .read_closure(view, &[definition], &[])
+            .map(|reads| {
+                (
+                    !reads.is_disjoint(&self.targets),
+                    !reads.contains(&variable),
+                )
+            });
+        self.facts.borrow_mut().insert(variable, facts.clone());
         facts
     }
 }
@@ -70,20 +76,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(super) fn current_definition(
         &self,
         coordinate: dae::CoordinateView<'dae>,
-    ) -> Option<(u32, dae::ExprId<'dae>)> {
+    ) -> Result<Option<(u32, dae::ExprId<'dae>)>, LowerError> {
         if !self.project_current_definitions || self.sampled_source {
-            return None;
+            return Ok(None);
         }
         let dae::CoordinateView::Algebraic(variable) = coordinate else {
-            return None;
+            return Ok(None);
         };
         let variable = dae::VariableId::from(variable).index();
-        let owner = self.same_tick_definitions.as_ref()?;
-        let definition = owner.definitions.definition(variable)?;
-        if !owner.facts(self.view, variable, definition).0 {
-            return None;
+        let Some(owner) = self.same_tick_definitions.as_ref() else {
+            return Ok(None);
+        };
+        let Some(definition) = owner.definitions.definition(variable) else {
+            return Ok(None);
+        };
+        if !owner.facts(self.view, variable, definition)?.0 {
+            return Ok(None);
         }
-        Some((variable, definition))
+        Ok(Some((variable, definition)))
     }
 
     fn begin_current_definition(&mut self, variable: u32, span: Span) -> Result<(), LowerError> {
@@ -102,9 +112,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         variable: u32,
         definition: dae::ExprId<'dae>,
     ) -> bool {
-        self.same_tick_definitions
-            .as_ref()
-            .is_some_and(|owner| owner.facts(self.view, variable, definition).1)
+        self.same_tick_definitions.as_ref().is_some_and(|owner| {
+            owner
+                .facts(self.view, variable, definition)
+                .is_ok_and(|facts| facts.1)
+        })
     }
 
     pub(super) fn current_definition_value(
@@ -124,7 +136,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         coordinate: dae::CoordinateView<'dae>,
         span: Span,
     ) -> Result<Option<solve::Reg>, LowerError> {
-        let Some((variable, definition)) = self.current_definition(coordinate) else {
+        let Some((variable, definition)) = self.current_definition(coordinate)? else {
             return Ok(None);
         };
         self.begin_current_definition(variable, span)?;
