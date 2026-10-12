@@ -1,20 +1,21 @@
 # Workshop DAE module review
 
-The architecture gate at `4aaaf7872ece5d60c13217565ae4bd5a4aa450c6` passes all 247 hardening tests, including
-the unchanged totality-debt ceilings. Its policy suite passes 18/19 tests:
-the DAE LOC acknowledgment is stale. This report accounts for the production
-source under SPEC_0043 §1/§1a, rather than changing that measurement or deleting
-coverage. The machine-readable inventory lists every included module.
+This report inventories production source at `d3f804491e1c80dfe4ed7caa3f77341d6778717b` under SPEC_0043 §1/§1a.
+The adjacent machine-readable inventory names every included module and the
+original PR comparison. Focused qualification is recorded in the conditional,
+clock and selected-value reports; the final combined quick/full gates remain
+pending. Earlier architecture tests passed at their documented source, which
+is not a qualification of this later combined source.
 
 | Source | Core lines | Wire lines | Total lines |
 |---|---:|---:|---:|
 | Original PR head `21d64ecaa9d205b671598991ee8c4d2f556fed6c` | 18803 | 5759 | 24562 |
-| Combined workshop source `4aaaf7872ece5d60c13217565ae4bd5a4aa450c6` | 19686 | 6037 | 25723 |
+| Combined workshop source `d3f804491e1c80dfe4ed7caa3f77341d6778717b` | 19937 | 6037 | 25974 |
 
-The §1b rule rounds these measurements up to the next 250 lines: 19750 core,
-6250 wire, and 25750 total. These are derived acknowledgments, not spare
-headroom; the existing review thresholds and totality-debt ceilings are retained.
-This review does not claim a net reduction in DAE production source.
+The §1b rule rounds these measurements up to the next 250 lines:
+20,000 core, 6,250 wire and 26,000 total.
+These are derived acknowledgments; review thresholds, measurement exclusions
+and totality-debt ceilings remain unchanged. This is an increase in DAE source.
 
 The largest addition is the model-conditional construction owner and its view:
 checked arm identity, begin/close scope, foreign-arm refusal, and provenance.
@@ -45,25 +46,39 @@ the ledger. Focused IR-DAE/IR-Solve/PhaseSolve and checked round-trip tests pass
 on the source commits documented in `operand-construction-proofs.md`; a final
 combined quick/full gate remains required.
 
+The later checked model-arm derivative facade carries one closed owner and
+its already-issued expression witnesses into reconstruction. It does not
+reopen the old construction scope. The condition entry now owns the strict
+synchronous clock fact once, distinct from its Boolean clock projection:
+Solve consumes the former rather than running a duplicate recursive analysis.
+Both facts are derived at construction and omitted from wire. The shared
+selected-value traversal delegates literal/constant branch selection to the
+existing evaluation owner; full source-DAG traversal retains every arm. The
+initialization binding consumer retains its existing stronger immutable
+parameter proof and binder-dependent controls. The query adds no alternate
+expression grammar or tensor enumeration.
+
 Changed production modules are listed below. Unchanged modules remain in the
 adjacent full inventory. This is the orchestrator's module review; maintainer
 PR/spec approval remains a separate requirement.
 
 | Module under `rumoca-ir-dae/src` | Before | After | Change |
 |---|---:|---:|---:|
-| `conditions.rs` | 436 | 461 | +25 |
+| `conditions.rs` | 436 | 493 | +57 |
+| `conditions/clock_projection.rs` | 0 | 91 | +91 |
 | `error.rs` | 419 | 422 | +3 |
+| `expr_query.rs` | 349 | 402 | +53 |
 | `expression.rs` | 340 | 368 | +28 |
 | `expression/arena.rs` | 85 | 91 | +6 |
 | `expression/array_nodes.rs` | 152 | 156 | +4 |
 | `lib.rs` | 199 | 200 | +1 |
-| `model.rs` | 1882 | 1918 | +36 |
+| `model.rs` | 1882 | 1917 | +35 |
 | `model/function_checks.rs` | 593 | 594 | +1 |
-| `model/model_conditionals.rs` | 0 | 503 | +503 |
+| `model/model_conditionals.rs` | 0 | 577 | +577 |
 | `model/runtime_quotients.rs` | 472 | 506 | +34 |
 | `model/storage.rs` | 790 | 858 | +68 |
 | `model/view.rs` | 1941 | 1952 | +11 |
-| `model/view/arena_walks.rs` | 330 | 331 | +1 |
+| `model/view/arena_walks.rs` | 330 | 333 | +3 |
 | `model/view/expression_operands.rs` | 0 | 48 | +48 |
 | `model/view/model_conditionals.rs` | 0 | 107 | +107 |
 | `model/view/quotient_owners.rs` | 111 | 118 | +7 |

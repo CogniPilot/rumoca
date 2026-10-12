@@ -1,29 +1,41 @@
 {
   "convention": "SPEC_0043 section 1a physical production Rust lines; test/generated exclusions; wire is model/wire.rs plus model/wire/",
   "before_source": "21d64ecaa9d205b671598991ee8c4d2f556fed6c",
-  "after_source": "4aaaf7872ece5d60c13217565ae4bd5a4aa450c6",
+  "after_source": "d3f804491e1c80dfe4ed7caa3f77341d6778717b",
   "before": {
     "core": 18803,
     "wire": 5759,
     "total": 24562
   },
   "after": {
-    "core": 19686,
+    "core": 19937,
     "wire": 6037,
-    "total": 25723
+    "total": 25974
   },
   "changed_files": [
     {
       "path": "conditions.rs",
       "before": 436,
-      "after": 461,
-      "delta": 25
+      "after": 493,
+      "delta": 57
+    },
+    {
+      "path": "conditions/clock_projection.rs",
+      "before": 0,
+      "after": 91,
+      "delta": 91
     },
     {
       "path": "error.rs",
       "before": 419,
       "after": 422,
       "delta": 3
+    },
+    {
+      "path": "expr_query.rs",
+      "before": 349,
+      "after": 402,
+      "delta": 53
     },
     {
       "path": "expression.rs",
@@ -52,8 +64,8 @@
     {
       "path": "model.rs",
       "before": 1882,
-      "after": 1918,
-      "delta": 36
+      "after": 1917,
+      "delta": 35
     },
     {
       "path": "model/function_checks.rs",
@@ -64,8 +76,8 @@
     {
       "path": "model/model_conditionals.rs",
       "before": 0,
-      "after": 503,
-      "delta": 503
+      "after": 577,
+      "delta": 577
     },
     {
       "path": "model/runtime_quotients.rs",
@@ -88,8 +100,8 @@
     {
       "path": "model/view/arena_walks.rs",
       "before": 330,
-      "after": 331,
-      "delta": 1
+      "after": 333,
+      "delta": 3
     },
     {
       "path": "model/view/expression_operands.rs",
@@ -165,7 +177,11 @@
     },
     "conditions.rs": {
       "partition": "core",
-      "lines": 461
+      "lines": 493
+    },
+    "conditions/clock_projection.rs": {
+      "partition": "core",
+      "lines": 91
     },
     "discrete_values.rs": {
       "partition": "core",
@@ -185,7 +201,7 @@
     },
     "expr_query.rs": {
       "partition": "core",
-      "lines": 349
+      "lines": 402
     },
     "expression.rs": {
       "partition": "core",
@@ -265,7 +281,7 @@
     },
     "model.rs": {
       "partition": "core",
-      "lines": 1918
+      "lines": 1917
     },
     "model/construction_checks.rs": {
       "partition": "core",
@@ -317,7 +333,7 @@
     },
     "model/model_conditionals.rs": {
       "partition": "core",
-      "lines": 503
+      "lines": 577
     },
     "model/runtime_quotients.rs": {
       "partition": "core",
@@ -341,7 +357,7 @@
     },
     "model/view/arena_walks.rs": {
       "partition": "core",
-      "lines": 331
+      "lines": 333
     },
     "model/view/expression_operands.rs": {
       "partition": "core",
