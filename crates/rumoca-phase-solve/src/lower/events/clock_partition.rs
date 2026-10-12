@@ -326,6 +326,7 @@ pub(super) struct SameTickExchangeMember<'dae> {
 /// fusion cannot reintroduce a stale same-tick read.
 pub(super) struct SameTickExchange<'dae> {
     event_reads: Vec<Option<rumoca_phase_structural::EventReadFacts<'dae>>>,
+    direct: Vec<BTreeSet<usize>>,
     observes: Vec<BTreeSet<usize>>,
     /// For each member, the members that read one of its targets at the
     /// event-iteration entry and so are issued before it.
@@ -367,6 +368,7 @@ impl<'dae> SameTickExchange<'dae> {
                 .iter()
                 .map(|member| member.event_reads.clone())
                 .collect(),
+            direct,
             observes,
             entry_readers,
         }
@@ -473,7 +475,7 @@ impl<'dae> SameTickExchange<'dae> {
     /// Whether every member `member` observes is placed or observes it back,
     /// and every entry reader of its targets is placed.
     fn producers_placed(&self, member: usize, placed: &[bool]) -> bool {
-        self.observes[member]
+        self.direct[member]
             .iter()
             .all(|&observed| placed[observed] || self.observes[observed].contains(&member))
             && self.entry_readers[member]
