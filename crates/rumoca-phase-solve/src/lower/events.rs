@@ -38,7 +38,7 @@ use periodic_schedule::{
 use pre_mode::{condition_pre_mode, expression_pre_mode, merge_pre_mode};
 
 use quotient_memory::lower_quotient_memory;
-use roots::{expression_clock_owner, lower_roots};
+use roots::lower_roots;
 
 use integrator_history::{
     HistoryDependencySlot, apply_integrator_history_effects, collect_linear_op_dependencies,

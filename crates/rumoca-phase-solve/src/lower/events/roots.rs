@@ -145,7 +145,7 @@ fn lower_structured_roots<'dae>(
 ///
 /// The first owner found wins; a clocked partition cannot mix clocks, and the callers
 /// that must reject a mix check for it explicitly.
-pub(super) fn expression_clock_owner<'dae>(
+fn expression_clock_owner<'dae>(
     view: dae::DaeView<'dae>,
     clocks: &LoweredClocks<'dae>,
     expression: dae::ExprId<'dae>,
