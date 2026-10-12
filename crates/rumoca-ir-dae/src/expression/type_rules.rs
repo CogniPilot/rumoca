@@ -11,7 +11,7 @@ pub(super) fn validate_static_quotient(
     };
     let operator = quotient_name(builtin);
     if discrete_integer_quotient(storage, [*lhs, *rhs], at)? {
-        // MLS §3.8.3: Integer expressions with discrete operands are already
+        // MLS §3.8.5: Integer expressions with discrete operands are already
         // discrete-time. Their exact arithmetic needs no continuous root and
         // must not be domain-proved through the Real static-value helper.
         return if storage.static_integer(*rhs) == Some(0) {

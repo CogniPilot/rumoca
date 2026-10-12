@@ -190,6 +190,7 @@ fn issue_411_main_integer_mod_and_div_publish_exact_i64_wasm_lanes() {
         for input in [
             0,
             1,
+            2,
             -1,
             9_007_199_254_740_993,
             -9_007_199_254_740_993,
@@ -237,6 +238,7 @@ fn main_integer_quotients_preserve_signed_dynamic_divisors_and_checked_faults() 
         let mut program = SourceProgram::new(&source, "IntegerPrecision");
         for (input, divisor) in [
             (0, 7),
+            (0, 1),
             (1, -7),
             (-9_007_199_254_740_994, 7),
             (0, i64::MIN),
