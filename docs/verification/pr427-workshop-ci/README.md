@@ -1,5 +1,13 @@
 # PR 427 workshop CI coverage inventory
 
+Latest focused checkpoints: the [function-definedness repair and original
+Booster prefix](function-definedness-compound-writer-qualification.md) pass;
+all 109 existing browser runtime/playground Node unit tests pass at `d4e415276`
+after canonical dependency staging and the configured-session assertion repair
+([receipt](browser-unit-configuration-qualification.json)). Full browser mission,
+final combined quick/full and remote CI remain pending. The inventory below
+records its named earlier checkpoints.
+
 Source baseline: `cfe53b91d18d53c988ea2b391f2bdde8f8697e5b`. The current candidate
 replaces its incompatible Ball/JAX configuration with event-free SympyDecay/JAX.
 This is a source-derived roster and candidate regression record. The focused
