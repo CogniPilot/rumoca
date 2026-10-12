@@ -128,13 +128,55 @@
           "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
         }
       }
+    },
+    {
+      "name": "guide-cli-build-450658a2b",
+      "source": "450658a2b9446c2eac4cd8399c25e0b97ed663fb",
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "-p",
+        "rumoca",
+        "--bin",
+        "rumoca"
+      ],
+      "scope": "release CLI build only; neural benchmark not started",
+      "elapsed_ms": 600064.025767,
+      "peak_resident_plus_swap_kib": 3155600,
+      "exit_code": 124,
+      "signal": "SIGKILL",
+      "resource_stop": "timeout",
+      "source_unchanged": true,
+      "artifacts": {
+        "guardian.json": {
+          "path": "$HOME/scratch/rumoca/workshop427-final-exports-20261012/evidence/guide-cli-build-450658a2b/guardian.json",
+          "sha256": "cd665e5515b6df52df6c6ea5ab1b3028977b9f2c79ae67a6154b0bedee1edfb8"
+        },
+        "command.log": {
+          "path": "$HOME/scratch/rumoca/workshop427-final-exports-20261012/evidence/guide-cli-build-450658a2b/command.log",
+          "sha256": "fe58d4fae13f12327693d52cc0d1dda337a0aff1100699cebe6667face63c76a"
+        },
+        "source-before.json": {
+          "path": "$HOME/scratch/rumoca/workshop427-final-exports-20261012/evidence/guide-cli-build-450658a2b/source-before.json",
+          "sha256": "8d5ea168ad18f64d6c8fb323606511a3b27802182744edec4fd0b5d2d93c4bb5"
+        },
+        "source-after.json": {
+          "path": "$HOME/scratch/rumoca/workshop427-final-exports-20261012/evidence/guide-cli-build-450658a2b/source-after.json",
+          "sha256": "8d5ea168ad18f64d6c8fb323606511a3b27802182744edec4fd0b5d2d93c4bb5"
+        },
+        "exit-code.txt": {
+          "path": "$HOME/scratch/rumoca/workshop427-final-exports-20261012/evidence/guide-cli-build-450658a2b/exit-code.txt",
+          "sha256": "ca2ebdf97d7469496b1f4b78958f9dc8447efdcb623953fee7b6996b762f6fff"
+        }
+      }
     }
   ],
   "results": {
     "wheel_test.py": "PASS five required scripts with JAX and CasADi required",
     "guide_test.py": "PASS ten exact Python fences and live JAX/CasADi differentiation",
     "guide_scenario_test.py": "PASS all four authored scenarios and two exact CMake fences after native-CMake environment correction",
-    "benchmark_test.py": "UNRUN; release CLI build active separately"
+    "benchmark_test.py": "UNRUN; first release CLI build timed out124 before runtime; separate same-source warm build in progress"
   },
   "qualification_boundaries": [
     "source-bound later combined changes still require refresh",

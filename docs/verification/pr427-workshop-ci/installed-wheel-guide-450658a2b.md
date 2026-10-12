@@ -24,6 +24,10 @@ attempts, not a first-attempt seven-script pass.
 
 The full neural benchmark is not covered by this checkpoint. Its original
 1082-parameter owner and simulation/gradient oracle remain required; a separate
-release CLI build is in progress to keep build time out of that runtime budget.
+release CLI build keeps build time out of that runtime budget. Its first
+600-second attempt timed out before executing the benchmark (exit124, peak
+resident plus swap 3,155,600 KiB, all tracked source entries unchanged). A
+separately recorded same-source warm build is in progress; no runtime result
+is inferred from the completed compilation stages.
 Later combined-source changes, the remaining browser guide routes, full/quick,
 MSL/OMC and remote CI still need qualification.
