@@ -305,6 +305,13 @@ pub(super) fn condition_clock_owner<'dae>(
     let condition = view
         .condition(condition)
         .expect("checked condition identity resolves");
+    checked_condition_clock_owner(view, condition)
+}
+
+pub(super) fn checked_condition_clock_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    condition: dae::ConditionView<'dae>,
+) -> Option<dae::ClockId<'dae>> {
     condition.synchronous_clock_owner().or_else(|| {
         let clock = condition.projected_task_clock()?;
         matches!(

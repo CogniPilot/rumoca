@@ -870,13 +870,25 @@ fn lower_conditional_discrete_value_owner<'dae>(
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
     let mut lowered = Vec::new();
+    let common_clock = common_periodic_clock(
+        view,
+        owner
+            .branches()
+            .iter()
+            .map(|branch| match branch.activation() {
+                dae::DiscreteBranchActivation::When { guard, .. } => {
+                    condition_clock_owner(view, guard)
+                }
+                dae::DiscreteBranchActivation::Always => None,
+            }),
+    );
     for (target_ordinal, target) in owner.targets().iter().enumerate() {
         let target_variable = dae::VariableId::from(target);
         let variable = view
             .variable(target_variable)
             .expect("checked B.1c target resolves");
         for branch in owner.branches().iter() {
-            let branch = lower_checked_discrete_value_branch(
+            let mut branch = lower_checked_discrete_value_branch(
                 view,
                 layout,
                 clocks,
@@ -884,6 +896,9 @@ fn lower_conditional_discrete_value_owner<'dae>(
                 target_ordinal,
                 branch,
             )?;
+            if is_ordinary_target(clocks, target_variable) && common_clock.is_none() {
+                branch.clock = None;
+            }
             record_guarded_target(
                 &mut lowered,
                 GuardedTargetMetadata {

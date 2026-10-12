@@ -17,6 +17,7 @@ mod condition_memory;
 mod integrator_history;
 mod messages;
 mod observation_refresh;
+mod periodic_schedule;
 mod pre_mode;
 mod quotient_memory;
 pub(super) mod structured;
@@ -29,6 +30,7 @@ pub(in crate::lower) use condition_memory::condition_memory;
 use condition_memory::{condition_clock_owner, lower_condition_memory};
 use messages::{MessageActionContext, push_message_action};
 use observation_refresh::derive_observation_refresh;
+use periodic_schedule::{common_periodic_clock, is_ordinary_target, ordinary_update_clocks};
 use pre_mode::{condition_pre_mode, expression_pre_mode, merge_pre_mode};
 
 use quotient_memory::lower_quotient_memory;
@@ -1094,18 +1096,15 @@ fn checked_discrete_real_activation_clock<'dae>(
     guard: dae::ConditionId<'dae>,
     span: Span,
 ) -> Result<Option<dae::ClockId<'dae>>, LowerError> {
-    let activation = condition_clock_owner(view, guard);
+    let guard_view = view.condition(guard).ok_or_else(|| {
+        LowerError::contract("discrete Real activation has no checked condition", span)
+    })?;
+    let activation = condition_memory::checked_condition_clock_owner(view, guard_view);
     let owner = clocks.variable_owner(variable).map(|(clock, _)| clock);
     match (activation, owner) {
         (None, None) => Ok(None),
         (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
-        (Some(activation), None)
-            if view
-                .condition(guard)
-                .expect("checked condition identity resolves")
-                .synchronous_clock_owner()
-                .is_none() =>
-        {
+        (Some(activation), None) if guard_view.synchronous_clock_owner().is_none() => {
             // A checked Boolean periodic task is an MLS §8.5 schedule;
             // it does not mint MLS §16 synchronous variable ownership.
             Ok(Some(activation))
@@ -1424,6 +1423,7 @@ fn guarded_targets_of<'dae>(
     updates: &[EventUpdate<'dae>],
 ) -> Result<Vec<GuardedTarget<'dae>>, LowerError> {
     let mut targets = Vec::<GuardedTarget<'dae>>::new();
+    let ordinary_clocks = ordinary_update_clocks(view, clocks, updates);
     for update in updates {
         let expression = view
             .expression(update.value)
@@ -1443,10 +1443,16 @@ fn guarded_targets_of<'dae>(
         let offset = update.element.map_or(0, |element| element as usize);
         let target_base =
             variable_scalar_slot(layout, update.variable.index(), offset, update.span)?;
-        let clock = update
+        let mut clock = update
             .clock
             .map(|clock| clocks.clock(clock).map(|solve| (clock, solve)))
             .transpose()?;
+        if ordinary_clocks
+            .get(&update.variable.index())
+            .is_some_and(Option::is_none)
+        {
+            clock = None;
+        }
         let trigger_memory = condition_memory(layout, update.trigger, update.span)?;
         let branch = (update.trigger, update.guard, update.value, trigger_memory);
         record_guarded_target(
