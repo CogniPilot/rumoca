@@ -109,14 +109,12 @@ fn a_when_equation_derivative_reads_the_current_same_tick_producer() {
             },
         )
         .unwrap_or_else(|error| panic!("{policy:?}: same-tick derivative {error}"));
-        assert_eq!(result.times, vec![0.0, 0.1, 0.2]);
+        let grid = regular_grid(&result, 0.1);
         for name in ["a", "z"] {
             let column = result.names.iter().position(|n| n == name).unwrap();
-            assert_eq!(
-                result.data[column],
-                vec![2.0, 3.0, 4.0],
-                "{policy:?}: {name}"
-            );
+            for (&row, expected) in grid.iter().zip([2.0, 3.0, 4.0]) {
+                assert_eq!(result.data[column][row], expected, "{policy:?}: {name}");
+            }
         }
     }
 }
@@ -143,7 +141,7 @@ fn check_event_derivative(source: &str, name: &str, names: &[&str], expected: &[
             },
         )
         .unwrap_or_else(|error| panic!("{policy:?}: event derivative {error}"));
-        assert_eq!(result.times.len(), 5);
+        regular_grid(&result, 0.05);
         for (&name, &expected) in names.iter().zip(expected) {
             let column = result.names.iter().position(|n| n == name).unwrap();
             assert_eq!(result.data[column][0], 0.0);
@@ -154,4 +152,24 @@ fn check_event_derivative(source: &str, name: &str, names: &[&str], expected: &[
             );
         }
     }
+}
+
+fn regular_grid(result: &SimResult, dt: f64) -> Vec<usize> {
+    assert_eq!(result.times.first(), Some(&0.0));
+    assert_eq!(result.times.last(), Some(&0.2));
+    assert!(result.times.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(result.data.len(), result.names.len());
+    assert!(result.data.iter().all(|column| {
+        column.len() == result.times.len() && column.iter().all(|value| value.is_finite())
+    }));
+    (0..=(0.2 / dt).round() as usize)
+        .map(|step| {
+            let time = step as f64 * dt;
+            result
+                .times
+                .iter()
+                .position(|&observed| observed == time)
+                .unwrap_or_else(|| panic!("required regular sample {time} is absent"))
+        })
+        .collect()
 }
