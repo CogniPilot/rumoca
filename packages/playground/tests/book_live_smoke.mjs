@@ -102,15 +102,26 @@ try {
     .then(() => true).catch(() => false);
   check(balloon, "HotAirBalloon exact visualization rendered its Three.js canvas");
 
-  // The unchanged balloon has events that dae-modelica cannot render.
-  // Preserve the typed refusal rather than silently dropping those owners.
+  // The inspector displays the actual checked DAE, including event owners.
   await page.locator(".rumoca-live button:has-text('Show DAE')").first().click();
-  const refusal = await page
-    .waitForSelector(".rumoca-live-error", { timeout: 120000 })
+  const balloonDaeText = await page
+    .waitForSelector(".rumoca-live-dae", { timeout: 120000 })
     .then((el) => el.textContent())
     .catch(() => null);
-  check(!!refusal && refusal.includes("unsupported-feature:events")
-    && refusal.includes("dae-modelica"), "HotAirBalloon Show DAE preserves typed event refusal");
+  const balloonDae = balloonDaeText ? JSON.parse(balloonDaeText) : null;
+  check(balloonDae?.storage?.continuous_equation_operations?.length > 0
+    && balloonDae.storage.conditions.length > 0 && balloonDae.storage.roots.length > 0,
+  "HotAirBalloon Show DAE includes checked equations, conditions and event roots");
+  const exporterRefusal = await page.evaluate(async () => {
+    const wasm = await import('/packages/rumoca/dist/release-full-web/rumoca_bind_wasm.js');
+    await wasm.default();
+    const source = window.monaco.editor.getModels()[0].getValue();
+    try { wasm.render_target_for_source(source, 'HotAirBalloon', 'dae-modelica', '', '{}'); }
+    catch (error) { return String(error); }
+    return '';
+  });
+  check(exporterRefusal.includes('unsupported-feature:events'),
+    'HotAirBalloon Modelica export retains its independent typed events refusal');
 
   if (monacoLoaded) {
     // LSP diagnostics: inject a syntax error into the first editor and
@@ -133,10 +144,11 @@ try {
     waitUntil: "domcontentloaded",
   });
   await page.locator(".rumoca-live button:has-text('Show DAE')").first().click();
-  const dae = await page.waitForSelector(".rumoca-live-dae", { timeout: 120000 })
+  const daeText = await page.waitForSelector(".rumoca-live-dae", { timeout: 120000 })
     .then((el) => el.textContent()).catch(() => null);
-  check(!!dae && dae.includes("class SympyDecay") && dae.includes("der(x)"),
-    "authored SympyDecay Show DAE renders its class and derivative equation");
+  const dae = daeText ? JSON.parse(daeText) : null;
+  check(dae?.storage?.continuous_equation_operations?.length > 0,
+    "authored SympyDecay Show DAE includes its checked continuous equation");
 
   // --- Turkey page: editable visualization scripts ---
   await page.goto(`${base}/docs/user-guide/book/language/arrays-pde.html`, {

@@ -158,9 +158,13 @@ export async function renderDaeTextWithRuntime({
   sourceRootCacheUrl = '',
 }) {
   await ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
-  const rendered = wasm.render_target_for_source(source, modelName, 'dae-modelica', '', '{}');
-  const files = Array.isArray(rendered?.files) ? rendered.files : [];
-  return files.map((file) => file.content || '').join('\n');
+  // Inspection shows the complete checked DAE, including event owners that
+  // a particular source exporter may be unable to reconstruct faithfully.
+  const compiled = JSON.parse(wasm.compile_to_json(source, modelName));
+  if (!compiled.dae_native || typeof compiled.pretty !== 'string' || !compiled.pretty.trim()) {
+    throw new Error('The compiler did not return its checked DAE inspection');
+  }
+  return compiled.pretty;
 }
 
 export async function diffsolAvailable(pkgBase) {
