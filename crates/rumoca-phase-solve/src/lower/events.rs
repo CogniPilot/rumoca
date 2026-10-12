@@ -68,7 +68,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
         derivatives,
     };
     let layout = &context;
-    let mut discrete = DiscreteRows::new(view)?;
+    let mut discrete = DiscreteRows::new(view, derivatives)?;
     lower_quotient_memory(view, layout, &mut discrete)?;
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
     lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
@@ -414,11 +414,18 @@ enum EventIterationOwnerClaim {
 }
 
 impl<'dae> DiscreteRows<'dae> {
-    fn new(view: dae::DaeView<'dae>) -> Result<Self, LowerError> {
+    fn new(
+        view: dae::DaeView<'dae>,
+        derivatives: &super::ContinuousRowIndex<'dae>,
+    ) -> Result<Self, LowerError> {
         let plan = causal_discrete_plan(view)?;
         Ok(Self {
             same_tick_definitions: std::rc::Rc::new(
-                rumoca_phase_structural::SameTickDefinitions::derive(view, &plan),
+                rumoca_phase_structural::SameTickDefinitions::derive_with_derivative_sources(
+                    view,
+                    &plan,
+                    derivatives.derivative_sources(),
+                ),
             ),
             event_iteration_owners: vec![None; view.variable_count()],
             ..Self::default()

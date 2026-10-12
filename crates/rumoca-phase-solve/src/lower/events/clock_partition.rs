@@ -435,17 +435,12 @@ fn unclocked_member<'dae>(
     let mut direct = BTreeSet::new();
     for &(trigger, guard, value, _) in &target.branches {
         let excluded = BTreeSet::from([trigger]);
-        rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
-        rumoca_phase_structural::collect_condition_same_instant_reads_except(
-            view,
-            guard,
-            &excluded,
-            &mut direct,
-        );
+        definitions.collect_expression_reads(view, value, &mut direct);
+        definitions.collect_condition_reads(view, guard, &excluded, |_| false, &mut direct);
     }
     let mut entry_reads = BTreeSet::new();
     for trigger in triggers {
-        rumoca_phase_structural::collect_condition_same_instant_reads_pruned(
+        definitions.collect_condition_reads(
             view,
             trigger,
             &BTreeSet::new(),
@@ -483,10 +478,16 @@ fn event_clock_member<'dae>(
 ) -> SameTickExchangeMember {
     let mut direct = BTreeSet::new();
     for &value in value_reads {
-        rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
+        definitions.collect_expression_reads(view, value, &mut direct);
     }
     for &condition in condition_reads {
-        rumoca_phase_structural::collect_condition_same_instant_reads(view, condition, &mut direct);
+        definitions.collect_condition_reads(
+            view,
+            condition,
+            &BTreeSet::new(),
+            |_| false,
+            &mut direct,
+        );
     }
     let (reads, sampled): (BTreeSet<u32>, BTreeSet<u32>) = direct
         .into_iter()

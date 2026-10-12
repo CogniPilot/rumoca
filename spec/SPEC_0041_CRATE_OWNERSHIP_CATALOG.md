@@ -108,7 +108,7 @@ omission. Format-specific omission belongs in an explicit `Serialize` keyed on
 |---|---|---|
 | Compilation/session orchestration | `rumoca-compile` | Pipeline coordination only; no runtime |
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Lowering Scope |
-| Checked DAE causal-discrete orientation and dependency plan | `rumoca-phase-structural` | One target/value authority shared by Solve and GALEC; ambiguous residuals remain unowned |
+| Checked DAE causal-discrete orientation and dependency plan | `rumoca-phase-structural` | One target/value authority shared by Solve and GALEC; ambiguous residuals remain unowned. Solve supplies its structurally matched derivative source rows to the same-instant read query; the query follows those rows and exact aliases, retaining history and issued entry/storage exclusions. Matching and derivative substitution remain Solve-owned. |
 | Typed executable programs plus distinct `SolveProblem` and `SolveAlgorithmBlock` (pending: 2026-08-08 plan, M3-4) roots | `rumoca-ir-solve` | Backend-neutral numerical and controller execution IR |
 | DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering (pending: 2026-08-08 plan, M3-4) | `rumoca-phase-solve` | Exhaustive semantic lowering only, not structural mutation or rendering |
 | Checked DAE pure-function graph → numerical `SolveProblem` typed program regions and pure-call owners | `rumoca-phase-solve` | Numerical Solve lowering is distinct from the GALEC-first Algorithm Code refinement path |
