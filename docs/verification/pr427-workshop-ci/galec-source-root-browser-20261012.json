@@ -405,5 +405,32 @@
     "firstControllerFailure": "Canonical root cache loaded; global Session compilation refused unrelated MSL resolution diagnostics.",
     "logSha256": "0afd6c71c4b2642c3dd6664788fc282196f4d6492b9ad8f2a9b4d644a4ce1f33",
     "guardianSha256": "576421795a9759f8b2dc1f038fac8082724dfb28591971e6e9f753caeec60924"
+  },
+  "strengthenedNativeDiagnosticAfter": {
+    "source": "7b36b3686224dfcb218bb8b0228112d03486fbdc",
+    "productionThrough": "38bf1f3fb757f948b4c3bedc467eb9bf602b5003",
+    "testCommit": "45f3acd7f4096509434dbd4d36ce76f4f9622c3f",
+    "tests": {
+      "selector": "galec_source_root_snapshot_",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "runtimeSeconds": 0.04
+    },
+    "scopedAllTargetClippy": "PASS -D warnings",
+    "scopedFormatter": "PASS",
+    "nativeTestBuildSeconds": 164,
+    "clippySeconds": 51,
+    "guardianElapsedSeconds": 220.466931035,
+    "peakResidentPlusSwapKiB": 2442588,
+    "peakCacheBytes": 7177990144,
+    "sourceFilesVerifiedUnchanged": 4088,
+    "sourceManifestSha256": "1693c5ad56063b7d23f78eac60570cf6a7fefa5d917bfe9172db13a0fc035d05",
+    "scriptSha256": "98f41f5112feefd1c8091acaab1a9e019163d47b0fbd41840211b81cc7f4ecb0",
+    "logSha256": "70c6ccc1f3d7a55f3c9e5945c85adaed1488e38cb136bc9c70e1cf100784c072",
+    "testLogSha256": "3e9bc2ca56380c93d39f708021a855b0e90a6a6cfd7a5cf89524e64cabb5b9cd",
+    "guardianSha256": "6b66e7d2cccd024e0d2d3566d7352da070e5ad5b88347924b95b228a14400d0c",
+    "retainedExecutableSha256": "028f31e1570a348c97a14a926cb4803ca0fbf7cdf2895e1385856fb598ebcd1e",
+    "scope": "Native addon diagnostic test and scoped style checks; no refreshed browser, final-head, full CI or wheel claim."
   }
 }
