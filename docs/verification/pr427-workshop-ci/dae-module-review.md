@@ -1,6 +1,6 @@
 # Workshop DAE module review
 
-This report inventories production source at `d3f804491e1c80dfe4ed7caa3f77341d6778717b` under SPEC_0043 §1/§1a.
+This report inventories production source at `5e6f9cb9afec4caf992a370db78c1a5b342d5336` under SPEC_0043 §1/§1a.
 The adjacent machine-readable inventory names every included module and the
 original PR comparison. Focused qualification is recorded in the conditional,
 clock and selected-value reports; the final combined quick/full gates remain
@@ -10,10 +10,10 @@ is not a qualification of this later combined source.
 | Source | Core lines | Wire lines | Total lines |
 |---|---:|---:|---:|
 | Original PR head `21d64ecaa9d205b671598991ee8c4d2f556fed6c` | 18803 | 5759 | 24562 |
-| Combined workshop source `d3f804491e1c80dfe4ed7caa3f77341d6778717b` | 19937 | 6037 | 25974 |
+| Combined workshop source `5e6f9cb9afec4caf992a370db78c1a5b342d5336` | 19967 | 6037 | 26004 |
 
 The §1b rule rounds these measurements up to the next 250 lines:
-20,000 core, 6,250 wire and 26,000 total.
+20,000 core, 6,250 wire and 26,250 total.
 These are derived acknowledgments; review thresholds, measurement exclusions
 and totality-debt ceilings remain unchanged. This is an increase in DAE source.
 
@@ -71,6 +71,7 @@ PR/spec approval remains a separate requirement.
 | `expression.rs` | 340 | 368 | +28 |
 | `expression/arena.rs` | 85 | 91 | +6 |
 | `expression/array_nodes.rs` | 152 | 156 | +4 |
+| `expression/type_rules.rs` | 944 | 974 | +30 |
 | `lib.rs` | 199 | 200 | +1 |
 | `model.rs` | 1882 | 1917 | +35 |
 | `model/function_checks.rs` | 593 | 594 | +1 |
@@ -90,3 +91,13 @@ PR/spec approval remains a separate requirement.
 | `model/wire/quotient_projection.rs` | 454 | 479 | +25 |
 | `model/wire/records.rs` | 606 | 608 | +2 |
 | `model/wire/structured_quotients.rs` | 91 | 94 | +3 |
+
+The final 30 production lines in `expression/type_rules.rs` give discrete
+Integer `div`, `mod` and `rem` their checked scalar-Integer domain before the
+existing Real static-numeric path. A known zero divisor still fails
+construction; continuous or Real operands retain the existing domain rule.
+The helper reuses issued type and variability facts without a second
+floating-point probe or a second expression grammar. Its focused regressions
+are included in the frozen source; this review does not claim that the
+combined quick/full gates pass. No other production module changed since
+the preceding inventory.

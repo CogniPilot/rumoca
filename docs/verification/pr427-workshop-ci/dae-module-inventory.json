@@ -1,16 +1,16 @@
 {
   "convention": "SPEC_0043 section 1a physical production Rust lines; test/generated exclusions; wire is model/wire.rs plus model/wire/",
   "before_source": "21d64ecaa9d205b671598991ee8c4d2f556fed6c",
-  "after_source": "d3f804491e1c80dfe4ed7caa3f77341d6778717b",
+  "after_source": "5e6f9cb9afec4caf992a370db78c1a5b342d5336",
   "before": {
     "core": 18803,
     "wire": 5759,
     "total": 24562
   },
   "after": {
-    "core": 19937,
+    "core": 19967,
     "wire": 6037,
-    "total": 25974
+    "total": 26004
   },
   "changed_files": [
     {
@@ -54,6 +54,12 @@
       "before": 152,
       "after": 156,
       "delta": 4
+    },
+    {
+      "path": "expression/type_rules.rs",
+      "before": 944,
+      "after": 974,
+      "delta": 30
     },
     {
       "path": "lib.rs",
@@ -265,7 +271,7 @@
     },
     "expression/type_rules.rs": {
       "partition": "core",
-      "lines": 944
+      "lines": 974
     },
     "expression/value_types.rs": {
       "partition": "core",
