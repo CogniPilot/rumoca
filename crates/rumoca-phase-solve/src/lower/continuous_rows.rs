@@ -22,7 +22,9 @@ impl<'dae> ContinuousRowIndex<'dae> {
     ) -> impl Iterator<Item = (dae::StateId<'dae>, dae::ExprId<'dae>)> + '_ {
         self.rows.iter().filter_map(|(unknown, row)| match unknown {
             UnknownId::Derivative { state, .. } => Some((*state, row.expression)),
-            UnknownId::Algebraic { .. } => None,
+            UnknownId::Algebraic { .. } | UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
+                None
+            }
         })
     }
 
