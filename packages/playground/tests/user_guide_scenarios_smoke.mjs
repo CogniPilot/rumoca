@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { launchGuideBrowser } from "./browser_launcher.mjs";
 import { observeShippedArtifact } from "./browser_artifact_identity.mjs";
 import { createBrowserFailureCollector } from "./browser_failures.mjs";
+import { driveBoosterMission } from "./user_guide_booster_mission.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -27,7 +28,8 @@ try {
   for (const path of roster) {
     const started = performance.now();
     try {
-      const receipt = await page.evaluate(async (path) => {
+      const boosterMission = path === "examples/interactive/reusable_booster/rumoca-scenario.toml";
+      const pendingReceipt = page.evaluate(async ({ path, boosterMission }) => {
         const pkgBase = "/packages/rumoca/dist/release-full-web/";
         const wasm = await import(pkgBase + "rumoca_bind_wasm.js");
         await wasm.default();
@@ -98,6 +100,12 @@ try {
               onError: (error) => rejectRuntime?.(error) });
             if (!session) throw new Error("canonical configured session not constructed");
             samples.push(snapshot(session));
+            if (boosterMission) {
+              const { observeBoosterMission } = await import("/packages/playground/tests/user_guide_booster_mission.mjs");
+              const mission = await observeBoosterMission({ controller, session, host, snapshot,
+                dt: config.sim.dt, setRuntimeReject: (reject) => { rejectRuntime = reject; } });
+              return { ...common, kind: "interactive", boosterMission: mission, samples };
+            }
             await new Promise((resolve, reject) => {
               rejectRuntime = reject;
               const step = session.step.bind(session);
@@ -131,7 +139,18 @@ try {
           solver: config.sim?.solver ?? "auto", dt, tEnd });
         const payload = result.payload ?? result;
         return { ...common, kind: "batch", requestedHorizon: tEnd, requestedDt: dt, payload };
-      }, path);
+      }, { path, boosterMission });
+      pendingReceipt.catch(() => {});
+      if (boosterMission) {
+        try {
+          await Promise.race([driveBoosterMission(page), pendingReceipt]);
+        } catch (error) {
+          await page.evaluate((message) => globalThis.__rumocaGuideBoosterMission?.fail(message), String(error));
+          await pendingReceipt.catch(() => {});
+          throw error;
+        }
+      }
+      const receipt = await pendingReceipt;
       const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
       assert.equal(receipt.scenarioSha256, sha(await readFile(path)), `authored configuration bytes: ${path}`);
       assert.equal(receipt.sourceSha256, sha(await readFile(receipt.sourcePath)), `authored model bytes: ${path}`);
@@ -167,6 +186,14 @@ try {
         receipt.sampledHorizon = [allData[0][0], allData[0].at(-1)];
         receipt.samples = allData[0].length;
         delete receipt.payload;
+      } else if (receipt.boosterMission) {
+        assert.deepEqual(receipt.boosterMission.nominal.phases, [0, 1, 2, 3, 4]);
+        const trace = receipt.boosterMission.trace;
+        assert(trace.length > 4, "full authored mission, not startup only");
+        assert(trace.every((sample, index) => index === 0
+          || Math.abs(sample.time - trace[index - 1].time - receipt.authoredDt) < 1e-9), "complete mission interval grid");
+        receipt.sampledHorizon = [trace[0].time, trace.at(-1).time];
+        receipt.samples = trace.length;
       } else if (receipt.kind === "interactive") {
         assert(receipt.samples.length >= 4);
         assert.equal(receipt.samples[0].time, 0, "interactive initialization");
