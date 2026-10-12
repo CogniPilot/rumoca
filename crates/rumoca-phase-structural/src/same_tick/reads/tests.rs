@@ -63,7 +63,7 @@ fn model() -> dae::Dae {
     .unwrap()
 }
 
-fn derivative(view: dae::DaeView<'_>) -> (dae::ExprId<'_>, dae::StateId<'_>) {
+pub(super) fn derivative(view: dae::DaeView<'_>) -> (dae::ExprId<'_>, dae::StateId<'_>) {
     (0..view.expression_count())
         .filter_map(|i| view.expression_id(i))
         .find_map(|id| match view.expression(id).unwrap().operation() {
