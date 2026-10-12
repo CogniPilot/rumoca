@@ -102,14 +102,15 @@ try {
     .then(() => true).catch(() => false);
   check(balloon, "HotAirBalloon exact visualization rendered its Three.js canvas");
 
-  // Show DAE before the diagnostics mutation below; dae-modelica renders a
-  // `class <Name> ... end <Name>;` document.
+  // The unchanged balloon has events that dae-modelica cannot render.
+  // Preserve the typed refusal rather than silently dropping those owners.
   await page.locator(".rumoca-live button:has-text('Show DAE')").first().click();
-  const dae = await page
-    .waitForSelector(".rumoca-live-dae", { timeout: 120000 })
+  const refusal = await page
+    .waitForSelector(".rumoca-live-error", { timeout: 120000 })
     .then((el) => el.textContent())
     .catch(() => null);
-  check(!!dae && dae.includes("class"), "Show DAE rendered Modelica text");
+  check(!!refusal && refusal.includes("unsupported-feature:events")
+    && refusal.includes("dae-modelica"), "HotAirBalloon Show DAE preserves typed event refusal");
 
   if (monacoLoaded) {
     // LSP diagnostics: inject a syntax error into the first editor and
@@ -126,6 +127,16 @@ try {
     });
     check(markerCount > 0, `LSP diagnostics produced ${markerCount} markers`);
   }
+
+  // The authored event-free SympyDecay scenario exercises the positive path.
+  await page.goto(`${base}/docs/user-guide/book/simulation/running.html`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator(".rumoca-live button:has-text('Show DAE')").first().click();
+  const dae = await page.waitForSelector(".rumoca-live-dae", { timeout: 120000 })
+    .then((el) => el.textContent()).catch(() => null);
+  check(!!dae && dae.includes("class SympyDecay") && dae.includes("der(x)"),
+    "authored SympyDecay Show DAE renders its class and derivative equation");
 
   // --- Turkey page: editable visualization scripts ---
   await page.goto(`${base}/docs/user-guide/book/language/arrays-pde.html`, {
