@@ -147,7 +147,6 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
     // unfiltered run still demands both corpora.
     let selected = selected_manifest(&manifest, &args.only)?;
     let roots = resolve_roots(root, &selected, args)?;
-    roots::ensure_usable(&selected, &roots)?;
     let rumoca = resolve_compiler(root, args)?;
     let entries: Vec<&CorpusEntry> = selected.entries.iter().collect();
     // Read from the whole manifest, never the selection: a `--only` run must
@@ -163,7 +162,11 @@ pub(super) fn run(root: &Path, args: &VerifyCorpusPinArgs) -> Result<()> {
     // names a root nothing was read from.
     for corpus in [manifest::Corpus::FlightModels, manifest::Corpus::Msl] {
         if entries.iter().any(|entry| entry.corpus == corpus) {
-            println!("  {}: {}", corpus.label(), roots.root_for(corpus).display());
+            println!(
+                "  {}: {}",
+                corpus.label(),
+                roots.root_for(corpus)?.display()
+            );
         }
     }
     println!("  compiler: {}", rumoca.display());
@@ -289,14 +292,16 @@ impl Worker<'_> {
     fn drain(&self) {
         while let Some(index) = self.claim() {
             let entry = self.entries[index];
-            let context = RunContext {
-                rumoca: self.rumoca,
-                corpus_root: self.roots.root_for(entry.corpus),
-                artifact_dir: self.artifact_dir,
-                cache_dir: self.cache_dir,
-                deadline: self.deadline,
-            };
-            let outcome = execution::run_entry(entry, &context);
+            let outcome = self.roots.root_for(entry.corpus).and_then(|corpus_root| {
+                let context = RunContext {
+                    rumoca: self.rumoca,
+                    corpus_root,
+                    artifact_dir: self.artifact_dir,
+                    cache_dir: self.cache_dir,
+                    deadline: self.deadline,
+                };
+                execution::run_entry(entry, &context)
+            });
             *self.slots[index].lock().expect("corpus slot mutex") = Some(outcome);
         }
     }
