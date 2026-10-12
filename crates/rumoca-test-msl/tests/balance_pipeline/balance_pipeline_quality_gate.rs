@@ -1038,7 +1038,7 @@ pub(super) fn model_names_from_omc_models_map(payload: &serde_json::Value) -> Op
     Some(normalize_model_names(models.keys().cloned().collect()))
 }
 
-pub(super) fn current_msl_quality_baseline(
+fn current_msl_quality_baseline(
     summary: &MslSummary,
     parity_input: Option<&MslParityGateInput>,
     phase_budgets: PhaseBudgets,
