@@ -39,7 +39,10 @@ impl<'dae> DefinednessPredicates<'dae> {
                 let prior = if join.was_partial {
                     Some(self.predicate(&join.target, span)?)
                 } else {
-                    None
+                    // A compound writer may withdraw analysis admission, but
+                    // cannot undo a definition on an already defined path
+                    // (MLS §12.4.4). Keep that issued predicate across a fold.
+                    self.defined.get(&join.target).copied()
                 };
                 Ok(PartialTarget {
                     name: join.target.clone(),
