@@ -131,3 +131,57 @@ fn same_expression_entry_current_entry_reads_keep_distinct_registers() {
         assert_eq!(actual, [7.0, 3.0, 7.0]);
     });
 }
+
+#[test]
+fn an_ordinary_intermediate_program_projects_its_current_algebraic_definition() {
+    let (model, span) = alias_model();
+    model.inspect(|view| {
+        let dae::ContinuousOwnerView::Residual { equation, .. } =
+            view.continuous_owners().next().unwrap()
+        else {
+            panic!("residual owner");
+        };
+        let dae::ExpressionOperation::Binary {
+            lhs: alias,
+            rhs: producer,
+            ..
+        } = view.expression(equation.residual()).unwrap().operation()
+        else {
+            panic!("defining equation");
+        };
+        let dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(producer)) =
+            view.expression(producer).unwrap().operation()
+        else {
+            panic!("issued producer");
+        };
+        let producer = dae::VariableId::from(producer).index();
+        let plan = rumoca_phase_structural::CausalDiscretePlan::derive(view).unwrap();
+        let definitions =
+            Rc::new(rumoca_phase_structural::SameTickDefinitions::derive(view, &plan).unwrap());
+        let owner = DefinitionOwner::new(definitions, Rc::new(BTreeSet::from([producer])));
+        let layout = crate::layout::lower_layout(view).unwrap();
+        let current = ScalarCompiler::new(view, &layout, None)
+            .current_definition_program(owner, alias, 0)
+            .unwrap();
+        let entry = ScalarCompiler::new(view, &layout, None)
+            .program(alias, 0)
+            .unwrap();
+        let block = solve::ScalarProgramBlock::with_source_span(
+            vec![entry, current],
+            span.require_provenance("current intermediate fixture")
+                .unwrap(),
+        )
+        .unwrap();
+        let mut actual = [0.0; 2];
+        rumoca_eval_solve::eval_scalar_program_block(
+            &block,
+            &[7.0],
+            &[3.0],
+            0.0,
+            None,
+            &mut actual,
+        )
+        .unwrap();
+        assert_eq!(actual, [7.0, 3.0]);
+    });
+}

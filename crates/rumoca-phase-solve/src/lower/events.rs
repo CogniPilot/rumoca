@@ -26,7 +26,7 @@ pub(super) mod structured;
 
 use clock_partition::{
     PendingClockedProducer, PendingClockedStep, SameTickExchange, SameTickExchangeMember,
-    guarded_group_same_tick_reads, issue_clock_partition_order,
+    guarded_definition_owner, guarded_group_same_tick_reads, issue_clock_partition_order,
 };
 use compiler_context::EventCompilationContext;
 pub(in crate::lower) use condition_memory::condition_memory;
@@ -613,6 +613,7 @@ impl<'dae> DiscreteRows<'dae> {
             });
         }
         self.clocked_producers.push(PendingClockedProducer {
+            read_context: rumoca_phase_structural::SameTickReadContext::ClockPartition,
             step: PendingClockedStep::EventTransaction { program_index },
             clock_owners: transaction.clock_owners().to_vec(),
             targets: transaction_targets,
@@ -801,6 +802,7 @@ impl<'dae> DiscreteRows<'dae> {
         span: Span,
     ) {
         self.clocked_producers.push(PendingClockedProducer {
+            read_context: rumoca_phase_structural::SameTickReadContext::ClockPartition,
             step,
             clock_owners: vec![clock_owner],
             targets,
@@ -1490,16 +1492,7 @@ fn lower_guarded_targets<'dae>(
         SameTickExchange::derive(view, layout, clocks, &rows.same_tick_definitions, targets)?;
     let order = exchange.producer_order();
     apply_permutation(targets, &order);
-    let definition_targets = std::rc::Rc::new(
-        targets
-            .iter()
-            .map(|target| target.variable.index())
-            .collect::<BTreeSet<_>>(),
-    );
-    let definition_owner = super::scalar::DefinitionOwner::new(
-        std::rc::Rc::clone(&rows.same_tick_definitions),
-        definition_targets,
-    );
+    let definition_owner = guarded_definition_owner(rows, targets);
     let mut first = 0;
     while first < targets.len() {
         let clock = targets[first].clock;
@@ -1518,6 +1511,8 @@ fn lower_guarded_targets<'dae>(
             && targets[end].clock == clock
             && targets[end].event_clock == event_clock
             && targets[end].pre_mode == pre_mode
+            && is_ordinary_target(clocks, targets[end].variable)
+                == is_ordinary_target(clocks, targets[first].variable)
             && same_guarded_control(&targets[first], &targets[end])
             && exchange.fusable_with_range(&order, first, end)
         {
@@ -1544,14 +1539,15 @@ fn lower_guarded_targets<'dae>(
             let (value_reads, condition_reads) = guarded_group_same_tick_reads(group);
             let span = group[0].span;
             let group_targets = group.iter().map(|target| target.variable).collect();
-            rows.record_clocked_producer(
-                PendingClockedStep::GuardedAssignment { program_index },
-                clock_owner,
-                group_targets,
+            rows.clocked_producers.push(PendingClockedProducer {
+                step: PendingClockedStep::GuardedAssignment { program_index },
+                read_context: exchange.group_read_context(&order, first, end),
+                clock_owners: vec![clock_owner],
+                targets: group_targets,
                 value_reads,
                 condition_reads,
                 span,
-            );
+            });
         }
         first = end;
     }

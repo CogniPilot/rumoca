@@ -45,12 +45,19 @@ use rumoca_ir_dae as dae;
 
 use crate::CausalDefinitions;
 
+mod event_reads;
+mod intermediates;
+pub use event_reads::{EventReadFacts, SameTickReadContext};
+use intermediates::{IntermediateKey, IntermediateNode, discover_intermediates};
+
 /// One clocked producer described by the Solve construction.
 ///
 /// `value_reads` and `condition_reads` are the expression and condition roots
 /// the producer evaluates at its tick. A producer whose reads all resolve
 /// through a history lane (for example a `sample(u)` source) passes no roots.
 pub struct SameTickProducer<'dae> {
+    /// Construction-issued current/entry facts, or the synchronous boundary.
+    pub read_context: SameTickReadContext<'dae>,
     /// Canonical periodic-clock domains on which this producer can execute.
     /// Same-tick exchange exists only between producers whose domains can
     /// fire on one shared instant under the caller's [`ClockCoincidence`]
@@ -135,6 +142,8 @@ pub enum SameTickStep<'dae> {
     IntermediateDefinition {
         variable: dae::VariableId<'dae>,
         definition: dae::ExprId<'dae>,
+        /// This row refreshes an ordinary event value, not an MLS16 history view.
+        read_boundary: SameTickReadBoundary,
     },
 }
 
@@ -147,7 +156,7 @@ pub struct SameTickSchedule<'dae> {
     /// This is derived by the same dependency walk that issued `steps`. Solve
     /// lowering maps the consumers to their typed clock domains once; a
     /// runtime must not rediscover this liveness from programs or storage.
-    pub intermediate_consumers: BTreeMap<u32, Vec<usize>>,
+    pub intermediate_consumers: BTreeMap<(u32, SameTickReadBoundary), Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -237,11 +246,14 @@ struct OwnerReadViews {
     clock_partition: BTreeSet<u32>,
 }
 
-#[derive(Clone, Copy)]
-enum ReadRole {
+/// Executable dependency boundary of an issued intermediate refresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SameTickReadBoundary {
     Current,
     ClockPartition,
 }
+
+type ReadRole = SameTickReadBoundary;
 
 mod reads;
 pub use reads::{
@@ -670,6 +682,9 @@ fn collect_producer_reads<'dae>(
     producers
         .iter()
         .map(|producer| {
+            if let SameTickReadContext::OrdinaryEvent(facts) = &producer.read_context {
+                return Ok(facts.current().clone());
+            }
             let mut reads = BTreeSet::new();
             for &value in &producer.value_reads {
                 collect_same_instant_reads(view, value, &mut reads);
@@ -682,184 +697,6 @@ fn collect_producer_reads<'dae>(
         .collect()
 }
 
-/// One discovered non-producer coordinate on a same-tick path.
-struct IntermediateNode<'dae> {
-    definition: Option<dae::ExprId<'dae>>,
-    reads: BTreeSet<u32>,
-    consumers: BTreeSet<usize>,
-}
-
-/// Discover the coordinates whose values sit on a same-tick path into a
-/// producer target, together with each one's own direct reads.
-///
-/// Only coordinates that transitively reach a producer target are kept: those
-/// are the storage coordinates whose event-entry values go stale mid-tick. A
-/// kept coordinate with no exact definition cannot be refreshed, so it fails
-/// construction instead of silently degrading to the pre-C57 stale read.
-fn discover_intermediates<'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: &SameTickDefinitions<'dae>,
-    producer_of: &BTreeMap<u32, usize>,
-    excluded: &BTreeSet<u32>,
-    direct_reads: &[BTreeSet<u32>],
-    producers: &[SameTickProducer<'dae>],
-) -> Result<BTreeMap<u32, IntermediateNode<'dae>>, SameTickOrderError> {
-    let mut discovered = BTreeMap::<u32, IntermediateNode<'dae>>::new();
-    let mut pending: Vec<(usize, u32)> = direct_reads
-        .iter()
-        .enumerate()
-        .flat_map(|(consumer, reads)| reads.iter().map(move |&read| (consumer, read)))
-        .collect();
-    let mut visited = BTreeSet::new();
-    while let Some((consumer, variable)) = pending.pop() {
-        if !visited.insert((consumer, variable))
-            || producer_of.contains_key(&variable)
-            || excluded.contains(&variable)
-        {
-            continue;
-        }
-        let (definition, reads) = if let Some(definition) = definitions.definition(variable) {
-            let mut reads = BTreeSet::new();
-            collect_same_instant_reads(view, definition, &mut reads);
-            (Some(definition), reads)
-        } else if let Some(reads) = definitions.opaque.get(&variable) {
-            (None, reads.clock_partition.clone())
-        } else {
-            // No writer at all: a state, parameter, input, or history lane.
-            // Its tick-entry value *is* its value for the whole tick.
-            continue;
-        };
-        pending.extend(reads.iter().map(|&read| (consumer, read)));
-        let node = discovered
-            .entry(variable)
-            .or_insert_with(|| IntermediateNode {
-                definition,
-                reads,
-                consumers: BTreeSet::new(),
-            });
-        node.consumers.insert(consumer);
-    }
-    let mut reach = BTreeMap::<u32, bool>::new();
-    let reaches_producer: BTreeMap<u32, bool> = discovered
-        .keys()
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|variable| {
-            let mut guard = BTreeSet::new();
-            let value =
-                reaches_producer_target(variable, producer_of, &discovered, &mut reach, &mut guard);
-            (variable, value)
-        })
-        .collect();
-    let mut tick_reach = BTreeMap::<u32, bool>::new();
-    let reaches_tick_refresh: BTreeMap<u32, bool> = discovered
-        .keys()
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|variable| {
-            let mut guard = BTreeSet::new();
-            let value = reaches_tick_refresh_definition(
-                variable,
-                definitions,
-                &discovered,
-                &mut tick_reach,
-                &mut guard,
-            );
-            (variable, value)
-        })
-        .collect();
-    discovered.retain(|variable, _| {
-        reaches_producer.get(variable).copied().unwrap_or(false)
-            || reaches_tick_refresh.get(variable).copied().unwrap_or(false)
-    });
-    if let Some((variable, _)) = discovered
-        .iter()
-        .find(|(_, node)| node.definition.is_none())
-    {
-        return Err(unrefreshable_read(view, producers, direct_reads, *variable));
-    }
-    Ok(discovered)
-}
-
-/// Whether this definition sits between a producer read and an always-active
-/// discrete definition whose stored value must be recomputed for this tick.
-fn reaches_tick_refresh_definition(
-    variable: u32,
-    definitions: &SameTickDefinitions<'_>,
-    discovered: &BTreeMap<u32, IntermediateNode<'_>>,
-    reach: &mut BTreeMap<u32, bool>,
-    guard: &mut BTreeSet<u32>,
-) -> bool {
-    if definitions.refreshes_on_tick(variable) {
-        return true;
-    }
-    if let Some(&known) = reach.get(&variable) {
-        return known;
-    }
-    if !guard.insert(variable) {
-        return false;
-    }
-    let result = discovered.get(&variable).is_some_and(|node| {
-        node.reads.iter().any(|&read| {
-            reaches_tick_refresh_definition(read, definitions, discovered, reach, guard)
-        })
-    });
-    guard.remove(&variable);
-    reach.insert(variable, result);
-    result
-}
-
-/// Report a read this module cannot refresh, at the span of a producer that
-/// observes it (directly when one does, otherwise the first producer).
-fn unrefreshable_read<'dae>(
-    view: dae::DaeView<'dae>,
-    producers: &[SameTickProducer<'dae>],
-    direct_reads: &[BTreeSet<u32>],
-    variable: u32,
-) -> SameTickOrderError {
-    let span = producers
-        .iter()
-        .zip(direct_reads)
-        .find_map(|(producer, reads)| reads.contains(&variable).then_some(producer.span))
-        .unwrap_or(producers[0].span);
-    SameTickOrderError::UnrefreshableRead {
-        span,
-        name: variable_name(view, variable),
-        detail: "it is written by an owner with no exact unconditional definition, yet its value \
-             depends on a producer of this clock partition; write the read through \
-             pre()/previous() or give the coordinate a single unconditional definition"
-            .to_owned(),
-    }
-}
-
-fn reaches_producer_target(
-    variable: u32,
-    producer_of: &BTreeMap<u32, usize>,
-    discovered: &BTreeMap<u32, IntermediateNode<'_>>,
-    reach: &mut BTreeMap<u32, bool>,
-    guard: &mut BTreeSet<u32>,
-) -> bool {
-    if producer_of.contains_key(&variable) {
-        return true;
-    }
-    if let Some(&known) = reach.get(&variable) {
-        return known;
-    }
-    if !guard.insert(variable) {
-        return false;
-    }
-    let result = discovered.get(&variable).is_some_and(|node| {
-        node.reads
-            .iter()
-            .any(|&read| reaches_producer_target(read, producer_of, discovered, reach, guard))
-    });
-    guard.remove(&variable);
-    reach.insert(variable, result);
-    result
-}
-
 /// Node universe: producers in caller order, then intermediates by variable
 /// index. Emission scans this fixed sequence, so the issued order is
 /// deterministic and biased toward source order, exactly like the proven GALEC
@@ -867,7 +704,7 @@ fn reaches_producer_target(
 #[derive(Clone, Copy)]
 enum Node {
     Producer(usize),
-    Intermediate(u32),
+    Intermediate(IntermediateKey),
 }
 
 /// Emit the topological order, or reject the same-tick cycle that blocks it.
@@ -877,10 +714,13 @@ fn emit_schedule<'dae>(
     producers: &[SameTickProducer<'dae>],
     producer_of: &BTreeMap<u32, usize>,
     direct_reads: &[BTreeSet<u32>],
-    intermediates: &BTreeMap<u32, IntermediateNode<'dae>>,
+    intermediates: &BTreeMap<IntermediateKey, IntermediateNode<'dae>>,
     coincidence: &ClockCoincidence,
 ) -> Result<SameTickSchedule<'dae>, SameTickOrderError> {
+    let event_order =
+        event_reads::EventOrdering::derive(producers, producer_of, direct_reads, coincidence);
     let graph = ScheduleGraph {
+        event_order,
         producers,
         direct_reads,
         intermediates,
@@ -913,6 +753,7 @@ fn emit_schedule<'dae>(
             .enumerate()
             .position(|(index, node)| {
                 !emitted[index]
+                    && graph.entry_readers_emitted(node, &emitted)
                     && graph.node_reads(node).iter().all(|&read| {
                         graph
                             .owner_of(node, read)
@@ -925,11 +766,12 @@ fn emit_schedule<'dae>(
             Node::Producer(producer) => SameTickStep::Producer(producer),
             Node::Intermediate(variable) => SameTickStep::IntermediateDefinition {
                 variable: definitions
-                    .variable_id(variable)
+                    .variable_id(variable.variable)
                     .expect("a discovered intermediate has a DAE variable identity"),
                 definition: intermediates[&variable]
                     .definition
                     .expect("a kept intermediate has an exact definition"),
+                read_boundary: variable.role,
             },
         });
     }
@@ -938,7 +780,12 @@ fn emit_schedule<'dae>(
     }
     let intermediate_consumers = intermediates
         .iter()
-        .map(|(&variable, node)| (variable, node.consumers.iter().copied().collect()))
+        .map(|(&variable, node)| {
+            (
+                (variable.variable, variable.role),
+                node.consumers.iter().copied().collect(),
+            )
+        })
         .collect();
     Ok(SameTickSchedule {
         steps,
@@ -948,11 +795,12 @@ fn emit_schedule<'dae>(
 
 /// The read adjacency the emission loop and its rejection diagnostic share.
 struct ScheduleGraph<'a, 'dae> {
+    event_order: event_reads::EventOrdering,
     producers: &'a [SameTickProducer<'dae>],
     direct_reads: &'a [BTreeSet<u32>],
-    intermediates: &'a BTreeMap<u32, IntermediateNode<'dae>>,
+    intermediates: &'a BTreeMap<IntermediateKey, IntermediateNode<'dae>>,
     coincidence: &'a ClockCoincidence,
-    node_of_intermediate: BTreeMap<u32, usize>,
+    node_of_intermediate: BTreeMap<IntermediateKey, usize>,
     producer_of: &'a BTreeMap<u32, usize>,
     nodes: Vec<Node>,
 }
@@ -967,11 +815,39 @@ impl ScheduleGraph<'_, '_> {
 
     fn owner_of(&self, consumer: Node, variable: u32) -> Option<usize> {
         if let Some(&producer) = self.producer_of.get(&variable) {
+            if let Node::Producer(reader) = consumer
+                && !self.event_order.requires_current(reader, producer)
+            {
+                return None;
+            }
             return self
                 .node_overlaps_producer(consumer, producer)
                 .then_some(producer);
         }
-        self.node_of_intermediate.get(&variable).copied()
+        let role = match consumer {
+            Node::Intermediate(key) => key.role,
+            Node::Producer(reader) => match self.producers[reader].read_context {
+                SameTickReadContext::ClockPartition => ReadRole::ClockPartition,
+                SameTickReadContext::OrdinaryEvent(_) => ReadRole::Current,
+            },
+        };
+        let key = IntermediateKey { variable, role };
+        if let Node::Producer(reader) = consumer
+            && !self.intermediates.get(&key)?.consumers.contains(&reader)
+        {
+            return None;
+        }
+        self.node_of_intermediate.get(&key).copied()
+    }
+
+    fn entry_readers_emitted(&self, node: Node, emitted: &[bool]) -> bool {
+        let Node::Producer(producer) = node else {
+            return true;
+        };
+        self.event_order
+            .entry_readers(producer)
+            .iter()
+            .all(|&reader| emitted[reader])
     }
 
     fn node_overlaps_producer(&self, node: Node, producer: usize) -> bool {
@@ -1031,10 +907,10 @@ impl ScheduleGraph<'_, '_> {
                     .iter()
                     .zip(self.direct_reads)
                     .find_map(|(producer, reads)| {
-                        reads.contains(&variable).then_some(producer.span)
+                        reads.contains(&variable.variable).then_some(producer.span)
                     })
                     .unwrap_or(self.producers[0].span),
-                variable_name(view, variable),
+                variable_name(view, variable.variable),
             ),
         };
         let mut dependencies = self
@@ -1070,6 +946,8 @@ fn variable_name(view: dae::DaeView<'_>, variable: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod event_fact_tests;
+
     use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
     use super::*;
@@ -1531,6 +1409,7 @@ mod tests {
             clock_domains: &[u32],
         ) -> SameTickProducer<'dae> {
             SameTickProducer {
+                read_context: SameTickReadContext::ClockPartition,
                 clock_domains: clock_domains.to_vec(),
                 targets: vec![self.variable(target)],
                 value_reads: reads.to_vec(),

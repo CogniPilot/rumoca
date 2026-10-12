@@ -67,6 +67,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self
     }
 
+    pub(in crate::lower) fn current_definition_program(
+        mut self,
+        owner: DefinitionOwner<'dae>,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self = self.with_current_definitions(owner);
+        self.project_current_definitions = true;
+        self.program(expression, scalar)
+    }
+
     pub(super) fn inherit_current_definitions(&mut self, parent: &Self) {
         self.same_tick_definitions = parent.same_tick_definitions.clone();
         self.project_current_definitions = parent.project_current_definitions;

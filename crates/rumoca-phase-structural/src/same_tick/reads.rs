@@ -350,6 +350,16 @@ impl<'dae> SameTickDefinitions<'dae> {
         seeds: BTreeSet<u32>,
         role: ReadRole,
     ) -> Result<BTreeSet<u32>, SameTickOrderError> {
+        self.visit_variable_read_closure(view, seeds, role, |_, _| {})
+    }
+
+    fn visit_variable_read_closure(
+        &self,
+        view: dae::DaeView<'dae>,
+        seeds: BTreeSet<u32>,
+        role: ReadRole,
+        mut visit: impl FnMut(u32, &BTreeSet<u32>),
+    ) -> Result<BTreeSet<u32>, SameTickOrderError> {
         let mut pending = seeds.into_iter().collect::<Vec<_>>();
         let mut closure = BTreeSet::new();
         while let Some(variable) = pending.pop() {
@@ -359,12 +369,14 @@ impl<'dae> SameTickDefinitions<'dae> {
             if let Some(definition) = self.definition(variable) {
                 let mut reads = BTreeSet::new();
                 self.expression_reads_with_role(view, definition, role, &mut reads)?;
+                visit(variable, &reads);
                 pending.extend(reads);
             } else if let Some(reads) = self.opaque.get(&variable) {
                 let reads = match role {
                     ReadRole::Current => &reads.current,
                     ReadRole::ClockPartition => &reads.clock_partition,
                 };
+                visit(variable, reads);
                 pending.extend(reads.iter().copied());
             }
         }

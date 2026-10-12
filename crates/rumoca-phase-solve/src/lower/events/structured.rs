@@ -116,6 +116,7 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                 .iter()
                 .map(|entry| {
                     Ok(SameTickExchangeMember {
+                        event_reads: None,
                         targets: vec![entry.3.index()],
                         entry_reads: BTreeSet::new(),
                         reads: if entry.5 {

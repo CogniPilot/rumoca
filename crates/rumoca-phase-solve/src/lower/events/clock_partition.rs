@@ -62,6 +62,7 @@ pub(super) fn issue_clock_partition_order<'dae>(
     let producers = admitted
         .iter()
         .map(|producer| rumoca_phase_structural::SameTickProducer {
+            read_context: producer.read_context.clone(),
             clock_domains: producer
                 .clock_owners
                 .iter()
@@ -105,8 +106,11 @@ pub(super) fn issue_clock_partition_order<'dae>(
             rumoca_phase_structural::SameTickStep::IntermediateDefinition {
                 variable,
                 definition,
+                read_boundary,
             } => {
-                let Some(consumers) = intermediate_consumers.get(&variable.index()) else {
+                let Some(consumers) =
+                    intermediate_consumers.get(&(variable.index(), read_boundary))
+                else {
                     return Err(LowerError::contract(
                         "issued clock-partition intermediate has no consumer set",
                         intermediate_variable_span(view, variable),
@@ -121,6 +125,7 @@ pub(super) fn issue_clock_partition_order<'dae>(
                         variable,
                         definition,
                         consumers,
+                        read_boundary,
                     },
                     &mut order,
                 )?;
@@ -135,6 +140,7 @@ struct IntermediateDefinitionIssue<'a, 'dae> {
     variable: dae::VariableId<'dae>,
     definition: dae::ExprId<'dae>,
     consumers: &'a [usize],
+    read_boundary: rumoca_phase_structural::SameTickReadBoundary,
 }
 
 fn issue_intermediate_definition<'dae>(
@@ -186,9 +192,27 @@ fn issue_intermediate_definition<'dae>(
         .expect("checked intermediate variable resolves")
         .scalar_count();
     for scalar in 0..scalar_count {
-        let program = layout
-            .scalar_compiler(view, None)
-            .program(issue.definition, scalar)?;
+        let compiler = layout.scalar_compiler(view, None);
+        let program =
+            if issue.read_boundary == rumoca_phase_structural::SameTickReadBoundary::Current {
+                compiler.current_definition_program(
+                    super::scalar::DefinitionOwner::new(
+                        std::rc::Rc::clone(&discrete.same_tick_definitions),
+                        std::rc::Rc::new(
+                            admitted
+                                .iter()
+                                .flat_map(|producer| {
+                                    producer.targets.iter().map(|target| target.index())
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    issue.definition,
+                    scalar,
+                )?
+            } else {
+                compiler.program(issue.definition, scalar)?
+            };
         let target = variable_scalar_slot(layout, issue.variable.index(), scalar, definition_span)?;
         let row = discrete.clock_partition_intermediate_targets.len();
         discrete
@@ -249,6 +273,7 @@ fn intermediate_variable_span<'dae>(
 /// tick; a producer whose reads resolve through a history lane (a `sample(u)`
 /// source) records none, which is exactly the SOLVE-C28 boundary.
 pub(super) struct PendingClockedProducer<'dae> {
+    pub(super) read_context: rumoca_phase_structural::SameTickReadContext<'dae>,
     pub(super) step: PendingClockedStep,
     pub(super) clock_owners: Vec<solve::PeriodicClockId>,
     pub(super) targets: Vec<dae::VariableId<'dae>>,
@@ -282,7 +307,8 @@ pub(super) fn guarded_group_same_tick_reads<'dae>(
 
 /// One prospective producer in a fusion candidate set: what it writes, and the
 /// alias-closed set of coordinates it observes at its tick.
-pub(super) struct SameTickExchangeMember {
+pub(super) struct SameTickExchangeMember<'dae> {
+    pub(super) event_reads: Option<rumoca_phase_structural::EventReadFacts<'dae>>,
     pub(super) targets: Vec<u32>,
     pub(super) reads: BTreeSet<u32>,
     /// Coordinates this member reads at the event-iteration entry: the
@@ -299,15 +325,16 @@ pub(super) struct SameTickExchangeMember {
 /// through any chain inside the set. Everything the members *do* observe is
 /// sequenced by the SOLVE-C57 issued order instead, which is why restoring
 /// fusion cannot reintroduce a stale same-tick read.
-pub(super) struct SameTickExchange {
+pub(super) struct SameTickExchange<'dae> {
+    event_reads: Vec<Option<rumoca_phase_structural::EventReadFacts<'dae>>>,
     observes: Vec<BTreeSet<usize>>,
     /// For each member, the members that read one of its targets at the
     /// event-iteration entry and so are issued before it.
     entry_readers: Vec<BTreeSet<usize>>,
 }
 
-impl SameTickExchange {
-    pub(super) fn new(members: &[SameTickExchangeMember]) -> Self {
+impl<'dae> SameTickExchange<'dae> {
+    pub(super) fn new(members: &[SameTickExchangeMember<'dae>]) -> Self {
         let mut owner_of = BTreeMap::<u32, usize>::new();
         for (index, member) in members.iter().enumerate() {
             for &target in &member.targets {
@@ -337,12 +364,16 @@ impl SameTickExchange {
             }
         }
         Self {
+            event_reads: members
+                .iter()
+                .map(|member| member.event_reads.clone())
+                .collect(),
             observes,
             entry_readers,
         }
     }
 
-    pub(super) fn derive<'dae>(
+    pub(super) fn derive(
         view: dae::DaeView<'dae>,
         layout: &EventCompilationContext<'_, 'dae>,
         clocks: &LoweredClocks<'dae>,
@@ -372,6 +403,7 @@ impl SameTickExchange {
                     );
                 }
                 Ok(SameTickExchangeMember {
+                    event_reads: None,
                     targets: vec![target.variable.index()],
                     reads: definitions.clock_partition_read_closure(
                         view,
@@ -383,6 +415,26 @@ impl SameTickExchange {
             })
             .collect::<Result<Vec<_>, LowerError>>()?;
         Ok(Self::new(&members))
+    }
+
+    pub(super) fn group_read_context(
+        &self,
+        order: &[usize],
+        first: usize,
+        end: usize,
+    ) -> rumoca_phase_structural::SameTickReadContext<'dae> {
+        let facts = order[first..end]
+            .iter()
+            .map(|&index| self.event_reads[index].as_ref())
+            .collect::<Option<Vec<_>>>();
+        match facts {
+            Some(facts) if !facts.is_empty() => {
+                rumoca_phase_structural::SameTickReadContext::OrdinaryEvent(
+                    rumoca_phase_structural::EventReadFacts::merge(facts[0], &facts[1..]),
+                )
+            }
+            Some(_) | None => rumoca_phase_structural::SameTickReadContext::ClockPartition,
+        }
     }
 
     fn fusable(&self, left: usize, right: usize) -> bool {
@@ -443,7 +495,7 @@ fn unclocked_member<'dae>(
     layout: &EventCompilationContext<'_, 'dae>,
     definitions: &rumoca_phase_structural::SameTickDefinitions<'dae>,
     target: &GuardedTarget<'dae>,
-) -> Result<SameTickExchangeMember, LowerError> {
+) -> Result<SameTickExchangeMember<'dae>, LowerError> {
     let triggers = target
         .branches
         .iter()
@@ -470,10 +522,12 @@ fn unclocked_member<'dae>(
             &mut entry_reads,
         )?;
     }
+    let facts = definitions.issue_event_read_facts(view, direct, entry_reads)?;
     Ok(SameTickExchangeMember {
         targets: vec![target.variable.index()],
-        reads: definitions.variable_read_closure(view, direct)?,
-        entry_reads: definitions.variable_read_closure(view, entry_reads)?,
+        reads: facts.current().clone(),
+        entry_reads: facts.entry().clone(),
+        event_reads: Some(facts),
     })
 }
 
@@ -492,7 +546,7 @@ fn event_clock_member<'dae>(
     target: &GuardedTarget<'dae>,
     (value_reads, condition_reads): (&[dae::ExprId<'dae>], &[dae::ConditionId<'dae>]),
     event_clocked: impl Fn(u32) -> bool,
-) -> Result<SameTickExchangeMember, LowerError> {
+) -> Result<SameTickExchangeMember<'dae>, LowerError> {
     let mut direct = BTreeSet::new();
     for &value in value_reads {
         rumoca_phase_structural::collect_same_instant_reads(view, value, &mut direct);
@@ -504,6 +558,7 @@ fn event_clock_member<'dae>(
         .into_iter()
         .partition(|&variable| event_clocked(variable));
     Ok(SameTickExchangeMember {
+        event_reads: None,
         targets: vec![target.variable.index()],
         reads,
         entry_reads: definitions.clock_partition_variable_read_closure(view, sampled)?,
@@ -519,4 +574,25 @@ fn transitive_observations(start: usize, direct: &[BTreeSet<usize>]) -> BTreeSet
         }
     }
     observations
+}
+
+pub(super) fn guarded_definition_owner<'dae>(
+    rows: &DiscreteRows<'dae>,
+    targets: &[GuardedTarget<'dae>],
+) -> super::scalar::DefinitionOwner<'dae> {
+    let definition_targets = std::rc::Rc::new(
+        targets
+            .iter()
+            .map(|target| target.variable.index())
+            .chain(
+                rows.clocked_producers
+                    .iter()
+                    .flat_map(|producer| producer.targets.iter().map(|target| target.index())),
+            )
+            .collect::<BTreeSet<_>>(),
+    );
+    super::scalar::DefinitionOwner::new(
+        std::rc::Rc::clone(&rows.same_tick_definitions),
+        definition_targets,
+    )
 }
