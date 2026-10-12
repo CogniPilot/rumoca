@@ -526,6 +526,7 @@ self.onmessage = async (event) => {
                     workspaceSources: args.workspaceSources || '{}',
                     modelName: args.model,
                     target,
+                    sourceRootCacheUrl: args.sourceRootCacheUrl || '',
                 }));
             } else {
                 if (!/^[A-Za-z0-9_.-]+$/.test(target)) {
@@ -3459,6 +3460,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                         workspaceSources,
                         modelName: model,
                         target,
+                        sourceRootCacheUrl,
                     }));
                 }
                 if (!/^[A-Za-z0-9_.-]+$/.test(target)) {

@@ -61,7 +61,7 @@ try {
         if (config.rumoca.task === "codegen") {
           const files = await runtime.renderGalecFilesWithRuntime({ pkgBase,
             workspaceSources: JSON.stringify({ [common.sourcePath]: source }),
-            modelName: config.model.name, target: config.codegen.target });
+            modelName: config.model.name, target: config.codegen.target, sourceRootCacheUrl });
           if (!Array.isArray(files) || files.length !== 3
             || files.some((file) => !file.path || !file.content?.trim())) throw new Error("incomplete GALEC production files");
           return { ...common, kind: "codegen", files: files.map((file) => ({ path: file.path, bytes: file.content.length })) };

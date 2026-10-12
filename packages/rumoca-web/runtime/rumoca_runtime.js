@@ -182,8 +182,10 @@ export async function renderGalecFilesWithRuntime({
   workspaceSources,
   modelName,
   target,
+  sourceRootCacheUrl = '',
 }) {
-  return renderGalecTargetFiles(pkgBase, workspaceSources, modelName, target);
+  const sourceRootBytes = sourceRootCacheUrl ? await fetchGzipBytes(sourceRootCacheUrl) : null;
+  return renderGalecTargetFiles(pkgBase, workspaceSources, modelName, target, sourceRootBytes);
 }
 
 export async function renderGalecCFromAlgWithRuntime({

@@ -632,6 +632,7 @@ self.onmessage = async (e) => {
                                 workspaceSources: payload.workspaceSources || '{}',
                                 modelName: payload.modelName || 'Model',
                                 target: payload.target || '',
+                                sourceRootCacheUrl: payload.sourceRootCacheUrl || '',
                             }),
                         };
                         break;
