@@ -78,3 +78,20 @@ pub(super) fn finite_or_zero<'program>(
     let finite = builder.compare(SolveCompareOperator::Equal, difference, zero, provenance)?;
     builder.select(finite, value, zero, provenance)
 }
+
+/// The scalar extremum kink rule: retain the left tangent at equality.
+pub(super) fn extremum_tangent<'program>(
+    builder: &mut TypedProgramBuilder<'program>,
+    [lhs, rhs]: [ProgramRegister<'program>; 2],
+    [lhs_tangent, rhs_tangent]: [ProgramRegister<'program>; 2],
+    minimum: bool,
+    provenance: Span,
+) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
+    let comparison = if minimum {
+        SolveCompareOperator::LessEqual
+    } else {
+        SolveCompareOperator::GreaterEqual
+    };
+    let condition = builder.compare(comparison, lhs, rhs, provenance)?;
+    builder.select(condition, lhs_tangent, rhs_tangent, provenance)
+}

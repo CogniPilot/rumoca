@@ -10,6 +10,7 @@
 //! forward dual lowering and reverse rows; `rumoca_phase_solve`'s
 //! `kink_rule_tests` pins the three together.
 
+mod extrema;
 mod linear_solve;
 mod mapped;
 mod partials;
@@ -136,10 +137,23 @@ fn program_supports_directional(
                 ..
             } => false,
             SolveOperation::Reduce {
-                operator:
-                    SolveReductionOperator::Product
-                    | SolveReductionOperator::Minimum
-                    | SolveReductionOperator::Maximum,
+                operand,
+                operator: SolveReductionOperator::Minimum | SolveReductionOperator::Maximum,
+                ..
+            } => program
+                .register_types()
+                .get(operand.index())
+                .is_some_and(|value_type| {
+                    !is_real(value_type)
+                        || pointwise::pointwise_domain(
+                            value_type,
+                            program.arithmetic(),
+                            operation.provenance(),
+                        )
+                        .is_ok()
+                }),
+            SolveOperation::Reduce {
+                operator: SolveReductionOperator::Product,
                 ..
             } => false,
             SolveOperation::Call { owner, .. } => available.get(owner.index() as usize).is_some(),
@@ -1039,18 +1053,13 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
             SolveBinaryOperator::Atan2 => {
                 self.derive_atan2(lhs, rhs, [lhs_tangent, rhs_tangent], zero, provenance)?
             }
-            SolveBinaryOperator::Min | SolveBinaryOperator::Max => {
-                let comparison = if operator == SolveBinaryOperator::Max {
-                    SolveCompareOperator::GreaterEqual
-                } else {
-                    SolveCompareOperator::LessEqual
-                };
-                let condition = self
-                    .builder
-                    .compare(comparison, lhs.primal, rhs.primal, provenance)?;
-                self.builder
-                    .select(condition, lhs_tangent, rhs_tangent, provenance)?
-            }
+            SolveBinaryOperator::Min | SolveBinaryOperator::Max => partials::extremum_tangent(
+                self.builder,
+                [lhs.primal, rhs.primal],
+                [lhs_tangent, rhs_tangent],
+                operator == SolveBinaryOperator::Min,
+                provenance,
+            )?,
             // A truncated Integer quotient is piecewise constant, like a Boolean.
             SolveBinaryOperator::IntegerQuotient
             | SolveBinaryOperator::And
@@ -1536,6 +1545,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
         operand: SolveRegisterId,
         provenance: Span,
     ) -> Result<(), SolveProgramConstructionError> {
+        let value_type = self.primal.register_types()[operand.index()].clone();
         let operand = self.get(operand, provenance)?;
         let primal = self.builder.reduce(operator, operand.primal, provenance)?;
         let tangent = match operator {
@@ -1544,7 +1554,22 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 .map(|tangent| self.builder.reduce(operator, tangent, provenance))
                 .transpose()?,
             SolveReductionOperator::All => None,
-            _ => {
+            SolveReductionOperator::Minimum | SolveReductionOperator::Maximum => {
+                if is_real(&value_type) {
+                    let tangent = self.tangent_or_zero(operand, &value_type, provenance)?;
+                    Some(extrema::reduction_tangent(
+                        self.builder,
+                        operand.primal,
+                        tangent,
+                        operator == SolveReductionOperator::Minimum,
+                        &value_type,
+                        provenance,
+                    )?)
+                } else {
+                    None
+                }
+            }
+            SolveReductionOperator::Product => {
                 return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
             }
         };
