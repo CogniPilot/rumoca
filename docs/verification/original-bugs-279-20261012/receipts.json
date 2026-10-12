@@ -1,0 +1,372 @@
+{
+  "source": "279836b2d70ed9f9175a121a7a1d0a9227b1d8d0",
+  "scope": "Focused checkpoint on source279; not final-tip, full CI, JAX execution or static-PIE refresh. Euler38 excluded as requested. No issue closure.",
+  "commands_and_counts": [
+    {
+      "gate": "compiler9",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "rumoca-compile",
+        "--lib",
+        "reported_bug_regressions",
+        "--",
+        "--nocapture"
+      ],
+      "expected_tests": 9,
+      "exit_code": 0,
+      "last_summary": [
+        "ok",
+        "9",
+        "0",
+        "0"
+      ],
+      "count_qualified": true,
+      "raw_log_sha256": "e7fc3cde105d071e87f86b9044002d224d1a2960d0e569ca7b1dd40de9f29671",
+      "guardian_sha256": "d969948ed7d1d559ce3592b415bbf38dc01877496863355da40dca4694b18f36",
+      "resources": {
+        "elapsedMs": 182015.15521000003,
+        "peakRssKiB": 2561216,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 2561216,
+        "peakCacheBytes": 5635194880,
+        "minimumAvailableKiB": 52045340,
+        "minimumScratchFreeBytes": 65010335744,
+        "signal": null,
+        "exitCode": 0,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "rust_test_duration_seconds": "0.01"
+    },
+    {
+      "gate": "runtime10",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "--no-default-features",
+        "--features",
+        "fmu-packaging",
+        "reported_bug_runtime::issue_",
+        "--",
+        "--skip",
+        "issue_425",
+        "--nocapture"
+      ],
+      "expected_tests": 10,
+      "exit_code": 0,
+      "last_summary": [
+        "ok",
+        "10",
+        "0",
+        "0"
+      ],
+      "count_qualified": true,
+      "raw_log_sha256": "75d7ba2f34280109efa36967f7a70d45e2a19877da930c5ef69452573199f1f6",
+      "guardian_sha256": "1d1ccd69306534b981b48d04451076746c8ebf03dc83c55d08394594a7689f20",
+      "resources": {
+        "elapsedMs": 225413.37053500002,
+        "peakRssKiB": 2859156,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 2859156,
+        "peakCacheBytes": 5700747264,
+        "minimumAvailableKiB": 51339868,
+        "minimumScratchFreeBytes": 64479379456,
+        "signal": null,
+        "exitCode": 0,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "rust_test_duration_seconds": "0.03"
+    },
+    {
+      "gate": "initialization4",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "--no-default-features",
+        "--features",
+        "fmu-packaging",
+        "initialization_parameter_conditionals::",
+        "--",
+        "--nocapture"
+      ],
+      "expected_tests": 4,
+      "exit_code": 0,
+      "last_summary": [
+        "ok",
+        "4",
+        "0",
+        "0"
+      ],
+      "count_qualified": true,
+      "raw_log_sha256": "888721fcbf53292717622f7e81df8fef33a4124a248037d445f1cec3a6a6ede7",
+      "guardian_sha256": "539a0570006dc2dc2a5ef5cf6f4b2418d279956ff3fc6f93eefcca4bb99cbb79",
+      "resources": {
+        "elapsedMs": 3107.778046,
+        "peakRssKiB": 122352,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 122352,
+        "peakCacheBytes": 5657051136,
+        "minimumAvailableKiB": 56195400,
+        "minimumScratchFreeBytes": 64592130048,
+        "signal": null,
+        "exitCode": 0,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "rust_test_duration_seconds": "0.02"
+    },
+    {
+      "gate": "evaluable8",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "rumoca",
+        "--test",
+        "suite_core",
+        "--no-default-features",
+        "--features",
+        "fmu-packaging",
+        "evaluable_parameters::",
+        "--",
+        "--nocapture"
+      ],
+      "expected_tests": 8,
+      "exit_code": 0,
+      "last_summary": [
+        "ok",
+        "8",
+        "0",
+        "0"
+      ],
+      "count_qualified": true,
+      "raw_log_sha256": "76f488a6d4bbb7995ad2b16003003552e26cdceeb0e8eccfa74349374a20f65e",
+      "guardian_sha256": "b51004ad39045220f4833a54d313999ff8c25a1de9a5ac038494caf1b1a7008e",
+      "resources": {
+        "elapsedMs": 1063.32171,
+        "peakRssKiB": 123436,
+        "peakSwapKiB": 0,
+        "peakResidentPlusSwapKiB": 123436,
+        "peakCacheBytes": 5657051136,
+        "minimumAvailableKiB": 56959856,
+        "minimumScratchFreeBytes": 64608649216,
+        "signal": null,
+        "exitCode": 0,
+        "secondsLimit": 600,
+        "rssLimitMiB": 4096,
+        "availableFloorMiB": 16384,
+        "cacheLimitMiB": 8192,
+        "scratchFreeFloorMiB": 8192
+      },
+      "rust_test_duration_seconds": "0.02"
+    }
+  ],
+  "selection": {
+    "compiler9": {
+      "path": "crates/rumoca-compile/src/session/tests/reported_bug_regressions.rs",
+      "source_derived_test_count": 9,
+      "tests": [
+        "issue_426_inactive_neighbor_preserves_the_structured_family",
+        "issue_423_iterator_mod_parameter_stays_in_its_domain",
+        "issue_424_original_constructor_rejects_incompatible_declared_shape",
+        "issue_424_conforming_constructor_has_last_iterator_outermost",
+        "issue_424_reported_reverse_order_constructor_has_conforming_dimensions_and_values",
+        "issue_424_parameter_extents_preserve_both_constructor_axis_orders",
+        "issue_424_boolean_parameter_masks_preserve_axis_order_and_exact_values",
+        "issue_424_reported_boolean_binding_accepts_conforming_parameter_dimensions",
+        "issue_424_partially_unknown_declaration_keeps_mismatched_known_axis"
+      ]
+    },
+    "runtime10": {
+      "path": "crates/rumoca/tests/suite_core/reported_bug_runtime.rs",
+      "source_derived_test_count": 10,
+      "tests": [
+        "issue_403_boolean_operand_order_is_a_profile_observation",
+        "issue_403_explicit_if_control_guarantees_inactive_operand_protection",
+        "issue_403_active_invalid_index_keeps_its_fault",
+        "issue_405_original_input_schedule_switches_at_each_write",
+        "issue_411_original_main_dae_integer_mod_retains_wide_literal",
+        "issue_411_main_dae_integer_div_retains_wide_literal",
+        "issue_418_original_explicit_algebraic_model_renders_public_jax_target",
+        "issue_426_original_inactive_neighbor_simulates_its_analytic_solution",
+        "issue_423_original_iterator_mod_simulates_its_analytic_solution",
+        "issue_422_original_array_function_runs_without_native_fallback"
+      ]
+    },
+    "initialization4": {
+      "path": "crates/rumoca/tests/suite_core/initialization_parameter_conditionals.rs",
+      "source_derived_test_count": 4,
+      "tests": [
+        "immutable_opposite_arm_parameter_dependencies_preserve_both_traces",
+        "tunable_condition_cannot_discard_a_parameter_dependency_cycle",
+        "selected_immutable_parameter_cycle_still_requires_a_coupled_owner",
+        "compact_binder_condition_retains_dependencies_without_a_scalar_point"
+      ]
+    },
+    "evaluable8": {
+      "path": "crates/rumoca/tests/suite_core/evaluable_parameters.rs",
+      "source_derived_test_count": 8,
+      "tests": [
+        "only_final_and_evaluate_parameters_over_evaluable_bindings_are_marked",
+        "a_binding_with_an_ordinary_branch_is_not_marked",
+        "an_explicit_evaluate_false_outranks_final",
+        "a_dependent_parameter_of_evaluable_parameters_is_evaluable",
+        "folding_replaces_every_evaluable_read_and_keeps_every_declaration",
+        "folded_values_drive_event_initial_and_continuous_rows",
+        "an_assertion_over_a_folded_parameter_is_still_enforced",
+        "a_folded_condition_selects_its_branch_and_drops_the_unselected_reads"
+      ]
+    }
+  },
+  "recipe_sha256": "c2211b056e96dfc7dba4920effcd33c6b8b7ac257370e4148d137039f24fcc1c",
+  "limits": {
+    "seconds": 600,
+    "rss_plus_swap_mib": 4096,
+    "available_mib": 16384,
+    "cache_mib": 8192,
+    "scratch_floor_gib": 8
+  },
+  "binaries": {
+    "$HOME/scratch/rumoca/pr427-original-bugs-279-20261012/artifacts/rumoca_compile-72d4a3e3550dc1f1": {
+      "sha256": "4945c1aa4026a384c07840ed8cdc7b29c4a5c506700cdf75e4c3721b36c646f9",
+      "bytes": 63596728,
+      "original": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/rumoca_compile-72d4a3e3550dc1f1"
+    },
+    "$HOME/scratch/rumoca/pr427-original-bugs-279-20261012/artifacts/suite_core-7b3890b8403f5e25": {
+      "sha256": "7df803f96056f557816e1750f6a55aa3ca6f93f16078d62a4de37c93b6a1f2f0",
+      "bytes": 105492824,
+      "original": "$HOME/scratch/rumoca/workshop427-staticpie-20261012/target/debug/deps/suite_core-7b3890b8403f5e25"
+    }
+  },
+  "raw_directory": "$HOME/scratch/rumoca/pr427-original-bugs-279-20261012",
+  "bindings": {
+    "compiler9.guardian.json": {
+      "sha256": "d969948ed7d1d559ce3592b415bbf38dc01877496863355da40dca4694b18f36",
+      "bytes": 8797
+    },
+    "compiler9.log": {
+      "sha256": "e7fc3cde105d071e87f86b9044002d224d1a2960d0e569ca7b1dd40de9f29671",
+      "bytes": 4604
+    },
+    "compiler9.sh": {
+      "sha256": "e4be37a1a13b5ca18752510cf36c4744d6bc21c199e2446dd54dac402d48b7ea",
+      "bytes": 527
+    },
+    "evaluable8.guardian.json": {
+      "sha256": "b51004ad39045220f4833a54d313999ff8c25a1de9a5ac038494caf1b1a7008e",
+      "bytes": 1673
+    },
+    "evaluable8.log": {
+      "sha256": "76f488a6d4bbb7995ad2b16003003552e26cdceeb0e8eccfa74349374a20f65e",
+      "bytes": 1653
+    },
+    "evaluable8.sh": {
+      "sha256": "9b2eebad19e6a2df53c256d73ec0cdd4e1519cd9c3336e065cd1a395359dc31e",
+      "bytes": 576
+    },
+    "guard-after-compiler9.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "guard-after-evaluable8.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "guard-after-initialization4.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "guard-after-runtime10.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "guard-after.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "guard-before.json": {
+      "sha256": "4d19a38ccbe8ecc538acdaaa45fde624d31509b563033c86be8a38fd20742e3a",
+      "bytes": 92
+    },
+    "idle-audit.json": {
+      "sha256": "350612fc40c4d1d60a40673befeb3ff7462023115f1e5a9056cd04d990fe9f08",
+      "bytes": 11170
+    },
+    "initialization4.guardian.json": {
+      "sha256": "539a0570006dc2dc2a5ef5cf6f4b2418d279956ff3fc6f93eefcca4bb99cbb79",
+      "bytes": 1655
+    },
+    "initialization4.log": {
+      "sha256": "888721fcbf53292717622f7e81df8fef33a4124a248037d445f1cec3a6a6ede7",
+      "bytes": 790
+    },
+    "initialization4.sh": {
+      "sha256": "6dc1127482569734d2751c9ffbe6d55ac2c2688fa519ed5ba26b887f67dc47ed",
+      "bytes": 593
+    },
+    "prepare.py": {
+      "sha256": "8ec1913b89d8ae78cb082f8f5cf97603551b901790fdae7a577ee46a8d712ea9",
+      "bytes": 4527
+    },
+    "recipe.json": {
+      "sha256": "c2211b056e96dfc7dba4920effcd33c6b8b7ac257370e4148d137039f24fcc1c",
+      "bytes": 2561
+    },
+    "results.json": {
+      "sha256": "f8c1f8d239ba27c34f5b8d07ed8a20024b686cdaee26dc71a46ab836c610398c",
+      "bytes": 2449
+    },
+    "run.py": {
+      "sha256": "c28d05ec423bcb0f2eba6a2758376421c39e31e7457913af3a952676ea40382c",
+      "bytes": 2867
+    },
+    "runtime10.guardian.json": {
+      "sha256": "1d1ccd69306534b981b48d04451076746c8ebf03dc83c55d08394594a7689f20",
+      "bytes": 8362
+    },
+    "runtime10.log": {
+      "sha256": "75d7ba2f34280109efa36967f7a70d45e2a19877da930c5ef69452573199f1f6",
+      "bytes": 8392
+    },
+    "runtime10.sh": {
+      "sha256": "67a54148b7abd5932ab45014de357fc63e6025184665ca17689b8b71369079bb",
+      "bytes": 599
+    },
+    "seal.py": {
+      "sha256": "18e073256c9a2b4a47edff090c43c0a8b99ffb94c531773b4b592b05b745b1e1",
+      "bytes": 4491
+    },
+    "selection-proof.json": {
+      "sha256": "c553aa0d2dd5dafba4566c7d8fc2c7ce9badb813defcc68fab7e873cf231981f",
+      "bytes": 2851
+    },
+    "source-before.json": {
+      "sha256": "73a23f02d91404a900d73f7a24734a6ccfd0b4a778ff0e33323cd28374e599e4",
+      "bytes": 644520
+    },
+    "terminal-idle-audit.json": {
+      "sha256": "35a7cc0cd82809c3c62950427e892cf31eb407186afbdbc8ce5dc27d3d9893d4",
+      "bytes": 75
+    }
+  }
+}
