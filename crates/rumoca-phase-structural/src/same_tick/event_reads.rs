@@ -219,30 +219,23 @@ impl EventOrdering {
             })
             .collect::<Vec<BTreeSet<usize>>>();
         let observations = (0..producers.len())
-            .map(|start| {
-                let mut seen = BTreeSet::new();
-                let mut pending = direct[start].iter().copied().collect::<Vec<_>>();
-                while let Some(next) = pending.pop() {
-                    if seen.insert(next) {
-                        pending.extend(direct[next].iter().copied());
-                    }
-                }
-                seen
-            })
+            .map(|start| observation_closure(&direct, start))
             .collect();
         let mut entry_readers = vec![BTreeSet::new(); producers.len()];
         for (reader, producer) in producers.iter().enumerate() {
             let SameTickReadContext::OrdinaryEvent(facts) = &producer.read_context else {
                 continue;
             };
-            for read in facts.entry() {
-                if let Some(&owner) = producer_of.get(read)
-                    && owner != reader
+            let owners = facts
+                .entry()
+                .iter()
+                .filter_map(|read| producer_of.get(read).copied());
+            for owner in owners.filter(|&owner| {
+                owner != reader
                     && coincidence
                         .domains_overlap(&producer.clock_domains, &producers[owner].clock_domains)
-                {
-                    entry_readers[owner].insert(reader);
-                }
+            }) {
+                entry_readers[owner].insert(reader);
             }
         }
         Self {
@@ -252,8 +245,8 @@ impl EventOrdering {
     }
 
     pub(super) fn requires_current(&self, consumer: usize, producer: usize) -> bool {
-        !self.entry_readers[producer].contains(&consumer)
-            && !(self.observations[consumer].contains(&producer)
+        !(self.entry_readers[producer].contains(&consumer)
+            || self.observations[consumer].contains(&producer)
                 && self.observations[producer].contains(&consumer))
     }
 
@@ -270,4 +263,15 @@ impl EventOrdering {
                 && self.observations[earlier].contains(&producer)
         })
     }
+}
+
+fn observation_closure(direct: &[BTreeSet<usize>], start: usize) -> BTreeSet<usize> {
+    let mut seen = BTreeSet::new();
+    let mut pending = direct[start].iter().copied().collect::<Vec<_>>();
+    while let Some(next) = pending.pop() {
+        if seen.insert(next) {
+            pending.extend(direct[next].iter().copied());
+        }
+    }
+    seen
 }

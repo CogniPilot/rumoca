@@ -56,10 +56,7 @@ fn discover_read_node<'dae>(
         // terminal producer reads, so no clock-boundary refresh is issued.
         return None;
     }
-    let Some((definition, reads)) = intermediate_reads(view, definitions, producer, variable)
-    else {
-        return None;
-    };
+    let (definition, reads) = intermediate_reads(view, definitions, producer, variable)?;
     Some((
         IntermediateKey {
             variable,

@@ -6,13 +6,14 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 mod tests;
 
+type DefinitionFacts =
+    BTreeMap<u32, Result<(bool, bool), rumoca_phase_structural::SameTickOrderError>>;
+
 #[derive(Clone)]
 pub(in crate::lower) struct DefinitionOwner<'dae> {
     definitions: Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
     targets: Rc<BTreeSet<u32>>,
-    facts: Rc<
-        RefCell<BTreeMap<u32, Result<(bool, bool), rumoca_phase_structural::SameTickOrderError>>>,
-    >,
+    facts: Rc<RefCell<DefinitionFacts>>,
 }
 
 impl PartialEq for DefinitionOwner<'_> {

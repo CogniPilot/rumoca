@@ -366,21 +366,32 @@ impl<'dae> SameTickDefinitions<'dae> {
             seeds.merge(self.expression_seeds_with_role(view, value, role)?);
         }
         for &condition in condition_reads {
-            match role {
-                ReadRole::Current => {
-                    visit_condition_expressions(view, condition, &BTreeSet::new(), |expression| {
-                        seeds.merge(self.expression_seeds_with_role(view, expression, role)?);
-                        Ok::<(), SameTickOrderError>(())
-                    })?
-                }
-                ReadRole::ClockPartition => {
-                    let mut reads = BTreeSet::new();
-                    collect_condition_same_instant_reads(view, condition, &mut reads);
-                    seeds.merge(ReadSeeds::raw(reads));
-                }
-            }
+            seeds.merge(self.condition_seeds_with_role(view, condition, role)?);
         }
         self.visit_read_seed_closure(view, seeds, role, |_, _| {})
+    }
+
+    fn condition_seeds_with_role(
+        &self,
+        view: dae::DaeView<'dae>,
+        condition: dae::ConditionId<'dae>,
+        role: ReadRole,
+    ) -> Result<ReadSeeds, SameTickOrderError> {
+        let mut seeds = ReadSeeds::default();
+        match role {
+            ReadRole::Current => {
+                visit_condition_expressions(view, condition, &BTreeSet::new(), |expression| {
+                    seeds.merge(self.expression_seeds_with_role(view, expression, role)?);
+                    Ok::<(), SameTickOrderError>(())
+                })?;
+            }
+            ReadRole::ClockPartition => {
+                let mut reads = BTreeSet::new();
+                collect_condition_same_instant_reads(view, condition, &mut reads);
+                seeds.merge(ReadSeeds::raw(reads));
+            }
+        }
+        Ok(seeds)
     }
 
     fn expression_seeds_with_role(
