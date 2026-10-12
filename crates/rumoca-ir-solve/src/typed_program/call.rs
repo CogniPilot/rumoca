@@ -1041,8 +1041,8 @@ mod tests {
     mod aggregate_logarithms;
     mod block_split;
     mod broadcast_division;
-    mod discrete_broadcast;
     mod dependencies;
+    mod discrete_broadcast;
     mod recursion;
     mod reduction_extrema;
     mod shared_values;
