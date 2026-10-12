@@ -240,14 +240,19 @@ fn render_galec_impl(
             .map_err(|error| format!("failed to load `{path}`: {error}"))?;
     }
     let result = session
-        .compile_model(model_name)
+        .compile_model_dae_strict_reachable_uncached_with_recovery(model_name)
         .map_err(|error| format!("compilation error: {error}"))?;
 
     // 2. Delegate to the shared identity-free renderer (validates the target,
     //    projects to GALEC, and renders the .alg + C with the target's
     //    conformance header). GALEC identifiers/C names cannot contain dots.
     let model_id = model_name.replace('.', "_");
-    let sources = render_checked_sources(&result.dae, &source_map, &model_id, target)?;
+    let sources = render_checked_sources(
+        &result.dae,
+        result.source_map.as_ref().unwrap_or(&source_map),
+        &model_id,
+        target,
+    )?;
 
     Ok(json!({
         "ok": true,
@@ -431,7 +436,7 @@ end GalecWasmDemo;
 
     #[test]
     fn galec_source_root_snapshot_supplies_the_authored_function() {
-        let library = "package Imported function twice input Real x; output Real y; algorithm y := 2*x; end twice; end Imported;";
+        let library = "package Imported function twice input Real x; output Real y; algorithm y := 2*x; end twice; model Broken extends Missing; end Broken; end Imported;";
         let bytes = rumoca_compile::source_roots::encode_source_root_snapshot(&[(
             "library/Imported.mo".to_owned(),
             library.to_owned(),
@@ -455,6 +460,17 @@ end GalecWasmDemo;
             &bytes,
         ));
         assert_eq!(imported["ok"], true, "{imported}");
+        let selected_invalid = parse(&render_galec_with_source_roots_binary(
+            &documents,
+            "Imported.Broken",
+            GALEC_PRODUCTION_TARGET,
+            &bytes,
+        ));
+        assert_eq!(
+            selected_invalid["ok"], false,
+            "reachable invalid sources must remain refused"
+        );
+
         assert!(
             imported["alg"]
                 .as_str()
