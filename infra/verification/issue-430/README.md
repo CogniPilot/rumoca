@@ -1,7 +1,12 @@
 # Issue 430 verification ledger
 
 This change is stacked on PR #421 at
-`da102156cf4496e8a2255e905ebe66b859e339db`. Earlier observations at
+`eb515d9b01ef71cc945774578b8e38d733a4b67f`. The before/after numerical
+evidence below was collected on the earlier PR #421 tree
+`da102156cf4496e8a2255e905ebe66b859e339db`; it is historical for the final
+stacked base. The rebase changes only Real signum fault classification
+and its selected-arm totality context (4 parent files, +95/-1).
+Earlier observations at
 `6ce369dd2f4c961704a05c9f3163cda90480fb79` are historical, not evidence for
 the current stacked base. Artifact names below are relative to
 `$HOME/scratch/rumoca/issue430-20261013`.
@@ -29,7 +34,7 @@ for the reporter's executable input context.
 
 ## First divergent producer
 
-On the clean latest stacked base, compilation succeeds and initialization
+On the clean da102 stacked base, compilation succeeds and initialization
 fails at lambda 0, continuation step 0.125:
 
 ```text
@@ -74,19 +79,19 @@ run with Node 24 available is retained as `canary-before-da102-node.log`; that
 run overwrote the results JSON in `canary-before-da102`, so those JSON files
 belong only to the second run. No per-model failures were selectively retried.
 
-| Metric | Clean da102, independent Node-corrected run | Change |
+| Metric | Clean da102, independent Node-corrected run | f6b99d6 change on da102 |
 | --- | --- | --- |
-| Parse / flatten / DAE / Solve | 20 / 20 / 20 / 20 | pending |
-| Simulation completions | 16 | pending |
-| Compared / high / near / deviation | 15 / 15 / 0 / 0 | pending |
-| Typed skips / missing | 1 / 0 | pending |
+| Parse / flatten / DAE / Solve | 20 / 20 / 20 / 20 | 20 / 20 / 20 / 20 (delta 0) |
+| Simulation completions | 16 | 16 (delta 0) |
+| Compared / high / near / deviation | 15 / 15 / 0 / 0 | 15 / 15 / 0 / 0 (delta 0) |
+| Typed skips / missing | 1 / 0 | 1 / 0 (delta 0) |
 
 This partial tripwire is not full-cohort parity. Final checks and after evidence
 will be appended before the draft becomes ready for review.
 
 ## Latest focused after evidence
 
-The latest stacked-base build runs DroneHoverLoop for four seconds without the
+The da102 stacked-base build with this change runs DroneHoverLoop for four seconds without the
 reported projection failure. `focused-trace.json` compares 402 Rumoca output
 points against 404 OMC points from the exact same reporter400 roots, using
 linear interpolation on the 401-point 0.01-second grid and the final sample at
@@ -113,7 +118,7 @@ Reset evidence covers four seconds, not the original reporter's 27-second
 failure point. PR #421 already restored pristine reset state; this PR repairs
 initialization relation reads shared by session creation and reset.
 
-Latest checks:
+Checks measured on da102 plus the change:
 
 - `cargo fmt --check`: passed.
 - `cargo test --profile msl-fast -p rumoca-ir-solve -p rumoca-phase-solve`:
@@ -134,3 +139,8 @@ Latest checks:
 
 Standard workspace, coverage, full MSL and ModelicaTest gates remain pending;
 the PR stays draft until required validation is accounted for.
+
+After rebasing only this change onto eb515, all 268 phase-solve tests passed,
+including the new parent Real signum cases and this change's wire/relation-mode
+cases. The five simulation initialization regressions are being rerun on eb515.
+Numerical/canary measurements above retain their original da102 context.
