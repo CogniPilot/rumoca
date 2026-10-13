@@ -877,15 +877,8 @@ fn when_for_equation_expands_all_index_ranges() {
             flat::WhenEquation::AssignElement { subscripts, .. } => subscripts
                 .iter()
                 .map(|subscript| {
-                    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+                    let rumoca_core::Subscript::Index { value, .. } = subscript else {
                         panic!("scalar index")
-                    };
-                    let rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Integer(value),
-                        ..
-                    } = expr.as_ref()
-                    else {
-                        panic!("constant index")
                     };
                     value.to_string()
                 })
