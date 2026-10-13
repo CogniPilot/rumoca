@@ -1,0 +1,146 @@
+{
+  "head": "fea499d4676780b2854be2113e2cc64892a7b791",
+  "method": {
+    "lines": "git diff --numstat BASE...HEAD; test path iff a path component is tests or file name is tests.rs, *_test.rs, *_tests.rs; remaining text includes production and review/spec documentation",
+    "public_api": "Changed Rust files: multiset difference of normalized explicit public item signatures (pub without visibility restriction) and public struct field declarations; declaration parser is a reproducible regex census, not semantic rustdoc. Public enum variants are separately listed.",
+    "new_public_enum_variants": [
+      "rumoca_ir_flat::WhenEquation::AssignElement",
+      "rumoca_ir_flat::StructuralParameterUse::WhenTargetSubscript",
+      "rumoca_ir_solve::EventIterationOwner::Partitioned",
+      "rumoca_phase_structural::SameTickOrderError::UnsupportedSelectedTarget"
+    ]
+  },
+  "bases": {
+    "stacked_421": {
+      "revision": "da102156cf4496e8a2255e905ebe66b859e339db",
+      "metrics": {
+        "production_lines_added": 2646,
+        "production_lines_deleted": 354,
+        "test_lines_added": 1228,
+        "test_lines_deleted": 18,
+        "public_items_added": 21,
+        "public_items_removed": 4,
+        "files_touched": 86,
+        "net_added_lines": 3502
+      },
+      "public_declarations_added": [
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub use targets::DiscreteValueTarget;"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub fn get(self, index: usize) -> Option<DiscreteValueTarget<'dae>> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub fn iter(self) -> impl ExactSizeIterator<Item = DiscreteValueTarget<'dae>> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub fn selected_owner( &mut self, provenance: DaeProvenance, targets: impl IntoIterator<Item = DiscreteValueTarget<'dae>>, build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>, ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values/targets.rs",
+          "pub struct DiscreteValueTarget<'dae> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values/targets.rs",
+          "pub const fn variable(self) -> DiscreteValueId<'dae> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values/targets.rs",
+          "pub const fn scalar_selection(self) -> Option<u32> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values/targets.rs",
+          "pub const fn index(self) -> u32 {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/expression/target_nodes.rs",
+          "pub fn discrete_value_target( self, target: crate::DiscreteValueTarget<'dae>, ) -> Result<ExprId<'dae>, DaeConstructionError> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/expression/target_nodes.rs",
+          "pub fn pre_discrete_value_target( self, target: crate::DiscreteValueTarget<'dae>, ) -> Result<ExprId<'dae>, DaeConstructionError> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/model.rs",
+          "pub const DAE_SCHEMA_VERSION: u16 = 52;"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/model.rs",
+          "pub fn b1c_selected( &mut self, plan: impl IntoIterator<Item = crate::DiscreteValueTarget<'dae>>, build: impl FnOnce(&mut DiscreteValueTopology<'_, 'dae>) -> Result<(), DaeConstructionError>, ) -> Result<(), DaeConstructionError> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/model.rs",
+          "pub fn discrete_value_element( &mut self, variable: DiscreteValueId<'dae>, indices: &[i64], provenance: DaeProvenance, ) -> Result<crate::DiscreteValueTarget<'dae>, DaeConstructionError> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/model/view.rs",
+          "pub fn discrete_value_target_indices( self, target: crate::DiscreteValueTarget<'dae>, ) -> Option<Vec<i64>> {"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/lib.rs",
+          "pub const SOLVE_SCHEMA_VERSION: u16 = 89;"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub struct EventIterationPartition {"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub fn new_partitioned( runs: Vec<EventIterationRun>, partitions: Vec<EventIterationPartition>, ) -> Self {"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub scalar_start: usize,"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub scalar_count: usize,"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub owner: EventIterationOwner,"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/model.rs",
+          "pub partitions: Vec<EventIterationPartition>,"
+        ]
+      ],
+      "public_declarations_removed": [
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub fn get(self, index: usize) -> Option<DiscreteValueId<'dae>> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/discrete_values.rs",
+          "pub fn iter(self) -> impl ExactSizeIterator<Item = DiscreteValueId<'dae>> {"
+        ],
+        [
+          "crates/rumoca-ir-dae/src/model.rs",
+          "pub const DAE_SCHEMA_VERSION: u16 = 51;"
+        ],
+        [
+          "crates/rumoca-ir-solve/src/lib.rs",
+          "pub const SOLVE_SCHEMA_VERSION: u16 = 88;"
+        ]
+      ]
+    },
+    "mandated_main": {
+      "revision": "c74cddff6d7669fc2c3603d43529ab62e0964072",
+      "metrics": {
+        "production_lines_added": 89366,
+        "production_lines_deleted": 21222,
+        "test_lines_added": 68373,
+        "test_lines_deleted": 3724,
+        "public_items_added": 1467,
+        "public_items_removed": 150,
+        "files_touched": 1420,
+        "net_added_lines": 132793
+      }
+    }
+  },
+  "measurement_scope": "Snapshot before adding this metrics receipt; PR body reports final text deltas. Mandated main includes the parent integration stack; stacked_421 isolates issue431."
+}
