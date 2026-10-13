@@ -142,5 +142,5 @@ the PR stays draft until required validation is accounted for.
 
 After rebasing only this change onto eb515, all 268 phase-solve tests passed,
 including the new parent Real signum cases and this change's wire/relation-mode
-cases. The five simulation initialization regressions are being rerun on eb515.
+cases. All five simulation initialization regressions passed on eb515.
 Numerical/canary measurements above retain their original da102 context.
