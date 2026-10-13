@@ -85,6 +85,23 @@ fn only_the_canonical_initial_mode_can_hide_a_nested_relation_effect() {
 }
 
 #[test]
+fn a_runtime_assignment_cannot_borrow_a_jacobian_seed_owner() {
+    for dst in [0, 1] {
+        let rhs = block(vec![vec![
+            LinearOp::LoadP { dst: 0, index: 7 },
+            LinearOp::LoadSeed { dst, index: 3 },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        assert!(
+            derive_runtime_assignment_roles(&rhs, &[scalar_slot_p(9)], &[8], Some(7))
+                .unwrap_err()
+                .to_string()
+                .contains("dependency program is not certifiable")
+        );
+    }
+}
+
+#[test]
 fn an_opaque_typed_call_cannot_authorize_relation_free_replay() {
     let span = Span::from_offsets(SourceId::from_source_name("opaque_call.mo"), 0, 1);
     let profile =

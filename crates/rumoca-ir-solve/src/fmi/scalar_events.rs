@@ -302,9 +302,6 @@ fn refuse_unsupported_owners(model: &SolveModel) -> Result<(), &'static str> {
     {
         return Err("the C profile cannot execute clocked previous() history");
     }
-    if problem.solve_layout.initial_event_parameter_index.is_some() {
-        return Err("the C profile cannot execute an initial event yet");
-    }
     Ok(())
 }
 

@@ -507,9 +507,8 @@ impl crate::visitor::SolveVisitor for RelationEffect {
 }
 
 fn initial_mode_condition(program: &[LinearOp], initial_mode: Option<usize>) -> bool {
-    matches!(program,
-        [LinearOp::LoadP { dst, index }, LinearOp::StoreOutput { src }]
-        if Some(*index) == initial_mode && dst == src)
+    initial_mode
+        .is_some_and(|flag| crate::parameter_reads::scalar_parameter_output(program) == Some(flag))
 }
 
 pub(crate) fn validate_runtime_assignment_certificates(

@@ -164,8 +164,12 @@ Both logs are retained (`modelicatest-current.log` and
 `modelicatest-current-prepared.log`), with the latter's JSON in
 `modelicatest-current-prepared`.
 
-The committed non-coverage verification gate for 2d684832 has passed fmt,
-workspace clippy and lint; workspace tests are running. Coverage requires an
+The committed non-coverage verification gate for 2d684832 passed fmt,
+CI-scope workspace clippy and lint, then failed workspace tests: 121 Rumoca
+library tests passed and the scalar-event FMI render test rejected the new
+relation initialization-mode lane as an authored initial event. The first
+failure and exact log digest are retained in `gate-first-failure.json`; later
+gate steps were not attempted. Coverage requires an
 unmeasured fresh instrumented target (the tool estimates approximately 50 GB)
 and remains pending because available scratch capacity is below that bound.
 Full 566-model MSL validation remains pending. This evidence update changes no
@@ -195,3 +199,31 @@ excludes rumoca-phase-instantiate, and does not enable all features; lint uses
 rumoca-bind-wasm, enable rumoca/msl-sim-tests, and skip snapshot-only
 commit_messages. Its completed steps are not a claim that the literal
 SPEC_0025 all-features clippy or unrestricted workspace command has passed.
+
+## Generated C admission and lifecycle counterexample
+
+The standard workspace gate exposed a second owner of the same execution
+mode: the scalar C profile inferred unsupported authored initial-event logic
+from storage presence, and neither FMI template raised/cleared that storage.
+Removing only the refusal would therefore have admitted the wrong kernel.
+
+C admission now derives allowed reads from the checked compiler relation
+regions using the canonical model visitor and shared parameter-read footprint
+and exact scalar-parameter-output helpers. The exact flag guard, stored raw
+comparison and relation-memory fallback grant relation-only initialization;
+every other scalar/indexed/tensor/nested mode read refuses. Both FMI versions
+raise the original hidden lane at EnterInitializationMode, retain it through
+initialization and the initial event, and clear it before transient refresh.
+Reset returns to its original cleared lane. No schema or metadata field changes.
+
+Owning checks include a source authored initial() refusal, adversarial compiled
+mode-read fixtures, and actual FMI2/3 C APIs that initialize, observe a derivative,
+change a trial state across a relation without committing an event, observe held
+truth, reset, and initialize again. The follow-up passes all four
+actual C cases on the eb515 source checkpoint. The 904 IR / 268 phase unit,
+3 integration and 9 doc tests also pass; scoped all-targets strict clippy and
+fmt pass. `fmi-mode-followup.json` retains exact counts, scope, first failure
+and log digests. The stronger algebraic fixture initially exposed the exact
+Y-only AD guard/fallback with distinct positive-zero tangents; negative alias,
+nonzero and negative-zero controls protect its private C admission proof.
+The earlier workspace gate remains a failed attempt.

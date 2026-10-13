@@ -45,6 +45,7 @@ pub use input_defaults::{
     FmiInputDefaultInput, FmiInputDefaultOrigin, FmiInputDefaultOriginRun,
     FmiInputInstantiationDefault,
 };
+mod initial_mode;
 mod max_step_duration;
 mod metadata;
 mod metadata_projection;

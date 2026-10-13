@@ -1,0 +1,64 @@
+{
+  "base": "eb515d9b01ef71cc945774578b8e38d733a4b67f",
+  "source_checkpoint_parent": "01ca1b9cbe683b8719b358a268e0b07b0eb898a7",
+  "git_worktree_dirty": true,
+  "owning_suite": {
+    "ir_unit_passed": 904,
+    "phase_unit_passed": 268,
+    "integration_passed": 3,
+    "doc_passed": 9
+  },
+  "actual_c_cases": {
+    "passed": 4,
+    "targets": [
+      "fmi2",
+      "fmi3"
+    ],
+    "coverage": [
+      "algebraic initialization before relation-memory seeding",
+      "held relation truth after uncommitted trial across root",
+      "Reset then repeat initialization",
+      "authored initial() refusal",
+      "CS pulse rearming with state/time event controls",
+      "optimized C warnings"
+    ]
+  },
+  "strict_checks": {
+    "fmt": "passed",
+    "clippy": "passed after singleton-slice fixture correction",
+    "clippy_scope": "rumoca-ir-solve, rumoca-phase-solve, rumoca-phase-codegen; all-targets; default features; -D warnings"
+  },
+  "first_c_failure": "algebraic fixture falsely refused by missing exact Y-only AD constant-tangent admission; retained unchanged fixture",
+  "trace": "guard P flag and distinct +0 tangent; raw Compare primal and exact +0 tangent; registered memory fallback and distinct +0 tangent",
+  "source_scope": "C-private exact admission extension; shared runtime effect predicate unchanged by Y-only addition; no schema changes",
+  "logs": {
+    "fmi-mode-owning-final.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-owning-final.log",
+      "sha256": "1edad9f713aabb73e946c931bc9e3bd0308b5476166de27e7e848504475a82aa"
+    },
+    "fmi-mode-c-apis-final.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-c-apis-final.log",
+      "sha256": "c434b2b7a65881385b0573a7a6e53ef2814a2bb8fa9b6c1df59917ebfad537dc"
+    },
+    "fmi-mode-clippy.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-clippy.log",
+      "sha256": "c3a7f705873f6016bc1c75a3bb68a98bf2696b48ddfc377025bbdf055e74b347"
+    },
+    "fmi-mode-clippy-corrected-fixture.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-clippy-corrected-fixture.log",
+      "sha256": "8b5bb99c54254b7202b6bc788994729c2c8763f6a2161c4e0cf6beaa8e88b020"
+    },
+    "fmi-mode-fmt.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-fmt.log",
+      "sha256": "9bd62bede5fd62c8256c299161503d47d09151d028ca3069544371a25ffd7666"
+    },
+    "fmi-mode-c-apis.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-c-apis.log",
+      "sha256": "bdee01bb56d621485edbcbe5e6a21192af1479669fc954f178d2e96d4586fab2"
+    },
+    "fmi-mode-algebraic-trace-msl.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/fmi-mode-algebraic-trace-msl.log",
+      "sha256": "c2d05179f1bd025ca01ed672646b9a92ab3afe73aff981e8a3efe51a0a6b0a87"
+    }
+  }
+}

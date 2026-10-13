@@ -9,6 +9,10 @@
     relation_memory.rs, discrete_rows.rs). -#}
 {%- from "fmi-c-kernel.jinja" import scalar_op %}
 
+{%- macro initial_mode(solve, active) -%}
+{%- if solve.solve_layout.initial_event_parameter_index is not none %}m->p[{{ solve.solve_layout.initial_event_parameter_index }}] = {{ "1.0" if active else "0.0" }}; {% endif -%}
+{%- endmacro %}
+
 {%- macro event_fields(fmi) -%}
 {%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_input_runs.scalar_count, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
 {%- endmacro %}
@@ -845,6 +849,7 @@ static {{ prefix }}Status rmc_events_update(ModelInstance* m, bool* states_chang
     if (status == {{ prefix }}OK) rmc_discrete_inputs_seen(m);
     *states_changed = memcmp(states, m->y, sizeof(states)) != 0;
     m->rmc_entry_captured = false;
+    if (initial && status == {{ prefix }}OK) { {{ initial_mode(solve, false) }} }
     m->rmc_initial_event = false;
     m->rmc_override_count = 0;
     return status;

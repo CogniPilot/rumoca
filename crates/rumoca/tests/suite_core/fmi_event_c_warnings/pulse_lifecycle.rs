@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn xml_attribute(xml: &str, tag: &[u8], name: &[u8], variable: Option<&str>) -> String {
+pub(super) fn xml_attribute(xml: &str, tag: &[u8], name: &[u8], variable: Option<&str>) -> String {
     let mut reader = quick_xml::Reader::from_str(xml);
     loop {
         let value = match reader.read_event().expect("valid rendered XML") {

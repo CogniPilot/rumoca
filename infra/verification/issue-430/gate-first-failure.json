@@ -1,0 +1,20 @@
+{
+  "revision": "2d684832794f10d5288b5adbe0af31781b1e475f",
+  "command": "cargo xtask verify gate --rev 2d684832794f10d5288b5adbe0af31781b1e475f",
+  "result": "failed",
+  "passed_steps": [
+    "fmt",
+    "clippy (CI scope, default features, phase-instantiate excluded)",
+    "lint"
+  ],
+  "first_failed_step": "workspace-tests",
+  "first_test_binary": "rumoca --lib",
+  "passed_tests_before_failure": 121,
+  "failed_test": "target_manifest::tests::fmi_targets_render_state_events_in_the_scalar_event_profile",
+  "diagnostic": "FMI C profile: the C profile cannot execute an initial event yet",
+  "later_gate_steps": "not attempted",
+  "log_path": "$HOME/scratch/rumoca/issue430-20261013/tmp/rumoca-gate/2d684832794f/gate.log",
+  "log_sha256": "a80421b3870a680480e201cc9f4c4d95622062134ff3ad01e94a41142fd80915",
+  "classification": "export admission and lifecycle counterexample: compiler relation-mode storage is not authored initial-event authority",
+  "individual_phase_retries": 0
+}

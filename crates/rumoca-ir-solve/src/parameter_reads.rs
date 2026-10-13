@@ -1,5 +1,6 @@
 //! Which parameter slots a Solve problem's programs read.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use crate::{LinearOp, LinearOpSliceKind, SolveProblem, SolveVisitor, TensorInputKind};
@@ -63,6 +64,83 @@ pub fn read_continuous_parameter_slots(problem: &SolveProblem) -> ParameterSlots
 
 struct ParameterReads(Vec<Range<usize>>);
 
+pub(crate) fn scalar_parameter_output(ops: &[LinearOp]) -> Option<usize> {
+    match ops {
+        [
+            LinearOp::LoadP { dst, index },
+            LinearOp::StoreOutput { src },
+        ] if dst == src => Some(*index),
+        [
+            LinearOp::LoadP { dst, index },
+            LinearOp::LoadSeed { dst: tangent, .. },
+            LinearOp::StoreOutput { src },
+        ] if dst == src && tangent != dst => Some(*index),
+        _ => None,
+    }
+}
+
+pub(crate) fn parameter_read_range(op: &LinearOp) -> Option<Range<usize>> {
+    match op {
+        LinearOp::LoadP { index, .. } => Some(*index..*index + 1),
+        LinearOp::LoadIndexedP { base, count, .. } => Some(*base..*base + *count),
+        LinearOp::TensorLoad {
+            input: TensorInputKind::P,
+            input_start,
+            count,
+            ..
+        } => Some(*input_start..*input_start + *count),
+        _ => None,
+    }
+}
+
+pub(crate) fn affine_parameter_read_limit(
+    node: &crate::ComputeNode,
+) -> Result<Option<usize>, crate::TensorOutputMapError> {
+    let (domain, base_ops, load_strides) = match node {
+        crate::ComputeNode::Map {
+            domain,
+            base_ops,
+            load_strides,
+            ..
+        }
+        | crate::ComputeNode::AffineStencil {
+            domain,
+            base_ops,
+            load_strides,
+            ..
+        } => (domain, base_ops, load_strides),
+        crate::ComputeNode::ScalarPrograms(_)
+        | crate::ComputeNode::MatMul { .. }
+        | crate::ComputeNode::LinSolve { .. } => return Ok(None),
+    };
+    let mut by_op = BTreeMap::<usize, Vec<crate::AffineStencilIndexStrideTerm>>::new();
+    for stride in load_strides {
+        by_op
+            .entry(stride.op_position)
+            .or_default()
+            .extend(stride.terms.iter().cloned());
+    }
+    let mut limit = None;
+    for (position, strides) in by_op {
+        let Some(op) = base_ops.get(position) else {
+            return Err(crate::TensorOutputMapError::OutputIndexOverflow);
+        };
+        let Some(range) = parameter_read_range(op) else {
+            continue;
+        };
+        if range.is_empty() {
+            continue;
+        }
+        let map = crate::TensorOutputMap {
+            start: range.end - 1,
+            strides,
+        };
+        let end = map.output_count(domain)?;
+        limit = Some(limit.unwrap_or(0).max(end));
+    }
+    Ok(limit)
+}
+
 impl SolveVisitor for ParameterReads {
     type Error = std::convert::Infallible;
     fn visit_linear_op(
@@ -71,16 +149,8 @@ impl SolveVisitor for ParameterReads {
         _index: usize,
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
-        match op {
-            LinearOp::LoadP { index, .. } => self.0.push(*index..*index + 1),
-            LinearOp::LoadIndexedP { base, count, .. } => self.0.push(*base..*base + *count),
-            LinearOp::TensorLoad {
-                input: TensorInputKind::P,
-                input_start,
-                count,
-                ..
-            } => self.0.push(*input_start..*input_start + *count),
-            _ => {}
+        if let Some(range) = parameter_read_range(op) {
+            self.0.push(range);
         }
         Ok(())
     }

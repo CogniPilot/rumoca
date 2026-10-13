@@ -116,6 +116,7 @@ fn admit_kernel(
     model: &crate::SolveModel,
     metadata: &FmiMetadata,
 ) -> Result<(Vec<usize>, usize), FmiCCodegenError> {
+    super::initial_mode::validate(model).map_err(FmiCCodegenError)?;
     validate_initial_values(model)?;
     validate_variables(metadata)?;
     refuse_recursive_groups(&model.pure_calls)?;
