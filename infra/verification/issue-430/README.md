@@ -170,3 +170,28 @@ unmeasured fresh instrumented target (the tool estimates approximately 50 GB)
 and remains pending because available scratch capacity is below that bound.
 Full 566-model MSL validation remains pending. This evidence update changes no
 compiler or test source relative to the measured revision.
+
+## Current Tier 1 canary delta
+
+`current-canary.json` retains the clean current pair: before at
+`eb515d9b01ef71cc945774578b8e38d733a4b67f`, after at
+`1b88adcc993a85a3fe67edf677c127e2bafae7a1`. Both use the fixed 20-model list,
+MSL v4.1.0 and OMC a96aa1a-cmake, with exact source/reference context
+`ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f`.
+The optional CI-pinned ModelicaTest package is installed but excluded from
+this list. Receipts are in `canary-before-eb515` and `canary-after-eb515`;
+no result directory was replaced and no individual phase was retried.
+
+| Metric | Before | After | Delta |
+| --- | --- | --- | --- |
+| Parse / flatten / DAE / Solve | 20 / 20 / 20 / 20 | 20 / 20 / 20 / 20 | 0 |
+| Simulation completions | 16 | 16 | 0 |
+| Compared / high / near / deviation | 15 / 15 / 0 / 0 | 15 / 15 / 0 / 0 | 0 |
+| Typed skips / missing | 1 / 0 | 1 / 0 | 0 |
+
+The archived gate has CI's exact scope: clippy uses workspace/all-targets,
+excludes rumoca-phase-instantiate, and does not enable all features; lint uses
+`cargo xtask verify lint`. Workspace tests exclude rumoca-bind-python and
+rumoca-bind-wasm, enable rumoca/msl-sim-tests, and skip snapshot-only
+commit_messages. Its completed steps are not a claim that the literal
+SPEC_0025 all-features clippy or unrestricted workspace command has passed.

@@ -1,0 +1,52 @@
+{
+  "scope": "Tier1 fixed20, partial; not full-cohort parity",
+  "targets": "infra/verification/msl-canary-20.json",
+  "msl_version": "v4.1.0",
+  "omc_version": "a96aa1a-cmake",
+  "source_reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+  "before": {
+    "commit": "eb515d9b01ef71cc945774578b8e38d733a4b67f",
+    "dirty": false,
+    "parity_measured": true,
+    "parse_models": 20,
+    "flatten_models": 20,
+    "dae_models": 20,
+    "solve_models": 20,
+    "sim_ok": 16,
+    "models_compared": 15,
+    "agreement_high": 15,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 1,
+    "missing_trace_models": 0
+  },
+  "after": {
+    "commit": "1b88adcc993a85a3fe67edf677c127e2bafae7a1",
+    "dirty": false,
+    "parity_measured": true,
+    "parse_models": 20,
+    "flatten_models": 20,
+    "dae_models": 20,
+    "solve_models": 20,
+    "sim_ok": 16,
+    "models_compared": 15,
+    "agreement_high": 15,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 1,
+    "missing_trace_models": 0
+  },
+  "delta": {
+    "parse_models": 0,
+    "flatten_models": 0,
+    "dae_models": 0,
+    "solve_models": 0,
+    "sim_ok": 0,
+    "models_compared": 0,
+    "agreement_high": 0,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 0,
+    "missing_trace_models": 0
+  }
+}
