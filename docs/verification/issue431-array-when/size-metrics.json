@@ -1,5 +1,5 @@
 {
-  "head": "fea499d4676780b2854be2113e2cc64892a7b791",
+  "head": "ee02efb856546fb8b623196e4fff68f2a11216d2",
   "method": {
     "lines": "git diff --numstat BASE...HEAD; test path iff a path component is tests or file name is tests.rs, *_test.rs, *_tests.rs; remaining text includes production and review/spec documentation",
     "public_api": "Changed Rust files: multiset difference of normalized explicit public item signatures (pub without visibility restriction) and public struct field declarations; declaration parser is a reproducible regex census, not semantic rustdoc. Public enum variants are separately listed.",
@@ -7,21 +7,26 @@
       "rumoca_ir_flat::WhenEquation::AssignElement",
       "rumoca_ir_flat::StructuralParameterUse::WhenTargetSubscript",
       "rumoca_ir_solve::EventIterationOwner::Partitioned",
-      "rumoca_phase_structural::SameTickOrderError::UnsupportedSelectedTarget"
-    ]
+      "rumoca_phase_structural::SameTickOrderError::UnsupportedSelectedTarget",
+      "rumoca_ir_flat::StructuralParameterUse::DiscreteDependencySubscript"
+    ],
+    "public_item_regex": "(?m)^\\s*pub\\s+(?:(?:async|const|unsafe|extern\\s+\"[^\"]*\")\\s+)*(?:fn|struct|enum|trait|type|const|static|use)\\s+[\\s\\S]*?(?:\\{|;)",
+    "public_field_regex": "(?m)^\\s*pub\\s+[A-Za-z_]\\w*\\s*:[^\\n]+,\\s*$"
   },
+  "measurement_scope": "Committed source/evidence snapshot before refreshing this metrics receipt; final PR text deltas additionally measured after receipt commit. Mandated origin/main includes parent history; stacked_421 isolates issue431.",
   "bases": {
     "stacked_421": {
-      "revision": "da102156cf4496e8a2255e905ebe66b859e339db",
+      "revision": "f7b18ac0b26cf206d336edc5960783bf789f351d",
+      "merge_base": "f7b18ac0b26cf206d336edc5960783bf789f351d",
       "metrics": {
-        "production_lines_added": 2646,
-        "production_lines_deleted": 354,
-        "test_lines_added": 1228,
-        "test_lines_deleted": 18,
+        "production_lines_added": 4213,
+        "production_lines_deleted": 454,
+        "test_lines_added": 1830,
+        "test_lines_deleted": 31,
         "public_items_added": 21,
         "public_items_removed": 4,
-        "files_touched": 86,
-        "net_added_lines": 3502
+        "files_touched": 107,
+        "net_added_lines": 5558
       },
       "public_declarations_added": [
         [
@@ -130,17 +135,17 @@
     },
     "mandated_main": {
       "revision": "c74cddff6d7669fc2c3603d43529ab62e0964072",
+      "merge_base": "c74cddff6d7669fc2c3603d43529ab62e0964072",
       "metrics": {
-        "production_lines_added": 89366,
-        "production_lines_deleted": 21222,
-        "test_lines_added": 68373,
-        "test_lines_deleted": 3724,
+        "production_lines_added": 91029,
+        "production_lines_deleted": 21326,
+        "test_lines_added": 69153,
+        "test_lines_deleted": 3740,
         "public_items_added": 1467,
         "public_items_removed": 150,
-        "files_touched": 1420,
-        "net_added_lines": 132793
+        "files_touched": 1437,
+        "net_added_lines": 135116
       }
     }
-  },
-  "measurement_scope": "Snapshot before adding this metrics receipt; PR body reports final text deltas. Mandated main includes the parent integration stack; stacked_421 isolates issue431."
+  }
 }
