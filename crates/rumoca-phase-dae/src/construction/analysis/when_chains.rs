@@ -39,7 +39,6 @@ pub(super) fn validate_when_chains(
     model_values: &ShapeEnvironment,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
-    when_elements::validate_model_owners(flat)?;
     let scope = WhenScope {
         flat,
         roles,
@@ -49,7 +48,6 @@ pub(super) fn validate_when_chains(
         model_values,
     };
     for chain in &flat.when_chains {
-        when_elements::validate_chain(flat, chain)?;
         for branch in chain.branches() {
             // A when-clause's own activation condition is evaluated to decide
             // whether the event happens, so it is not yet inside the event it

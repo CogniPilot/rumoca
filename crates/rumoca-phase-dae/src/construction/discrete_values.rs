@@ -88,10 +88,9 @@ impl<'dae> DiscreteValueStaging<'dae> {
             for (ordinal, key) in targets.iter().enumerate() {
                 let (analysis::DiscreteTargetKey::Whole(instance)
                 | analysis::DiscreteTargetKey::Element { instance, .. }) = key;
-                let Coordinate::DiscreteValue(variable) = coordinates.by_instance()[instance]
-                else {
-                    unreachable!("B.1c analysis proves discrete-value target roles")
-                };
+                let variable = coordinates.by_instance()[instance]
+                    .discrete_value()
+                    .expect("B.1c analysis proves discrete-value target roles");
                 let target = match key {
                     analysis::DiscreteTargetKey::Whole(_) => variable.into(),
                     analysis::DiscreteTargetKey::Element { indices, .. } => construction

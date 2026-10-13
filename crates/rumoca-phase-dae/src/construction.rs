@@ -154,6 +154,12 @@ enum Coordinate<'dae> {
 }
 
 impl<'dae> Coordinate<'dae> {
+    fn discrete_value(self) -> Option<dae::DiscreteValueId<'dae>> {
+        match self {
+            Self::DiscreteValue(variable) => Some(variable),
+            _ => None,
+        }
+    }
     fn current(self) -> dae::CoordinateInput<'dae> {
         match self {
             Self::Parameter(id) => dae::CoordinateInput::Parameter(id),
@@ -296,9 +302,6 @@ fn build_checked<'dae>(
     variable_plan: &VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    if let Some(declaration) = flat.predefined_string_declaration {
-        construction.register_predefined_string(declaration)?;
-    }
     let value_types = reserve_value_types(flat, analysis, construction)?;
     let mut clocks = lower_analysis_clocks(construction, flat, analysis)?;
     let no_function_ids = HashMap::new();
@@ -546,6 +549,9 @@ fn reserve_value_types<'dae>(
     analysis: &Analysis,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<HashMap<VarName, dae::ValueTypeId<'dae>>, dae::DaeConstructionError> {
+    if let Some(declaration) = flat.predefined_string_declaration {
+        construction.register_predefined_string(declaration)?;
+    }
     let mut value_types = HashMap::new();
     for (name, variable) in &flat.variables {
         if matches!(analysis.roles[name], PlannedRole::Clock) {

@@ -1,8 +1,7 @@
 use super::{
-    collect_when_eq_targets, extract_assignment_target, flatten_when_blocks,
-    flatten_when_body_equation, flatten_when_for_equation, flatten_when_function_call,
-    flatten_when_if_equation, is_known_streams_side_effect_call,
-    validate_when_equation_definitions,
+    collect_when_eq_targets, flatten_when_blocks, flatten_when_body_equation,
+    flatten_when_for_equation, flatten_when_function_call, flatten_when_if_equation,
+    is_known_streams_side_effect_call, validate_when_equation_definitions,
 };
 use crate::errors::FlattenError;
 use rumoca_ir_ast as ast;
@@ -765,8 +764,17 @@ fn assignment_target_error_uses_invalid_lhs_span() {
         span,
     };
 
-    let err = extract_assignment_target(&lhs, &ast::QualifiedName::new())
-        .expect_err("non-reference LHS should fail");
+    let err = flatten_when_body_equation(
+        &crate::Context::default(),
+        &ast::Equation::Simple {
+            lhs,
+            rhs: int_expr_with_span(1, span),
+        },
+        &ast::QualifiedName::new(),
+        span,
+        None,
+    )
+    .expect_err("non-reference LHS should fail");
 
     assert!(
         matches!(

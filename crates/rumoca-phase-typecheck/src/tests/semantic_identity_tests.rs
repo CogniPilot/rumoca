@@ -402,24 +402,26 @@ fn iterator_reference_fixture() -> (ComponentReference, DefId, DefId) {
 fn comprehension_type_scope_source_id_cannot_capture_same_name_component() {
     let (mut reference, iterator, enclosing) = iterator_reference_fixture();
     let mut checker = TypeChecker::new();
-    checker.current_integer_iterators.push((
+    checker.current_iterators.push((
         Some(rumoca_core::IndexBinderProvenance::Source(iterator)),
         "i".into(),
+        TypeTable::new().integer(),
     ));
-    assert!(checker.is_integer_iterator_reference(&reference));
+    assert!(checker.is_iterator_reference(&reference));
     reference.set_target_def_id(Some(enclosing));
-    assert!(!checker.is_integer_iterator_reference(&reference));
+    assert!(!checker.is_iterator_reference(&reference));
 }
 
 #[test]
 fn comprehension_type_scope_generated_axis_cannot_capture_source_id() {
     let (mut reference, _, _) = iterator_reference_fixture();
     let mut checker = TypeChecker::new();
-    checker.current_integer_iterators.push((
+    checker.current_iterators.push((
         Some(rumoca_core::IndexBinderProvenance::Generated),
         "i".into(),
+        TypeTable::new().integer(),
     ));
-    assert!(!checker.is_integer_iterator_reference(&reference));
+    assert!(!checker.is_iterator_reference(&reference));
     reference.set_target_def_id(None);
-    assert!(checker.is_integer_iterator_reference(&reference));
+    assert!(checker.is_iterator_reference(&reference));
 }

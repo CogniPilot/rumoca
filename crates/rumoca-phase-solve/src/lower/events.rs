@@ -1868,7 +1868,6 @@ fn lower_time_events<'dae>(
 #[cfg(test)]
 mod integrator_history_effect_tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn provenance() -> rumoca_core::ProvenanceSpan {
         Span::from_offsets(

@@ -1,0 +1,20 @@
+{
+  "model": "ScalableTestSuite.Elementary.WhenEvents.ScaledExperiments.ManyEvents_N_1000_M_10",
+  "stacked_base": "eb515d9b01ef71cc945774578b8e38d733a4b67f",
+  "source_revision": "c9a7574b31142fa976d20ab6970d78639c125ceb",
+  "stop_time": 10,
+  "scope": "terminal sample only; refreshed compiler including source-type, structural dependency, and tuple overlap fixes; working-tree source pending signed checkpoint",
+  "Boolean_coordinates_compared": 1000,
+  "Boolean_mismatches": 0,
+  "true_coordinate_count": 99,
+  "Real_coordinate_absolute_errors": {
+    "x[1]": 9.71445146547012e-17,
+    "x[901]": 3.3306690738754696e-16,
+    "x[902]": 9.992007221626409e-15,
+    "x[1000]": 1.2789769243681803e-13
+  },
+  "compile_elapsed_ms": 179.58,
+  "simulation_elapsed_seconds": 6.5,
+  "log_sha256": "c7a4b5aec08d076c0924fcaf41729b1d6a22495c51d32819342744c82219f94b",
+  "oracle_sha256": "2de99d127f4c87325dee4b148d136f8e5b9e9ba0920c286d9d082f54bf8a1e2f"
+}

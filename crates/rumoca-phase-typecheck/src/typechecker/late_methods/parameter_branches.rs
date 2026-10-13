@@ -61,7 +61,10 @@ impl TypeChecker {
             .all(|reference| !self.is_simulation_time_reference(reference))
     }
 
-    fn is_simulation_time_reference(&self, reference: &rumoca_ir_ast::ComponentReference) -> bool {
+    pub(in crate::typechecker) fn is_simulation_time_reference(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> bool {
         if reference.parts.len() == 1
             && reference.parts[0].ident.text.as_ref() == "time"
             && reference.parts[0].subs.iter().flatten().next().is_none()

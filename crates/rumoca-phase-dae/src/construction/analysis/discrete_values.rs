@@ -902,11 +902,6 @@ fn order_owners(
 }
 
 fn expand_selected_dependencies(flat: &flat::Model, owners: &mut [SourceOwner]) {
-    let parents = flat
-        .variables
-        .values()
-        .map(|variable| (variable.instance_id, variable.name.clone()))
-        .collect::<HashMap<_, _>>();
     let mut selected: HashMap<InstanceId, Vec<DiscreteTargetKey>> = HashMap::new();
     let mut whole = HashSet::new();
     for target in owners.iter().flat_map(|owner| &owner.targets) {
@@ -928,19 +923,8 @@ fn expand_selected_dependencies(flat: &flat::Model, owners: &mut [SourceOwner]) 
                 {
                     dependencies.extend(selected[name].iter().cloned());
                 }
-                selected_key @ DiscreteTargetKey::Element { .. } => {
-                    let DiscreteTargetKey::Element { instance, .. } = &selected_key else {
-                        unreachable!()
-                    };
-                    if parents.contains_key(instance) {
-                        if whole.contains(instance) {
-                            dependencies.insert(DiscreteTargetKey::Whole(*instance));
-                        } else {
-                            dependencies.insert(selected_key);
-                        }
-                    } else {
-                        dependencies.insert(selected_key);
-                    }
+                DiscreteTargetKey::Element { instance, .. } if whole.contains(&instance) => {
+                    dependencies.insert(DiscreteTargetKey::Whole(instance));
                 }
                 other => {
                     dependencies.insert(other);

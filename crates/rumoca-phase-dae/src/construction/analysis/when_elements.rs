@@ -21,6 +21,13 @@ impl DiscreteTargetKey {
             && !subscripts.is_empty()
             && let Some(instance) = name.instance_id()
             && let Some(indices) = literal_indices(subscripts)
+            && flat.variables.get(name.var_name()).is_some_and(|variable| {
+                indices.len() == variable.dims.len()
+                    && indices
+                        .iter()
+                        .zip(&variable.dims)
+                        .all(|(&index, &extent)| index > 0 && index <= extent)
+            })
         {
             return Self::Element { instance, indices };
         }
@@ -45,7 +52,23 @@ impl SelectedWhenTarget {
     }
 }
 
-pub(super) fn literal_indices(subscripts: &[Subscript]) -> Option<Box<[i64]>> {
+pub(super) fn parameter_indices(
+    flat: &flat::Model,
+    subscripts: &[Subscript],
+) -> Option<Box<[i64]>> {
+    subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => Some(*value),
+            Subscript::Expr { expr, .. } => {
+                rumoca_eval_flat::flat_int::try_eval_flat_expr_i64(expr, flat, 0)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn literal_indices(subscripts: &[Subscript]) -> Option<Box<[i64]>> {
     subscripts
         .iter()
         .map(|subscript| match subscript {
@@ -65,10 +88,11 @@ pub(super) fn literal_indices(subscripts: &[Subscript]) -> Option<Box<[i64]>> {
 pub(super) fn validate_chain(
     flat: &flat::Model,
     chain: &flat::WhenChain,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<(), ToDaeError> {
     let mut expected = None;
     for branch in chain.branches() {
-        let targets = branch_targets(flat, &branch.equations)?;
+        let targets = branch_targets(flat, &branch.equations, calls)?;
         if expected
             .as_ref()
             .is_some_and(|expected| expected != &targets)
@@ -123,11 +147,14 @@ impl CoordinateOwners {
 }
 
 /// MLS §8.3.5.4 applies to `z` and `m`, including partial array definitions.
-pub(super) fn validate_model_owners(flat: &flat::Model) -> Result<(), ToDaeError> {
+pub(super) fn validate_model_owners(
+    flat: &flat::Model,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+) -> Result<(), ToDaeError> {
     let mut owners = HashMap::new();
     for (owner, chain) in flat.when_chains.iter().enumerate() {
         for branch in chain.branches() {
-            claim_equation_targets(flat, &branch.equations, owner, &mut owners)?;
+            claim_equation_targets(flat, &branch.equations, owner, &mut owners, calls)?;
         }
     }
     Ok(())
@@ -138,13 +165,16 @@ fn claim_equation_targets(
     equations: &[flat::WhenEquation],
     owner: usize,
     owners: &mut HashMap<InstanceId, CoordinateOwners>,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
+        for instance in whole_target_instances(flat, equation, calls) {
+            owners
+                .entry(instance)
+                .or_default()
+                .claim(None, owner, equation.span())?;
+        }
         let target = match equation {
-            flat::WhenEquation::Assign { target, .. } => flat
-                .variables
-                .get(target)
-                .map(|variable| (variable.instance_id, None)),
             flat::WhenEquation::AssignElement {
                 target,
                 subscripts,
@@ -164,7 +194,7 @@ fn claim_equation_targets(
                     .map(|(_, equations)| equations.as_slice())
                     .chain(else_branch.iter().map(Vec::as_slice))
                 {
-                    claim_equation_targets(flat, equations, owner, owners)?;
+                    claim_equation_targets(flat, equations, owner, owners, calls)?;
                 }
                 None
             }
@@ -183,8 +213,11 @@ fn claim_equation_targets(
 fn branch_targets(
     flat: &flat::Model,
     equations: &[flat::WhenEquation],
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<HashSet<DiscreteTargetKey>, ToDaeError> {
     let mut targets = HashSet::new();
+    let mut whole = HashSet::new();
+    collect_whole_targets(flat, equations, &mut whole, calls);
     for equation in equations {
         let new = match equation {
             flat::WhenEquation::AssignElement {
@@ -198,10 +231,18 @@ fn branch_targets(
                 else_branch,
                 span,
                 ..
-            } => conditional_targets(flat, branches, else_branch.as_deref(), *span)?,
+            } => conditional_targets(flat, branches, else_branch.as_deref(), *span, calls)?,
             _ => HashSet::new(),
         };
         for key in new {
+            if let DiscreteTargetKey::Element { instance, .. } = &key
+                && whole.contains(instance)
+            {
+                return Err(ToDaeError::discrete_solved_form_violation(
+                    "one when branch overlaps a whole declaration and a selected coordinate",
+                    equation.span(),
+                ));
+            }
             if !targets.insert(key) {
                 return Err(ToDaeError::discrete_solved_form_violation(
                     "one when branch defines the same selected coordinate more than once",
@@ -211,6 +252,71 @@ fn branch_targets(
         }
     }
     Ok(targets)
+}
+
+fn collect_whole_targets(
+    flat: &flat::Model,
+    equations: &[flat::WhenEquation],
+    whole: &mut HashSet<InstanceId>,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+) {
+    for equation in equations {
+        whole.extend(whole_target_instances(flat, equation, calls));
+        collect_nested_whole_targets(flat, equation, whole, calls);
+    }
+}
+
+fn whole_target_instances(
+    flat: &flat::Model,
+    equation: &flat::WhenEquation,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+) -> Vec<InstanceId> {
+    let names = match equation {
+        flat::WhenEquation::Assign { target, .. } => {
+            return flat
+                .variables
+                .get(target)
+                .map(|variable| vec![variable.instance_id])
+                .unwrap_or_default();
+        }
+        flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
+            let key = when_function_call_key(flat, outputs, *span)
+                .expect("call analysis proves exact receiver identities");
+            calls[&key]
+                .outputs
+                .iter()
+                .flatten()
+                .flat_map(|output| output.receivers().into_iter().map(|(target, _)| target))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    names
+        .into_iter()
+        .map(|name| flat.variables[name].instance_id)
+        .collect()
+}
+
+fn collect_nested_whole_targets(
+    flat: &flat::Model,
+    equation: &flat::WhenEquation,
+    whole: &mut HashSet<InstanceId>,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+) {
+    if let flat::WhenEquation::Conditional {
+        branches,
+        else_branch,
+        ..
+    } = equation
+    {
+        for nested in branches
+            .iter()
+            .map(|(_, nested)| nested.as_slice())
+            .chain(else_branch.as_deref())
+        {
+            collect_whole_targets(flat, nested, whole, calls);
+        }
+    }
 }
 
 pub(in crate::construction) fn selected_target(
@@ -232,17 +338,7 @@ pub(in crate::construction) fn selected_target(
         .get(target.var_name())
         .filter(|variable| variable.instance_id == instance)
         .ok_or_else(invalid)?;
-    let indices = subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            Subscript::Index { value, .. } => Some(*value),
-            Subscript::Expr { expr, .. } => {
-                rumoca_eval_flat::flat_int::try_eval_flat_expr_i64(expr, flat, 0)
-            }
-            _ => None,
-        })
-        .collect::<Option<Box<[i64]>>>()
-        .ok_or_else(invalid)?;
+    let indices = parameter_indices(flat, subscripts).ok_or_else(invalid)?;
     if indices.len() != variable.dims.len()
         || indices
             .iter()
@@ -264,6 +360,7 @@ fn conditional_targets(
     branches: &[(Expression, Vec<flat::WhenEquation>)],
     else_branch: Option<&[flat::WhenEquation]>,
     span: Span,
+    calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<HashSet<DiscreteTargetKey>, ToDaeError> {
     let mut alternatives = branches
         .iter()
@@ -271,11 +368,11 @@ fn conditional_targets(
         .chain(else_branch);
     let first = alternatives
         .next()
-        .map(|equations| branch_targets(flat, equations))
+        .map(|equations| branch_targets(flat, equations, calls))
         .transpose()?
         .unwrap_or_default();
     for equations in alternatives {
-        if branch_targets(flat, equations)? != first {
+        if branch_targets(flat, equations, calls)? != first {
             return Err(ToDaeError::discrete_solved_form_violation(
                 "if-equation branches must define the same selected coordinates (MLS §8.3.5)",
                 span,

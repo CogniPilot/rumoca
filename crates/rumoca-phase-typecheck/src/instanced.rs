@@ -148,6 +148,7 @@ impl TypeChecker {
         };
         self.type_ids_by_def_id = type_ids_by_def_id;
         self.rebuild_type_roots(tree, &type_table);
+        self.collect_component_index_domains(tree, &type_table);
         self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
         Some(type_table)
     }

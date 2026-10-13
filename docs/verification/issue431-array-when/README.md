@@ -30,9 +30,9 @@ declaration history run with a checked partition into exact producer ranges;
 independent elements retain their individual activations and holds.
 
 The PR is stacked on PR #421 at
-`da102156cf4496e8a2255e905ebe66b859e339db`. An earlier diagnostic baseline at
-`6ce369dd2f4c961704a05c9f3163cda90480fb79` is historical evidence only.
-The current clean `da102156` baseline independently reproduces ToDAE ED019
+`eb515d9b01ef71cc945774578b8e38d733a4b67f`. The earlier `da102156` and
+`6ce369dd` compiler snapshots are historical evidence only.
+The clean historical `da102156` baseline independently reproduces ToDAE ED019
 for `e[1]` on the exact pinned model.
 
 The full upstream source-root reader fails earlier on an unrelated UTF-8 BOM
@@ -44,7 +44,7 @@ changed. All machine-local artifacts are under task-owned directories
 derived from `$HOME`; raw paths in the receipt are relative to `$HOME`.
 
 The [source manifest](source-closure-manifest.json) pins all five input files.
-The exact N1000/M10 model now compiles in 84.91 ms on this host, retaining
+The historical da102 N1000/M10 run compiled in 84.91 ms on this host, retaining
 one aggregate state declaration and one compact continuous equation family.
 Its scalar balance has 1000 states, 1000 continuous equations, and 1000
 discrete definitions; structural matching covers all 1000 state coordinates.
@@ -59,7 +59,7 @@ including the 99 fired elements `e[902]` through `e[1000]`; the four Real
 samples differ by at most `1.28e-13`. Its separate
 [receipt](omc-terminal-comparison-10.json) retains the horizon and scope.
 
-The compiler's focused nine-test suite proves aggregate storage, independent
+The compiler's focused fifteen-test suite proves aggregate storage, independent
 triggers, partial held coverage, Integer/enum/discrete Real coordinates,
 matrix mapping, parameter expressions, empty domains, dependency ordering,
 and refusal of invalid coordinates, cycles, overlapping owners, and branch
@@ -72,3 +72,29 @@ current-value reads; elsewhen priority; and matrix row-major mapping.
 This record is a focused verification ledger. Canary and cohort measurements
 must retain their exact scope and reference context; partial snapshots must
 not be promoted or reported as full-cohort parity.
+
+The refreshed compiler on the current eb515 stack repeats the requested
+horizon 10 after the review corrections. It compiles in 179.58 ms and
+simulates in 6.50 s on this host; these observations are not a performance
+parity claim. All 1000 terminal Boolean values still equal the unchanged
+OMC oracle, and the maximum sampled Real error remains 1.28e-13. The
+[current terminal receipt](omc-terminal-comparison-eb515-10.json) includes
+both raw log and oracle hashes.
+
+Source review added original scalar index-type and when-target variability
+proofs before normalization, rejecting Real indices and dynamic Integer
+indices. Selected current reads with parameter indices now freeze the same
+coordinate used by dependency ordering and emitted values; their parameters
+carry translation-selection metadata and the existing WD001 refusal.
+`pre`, `previous`, and `sample` keep their temporal selection semantics.
+The shared constant interpreter owns structural Integer evaluation, with
+parameter/constant bindings and exact Integer results. Whole assignments,
+function output tuples, and canonical expanded record receivers share source
+coordinate overlap checks. Independent review confirmed the refusals and
+positive parameter dependency, priority, and record tuple simulations.
+
+Current compatibility probes pass for the immutable modelica_models revision
+`a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f`: `Tests.All` compile and
+`Tests.LieGroupTests.SO2` / `SE2` simulation at time zero. The CI-pinned
+ModelicaTest overlay is revision `8ae3d35c24e519cb2996cab20f3b13daf2b0c50a`,
+archive SHA256 `b402903aefd4f1397364e3ae1992bb99080ce935ab9a426d3bcdb47e4da8eeb6`.

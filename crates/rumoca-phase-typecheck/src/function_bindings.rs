@@ -6,12 +6,12 @@ pub(crate) struct FunctionCalls<'a>(pub(crate) &'a mut TypeChecker);
 impl TypeCheckTraversalCallbacks for FunctionCalls<'_> {
     fn on_simple_equation(&mut self, _lhs: &Expression, _rhs: &Expression, _types: &TypeTable) {}
 
-    fn push_integer_iterator(&mut self, index: &rumoca_ir_ast::ForIndex) {
-        TypeCheckTraversalCallbacks::push_integer_iterator(self.0, index);
+    fn push_iterator(&mut self, index: &rumoca_ir_ast::ForIndex, types: &TypeTable) {
+        TypeCheckTraversalCallbacks::push_iterator(self.0, index, types);
     }
 
-    fn pop_integer_iterators(&mut self, count: usize) {
-        TypeCheckTraversalCallbacks::pop_integer_iterators(self.0, count);
+    fn pop_iterators(&mut self, count: usize) {
+        TypeCheckTraversalCallbacks::pop_iterators(self.0, count);
     }
 
     fn on_expression_function_call(
@@ -97,7 +97,7 @@ impl TypeChecker {
         let scope = self.current_instance_scope.take();
         let class_instance = self.current_class_instance_id.take();
         let domain = std::mem::take(&mut self.current_instance_domain_shape);
-        let iterators = std::mem::take(&mut self.current_integer_iterators);
+        let iterators = std::mem::take(&mut self.current_iterators);
         let overrides = std::mem::take(&mut self.current_call_type_overrides);
         let mut checked = HashSet::new();
         while let Some(context) = self.reachable_function_bindings.as_mut().and_then(Vec::pop) {
@@ -118,7 +118,7 @@ impl TypeChecker {
         self.current_instance_scope = scope;
         self.current_class_instance_id = class_instance;
         self.current_instance_domain_shape = domain;
-        self.current_integer_iterators = iterators;
+        self.current_iterators = iterators;
         self.current_call_type_overrides = overrides;
     }
 
