@@ -104,7 +104,10 @@ pub(super) fn lower_discrete_and_events<'dae>(
     let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
     let mut discrete = discrete.finish(
         &roots.relation_memory_targets,
-        &layout.solve_layout.relation_memory_parameter_indices,
+        (
+            &layout.solve_layout.relation_memory_parameter_indices,
+            layout.solve_layout.initial_event_parameter_index,
+        ),
         &clocks.partition.activation_parameter_indices,
         continuous,
         layout.solve_layout.state_scalar_count,
@@ -832,7 +835,7 @@ impl<'dae> DiscreteRows<'dae> {
     fn finish(
         mut self,
         root_relation_targets: &[Option<solve::ScalarSlot>],
-        relation_memory_parameter_indices: &[usize],
+        (relation_memory_parameter_indices, initial_mode): (&[usize], Option<usize>),
         clock_activation_parameter_indices: &[usize],
         continuous: &solve::ContinuousSolveSystem,
         state_scalar_count: usize,
@@ -844,6 +847,7 @@ impl<'dae> DiscreteRows<'dae> {
             &runtime_assignment_rhs,
             &self.runtime_targets,
             relation_memory_parameter_indices,
+            initial_mode,
         )?;
         let history_sensitive = integrator_history_sensitive_slots(
             continuous,

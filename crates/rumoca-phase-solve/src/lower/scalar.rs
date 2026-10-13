@@ -27,6 +27,7 @@ mod region_catalog;
 mod register_folding;
 mod register_ledger;
 pub(super) use register_ledger::MetadataBudget;
+mod relation_initialization;
 mod selected_arm;
 mod selector;
 
@@ -1337,10 +1338,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<solve::Reg, LowerError> {
         if let Some(index) = self.buffered_relation_slot(expression) {
-            return self.load_slot(
-                solve::scalar_slot_p(index),
-                self.node(expression).provenance().span(),
-            );
+            return self.initialization_relation(expression, scalar, index);
         }
         self.unbuffered_expression(expression, scalar)
     }

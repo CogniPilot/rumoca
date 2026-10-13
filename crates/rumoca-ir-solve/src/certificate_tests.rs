@@ -18,6 +18,108 @@ fn load_p(index: usize) -> Vec<LinearOp> {
 }
 
 #[test]
+fn only_the_canonical_initial_mode_can_hide_a_nested_relation_effect() {
+    let comparison = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::Compare {
+            dst: 2,
+            op: CompareOp::Gt,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    for (guard, initial_mode, fallback, expected) in [
+        (
+            load_p(7),
+            Some(7),
+            load_p(8),
+            RuntimeAssignmentRole::RelationFree,
+        ),
+        (
+            load_p(6),
+            Some(7),
+            load_p(8),
+            RuntimeAssignmentRole::RelationEvaluating,
+        ),
+        (
+            load_p(7),
+            None,
+            load_p(8),
+            RuntimeAssignmentRole::RelationEvaluating,
+        ),
+        (
+            load_p(7),
+            Some(7),
+            comparison.clone(),
+            RuntimeAssignmentRole::RelationEvaluating,
+        ),
+        (
+            comparison.clone(),
+            Some(7),
+            load_p(8),
+            RuntimeAssignmentRole::RelationEvaluating,
+        ),
+    ] {
+        let conditional = FunctionConditionalProgram::checked(
+            0,
+            vec![1],
+            vec![(guard, comparison.clone())],
+            fallback,
+        )
+        .unwrap();
+        let rhs = block(vec![vec![
+            LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]]);
+        assert_eq!(
+            derive_runtime_assignment_roles(&rhs, &[scalar_slot_p(9)], &[8], initial_mode).unwrap(),
+            [expected],
+        );
+    }
+}
+
+#[test]
+fn an_opaque_typed_call_cannot_authorize_relation_free_replay() {
+    let span = Span::from_offsets(SourceId::from_source_name("opaque_call.mo"), 0, 1);
+    let profile =
+        SolveArithmeticProfile::construct(SolveRealFormat::Binary64, SolveIntegerDomain::FULL);
+    let table = SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            vec![],
+            vec![SolvePureCallOutput::result(SolveValueType::scalar(
+                SolveScalarType::real(profile),
+            ))],
+            span,
+            |body, _, outputs| {
+                let value = body.constant(SolveValue::real(profile, 1.0), span)?;
+                body.store(outputs[0], value, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let rhs = block(vec![vec![
+        LinearOp::PureCall {
+            dst_start: 0,
+            input_starts: vec![].into(),
+            site: table.owners()[0].call_site(),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    assert_eq!(
+        derive_runtime_assignment_roles(&rhs, &[scalar_slot_p(1)], &[], Some(2)).unwrap(),
+        [RuntimeAssignmentRole::RelationEvaluating],
+    );
+}
+
+#[test]
 fn runtime_roles_prove_direct_and_transitive_relation_dependencies() {
     let rhs = block(vec![
         vec![
@@ -38,6 +140,7 @@ fn runtime_roles_prove_direct_and_transitive_relation_dependencies() {
         &rhs,
         &[scalar_slot_p(1), scalar_slot_p(2), scalar_slot_p(4)],
         &[0],
+        None,
     )
     .expect("base runtime programs are certifiable");
     assert_eq!(
@@ -83,7 +186,7 @@ fn unsupported_dependency_program_cannot_issue_a_certificate() {
         LinearOp::LoadSeed { dst: 0, index: 0 },
         LinearOp::StoreOutput { src: 0 },
     ]]);
-    assert!(derive_runtime_assignment_roles(&rhs, &[scalar_slot_p(0)], &[]).is_err());
+    assert!(derive_runtime_assignment_roles(&rhs, &[scalar_slot_p(0)], &[], None).is_err());
 
     let unsupported_impure_programs = [
         vec![
@@ -119,7 +222,7 @@ fn unsupported_dependency_program_cannot_issue_a_certificate() {
     ];
     for program in unsupported_impure_programs {
         let impure = block(vec![program]);
-        assert!(derive_runtime_assignment_roles(&impure, &[scalar_slot_p(0)], &[]).is_err());
+        assert!(derive_runtime_assignment_roles(&impure, &[scalar_slot_p(0)], &[], None).is_err());
     }
 }
 
@@ -140,7 +243,7 @@ fn post_commit_reachability_does_not_cross_relation_evaluation() {
         load_p(1),
     ]);
     let targets = [scalar_slot_p(1), scalar_slot_p(2)];
-    let roles = derive_runtime_assignment_roles(&rhs, &targets, &[])
+    let roles = derive_runtime_assignment_roles(&rhs, &targets, &[], None)
         .expect("base programs are certifiable");
     assert_eq!(
         roles,

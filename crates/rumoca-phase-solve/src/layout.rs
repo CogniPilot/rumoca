@@ -296,7 +296,11 @@ fn append_runtime_layout<'dae>(
     let buffered_relations = BufferedRelations::construct(view, after_delays)?;
     let buffered_quotients =
         BufferedQuotients::construct(view, buffered_relations.end(), &buffered_relations)?;
-    let flags = append_runtime_flags(view, buffered_quotients.end())?;
+    let flags = append_runtime_flags(
+        view,
+        buffered_quotients.end(),
+        buffered_relations.continuous_root_count() != 0,
+    )?;
     Ok(RuntimeLayout {
         condition_memory,
         buffered_relations,
@@ -337,10 +341,12 @@ fn append_delay_values(
 fn append_runtime_flags(
     view: dae::DaeView<'_>,
     first_index: usize,
+    has_buffered_relations: bool,
 ) -> Result<RuntimeFlags, LowerError> {
-    let has_initial = view
-        .conditions()
-        .any(|(_, condition)| matches!(condition.operation(), dae::ConditionOperation::Initial));
+    let has_initial = has_buffered_relations
+        || view.conditions().any(|(_, condition)| {
+            matches!(condition.operation(), dae::ConditionOperation::Initial)
+        });
     let after_initial = first_index
         .checked_add(usize::from(has_initial))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;

@@ -926,9 +926,19 @@ fn shared_relation_expression_keeps_no_event_evaluation_literal() {
     .unwrap();
     let solve = lower_solve_problem(&model).unwrap();
     let buffer = solve.solve_layout.relation_memory_parameter_indices[0];
+    let initial = solve
+        .solve_layout
+        .initial_event_parameter_index
+        .expect("relations require initialization mode without authored initial()");
     let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
-    for (time, buffered, expected) in [(0.0, 1.0, [1.0, 0.0, 1.0]), (1.0, 0.0, [0.0, 1.0, 0.0])] {
+    for (time, buffered, initializing, expected) in [
+        (0.0, 1.0, false, [1.0, 0.0, 1.0]),
+        (1.0, 0.0, false, [0.0, 1.0, 0.0]),
+        (0.0, 1.0, true, [0.0, 0.0, 0.0]),
+        (1.0, 0.0, true, [1.0, 1.0, 1.0]),
+    ] {
         parameters[buffer] = buffered;
+        parameters[initial] = f64::from(initializing);
         let mut output = [0.0; 3];
         rumoca_eval_solve::eval_scalar_program_block(
             &solve.discrete.runtime_assignment_rhs,

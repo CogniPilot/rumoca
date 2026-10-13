@@ -300,6 +300,7 @@ pub fn derive_runtime_assignment_roles(
     rhs: &ScalarProgramBlock,
     targets: &[ScalarSlot],
     relation_memory_parameter_indices: &[usize],
+    initial_mode: Option<usize>,
 ) -> Result<Vec<RuntimeAssignmentRole>, SolveProblemShapeContractError> {
     let relation_memory = relation_memory_parameter_indices
         .iter()
@@ -313,11 +314,7 @@ pub fn derive_runtime_assignment_roles(
         .map(|(program, target)| {
             let writes_relation_memory =
                 matches!(target, ScalarSlot::P { index, .. } if relation_memory.contains(&index));
-            if writes_relation_memory
-                || program
-                    .iter()
-                    .any(|op| matches!(op, LinearOp::Compare { .. }))
-            {
+            if writes_relation_memory || evaluates_transient_relation(program, initial_mode) {
                 RuntimeAssignmentRole::RelationEvaluating
             } else {
                 RuntimeAssignmentRole::RelationFree
@@ -457,6 +454,64 @@ pub fn derive_root_relation_refresh_roles(
     Ok(roles)
 }
 
+/// Effect of the checked regions reachable with initialization mode cleared.
+fn evaluates_transient_relation(program: &[LinearOp], initial_mode: Option<usize>) -> bool {
+    program.iter().any(|op| match op {
+        LinearOp::Compare { .. } => true,
+        LinearOp::FunctionConditional { program, .. } => {
+            program.arms.iter().any(|arm| {
+                evaluates_transient_relation(&arm.condition, initial_mode)
+                    || (!initial_mode_condition(&arm.condition, initial_mode)
+                        && evaluates_transient_relation(&arm.result, initial_mode))
+            }) || evaluates_transient_relation(&program.fallback, initial_mode)
+        }
+        _ => {
+            let mut effect = RelationEffect(false);
+            crate::visitor::walk_linear_op_slice(
+                &mut effect,
+                crate::visitor::LinearOpSliceKind::ScalarProgram {
+                    program_index: 0,
+                    span: None,
+                },
+                std::slice::from_ref(op),
+            )
+            .expect("relation-effect traversal is infallible");
+            effect.0
+        }
+    })
+}
+
+struct RelationEffect(bool);
+
+impl crate::visitor::SolveVisitor for RelationEffect {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: crate::visitor::LinearOpSliceKind,
+        _index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        // Opaque typed owners have no phase-specific relation-effect proof.
+        // They cannot authorize relation-free post-commit replay.
+        self.0 |= matches!(
+            op,
+            LinearOp::Compare { .. }
+                | LinearOp::PureCall { .. }
+                | LinearOp::PureCallObservation { .. }
+                | LinearOp::PureCallDirectional { .. }
+                | LinearOp::StoreOutputFoldTensorUpdate { .. }
+        );
+        Ok(())
+    }
+}
+
+fn initial_mode_condition(program: &[LinearOp], initial_mode: Option<usize>) -> bool {
+    matches!(program,
+        [LinearOp::LoadP { dst, index }, LinearOp::StoreOutput { src }]
+        if Some(*index) == initial_mode && dst == src)
+}
+
 pub(crate) fn validate_runtime_assignment_certificates(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
@@ -465,6 +520,7 @@ pub(crate) fn validate_runtime_assignment_certificates(
         &system.runtime_assignment_rhs,
         &system.runtime_assignment_targets,
         &problem.solve_layout.relation_memory_parameter_indices,
+        problem.solve_layout.initial_event_parameter_index,
     )?;
     for (row, (actual, expected)) in system
         .runtime_assignment_roles

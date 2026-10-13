@@ -14,6 +14,8 @@ mod fmi_export_defaults;
 mod function_returns;
 mod host_initialization;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+mod initial_relation_truth;
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]

@@ -813,8 +813,15 @@ DAE condition lowering consumes the expression's constructed variability:
 parameter-only comparisons become literal discrete conditions, without
 continuous crossing roots or relation buffers (MLS §3.8.3/§8.5). This preserves
 parameter bindings when they are reevaluated during initialization.
-Expression consumers read that buffer; root evaluation retains the original
-relation operands. The buffer is distinct from condition-edge history and from
+During initialization, expression consumers evaluate the original relation at
+the current simultaneous solve iterate (MLS §8.6). Solve reserves its existing
+initial-mode flag for every buffered relation and constructs a selected-arm
+program: the literal relation in initialization, only its truth buffer after
+initialization. The inactive literal arm is not evaluated. Runtime-assignment
+effect construction excludes a comparison only under the exact cleared
+initial-mode flag load; other guards, else arms, nested regions, and opaque
+call effects cannot issue a relation-free proof. Root evaluation
+retains the original relation operands. The buffer is distinct from condition-edge history and from
 any whole B.1c Boolean result. Clocked, structured, suppressed, and call-scoped
 relations retain their own checked activation and storage contracts. A
 `noEvent` operand has a literal-evaluation context, including its descendants
