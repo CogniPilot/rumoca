@@ -1,5 +1,5 @@
 {
-  "head": "5e9a507eb9576bbc2fd80c822a63dc884baff9bd",
+  "head": "98c8f13e32b5ee346422db5719d5e87774a69932",
   "method": {
     "lines": "git diff --numstat BASE...HEAD; test path iff a path component is tests or file name is tests.rs, *_test.rs, *_tests.rs; remaining text includes production and review/spec documentation",
     "public_api": "Changed Rust files: multiset difference of normalized explicit public item signatures (pub without visibility restriction) and public struct field declarations; declaration parser is a reproducible regex census, not semantic rustdoc. Public enum variants are separately listed.",
@@ -19,14 +19,14 @@
       "revision": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
       "merge_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
       "metrics": {
-        "production_lines_added": 4528,
+        "production_lines_added": 4566,
         "production_lines_deleted": 458,
         "test_lines_added": 1830,
         "test_lines_deleted": 31,
         "public_items_added": 21,
         "public_items_removed": 4,
         "files_touched": 108,
-        "net_added_lines": 5869
+        "net_added_lines": 5907
       },
       "public_declarations_added": [
         [
@@ -137,14 +137,14 @@
       "revision": "c74cddff6d7669fc2c3603d43529ab62e0964072",
       "merge_base": "c74cddff6d7669fc2c3603d43529ab62e0964072",
       "metrics": {
-        "production_lines_added": 91784,
+        "production_lines_added": 91822,
         "production_lines_deleted": 21335,
         "test_lines_added": 69381,
         "test_lines_deleted": 3741,
         "public_items_added": 1467,
         "public_items_removed": 150,
         "files_touched": 1448,
-        "net_added_lines": 136089
+        "net_added_lines": 136127
       }
     }
   }
