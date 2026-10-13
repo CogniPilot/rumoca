@@ -1,14 +1,14 @@
 # Issue 430 verification ledger
 
 This change is stacked on PR #421 at
-`bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483`. Current source checks and the
-clean Tier 1 before/after pair use source checkpoint
-`8c34dd9e4628fe23676304600396d5896643142e`, recorded below. Earlier da102
-numerical/reset evidence and eb515 canaries/C checks retain their measured
-commits and are historical for this final base. The parent delta from eb515
-to bd6 is 28 files, +867/-32, including literal builtin semantics, parser build
-support, retained native support and execution controls. Artifact names below
-are relative to `$HOME/scratch/rumoca/issue430-20261013` unless noted.
+`65478f8e89210f6bf77d347e1cc6b7730daaf8d0`. Latest focused/compiler/C and
+compatibility checks use clean source checkpoint
+`b1de69c791c6c8051302123ce13a2dc66d48792b`, recorded at the end of this ledger.
+The completed clean bd6 Tier 1 pair and selected ModelicaTest gate retain their
+measured source checkpoint 8c34dd9e and are historical for this latest parent.
+Earlier da102 numerical/reset and eb515 measurements also retain their exact
+contexts. Artifact names are relative to `$HOME/scratch/rumoca/issue430-20261013`
+unless noted.
 
 ## Reproduction inputs
 
@@ -226,7 +226,7 @@ Y-only AD guard/fallback with distinct positive-zero tangents; negative alias,
 nonzero and negative-zero controls protect its private C admission proof.
 The earlier workspace gate remains a failed attempt.
 
-## Final bd6 source checks and Tier 1 delta
+## bd6 source checks and Tier 1 delta (historical after parent rewrite)
 
 `bd6-checks.json` binds all current checks to clean source checkpoint 8c34dd9e.
 The full owning suites pass 904 IR and 270 phase unit tests, 3 integration
@@ -270,3 +270,29 @@ The approximately 50 GB coverage estimate exceeds available owned storage.
 The stacked integration-base PR triggers DCO; standard PR CI is filtered to
 main-targeted PRs. The PR remains draft. Historical real-model reset evidence
 covers four seconds; the original reported 27-second point is unmeasured.
+
+## Latest 654 parent refresh
+
+After the completed bd6 measurements, PR #421 was rewritten to 65478f8e.
+Its four-file delta removes the literal builtin selection test and restores
+structural builtin constant folding/spec behavior. Only this issue’s own
+commits were rebased; no obsolete parent history was retained.
+
+`latest654-checks.json` binds the newest checks to clean source b1de69c7.
+All 268 phase unit tests, five initialization regressions and four actual
+FMI C cases pass. Formatting and scoped all-targets default-feature strict
+clippy pass. DroneHoverLoop initializes and advances to 0.01 s (501 points,
+18.55 s); pinned Tests.All compile and SO2/SE2 t0 assertions pass again.
+
+Cache reuse restores timestamps only for files proven byte-identical to the
+last measured own source. The changed structural implementation, expression
+module and spec row keep fresh checkout timestamps; the removed test stays
+removed. No baseline binary rebuild intervened between those own snapshots.
+Current logs explicitly rebuild changed structural/codegen/phase/compiler/sim
+and profiling-worker producers. The exact cache/source proof is retained.
+
+The latest paired canary is pending after the moving parent; the completed
+bd6 pair and selected ModelicaTest result remain historical, never relabeled
+as latest. Broad workspace/doc/all-features/coverage/full-MSL and original
+27-second reset gaps remain as recorded above. The final evidence update
+changes no compiler or test source from measured b1de69c7; the PR remains draft.

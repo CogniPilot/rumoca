@@ -1,0 +1,80 @@
+{
+  "source_commit": "b1de69c791c6c8051302123ce13a2dc66d48792b",
+  "stacked_base": "65478f8e89210f6bf77d347e1cc6b7730daaf8d0",
+  "git_worktree_dirty": false,
+  "parent_delta_from_measured_bd6": "4 files: remove literal builtin selection test and revert structural builtin constant folding/spec row",
+  "passed": {
+    "phase_unit_tests": 268,
+    "initial_relation_regressions": 5,
+    "actual_fmi_c_cases": 4,
+    "fmt": true,
+    "strict_clippy": "ir-solve/phase-solve/codegen all-targets default features -D warnings",
+    "DroneHoverLoop": "initializes and advances 0.01 s; 501 points; 18.55 s",
+    "Tests.All": "compile",
+    "Tests.LieGroupTests.SO2": "t0 assertion simulation",
+    "Tests.LieGroupTests.SE2": "t0 assertion simulation"
+  },
+  "cache_source_binding": {
+    "previous_measured_own_head": "347dde32dff456de5be3895e29edbb9ed5168120",
+    "current_head": "b1de69c791c6c8051302123ce13a2dc66d48792b",
+    "method": "restore only tracked file blobs exactly equal to the last measured own source; all differing files keep fresh rebase mtimes; no baseline binary rebuild occurred between those own source snapshots",
+    "byte_identical_files_restored": 4820,
+    "changed_files_fresh": [
+      "crates/rumoca-phase-solve/src/tests/expressions.rs",
+      "crates/rumoca-phase-structural/src/dae_transform/constant_values.rs",
+      "spec/SPEC_0043_CONSTRUCTION_CATALOG.md"
+    ]
+  },
+  "build_binding": "changed structural/codegen/phase/compile/sim/worker producers explicitly rebuilt in source-pinned logs; unchanged IR/C source bytes equal the last measured own source; no intervening clean-baseline build",
+  "latest_paired_canary": "pending after moving parent; completed bd6 pair retained as historical",
+  "selected_ModelicaTest": "completed on bd6 source8c; historical for latest654; not relabeled current",
+  "other_gaps": [
+    "remaining broad workspace/doc gate steps",
+    "literal all-features workspace clippy",
+    "committed coverage gate; approximately 50 GB target exceeds owned available storage",
+    "full 566-model MSL parity",
+    "original reporter 27 s point; historical reset measured 4 s"
+  ],
+  "logs": {
+    "latest654-initialization-regressions.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-initialization-regressions.log",
+      "sha256": "7281484feb495b8c1ac304c4f32e0c215bbb5f93415673460cc8292e7329b7ee"
+    },
+    "latest654-c-apis.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-c-apis.log",
+      "sha256": "3fe851eb7498ffc6b2b6a324fe12ba68526a9c9f24b4a48c40a4dcd7e2f8e195"
+    },
+    "latest654-phase.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-phase.log",
+      "sha256": "fc1be31f4a9031688e8d58d9dd6462c6cf5ba808c86def7aeedfdcf9b63f3580"
+    },
+    "latest654-clippy.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-clippy.log",
+      "sha256": "4d676685e7660571633ecaf59c54ca028fb65c07355a02b855c9c6cff0892e2f"
+    },
+    "latest654-fmt.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-fmt.log",
+      "sha256": "6178ab41226142fc5658194e811747e4c1f448cde4b6dfd25591b19d878184ca"
+    },
+    "latest654-profile-build.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-profile-build.log",
+      "sha256": "cb6681b4e2b7c1b1e9020477bcb27cbb5563c7fd12bb61e85aaad76ee573a217"
+    },
+    "latest654-drone.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-drone.log",
+      "sha256": "59cb067ef4630cd41200154d4cb7b154f757f0500de096bc961b85cdb99c85da"
+    },
+    "latest654-corpus-All.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-corpus-All.log",
+      "sha256": "adbb58f5941f7536fc19c18baba02557cd6d4f781305883b8cc613fc555f5199"
+    },
+    "latest654-corpus-SO2.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-corpus-SO2.log",
+      "sha256": "50255870f46779532481f85f28fb6b40ca53530e85d04dbdcab8d1b718b03687"
+    },
+    "latest654-corpus-SE2.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/latest654-corpus-SE2.log",
+      "sha256": "ff1273495f5fcf369efcbcf0a35bff8a8af902255bd1160af3c2a9d1afaf45df"
+    }
+  }
+}
