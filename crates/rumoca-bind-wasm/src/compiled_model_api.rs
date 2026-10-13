@@ -8,7 +8,7 @@ use rumoca_compile::codegen::SolveTemplateRenderer;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
     parse_target_manifest, render_dae_target_files, validate_dae_target_capabilities,
-    validate_solve_target_capabilities,
+    validate_solve_target_capabilities_with_calls,
 };
 use rumoca_compile::compile::{
     CompilationResult, compile_phase_timing_stats, reset_compile_phase_timing_stats,
@@ -223,8 +223,19 @@ impl WasmCompiledModel {
             .ok_or_else(|| WasmError::new("Solve target must declare capabilities"))?;
         validate_dae_target_capabilities(&self.compiled.dae, manifest, capabilities)
             .map_err(|error| WasmError::new(error.to_string()))?;
-        validate_solve_target_capabilities(&retained.model.problem, manifest, capabilities)
-            .map_err(|error| WasmError::new(error.to_string()))?;
+        validate_solve_target_capabilities_with_calls(
+            &retained.model.problem,
+            Some(&retained.model.pure_calls),
+            manifest,
+            capabilities,
+        )
+        .map_err(|error| WasmError::new(error.to_string()))?;
+        if capabilities.scalar_fallback == Some(true) {
+            retained
+                .renderer
+                .require_scalar_derivative_programs()
+                .map_err(|error| WasmError::new(error.to_string()))?;
+        }
         manifest
             .files
             .iter()

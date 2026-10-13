@@ -64,6 +64,43 @@ template = "model.jinja"
 }
 
 #[test]
+fn compiled_model_admits_function_parameter_initialization_like_source_rendering() {
+    let _guard = session_test_guard();
+    let source = r#"
+function Square
+  input Real value;
+  output Real result;
+algorithm
+  result := value * value;
+end Square;
+model FunctionParameterInitialization
+  parameter Real base = 2;
+  parameter Real gain = Square(base);
+  Real x(start=1, fixed=true);
+equation
+  der(x) = -gain*x;
+end FunctionParameterInitialization;
+"#;
+    let name = "FunctionParameterInitialization";
+    let mut session = Session::default();
+    session.update_document("fixture.mo", source);
+    let compiled = compile_requested_model(&mut session, name).unwrap();
+    let source_files =
+        crate::target_render_api::render_target_files("c-ode", "", "{}", &compiled.dae, None, name)
+            .expect("source renderer admits checked function initialization");
+    let model =
+        compile_with_options(source, name, r#"{"representations":["dae","solve"]}"#).unwrap();
+    let rendered = model
+        .render_target("c-ode", "", "{}")
+        .expect("retained renderer admits the same checked function initialization");
+    let rendered: Value = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(
+        rendered["files"].as_array().unwrap().len(),
+        source_files.len()
+    );
+}
+
+#[test]
 fn compiled_model_rejects_unknown_and_empty_selections() {
     let _guard = session_test_guard();
     for options in [

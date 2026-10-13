@@ -28,13 +28,14 @@ impl SolveTemplateRenderer {
     ) -> Result<Self, CodegenError> {
         let model_entry = super::solve_lazy::model_value(model.clone())?;
         let handle = super::solve_lazy::SolveRenderHandle::Model(model);
-        let context = solve_render_context_value_with_handles(
+        let renderer = solve_render_context_value_with_handles(
             handle,
             None,
             checked_dae_template_value(dae_model)?,
         )?;
         Ok(Self {
-            context: minijinja::context! { solve_model => model_entry, ..context },
+            context: minijinja::context! { solve_model => model_entry, ..renderer.context },
+            ..renderer
         })
     }
 

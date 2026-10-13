@@ -66,11 +66,12 @@ impl SolveRenderHandle {
         }
     }
 
-    /// The pure-call owners a standalone scalar target inlines; an FMI
+    /// The pure-call owners a standalone or retained-model scalar target inlines; an FMI
     /// component renders its owners as typed functions instead.
     pub(super) fn inlined_pure_calls(&self) -> Option<&solve::SolvePureCallTable> {
         match self {
             Self::Standalone { pure_calls, .. } => pure_calls.as_deref(),
+            Self::Model(model) => Some(&model.pure_calls),
             Self::Fmi(_) => None,
         }
     }
