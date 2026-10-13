@@ -6,8 +6,6 @@ use std::collections::BTreeSet;
 #[derive(Debug)]
 pub(in crate::construction) struct DiscreteValueTopologyPlan {
     ordered_owners: Vec<Vec<DiscreteTargetKey>>,
-    order_by_target: HashMap<DiscreteTargetKey, TargetOrder>,
-    whole_orders: HashMap<VarName, TargetOrder>,
     held_targets: Vec<HeldTargetPlan>,
     /// Per ordered owner: every target is an unread observation whose
     /// definition is not a discrete-time expression.
@@ -30,17 +28,6 @@ pub(in crate::construction) struct HeldTargetPlan {
 impl DiscreteValueTopologyPlan {
     pub(in crate::construction) fn ordered_owners(&self) -> &[Vec<DiscreteTargetKey>] {
         &self.ordered_owners
-    }
-
-    pub(in crate::construction) fn target_order(&self, target: &VarName) -> Option<TargetOrder> {
-        self.whole_orders.get(target).copied()
-    }
-
-    pub(in crate::construction) fn selected_target_order(
-        &self,
-        target: &SelectedWhenTarget,
-    ) -> Option<TargetOrder> {
-        self.order_by_target.get(&target.key()).copied()
     }
 
     pub(in crate::construction) fn held_targets(&self) -> &[HeldTargetPlan] {
@@ -907,32 +894,8 @@ fn order_owners(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let order_by_target: HashMap<DiscreteTargetKey, TargetOrder> = ordered_owners
-        .iter()
-        .enumerate()
-        .flat_map(|(owner, targets)| {
-            targets
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(move |(target, name)| (name, TargetOrder { owner, target }))
-        })
-        .collect();
-    let whole_orders = owners
-        .iter()
-        .flat_map(|owner| &owner.targets)
-        .filter(|target| target.selection.is_none())
-        .filter_map(|target| {
-            order_by_target
-                .get(&target.key(flat))
-                .copied()
-                .map(|order| (target.name.clone(), order))
-        })
-        .collect();
     Ok(DiscreteValueTopologyPlan {
-        whole_orders,
         ordered_owners,
-        order_by_target,
         held_targets,
         observed_owners,
     })
@@ -1151,6 +1114,22 @@ fn collect_current_discrete_dependencies(
         } if args
             .first()
             .is_some_and(|value| matches!(value, Expression::VarRef { .. })) => {}
+        Expression::Index {
+            base, subscripts, ..
+        } if matches!(base.as_ref(), Expression::VarRef { .. }) => {
+            let Expression::VarRef { name, .. } = base.as_ref() else {
+                unreachable!()
+            };
+            if matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue)) {
+                dependencies.insert(DiscreteTargetKey::from_reference(flat, name, expression));
+            }
+            for expr in subscripts.iter().filter_map(|subscript| match subscript {
+                Subscript::Expr { expr, .. } => Some(expr.as_ref()),
+                _ => None,
+            }) {
+                collect_current_discrete_dependencies(flat, expr, roles, dependencies);
+            }
+        }
         Expression::VarRef { name, .. } => {
             if matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue)) {
                 dependencies.insert(DiscreteTargetKey::from_reference(flat, name, expression));

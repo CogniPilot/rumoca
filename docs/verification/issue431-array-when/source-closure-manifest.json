@@ -1,0 +1,25 @@
+{
+  "ScalableTestSuite_revision": "c9a7574b31142fa976d20ab6970d78639c125ceb",
+  "files": [
+    {
+      "relative_path": "ScalableTestSuite/package.mo",
+      "sha256": "577a84d6a4310ffffe5745ee55ff6cbcfc1f84280a12da53639e4ed135224405"
+    },
+    {
+      "relative_path": "ScalableTestSuite/Elementary/package.mo",
+      "sha256": "429d36f286feb2d9fc214ed9d244be624c066dc547f6cbda19db950bfab1f93e"
+    },
+    {
+      "relative_path": "ScalableTestSuite/Elementary/WhenEvents.mo",
+      "sha256": "25eb2ec864db868814b681d8583fa9d354593e9bf073ca8f130761e14b80fca5"
+    },
+    {
+      "relative_path": "Modelica/package.mo",
+      "sha256": "b9fe3f8b6259cf5715906b96b35523c7222259a2b86fff9394bc7703b6e39c8b"
+    },
+    {
+      "relative_path": "Modelica/Icons.mo",
+      "sha256": "6735813da1429ad28237c8ae641f4ed7a6401e13db80b8712a20ca13858d4649"
+    }
+  ]
+}

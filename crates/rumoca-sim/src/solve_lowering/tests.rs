@@ -30,6 +30,7 @@ scheduled_executor_items! {
 mod settled_initial_tangent;
 mod structure_report;
 mod tangent_jacobian;
+mod when_array_coordinates;
 #[cfg(feature = "solver-rk45")]
 mod zero_state_batch;
 

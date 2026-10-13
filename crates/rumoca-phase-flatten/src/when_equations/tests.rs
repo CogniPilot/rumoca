@@ -828,16 +828,24 @@ fn when_for_equation_expands_all_index_ranges() {
     )
     .expect("resolved references retain source spans and issued iterator identities");
     for (equation, (i, j)) in expanded.iter().zip([(1, 1), (1, 2), (2, 1), (2, 2)]) {
-        let flat::WhenEquation::Assign {
+        let flat::WhenEquation::AssignElement {
             target,
             value,
+            subscripts,
             span,
             ..
         } = equation
         else {
             panic!("expanded assignment");
         };
-        assert_eq!(target.as_str(), format!("y[{i},{j}]"));
+        assert_eq!(target.as_str(), "y");
+        assert_eq!(subscripts.len(), 2);
+        for (subscript, expected) in subscripts.iter().zip([i, j]) {
+            assert!(
+                matches!(subscript, rumoca_core::Subscript::Expr { expr, .. }
+                if matches!(expr.as_ref(), rumoca_core::Expression::Literal { value: rumoca_core::Literal::Integer(value), .. } if *value == expected))
+            );
+        }
         assert!(!span.is_dummy());
         let rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
@@ -859,14 +867,30 @@ fn when_for_equation_expands_all_index_ranges() {
     let targets = expanded
         .iter()
         .map(|eq| match eq {
-            flat::WhenEquation::Assign { target, .. } => target.as_str().to_string(),
+            flat::WhenEquation::AssignElement { subscripts, .. } => subscripts
+                .iter()
+                .map(|subscript| {
+                    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+                        panic!("scalar index")
+                    };
+                    let rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(value),
+                        ..
+                    } = expr.as_ref()
+                    else {
+                        panic!("constant index")
+                    };
+                    value.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(","),
             other => panic!("expected assignment, got {other:?}"),
         })
         .collect::<std::collections::HashSet<_>>();
 
     assert_eq!(targets.len(), 4);
-    assert!(targets.contains("y[1,1]"));
-    assert!(targets.contains("y[1,2]"));
-    assert!(targets.contains("y[2,1]"));
-    assert!(targets.contains("y[2,2]"));
+    assert!(targets.contains("1,1"));
+    assert!(targets.contains("1,2"));
+    assert!(targets.contains("2,1"));
+    assert!(targets.contains("2,2"));
 }

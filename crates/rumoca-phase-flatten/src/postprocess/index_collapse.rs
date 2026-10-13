@@ -135,16 +135,15 @@ fn collapse_index_when_equations(
                     span: *span,
                 };
                 collapse_index_expr(&mut expression, known_flat_vars);
-                let rumoca_core::Expression::VarRef {
+                if let rumoca_core::Expression::VarRef {
                     name,
                     subscripts: selected,
                     ..
                 } = expression
-                else {
-                    unreachable!("index normalization preserves an assignment reference")
-                };
-                *target = name;
-                *subscripts = selected;
+                {
+                    *target = name;
+                    *subscripts = selected;
+                }
                 collapse_index_expr(value, known_flat_vars);
             }
             rumoca_ir_flat::WhenEquation::Assert {

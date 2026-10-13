@@ -311,10 +311,11 @@ impl ReferenceCollector {
                 ..
             } => {
                 self.names.insert(target.var_name().clone());
-                for subscript in subscripts {
-                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                        self.visit_expression(expr);
-                    }
+                for expr in subscripts.iter().filter_map(|subscript| match subscript {
+                    rumoca_core::Subscript::Expr { expr, .. } => Some(expr.as_ref()),
+                    _ => None,
+                }) {
+                    self.visit_expression(expr);
                 }
                 self.visit_expression(value);
             }

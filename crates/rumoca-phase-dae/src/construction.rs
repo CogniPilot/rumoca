@@ -369,7 +369,12 @@ fn build_checked<'dae>(
         &analysis.clocked_value_owners,
         &clocks,
     )?;
-    let mut discrete_values = DiscreteValueStaging::new();
+    let mut discrete_values = DiscreteValueStaging::new(
+        flat,
+        &coordinates,
+        construction,
+        &analysis.discrete_value_topology,
+    )?;
     lower_bindings(
         construction,
         &mut discrete_values,

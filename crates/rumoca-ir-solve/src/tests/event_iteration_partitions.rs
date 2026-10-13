@@ -251,3 +251,52 @@ fn partition_clock_query_checks_every_leaf_and_rejects_nesting() {
     problem.discrete.event_iteration_plan.partitions[1].owner = run.owner;
     assert!(problem.discrete.event_iteration_run_clock(&run).is_err());
 }
+
+#[test]
+fn stateless_native_schedule_retains_every_scalar_partition_output() {
+    let mut problem = fixture(false);
+    let storage = &mut problem.solve_layout.variable_storage_runs[0];
+    storage.role = SolveVariableStorageRole::DiscreteValue;
+    storage.value_kind = SolveVariableValueKind::Boolean;
+    problem.solve_layout.variable_declarations[0] = SolveVariableDeclaration::new(
+        SolveVariableStorageRole::DiscreteValue,
+        SolveVariableValueKind::Boolean,
+    );
+    problem.solve_layout.discrete_valued_scalar_names =
+        std::mem::take(&mut problem.solve_layout.discrete_real_scalar_names);
+    problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        [1.0, 0.0, 1.0]
+            .into_iter()
+            .map(|value| {
+                vec![
+                    LinearOp::Const { dst: 0, value },
+                    LinearOp::StoreOutput { src: 0 },
+                ]
+            })
+            .collect(),
+        fixture_provenance(),
+    )
+    .unwrap();
+    problem.validate_shape_contract().unwrap();
+    issue_native_assignment_schedule(&mut problem);
+    let schedule = problem
+        .continuous
+        .refresh_owners
+        .native_assignment_schedule()
+        .expect("partitioned scalar ownership preserves the stateless native profile");
+    assert_eq!(schedule.derived_outputs().len(), 3);
+    assert_eq!(
+        schedule
+            .derived_outputs()
+            .iter()
+            .map(NativeDerivedOutput::p_index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert!(
+        schedule
+            .derived_outputs()
+            .iter()
+            .all(|output| output.lane() == NativeOutputLane::Boolean)
+    );
+}

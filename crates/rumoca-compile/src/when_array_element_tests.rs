@@ -76,22 +76,35 @@ fn partial_array_when_definition_issues_explicit_held_element_owners() {
 
 #[test]
 fn invalid_array_when_coordinates_and_overlapping_owners_are_refused() {
-    for equations in [
-        "when time>0.1 then e[0]=true; end when;",
-        "when time>0.1 then e[4]=true; end when;",
-        "when time>0.1 then e[1,1]=true; end when;",
-        "when time>0.1 then e[1]=true; end when; when time>0.2 then e[1]=false; end when;",
-        "when time>0.1 then e={true,true,true}; end when; when time>0.2 then e[1]=false; end when;",
+    for (equations, diagnostic) in [
+        (
+            "when time>0.1 then e[0]=true; end when;",
+            "ToDae error [ED019]",
+        ),
+        (
+            "when time>0.1 then e[4]=true; end when;",
+            "ToDae error [ED019]",
+        ),
+        (
+            "when time>0.1 then e[1,1]=true; end when;",
+            "ToDae error [ED019]",
+        ),
+        (
+            "when time>0.1 then e[1]=true; end when; when time>0.2 then e[1]=false; end when;",
+            "ToDae error [ED010]",
+        ),
+        (
+            "when time>0.1 then e={true,true,true}; end when; when time>0.2 then e[1]=false; end when;",
+            "ToDae error [ED010]",
+        ),
     ] {
         let source = format!(
             "model Invalid Boolean e[3](each start=false,each fixed=true); equation {equations} end Invalid;"
         );
         let mut session = Session::new(SessionConfig::default());
         session.add_document("Invalid.mo", &source).unwrap();
-        assert!(
-            session.compile_model("Invalid").is_err(),
-            "invalid owner was accepted: {equations}"
-        );
+        let error = session.compile_model("Invalid").unwrap_err().to_string();
+        assert!(error.contains(diagnostic), "{equations}: {error}");
     }
 }
 
@@ -114,7 +127,8 @@ fn selected_current_dependency_cycles_are_refused() {
     let source = "model Cycle Boolean e[2](each start=false,each fixed=true); equation when time>0.1 then e[2]=e[1]; end when; when time>0.1 then e[1]=e[2]; end when; end Cycle;";
     let mut session = Session::new(SessionConfig::default());
     session.add_document("Cycle.mo", source).unwrap();
-    assert!(session.compile_model("Cycle").is_err());
+    let error = session.compile_model("Cycle").unwrap_err().to_string();
+    assert!(error.contains("ToDae error [ED010]"), "{error}");
 }
 
 #[test]
@@ -129,10 +143,11 @@ fn selected_when_branch_mismatch_and_repeated_branch_target_are_refused() {
         );
         let mut session = Session::new(SessionConfig::default());
         session.add_document("BadBranches.mo", &source).unwrap();
-        assert!(
-            session.compile_model("BadBranches").is_err(),
-            "invalid branch owner was accepted: {body}"
-        );
+        let error = session
+            .compile_model("BadBranches")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ToDae error [ED010]"), "{body}: {error}");
     }
 }
 
@@ -199,6 +214,6 @@ fn parameter_expression_target_is_fixed_at_translation() {
             .find(|(_, variable)| variable.name().as_str() == "k")
             .unwrap()
             .1;
-        assert!(parameter.evaluable());
+        assert!(parameter.is_evaluable());
     });
 }

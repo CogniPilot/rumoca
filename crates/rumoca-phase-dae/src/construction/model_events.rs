@@ -262,13 +262,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             let Coordinate::DiscreteValue(target) = self.request.coordinates[&name] else {
                 unreachable!()
             };
-            (
-                target.into(),
-                self.request
-                    .topology
-                    .target_order(&name)
-                    .expect("whole target has an analyzed order"),
-            )
+            target.into()
         })
         .collect::<Vec<_>>();
         for branch in chain.branches() {
@@ -612,49 +606,52 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn collect_selected_targets(
         &mut self,
         equations: &[flat::WhenEquation],
-        targets: &mut Vec<(dae::DiscreteValueTarget<'dae>, analysis::TargetOrder)>,
+        targets: &mut Vec<dae::DiscreteValueTarget<'dae>>,
     ) -> Result<(), dae::DaeConstructionError> {
         for equation in equations {
-            match equation {
-                flat::WhenEquation::AssignElement {
-                    target,
-                    subscripts,
-                    span,
-                    ..
-                } => {
-                    let selection =
-                        selected_when_target(self.request.flat, target, subscripts, *span)
-                            .expect("analysis checked selected target identity and bounds");
-                    if let Coordinate::DiscreteValue(parent) =
-                        self.request.coordinates[&selection.name]
-                    {
-                        let target = self.construction.discrete_value_element(
-                            parent,
-                            &selection.indices,
-                            dae::DaeProvenance::source(*span)?,
-                        )?;
-                        let order = self
-                            .request
-                            .topology
-                            .selected_target_order(&selection)
-                            .expect("selected source owner is ordered");
-                        targets.push((target, order));
-                    }
+            self.collect_selected_equation_targets(equation, targets)?;
+        }
+        Ok(())
+    }
+
+    fn collect_selected_equation_targets(
+        &mut self,
+        equation: &flat::WhenEquation,
+        targets: &mut Vec<dae::DiscreteValueTarget<'dae>>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        match equation {
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                span,
+                ..
+            } => {
+                let selection = selected_when_target(self.request.flat, target, subscripts, *span)
+                    .expect("analysis checked selected target identity and bounds");
+                if let Coordinate::DiscreteValue(parent) =
+                    self.request.functions.coordinate_instances[&selection.instance]
+                {
+                    let target = self.construction.discrete_value_element(
+                        parent,
+                        &selection.indices,
+                        dae::DaeProvenance::source(*span)?,
+                    )?;
+                    targets.push(target);
                 }
-                flat::WhenEquation::Conditional {
-                    branches,
-                    else_branch,
-                    ..
-                } => {
-                    for (_, equations) in branches {
-                        self.collect_selected_targets(equations, targets)?;
-                    }
-                    if let Some(equations) = else_branch {
-                        self.collect_selected_targets(equations, targets)?;
-                    }
-                }
-                _ => {}
             }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    self.collect_selected_targets(equations, targets)?;
+                }
+                if let Some(equations) = else_branch {
+                    self.collect_selected_targets(equations, targets)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -672,7 +669,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             .expect("analysis checked selected target identity and bounds");
         let provenance = dae::DaeProvenance::source(span)?;
         let value = self.lower_body_value(guard, value)?;
-        match self.request.coordinates[&selection.name] {
+        match self.request.functions.coordinate_instances[&selection.instance] {
             Coordinate::DiscreteValue(parent) => {
                 let target = self.construction.discrete_value_element(
                     parent,

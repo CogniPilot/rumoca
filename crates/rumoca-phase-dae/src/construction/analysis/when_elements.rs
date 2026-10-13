@@ -16,7 +16,8 @@ impl DiscreteTargetKey {
         name: &rumoca_core::Reference,
         expression: &Expression,
     ) -> Self {
-        if let Expression::VarRef { subscripts, .. } = expression
+        if let Expression::VarRef { subscripts, .. } | Expression::Index { subscripts, .. } =
+            expression
             && !subscripts.is_empty()
             && let Some(instance) = name.instance_id()
             && let Some(indices) = literal_indices(subscripts)
@@ -48,6 +49,7 @@ pub(super) fn literal_indices(subscripts: &[Subscript]) -> Option<Box<[i64]>> {
     subscripts
         .iter()
         .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => Some(*value),
             Subscript::Expr { expr, .. } => match expr.as_ref() {
                 Expression::Literal {
                     value: Literal::Integer(value),
@@ -81,9 +83,48 @@ pub(super) fn validate_chain(
     Ok(())
 }
 
+#[derive(Default)]
+struct CoordinateOwners {
+    whole: Option<usize>,
+    elements: HashMap<Box<[i64]>, usize>,
+}
+
+impl CoordinateOwners {
+    fn claim(
+        &mut self,
+        selection: Option<Box<[i64]>>,
+        owner: usize,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let conflict = self.whole.is_some_and(|previous| previous != owner)
+            || match &selection {
+                Some(indices) => self
+                    .elements
+                    .get(indices)
+                    .is_some_and(|&previous| previous != owner),
+                None => self.elements.values().any(|&previous| previous != owner),
+            };
+        if conflict {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "independent when-equations have overlapping coordinate definitions (MLS §8.3.5.4)",
+                span,
+            ));
+        }
+        match selection {
+            Some(indices) => {
+                self.elements.insert(indices, owner);
+            }
+            None => {
+                self.whole = Some(owner);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// MLS §8.3.5.4 applies to `z` and `m`, including partial array definitions.
 pub(super) fn validate_model_owners(flat: &flat::Model) -> Result<(), ToDaeError> {
-    let mut owners: HashMap<InstanceId, Vec<(Option<Box<[i64]>>, usize)>> = HashMap::new();
+    let mut owners = HashMap::new();
     for (owner, chain) in flat.when_chains.iter().enumerate() {
         for branch in chain.branches() {
             claim_equation_targets(flat, &branch.equations, owner, &mut owners)?;
@@ -96,7 +137,7 @@ fn claim_equation_targets(
     flat: &flat::Model,
     equations: &[flat::WhenEquation],
     owner: usize,
-    owners: &mut HashMap<InstanceId, Vec<(Option<Box<[i64]>>, usize)>>,
+    owners: &mut HashMap<InstanceId, CoordinateOwners>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         let target = match equation {
@@ -118,10 +159,11 @@ fn claim_equation_targets(
                 else_branch,
                 ..
             } => {
-                for (_, equations) in branches {
-                    claim_equation_targets(flat, equations, owner, owners)?;
-                }
-                if let Some(equations) = else_branch {
+                for equations in branches
+                    .iter()
+                    .map(|(_, equations)| equations.as_slice())
+                    .chain(else_branch.iter().map(Vec::as_slice))
+                {
                     claim_equation_targets(flat, equations, owner, owners)?;
                 }
                 None
@@ -129,18 +171,10 @@ fn claim_equation_targets(
             _ => None,
         };
         if let Some((instance, selection)) = target {
-            let previous = owners.entry(instance).or_default();
-            if previous.iter().any(|(other, source)| {
-                *source != owner && (selection.is_none() || other.is_none() || other == &selection)
-            }) {
-                return Err(ToDaeError::discrete_solved_form_violation(
-                    "independent when-equations have overlapping coordinate definitions (MLS §8.3.5.4)",
-                    equation.span(),
-                ));
-            }
-            if !previous.contains(&(selection.clone(), owner)) {
-                previous.push((selection, owner));
-            }
+            owners
+                .entry(instance)
+                .or_default()
+                .claim(selection, owner, equation.span())?;
         }
     }
     Ok(())
@@ -164,26 +198,7 @@ fn branch_targets(
                 else_branch,
                 span,
                 ..
-            } => {
-                let mut alternatives = branches
-                    .iter()
-                    .map(|(_, equations)| equations.as_slice())
-                    .chain(else_branch.iter().map(Vec::as_slice));
-                let first = alternatives
-                    .next()
-                    .map(|equations| branch_targets(flat, equations))
-                    .transpose()?
-                    .unwrap_or_default();
-                for equations in alternatives {
-                    if branch_targets(flat, equations)? != first {
-                        return Err(ToDaeError::discrete_solved_form_violation(
-                            "if-equation branches must define the same selected coordinates (MLS §8.3.5)",
-                            *span,
-                        ));
-                    }
-                }
-                first
-            }
+            } => conditional_targets(flat, branches, else_branch.as_deref(), *span)?,
             _ => HashSet::new(),
         };
         for key in new {
@@ -207,7 +222,7 @@ pub(in crate::construction) fn selected_target(
     let invalid = || {
         ToDaeError::unsupported_flat(
             "when element assignment",
-            "requires a resolved, in-bounds full-rank literal coordinate",
+            "requires a resolved, in-bounds full-rank parameter coordinate",
             span,
         )
     };
@@ -220,6 +235,7 @@ pub(in crate::construction) fn selected_target(
     let indices = subscripts
         .iter()
         .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => Some(*value),
             Subscript::Expr { expr, .. } => {
                 rumoca_eval_flat::flat_int::try_eval_flat_expr_i64(expr, flat, 0)
             }
@@ -241,4 +257,30 @@ pub(in crate::construction) fn selected_target(
         indices,
         span,
     })
+}
+
+fn conditional_targets(
+    flat: &flat::Model,
+    branches: &[(Expression, Vec<flat::WhenEquation>)],
+    else_branch: Option<&[flat::WhenEquation]>,
+    span: Span,
+) -> Result<HashSet<DiscreteTargetKey>, ToDaeError> {
+    let mut alternatives = branches
+        .iter()
+        .map(|(_, equations)| equations.as_slice())
+        .chain(else_branch);
+    let first = alternatives
+        .next()
+        .map(|equations| branch_targets(flat, equations))
+        .transpose()?
+        .unwrap_or_default();
+    for equations in alternatives {
+        if branch_targets(flat, equations)? != first {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "if-equation branches must define the same selected coordinates (MLS §8.3.5)",
+                span,
+            ));
+        }
+    }
+    Ok(first)
 }

@@ -68,14 +68,53 @@ struct StagedAssignment<'dae> {
 pub(super) struct DiscreteValueStaging<'dae> {
     owners: Vec<StagedOwner<'dae>>,
     owner_by_target: HashMap<dae::DiscreteValueTarget<'dae>, usize>,
+    orders: HashMap<dae::DiscreteValueTarget<'dae>, analysis::TargetOrder>,
 }
 
 impl<'dae> DiscreteValueStaging<'dae> {
-    pub(super) fn new() -> Self {
-        Self {
+    pub(super) fn new(
+        flat: &flat::Model,
+        coordinates: &ModelCoordinates<'dae>,
+        construction: &mut dae::DaeConstruction<'dae>,
+        plan: &DiscreteValueTopologyPlan,
+    ) -> Result<Self, dae::DaeConstructionError> {
+        let declarations = flat
+            .variables
+            .values()
+            .map(|variable| (variable.instance_id, variable.source_span))
+            .collect::<HashMap<_, _>>();
+        let mut orders = HashMap::new();
+        for (owner, targets) in plan.ordered_owners().iter().enumerate() {
+            for (ordinal, key) in targets.iter().enumerate() {
+                let (analysis::DiscreteTargetKey::Whole(instance)
+                | analysis::DiscreteTargetKey::Element { instance, .. }) = key;
+                let Coordinate::DiscreteValue(variable) = coordinates.by_instance()[instance]
+                else {
+                    unreachable!("B.1c analysis proves discrete-value target roles")
+                };
+                let target = match key {
+                    analysis::DiscreteTargetKey::Whole(_) => variable.into(),
+                    analysis::DiscreteTargetKey::Element { indices, .. } => construction
+                        .discrete_value_element(
+                            variable,
+                            indices,
+                            dae::DaeProvenance::source(declarations[instance])?,
+                        )?,
+                };
+                orders.insert(
+                    target,
+                    analysis::TargetOrder {
+                        owner,
+                        target: ordinal,
+                    },
+                );
+            }
+        }
+        Ok(Self {
             owners: Vec::new(),
             owner_by_target: HashMap::new(),
-        }
+            orders,
+        })
     }
 
     pub(super) fn owner(
@@ -123,7 +162,10 @@ impl<'dae> DiscreteValueStaging<'dae> {
                 let Coordinate::DiscreteValue(target) = coordinates[&name] else {
                     return None;
                 };
-                plan.target_order(&name).map(|order| (target.into(), order))
+                self.orders
+                    .get(&target.into())
+                    .copied()
+                    .map(|order| (target.into(), order))
             })
             .collect::<Vec<_>>();
         self.build_targets(provenance, targets, plan, structure)
@@ -132,9 +174,13 @@ impl<'dae> DiscreteValueStaging<'dae> {
     pub(super) fn mixed_owner(
         &mut self,
         provenance: dae::DaeProvenance,
-        targets: Vec<(dae::DiscreteValueTarget<'dae>, analysis::TargetOrder)>,
+        targets: Vec<dae::DiscreteValueTarget<'dae>>,
         plan: &DiscreteValueTopologyPlan,
     ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
+        let targets = targets
+            .into_iter()
+            .map(|target| (target, self.orders[&target]))
+            .collect();
         self.build_targets(provenance, targets, plan, None)
     }
 
@@ -350,13 +396,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
                 }
                 None => target.into(),
             };
-            let order = held
-                .selection
-                .as_ref()
-                .and_then(|target| plan.selected_target_order(target))
-                .or_else(|| plan.target_order(&held.name))
-                .expect("analysis orders each held target");
-            let Some(owner) = self.mixed_owner(provenance, vec![(selected, order)], plan)? else {
+            let Some(owner) = self.mixed_owner(provenance, vec![selected], plan)? else {
                 unreachable!("a held owner has one selected target")
             };
             let value = construction.expressions(|expressions| {

@@ -60,15 +60,16 @@ fn collect_when_target_indices<'a>(
                 lhs: ast::Expression::ComponentReference(reference),
                 ..
             } => {
-                for subscript in reference
-                    .parts
-                    .iter()
-                    .flat_map(|part| part.subs.iter().flatten())
-                {
-                    if let ast::Subscript::Expression(expression) = subscript {
-                        indices.push(expression);
-                    }
-                }
+                indices.extend(
+                    reference
+                        .parts
+                        .iter()
+                        .flat_map(|part| part.subs.iter().flatten())
+                        .filter_map(|subscript| match subscript {
+                            ast::Subscript::Expression(expression) => Some(expression),
+                            _ => None,
+                        }),
+                );
             }
             ast::Equation::For { equations, .. } => collect_when_target_indices(equations, indices),
             ast::Equation::If {

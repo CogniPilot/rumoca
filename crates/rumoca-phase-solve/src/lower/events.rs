@@ -553,6 +553,12 @@ impl<'dae> DiscreteRows<'dae> {
         update_index: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if self.selected_event_owners.contains_key(&variable.index()) {
+            return Err(LowerError::contract(
+                "event coordinate has both selected and structured producer owners",
+                span,
+            ));
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable.index() as usize)
@@ -753,13 +759,13 @@ impl<'dae> DiscreteRows<'dae> {
                     span,
                 ));
             }
+            if start > cursor && role != dae::VariableRole::DiscreteReal {
+                return Err(LowerError::contract(
+                    "selected m lacks a held definition",
+                    span,
+                ));
+            }
             if start > cursor {
-                if role != dae::VariableRole::DiscreteReal {
-                    return Err(LowerError::contract(
-                        "selected m lacks a held definition",
-                        span,
-                    ));
-                }
                 partitions.push(solve::EventIterationPartition {
                     scalar_start: cursor,
                     scalar_count: start - cursor,
@@ -773,13 +779,13 @@ impl<'dae> DiscreteRows<'dae> {
             });
             cursor = start + owner.width;
         }
+        if cursor < scalar_count && role != dae::VariableRole::DiscreteReal {
+            return Err(LowerError::contract(
+                "selected m lacks complete definition coverage",
+                span,
+            ));
+        }
         if cursor < scalar_count {
-            if role != dae::VariableRole::DiscreteReal {
-                return Err(LowerError::contract(
-                    "selected m lacks complete definition coverage",
-                    span,
-                ));
-            }
             partitions.push(solve::EventIterationPartition {
                 scalar_start: cursor,
                 scalar_count: scalar_count - cursor,
