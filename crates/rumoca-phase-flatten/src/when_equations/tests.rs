@@ -30,7 +30,7 @@ fn comp_ref(path: &str) -> ast::ComponentReference {
                 def_id: Some(rumoca_core::DefId::new(19_001 + index as u32)),
             })
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         qualified_display_name: None,
     }
 }
@@ -850,8 +850,7 @@ fn when_for_equation_expands_all_index_ranges() {
         assert_eq!(subscripts.len(), 2);
         for (subscript, expected) in subscripts.iter().zip([i, j]) {
             assert!(
-                matches!(subscript, rumoca_core::Subscript::Expr { expr, .. }
-                if matches!(expr.as_ref(), rumoca_core::Expression::Literal { value: rumoca_core::Literal::Integer(value), .. } if *value == expected))
+                matches!(subscript, rumoca_core::Subscript::Index { value, .. } if *value == expected)
             );
         }
         assert!(!span.is_dummy());
