@@ -124,7 +124,8 @@
       "omc_simulation_reference.json": "3132560f87ebd0b3add735126ef90c581cfee79ac44eef4c7765cf38b65b7429"
     },
     "selected_target": "ModelicaTest.Blocks.MuxDemux",
-    "required_selected_targets_success": true
+    "required_selected_targets_success": true,
+    "compiler_identity": "Uses the proven corrected eb515 compiler before any later clean-baseline checkout; audit build-log hashes retained under historical_eb515."
   },
   "validation": {
     "typecheck_lib": 152,
@@ -262,6 +263,43 @@
       "missing": 0,
       "near": 0,
       "deviation": 0
+    },
+    "compiler_identity_audit": {
+      "initial_affected_source_build": {
+        "log_sha256": "c426dd74ce3d9ba590d6065863b9d1ee8de4bde3c770e14a21b1c29ad53ed153",
+        "recompiled_crates": [
+          "rumoca-compile",
+          "rumoca-eval-dae",
+          "rumoca-eval-flat",
+          "rumoca-eval-solve",
+          "rumoca-exec-cranelift",
+          "rumoca-ir-dae",
+          "rumoca-ir-flat",
+          "rumoca-ir-solve",
+          "rumoca-phase-codegen",
+          "rumoca-phase-dae",
+          "rumoca-phase-flatten",
+          "rumoca-phase-solve",
+          "rumoca-phase-structural",
+          "rumoca-phase-typecheck",
+          "rumoca-sim",
+          "rumoca-solver",
+          "rumoca-solver-diffsol",
+          "rumoca-test-msl",
+          "rumoca-worker"
+        ]
+      },
+      "enum_domain_correction_build": {
+        "log_sha256": "d6f705717ce0e47425fb56affdeca88f9f7ac919fa29186884cedffa8c8c1c12",
+        "recompiled_crates": [
+          "rumoca-compile",
+          "rumoca-phase-typecheck",
+          "rumoca-sim",
+          "rumoca-test-msl",
+          "rumoca-worker"
+        ]
+      },
+      "validity": "The initial after actually rebuilt all affected IR/producer/consumer crates and exposed ET009 regressions. The corrected after rebuilt changed TypeCheck and downstream crates. No intervening clean-baseline checkout used this cache; issue430 supplied the clean baseline from its independent cache."
     }
   },
   "historical_f7_unverified": {
