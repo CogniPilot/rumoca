@@ -1,0 +1,172 @@
+{
+  "scope": "Fixed20 partial cohort only; no full-cohort or performance parity claim",
+  "target_file": "infra/verification/msl-canary-20.json",
+  "target_file_sha256": "536004933ce502f7a8a4317e5dd6de2b700a6b176e84d2d6e7bbe0dcdf61eafa",
+  "historical_da102": {
+    "before": {
+      "artifact_root": "scratch/rumoca/issue430-20261013/canary-before-da102",
+      "compiler_commit": "da102156cf4496e8a2255e905ebe66b859e339db",
+      "worktree_dirty": false,
+      "reference_context": "12ae478f4a9ff9e3e5e34945452e90f9e8d36650b90459b140dd3329f42dff9d",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "d802d6eae3db0292e9791916f727f6e9435c2a9437ea5faacbb7f4db9aac3db6",
+        "sim_trace_comparison.json": "c4a63217dfb94745c87fb21ed75a62404daa904dca6e49616a8f7f7492a1dac8",
+        "msl_results.json": "6bb56103f09b4cfc5280720be2737521724e6394449ed8f2a259698fbadb0a1a",
+        "omc_simulation_reference.json": "c0bc42b2cf04beb56ccbce4f2619b39cc1d07815b5d4b20afc63ef56fe7e9936"
+      }
+    },
+    "after": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-after-da102",
+      "compiler_commit": "e467e725cc31faa8a51448d1164aef356b5ae4b4",
+      "worktree_dirty": false,
+      "reference_context": "25b80334f5847c50810c00c6d47c747598e8c07ea798149cb43aebadccc44308",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "beb5979fb186054b8e020c1e179427c489b8bd27f489b8c3694f4d609144198c",
+        "sim_trace_comparison.json": "132a20167df98a0f49a40f2c614e55f51ea4a90175dc7af13c142107f78393c8",
+        "msl_results.json": "4632d746dea373ace54b244abfdc987ee6e0734a2703add06b55c289d410bcdf",
+        "omc_simulation_reference.json": "d97d96946f8e2c1f4f907dfe94982c24cf01c611103d2044e4a72edfd9291554"
+      }
+    }
+  },
+  "current_eb515": {
+    "before": {
+      "artifact_root": "scratch/rumoca/issue430-20261013/canary-before-eb515",
+      "compiler_commit": "eb515d9b01ef71cc945774578b8e38d733a4b67f",
+      "worktree_dirty": false,
+      "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "935629f1fa694e0e55fde6b98da3bc98a88abe78bc4dbd8f959a563af1639cc7",
+        "sim_trace_comparison.json": "680fef394aad7951addf3a774bc2cf3da0d243a5e1776cb1dbaaa8f84195de24",
+        "msl_results.json": "ba2a9ed24a95f2f043aff6a957199884168e706c726798812d0651fad92d33ee",
+        "omc_simulation_reference.json": "64d1c45e918b5e1def510e65b9a83f3da5f9d0cea6732b8c300b3756e262ffbb"
+      }
+    },
+    "first_after_before_correction": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-after-eb515",
+      "compiler_commit": "8fae69db8e1b75346d63dd66424737687b6dbf7a",
+      "worktree_dirty": false,
+      "reference_context": "29df6328b926fbd3b72d56e797e1ec43aba21a94f8d31ced1fc2475d307a0d1e",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 18,
+        "dae_models": 18,
+        "solve_models": 18,
+        "sim_ok": 14
+      },
+      "trace": {
+        "models_compared": 14,
+        "missing_trace_models": 0,
+        "skipped_models": 0,
+        "agreement_bands": {
+          "high_agreement": 14,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "result": "REGRESSION: two enum-domain Typecheck refusals; not comparable reference context; zero command exit is not parity",
+      "diagnostics": [
+        {
+          "model": "Modelica.Electrical.Digital.Examples.Counter",
+          "phase": "Typecheck",
+          "code": "ET009",
+          "detail": "Modelica.Electrical.Digital.Examples.Counter failed in Typecheck: array subscript must have Integer type, found Modelica.Electrical.Digital.Interfaces.Logic (MLS \u00a710.5.1)"
+        },
+        {
+          "model": "Modelica.Electrical.Digital.Examples.FullAdder",
+          "phase": "Typecheck",
+          "code": "ET009",
+          "detail": "Modelica.Electrical.Digital.Examples.FullAdder failed in Typecheck: array subscript must have Integer type, found Modelica.Electrical.Digital.Interfaces.Logic (MLS \u00a710.5.1)"
+        }
+      ],
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "5ef9e2c5a7d34070dbfc2dc19e1961b6bab6cec7a97cb2a842a68d410c415612",
+        "sim_trace_comparison.json": "0ab43e9a140568d20e9b7c736420a728ce008f8c545452226f94781f06e00577",
+        "msl_results.json": "dee66e6c34186e1b62df4a1e3d45cca325c5008c7b8d7cd4aef03fa8f6c62d23",
+        "omc_simulation_reference.json": "52c0f5ad56d99b5a62ed07a8f83d9686a76a8ba54666018f542ebe9fb5cf4636"
+      }
+    }
+  },
+  "setup_receipts": [
+    "Historical da102 baseline first comparator invocation lacked Node; independent corrected run passed.",
+    "Initial current focused source build used InstanceId in BTreeSet without Ord; corrected noniterated visited set to FxHashSet.",
+    "Initial strict layer lint identified excessive nesting and an unused test import; refactored/removal and strict rerun passed.",
+    "Broader Flatten checks identified dummy reference source spans and old Expr expectations in when fixtures; fixtures corrected; fresh suite rerun pending."
+  ],
+  "verification_gaps": [
+    "Full workspace all-target/all-feature clippy, workspace test and doc not completed.",
+    "Full release MSL quality-baseline gate and coverage/landing gate not completed; no new broad cache under current disk capacity."
+  ],
+  "source_context_equivalence": {
+    "source_before": "scratch/rumoca/issue430-20261013/msl/ModelicaStandardLibrary-4.1.0",
+    "source_after": "target/msl/ModelicaStandardLibrary-4.1.0",
+    "mo_files": 2669,
+    "identical_relative_paths": true,
+    "identical_sha256_contents": true,
+    "copied_mtime_metadata_files": 2556,
+    "reason": "OMC reference key fingerprints relative paths, size and mtime, not content; preserve exact baseline source snapshot timestamps after proving byte-identical trees."
+  },
+  "retry_reason": "Compiler source correction required for package-qualified enum domain lookup; separately preserve baseline timestamp metadata only after all2669 .mo relative paths/sizes/SHA256 contents proved identical. Next run is a corrected-source and corrected-context attempt, not unchanged-source retry."
+}

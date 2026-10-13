@@ -84,6 +84,12 @@ impl TypeChecker {
         part: usize,
         types: &TypeTable,
     ) -> Vec<TypeId> {
+        if let Some(domains) = reference.parts[part]
+            .def_id
+            .and_then(|id| self.component_index_domains.get(&id))
+        {
+            return domains.clone();
+        }
         let id = if part == 0 {
             reference.root_def_id()
         } else {

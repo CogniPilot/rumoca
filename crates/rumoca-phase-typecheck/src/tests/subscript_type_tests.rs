@@ -240,6 +240,64 @@ fn function_result_indices_retain_output_domains() {
     typecheck(resolve(parse(source)).unwrap()).expect("function output index domains");
 }
 
+const QUALIFIED_ENUM_TABLE: &str = r#"
+    package Digital
+        package Interfaces
+            type Logic = enumeration(low, high);
+            type Other = enumeration(low, high);
+        end Interfaces;
+        package Tables
+            import L = Digital.Interfaces.Logic;
+            constant Digital.Interfaces.Logic AndTable[L, L] =
+                [L.low, L.low; L.low, L.high];
+        end Tables;
+    end Digital;
+    model Test
+        Digital.Interfaces.Logic left = Digital.Interfaces.Logic.low;
+        Digital.Interfaces.Logic right = Digital.Interfaces.Logic.high;
+        Digital.Interfaces.Other other = Digital.Interfaces.Other.low;
+        Digital.Interfaces.Logic outputValue;
+    equation
+        outputValue = Digital.Tables.AndTable[left, right];
+    end Test;
+"#;
+
+#[test]
+fn qualified_constant_table_retains_imported_enumeration_domains() {
+    typecheck(resolve(parse(QUALIFIED_ENUM_TABLE)).unwrap()).expect("qualified enum-domain table");
+    let mut instanced = rumoca_phase_instantiate::instantiate(
+        resolve(parse(QUALIFIED_ENUM_TABLE)).unwrap(),
+        "Test",
+    )
+    .expect("instantiate qualified enum table");
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "Test")
+        .expect("instanced qualified enum-domain table");
+}
+
+#[test]
+fn qualified_constant_table_rejects_a_different_enumeration_domain() {
+    let source = QUALIFIED_ENUM_TABLE.replace("AndTable[left, right]", "AndTable[other, right]");
+    let diagnostics = typecheck_diagnostics(&source);
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("array subscript must have")
+            && diagnostic.message.contains("Logic")
+            && diagnostic.message.contains("Other")),
+        "{diagnostics:?}"
+    );
+    let source = QUALIFIED_ENUM_TABLE.replace("AndTable[left, right]", "AndTable[1, right]");
+    let diagnostics = typecheck_diagnostics(&source);
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("array subscript must have")
+            && diagnostic.message.contains("Logic")
+            && diagnostic.message.contains("Integer")),
+        "{diagnostics:?}"
+    );
+}
+
 #[test]
 fn member_index_domains_follow_inherited_declarations() {
     let source = r#"
