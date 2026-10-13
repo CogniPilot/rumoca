@@ -152,9 +152,9 @@ impl StatementRewriter for ReferenceAudit {
 fn audit_when_equations(audit: &mut ReferenceAudit, equations: &[flat::WhenEquation]) {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-                audit.expression(value)
-            }
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => audit.expression(value),
             flat::WhenEquation::Assert {
                 condition,
                 message,

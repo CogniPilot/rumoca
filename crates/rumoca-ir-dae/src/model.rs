@@ -185,7 +185,8 @@ pub(crate) use construction_checks::{
 /// partial value projections, without any operand for an unwritten path.
 /// 50 removes the superseded value-only conditional assignment-group wire;
 /// ordered conditional statements are the only function-branch owners.
-pub const DAE_SCHEMA_VERSION: u16 = 51;
+/// 52 retains constructor-checked whole or scalar B.1c target selections.
+pub const DAE_SCHEMA_VERSION: u16 = 52;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -626,7 +627,7 @@ pub(crate) struct Storage {
     pub(crate) initial_parameter_value_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) discrete_real_equations: Vec<DiscreteRealEquationEntry>,
     pub(crate) discrete_value_owners: Vec<DiscreteValueOwnerEntry>,
-    pub(crate) discrete_value_targets: Vec<u32>,
+    pub(crate) discrete_value_targets: Vec<crate::discrete_values::DiscreteValueTargetEntry>,
     pub(crate) discrete_value_branches: Vec<DiscreteValueBranchEntry>,
     pub(crate) discrete_value_branch_values: Vec<u32>,
     pub(crate) discrete_value_branch_value_provenance: Vec<DaeProvenance>,
@@ -689,7 +690,7 @@ struct FrozenStorage {
     initial_parameter_values: Box<[InitialParameterValueEntry]>,
     discrete_real_equations: Box<[DiscreteRealEquationEntry]>,
     discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
-    discrete_value_targets: Box<[u32]>,
+    discrete_value_targets: Box<[crate::discrete_values::DiscreteValueTargetEntry]>,
     discrete_value_branches: Box<[DiscreteValueBranchEntry]>,
     discrete_value_branch_values: Box<[u32]>,
     discrete_value_branch_value_provenance: Box<[DaeProvenance]>,
@@ -1019,7 +1020,30 @@ impl<'dae> DaeConstruction<'dae> {
         plan: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         build: impl FnOnce(&mut DiscreteValueTopology<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<(), DaeConstructionError> {
+        build_discrete_value_topology(
+            self.source_map,
+            self.storage,
+            plan.into_iter().map(Into::into),
+            build,
+        )
+    }
+
+    pub fn b1c_selected(
+        &mut self,
+        plan: impl IntoIterator<Item = crate::DiscreteValueTarget<'dae>>,
+        build: impl FnOnce(&mut DiscreteValueTopology<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<(), DaeConstructionError> {
         build_discrete_value_topology(self.source_map, self.storage, plan, build)
+    }
+
+    pub fn discrete_value_element(
+        &mut self,
+        variable: DiscreteValueId<'dae>,
+        indices: &[i64],
+        provenance: DaeProvenance,
+    ) -> Result<crate::DiscreteValueTarget<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        crate::discrete_values::select_element(self.storage, variable, indices, provenance)
     }
 }
 

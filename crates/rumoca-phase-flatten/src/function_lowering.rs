@@ -1049,7 +1049,9 @@ fn decompose_record_calls_in_when_equations(
 ) -> Result<(), FlattenError> {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 decompose_record_call_args_in_expr(value, decomposition_map, None)?;
             }
             flat::WhenEquation::Assert {

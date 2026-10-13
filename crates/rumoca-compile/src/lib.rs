@@ -61,6 +61,8 @@ mod session;
 mod source_root_cache;
 mod source_root_discovery;
 mod traversal_adapter;
+#[cfg(test)]
+mod when_array_element_tests;
 mod workspace_config;
 
 /// Source-root discovery and cache helpers.

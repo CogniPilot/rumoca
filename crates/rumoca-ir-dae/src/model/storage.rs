@@ -674,6 +674,33 @@ impl Storage {
         self.expect_value_type_compatible(variable.value_type, found, at)
     }
 
+    pub(crate) fn expect_discrete_target_value(
+        &self,
+        target: crate::discrete_values::DiscreteValueTargetEntry,
+        value: u32,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        if target.scalar_selection.is_none() {
+            return self.expect_discrete_value_raw(target.variable, value, at);
+        }
+        self.expect_discrete_value_target_id(target.variable, at)?;
+        self.expect_closed_expression(ExprId::from_raw(value), at)?;
+        let variable = &self.variables[target.variable as usize];
+        let expected = self.value_type_at(variable.value_type, at)?.scalar_type();
+        let found = self.expr_type(ExprId::from_raw(value), at)?;
+        if expected != found.scalar_type() {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected,
+                found: found.scalar_type(),
+                span: at.span(),
+            });
+        }
+        if !found.is_scalar() {
+            return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+        }
+        Ok(())
+    }
+
     pub(crate) fn expect_discrete_value_topology_open(
         &self,
         declaration: DaeProvenance,

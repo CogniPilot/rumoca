@@ -97,6 +97,14 @@ pub enum WhenEquation {
         span: Span,
         origin: String,
     },
+    /// One primitive-array element assignment, retaining its resolved parent.
+    AssignElement {
+        target: Reference,
+        subscripts: Vec<Subscript>,
+        value: Expression,
+        span: Span,
+        origin: String,
+    },
     /// Reinitialize state variable: `reinit(state, value)`
     Reinit {
         state: VarName,
@@ -234,7 +242,7 @@ impl WhenEquation {
     /// Get the span for this equation.
     pub fn span(&self) -> Span {
         match self {
-            Self::Assign { span, .. } => *span,
+            Self::Assign { span, .. } | Self::AssignElement { span, .. } => *span,
             Self::Reinit { span, .. } => *span,
             Self::Assert { span, .. } => *span,
             Self::Terminate { span, .. } => *span,
@@ -246,7 +254,7 @@ impl WhenEquation {
     /// Get the origin string for this equation.
     pub fn origin(&self) -> &str {
         match self {
-            Self::Assign { origin, .. } => origin,
+            Self::Assign { origin, .. } | Self::AssignElement { origin, .. } => origin,
             Self::Reinit { origin, .. } => origin,
             Self::Assert { origin, .. } => origin,
             Self::Terminate { origin, .. } => origin,

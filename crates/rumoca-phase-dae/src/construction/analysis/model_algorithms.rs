@@ -1135,6 +1135,9 @@ fn collect_when_equation_targets(equations: &[flat::WhenEquation], targets: &mut
             flat::WhenEquation::Assign { target, .. } => {
                 targets.insert(target.clone());
             }
+            flat::WhenEquation::AssignElement { target, .. } => {
+                targets.insert(target.var_name().clone());
+            }
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

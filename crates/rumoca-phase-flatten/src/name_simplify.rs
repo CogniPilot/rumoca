@@ -355,6 +355,16 @@ fn remap_when_equations(
                 *target = remap_var_name(target, ctx.rename_map);
                 remap_expression(value, ctx)?;
             }
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                ..
+            } => {
+                *target = remap_reference(target, ctx.rename_map);
+                remap_subscripts(subscripts, ctx, &HashSet::new())?;
+                remap_expression(value, ctx)?;
+            }
             flat::WhenEquation::Reinit { state, value, .. } => {
                 *state = remap_var_name(state, ctx.rename_map);
                 remap_expression(value, ctx)?;

@@ -16,6 +16,7 @@ mod compact_pattern;
 #[cfg(test)]
 mod compute_block_tests;
 mod continuous_wire;
+mod event_iteration;
 mod event_writes;
 mod exact_initial_values;
 mod fault;
@@ -137,7 +138,8 @@ pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
 /// 78 checks lazy quotient root/step activation and exact inactive private holds.
 /// 79 to 88 carry this lineage's native-product Solve rows on top of that.
-pub const SOLVE_SCHEMA_VERSION: u16 = 88;
+/// 89 carries checked producer partitions within one event-iteration declaration.
+pub const SOLVE_SCHEMA_VERSION: u16 = 89;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1375,6 +1377,7 @@ fn variable_storage_contract(
 
 #[derive(Default)]
 struct EventIterationClaims {
+    partitions: BTreeSet<usize>,
     covered_variables: BTreeSet<usize>,
     covered_bindings: BTreeSet<usize>,
     current_indices: BTreeSet<usize>,
@@ -1413,6 +1416,12 @@ fn validate_event_iteration_plan(
         return Err(event_iteration_contract(
             0,
             "plan is not a reverse bijection over typed discrete variable owners",
+        ));
+    }
+    if claims.partitions.len() != problem.discrete.event_iteration_plan.partitions.len() {
+        return Err(event_iteration_contract(
+            0,
+            "event-iteration partition table contains unclaimed entries",
         ));
     }
     validate_scalar_event_producers(problem, &claims.scalar_rows)?;
@@ -1549,6 +1558,20 @@ fn validate_event_iteration_owner(
     claims: &mut EventIterationClaims,
 ) -> Result<(), SolveProblemShapeContractError> {
     match run.owner {
+        EventIterationOwner::Partitioned {
+            first_partition,
+            partition_count,
+        } => {
+            event_iteration::validate_partitioned_owner(
+                problem,
+                row,
+                run,
+                storage,
+                current_base,
+                (first_partition, partition_count),
+                claims,
+            )?;
+        }
         EventIterationOwner::Hold => {
             if storage.role != SolveVariableStorageRole::DiscreteReal {
                 return Err(event_iteration_contract(
@@ -2029,7 +2052,12 @@ fn validate_scalar_event_owner(
                 "owner rows disagree on their typed clock",
             ));
         }
-        claimed_rows.insert(start_row + offset);
+        if !claimed_rows.insert(start_row + offset) {
+            return Err(event_iteration_contract(
+                row,
+                "scalar event producer is claimed more than once",
+            ));
+        }
     }
     Ok(())
 }
@@ -2065,7 +2093,12 @@ fn validate_structured_event_owner(
             "structured owner does not define the run",
         ));
     }
-    claimed_updates.insert(update_index);
+    if !claimed_updates.insert(update_index) {
+        return Err(event_iteration_contract(
+            row,
+            "structured event producer is claimed more than once",
+        ));
+    }
     Ok(())
 }
 

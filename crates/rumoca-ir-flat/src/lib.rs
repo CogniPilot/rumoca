@@ -1629,6 +1629,8 @@ pub enum StructuralParameterUse {
     /// callee reads, which fixes the call's argument or result shape at
     /// translation (MLS §10.1, §12.2).
     SpecializationArgument,
+    /// A when-equation's selected left-hand coordinate (MLS §8.3.5.3).
+    WhenTargetSubscript,
 }
 
 /// One flatten use that evaluated parameter values at translation

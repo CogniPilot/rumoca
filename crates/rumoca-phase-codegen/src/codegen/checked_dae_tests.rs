@@ -67,6 +67,48 @@ fn dae_render_context_accepts_only_a_finalized_checked_root() {
 }
 
 #[test]
+fn dae_template_targets_retain_aggregate_identity_and_selected_offsets() {
+    let text = "Boolean m[2]; m[1] = true; m[2] = false;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("SelectedTargets.mo", text);
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let model = dae::Dae::construct(sources, |model| {
+        let ty = model.types(|types| {
+            types.derived(dae::ValueType::array(dae::ScalarType::Boolean, [2]), at)
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                ty,
+                at,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let targets = [
+            model.discrete_value_element(variable, &[1], at)?,
+            model.discrete_value_element(variable, &[2], at)?,
+        ];
+        let value = model.expressions(|expressions| {
+            expressions.at(at).literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        model.b1c_selected(targets, |topology| {
+            topology.selected_owner(at, targets, |owner| owner.always(at, [(value, at); 2]))?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    let json = dae_template_json(&model).unwrap();
+    assert_eq!(json["variables"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json.pointer("/systems/discrete_values/owners/0/targets")
+            .unwrap(),
+        &serde_json::json!([
+            {"variable": 0, "scalar_selection": 0}, {"variable": 0, "scalar_selection": 1},
+        ])
+    );
+}
+
+#[test]
 fn dae_modelica_retains_initial_parameter_definitions_without_numeric_rows() {
     let text = "parameter Boolean branch(fixed=false); initial equation branch = true;";
     let mut sources = SourceMap::new();

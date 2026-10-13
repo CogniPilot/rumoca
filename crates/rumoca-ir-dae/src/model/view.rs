@@ -485,6 +485,15 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    pub fn discrete_value_target_indices(
+        self,
+        target: crate::DiscreteValueTarget<'dae>,
+    ) -> Option<Vec<i64>> {
+        let offset = target.scalar_selection()?;
+        let variable = self.variable(target.variable().into())?;
+        crate::discrete_values::selection_indices(variable.value_type().dimensions(), offset)
+    }
+
     pub fn discrete_value_owner(
         self,
         id: DiscreteValueOwnerId<'dae>,

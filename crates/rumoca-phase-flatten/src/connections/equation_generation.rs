@@ -304,6 +304,20 @@ impl ReferenceCollector {
                 self.names.insert(target.clone());
                 self.visit_expression(value);
             }
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                ..
+            } => {
+                self.names.insert(target.var_name().clone());
+                for subscript in subscripts {
+                    if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+                        self.visit_expression(expr);
+                    }
+                }
+                self.visit_expression(value);
+            }
             flat::WhenEquation::Reinit { state, value, .. } => {
                 self.names.insert(state.clone());
                 self.visit_expression(value);

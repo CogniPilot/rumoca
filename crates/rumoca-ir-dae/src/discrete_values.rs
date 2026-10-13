@@ -1,3 +1,10 @@
+mod targets;
+
+pub use targets::DiscreteValueTarget;
+pub(crate) use targets::DiscreteValueTargetEntry;
+use targets::TargetCoverage;
+pub(crate) use targets::{select_element, selection_indices, target_indices};
+
 use std::marker::PhantomData;
 
 use rumoca_core::ComprehensionScalarView;
@@ -125,7 +132,7 @@ impl<'dae> StructuredDiscreteValueView<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiscreteValueTargets<'dae> {
-    pub(crate) raw: &'dae [u32],
+    pub(crate) raw: &'dae [DiscreteValueTargetEntry],
     pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -138,12 +145,21 @@ impl<'dae> DiscreteValueTargets<'dae> {
         self.raw.is_empty()
     }
 
-    pub fn get(self, index: usize) -> Option<DiscreteValueId<'dae>> {
-        self.raw.get(index).copied().map(DiscreteValueId::from_raw)
+    pub fn get(self, index: usize) -> Option<DiscreteValueTarget<'dae>> {
+        self.raw
+            .get(index)
+            .copied()
+            .map(|entry| DiscreteValueTarget {
+                entry,
+                marker: PhantomData,
+            })
     }
 
-    pub fn iter(self) -> impl ExactSizeIterator<Item = DiscreteValueId<'dae>> {
-        self.raw.iter().copied().map(DiscreteValueId::from_raw)
+    pub fn iter(self) -> impl ExactSizeIterator<Item = DiscreteValueTarget<'dae>> {
+        self.raw.iter().copied().map(|entry| DiscreteValueTarget {
+            entry,
+            marker: PhantomData,
+        })
     }
 }
 
@@ -360,8 +376,8 @@ impl<'dae> DiscreteValueOwner<'_, 'dae> {
 pub struct DiscreteValueTopology<'storage, 'dae> {
     source_map: &'storage rumoca_core::SourceMap,
     storage: &'storage mut Storage,
-    plan: Vec<u32>,
-    issued: FxHashSet<u32>,
+    plan: Vec<DiscreteValueTargetEntry>,
+    issued: TargetCoverage,
     cursor: usize,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
@@ -403,13 +419,28 @@ impl DiscreteValueTopologyCheckpoint {
 }
 
 impl<'dae> DiscreteValueTopology<'_, 'dae> {
+    pub fn selected_owner(
+        &mut self,
+        provenance: DaeProvenance,
+        targets: impl IntoIterator<Item = DiscreteValueTarget<'dae>>,
+        build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
+        self.build_owner(provenance, targets, None, false, build)
+    }
+
     pub fn owner(
         &mut self,
         provenance: DaeProvenance,
         targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
-        self.build_owner(provenance, targets, None, false, build)
+        self.build_owner(
+            provenance,
+            targets.into_iter().map(Into::into),
+            None,
+            false,
+            build,
+        )
     }
 
     /// An unstructured owner whose targets nothing reads and whose single
@@ -420,7 +451,13 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
-        self.build_owner(provenance, targets, None, true, build)
+        self.build_owner(
+            provenance,
+            targets.into_iter().map(Into::into),
+            None,
+            true,
+            build,
+        )
     }
 
     pub fn structured_owner(
@@ -434,7 +471,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         let scalar_count = self.storage.domain_scalar_count(domain, provenance)?;
         self.build_owner(
             provenance,
-            targets,
+            targets.into_iter().map(Into::into),
             Some((domain, scalar_view, scalar_count)),
             false,
             build,
@@ -444,7 +481,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn build_owner(
         &mut self,
         provenance: DaeProvenance,
-        targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+        targets: impl IntoIterator<Item = DiscreteValueTarget<'dae>>,
         structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
         observed: bool,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
@@ -452,7 +489,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         let targets = targets
             .into_iter()
-            .map(DiscreteValueId::index)
+            .map(|target| target.entry)
             .collect::<Vec<_>>();
         if targets.is_empty() {
             return Err(DaeConstructionError::EmptyDiscreteValueOwner {
@@ -463,14 +500,14 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         let expected = self.plan.get(self.cursor..end).unwrap_or(&[]);
         if expected != targets {
             return Err(DaeConstructionError::InvalidDiscreteTargetOrder {
-                expected: expected.first().copied(),
-                found: targets.first().copied(),
+                expected: expected.first().map(|target| target.variable),
+                found: targets.first().map(|target| target.variable),
                 span: provenance.span(),
             });
         }
         for &target in &targets {
             self.storage
-                .expect_discrete_value_target_id(target, provenance)?;
+                .expect_discrete_value_target_id(target.variable, provenance)?;
         }
         if let Some((domain, _, _)) = structure {
             self.validate_structured_targets(domain, &targets, provenance)?;
@@ -527,7 +564,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn commit_owner(
         &mut self,
         provenance: DaeProvenance,
-        targets: &[u32],
+        targets: &[DiscreteValueTargetEntry],
         structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
         observed: bool,
         target_range: PackedRange,
@@ -590,7 +627,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
 
     fn validate_owner(
         &self,
-        targets: &[u32],
+        targets: &[DiscreteValueTargetEntry],
         branch_start: usize,
         structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
     ) -> Result<(), DaeConstructionError> {
@@ -599,8 +636,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             self.validate_branch_activation(targets, branch)?;
         }
 
-        let mut issued_prefix = FxHashSet::default();
-        issued_prefix.reserve(targets.len());
+        let mut issued_prefix = TargetCoverage::default();
         for (ordinal, &target) in targets.iter().enumerate() {
             for branch in branches {
                 let value_index = branch.values.start as usize + ordinal;
@@ -608,7 +644,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 let provenance = self.storage.discrete_value_branch_value_provenance[value_index];
                 match structure {
                     Some((domain, scalar_view, _)) => self.expect_structured_value(
-                        target,
+                        target.variable,
                         value,
                         domain,
                         scalar_view,
@@ -616,11 +652,11 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                     )?,
                     None => self
                         .storage
-                        .expect_discrete_value_raw(target, value, provenance)?,
+                        .expect_discrete_target_value(target, value, provenance)?,
                 }
                 self.expect_expression_dependencies_issued(
                     value,
-                    target,
+                    target.variable,
                     &issued_prefix,
                     provenance,
                 )?;
@@ -633,7 +669,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn validate_structured_targets(
         &self,
         domain: crate::DomainId<'dae>,
-        targets: &[u32],
+        targets: &[DiscreteValueTargetEntry],
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         let extents = self.storage.domain_extents(domain, provenance)?;
@@ -641,12 +677,12 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             let variable = self
                 .storage
                 .variables
-                .get(target as usize)
-                .ok_or_else(|| unknown("variable", target, provenance))?;
+                .get(target.variable as usize)
+                .ok_or_else(|| unknown("variable", target.variable, provenance))?;
             let value_type = self
                 .storage
                 .value_type_at(variable.value_type, provenance)?;
-            if value_type.dimensions() != extents {
+            if target.scalar_selection.is_some() || value_type.dimensions() != extents {
                 return Err(DaeConstructionError::ShapeMismatch {
                     span: provenance.span(),
                 });
@@ -707,26 +743,26 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
 
     fn validate_branch_activation(
         &self,
-        targets: &[u32],
+        targets: &[DiscreteValueTargetEntry],
         branch: &DiscreteValueBranchEntry,
     ) -> Result<(), DaeConstructionError> {
         let DiscreteBranchActivationEntry::When { trigger, guard } = branch.activation else {
             return Ok(());
         };
         for &target in targets {
-            expect_clock_ownership(self.storage, trigger, target, branch.provenance)?;
-            expect_clock_ownership(self.storage, guard, target, branch.provenance)?;
+            expect_clock_ownership(self.storage, trigger, target.variable, branch.provenance)?;
+            expect_clock_ownership(self.storage, guard, target.variable, branch.provenance)?;
         }
-        let no_owner_targets = FxHashSet::default();
+        let no_owner_targets = TargetCoverage::default();
         self.expect_condition_dependencies_issued(
             trigger,
-            targets[0],
+            targets[0].variable,
             &no_owner_targets,
             branch.provenance,
         )?;
         self.expect_condition_dependencies_issued(
             guard,
-            targets[0],
+            targets[0].variable,
             &no_owner_targets,
             branch.provenance,
         )
@@ -736,7 +772,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         &self,
         condition: u32,
         target: u32,
-        issued_prefix: &FxHashSet<u32>,
+        issued_prefix: &TargetCoverage,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         let mut conditions = vec![condition];
@@ -787,7 +823,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         &self,
         expression: u32,
         target: u32,
-        issued_prefix: &FxHashSet<u32>,
+        issued_prefix: &TargetCoverage,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         let ordered_scalar_self_dependencies =
@@ -804,11 +840,26 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 .nodes
                 .get(index as usize)
                 .ok_or_else(|| unknown("expression", index, provenance))?;
+            if self.expect_selected_dependency_issued(
+                node,
+                (target, ordered_scalar_self_dependencies),
+                issued_prefix,
+                provenance,
+                &mut pending,
+            )? {
+                continue;
+            }
             match node {
                 ExprNode::Coordinate(Coordinate::DiscreteValue(dependency))
                     if *dependency != target || !ordered_scalar_self_dependencies =>
                 {
-                    self.expect_dependency_issued(*dependency, target, issued_prefix, provenance)?;
+                    self.expect_dependency_issued(
+                        *dependency,
+                        None,
+                        target,
+                        issued_prefix,
+                        provenance,
+                    )?;
                 }
                 ExprNode::Coordinate(Coordinate::Condition(condition)) => {
                     self.expect_condition_dependencies_issued(
@@ -823,6 +874,83 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             node.for_each_child(&self.storage.expressions, |child| pending.push(child));
         }
         Ok(())
+    }
+
+    fn expect_selected_dependency_issued(
+        &self,
+        node: &ExprNode,
+        target: (u32, bool),
+        issued_prefix: &TargetCoverage,
+        provenance: DaeProvenance,
+        pending: &mut Vec<u32>,
+    ) -> Result<bool, DaeConstructionError> {
+        let Some((dependency, selection, subscripts)) =
+            self.selected_dependency(node, provenance)?
+        else {
+            return Ok(false);
+        };
+        if dependency != target.0 || !target.1 {
+            self.expect_dependency_issued(
+                dependency,
+                Some(selection),
+                target.0,
+                issued_prefix,
+                provenance,
+            )?;
+        }
+        pending.extend(
+            self.storage.expressions.subscripts[subscripts.indices()]
+                .iter()
+                .filter_map(|subscript| match subscript.kind {
+                    PackedSubscriptKind::Index(expression) => Some(expression),
+                    _ => None,
+                }),
+        );
+        Ok(true)
+    }
+
+    fn selected_dependency(
+        &self,
+        node: &ExprNode,
+        provenance: DaeProvenance,
+    ) -> Result<Option<(u32, u32, crate::expression::OperandRange)>, DaeConstructionError> {
+        let ExprNode::Index { base, subscripts } = node else {
+            return Ok(None);
+        };
+        let Some(ExprNode::Coordinate(Coordinate::DiscreteValue(dependency))) =
+            self.storage.expressions.nodes.get(*base as usize)
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .literal_scalar_selection(*dependency, *subscripts, provenance)?
+            .map(|selection| (*dependency, selection, *subscripts)))
+    }
+
+    fn literal_scalar_selection(
+        &self,
+        variable: u32,
+        subscripts: crate::expression::OperandRange,
+        provenance: DaeProvenance,
+    ) -> Result<Option<u32>, DaeConstructionError> {
+        let entry = &self.storage.variables[variable as usize];
+        let dimensions = self
+            .storage
+            .value_type_at(entry.value_type, provenance)?
+            .dimensions();
+        let indices = self.storage.expressions.subscripts[subscripts.indices()]
+            .iter()
+            .map(|subscript| {
+                let PackedSubscriptKind::Index(index) = subscript.kind else {
+                    return None;
+                };
+                match self.storage.expressions.nodes.get(index as usize) {
+                    Some(ExprNode::Literal(crate::DaeLiteral::Integer(value))) => Some(*value),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>();
+        Ok(indices.and_then(|indices| targets::scalar_selection(dimensions, &indices)))
     }
 
     /// Independently prove that an aggregate value's current-target reads are
@@ -1062,8 +1190,9 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn expect_dependency_issued(
         &self,
         dependency: u32,
+        selection: Option<u32>,
         target: u32,
-        issued_prefix: &FxHashSet<u32>,
+        issued_prefix: &TargetCoverage,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         let variable = self
@@ -1074,7 +1203,13 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         if variable.is_discrete_value_input() {
             return Ok(());
         }
-        if self.issued.contains(&dependency) || issued_prefix.contains(&dependency) {
+        if self.issued.contains_union(
+            issued_prefix,
+            dependency,
+            selection,
+            self.storage,
+            provenance,
+        )? {
             return Ok(());
         }
         Err(DaeConstructionError::UnissuedDiscreteDependency {
@@ -1086,7 +1221,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
 
     fn complete(self) -> Result<(), DaeConstructionError> {
         if self.cursor != self.plan.len() {
-            let target = self.plan[self.cursor];
+            let target = self.plan[self.cursor].variable;
             let declaration = self.storage.variables[target as usize].declaration();
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "B.1c target",
@@ -1119,7 +1254,7 @@ fn expect_packed_capacity(
 pub(crate) fn build_discrete_value_topology<'dae>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
-    plan: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+    plan: impl IntoIterator<Item = DiscreteValueTarget<'dae>>,
     build: impl FnOnce(&mut DiscreteValueTopology<'_, 'dae>) -> Result<(), DaeConstructionError>,
 ) -> Result<(), DaeConstructionError> {
     if storage.discrete_value_topology_complete {
@@ -1140,7 +1275,7 @@ pub(crate) fn build_discrete_value_topology<'dae>(
     let result = {
         let mut topology = DiscreteValueTopology {
             source_map,
-            issued: FxHashSet::default(),
+            issued: TargetCoverage::default(),
             storage,
             plan,
             cursor: 0,
@@ -1159,32 +1294,43 @@ pub(crate) fn build_discrete_value_topology<'dae>(
 
 fn checked_plan<'dae>(
     storage: &Storage,
-    plan: impl IntoIterator<Item = DiscreteValueId<'dae>>,
-) -> Result<Vec<u32>, DaeConstructionError> {
+    plan: impl IntoIterator<Item = DiscreteValueTarget<'dae>>,
+) -> Result<Vec<DiscreteValueTargetEntry>, DaeConstructionError> {
     let plan = plan
         .into_iter()
-        .map(DiscreteValueId::index)
+        .map(|target| target.entry)
         .collect::<Vec<_>>();
-    let mut present = FxHashSet::default();
+    let mut present = TargetCoverage::default();
     for &target in &plan {
-        let variable = storage.variables.get(target as usize).ok_or_else(|| {
-            let at = storage
-                .first_required_discrete_value
-                .map(|(_, provenance)| provenance)
-                .expect("an invalid branded variable needs a DAE source owner");
-            unknown("variable", target, at)
-        })?;
+        let variable = storage
+            .variables
+            .get(target.variable as usize)
+            .ok_or_else(|| {
+                let at = storage
+                    .first_required_discrete_value
+                    .map(|(_, provenance)| provenance)
+                    .expect("an invalid branded variable needs a DAE source owner");
+                unknown("variable", target.variable, at)
+            })?;
         let provenance = variable.declaration();
         if variable.attributes_missing() {
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "variable",
-                index: target,
+                index: target.variable,
                 span: provenance.span(),
             });
         }
-        if !variable.requires_discrete_value_owner() || !present.insert(target) {
+        let count = storage
+            .value_type_at(variable.value_type, provenance)?
+            .scalar_count();
+        if !variable.requires_discrete_value_owner()
+            || target
+                .scalar_selection
+                .is_some_and(|offset| Some(offset as usize) >= count)
+            || !present.insert(target)
+        {
             return Err(DaeConstructionError::InvalidDiscreteTopologyPlan {
-                target,
+                target: target.variable,
                 span: provenance.span(),
             });
         }
@@ -1197,7 +1343,9 @@ fn checked_plan<'dae>(
                 span: variable.declaration().span(),
             });
         }
-        if variable.requires_discrete_value_owner() && !present.contains(&(target as u32)) {
+        if variable.requires_discrete_value_owner()
+            && !present.contains(target as u32, None, storage, variable.declaration())?
+        {
             return Err(DaeConstructionError::InvalidDiscreteTopologyPlan {
                 target: target as u32,
                 span: variable.declaration().span(),

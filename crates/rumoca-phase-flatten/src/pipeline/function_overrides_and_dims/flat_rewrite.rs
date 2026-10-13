@@ -6,7 +6,9 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Result<(), FlattenError> {
     match eq {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. }
+        | flat::WhenEquation::Reinit { value, .. } => {
             rewrite_function_overrides_in_expression_with_ctx(value, ctx)?;
         }
         flat::WhenEquation::Assert {
@@ -56,6 +58,7 @@ fn when_chain_scope_path(chain: &rumoca_ir_flat::WhenChain) -> ComponentPath {
     fn equation_target(eq: &rumoca_ir_flat::WhenEquation) -> Option<&rumoca_core::VarName> {
         match eq {
             flat::WhenEquation::Assign { target, .. } => Some(target),
+            flat::WhenEquation::AssignElement { target, .. } => Some(target.var_name()),
             flat::WhenEquation::Reinit { state, .. } => Some(state),
             flat::WhenEquation::FunctionCallOutputs { outputs, .. } => outputs.first(),
             flat::WhenEquation::Conditional {

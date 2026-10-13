@@ -423,6 +423,53 @@ fn unconditional_owner_lowers_directly_with_action_provenance() {
     ));
 }
 
+#[test]
+fn selected_value_owner_refuses_whole_coordinate_scheduler_at_owner_span() {
+    let text = "discrete Boolean m[2]; m[1] = true; m[2] = false; sample(0,1);";
+    let mut sources = SourceMap::new();
+    let source = sources.add("SelectedValueOwner.mo", text);
+    let declaration = at(source, text, "discrete Boolean m[2]");
+    let owner_at = at(source, text, "m[1] = true");
+    let model = dae::Dae::construct(sources, |model| {
+        let ty = model.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Boolean, [2]),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                ty,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let targets = [
+            model.discrete_value_element(variable, &[1], owner_at)?,
+            model.discrete_value_element(variable, &[2], owner_at)?,
+        ];
+        let value = model.expressions(|expressions| {
+            expressions
+                .at(owner_at)
+                .literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        periodic_clock(model, at(source, text, "sample(0,1)"))?;
+        model.b1c_selected(targets, |topology| {
+            topology.selected_owner(owner_at, targets, |owner| {
+                owner.always(owner_at, [(value, owner_at); 2])
+            })?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    assert!(
+        matches!(project(&model), Err(GalecTargetError::UnsupportedFeature {
+        feature, span: Some(span), ..
+    }) if feature == "discrete-value-element-owner" && span == owner_at.span())
+    );
+}
+
 struct MaterializedGuardDefinition<'dae> {
     target: dae::DiscreteValueId<'dae>,
     first: dae::ConditionId<'dae>,

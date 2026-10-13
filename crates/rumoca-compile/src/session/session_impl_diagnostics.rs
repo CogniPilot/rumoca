@@ -600,6 +600,10 @@ fn structural_selection_warnings(
                     ),
                     "range fixed at translation",
                 ),
+                rumoca_ir_flat::StructuralParameterUse::WhenTargetSubscript => (
+                    format!("this when-equation target is fixed at translation, so parameter{plural} {parameters} cannot be set (MLS 3.7 §8.3.5.3)"),
+                    "when coordinate fixed at translation",
+                ),
                 rumoca_ir_flat::StructuralParameterUse::SpecializationArgument => (
                     format!(
                         "this argument is fixed at translation because a declared dimension of the \

@@ -146,6 +146,17 @@ fn redirect_when_equations(
                 redirect_var_name(target, outer_to_inner);
                 redirect_flat_expr(value, outer_to_inner);
             }
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                ..
+            } => {
+                *target = redirect_reference(target, outer_to_inner);
+                let mut rewriter = OuterRefRedirectRewriter { outer_to_inner };
+                *subscripts = rewriter.rewrite_subscripts(subscripts);
+                redirect_flat_expr(value, outer_to_inner);
+            }
             flat::WhenEquation::Reinit { state, value, .. } => {
                 redirect_var_name(state, outer_to_inner);
                 redirect_flat_expr(value, outer_to_inner);

@@ -53,6 +53,10 @@ mod structural_selections;
 mod structured_families;
 mod unexecuted_branches;
 mod when_chains;
+mod when_elements;
+pub(super) use when_elements::{
+    DiscreteTargetKey, SelectedWhenTarget, selected_target as selected_when_target,
+};
 
 use super::*;
 use clocks::SampledTarget;
@@ -69,8 +73,8 @@ pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
 pub(super) use derived_parameters::DerivedParameterPlan;
 use derived_parameters::analyze_derived_parameters;
-pub(super) use discrete_values::DiscreteValueTopologyPlan;
 use discrete_values::analyze_discrete_value_topology;
+pub(super) use discrete_values::{DiscreteValueTopologyPlan, TargetOrder};
 pub(super) use equation_partitions::DiscreteConnectionRanks;
 pub(super) use equation_partitions::{
     AggregateDiscreteConnections, DiscreteValueAssignmentPlan, EquationPartition,
@@ -1124,7 +1128,7 @@ fn analyze_event_algorithms(
 ) -> Result<EventAlgorithmAnalysis, ToDaeError> {
     let mut sample_lattices = Vec::new();
     validate_when_chains(
-        &flat.when_chains,
+        flat,
         roles,
         expression_roles,
         states,

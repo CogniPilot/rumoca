@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
@@ -143,6 +143,7 @@ fn build_event_iteration_plan<'dae>(
     discrete: &DiscreteRows<'dae>,
 ) -> Result<solve::EventIterationPlan, LowerError> {
     let mut runs = Vec::new();
+    let mut partitions = Vec::new();
     for (id, variable) in view.variables().filter(|(_, variable)| {
         variable.causality() != dae::VariableCausality::Input
             && matches!(
@@ -212,7 +213,14 @@ fn build_event_iteration_plan<'dae>(
                 ));
             }
         }
-        let owner = discrete.event_iteration_owner(id, scalar_count, span)?;
+        let owner = discrete.selected_iteration_owner(
+            id,
+            variable.role(),
+            current_p_base,
+            scalar_count,
+            &mut partitions,
+            span,
+        )?;
         runs.push(solve::EventIterationRun {
             variable: id.index() as usize,
             pre_binding_start,
@@ -220,7 +228,7 @@ fn build_event_iteration_plan<'dae>(
         });
     }
     runs.sort_by_key(|run| run.pre_binding_start);
-    Ok(solve::EventIterationPlan::new(runs))
+    Ok(solve::EventIterationPlan::new_partitioned(runs, partitions))
 }
 
 fn lower_delays<'dae>(
@@ -302,6 +310,8 @@ struct DiscreteRows<'dae> {
     guarded_assignments: Vec<PendingGuardedAssignment>,
     structured_output_cursor: usize,
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
+    selected_event_variables: BTreeSet<u32>,
+    selected_event_owners: HashMap<u32, Vec<SelectedEventOwner>>,
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
     same_tick_definitions: std::rc::Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
@@ -322,6 +332,13 @@ struct DiscreteRows<'dae> {
     /// Rows of observed B.1c owners (SPEC_0022 EXPR-012): unread
     /// observations refreshed at every output point.
     observed_rows: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedEventOwner {
+    base: solve::ScalarSlot,
+    width: usize,
+    owner: solve::EventIterationOwner,
 }
 
 struct PendingGuardedAssignment {
@@ -417,6 +434,29 @@ enum EventIterationOwnerClaim {
     },
 }
 
+fn selected_event_variables(view: dae::DaeView<'_>) -> BTreeSet<u32> {
+    let mut selected = view
+        .variables()
+        .filter_map(|(id, variable)| {
+            (variable.role() == dae::VariableRole::DiscreteReal && variable.scalar_count() > 1)
+                .then_some(id.index())
+        })
+        .collect::<BTreeSet<_>>();
+    for ordinal in 0..view.discrete_value_owner_count() {
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(ordinal).unwrap())
+            .unwrap();
+        selected.extend(
+            owner
+                .targets()
+                .iter()
+                .filter(|target| target.scalar_selection().is_some())
+                .map(|target| target.index()),
+        );
+    }
+    selected
+}
+
 impl<'dae> DiscreteRows<'dae> {
     fn new(
         view: dae::DaeView<'dae>,
@@ -432,6 +472,7 @@ impl<'dae> DiscreteRows<'dae> {
                 )?,
             ),
             event_iteration_owners: vec![None; view.variable_count()],
+            selected_event_variables: selected_event_variables(view),
             ..Self::default()
         })
     }
@@ -444,6 +485,17 @@ impl<'dae> DiscreteRows<'dae> {
     ) -> Result<(), LowerError> {
         let variable_index = variable.index() as usize;
         let row = self.targets.len();
+        if self.selected_event_variables.contains(&variable.index()) {
+            return self.claim_selected_event_owner(
+                variable,
+                SelectedEventOwner {
+                    base: target,
+                    width: 1,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: row },
+                },
+                span,
+            );
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable_index)
@@ -520,8 +572,24 @@ impl<'dae> DiscreteRows<'dae> {
         variable: dae::VariableId<'dae>,
         program_index: usize,
         target_range_index: usize,
+        base: solve::ScalarSlot,
+        width: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if self.selected_event_variables.contains(&variable.index()) {
+            return self.claim_selected_event_owner(
+                variable,
+                SelectedEventOwner {
+                    base,
+                    width,
+                    owner: solve::EventIterationOwner::GuardedAssignment {
+                        program_index,
+                        target_range_index,
+                    },
+                },
+                span,
+            );
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable.index() as usize)
@@ -625,6 +693,103 @@ impl<'dae> DiscreteRows<'dae> {
             span: transaction_span,
         });
         Ok(())
+    }
+
+    fn claim_selected_event_owner(
+        &mut self,
+        variable: dae::VariableId<'dae>,
+        owner: SelectedEventOwner,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if self.event_iteration_owners[variable.index() as usize].is_some() {
+            return Err(LowerError::contract(
+                "selected producer overlaps a whole-declaration owner",
+                span,
+            ));
+        }
+        self.selected_event_owners
+            .entry(variable.index())
+            .or_default()
+            .push(owner);
+        Ok(())
+    }
+
+    fn selected_iteration_owner(
+        &self,
+        variable: dae::VariableId<'dae>,
+        role: dae::VariableRole,
+        current_base: usize,
+        scalar_count: usize,
+        partitions: &mut Vec<solve::EventIterationPartition>,
+        span: Span,
+    ) -> Result<solve::EventIterationOwner, LowerError> {
+        let Some(owners) = self.selected_event_owners.get(&variable.index()) else {
+            return self.event_iteration_owner(variable, scalar_count, span);
+        };
+        let first_partition = partitions.len();
+        let mut ordered = owners.clone();
+        ordered.sort_by_key(|owner| match owner.base {
+            solve::ScalarSlot::P { index, .. } => index,
+            _ => usize::MAX,
+        });
+        let mut cursor = 0usize;
+        for owner in ordered {
+            let solve::ScalarSlot::P { index, .. } = owner.base else {
+                return Err(LowerError::contract(
+                    "selected event target is not P-backed",
+                    span,
+                ));
+            };
+            let start = index.checked_sub(current_base).ok_or_else(|| {
+                LowerError::contract("selected event target precedes its declaration", span)
+            })?;
+            if start < cursor
+                || start
+                    .checked_add(owner.width)
+                    .is_none_or(|end| end > scalar_count)
+            {
+                return Err(LowerError::contract(
+                    "selected event producer ranges overlap or leave storage",
+                    span,
+                ));
+            }
+            if start > cursor {
+                if role != dae::VariableRole::DiscreteReal {
+                    return Err(LowerError::contract(
+                        "selected m lacks a held definition",
+                        span,
+                    ));
+                }
+                partitions.push(solve::EventIterationPartition {
+                    scalar_start: cursor,
+                    scalar_count: start - cursor,
+                    owner: solve::EventIterationOwner::Hold,
+                });
+            }
+            partitions.push(solve::EventIterationPartition {
+                scalar_start: start,
+                scalar_count: owner.width,
+                owner: owner.owner,
+            });
+            cursor = start + owner.width;
+        }
+        if cursor < scalar_count {
+            if role != dae::VariableRole::DiscreteReal {
+                return Err(LowerError::contract(
+                    "selected m lacks complete definition coverage",
+                    span,
+                ));
+            }
+            partitions.push(solve::EventIterationPartition {
+                scalar_start: cursor,
+                scalar_count: scalar_count - cursor,
+                owner: solve::EventIterationOwner::Hold,
+            });
+        }
+        Ok(solve::EventIterationOwner::Partitioned {
+            first_partition,
+            partition_count: partitions.len() - first_partition,
+        })
     }
 
     fn event_iteration_owner(
@@ -773,6 +938,8 @@ impl<'dae> DiscreteRows<'dae> {
                     target.variable,
                     program_index,
                     target_range_index,
+                    target.target_base,
+                    target.width,
                     target.span,
                 )?;
             }
@@ -1695,6 +1862,7 @@ fn lower_time_events<'dae>(
 #[cfg(test)]
 mod integrator_history_effect_tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn provenance() -> rumoca_core::ProvenanceSpan {
         Span::from_offsets(

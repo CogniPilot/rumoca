@@ -901,6 +901,17 @@ pub enum EventIterationOwner {
         program_index: usize,
         target_index: usize,
     },
+    Partitioned {
+        first_partition: usize,
+        partition_count: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub struct EventIterationPartition {
+    pub scalar_start: usize,
+    pub scalar_count: usize,
+    pub owner: EventIterationOwner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -914,6 +925,7 @@ pub struct EventIterationRun {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct EventIterationPlan {
     pub runs: Vec<EventIterationRun>,
+    pub partitions: Vec<EventIterationPartition>,
     /// How every executor walks the iteration (SPEC_0044 ME-EVENT-006).
     #[serde(default)]
     pub schedule: EventIterationSchedule,
@@ -924,6 +936,18 @@ impl EventIterationPlan {
     pub fn new(runs: Vec<EventIterationRun>) -> Self {
         Self {
             runs,
+            partitions: Vec::new(),
+            schedule: EventIterationSchedule::standard(),
+        }
+    }
+
+    pub fn new_partitioned(
+        runs: Vec<EventIterationRun>,
+        partitions: Vec<EventIterationPartition>,
+    ) -> Self {
+        Self {
+            runs,
+            partitions,
             schedule: EventIterationSchedule::standard(),
         }
     }
@@ -1079,6 +1103,44 @@ impl DiscreteSolveSystem {
         run: &EventIterationRun,
     ) -> Result<Option<PeriodicClockId>, &'static str> {
         match run.owner {
+            EventIterationOwner::Partitioned {
+                first_partition,
+                partition_count,
+            } => self.partitioned_event_iteration_clock(first_partition, partition_count),
+            owner => self.event_iteration_leaf_clock(owner),
+        }
+    }
+
+    fn partitioned_event_iteration_clock(
+        &self,
+        first_partition: usize,
+        partition_count: usize,
+    ) -> Result<Option<PeriodicClockId>, &'static str> {
+        if partition_count == 0 {
+            return Err("event-iteration partition owner is empty");
+        }
+        let end = first_partition
+            .checked_add(partition_count)
+            .ok_or("event-iteration partition range overflowed")?;
+        let partitions = self
+            .event_iteration_plan
+            .partitions
+            .get(first_partition..end)
+            .ok_or("event-iteration partition range is out of bounds")?;
+        let clock = self.event_iteration_leaf_clock(partitions[0].owner)?;
+        for partition in &partitions[1..] {
+            if self.event_iteration_leaf_clock(partition.owner)? != clock {
+                return Err("event-iteration partition owners disagree on their typed clock");
+            }
+        }
+        Ok(clock)
+    }
+
+    fn event_iteration_leaf_clock(
+        &self,
+        owner: EventIterationOwner,
+    ) -> Result<Option<PeriodicClockId>, &'static str> {
+        match owner {
             EventIterationOwner::Hold => Ok(None),
             EventIterationOwner::ScalarRows { start_row } => self
                 .clock_owners
@@ -1104,6 +1166,9 @@ impl DiscreteSolveSystem {
                 .and_then(|transaction| transaction.targets().get(target_index))
                 .map(EventTransactionTarget::clock_owner)
                 .ok_or("event-iteration transaction owner clock is out of bounds"),
+            EventIterationOwner::Partitioned { .. } => {
+                Err("event-iteration partitions cannot contain partitioned owners")
+            }
         }
     }
 

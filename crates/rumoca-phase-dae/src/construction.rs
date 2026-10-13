@@ -75,8 +75,9 @@ use analysis::{
     function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
     is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
     materialized_discrete_value_rows, model_algorithm_targets, names_overlap,
-    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
-    structured_assignment_names, when_conditional_selects_clock_structure, when_function_call_key,
+    record_field_projections, selected_conditional_statements, selected_when_target,
+    specialized_comprehension_plan, structured_assignment_names,
+    when_conditional_selects_clock_structure, when_function_call_key,
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};

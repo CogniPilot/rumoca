@@ -1,6 +1,8 @@
 // SPEC_0021 file-size exception: this root integration fixture covers several
 // cross-owner Solve contracts. split plan: move serialization and event-owner
 // fixture families into dedicated test modules without duplicating builders.
+mod event_iteration_partitions;
+
 use super::*;
 use indexmap::IndexMap;
 use rumoca_core::{SourceId, StructuredIndexBinder};

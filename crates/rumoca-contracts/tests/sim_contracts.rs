@@ -61,7 +61,7 @@ fn owner_target_reads_pre(dae: &Dae, owner_index: usize, target_index: usize) ->
                     expression.operation(),
                     rumoca_compile::compile::ExpressionOperation::Coordinate(
                         rumoca_compile::compile::CoordinateView::PreDiscreteValue(candidate)
-                    ) if candidate == target
+                    ) if candidate == target.variable()
                 );
             });
             reads_pre

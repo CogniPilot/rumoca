@@ -81,6 +81,7 @@ pub(super) trait ModelExpressionOwnerVisitor: FallibleStatementVisitor {
     fn visit_when_equation(&mut self, equation: &flat::WhenEquation) -> Result<(), Self::Error> {
         match equation {
             flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
             | flat::WhenEquation::Reinit { value, .. }
             | flat::WhenEquation::Terminate { message: value, .. }
             | flat::WhenEquation::FunctionCallOutputs {

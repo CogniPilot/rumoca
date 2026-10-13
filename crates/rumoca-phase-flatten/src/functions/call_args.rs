@@ -679,7 +679,9 @@ fn rewrite_when_equations<R: FallibleStatementRewriter<Error = FlattenError>>(
 ) -> Result<(), FlattenError> {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 *value = rewriter.rewrite_expression(value)?;
             }
             flat::WhenEquation::Assert {

@@ -1733,43 +1733,60 @@ fn reconstruct_discrete_value_owners<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    let plan = wire
+    let targets = wire
         .discrete_value_owners
         .iter()
-        .flat_map(|owner| {
+        .map(|owner| {
             owner
                 .targets
                 .iter()
-                .copied()
-                .map(move |target| (target, owner.provenance))
-        })
-        .map(|(target, provenance)| {
-            let variable = mapped(&ids.variables, target, "variable", provenance)?;
-            Ok(DiscreteValueId::from_raw(variable.index()))
+                .map(|target| replay_discrete_value_target(*target, dae, ids, owner.provenance))
+                .collect::<Result<Vec<_>, DaeConstructionError>>()
         })
         .collect::<Result<Vec<_>, DaeConstructionError>>()?;
-    dae.b1c(plan, |topology| {
-        for (ordinal, owner) in wire.discrete_value_owners.iter().enumerate() {
-            let rebuilt = replay_discrete_value_owner(owner, topology, ids)?;
+    let plan = targets.iter().flatten().copied();
+    dae.b1c_selected(plan, |topology| {
+        for (ordinal, (owner, targets)) in
+            wire.discrete_value_owners.iter().zip(&targets).enumerate()
+        {
+            let rebuilt = replay_discrete_value_owner(owner, targets, topology, ids)?;
             expect_ordinal("B.1c owner", ordinal, rebuilt.index(), owner.provenance)?;
         }
         Ok(())
     })
 }
 
+fn replay_discrete_value_target<'dae>(
+    target: DiscreteValueTargetWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    provenance: DaeProvenance,
+) -> Result<crate::DiscreteValueTarget<'dae>, DaeConstructionError> {
+    let variable = mapped(&ids.variables, target.variable, "variable", provenance)?;
+    let variable = DiscreteValueId::from_raw(variable.index());
+    let Some(offset) = target.scalar_selection else {
+        return Ok(variable.into());
+    };
+    let entry = &dae.storage.variables[variable.index() as usize];
+    let dimensions = dae
+        .storage
+        .value_type_at(entry.value_type, provenance)?
+        .dimensions();
+    let indices = crate::discrete_values::selection_indices(dimensions, offset).ok_or(
+        DaeConstructionError::InvalidDiscreteElementSelection {
+            target: variable.index(),
+            span: provenance.span(),
+        },
+    )?;
+    dae.discrete_value_element(variable, &indices, provenance)
+}
+
 fn replay_discrete_value_owner<'dae>(
     owner: &DiscreteValueOwnerWire,
+    targets: &[crate::DiscreteValueTarget<'dae>],
     topology: &mut crate::DiscreteValueTopology<'_, 'dae>,
     ids: &WireIds<'dae>,
 ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
-    let targets = owner
-        .targets
-        .iter()
-        .map(|&target| {
-            let variable = mapped(&ids.variables, target, "variable", owner.provenance)?;
-            Ok(DiscreteValueId::from_raw(variable.index()))
-        })
-        .collect::<Result<Vec<_>, DaeConstructionError>>()?;
     let replay = |staged: &mut crate::DiscreteValueOwner<'_, 'dae>| {
         for branch in &owner.branches {
             replay_discrete_value_branch(branch, staged, ids)?;
@@ -1780,15 +1797,37 @@ fn replay_discrete_value_owner<'dae>(
         Some(_) if owner.observed => Err(DaeConstructionError::InvalidObservedDiscreteOwner {
             span: owner.provenance.span(),
         }),
+        Some(_)
+            if targets
+                .iter()
+                .any(|target| target.scalar_selection().is_some()) =>
+        {
+            Err(DaeConstructionError::ShapeMismatch {
+                span: owner.provenance.span(),
+            })
+        }
+        None if owner.observed
+            && targets
+                .iter()
+                .any(|target| target.scalar_selection().is_some()) =>
+        {
+            Err(DaeConstructionError::InvalidObservedDiscreteOwner {
+                span: owner.provenance.span(),
+            })
+        }
         Some(structure) => topology.structured_owner(
             owner.provenance,
             mapped(&ids.domains, structure.domain, "domain", owner.provenance)?,
             structure.scalar_view,
-            targets,
+            targets.iter().map(|target| target.variable()),
             replay,
         ),
-        None if owner.observed => topology.observed_owner(owner.provenance, targets, replay),
-        None => topology.owner(owner.provenance, targets, replay),
+        None if owner.observed => topology.observed_owner(
+            owner.provenance,
+            targets.iter().map(|target| target.variable()),
+            replay,
+        ),
+        None => topology.selected_owner(owner.provenance, targets.iter().copied(), replay),
     }
 }
 

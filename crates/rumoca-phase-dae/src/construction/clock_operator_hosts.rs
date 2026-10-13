@@ -60,7 +60,8 @@ fn when_equation_operator(
     operator: BuiltinFunction,
 ) -> Option<Span> {
     match equation {
-        flat::WhenEquation::Assign { value, .. } => operator_span(value, operator),
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. } => operator_span(value, operator),
         flat::WhenEquation::Conditional {
             branches,
             else_branch,

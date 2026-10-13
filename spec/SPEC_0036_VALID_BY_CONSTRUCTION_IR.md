@@ -183,7 +183,12 @@ Relation truth, homotopy iteration, and scalar discrete initialization MUST
 preserve their distinct checked owners, evaluation contexts, and rollback
 semantics under [SPEC_0043 §6b](SPEC_0043_CONSTRUCTION_CATALOG.md#6b-relation-and-initialization-construction).
 
-Each non-input `m` has exactly one B.1c definition owner. A source
+Each non-input scalar coordinate of `m` has exactly one B.1c definition owner.
+Whole-array targets cover their complete declaration; literal full-rank element
+targets retain constructor-issued parent identity and checked selection.
+Construction rejects overlapping or incomplete coverage; untouched elements
+require explicit held definitions. Exact element reads depend on that element,
+and whole-array reads require every element to have been issued. A source
 `when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional
 definition of the branch target set; independent `when` owners cannot define
 the same target, as required by SPEC_0022 EQN-020. Event-only updates of `m`

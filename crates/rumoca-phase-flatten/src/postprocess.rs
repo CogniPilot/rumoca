@@ -441,7 +441,9 @@ fn substitute_known_constants_when_equation(
     locals: &HashSet<String>,
 ) -> Result<(), FlattenError> {
     match equation {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. }
+        | flat::WhenEquation::Reinit { value, .. } => {
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Assert {

@@ -271,19 +271,27 @@ fn rebuild_discrete_value_owners<'target>(
                 .expect("finalized B.1c owner identity resolves")
         })
         .collect::<Vec<_>>();
-    let plan = source_owners
+    let rebuilt_targets = source_owners
         .iter()
-        .copied()
-        .flat_map(|owner| owner.targets().iter())
-        .map(|source_target| rebuilt_discrete_value(variables, source_target))
-        .collect::<Vec<_>>();
-    target.b1c(plan, |topology| {
-        for source_owner in source_owners {
-            let targets = source_owner
+        .map(|owner| {
+            owner
                 .targets()
                 .iter()
-                .map(|source_target| rebuilt_discrete_value(variables, source_target))
-                .collect::<Vec<_>>();
+                .map(|source_target| {
+                    rebuilt_discrete_value_target(
+                        source,
+                        target,
+                        variables,
+                        source_target,
+                        owner.provenance(),
+                    )
+                })
+                .collect::<Result<Vec<_>, dae::DaeConstructionError>>()
+        })
+        .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+    let plan = rebuilt_targets.iter().flatten().copied();
+    target.b1c_selected(plan, |topology| {
+        for (source_owner, targets) in source_owners.into_iter().zip(&rebuilt_targets) {
             let append = |target_owner: &mut dae::DiscreteValueOwner<'_, 'target>| {
                 rebuild_discrete_value_branches(target_owner, source_owner, expressions, conditions)
             };
@@ -295,13 +303,19 @@ fn rebuild_discrete_value_owners<'target>(
                     source_owner.provenance(),
                     domains[structure.domain().index() as usize].id,
                     structure.scalar_view(),
-                    targets,
+                    targets.iter().map(|target| target.variable()),
                     append,
                 )?,
-                None if source_owner.observed() => {
-                    topology.observed_owner(source_owner.provenance(), targets, append)?
-                }
-                None => topology.owner(source_owner.provenance(), targets, append)?,
+                None if source_owner.observed() => topology.observed_owner(
+                    source_owner.provenance(),
+                    targets.iter().map(|target| target.variable()),
+                    append,
+                )?,
+                None => topology.selected_owner(
+                    source_owner.provenance(),
+                    targets.iter().copied(),
+                    append,
+                )?,
             };
         }
         Ok(())
@@ -336,14 +350,30 @@ fn rebuild_discrete_value_branches<'target>(
     Ok(())
 }
 
-fn rebuilt_discrete_value<'target>(
+fn rebuilt_discrete_value_target<'source, 'target>(
+    source: dae::DaeView<'source>,
+    target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
-    source: dae::DiscreteValueId<'_>,
-) -> dae::DiscreteValueId<'target> {
-    let TargetVariable::DiscreteValue(target) = variables[source.index() as usize].identity else {
+    source_target: dae::DiscreteValueTarget<'source>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::DiscreteValueTarget<'target>, dae::DaeConstructionError> {
+    let TargetVariable::DiscreteValue(variable) =
+        variables[source_target.variable().index() as usize].identity
+    else {
         unreachable!("checked B.1c owner target retains its discrete-value role")
     };
-    target
+    match source_target.scalar_selection() {
+        Some(_) => {
+            let indices = source.discrete_value_target_indices(source_target).ok_or(
+                dae::DaeConstructionError::InvalidDiscreteElementSelection {
+                    target: source_target.variable().index(),
+                    span: provenance.span(),
+                },
+            )?;
+            target.discrete_value_element(variable, &indices, provenance)
+        }
+        None => Ok(variable.into()),
+    }
 }
 
 fn rebuild_continuous_family<'target>(

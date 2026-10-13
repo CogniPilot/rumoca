@@ -665,7 +665,8 @@ pub(in crate::construction) fn when_conditional_selects_clock_structure(
         .chain(else_branch)
         .flatten()
         .any(|equation| match equation {
-            flat::WhenEquation::Assign { value, .. } => mentions_clock_conversion(value),
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. } => mentions_clock_conversion(value),
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,

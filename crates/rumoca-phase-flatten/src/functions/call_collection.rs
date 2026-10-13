@@ -102,7 +102,8 @@ fn collect_from_when_equation(
     values: &ValueNames,
 ) {
     match eq {
-        flat::WhenEquation::Assign { value, .. } => {
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. } => {
             collect_from_expression(value, calls, values);
         }
         flat::WhenEquation::Reinit { value, .. } => {

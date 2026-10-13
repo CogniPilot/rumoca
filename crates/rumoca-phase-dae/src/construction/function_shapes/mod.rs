@@ -1741,9 +1741,9 @@ impl ShapeAnalyzer<'_> {
         values: &ShapeEnvironment,
     ) -> Result<(), ToDaeError> {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
-                self.discover_calls(value, values)
-            }
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => self.discover_calls(value, values),
             flat::WhenEquation::Assert {
                 condition,
                 message,

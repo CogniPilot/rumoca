@@ -264,7 +264,7 @@ fn b1c_atomic_owner_accepts_current_dependency_on_issued_target_prefix() {
             owner
                 .targets()
                 .iter()
-                .map(DiscreteValueId::index)
+                .map(DiscreteValueTarget::index)
                 .collect::<Vec<_>>(),
             [0, 1]
         );
