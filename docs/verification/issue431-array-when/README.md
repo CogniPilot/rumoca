@@ -30,7 +30,8 @@ declaration history run with a checked partition into exact producer ranges;
 independent elements retain their individual activations and holds.
 
 The PR is stacked on PR #421 at
-`f7b18ac0b26cf206d336edc5960783bf789f351d`. The earlier `eb515d9b`, `da102156` and
+`bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483`. The earlier `f7b18ac0`,
+`eb515d9b`, `da102156` and
 `6ce369dd` compiler snapshots are historical evidence only.
 The clean historical `da102156` baseline independently reproduces ToDAE ED019
 for `e[1]` on the exact pinned model.
@@ -50,12 +51,12 @@ Its scalar balance has 1000 states, 1000 continuous equations, and 1000
 discrete definitions; structural matching covers all 1000 state coordinates.
 The bounded simulation completes to 0.95. At that terminal sample,
 all 1000 Boolean coordinates equal OMC exactly; only `e[992]` through
-`e[1000]` are true. Four sampled Real coordinates differ from OMC by at most
+`e[1000]` are true. Four rounded diagnostic Real samples differ from OMC by at most
 `4.45e-13`. The [comparison receipt](omc-terminal-comparison.json) records
 this terminal-sample scope; this is not a full trace-parity measurement.
 The source experiment's requested horizon 10 also completes, in 5.15 s
 on this host. All 1000 terminal Boolean coordinates equal OMC exactly,
-including the 99 fired elements `e[902]` through `e[1000]`; the four Real
+including the 99 fired elements `e[902]` through `e[1000]`; the four rounded diagnostic Real
 samples differ by at most `1.28e-13`. Its separate
 [receipt](omc-terminal-comparison-10.json) retains the horizon and scope.
 
@@ -77,7 +78,7 @@ The refreshed compiler on the historical eb515 stack repeats the requested
 horizon 10 after the review corrections. It compiles in 179.58 ms and
 simulates in 6.50 s on this host; these observations are not a performance
 parity claim. All 1000 terminal Boolean values still equal the unchanged
-OMC oracle, and the maximum sampled Real error remains 1.28e-13. The
+OMC oracle, and the maximum rounded diagnostic sample difference remains 1.28e-13. The
 [eb515 terminal receipt](omc-terminal-comparison-eb515-10.json) includes
 both raw log and oracle hashes.
 
@@ -112,14 +113,35 @@ this is an explicitly recorded context correction as well as a source fix.
 The CI-selected `ModelicaTest.Blocks.MuxDemux` gate also passes: one selected
 model compiles, simulates, and compares high, with required selected success.
 
-The final f7 source checkpoint `3c7023765517628782d22049620149c710afdf28`
+The historical f7 source checkpoint `3c7023765517628782d22049620149c710afdf28`
 repeats the exact N1000 horizon 10 model: 78.99 ms compile, 4.18 s simulation,
 balance 0, 1000/1000 matching and zero terminal Boolean mismatches. The
-[final receipt](omc-terminal-comparison-f7-10.json) identifies the compiler
+[f7 terminal receipt](omc-terminal-comparison-f7-10.json) identifies the compiler
 binary and raw log/oracle hashes. Real samples use the profile's 12 decimal
 diagnostic formatting; their reported differences are not unrounded solver
 error bounds. All three pinned modelica_models probes repeat successfully.
-The final f7 fixed20 pair has identical source/reference context and zero
-stage/completion/model-band count deltas. Selected ModelicaTest again has
-one required-success compile/simulation/high comparison. Historical receipts
-remain labeled by their original source checkpoints.
+The f7 canary after and ModelicaTest receipts are now **unverified**: restoring
+old timestamps on changed source after the baseline build did not establish
+the intended compiler identity. Their reported counts are retained, but
+excluded from PASS and parity claims. The first bd6 after attempt had the
+same invalid cache reuse and is retained separately. All changed issue
+source files were then invalidated, and the build logs confirm that the
+affected IR, producer and consumer crates actually recompiled.
+
+The current bd6 source checkpoint `67707e72538f582584c966fc45eb46dc8f945d1c`
+passes all fifteen focused compiler tests, three event simulations and
+workspace formatting. The exact N1000 horizon 10 model compiles in 82.32 ms
+and simulates in 4.19 s: balance 0, 1000/1000 matching, all 1000 terminal
+Boolean values equal OMC, with 99 true elements. The
+[current terminal receipt](omc-terminal-comparison-bd6-10.json) records
+the binary and raw log/oracle hashes and the rounded Real diagnostic scope.
+All three pinned modelica_models probes repeat successfully.
+
+The valid current bd6 fixed20 pair uses clean source and the same `ec011...`
+reference context: 20 through Solve and balanced, 16 simulation completions,
+15 compared/high, one typed skip, and no missing, near or deviating model
+traces. Pipeline/completion/model-band deltas are zero, and no per-model
+phase/error/simulation/IC status changes occur. The required-selected
+ModelicaTest gate uses the same proven rebuilt compiler and passes one
+compile/simulation/high comparison. These are partial cohorts; full
+workspace, full release MSL and coverage/landing gates remain incomplete.

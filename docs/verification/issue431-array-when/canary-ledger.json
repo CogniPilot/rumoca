@@ -74,7 +74,8 @@
     "Historical da102 baseline first comparator invocation lacked Node; independent corrected run passed.",
     "Initial current focused source build used InstanceId in BTreeSet without Ord; corrected noniterated visited set to FxHashSet.",
     "Initial strict layer lint identified excessive nesting and an unused test import; refactored/removal and strict rerun passed.",
-    "Broader Flatten checks identified dummy reference source spans and old Expr expectations in when fixtures; fixtures corrected; fresh full677 suite passed."
+    "Broader Flatten checks identified dummy reference source spans and old Expr expectations in when fixtures; fixtures corrected; fresh full677 suite passed.",
+    "Current bd6 first-after cache identity invalidated and retained; actual changed-source rebuild plus separately named rerun establishes current evidence. Historical f7 after/ModelicaTest downgraded to unverified for the same timestamp-pattern audit."
   ],
   "verification_gaps": [
     "Full workspace all-target/all-feature clippy, workspace test and doc not completed.",
@@ -134,7 +135,7 @@
     "selected_compile_tests": 15,
     "strict_lint": "Affected producer/consumer strict all-target lint passed; six-line enum-domain follow-up strict TypeCheck lint passed.",
     "format": "workspace fmt --all --check passed",
-    "scope": "Typecheck/EvalFlat/Flatten/partition/strict-lint receipts were captured on eb515 source; latest f7 reran compiler15, runtime3, parent literal builtin2, formatting, exact N1000 horizon10, all3 pinned modelica_models probes, fixed20 pair and selected ModelicaTest."
+    "scope": "TypeCheck/EvalFlat/Flatten/partition/strict-lint receipts were captured on eb515 source. Current bd6 source reran compiler15, runtime3, formatting, exact N1000 horizon10, pinned modelica_models3, valid rebuilt fixed20 pair and required-selected ModelicaTest. Historical f7 canary/ModelicaTest after identity is unverified and excluded."
   },
   "historical_eb515": {
     "before": {
@@ -263,7 +264,7 @@
       "deviation": 0
     }
   },
-  "current_f7": {
+  "historical_f7_unverified": {
     "before": {
       "artifact_root": "scratch/rumoca/issue431-20261013/canary-before-f7",
       "compiler_commit": "f7b18ac0b26cf206d336edc5960783bf789f351d",
@@ -328,9 +329,11 @@
         "sim_trace_comparison.json": "8d1ac7f40ee5bef3b2df25f1a921e6d739e312edb406eb2db6e09e4256f046d8",
         "msl_results.json": "b763216d1466373a1ee8579eb0a6e9d44fee974d2186017cb78abb526279b10d",
         "omc_simulation_reference.json": "40173b75ba8a55f156c45dde5e04cd1ddd5f67a291a0906029832b654147b06c"
-      }
+      },
+      "compiler_identity_verified": false
     },
-    "measured_delta": {
+    "validity": "UNVERIFIED after compiler identity: restoring old changed-source timestamps after the clean baseline build did not independently establish the intended compiler. Excluded from parity claims.",
+    "reported_count_delta_unverified": {
       "pipeline": {
         "parse_models": 0,
         "flatten_models": 0,
@@ -346,7 +349,7 @@
       "deviating_models": 0
     }
   },
-  "modelicatest_f7": {
+  "historical_modelicatest_f7_unverified": {
     "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-f7",
     "compiler_commit": "3c7023765517628782d22049620149c710afdf28",
     "worktree_dirty": false,
@@ -379,9 +382,10 @@
       "omc_simulation_reference.json": "ebf955fef542748d15b6fb3e1363bc14a0302e511f6a07f439d84f3b7674bc80"
     },
     "selected_target": "ModelicaTest.Blocks.MuxDemux",
-    "required_selected_targets_success": true
+    "required_selected_targets_success": true,
+    "validity": "UNVERIFIED compiler identity for the same historical restored-cache reason; excluded from PASS claims."
   },
-  "latest_compatibility": {
+  "historical_compatibility_f7": {
     "compiler_source_checkpoint": "3c7023765517628782d22049620149c710afdf28",
     "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
     "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
@@ -402,5 +406,263 @@
         "log_sha256": "771324b9d4acb824e634471704856d26565e0c49f5595fd3e986eade2e75b2dd"
       }
     ]
+  },
+  "invalid_bd6_after_before_source_rebuild": {
+    "artifact_root": "scratch/rumoca/issue431-20261013/canary-after-bd6",
+    "compiler_commit": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "worktree_dirty": false,
+    "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "msl_version": "v4.1.0",
+    "omc_version": "a96aa1a-cmake",
+    "scope": "partial",
+    "pipeline": {
+      "parse_models": 20,
+      "flatten_models": 20,
+      "dae_models": 20,
+      "solve_models": 20,
+      "balanced_models": 20,
+      "sim_ok": 16
+    },
+    "trace": {
+      "models_compared": 15,
+      "missing_trace_models": 0,
+      "skipped_models": 1,
+      "agreement_bands": {
+        "high_agreement": 15,
+        "minor_agreement": 0,
+        "deviation": 0
+      }
+    },
+    "raw_artifact_sha256": {
+      "msl_quality_current.json": "49384dea36452c99515edca5845e586c7d4813e0b0d9b3a514083cf6ab6facee",
+      "sim_trace_comparison.json": "26a3e777140265a4fabc0de59187135fc30e6d07e6f49171b3e05784eff96dcc",
+      "msl_results.json": "fbf7634270d8cab5b16137a20164d3324636465b912fcbbae63c800ec52c9c72",
+      "omc_simulation_reference.json": "aa9eb8a85c93d5588c94fc04e536d1d10c5bc1eb0f767dc97e5ac4b8e89988ca"
+    },
+    "validity": "INVALID current-after evidence: Cargo reused clean-baseline compiler artifacts after old timestamps were restored on changed source; reported git commit does not prove compiler identity.",
+    "excluded_from_parity_claims": true,
+    "log_sha256": "33eb25c47ca942d29939658e0ebcf451c71e08b682e6295fabe727c401fa5558"
+  },
+  "current_bd6": {
+    "before": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-before-bd6",
+      "compiler_commit": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+      "worktree_dirty": false,
+      "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "c6e750b7cd7b6a1ee3eef907653565ba4220046d0acc63ef3ed05cc0df16d05a",
+        "sim_trace_comparison.json": "813aadb4ab626cf99d118d00463485f09210228435c731e815ab6f03d0424790",
+        "msl_results.json": "7a71cbda79935751bf5a4d8a0dc6d2d62a1ec2452e99f6db70d6a6d9e3fdd86a",
+        "omc_simulation_reference.json": "49ab8fce1f2f2e3efe52c93e7790de3193c0f616f9d205ccdf369ace2c942a0d"
+      },
+      "build_evidence": {
+        "log_sha256": "8a10f8d6646e0de693f354dd314bbae81be71b28b0ac0702e1d13d4bcfbf53f5",
+        "recompiled_crates": [
+          "rumoca-compile",
+          "rumoca-eval-dae",
+          "rumoca-eval-flat",
+          "rumoca-eval-solve",
+          "rumoca-exec-cranelift",
+          "rumoca-ir-dae",
+          "rumoca-ir-flat",
+          "rumoca-ir-solve",
+          "rumoca-phase-autodiff",
+          "rumoca-phase-codegen",
+          "rumoca-phase-dae",
+          "rumoca-phase-flatten",
+          "rumoca-phase-parse",
+          "rumoca-phase-solve",
+          "rumoca-phase-structural",
+          "rumoca-phase-typecheck",
+          "rumoca-sim",
+          "rumoca-solver",
+          "rumoca-solver-diffsol",
+          "rumoca-test-msl",
+          "rumoca-worker"
+        ],
+        "command": "cargo xtask verify msl-parity --sim-targets-file infra/verification/msl-canary-20.json --results-dir $HOME/scratch/rumoca/issue431-20261013/canary-before-bd6",
+        "validity": "Clean compiler source; affected IR, producer and consumer crates actually rebuilt in the existing msl-fast cache."
+      }
+    },
+    "after": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-after-bd6-source-rebuilt",
+      "compiler_commit": "67707e72538f582584c966fc45eb46dc8f945d1c",
+      "worktree_dirty": false,
+      "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "6acd0c2ba99e448d4064c1fb5690cd8fd93755d5726f0af985cbf3154f02cf6c",
+        "sim_trace_comparison.json": "ca049d381ec27935938778f6c420688da4d6f40dfcc352d7f4c81726273c3f34",
+        "msl_results.json": "d94ce201b4b584800e2795010f58045ba54c9e7ec2e93a281c5ae08831f28ec6",
+        "omc_simulation_reference.json": "fb1bbe49a3afb98273ebb7c9497060d2168ec891839d0f912cdd9df63e288eaa"
+      },
+      "build_evidence": {
+        "log_sha256": "3737e991a8ac5a47b01b2e9381ce1b5d9626685f67d679d0f320b79730ab17a3",
+        "recompiled_crates": [
+          "rumoca-compile",
+          "rumoca-eval-dae",
+          "rumoca-eval-flat",
+          "rumoca-eval-solve",
+          "rumoca-exec-cranelift",
+          "rumoca-ir-dae",
+          "rumoca-ir-flat",
+          "rumoca-ir-solve",
+          "rumoca-phase-codegen",
+          "rumoca-phase-dae",
+          "rumoca-phase-flatten",
+          "rumoca-phase-solve",
+          "rumoca-phase-structural",
+          "rumoca-phase-typecheck",
+          "rumoca-sim",
+          "rumoca-solver",
+          "rumoca-solver-diffsol",
+          "rumoca-test-msl",
+          "rumoca-worker"
+        ],
+        "command": "cargo xtask verify msl-parity --sim-targets-file infra/verification/msl-canary-20.json --results-dir $HOME/scratch/rumoca/issue431-20261013/canary-after-bd6-source-rebuilt",
+        "validity": "Clean compiler source; affected IR, producer and consumer crates actually rebuilt in the existing msl-fast cache."
+      }
+    },
+    "measured_delta": {
+      "pipeline": {
+        "parse_models": 0,
+        "flatten_models": 0,
+        "dae_models": 0,
+        "solve_models": 0,
+        "balanced_models": 0,
+        "sim_ok": 0
+      },
+      "compared": 0,
+      "high": 0,
+      "missing": 0,
+      "near_models": 0,
+      "deviating_models": 0
+    },
+    "model_status_changes": [],
+    "environment": {
+      "CARGO_TARGET_DIR": "$HOME/scratch/rumoca/issue431-20261013/build",
+      "TMPDIR": "$HOME/scratch/rumoca/issue431-20261013/tmp",
+      "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue431-20261013/canary-cache",
+      "CARGO_BUILD_JOBS": 4,
+      "RUST_TEST_THREADS": 4,
+      "RAYON_NUM_THREADS": 4,
+      "CARGO_INCREMENTAL": 0,
+      "CARGO_PROFILE_DEV_DEBUG": 0,
+      "CARGO_PROFILE_TEST_DEBUG": 0,
+      "node_version": "24.18.0",
+      "nix_environment": ".#modelica"
+    },
+    "source_rebuild_correction": "The invalid first after attempt is retained separately. All 107 issue-vs-base changed files were timestamp-invalidated before the corrected build; logs confirm the exact affected source crates rebuilt. Timestamp preservation is valid only for byte-identical source relative to the active cached build."
+  },
+  "modelicatest_bd6": {
+    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-bd6",
+    "compiler_commit": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "worktree_dirty": false,
+    "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "msl_version": "v4.1.0",
+    "omc_version": "a96aa1a-cmake",
+    "scope": "partial",
+    "pipeline": {
+      "parse_models": 1,
+      "flatten_models": 1,
+      "dae_models": 1,
+      "solve_models": 1,
+      "balanced_models": 1,
+      "sim_ok": 1
+    },
+    "trace": {
+      "models_compared": 1,
+      "missing_trace_models": 0,
+      "skipped_models": 0,
+      "agreement_bands": {
+        "high_agreement": 1,
+        "minor_agreement": 0,
+        "deviation": 0
+      }
+    },
+    "raw_artifact_sha256": {
+      "msl_quality_current.json": "4ebc83848df8a95e560142b705f67d7e9a0982007db7d5e1d9062ceb47b0c305",
+      "sim_trace_comparison.json": "9c7c0076f31945c6462914caa42aac2d35e86a9a44488f75629e42ac063a0518",
+      "msl_results.json": "335fa8a1f146955111ca51c091ab6dfb878e909675cf99d94ec248712127771c",
+      "omc_simulation_reference.json": "7684b9dd03e6ff70f4d5b07787a801f06126f02139ede0f6e34d1a3f60679bff"
+    },
+    "selected_target": "ModelicaTest.Blocks.MuxDemux",
+    "required_selected_targets_success": true,
+    "command": "cargo xtask verify msl-parity --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json --results-dir $HOME/scratch/rumoca/issue431-20261013/modelicatest-bd6 --include-modelica-test --require-selected-targets-success --sim-set full",
+    "log_sha256": "2501f3c79a59bc8ee2b120221ea4f6fefc1019e553c148e232750d18ea89b29c",
+    "compiler_identity": "Uses the proven current compiler immediately after the full affected-source rebuild; no source or timestamp changes between runs."
+  },
+  "latest_compatibility": {
+    "compiler_source_checkpoint": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
+    "models": [
+      {
+        "model": "Tests.All",
+        "mode": "compile",
+        "log_sha256": "cbb658a25999d0fa4ddd4e4c31c49ebdba53359cbe8d54602e28226152c89f97"
+      },
+      {
+        "model": "Tests.LieGroupTests.SO2",
+        "mode": "simulate t=0",
+        "log_sha256": "7f13350f181d0214ca887bbb407399bf39a15b83893ce72f69906eb641a73f64"
+      },
+      {
+        "model": "Tests.LieGroupTests.SE2",
+        "mode": "simulate t=0",
+        "log_sha256": "f5cad3365ef35cb481da73d212e15c67ecef8d934edd96e941e6a73ed5e7ccfd"
+      }
+    ]
+  },
+  "current_source_validation": {
+    "compiler_source_checkpoint": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "stacked_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+    "compile_regressions_passed": 15,
+    "runtime_regressions_passed": 3,
+    "workspace_format": "PASS",
+    "focused_build_log_sha256": "cef0dbba8587adc868279b395b61754ea28e94ce8addbd3d763434fd17afaa74",
+    "real_model_receipt": "omc-terminal-comparison-bd6-10.json",
+    "scope": "Current-base focused/source/canary/selected semantic gates only; full workspace, full MSL cohort and coverage remain unmeasured."
   }
 }
