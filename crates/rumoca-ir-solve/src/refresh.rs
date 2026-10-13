@@ -5,11 +5,15 @@
 // `refresh/exact_assignment.rs`, leaving plan identity, stages, and validation
 // here.
 mod assignment_shape;
+mod compact_owner;
 mod dependency;
 mod materialization;
 mod native_assignment;
+mod output_stores;
 mod projection;
+mod range_assignment;
 mod shared_schedule;
+mod singleton_coverage;
 mod source_outputs;
 mod staged_execution;
 
@@ -19,6 +23,7 @@ use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub use assignment_shape::cached::CanonicalAssignmentQueries;
 use assignment_shape::cached::SourceCertificateQueries;
 #[cfg(test)]
 use assignment_shape::canonical_assignment_shape_for_output;
@@ -28,17 +33,25 @@ pub use assignment_shape::{
     isolates_through_zero_coefficient, isolator_coefficient_proof, output_y_reads,
 };
 use dependency::AssignmentDependencies;
-pub use dependency::ScalarProgramYDependency;
+pub use dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
 pub use materialization::{
     ExactAssignmentProgramBuilder, IsolatedDivisor, IsolatedTerm, IsolatedTerms, IsolatedValue,
     isolated_parts, materialize_target_assignment,
 };
+pub(crate) use native_assignment::derive_projection_run;
+pub(crate) use native_assignment::projection_run_source;
 pub use native_assignment::{
-    NativeDerivedOutput, NativeEvaluationRefusal, NativeInputLane, NativeIntegerSource,
-    NativeOutputLane, NativeRefreshAssignmentRefusal, NativeRefreshAssignmentSchedule,
-    NativeRefreshAssignmentStage, NativeScheduleRefusal, NativeStageSource,
+    NativeCarriedHost, NativeCarriedLane, NativeCarriedRefusal, NativeCarriedRun,
+    NativeCarriedState, NativeDerivedOutput, NativeEvaluationRefusal, NativeInputCheck,
+    NativeInputLane, NativeInputRun, NativeInputSelection, NativeIntegerArgumentRun,
+    NativeIntegerSource, NativeOutputLane, NativeRefreshAssignmentRefusal,
+    NativeRefreshAssignmentSchedule, NativeRefreshAssignmentStage, NativeScheduleRefusal,
+    NativeStageSource,
 };
+pub use output_stores::ScalarProgramOutputStores;
+use range_assignment::ExactAssignmentStore;
 pub use shared_schedule::SharedAssignmentSchedule;
+use singleton_coverage::exact_singleton_row_owners;
 pub use staged_execution::{
     RefreshStageSchedule, StagedRefreshRefusal, StagedRefreshStep, projection_seed_rescue_targets,
 };
@@ -258,7 +271,9 @@ pub struct ExactRefreshAssignmentProgram {
     row_owners: Box<[RefreshRowOwnerId]>,
     source: RefreshScalarProgramSource,
     target_indices: Box<[usize]>,
+    source_owner: ScalarProgramBlock,
     assignment_shapes: Box<[TargetAssignmentShape]>,
+    assignment_stores: Box<[ExactAssignmentStore]>,
     assignment_y_dependencies: Box<[IndexIntervals]>,
 }
 
@@ -314,7 +329,7 @@ impl ExactRefreshAssignmentProgram {
 
     /// Materialize the scalar execution view at a final backend boundary.
     ///
-    /// The checked owner stores only canonical source identity and isolator
+    /// The checked owner retains its shared canonical source and isolator
     /// shapes. It never retains an expanded assignment operation graph.
     pub fn final_scalar_program(
         &self,
@@ -449,9 +464,25 @@ pub enum RefreshSeedRule {
     IntegratorWarmStart,
 }
 
+/// Which refresh inventory a lowering issues for a stateless model whose
+/// algebraic projection is a ranged declaration run. The compact inventory is
+/// executed only by the retained native owner and the per-scalar one by the
+/// scalar runtime; the consumer is known when the model is lowered, so the
+/// owners are issued once for it and the scalar runtime never meets compact
+/// ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RefreshProfile {
+    /// Compact owners wherever the projection admits them.
+    #[default]
+    NativeCompact,
+    /// Per-scalar owners for the scalar runtime.
+    Scalar,
+}
+
 /// Complete construction-issued continuous refresh inventory for one model.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContinuousRefreshOwners {
+    compact_projection: Option<crate::ProjectionBlocks>,
     /// The stateless native value schedule or why the problem has none;
     /// `None` until [`issue_native_assignment_schedule`] runs.
     #[serde(skip)]
@@ -611,6 +642,7 @@ impl<'de> Deserialize<'de> for AlgebraicRefreshRow {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContinuousRefreshOwnersWire {
+    compact_projection: Option<crate::ProjectionBlocks>,
     algebraic: RefreshPlan,
     derivative: RefreshPlan,
     root: RefreshPlan,
@@ -624,6 +656,14 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
         D: Deserializer<'de>,
     {
         let wire = ContinuousRefreshOwnersWire::deserialize(deserializer)?;
+        if let Some(blocks) = wire.compact_projection {
+            return Self::from_compact_wire(
+                blocks,
+                [wire.algebraic, wire.derivative, wire.root, wire.event],
+                wire.clock_events,
+            )
+            .map_err(serde::de::Error::custom);
+        }
         Self::checked(
             wire.algebraic,
             wire.derivative,
@@ -637,9 +677,33 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
 
 /// Issue the stateless native value schedule of `problem`, or the reason it has
 /// none, from its canonical rows. Construction and wire decoding both call
-/// this once; nothing re-derives or re-checks the issued schedule afterwards.
+/// this for the problem-only profile. Final FMI construction refines the
+/// schedule against its actual immutable call table and action inventory.
 pub fn issue_native_assignment_schedule(problem: &mut crate::SolveProblem) {
+    problem
+        .continuous
+        .refresh_owners
+        .rebind_compact_projection(&problem.continuous.algebraic_projection_plan.blocks);
     let issued = native_assignment::derive_for_problem(problem);
+    problem.continuous.refresh_owners.native_assignment = Some(issued);
+}
+
+pub(crate) fn issue_model_native_assignment_schedule(model: &mut crate::SolveModel) {
+    let issued = native_assignment::derive_for_model(model);
+    model.problem.continuous.refresh_owners.native_assignment = Some(issued);
+}
+
+/// Reconstruct the construction-only schedule from the finalized source pair.
+/// Retained execution still requires the final immutable model and metadata.
+pub fn issue_native_assignment_schedule_with_calls(
+    problem: &mut crate::SolveProblem,
+    calls: &crate::SolvePureCallTable,
+) {
+    problem
+        .continuous
+        .refresh_owners
+        .rebind_compact_projection(&problem.continuous.algebraic_projection_plan.blocks);
+    let issued = native_assignment::derive_for_sources(problem, calls);
     problem.continuous.refresh_owners.native_assignment = Some(issued);
 }
 
@@ -677,10 +741,11 @@ impl ContinuousRefreshOwners {
     }
 
     #[must_use]
-    pub const fn is_issued(&self) -> bool {
-        self.root_after_derivative.is_some()
-            && self.algebraic_after_derivative.is_some()
-            && self.clock_events_after_event.len() == self.clock_events.len()
+    pub fn is_issued(&self) -> bool {
+        self.compact_projection.is_some() && self.native_assignment.is_some()
+            || self.root_after_derivative.is_some()
+                && self.algebraic_after_derivative.is_some()
+                && self.clock_events_after_event.len() == self.clock_events.len()
     }
 
     fn checked(
@@ -733,6 +798,7 @@ impl ContinuousRefreshOwners {
             algebraic_remainder_owner,
         )?;
         Ok(Self {
+            compact_projection: None,
             projection_affinities: BTreeMap::new(),
             native_assignment: None,
             algebraic,
@@ -903,7 +969,11 @@ impl ContinuousRefreshOwners {
         self.projection_affinities =
             crate::affinity::projection_affinities(implicit_rhs, &self.algebraic);
         self.omit_affine_projection_seeds();
+        if self.has_compact_source_recipe() {
+            return Ok(());
+        }
         let Self {
+            compact_projection: _,
             native_assignment: _,
             projection_affinities: _,
             algebraic,
@@ -979,6 +1049,9 @@ impl ContinuousRefreshOwners {
     /// it with the authoritative root inventory it consumes.
     #[must_use]
     pub fn algebraic_exact_assignment_stages_cover(&self) -> bool {
+        if self.has_compact_source_recipe() {
+            return false;
+        }
         exact_assignment_stages_cover(
             &self.algebraic,
             &self.exact_assignment_programs,
@@ -1138,6 +1211,12 @@ fn construct_exact_assignment_program<'a>(
             .into_boxed_slice(),
         source: first.source,
         target_indices,
+        source_owner: scalar_source_owner(block, first.source)?
+            .ok_or_else(|| ContinuousRefreshConstructionError {
+                reason: "exact continuous refresh source owner is missing".to_string(),
+            })?
+            .clone(),
+        assignment_stores: range_assignment::construct(source_program, rows, &shapes),
         assignment_shapes: shapes.into_boxed_slice(),
         assignment_y_dependencies,
     })
@@ -1147,6 +1226,12 @@ fn materialize_exact_assignment_program(
     block: &ComputeBlock,
     owner: &ExactRefreshAssignmentProgram,
 ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
+    let source_owner = scalar_source_owner(block, owner.source)?;
+    if source_owner.is_none_or(|source| !source.shares_program_owner(&owner.source_owner)) {
+        return refresh_error(
+            "exact continuous refresh source no longer has its issued owner".to_string(),
+        );
+    }
     let (source_program, span) = scalar_source_program(block, owner.source)?.ok_or_else(|| {
         ContinuousRefreshConstructionError {
             reason: "exact continuous refresh source program is missing".to_string(),
@@ -1179,11 +1264,24 @@ fn materialize_exact_assignment_program(
         reason: "exact continuous refresh assignment program overflows registers".to_string(),
     };
     let mut program = ExactAssignmentProgramBuilder::new(&mut operations).ok_or_else(overflow)?;
-    for shape in &owner.assignment_shapes {
-        let (result, _) = program.materialize_guarded(shape).ok_or_else(overflow)?;
-        program
-            .push(LinearOp::StoreOutput { src: result })
-            .ok_or_else(overflow)?;
+    for store in &owner.assignment_stores {
+        match *store {
+            ExactAssignmentStore::Scalar(index) => {
+                let (src, _) = program
+                    .materialize_guarded(&owner.assignment_shapes[index])
+                    .ok_or_else(overflow)?;
+                program
+                    .push(LinearOp::StoreOutput { src })
+                    .ok_or_else(overflow)?;
+            }
+            ExactAssignmentStore::Range {
+                start,
+                stride,
+                targets,
+            } => program
+                .push_range_output(start, targets.count(), stride)
+                .ok_or_else(overflow)?,
+        }
     }
     let provenance = rumoca_core::ProvenanceSpan::new(span, "continuous refresh assignment")
         .map_err(|error| ContinuousRefreshConstructionError {
@@ -1200,10 +1298,9 @@ fn scalar_source_program(
     block: &ComputeBlock,
     source: RefreshScalarProgramSource,
 ) -> Result<Option<(&[LinearOp], rumoca_core::Span)>, ContinuousRefreshConstructionError> {
-    let node = usize::try_from(source.node).map_err(|_| refresh_source_overflow("node"))?;
     let program =
         usize::try_from(source.program).map_err(|_| refresh_source_overflow("program"))?;
-    let Some(ComputeNode::ScalarPrograms(programs)) = block.nodes.get(node) else {
+    let Some(programs) = scalar_source_owner(block, source)? else {
         return Ok(None);
     };
     let Some(operations) = programs.programs().get(program) else {
@@ -1213,6 +1310,17 @@ fn scalar_source_program(
         return refresh_error("continuous refresh source program has no provenance".to_string());
     };
     Ok(Some((operations, span)))
+}
+
+fn scalar_source_owner(
+    block: &ComputeBlock,
+    source: RefreshScalarProgramSource,
+) -> Result<Option<&ScalarProgramBlock>, ContinuousRefreshConstructionError> {
+    let node = usize::try_from(source.node).map_err(|_| refresh_source_overflow("node"))?;
+    Ok(match block.nodes.get(node) {
+        Some(ComputeNode::ScalarPrograms(programs)) => Some(programs),
+        _ => None,
+    })
 }
 
 fn exact_rows_can_commit_together(
@@ -1241,7 +1349,7 @@ fn exact_rows_can_commit_together(
         };
         // The footprint's intervals are met with the targets, so the cost is
         // the targets inside them, not the footprint's width.
-        let conflicts = match dependencies.footprint(shape.value_registers()) {
+        let conflicts = match dependencies.footprint_ranges(shape.value_register_ranges()) {
             Some(footprint) => footprint.intervals().any(|interval| {
                 owners_by_target
                     .range(interval)
@@ -1261,44 +1369,15 @@ fn advance_output_cursor(
     node_index: usize,
     output_cursor: usize,
 ) -> Result<usize, ContinuousRefreshConstructionError> {
-    match node {
-        ComputeNode::ScalarPrograms(programs) => {
-            let outputs = programs
-                .compute_block_output_indices(
-                    "continuous.refresh_owners",
-                    node_index,
-                    output_cursor,
-                )
-                .map_err(|error| ContinuousRefreshConstructionError {
-                    reason: error.to_string(),
-                })?;
-            let Some(last) = outputs.into_iter().max() else {
-                return Ok(output_cursor);
-            };
-            let end = last
-                .checked_add(1)
-                .ok_or_else(|| refresh_source_overflow("scalar output range"))?;
-            Ok(output_cursor.max(end))
-        }
-        ComputeNode::MatMul { m, n, .. } => m
-            .checked_mul(*n)
-            .and_then(|count| output_cursor.checked_add(count))
-            .ok_or_else(|| refresh_source_overflow("matrix output range")),
-        ComputeNode::LinSolve { n, .. } => output_cursor
-            .checked_add(*n)
-            .ok_or_else(|| refresh_source_overflow("linear-solve output range")),
-        ComputeNode::Map {
-            domain, output_map, ..
-        }
-        | ComputeNode::AffineStencil {
-            domain, output_map, ..
-        } => output_map
-            .output_count(domain)
-            .map(|count| output_cursor.max(count))
-            .map_err(|error| ContinuousRefreshConstructionError {
-                reason: format!("continuous refresh tensor output map is invalid: {error:?}"),
-            }),
-    }
+    crate::tensor::advance_compute_output_cursor(
+        "continuous.refresh_owners",
+        node_index,
+        node,
+        output_cursor,
+    )
+    .map_err(|error| ContinuousRefreshConstructionError {
+        reason: error.to_string(),
+    })
 }
 
 fn refresh_source_overflow(part: &str) -> ContinuousRefreshConstructionError {
@@ -1415,26 +1494,6 @@ fn exact_assignment_stage_coverage(
     Some(coverage.covered)
 }
 
-fn exact_singleton_row_owners(
-    plan: &RefreshPlan,
-) -> Option<std::collections::BTreeSet<RefreshRowOwnerId>> {
-    let mut owners = std::collections::BTreeSet::new();
-    for block in &plan.simultaneous_plan.blocks {
-        let ([equation], [target]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
-            return None;
-        };
-        let mut matches = plan
-            .rows
-            .iter()
-            .filter(|row| row.equation_index == *equation && row.target_index == *target);
-        let row = matches.next()?;
-        if matches.next().is_some() || !owners.insert(row.owner_id) {
-            return None;
-        }
-    }
-    (owners.len() == plan.rows.len()).then_some(owners)
-}
-
 struct ExactAssignmentCoverage<'a> {
     plan: &'a RefreshPlan,
     programs: &'a [ExactRefreshAssignmentProgram],
@@ -1454,6 +1513,7 @@ impl<'a> ExactAssignmentCoverage<'a> {
         let target_inventory = plan
             .simultaneous_plan
             .blocks
+            .scalar_blocks()
             .iter()
             .flat_map(|block| block.y_indices.iter().copied())
             .collect();
@@ -1484,7 +1544,7 @@ impl<'a> ExactAssignmentCoverage<'a> {
             .all(|(sequence, selection)| self.mark_selection(sequence, selection)),
             RefreshStage::ProjectionBlock { plan, .. } => plan
                 .blocks
-                .iter()
+                .explicit_blocks()
                 .flat_map(|block| block.y_indices.iter().copied())
                 .all(|target| {
                     self.target_inventory.contains(&target) && self.available.insert(target)
@@ -1753,8 +1813,13 @@ fn validate_refresh_plan(
                         "{label} refresh stage refers to unowned BLT block {block_index}"
                     ));
                 };
-                if stage_plan.blocks.as_slice()
-                    != std::slice::from_ref(&plan.simultaneous_plan.blocks[local])
+                let Some(block) = plan.simultaneous_plan.blocks.explicit_block_at(local) else {
+                    return refresh_error(format!(
+                        "{label} scalar projection stage refers to a compact singleton run"
+                    ));
+                };
+                if stage_plan.blocks.stages()
+                    != std::slice::from_ref(&crate::ProjectionStage::Explicit(block.clone()))
                 {
                     return refresh_error(format!(
                         "{label} refresh stage does not replay canonical BLT block {block_index}"

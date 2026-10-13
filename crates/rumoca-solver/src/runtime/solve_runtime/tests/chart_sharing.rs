@@ -41,7 +41,7 @@ impl Interpreted {
         (y, p, t): (&[f64], &[f64], f64),
         seed: Option<&[f64]>,
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         let context = RowEvalContext {
             seed,
@@ -63,7 +63,7 @@ impl CompiledSolveExpression for Interpreted {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         let mut values = vec![0.0; self.block.len()];
         self.eval((y, p, t), None, &mut values)?;
         out.clear();
@@ -78,7 +78,7 @@ impl CompiledSolveExpression for Interpreted {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.eval((y, p, t), None, out)
     }
 }
@@ -92,7 +92,7 @@ impl CompiledSolveJacobianExpression for Interpreted {
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.eval((y, p, t), Some(seed), out)
     }
 }
@@ -108,7 +108,7 @@ impl CompiledSolveProjectionJacobian for BlockJacobian {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         out.fill(self.0);
         Ok(())
     }
@@ -194,11 +194,11 @@ fn offset_model(slopes: [f64; 3], offsets: [f64; 3]) -> solve::SolveModel {
     });
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                vec!["a".into(), "b".into(), "c".into()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["a".into(), "b".into(), "c".into()],
-                    ..Default::default()
-                },
                 algebraic_scalar_count: 3,
                 ..Default::default()
             },
@@ -209,12 +209,13 @@ fn offset_model(slopes: [f64; 3], offsets: [f64; 3]) -> solve::SolveModel {
                 )),
                 implicit_row_targets: (0..3)
                     .map(|index| Some(solve::scalar_slot_y(index)))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 ..Default::default()
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 3],
+        initial_y: vec![0.0; 3].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(&mut model, tangents, "chart_sharing_jvp.mo");
@@ -234,6 +235,55 @@ fn calls_of(list: &RefCell<Vec<Recorded>>, programs: usize) -> Rc<Cell<usize>> {
         .expect("the block was compiled")
 }
 
+/// Blocks that read no replaced row share the primary's prepared Jacobian by
+/// identity; the replaced row's block has none.
+fn assert_unreplaced_block_jacobians_are_shared(
+    alternate: &SolveRuntime,
+    primary: &SolveRuntime,
+    y: &[f64],
+) {
+    let rows = |runtime: &SolveRuntime| {
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .continuous_structural
+            .algebraic_projection()
+            .iter()
+            .map(|structure| structure.jacobian_application().map(|a| a.rows().to_vec()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(alternate), rows(primary));
+    for (index, rows) in rows(alternate).iter().enumerate() {
+        let shared = alternate
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_algebraic_jacobians[index]
+            .as_ref();
+        match rows {
+            Some(rows) if !rows.contains(&1) => {
+                let shared = shared.unwrap();
+                assert!(Rc::ptr_eq(
+                    shared,
+                    primary
+                        .scalar_execution()
+                        .unwrap()
+                        .scalar
+                        .compiled_algebraic_jacobians[index]
+                        .as_ref()
+                        .unwrap()
+                ));
+                let mut entry = [f64::NAN];
+                shared.call(y, &[], 0.0, &[], &mut entry).unwrap();
+                assert_eq!(entry, [index as f64]);
+            }
+            _ => assert!(shared.is_none()),
+        }
+    }
+    assert!(rows(alternate).iter().flatten().count() >= 2);
+}
+
 #[test]
 fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     let backend = Rc::new(RecordingBackend::default());
@@ -243,10 +293,15 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     )
     .unwrap();
     // The primary's prepared block Jacobians, one per projection block.
-    primary.compiled_algebraic_jacobians =
-        (0..primary.continuous_structural.algebraic_projection().len())
-            .map(|index| Some(Rc::new(BlockJacobian(index as f64)) as Rc<_>))
-            .collect();
+    primary.scalar_fixture_mut().compiled_algebraic_jacobians = (0..primary
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .continuous_structural
+        .algebraic_projection()
+        .len())
+        .map(|index| Some(Rc::new(BlockJacobian(index as f64)) as Rc<_>))
+        .collect();
     let primary_rhs_calls = calls_of(&backend.expressions, 3);
     let primary_jvp_calls = calls_of(&backend.jacobians, 3);
     backend.expressions.borrow_mut().clear();
@@ -275,7 +330,13 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     let replacement_calls = backend.expressions.borrow()[0].calls.clone();
 
     // Unreplaced programs execute the primary's compiled instance.
-    let native = alternate.compiled_implicit_rhs.as_ref().unwrap();
+    let native = alternate
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .compiled_implicit_rhs
+        .as_ref()
+        .unwrap();
     let (y, mut out) = ([1.0, 2.0, 3.0], Vec::new());
     assert!(
         native
@@ -297,6 +358,9 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     // The whole Jacobian runs the primary's block, then overwrites the
     // replaced row with the replacement's tangent.
     let jacobian = alternate
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .compiled_implicit_projection_jacobian_v
         .as_ref()
         .unwrap();
@@ -307,36 +371,7 @@ fn an_alternate_references_the_primary_programs_except_the_replaced_rows() {
     assert_eq!(tangent, [1.0, 2.0, 1.0]);
     assert_eq!(primary_jvp_calls.get(), 1);
 
-    // The prepared block Jacobians of blocks that read no replaced row are
-    // the primary's by identity; the replaced row's block has none.
-    let rows = |runtime: &SolveRuntime| {
-        runtime
-            .continuous_structural
-            .algebraic_projection()
-            .iter()
-            .map(|structure| structure.jacobian_application().map(|a| a.rows().to_vec()))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(rows(&alternate), rows(&primary));
-    for (index, rows) in rows(&alternate).iter().enumerate() {
-        let shared = alternate.compiled_algebraic_jacobians[index].as_ref();
-        match rows {
-            Some(rows) if !rows.contains(&1) => {
-                let shared = shared.unwrap();
-                assert!(Rc::ptr_eq(
-                    shared,
-                    primary.compiled_algebraic_jacobians[index]
-                        .as_ref()
-                        .unwrap()
-                ));
-                let mut entry = [f64::NAN];
-                shared.call(&y, &[], 0.0, &[], &mut entry).unwrap();
-                assert_eq!(entry, [index as f64]);
-            }
-            _ => assert!(shared.is_none()),
-        }
-    }
-    assert!(rows(&alternate).iter().flatten().count() >= 2);
+    assert_unreplaced_block_jacobians_are_shared(&alternate, &primary, &y);
 
     // The fixture declines to compile a refresh assignment schedule, so the
     // alternate refreshes through the interpreter onto its own rows.

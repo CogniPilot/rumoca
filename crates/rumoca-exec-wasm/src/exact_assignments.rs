@@ -11,7 +11,7 @@ pub struct CompiledExactAssignmentWasm {
     artifact: crate::CompiledNativeCallProgramWasm,
     y_count: usize,
     p_count: usize,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
 }
 
@@ -50,37 +50,21 @@ impl CompiledExactAssignmentWasm {
                 "exact schedule input lengths differ from issued layout".into(),
             ));
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let status = self.runtime.call_assignments(y, p, time, scratch)?;
             if status != 0 {
-                return Err(self.status_error(status));
+                return Err(self.artifact.status_error(status));
             }
             Ok(())
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
             let _ = (y, p, time, scratch);
             Err(WasmCompileError::Input(
-                "compiled WASM schedules execute only on wasm32".into(),
+                "compiled WASM schedules have no admitted engine on this target".into(),
             ))
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn status_error(&self, status: u32) -> WasmCompileError {
-        // Map by exact issued fault status, not operation names or source text.
-        if let Some(fault) = self.faults().iter().find(|fault| fault.status == status) {
-            return WasmCompileError::Backend(format!("exact assignment source fault: {fault:?}"));
-        }
-        if let Some(fault) = self
-            .gather_faults()
-            .iter()
-            .find(|fault| fault.status == status)
-        {
-            return WasmCompileError::Backend(format!("exact assignment source fault: {fault:?}"));
-        }
-        WasmCompileError::Backend(format!("exact assignment entry failure status {status}"))
     }
 }
 
@@ -94,7 +78,7 @@ pub fn compile_exact_assignment_schedule_wasm(
     let artifact =
         crate::emit::emit_exact_assignment_module(source, owners, schedule, layout, table)
             .map_err(WasmCompileError::Backend)?;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let runtime = crate::WasmKernelRuntime::new_with_arena(
         artifact.module_bytes(),
         "eval_assignments",
@@ -104,7 +88,7 @@ pub fn compile_exact_assignment_schedule_wasm(
         artifact,
         y_count: layout.y_scalars(),
         p_count: layout.p_scalars(),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         runtime,
     })
 }

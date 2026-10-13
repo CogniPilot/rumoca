@@ -56,3 +56,77 @@ fn withheld_charts_leave_the_set_and_later_exchanges_renumber() {
         ]
     );
 }
+
+fn run(
+    index: usize,
+    role: solve::SolveVariableStorageRole,
+    value_kind: solve::SolveVariableValueKind,
+) -> solve::SolveVariableStorageRun {
+    solve::SolveVariableStorageRun {
+        base: solve::scalar_slot_y(index),
+        scalar_count: 1,
+        role,
+        value_kind,
+    }
+}
+
+fn solve_layout(
+    runs: Vec<solve::SolveVariableStorageRun>,
+    states: usize,
+    algebraics: usize,
+) -> solve::SolveLayout {
+    solve::SolveLayout {
+        variable_declarations: runs
+            .iter()
+            .map(|run| solve::SolveVariableDeclaration::new(run.role, run.value_kind))
+            .collect(),
+        variable_storage_runs: runs,
+        state_scalar_count: states,
+        algebraic_scalar_count: algebraics,
+        ..Default::default()
+    }
+}
+
+fn var_layout(shape_start: usize) -> solve::VarLayout {
+    let source = rumoca_core::SourceId::from_source_name("chart.mo");
+    let name = rumoca_core::VarName::new("$state_coordinates");
+    solve::VarLayout::from_interned_parts_with_shapes_and_spans(
+        [(name.clone(), solve::scalar_slot_y(0))].into(),
+        [(name.clone(), vec![1])].into(),
+        [(
+            name,
+            rumoca_core::Span::from_offsets(source, shape_start, shape_start + 1),
+        )]
+        .into(),
+        1,
+        0,
+    )
+    .unwrap()
+}
+
+fn admitted(
+    (a, a_start): (&solve::SolveLayout, usize),
+    (b, b_start): (&solve::SolveLayout, usize),
+) -> bool {
+    crate::same_exchange_layout((&var_layout(a_start), a), (&var_layout(b_start), b))
+}
+
+/// Two charts of one exchange share their addressing and storage, whatever
+/// source span a synthetic shape was declared at; a moved slot, another value
+/// kind, another role or another split is a different layout.
+#[test]
+fn alternate_chart_layout_matches_by_addressing_not_declaration_span() {
+    use solve::SolveVariableStorageRole::{Algebraic, State};
+    use solve::SolveVariableValueKind::{Integer, Real};
+    let primary = solve_layout(vec![run(0, State, Real), run(1, Algebraic, Real)], 1, 1);
+    let same = solve_layout(vec![run(0, State, Real), run(1, Algebraic, Real)], 1, 1);
+    assert!(admitted((&primary, 25), (&same, 46)));
+    let moved = solve_layout(vec![run(1, State, Real), run(0, Algebraic, Real)], 1, 1);
+    assert!(!admitted((&primary, 25), (&moved, 25)));
+    let retyped = solve_layout(vec![run(0, State, Integer), run(1, Algebraic, Real)], 1, 1);
+    assert!(!admitted((&primary, 25), (&retyped, 25)));
+    let rerolled = solve_layout(vec![run(0, Algebraic, Real), run(1, State, Real)], 1, 1);
+    assert!(!admitted((&primary, 25), (&rerolled, 25)));
+    let split = solve_layout(vec![run(0, State, Real), run(1, Algebraic, Real)], 2, 0);
+    assert!(!admitted((&primary, 25), (&split, 25)));
+}

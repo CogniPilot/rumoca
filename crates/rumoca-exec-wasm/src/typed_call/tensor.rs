@@ -1,6 +1,7 @@
-//! Source-issued tensor construction and Real scaling in private SSA storage.
-use super::TypedCallCompileError;
+//! Source-issued tensor construction and typed scaling in private SSA storage.
 use super::emit::{CELL, Emitter};
+use super::numbers::Operand;
+use super::{TypedCallCompileError, TypedCallFaultKind};
 use rumoca_ir_solve as solve;
 use wasm_encoder::Instruction as I;
 
@@ -16,10 +17,13 @@ impl Emitter<'_> {
                 aggregate,
                 scalar,
             } => {
-                if !matches!(self.scalar(*scalar), solve::SolveScalarType::Real { .. }) {
-                    return Err(self.unsupported(index, "integer scale", operation.provenance()));
-                }
-                self.scale(*destination, *aggregate, *scalar);
+                let status = self.fault(
+                    Some(index),
+                    "scale",
+                    TypedCallFaultKind::IntegerArithmetic,
+                    operation.provenance(),
+                );
+                self.scale(*destination, *aggregate, *scalar, status);
             }
             solve::SolveOperation::Identity { destination } => self.identity(*destination),
             _ => unreachable!("checked tensor dispatch"),
@@ -32,18 +36,26 @@ impl Emitter<'_> {
         destination: solve::SolveRegisterId,
         aggregate: solve::SolveRegisterId,
         scalar: solve::SolveRegisterId,
+        status: u32,
     ) {
+        let element = self.scalar(aggregate);
+        let real = matches!(element, solve::SolveScalarType::Real { .. });
         let (destination, aggregate, scalar) =
             (self.reg(destination), self.reg(aggregate), self.reg(scalar));
-        self.address(scalar);
-        self.push(I::F64Load(CELL));
-        self.push(I::LocalSet(8));
         self.cells(destination.bytes / 8, |e| {
             e.cell_address(destination);
-            e.load_cell(aggregate, true);
-            e.push(I::LocalGet(8));
-            e.push(I::F64Mul);
-            e.push(I::F64Store(CELL));
+            e.binary(
+                solve::SolveBinaryOperator::Multiply,
+                element,
+                (Operand::Cells(aggregate), Operand::Fixed(scalar)),
+                false,
+                status,
+            );
+            e.push(if real {
+                I::F64Store(CELL)
+            } else {
+                I::I64Store(CELL)
+            });
         });
     }
 

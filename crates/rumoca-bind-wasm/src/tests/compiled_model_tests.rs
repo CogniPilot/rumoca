@@ -57,7 +57,11 @@ template = "model.jinja"
             .unwrap();
         assert_eq!(
             files[0].content,
-            if ir == "dae" { "2" } else { "[1.0,0.0]" }
+            if ir == "dae" {
+                "2"
+            } else {
+                r#"{"count":2,"runs":[{"bits":4607182418800017408,"count":1,"kind":"repeat","start":0},{"bits":0,"count":1,"kind":"repeat","start":1}]}"#
+            }
         );
         assert_eq!(model.representation_json("solve").unwrap(), solve_before);
     }
@@ -177,7 +181,12 @@ fn compiled_model_exposes_directional_function_owners_and_full_jacobian_plans() 
         )
         .unwrap();
     assert!(files[0].content.starts_with("1|1|"), "{}", files[0].content);
-    assert!(files[0].content.contains("PureCallDirectional;"));
+    assert!(files[0].content.contains("Binary;"), "{}", files[0].content);
+    assert!(
+        !files[0].content.contains("PureCall"),
+        "{}",
+        files[0].content
+    );
     assert!(files[0].content.contains("LoadSeed;"));
 }
 
@@ -465,7 +474,7 @@ fn compiled_model_checks_undefined_output_on_loop_return() {
                     assert!(
                         error
                             .to_string()
-                            .contains("the executed path never assigned it"),
+                            .contains("`index` is used without a value"),
                         "{error}"
                     );
                 }

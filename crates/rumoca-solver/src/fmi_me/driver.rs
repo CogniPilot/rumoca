@@ -23,6 +23,28 @@ fn root_location_tolerance(
     )
 }
 
+/// No-trace FMI session options from the actual entered instance request.
+pub fn fmi_session_options(
+    plan: &rumoca_ir_solve::fmi::RootLocationPlan,
+    config: &super::MeInstanceConfig,
+) -> Result<MeSessionOptions, MeSessionError> {
+    let start_time = config.start_time();
+    let stop_time = config.stop_time();
+    let width = stop_time.map_or(0.0, |stop| stop - start_time);
+    let scan_resolution = plan.scan_resolution(width);
+    MeSessionOptions::new(MeSessionOptionsInput {
+        start_time,
+        stop_time,
+        relative_tolerance: config.relative_tolerance(),
+        absolute_tolerance: config.relative_tolerance(),
+        output_interval: scan_resolution,
+        root_scan_resolution: scan_resolution,
+        root_location_tolerance: root_location_tolerance(plan, start_time, scan_resolution),
+        max_wall_seconds: None,
+        records_trace: false,
+    })
+}
+
 /// The checked session options a defined experiment implies.
 pub fn batch_session_options(
     plan: &rumoca_ir_solve::fmi::RootLocationPlan,

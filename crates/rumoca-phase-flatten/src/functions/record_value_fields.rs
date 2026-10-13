@@ -44,8 +44,8 @@ use crate::function_lowering::{expand_record_arg, record_field_column_param};
 use paths::{BodyPaths, SplitRewriter, WholeWriteExpander, expand_array_copies};
 use rumoca_core::{ComponentRefPart, ComponentReference, Expression, Span, Statement};
 
-/// Rewrite every function whose record values are assigned field by field
-/// inside nested statements.
+/// Rewrite field-only protected locals and record values assigned field by
+/// field inside nested statements.
 pub(crate) fn split_branch_assigned_records(flat: &mut flat::Model) -> Result<(), FlattenError> {
     let constructors = flat
         .functions
@@ -221,10 +221,14 @@ fn branch_assigned_records(
             let name = value.name.clone();
             let path = vec![name.clone()];
             let root = paths.uses(&path);
+            let field_only_local =
+                !is_output && root.written_below && !root.written_whole && !root.read_whole(false);
             // A whole write defines every field; a whole read reassembles the
             // value from its field locals through the constructor.
-            (root.written_whole || assigns_every_field(&function.body, &name, &constructor.inputs))
-                .then_some(())?;
+            (field_only_local
+                || root.written_whole
+                || assigns_every_field(&function.body, &name, &constructor.inputs))
+            .then_some(())?;
             let mut record = SplitRecord {
                 def_id: value.def_id.filter(|id| id.index() != 0)?,
                 fields: split_fields(
@@ -246,7 +250,8 @@ fn branch_assigned_records(
             collect_nodes(&record.fields, &mut |field| {
                 mixed |= field.written_whole_and_by_field
             });
-            (mixed
+            (field_only_local
+                || mixed
                 || (root.written_whole && root.written_below)
                 || root.element_field_write
                 || paths.overwrites_below(&record.name)
@@ -430,11 +435,13 @@ fn contains_return(statements: &[Statement]) -> bool {
     })
 }
 
-/// Whether a field of `record` is assigned by a statement nested in a
+/// Whether a field write selects a conditional value or occurs inside a
 /// conditional or loop.
 fn assigns_field_in_nested_statement(statements: &[Statement], record: &str, nested: bool) -> bool {
     statements.iter().any(|statement| match statement {
-        Statement::Assignment { comp, .. } => nested && is_field_of(comp, record),
+        Statement::Assignment { comp, value, .. } => {
+            (nested || matches!(value, Expression::If { .. })) && is_field_of(comp, record)
+        }
         Statement::FunctionCall { outputs, .. } => {
             nested
                 && outputs

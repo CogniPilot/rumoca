@@ -48,6 +48,11 @@ impl PureCallInvocation<'_> {
 /// must preserve its typed arithmetic, lazy regions, output order, and errors.
 /// Inputs and outputs are invocation-local ABI payloads, never retained values.
 pub trait PureCallExecution {
+    /// Whether this execution owns the form `invocation` names, as admitted
+    /// when it was built. A form it does not own runs in the typed interpreter,
+    /// and `call` is never made for it.
+    fn executes(&self, invocation: PureCallInvocation<'_>) -> bool;
+
     fn call(
         &self,
         invocation: PureCallInvocation<'_>,

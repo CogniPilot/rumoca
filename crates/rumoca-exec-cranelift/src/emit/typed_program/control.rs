@@ -1,11 +1,20 @@
 use super::{
     CompileError, ProgramLayout, ProgramLowerer, StorageBase, ValueLocation, checked_cells,
-    create_tape,
+    create_tape, observation::ObservationLowering,
 };
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve as solve;
+
+struct FoldFrames {
+    carried_cells: u32,
+    capture_cells: u32,
+    first: Value,
+    second: Value,
+    predicate_input: Option<Value>,
+    predicate: Option<Value>,
+}
 
 impl ProgramLowerer<'_, '_> {
     pub(super) fn lower_conditional(
@@ -52,31 +61,27 @@ impl ProgramLowerer<'_, '_> {
         domain: &StructuredIndexDomain,
         initial: &[solve::SolveRegisterId],
         captures: &[solve::SolveRegisterId],
+        state_captures: &[solve::SolveAssignedStateId],
         destinations: &[solve::SolveRegisterId],
         (transition, continuation): (
             &solve::SolveProgramRegion,
             Option<&solve::SolveProgramRegion>,
         ),
     ) -> Result<(), CompileError> {
-        let carried_cells = self.register_cell_count(initial, "typed fold carried tuple")?;
-        let capture_cells = self.register_cell_count(captures, "typed fold captures")?;
-        let binder_cells = u32::try_from(domain.binders.len())
-            .map_err(|_| CompileError::Backend("typed fold binder count overflows".into()))?;
-        let input_cells = checked_cells(carried_cells, capture_cells, "typed fold input")?;
-        let input_cells = checked_cells(input_cells, binder_cells, "typed fold binders")?;
-        // The complete transition input is a private fold-owned frame. Two
-        // frames carry the tuple by swapping roles after each transition;
-        // compact tensors therefore cross the loop backedge by ownership, not
-        // by an elementwise copy. Captures are immutable and initialized once
-        // in both frames. The transition writes only the carried prefix.
-        let first = create_tape(self.builder, self.pointer_type, input_cells)?;
-        let second = create_tape(self.builder, self.pointer_type, input_cells)?;
-        self.pack_registers(initial, first)?;
-        self.pack_registers_at(captures, first, carried_cells)?;
-        self.pack_registers_at(captures, second, carried_cells)?;
-        let predicate = continuation
-            .map(|_| create_tape(self.builder, self.pointer_type, 1))
-            .transpose()?;
+        let FoldFrames {
+            carried_cells,
+            capture_cells,
+            first,
+            second,
+            predicate_input,
+            predicate,
+        } = self.prepare_fold_frames(
+            domain,
+            initial,
+            captures,
+            state_captures,
+            (transition, continuation),
+        )?;
 
         let count = domain
             .scalar_count()
@@ -89,6 +94,8 @@ impl ProgramLowerer<'_, '_> {
             .map_err(|error| CompileError::Backend(error.to_string()))?;
         let count = i64::try_from(count)
             .map_err(|_| CompileError::Backend("typed fold domain exceeds i64".into()))?;
+        let binder_cells = u32::try_from(domain.binders.len())
+            .map_err(|_| CompileError::Backend("typed fold binder count overflows".into()))?;
         let header = self.builder.create_block();
         let body = self.builder.create_block();
         let exit = self.builder.create_block();
@@ -115,10 +122,30 @@ impl ProgramLowerer<'_, '_> {
 
         self.builder.switch_to_block(body);
         self.builder.seal_block(body);
-        // A bounded `while` fold tests its predicate on the current tuple
-        // before each pass and leaves with that tuple when it is false.
+        self.store_domain_binders(
+            domain,
+            &extents,
+            &strides,
+            ordinal,
+            current,
+            carried_cells + capture_cells,
+        )?;
+        // An early-exit fold tests its predicate on the current tuple and the
+        // binders of the pass about to run, and leaves with that tuple when it
+        // is false.
         if let (Some(continuation), Some(predicate)) = (continuation, predicate) {
-            self.lower_region(continuation, current, predicate)?;
+            let predicate_source = if let Some(frame) = predicate_input {
+                let ordinary_cells = checked_cells(
+                    carried_cells + capture_cells,
+                    binder_cells,
+                    "assigned predicate input copy",
+                )?;
+                self.copy_frame_cells(current, frame, ordinary_cells)?;
+                frame
+            } else {
+                current
+            };
+            self.lower_region(continuation, predicate_source, predicate)?;
             let value = self.builder.ins().load(
                 types::I64,
                 cranelift_codegen::ir::MemFlags::trusted(),
@@ -133,14 +160,6 @@ impl ProgramLowerer<'_, '_> {
             self.builder.switch_to_block(pass);
             self.builder.seal_block(pass);
         }
-        self.store_domain_binders(
-            domain,
-            &extents,
-            &strides,
-            ordinal,
-            current,
-            carried_cells + capture_cells,
-        )?;
         self.lower_region(transition, current, next_frame)?;
         let next = self.builder.ins().iadd_imm(ordinal, 1);
         self.builder
@@ -152,6 +171,78 @@ impl ProgramLowerer<'_, '_> {
         self.builder.seal_block(exit);
         let result = self.builder.block_params(exit)[0];
         self.unpack_registers(result, destinations)
+    }
+
+    fn prepare_fold_frames(
+        &mut self,
+        domain: &StructuredIndexDomain,
+        initial: &[solve::SolveRegisterId],
+        captures: &[solve::SolveRegisterId],
+        state_captures: &[solve::SolveAssignedStateId],
+        (transition, continuation): (
+            &solve::SolveProgramRegion,
+            Option<&solve::SolveProgramRegion>,
+        ),
+    ) -> Result<FoldFrames, CompileError> {
+        let carried_cells = self.register_cell_count(initial, "typed fold carried tuple")?;
+        let capture_cells = self.register_cell_count(captures, "typed fold captures")?;
+        let binder_cells = u32::try_from(domain.binders.len())
+            .map_err(|_| CompileError::Backend("typed fold binder count overflows".into()))?;
+        let input_cells = checked_cells(carried_cells, capture_cells, "typed fold input")?;
+        let input_cells = checked_cells(input_cells, binder_cells, "typed fold binders")?;
+        // The complete transition input is a private fold-owned frame. Two
+        // frames carry the tuple by swapping roles after each transition;
+        // compact tensors therefore cross the loop backedge by ownership, not
+        // by an elementwise copy. Captures are immutable and initialized once
+        // in both frames. The transition writes only the carried prefix.
+        let ordinary_input_cells = input_cells;
+        let input_cells =
+            self.assigned_input_cells(transition.body().assigned_state_inputs(), input_cells)?;
+        let first = create_tape(self.builder, self.pointer_type, input_cells)?;
+        let second = create_tape(self.builder, self.pointer_type, input_cells)?;
+        self.pack_registers(initial, first)?;
+        self.pack_registers_at(captures, first, carried_cells)?;
+        self.pack_registers_at(captures, second, carried_cells)?;
+        self.pack_assigned_inputs(
+            state_captures,
+            transition.body().assigned_state_inputs(),
+            first,
+            ordinary_input_cells,
+        )?;
+        self.pack_assigned_inputs(
+            state_captures,
+            transition.body().assigned_state_inputs(),
+            second,
+            ordinary_input_cells,
+        )?;
+        let predicate_input =
+            if let Some(continuation) = continuation.filter(|_| !state_captures.is_empty()) {
+                let ordinary = ordinary_input_cells;
+                let cells = self
+                    .assigned_input_cells(continuation.body().assigned_state_inputs(), ordinary)?;
+                let frame = create_tape(self.builder, self.pointer_type, cells)?;
+                self.pack_assigned_inputs(
+                    state_captures,
+                    continuation.body().assigned_state_inputs(),
+                    frame,
+                    ordinary,
+                )?;
+                Some(frame)
+            } else {
+                None
+            };
+        let predicate = continuation
+            .map(|_| create_tape(self.builder, self.pointer_type, 1))
+            .transpose()?;
+
+        Ok(FoldFrames {
+            carried_cells,
+            capture_cells,
+            first,
+            second,
+            predicate_input,
+            predicate,
+        })
     }
 
     pub(super) fn lower_map(
@@ -212,7 +303,7 @@ impl ProgramLowerer<'_, '_> {
         Ok(())
     }
 
-    fn lower_region(
+    pub(super) fn lower_region(
         &mut self,
         region: &solve::SolveProgramRegion,
         input: Value,
@@ -229,9 +320,11 @@ impl ProgramLowerer<'_, '_> {
             output,
             tape,
             layout: &layout,
+            outputs: self.outputs,
             functions: self.functions,
             recursive_calls: self.recursive_calls,
             flags: self.flags,
+            observation: self.observation.as_ref().map(ObservationLowering::nested),
         };
         nested.lower(region.body())
     }
@@ -262,7 +355,7 @@ impl ProgramLowerer<'_, '_> {
         Ok(tape)
     }
 
-    fn pack_registers(
+    pub(super) fn pack_registers(
         &mut self,
         registers: &[solve::SolveRegisterId],
         pointer: Value,

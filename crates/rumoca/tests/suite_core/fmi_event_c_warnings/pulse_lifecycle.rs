@@ -57,7 +57,7 @@ fn check_pulse_lifecycle(target: &str) {
         std::fs::read_to_string(sources.parent().unwrap().join("modelDescription.xml")).unwrap();
     let (identity_attribute, variable_tag, abi) = match target {
         "fmi2" => (&b"guid"[..], &b"ScalarVariable"[..], FMI2_ABI),
-        _ => (&b"instantiationToken"[..], &b"Int32"[..], FMI3_ABI),
+        _ => (&b"instantiationToken"[..], &b"Int64"[..], FMI3_ABI),
     };
     let guid = xml_attribute(&xml, b"fmiModelDescription", identity_attribute, None);
     let identifier = xml_attribute(&xml, b"CoSimulation", b"modelIdentifier", None);
@@ -123,7 +123,7 @@ int main(void) {
         double t = (double)step / 10.0;
         CHECK(pulse_step(c, t));
         CHECK(pulse_read(c, references, values));
-        printf("%.17g,%d,%d,%d\n", t + 0.1, values[0], values[1], values[2]);
+        printf("%.17g,%lld,%lld,%lld\n", t + 0.1, (long long)values[0], (long long)values[1], (long long)values[2]);
         CHECK(values[2] == step + 1);
         CHECK(values[0] == (step >= 4 ? 1 : 0));
         CHECK(values[1] == (step >= 4 ? 1 : 0));
@@ -161,7 +161,7 @@ const FMI3_ABI: &str = r#"
 #include "fmi3Functions.h"
 typedef fmi3Instance PulseInstance;
 typedef fmi3ValueReference PulseReference;
-typedef fmi3Int32 PulseInteger;
+typedef fmi3Int64 PulseInteger;
 static PulseInstance pulse_instantiate(const char* identity) {
     return fmi3InstantiateCoSimulation("pulse", identity, NULL, 0, 0, 0, 0, NULL, 0, NULL, NULL, NULL);
 }
@@ -170,7 +170,7 @@ static int pulse_initialize(PulseInstance c) {
         fmi3ExitInitializationMode(c) == fmi3OK;
 }
 static int pulse_read(PulseInstance c, const PulseReference* references, PulseInteger* values) {
-    return fmi3GetInt32(c, references, 3, values, 3) == fmi3OK;
+    return fmi3GetInt64(c, references, 3, values, 3) == fmi3OK;
 }
 static int pulse_step(PulseInstance c, double time) {
     fmi3Boolean event_needed, terminate, early_return;

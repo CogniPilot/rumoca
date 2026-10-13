@@ -1,5 +1,5 @@
 {
-  "schema_version": 78,
+  "schema_version": 88,
   "layout": {
     "bindings": {
       "x": {
@@ -81,29 +81,6 @@
     "p_scalars": 2
   },
   "solve_layout": {
-    "solver_maps": {
-      "names": [
-        "x",
-        "y",
-        "hold.y"
-      ],
-      "name_to_idx": {
-        "x": 0,
-        "y": 1,
-        "hold.y": 2
-      },
-      "base_to_indices": {
-        "x": [
-          0
-        ],
-        "y": [
-          1
-        ],
-        "hold.y": [
-          2
-        ]
-      }
-    },
     "variable_storage_runs": [],
     "variable_declarations": [],
     "state_scalar_count": 1,
@@ -175,31 +152,37 @@
                 "end": 1
               }
             ],
-            "output_indices": [
-              0
-            ]
+            "output_placements": {
+              "Dense": {
+                "count": 1
+              }
+            }
           }
         }
       ]
     },
-    "implicit_row_targets": [
-      {
-        "Y": {
-          "index": 1,
-          "byte_offset": 8
+    "implicit_row_targets": {
+      "Explicit": [
+        {
+          "Y": {
+            "index": 1,
+            "byte_offset": 8
+          }
         }
-      }
-    ],
+      ]
+    },
     "algebraic_projection_plan": {
       "blocks": [
         {
-          "rows": [
-            0
-          ],
-          "y_indices": [
-            1
-          ],
-          "tearing": null
+          "Explicit": {
+            "rows": [
+              0
+            ],
+            "y_indices": [
+              1
+            ],
+            "tearing": null
+          }
         }
       ]
     },
@@ -229,9 +212,11 @@
                 "end": 1
               }
             ],
-            "output_indices": [
-              0
-            ]
+            "output_placements": {
+              "Dense": {
+                "count": 1
+              }
+            }
           }
         }
       ]
@@ -308,6 +293,7 @@
       ]
     },
     "refresh_owners": {
+      "compact_projection": null,
       "algebraic": {
         "simultaneous_plan": {
           "blocks": []
@@ -398,9 +384,11 @@
                 "end": 1
               }
             ],
-            "output_indices": [
-              0
-            ]
+            "output_placements": {
+              "Dense": {
+                "count": 1
+              }
+            }
           }
         }
       ]
@@ -415,7 +403,11 @@
     "update_rhs": {
       "programs": [],
       "program_spans": [],
-      "output_indices": []
+      "output_placements": {
+        "Dense": {
+          "count": 0
+        }
+      }
     },
     "update_targets": [],
     "manifold_row_count": 0,
@@ -478,9 +470,11 @@
           "end": 1
         }
       ],
-      "output_indices": [
-        0
-      ]
+      "output_placements": {
+        "Dense": {
+          "count": 1
+        }
+      }
     },
     "runtime_assignment_targets": [
       {
@@ -496,7 +490,11 @@
     "post_commit_assignment_rhs": {
       "programs": [],
       "program_spans": [],
-      "output_indices": []
+      "output_placements": {
+        "Dense": {
+          "count": 0
+        }
+      }
     },
     "post_commit_assignment_targets": [],
     "post_commit_assignment_runtime_rows": [],
@@ -537,9 +535,11 @@
           "end": 1
         }
       ],
-      "output_indices": [
-        0
-      ]
+      "output_placements": {
+        "Dense": {
+          "count": 1
+        }
+      }
     },
     "update_targets": [
       {
@@ -575,7 +575,11 @@
     "clock_partition_intermediates": {
       "programs": [],
       "program_spans": [],
-      "output_indices": []
+      "output_placements": {
+        "Dense": {
+          "count": 0
+        }
+      }
     },
     "clock_partition_intermediate_targets": [],
     "clock_partition_intermediate_clocks": []
@@ -617,9 +621,11 @@
           "end": 1
         }
       ],
-      "output_indices": [
-        0
-      ]
+      "output_placements": {
+        "Dense": {
+          "count": 1
+        }
+      }
     },
     "root_relation_memory_targets": [
       {
@@ -644,12 +650,20 @@
     "dynamic_time_event_rhs": {
       "programs": [],
       "program_spans": [],
-      "output_indices": []
+      "output_placements": {
+        "Dense": {
+          "count": 0
+        }
+      }
     },
     "action_conditions": {
       "programs": [],
       "program_spans": [],
-      "output_indices": []
+      "output_placements": {
+        "Dense": {
+          "count": 0
+        }
+      }
     },
     "actions": [],
     "has_terminal_event": false,
@@ -657,17 +671,29 @@
       "source_rhs": {
         "programs": [],
         "program_spans": [],
-        "output_indices": []
+        "output_placements": {
+          "Dense": {
+            "count": 0
+          }
+        }
       },
       "delay_time_rhs": {
         "programs": [],
         "program_spans": [],
-        "output_indices": []
+        "output_placements": {
+          "Dense": {
+            "count": 0
+          }
+        }
       },
       "delay_max_rhs": {
         "programs": [],
         "program_spans": [],
-        "output_indices": []
+        "output_placements": {
+          "Dense": {
+            "count": 0
+          }
+        }
       },
       "value_parameter_indices": [],
       "source_is_discrete": []

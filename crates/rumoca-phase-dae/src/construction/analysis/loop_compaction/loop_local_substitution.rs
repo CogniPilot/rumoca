@@ -102,7 +102,7 @@ pub(super) fn inline_loop_local_prefixes(
 
 fn inline_loop_local_prefixes_in_scope(
     statements: &[rumoca_core::Statement],
-    enclosing_suffix: &[rumoca_core::Statement],
+    enclosing_suffix: &[&[rumoca_core::Statement]],
     back_edges: &[&[rumoca_core::Statement]],
     locals: &HashSet<VarName>,
     outputs: &HashSet<VarName>,
@@ -113,7 +113,8 @@ fn inline_loop_local_prefixes_in_scope(
         .iter()
         .enumerate()
         .map(|(ordinal, statement)| {
-            let mut suffix = statements[ordinal + 1..].to_vec();
+            let mut suffix = Vec::with_capacity(enclosing_suffix.len() + 1);
+            suffix.push(&statements[ordinal + 1..]);
             suffix.extend_from_slice(enclosing_suffix);
             inline_one_loop_local_prefix(
                 statement,
@@ -142,7 +143,7 @@ fn observed_by_the_caller(outputs: &HashSet<VarName>) -> liveness::LiveSet {
 
 fn inline_one_loop_local_prefix(
     statement: &rumoca_core::Statement,
-    suffix: &[rumoca_core::Statement],
+    suffix: &[&[rumoca_core::Statement]],
     back_edges: &[&[rumoca_core::Statement]],
     locals: &HashSet<VarName>,
     outputs: &HashSet<VarName>,
@@ -258,7 +259,7 @@ fn inline_one_loop_local_prefix(
 /// retention policy.
 fn inline_dominated_loop_locals(
     mut statements: Vec<rumoca_core::Statement>,
-    outer_suffix: &[rumoca_core::Statement],
+    outer_suffix: &[&[rumoca_core::Statement]],
     back_edges: &[&[rumoca_core::Statement]],
     locals: &HashSet<VarName>,
     outputs: &HashSet<VarName>,
@@ -291,7 +292,8 @@ fn inline_dominated_loop_locals(
             ordinal += 1;
             continue;
         };
-        if statements_assign_name(suffix, &target)
+        if !preserves_selected_assignment_owner(&value)
+            || statements_assign_name(suffix, &target)
             || (preserve_shared
                 && statements_read_count(suffix, &target) > 1
                 && !statements_loop_ranges_read_name(suffix, &target))
@@ -423,7 +425,7 @@ fn strip_subscripts(segment: &str) -> &str {
 /// substitution has no way to stop at the write.
 fn loop_local_substitutions(
     prefix: &[rumoca_core::Statement],
-    exit: &[rumoca_core::Statement],
+    exit: &[&[rumoca_core::Statement]],
     enclosing_bodies: &[&[rumoca_core::Statement]],
     trailing: &[rumoca_core::Statement],
     outputs: &HashSet<VarName>,
@@ -463,7 +465,8 @@ fn loop_local_substitutions(
         // one already folded through the earlier definitions, so it is the one
         // whose dependencies have to hold still.
         let replacement = rewriter.rewrite_expression(value);
-        if statements_assign_name(trailing, &target)
+        if !preserves_selected_assignment_owner(&replacement)
+            || statements_assign_name(trailing, &target)
             || (preserve_shared
                 && statement_segments_read_count(&substituted, &target) > 1
                 && !statements_loop_ranges_read_name(trailing, &target))

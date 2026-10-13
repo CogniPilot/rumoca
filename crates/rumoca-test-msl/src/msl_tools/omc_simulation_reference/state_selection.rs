@@ -121,7 +121,9 @@ fn rumoca_state_names(trace: &SimTrace) -> Option<BTreeSet<String>> {
 }
 
 fn load_omc_state_names(paths: &MslPaths, model_name: &str) -> Option<BTreeSet<String>> {
-    let init_xml = paths.sim_work_dir.join(format!("{model_name}_init.xml"));
+    let init_xml = paths
+        .sim_work_dir
+        .join(crate::msl_tools::common::omc_init_xml_file_name(model_name));
     let xml = std::fs::read_to_string(init_xml).ok()?;
     Some(extract_omc_state_names_from_init_xml(&xml))
 }
@@ -201,6 +203,24 @@ mod tests {
         let states = extract_omc_state_names_from_init_xml(xml);
 
         assert_eq!(states, BTreeSet::from(["a&b".to_string(), "x".to_string()]));
+    }
+
+    #[test]
+    fn omc_state_names_come_from_the_models_init_xml_in_the_sim_work_dir() {
+        let work = tempfile::tempdir().unwrap();
+        let mut paths = MslPaths::from_manifest_dir(env!("CARGO_MANIFEST_DIR"));
+        paths.sim_work_dir = work.path().to_path_buf();
+        std::fs::write(
+            work.path().join("Pkg.Model_init.xml"),
+            r#"<ScalarVariable name = "x" classType = "rSta" />"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_omc_state_names(&paths, "Pkg.Model"),
+            Some(BTreeSet::from(["x".to_string()]))
+        );
+        assert_eq!(load_omc_state_names(&paths, "Pkg.Other"), None);
     }
 
     /// A worker trace whose `variable_meta` lists `states`, each with the

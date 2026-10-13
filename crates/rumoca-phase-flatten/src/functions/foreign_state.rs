@@ -9,9 +9,9 @@
 //! last input and return the updated cell as its last output, each call passes
 //! the cell along in statement order, and the model holds the cell as one
 //! discrete variable that the single algorithm section drawing from it
-//! updates. A parameter binding that initializes the library state becomes
-//! the cell's start value. The specialized functions are pure: their effect
-//! is a data dependence, so re-evaluating an event iteration reads the cell's
+//! updates. A parameter binding, or an initial equation defining a parameter,
+//! that initializes the library state becomes the cell's start value. The specialized functions are pure:
+//! their effect is a data dependence, so re-evaluating an event iteration reads the cell's
 //! `pre` value again instead of advancing the state twice.
 //!
 //! Any position that would make the order of state accesses unspecified (two
@@ -535,7 +535,8 @@ fn thread_model(
             algorithm.outputs.push(Reference::new(cell.name()));
         }
     }
-    let initializers = thread_parameter_bindings(flat, threaded, owners)?;
+    let mut initializers = thread_parameter_bindings(flat, threaded, owners)?;
+    thread_initial_equations(flat, threaded, owners, &mut initializers)?;
     reject_other_positions(flat, threaded)?;
     for (cell, span) in drawn {
         let owner = owners[&cell];
@@ -548,15 +549,17 @@ fn thread_model(
     Ok(())
 }
 
+/// The reaching call that initializes each cell, with its arguments.
+type Initializers = BTreeMap<ForeignStateCell, (Reference, Vec<Expression>)>;
+
 /// A parameter binding that is exactly a call of a reaching function calls
-/// its specialization with each cell's initial value. At most one binding
-/// may initialize a cell, since binding order is unspecified.
+/// its specialization with each cell's initial value.
 fn thread_parameter_bindings(
     flat: &mut flat::Model,
     threaded: &IndexMap<VarName, Threaded>,
     owners: &BTreeMap<ForeignStateCell, Cell>,
-) -> Result<BTreeMap<ForeignStateCell, (Reference, Vec<Expression>)>, FlattenError> {
-    let mut initializers = BTreeMap::new();
+) -> Result<Initializers, FlattenError> {
+    let mut initializers = Initializers::new();
     for variable in flat.variables.values_mut() {
         let Some(Expression::FunctionCall {
             name,
@@ -583,29 +586,8 @@ fn thread_parameter_bindings(
             ));
         }
         let (name, args, span) = (name.clone(), args.clone(), *span);
-        let mut threaded_args = args.clone();
-        for cell in &plan.cells {
-            if initializers
-                .insert(*cell, (name.clone(), args.clone()))
-                .is_some()
-            {
-                return Err(FlattenError::unordered_foreign_state(
-                    format!(
-                        "two parameter bindings initialize the library state `{}`, so their \
-                         order is unspecified",
-                        cell.name()
-                    ),
-                    span,
-                ));
-            }
-            threaded_args.push(initial_cell(*cell, owners[cell].span));
-        }
-        let threaded_binding = Expression::FunctionCall {
-            name: threaded_reference(plan, &name),
-            args: threaded_args,
-            is_constructor: false,
-            span,
-        };
+        let threaded_binding =
+            threaded_initializer(plan, &name, &args, span, owners, &mut initializers)?;
         // A parameter's start value is its binding (MLS 3.7 §4.4.4); the same
         // call is the same initialization, not a second one.
         if variable.start.as_ref() == variable.binding.as_ref() {
@@ -614,6 +596,125 @@ fn thread_parameter_bindings(
         variable.binding = Some(threaded_binding);
     }
     Ok(initializers)
+}
+
+/// The call of `plan`'s specialization that initializes each cell it reaches
+/// from the library's initial storage, recording it as that cell's
+/// initializer. A parameter binding and an initial equation both execute
+/// once at initialization, so the order of their accesses is the order of the
+/// initialization; two such sites on one cell are unordered.
+fn threaded_initializer(
+    plan: &Threaded,
+    callee: &Reference,
+    args: &[Expression],
+    span: Span,
+    owners: &BTreeMap<ForeignStateCell, Cell>,
+    initializers: &mut Initializers,
+) -> Result<Expression, FlattenError> {
+    let mut threaded_args = args.to_vec();
+    for cell in &plan.cells {
+        if initializers
+            .insert(*cell, (callee.clone(), args.to_vec()))
+            .is_some()
+        {
+            return Err(FlattenError::unordered_foreign_state(
+                format!(
+                    "two parameter bindings or initial equations initialize the library state \
+                     `{}`, so their order is unspecified",
+                    cell.name()
+                ),
+                span,
+            ));
+        }
+        threaded_args.push(initial_cell(*cell, owners[cell].span));
+    }
+    Ok(Expression::FunctionCall {
+        name: threaded_reference(plan, callee),
+        args: threaded_args,
+        is_constructor: false,
+        span,
+    })
+}
+
+/// The reaching call of an initial equation `p = f(...)` that defines a
+/// parameter or constant `p`: the equation is the parameter's binding stated
+/// in the initial section (MLS 3.7 §8.6), so it initializes the library state
+/// as a parameter binding does. Any other initial equation holding a
+/// reaching call is left for the position check to refuse.
+fn initial_equation_call<'a>(
+    flat: &flat::Model,
+    threaded: &IndexMap<VarName, Threaded>,
+    residual: &'a Expression,
+) -> Option<(&'a Reference, &'a [Expression], Span)> {
+    let Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = residual
+    else {
+        return None;
+    };
+    let (variable, call) = match (&**lhs, &**rhs) {
+        (
+            Expression::VarRef {
+                name, subscripts, ..
+            },
+            call,
+        )
+        | (
+            call,
+            Expression::VarRef {
+                name, subscripts, ..
+            },
+        ) if subscripts.is_empty() => (name, call),
+        _ => return None,
+    };
+    let Expression::FunctionCall {
+        name,
+        args,
+        is_constructor: false,
+        span,
+    } = call
+    else {
+        return None;
+    };
+    let defined = flat.variables.get(variable.var_name())?;
+    (matches!(
+        defined.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) && threaded.contains_key(name.var_name()))
+    .then_some((name, args.as_slice(), *span))
+}
+
+/// An initial equation that defines a parameter by a call of a reaching
+/// function calls its specialization with each cell's initial value.
+fn thread_initial_equations(
+    flat: &mut flat::Model,
+    threaded: &IndexMap<VarName, Threaded>,
+    owners: &BTreeMap<ForeignStateCell, Cell>,
+    initializers: &mut Initializers,
+) -> Result<(), FlattenError> {
+    for index in 0..flat.initial_equations.len() {
+        let residual = &flat.initial_equations[index].residual;
+        let Some((callee, args, span)) = initial_equation_call(flat, threaded, residual) else {
+            continue;
+        };
+        let (callee, args) = (callee.clone(), args.to_vec());
+        let plan = &threaded[callee.var_name()];
+        let call = threaded_initializer(plan, &callee, &args, span, owners, initializers)?;
+        let Expression::Binary { lhs, rhs, .. } = &mut flat.initial_equations[index].residual
+        else {
+            continue;
+        };
+        let side = if matches!(&**rhs, Expression::FunctionCall { .. }) {
+            rhs
+        } else {
+            lhs
+        };
+        **side = call;
+    }
+    Ok(())
 }
 
 /// A call of the cell output of `callee`'s specialization: a generated pure

@@ -430,35 +430,27 @@ fn map_scalar_view_preserves_sparse_output_indices() {
 }
 
 #[test]
-fn scalar_program_block_output_overflow_reports_span() {
+fn scalar_program_block_output_overflow_is_refused_at_construction() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_scalarized_output.mo"),
         11,
         17,
     );
-    let block = ComputeBlock {
-        nodes: vec![ComputeNode::ScalarPrograms(
-            ScalarProgramBlock::with_output_indices(
-                vec![vec![
-                    LinearOp::Const { dst: 0, value: 1.0 },
-                    LinearOp::StoreOutput { src: 0 },
-                ]],
-                vec![span],
-                vec![usize::MAX],
-            )
-            .expect("overflow fixture metadata should match row count"),
-        )],
-    };
+    let err = ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![span],
+        vec![usize::MAX],
+    )
+    .expect_err("an output index with no representable logical count has no block");
 
-    let err = to_scalar_program_block(&block)
-        .expect_err("overflowing scalar output index should fail scalarization");
-
+    assert!(matches!(
+        err,
+        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow { .. }
+    ));
     assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.to_string()
-            .contains(&format!("output index {} overflows", usize::MAX)),
-        "error should explain scalar output overflow: {err}"
-    );
 }
 
 #[test]

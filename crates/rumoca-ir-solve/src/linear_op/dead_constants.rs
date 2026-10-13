@@ -4,7 +4,7 @@
 //! flow, so an op kind cannot read a register this pass misses: a literal
 //! register stays pending until an op's source check would fail without it.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::*;
 
@@ -36,15 +36,15 @@ fn prunable(op: &LinearOp) -> bool {
     matches!(
         op,
         LinearOp::Const { .. } | LinearOp::Unary { .. } | LinearOp::Binary { .. }
-    )
+    ) && op.fault_class().is_prunable()
 }
 
 /// Per op, whether it is kept: every op this pass cannot drop, and each
 /// prunable op whose register a later op reads.
 fn live_pure_ops(program: &[LinearOp]) -> Option<Vec<bool>> {
     let mut live = program.iter().map(|op| !prunable(op)).collect::<Vec<_>>();
-    let mut initialized = Vec::new();
-    let mut pending: HashMap<Reg, usize> = HashMap::new();
+    let mut initialized = DefinedRegisters::default();
+    let mut pending: BTreeMap<Reg, usize> = BTreeMap::new();
     let mut validation = ScalarProgramValidationCache::default();
     for (op_index, op) in program.iter().enumerate() {
         loop {
@@ -53,7 +53,7 @@ fn live_pure_ops(program: &[LinearOp]) -> Option<Vec<bool>> {
                 Err(ScalarProgramRegisterError::UndefinedRegister { register, .. }) => {
                     let defining = pending.remove(&register)?;
                     live[defining] = true;
-                    mark_register_initialized(&mut initialized, register);
+                    initialized.insert(register, 1);
                 }
                 Err(_) => return None,
             }
@@ -67,7 +67,7 @@ fn live_pure_ops(program: &[LinearOp]) -> Option<Vec<bool>> {
         if prunable(op) {
             pending.insert(dst, op_index);
         } else {
-            mark_register_range_initialized(&mut initialized, dst, op.dst_register_count());
+            initialized.insert(dst, op.dst_register_count());
         }
     }
     Some(live)

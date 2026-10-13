@@ -3,6 +3,43 @@
 
 use super::*;
 
+/// Issued only after the same loop has resolved on its invariant selected path.
+pub(in crate::construction) struct SelectedLoopEntry {
+    span: Span,
+    condition: Expression,
+}
+
+pub(in crate::construction) fn selected_loop_entry(
+    entry: &SelectedLoopEntry,
+    span: Span,
+) -> &Expression {
+    assert_eq!(
+        entry.span, span,
+        "the selected entry belongs to this source loop"
+    );
+    &entry.condition
+}
+
+/// Define the targets of a total array-definition loop, proving each read of
+/// its statements against the definitions that precede it.
+fn define_total_array_loop(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) {
+    for (statement, plan) in statements.iter().zip(plans.iter_mut()) {
+        if let (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) = (statement, plan)
+        {
+            assignment.proven_reads = definitions.proven_assignment_reads(value, context, *span);
+            definitions.define_whole(&assignment.target);
+        }
+    }
+}
+
 /// A loop transition may only carry values whose elements already have a
 /// definition, because MLS §12.4.4 gives the carried value no other owner.
 pub(super) fn resolve_function_loop_definitions(
@@ -18,6 +55,9 @@ pub(super) fn resolve_function_loop_definitions(
 ) -> Result<(), ToDaeError> {
     let (indices, statements, span) = source;
     let (domain, source_depth, lowering, body) = planned;
+    if domain.scalar_count().is_ok_and(|count| count == 0) {
+        return Ok(());
+    }
     let binders = indices
         .iter()
         .map(|index| VarName::new(&index.ident))
@@ -25,32 +65,44 @@ pub(super) fn resolve_function_loop_definitions(
     definitions.enter_loop_facts(statements, &binders, context);
     match lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
-            for plan in body {
-                if let FunctionStatementPlan::Assignment(assignment) = plan {
-                    definitions.define_whole(&assignment.target);
-                }
-            }
+            let (_, flat_body) = flattened_function_loop_source(indices, statements, source_depth);
+            define_total_array_loop(flat_body, body, context, definitions);
         }
         FunctionLoopLowering::Fold {
             targets,
             iteration_locals,
+            selected_entry,
+            entry_reads,
+            entry_seeds,
         } => {
             let (flat_indices, flat_body) =
                 flattened_function_loop_source(indices, statements, source_depth);
-            // A statically decided condition is selected inside the fold, and a
-            // condition over an enclosing binder is a binder-range selection the
-            // generic iteration narrows exactly.
-            let selection =
-                invariant_selection(&flat_indices, flat_body, context.generated_booleans).filter(
-                    |condition| {
-                        !matches!(static_boolean_expression(condition, context), Ok(Some(_)))
-                            && !reads_enclosing_binder(condition, context, 0)
-                    },
-                );
+            // A statically decided condition is selected inside the fold.
+            // The source invariant-selection check excludes this child's own
+            // binders and writes; enclosing binders remain fixed during it.
+            let lexical_selection = context
+                .snapshot_loops
+                .iter()
+                .find_map(|entry| entry.condition_for(statements));
+            let selection = lexical_selection
+                .or_else(|| {
+                    invariant_selection(&flat_indices, flat_body, context.generated_booleans)
+                })
+                .filter(|condition| {
+                    !matches!(static_boolean_expression(condition, context), Ok(Some(_)))
+                });
             let Some(condition) = selection else {
                 return resolve_fold_definitions(
                     (indices, statements, span),
-                    (domain, source_depth, body, targets, iteration_locals),
+                    (
+                        domain,
+                        source_depth,
+                        body,
+                        targets,
+                        iteration_locals,
+                        entry_reads,
+                        entry_seeds,
+                    ),
                     context,
                     definitions,
                 );
@@ -60,15 +112,34 @@ pub(super) fn resolve_function_loop_definitions(
             // that guard into the body), so each side is resolved on its path.
             let prior =
                 is_immutable_guard(condition, context).then(|| definitions.guarded_proofs(targets));
+            let writes_before = definitions.folds.write_count();
             let mut taken = definitions.clone();
             taken.enter_guard(condition, context);
             taken.enter_path(&[condition], 0, context);
+            // The enclosing iteration reaches the loop only at the binder values
+            // the guard selects (a dependent range's membership test).
+            taken.folds.assume(condition, true, context);
+            let captured = captured_entry(condition, context, span);
+            let capture_reads = if captured.is_some() {
+                readonly_selected_entry_reads(flat_body, body, context, &taken, span)
+            } else {
+                Vec::new()
+            };
             resolve_fold_definitions(
                 (indices, statements, span),
-                (domain, source_depth, body, targets, iteration_locals),
+                (
+                    domain,
+                    source_depth,
+                    body,
+                    targets,
+                    iteration_locals,
+                    entry_reads,
+                    entry_seeds,
+                ),
                 context,
                 &mut taken,
             )?;
+            let taken_folds = taken.folds.clone();
             join_selected_loop(
                 (condition, prior),
                 taken,
@@ -77,9 +148,70 @@ pub(super) fn resolve_function_loop_definitions(
                 definitions,
                 span,
             )?;
+            definitions
+                .folds
+                .absorb_branch_writes(writes_before, &[&taken_folds], false);
+            entry_reads.extend(capture_reads);
+            *selected_entry = captured.map(Box::new);
         }
     }
     Ok(())
+}
+
+fn readonly_selected_entry_reads(
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+    span: Span,
+) -> Vec<(VarName, Span)> {
+    let written = function_ranges::assigned_function_targets(statements);
+    let sequence = loop_compaction::StatementSequence {
+        statements,
+        plans: Some(plans),
+    };
+    let unwritten = context
+        .function
+        .outputs
+        .iter()
+        .chain(&context.function.locals)
+        .filter(|value| !written.contains(&value.name))
+        .map(|value| VarName::new(&value.name))
+        .collect::<Vec<_>>();
+    let reads = loop_compaction::planned_sequences_read_incoming_names(
+        &[sequence],
+        &unwritten.iter().collect::<Vec<_>>(),
+        context,
+    );
+    let captures = unwritten
+        .into_iter()
+        .zip(reads)
+        .filter_map(|(name, read)| read.then_some(name))
+        .collect::<Vec<_>>();
+    definitions.proven_carried_entry_reads(&captures, context, span)
+}
+
+fn captured_entry(
+    condition: &Expression,
+    context: FunctionValidationContext<'_>,
+    span: Span,
+) -> Option<SelectedLoopEntry> {
+    let mut reads = Vec::new();
+    condition.collect_var_refs(&mut reads);
+    let captured = !reads.is_empty()
+        && reads.iter().all(|read| {
+            context
+                .generated_booleans
+                .iter()
+                .any(|capture| !capture.mutable && &capture.target == read)
+        })
+        && !condition.contains_subexpression(|expression| {
+            matches!(expression, Expression::FunctionCall { .. })
+        });
+    captured.then(|| SelectedLoopEntry {
+        span,
+        condition: condition.clone(),
+    })
 }
 
 /// Join a loop resolved on the path its invariant `condition` selects with
@@ -105,7 +237,7 @@ fn join_selected_loop(
         std::slice::from_ref(&taken),
         (!skipped, &[]),
         targets,
-        &HashSet::new(),
+        &PathPartialAdmission::default(),
         context,
         span,
     )?;
@@ -115,26 +247,37 @@ fn join_selected_loop(
     Ok(())
 }
 
+type FoldDefinitionPlan<'plan> = (
+    &'plan StructuredIndexDomain,
+    usize,
+    &'plan mut [FunctionStatementPlan],
+    &'plan mut Vec<VarName>,
+    &'plan mut Vec<VarName>,
+    &'plan mut Vec<(VarName, Span)>,
+    &'plan mut Vec<(VarName, FunctionValueSeed)>,
+);
+
 /// Resolve a compact fold's definedness from one generic iteration (see
 /// `fold_scopes`): a learning round finds what every iteration certainly
 /// defines by its end, and a judging round checks every read against it.
 fn resolve_fold_definitions(
     source: (&[rumoca_core::ForIndex], &[rumoca_core::Statement], Span),
-    planned: (
-        &StructuredIndexDomain,
-        usize,
-        &mut [FunctionStatementPlan],
-        &mut Vec<VarName>,
-        &mut Vec<VarName>,
-    ),
+    planned: FoldDefinitionPlan<'_>,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     let (indices, statements, span) = source;
-    let (domain, source_depth, plans, targets, iteration_locals) = planned;
+    let (domain, source_depth, plans, targets, iteration_locals, entry_reads, entry_seeds) =
+        planned;
     let enclosing_definitions = definitions.clone();
     let (indices, statements) = flattened_function_loop_source(indices, statements, source_depth);
     let seeds = seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    *entry_reads = definitions.proven_carried_entry_reads(targets, context, span);
+    let joined_at_entry = targets
+        .iter()
+        .filter(|target| definitions.has_join_value(target))
+        .cloned()
+        .collect::<Vec<_>>();
     let invalid = |problem: String| {
         ToDaeError::unsupported_flat(
             "function loop transition",
@@ -192,13 +335,39 @@ fn resolve_fold_definitions(
             definitions.add_loop_coverage(&target, written);
         }
     }
+    // A value the entry state holds on some paths only, which this loop alone
+    // then defines in full, never has its prior elements read: its initial
+    // value is dead, so the fold starts from a generated seed.
+    for target in joined_at_entry {
+        if definitions.is_total(&target) {
+            entry_seeds.push((
+                target.clone(),
+                definitions.whole_loop_seed(&target, context, span)?,
+            ));
+        }
+    }
     confine_guarded_seeds(statements, seeds, context, definitions);
     definitions.forget_varying_guard_paths(context.generated_booleans, iteration_locals);
     targets.retain(|target| {
-        definitions.is_defined(target)
+        let carried = definitions.is_defined(target)
+            || definitions.has_join_value(target)
             || definitions.has_total_guarded_definition(target)
-            || definitions.has_seeded_slot(target)
+            || definitions.has_seeded_slot(target);
+        if !carried
+            && context
+                .function
+                .locals
+                .iter()
+                .any(|local| VarName::new(&local.name) == *target)
+            && !iteration_locals.contains(target)
+        {
+            // Definedness was checked on every source path above. A local
+            // absent from the exit value still owns its branch-only writes.
+            iteration_locals.push(target.clone());
+        }
+        carried
     });
+    entry_reads.retain(|(name, _)| targets.contains(name) && !iteration_locals.contains(name));
     definitions.restore_names(&enclosing_definitions, iteration_locals);
     Ok(())
 }
@@ -278,13 +447,17 @@ fn resolve_fold_statement(
                 branches,
                 fallback,
                 targets,
+                condition_reads,
             },
         ) => {
             let point_targets = resolve_function_conditional(
                 cond_blocks,
                 else_block.as_deref(),
-                branches,
-                fallback.as_mut(),
+                FunctionConditionalPlans {
+                    branches,
+                    fallback: fallback.as_mut(),
+                    condition_reads,
+                },
                 *span,
                 context,
                 definitions,
@@ -327,8 +500,13 @@ fn resolve_fold_statement(
         )?,
         (
             rumoca_core::Statement::FunctionCall { args, span, .. },
-            FunctionStatementPlan::MultiOutputCall { outputs },
-        ) => resolve_fold_multi_output(args, *span, outputs, context, definitions)?,
+            FunctionStatementPlan::MultiOutputCall {
+                outputs,
+                argument_reads,
+            },
+        ) => {
+            resolve_fold_multi_output(args, *span, (outputs, argument_reads), context, definitions)?
+        }
         (statement, _) => {
             return Err(unsupported_statement(
                 statement,
@@ -391,18 +569,26 @@ fn resolve_fold_assignment(
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     definitions.require_readable(value, context, span)?;
+    let mut proven_reads = definitions.proven_assignment_reads(value, context, span);
     for expression in assignment
         .subscripts()
         .iter()
         .filter_map(subscript_expression)
     {
         definitions.require_readable(expression, context, span)?;
+        proven_reads.extend(definitions.proven_assignment_reads(expression, context, span));
     }
+    assignment.proven_reads = proven_reads;
     if assignment.subscripts().is_empty() {
         seed_undefined_whole_loop_value(assignment, context, definitions, span)?;
         definitions.define_whole(assignment.target());
         return Ok(());
     }
+    assignment.base_reads = definitions.proven_carried_entry_reads(
+        std::slice::from_ref(assignment.target()),
+        context,
+        span,
+    );
     let seed =
         definitions.write_elements(assignment.target(), assignment.subscripts(), context, span)?;
     assignment.seed = assignment.seed.take().or(seed);
@@ -414,10 +600,14 @@ fn resolve_fold_assignment(
 fn resolve_fold_multi_output(
     arguments: &[Expression],
     span: Span,
-    outputs: &mut [Option<FunctionAssignmentPlan>],
+    planned: (
+        &mut [Option<FunctionAssignmentPlan>],
+        &mut Vec<(VarName, Span)>,
+    ),
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
+    let (outputs, argument_reads) = planned;
     for output in outputs
         .iter_mut()
         .flatten()
@@ -425,7 +615,13 @@ fn resolve_fold_multi_output(
     {
         seed_undefined_whole_loop_value(output, context, definitions, span)?;
     }
-    resolve_multi_output_definitions(arguments, span, outputs, context, definitions)
+    resolve_multi_output_definitions(
+        arguments,
+        span,
+        (outputs, argument_reads),
+        context,
+        definitions,
+    )
 }
 
 fn seed_undefined_whole_loop_value(
@@ -505,25 +701,52 @@ fn sequence_selection<'a>(
     selected
 }
 
-/// Whether `condition`, or a generated selection it reads, reads a binder of
-/// an enclosing loop.
-fn reads_enclosing_binder(
-    condition: &Expression,
-    context: FunctionValidationContext<'_>,
-    depth: usize,
-) -> bool {
-    let mut reads = Vec::new();
-    condition.collect_var_refs(&mut reads);
-    reads.iter().any(|name| {
-        context.loop_binders.contains(name)
-            || context
-                .generated_booleans
-                .iter()
-                .find(|definition| &definition.target == name)
-                .is_some_and(|definition| {
-                    // Generated selections are defined before their readers,
-                    // so the expansion is finite; the depth only bounds it.
-                    depth >= 16 || reads_enclosing_binder(&definition.value, context, depth + 1)
-                })
-    })
+#[cfg(test)]
+mod selected_entry_tests {
+    use super::*;
+    use crate::construction::analysis::loop_compaction::preservation_corpus::{
+        assign, branch, for_loop, integer, var,
+    };
+
+    fn binder() -> rumoca_core::ForIndex {
+        rumoca_core::ForIndex {
+            binder: rumoca_core::IndexBinderProvenance::Generated,
+            ident: "axis".into(),
+            range: integer(2),
+        }
+    }
+
+    #[test]
+    fn selected_child_entry_keeps_an_enclosing_capture_but_not_its_own_binder() {
+        let axis = binder();
+        let body = vec![branch(
+            vec![(var("captured_outer"), vec![assign("scratch", integer(1))])],
+            None,
+        )];
+        assert!(invariant_selection(&[&axis], &body, &[]).is_some());
+        let dependent = vec![branch(
+            vec![(var("axis"), vec![assign("scratch", integer(1))])],
+            None,
+        )];
+        assert!(invariant_selection(&[&axis], &dependent, &[]).is_none());
+    }
+
+    #[test]
+    fn selected_child_entry_excludes_nested_binders_and_changed_selections() {
+        let axis = binder();
+        let nested = vec![for_loop(
+            "column",
+            2,
+            vec![branch(
+                vec![(var("column"), vec![assign("scratch", integer(1))])],
+                None,
+            )],
+        )];
+        assert!(invariant_selection(&[&axis], &nested, &[]).is_none());
+        let changed = vec![branch(
+            vec![(var("chosen"), vec![assign("chosen", integer(1))])],
+            None,
+        )];
+        assert!(invariant_selection(&[&axis], &changed, &[]).is_none());
+    }
 }

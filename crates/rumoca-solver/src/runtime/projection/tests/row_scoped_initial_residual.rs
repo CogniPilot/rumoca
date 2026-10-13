@@ -13,7 +13,7 @@ impl OpenTankRowsModel {
     fn new() -> Self {
         Self {
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![
+                blocks: (vec![
                     solve::AlgebraicProjectionBlock {
                         rows: vec![0],
                         y_indices: vec![0],
@@ -24,7 +24,8 @@ impl OpenTankRowsModel {
                         y_indices: vec![1],
                         ..Default::default()
                     },
-                ],
+                ])
+                .into(),
             },
             complete_reads: Cell::new(0),
         }
@@ -87,7 +88,7 @@ impl ImplicitProjectionModel for OpenTankRowsModel {
         &self.plan
     }
 
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
+    fn target_name_for_row(&self, _row_idx: usize) -> Option<String> {
         None
     }
 }

@@ -9,6 +9,9 @@ mod committed_seed;
 mod failure_atomicity;
 mod manifold;
 mod on_demand_derivatives;
+mod precompiled;
+mod rejected_writes;
+mod session_surface;
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
@@ -170,7 +173,7 @@ fn an_unannotated_failure_reports_no_stage() {
 /// `der(x) = v`, `der(v) = -4·x`: a pure ODE whose exact state Jacobian is the
 /// constant `[[0, 1], [-4, 0]]`, so the expected directional derivative for any
 /// seed is closed form and no tolerance is needed.
-fn harmonic_oscillator() -> solve::SolveModel {
+pub(super) fn harmonic_oscillator() -> solve::SolveModel {
     let derivative = block(
         vec![
             vec![
@@ -217,40 +220,48 @@ fn harmonic_oscillator() -> solve::SolveModel {
         ],
         "fmi_me_harmonic_jvp.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "v".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                    vec!["x".to_string(), "v".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+                        derivative.clone(),
+                    ),
+                    implicit_row_targets: (vec![
+                        Some(solve::scalar_slot_y(0)),
+                        Some(solve::scalar_slot_y(1)),
+                    ])
+                    .into(),
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                     ..Default::default()
                 },
-                state_scalar_count: 2,
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 2,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-        artifacts: solve::SolveArtifacts {
-            discrete: Default::default(),
-            continuous: solve::ContinuousSolveArtifacts {
-                full_jacobian_v: jacobian_v,
+            artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
+                continuous: solve::ContinuousSolveArtifacts {
+                    full_jacobian_v: jacobian_v,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![1.0, 0.0].into(),
+            solver_nominals: vec![1.0, 1.0],
+
             ..Default::default()
         },
-        initial_y: vec![1.0, 0.0],
-        solver_nominals: vec![1.0, 1.0],
-        visible_names: vec!["x".to_string(), "v".to_string()],
-        ..Default::default()
-    }
+        vec!["x".to_string(), "v".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn nonlinear_right_limit_implicit_jvp() -> solve::ScalarProgramBlock {
@@ -288,7 +299,7 @@ fn nonlinear_right_limit_implicit_jvp() -> solve::ScalarProgramBlock {
     )
 }
 
-fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
+pub(super) fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
     use solve::LinearOp::{Binary, LoadSeed, LoadY, StoreOutput};
     let derivative = block(
         vec![vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
@@ -322,54 +333,60 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
         vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
         "fmi_me_right_limit_derivative_jvp.mo",
     );
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(Default::default(), 2, 0),
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                        alternate_charts: Vec::new(),
-                    }],
-                },
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string()],
+    let mut model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                    vec!["x".to_string(), "a".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+                    implicit_row_targets: (vec![
+                        Some(solve::scalar_slot_y(0)),
+                        Some(solve::scalar_slot_y(1)),
+                    ])
+                    .into(),
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                    algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                        blocks: (vec![solve::AlgebraicProjectionBlock {
+                            rows: vec![1],
+                            y_indices: vec![1],
+                            tearing: None,
+                            alternate_charts: Vec::new(),
+                        }])
+                        .into(),
+                    },
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    algebraic_scalar_count: 1,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-        artifacts: solve::SolveArtifacts {
-            discrete: Default::default(),
-            continuous: solve::ContinuousSolveArtifacts {
-                implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
-                    implicit_jvp.clone(),
-                ),
-                implicit_jacobian_v_scalar: implicit_jvp,
-                full_jacobian_v: derivative_jvp,
+            artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
+                continuous: solve::ContinuousSolveArtifacts {
+                    implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
+                        implicit_jvp.clone(),
+                    ),
+                    implicit_jacobian_v_scalar: implicit_jvp,
+                    full_jacobian_v: derivative_jvp,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![4.0, 2.0].into(),
+            solver_nominals: vec![1.0, 1.0],
+
             ..Default::default()
         },
-        initial_y: vec![4.0, 2.0],
-        solver_nominals: vec![1.0, 1.0],
-        visible_names: vec!["x".to_string(), "a".to_string()],
-        ..Default::default()
-    };
+        vec!["x".to_string(), "a".to_string()],
+        Default::default(),
+        Vec::new(),
+    );
     crate::test_fixtures::derive_structural_artifacts(&mut model);
     model
 }
@@ -436,48 +453,52 @@ fn strict_root_relation_memory() -> solve::SolveModel {
         ]],
         "fmi_me_strict_root_memory.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
-            continuous: solve::ContinuousSolveSystem {
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                rhs: condition_memory,
-                update_targets: vec![solve::scalar_slot_p(0)],
-                row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
-                observation_refresh: vec![false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![None],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: root,
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
-                root_zero_domains: vec![solve::RootZeroDomain::Positive],
-                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
-                condition_memory_parameter_indices: vec![0],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+                    vec!["x".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                compiled_parameter_len: 1,
+                discrete: solve::DiscreteSolveSystem {
+                    rhs: condition_memory,
+                    update_targets: vec![solve::scalar_slot_p(0)],
+                    row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
+                    pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                    observation_refresh: vec![false],
+                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+                    clock_owners: vec![None],
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition {
+                    root_conditions: root,
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                    root_zero_domains: vec![solve::RootZeroDomain::Positive],
+                    root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                    condition_memory_parameter_indices: vec![0],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    compiled_parameter_len: 1,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![-1.0].into(),
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0].into(),
+
             ..Default::default()
         },
-        initial_y: vec![-1.0],
-        solver_nominals: vec![1.0],
-        parameters: vec![0.0],
-        visible_names: vec!["x".to_string()],
-        ..Default::default()
-    }
+        vec!["x".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn static_true_relation_memory() -> solve::SolveModel {
@@ -492,39 +513,43 @@ fn static_true_relation_memory() -> solve::SolveModel {
         ]],
         "fmi_me_static_relation_root.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
-            continuous: solve::ContinuousSolveSystem {
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: root,
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+                    vec!["state".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                relation_memory_parameter_indices: vec![0],
+                events: solve::SolveEventPartition {
+                    root_conditions: root,
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                    root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                    root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    parameter_count: 1,
+                    compiled_parameter_len: 1,
+                    relation_memory_parameter_indices: vec![0],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![0.0].into(),
+            solver_nominals: vec![1.0],
+            parameters: vec![1.0].into(),
+
             ..Default::default()
         },
-        initial_y: vec![0.0],
-        solver_nominals: vec![1.0],
-        parameters: vec![1.0],
-        visible_names: vec!["state".to_string()],
-        ..Default::default()
-    }
+        vec!["state".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn post_pre_relation_cycle() -> solve::SolveModel {
@@ -567,45 +592,54 @@ fn post_pre_relation_cycle() -> solve::SolveModel {
         ]],
         "fmi_me_post_pre_relation_cycle_root.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                runtime_assignment_rhs: runtime_assignment,
-                runtime_assignment_targets: vec![solve::scalar_slot_p(1)],
-                runtime_assignment_roles: vec![solve::RuntimeAssignmentRole::RelationEvaluating],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: root,
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 2),
+                    vec!["state".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+                        derivative.clone(),
+                    ),
+                    implicit_row_targets: (vec![Some(solve::scalar_slot_y(0))]).into(),
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                compiled_parameter_len: 2,
-                relation_memory_parameter_indices: vec![0],
+                discrete: solve::DiscreteSolveSystem {
+                    runtime_assignment_rhs: runtime_assignment,
+                    runtime_assignment_targets: vec![solve::scalar_slot_p(1)],
+                    runtime_assignment_roles: vec![
+                        solve::RuntimeAssignmentRole::RelationEvaluating,
+                    ],
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition {
+                    root_conditions: root,
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                    root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                    root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    compiled_parameter_len: 2,
+                    relation_memory_parameter_indices: vec![0],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![0.0].into(),
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0, 0.0].into(),
+
             ..Default::default()
         },
-        initial_y: vec![0.0],
-        solver_nominals: vec![1.0],
-        parameters: vec![0.0, 0.0],
-        visible_names: vec!["state".to_string()],
-        ..Default::default()
-    }
+        vec!["state".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
@@ -648,60 +682,67 @@ fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
         ],
         "fmi_me_post_commit_frozen_root_conditions.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 4),
-            continuous: solve::ContinuousSolveSystem {
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                runtime_assignment_rhs: runtime_assignments,
-                runtime_assignment_targets: vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)],
-                runtime_assignment_roles: vec![
-                    solve::RuntimeAssignmentRole::RelationFree,
-                    solve::RuntimeAssignmentRole::RelationEvaluating,
-                ],
-                post_commit_assignment_rhs: alias,
-                post_commit_assignment_targets: vec![solve::scalar_slot_p(2)],
-                post_commit_assignment_runtime_rows: vec![0],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: roots,
-                root_relation_memory_targets: vec![
-                    Some(solve::scalar_slot_p(0)),
-                    Some(solve::scalar_slot_p(1)),
-                ],
-                root_zero_domains: vec![
-                    solve::RootZeroDomain::Previous,
-                    solve::RootZeroDomain::Previous,
-                ],
-                root_relation_refresh_roles: vec![
-                    solve::RootRelationRefreshRole::Frozen,
-                    solve::RootRelationRefreshRole::Frozen,
-                ],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    solve::VarLayout::from_parts(IndexMap::new(), 1, 4),
+                    vec!["state".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                parameter_count: 4,
-                compiled_parameter_len: 4,
-                relation_memory_parameter_indices: vec![0, 1],
+                discrete: solve::DiscreteSolveSystem {
+                    runtime_assignment_rhs: runtime_assignments,
+                    runtime_assignment_targets: vec![
+                        solve::scalar_slot_p(2),
+                        solve::scalar_slot_p(3),
+                    ],
+                    runtime_assignment_roles: vec![
+                        solve::RuntimeAssignmentRole::RelationFree,
+                        solve::RuntimeAssignmentRole::RelationEvaluating,
+                    ],
+                    post_commit_assignment_rhs: alias,
+                    post_commit_assignment_targets: vec![solve::scalar_slot_p(2)],
+                    post_commit_assignment_runtime_rows: vec![0],
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition {
+                    root_conditions: roots,
+                    root_relation_memory_targets: vec![
+                        Some(solve::scalar_slot_p(0)),
+                        Some(solve::scalar_slot_p(1)),
+                    ],
+                    root_zero_domains: vec![
+                        solve::RootZeroDomain::Previous,
+                        solve::RootZeroDomain::Previous,
+                    ],
+                    root_relation_refresh_roles: vec![
+                        solve::RootRelationRefreshRole::Frozen,
+                        solve::RootRelationRefreshRole::Frozen,
+                    ],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    parameter_count: 4,
+                    compiled_parameter_len: 4,
+                    relation_memory_parameter_indices: vec![0, 1],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![0.0].into(),
+            solver_nominals: vec![1.0],
+            parameters: vec![1.0, 1.0, -1.0, -1.0].into(),
+
             ..Default::default()
         },
-        initial_y: vec![0.0],
-        solver_nominals: vec![1.0],
-        parameters: vec![1.0, 1.0, -1.0, -1.0],
-        visible_names: vec!["state".to_string()],
-        ..Default::default()
-    }
+        vec!["state".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn zero_derivative(name: &'static str) -> solve::ScalarProgramBlock {
@@ -903,7 +944,7 @@ fn continuous_state_change_flag_uses_the_exact_fmi_state_vector() {
 fn terminated_is_fail_closed_until_snapshot_restore() {
     let model = harmonic_oscillator();
     let mut kernel = instantiate(&model);
-    let saved = kernel.fmu_state();
+    let saved = kernel.fmu_state().unwrap();
     kernel.terminate().expect("termination is legal once");
 
     assert!(kernel.set_time(super::MeTime::at(0.25)).is_err());
@@ -949,7 +990,7 @@ fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
     assert_eq!(stop.time.to_bits(), 0.5f64.to_bits());
     assert!(stop.is_event);
     let saved_observable = kernel.verification_observable_state();
-    let saved = kernel.fmu_state();
+    let saved = kernel.fmu_state().unwrap();
 
     let first = continue_from_scheduled_event(&mut kernel);
     assert!(
@@ -1009,8 +1050,8 @@ fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u
 fn instance_brands_reject_foreign_capabilities_without_mutation() {
     let mut model = harmonic_oscillator();
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()].into();
+    model.parameters = vec![1.0].into();
     let mut first = instantiate(&model);
     let mut second = instantiate(&model);
     let first_ref = first
@@ -1035,13 +1076,33 @@ fn instance_brands_reject_foreign_capabilities_without_mutation() {
         .get_outputs(&foreign_observation, 0.0, &mut values)
         .expect_err("observations cannot cross component instances");
 
-    let foreign_state = first.fmu_state();
+    let foreign_state = first.fmu_state().unwrap();
     second
         .reset_to_fmu_state(&foreign_state)
         .expect_err("saved component state cannot cross instances");
     assert_eq!(
         second.verification_observable_state().3,
         vec![1.0f64.to_bits()]
+    );
+}
+
+#[test]
+fn a_non_finite_input_rejects_the_whole_float64_batch_without_mutation() {
+    let mut model = harmonic_oscillator();
+    model.problem.solve_layout.compiled_parameter_len = 2;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string(), "v".to_string()].into();
+    model.parameters = vec![1.0, 2.0].into();
+    let mut kernel = instantiate(&model);
+    let u = kernel.value_reference("u").expect("u has a reference");
+    let v = kernel.value_reference("v").expect("v has a reference");
+
+    let error = kernel
+        .set_float64(&[u, v], &[5.0, f64::NAN])
+        .expect_err("a non-finite value is not writable");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits(), 2.0f64.to_bits()]
     );
 }
 
@@ -1156,7 +1217,7 @@ fn neutral_static_root_never_fabricates_a_relation_crossing() {
 fn post_pre_canonicalization_holds_parameter_only_relation_memory() {
     let model = post_pre_relation_cycle();
     let mut kernel = instantiate(&model);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     kernel
         .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
@@ -1182,7 +1243,7 @@ fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
         .validate()
         .expect("fixture certificates must satisfy the Solve shape contract");
     let mut kernel = instantiate(&model);
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     kernel
         .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
@@ -1204,7 +1265,7 @@ fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
 fn the_component_preserves_a_nonzero_root_distance_inside_solver_tolerance() {
     let mut model = strict_root_relation_memory();
     let positive_distance = 5.0e-11;
-    model.initial_y = vec![-positive_distance];
+    model.initial_y = vec![-positive_distance].into();
     model
         .validate()
         .expect("near-root fixture must satisfy the finalized Solve contract");
@@ -1320,7 +1381,7 @@ fn a_zero_state_model_constructs_the_common_component() {
 #[test]
 fn a_rejected_model_is_staged_at_instantiation() {
     let mut model = harmonic_oscillator();
-    model.initial_y = vec![1.0];
+    model.initial_y = vec![1.0].into();
     let error =
         SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
             .err()
@@ -1342,7 +1403,7 @@ fn constant_delay_model() -> solve::SolveModel {
     };
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.parameters = vec![0.0];
+    model.parameters = vec![0.0].into();
     model.problem.events.delays = solve::SolveDelayPartition {
         source_rhs: constant_row(3.0, "fmi_me_delay_source.mo"),
         delay_time_rhs: constant_row(0.2, "fmi_me_delay_time.mo"),
@@ -1541,6 +1602,45 @@ fn a_state_carrying_component_refuses_the_time_only_plugin() {
     );
 }
 
+#[test]
+fn a_live_session_without_a_trace_still_names_its_outputs() {
+    use super::session::{MeRetainedComponent, MeSessionOptions, MeSessionOptionsInput};
+
+    let model = refresh_owned(harmonic_oscillator());
+    let mut retained = MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the fixture component instantiates");
+    let options = |records_trace| {
+        MeSessionOptions::new(MeSessionOptionsInput {
+            start_time: 0.0,
+            stop_time: None,
+            relative_tolerance: 1.0e-8,
+            absolute_tolerance: 1.0e-8,
+            output_interval: 0.1,
+            root_scan_resolution: 0.05,
+            root_location_tolerance: 1.0e-10,
+            max_wall_seconds: None,
+            records_trace,
+        })
+        .expect("an open live session needs no defined stop")
+    };
+    let recorded = retained
+        .lease(options(true))
+        .expect("the sole lease is granted")
+        .output_names()
+        .expect("the output inventory reads");
+    let live = retained
+        .lease(options(false))
+        .expect("the lease is granted again")
+        .output_names()
+        .expect("the output inventory reads");
+    assert!(!recorded.is_empty());
+    assert_eq!(live, recorded);
+}
+
 fn fixture_instance_config() -> MeInstanceConfig {
     MeInstanceConfig::new("fmi-me-session", 1.0e-10, 0.0, 1.0)
         .expect("fixture instance configuration constructs")
@@ -1548,20 +1648,10 @@ fn fixture_instance_config() -> MeInstanceConfig {
 
 /// Build the refresh owners and the solver name index a fixture kernel needs to
 /// answer the batched output getters, without mutating a shared fixture.
-fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
+pub(super) fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
     model.problem.continuous.refresh_owners =
         rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
             .expect("ME fixture refresh owners construct");
-    model.problem.solve_layout.solver_maps.name_to_idx = model
-        .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(index, name)| (name, index))
-        .collect();
     model
 }
 
@@ -1670,7 +1760,7 @@ fn the_step_path_neither_masks_nor_reprojects_the_root_vector() {
 #[test]
 fn the_indicator_step_path_never_rebuilds_or_regrows_its_storage() {
     let mut model = strict_root_relation_memory();
-    model.initial_y = vec![-0.5];
+    model.initial_y = vec![-0.5].into();
     model
         .validate()
         .expect("stepping fixture must satisfy the finalized Solve contract");

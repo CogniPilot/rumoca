@@ -19,17 +19,15 @@ impl BodyEmitter<'_> {
             TensorInputKind::Y => Y_PTR_PARAM,
             TensorInputKind::P => P_PTR_PARAM,
         };
-        let counter = self.arena_plan()?.counter;
-        self.loop_start(counter, count)?;
-        self.push_arena_address(dst_start, Some(counter), 1)?;
+        self.push_arena_address(dst_start, None, 1)?;
         self.push(Instruction::LocalGet(pointer));
-        self.push(Instruction::LocalGet(counter));
-        self.push(Instruction::I32Const(8));
-        self.push(Instruction::I32Mul);
+        self.push(Instruction::I32Const(cell_bytes(input_start)?));
         self.push(Instruction::I32Add);
-        self.push(Instruction::F64Load(memarg_for_index(input_start)?));
-        self.push(Instruction::F64Store(memarg()));
-        self.loop_end(counter);
+        self.push(Instruction::I32Const(cell_bytes(count)?));
+        self.push(Instruction::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 1,
+        });
         Ok(())
     }
 
@@ -187,4 +185,12 @@ impl BodyEmitter<'_> {
         }
         Ok(())
     }
+}
+
+/// The byte length of `cells` eight-byte cells as a WASM constant.
+pub(in crate::emit) fn cell_bytes(cells: usize) -> Result<i32, String> {
+    cells
+        .checked_mul(8)
+        .and_then(|bytes| i32::try_from(bytes).ok())
+        .ok_or_else(|| "native cell run exceeds the WASM address range".into())
 }

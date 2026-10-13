@@ -53,7 +53,7 @@ fn flat_preserves_scalar_array_and_alias_effective_types() {
     assert_eq!(model.effective_types[&matrix.type_id].dimensions(), [2, 3]);
     assert_eq!(
         model.effective_types[&aliased_scalar.type_id].dimensions(),
-        []
+        [0_i64; 0]
     );
 }
 

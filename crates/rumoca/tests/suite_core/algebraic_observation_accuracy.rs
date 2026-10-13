@@ -22,16 +22,9 @@ fn algebraic_observation_refresh_bounds_recovered_coordinate_error() {
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
     let runtime = SolveRuntime::new(&model).unwrap();
-    let index = model
-        .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .iter()
-        .position(|name| name == "voltage")
-        .unwrap();
+    let index = model.problem.solver_index("voltage").unwrap();
     for time in [0.0, 0.5] {
-        let mut y = model.initial_y.clone();
+        let mut y = model.initial_y.to_vec();
         runtime
             .refresh_algebraic_and_output_slots_certified(
                 time,

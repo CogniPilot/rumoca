@@ -121,6 +121,9 @@ pub struct PreparedScalarProgramBlock {
     row_requirements: Vec<RowInputRequirements>,
     row_reverse_y_gradient_supported: Vec<bool>,
     row_is_causal: Vec<bool>,
+    /// Programs holding an assertion observation, which only the checked
+    /// event-action adapter evaluates, so no execution backend compiles them.
+    row_requires_checked_observation: Vec<bool>,
     row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
     row_tensor_affine_assignments: Vec<tensor_affine_assignment::PreparedTensorAffineAssignments>,
     row_parameter_indices: Vec<Box<[usize]>>,
@@ -575,6 +578,17 @@ impl PreparedScalarProgramBlock {
             && self
                 .assignment_shape_for_output(row_idx, output_offset, target_y_index)
                 .is_some()
+    }
+
+    /// Whether program `row_idx` holds an assertion observation, a fact fixed
+    /// when the block is prepared: such a program runs only in the reference
+    /// evaluator with its checked event-action adapter.
+    #[must_use]
+    pub fn program_requires_checked_observation(&self, row_idx: usize) -> bool {
+        self.row_requires_checked_observation
+            .get(row_idx)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn is_causal_row(&self, row_idx: usize) -> bool {

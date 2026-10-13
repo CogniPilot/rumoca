@@ -23,7 +23,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 2],
+        parameters: vec![0.0; 2].into(),
         ..Default::default()
     };
     model.problem.discrete.structured_rhs = solve::ComputeBlock {
@@ -88,9 +88,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
     assert!(model.problem.discrete.rhs.is_empty());
 }
 
-#[test]
-fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
-    let span = test_span("guarded_assignment_runtime.mo");
+fn guarded_range_owner(span: rumoca_core::Span) -> solve::GuardedAssignmentProgram {
     let condition = vec![
         solve::LinearOp::LoadP { dst: 0, index: 2 },
         solve::LinearOp::StoreOutput { src: 0 },
@@ -122,7 +120,7 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
     let conditional =
         solve::FunctionConditionalProgram::checked(0, [2], [(condition, selected)], fallback)
             .expect("guarded fixture conditional is checked");
-    let owner = solve::GuardedAssignmentProgram::checked(
+    solve::GuardedAssignmentProgram::checked(
         vec![
             solve::LinearOp::FunctionConditional {
                 dst_start: 0,
@@ -144,7 +142,13 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
         solve::IntegratorHistoryEffect::Preserve,
         None,
     )
-    .expect("guarded owner is checked");
+    .expect("guarded owner is checked")
+}
+
+#[test]
+fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
+    let span = test_span("guarded_assignment_runtime.mo");
+    let owner = guarded_range_owner(span);
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
             layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 3),
@@ -159,7 +163,7 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 3],
+        parameters: vec![0.0; 3].into(),
         ..Default::default()
     };
     model
@@ -167,9 +171,32 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
         .validate_shape_contract()
         .expect("guarded range satisfies the Solve contract");
     let runtime = SolveRuntime::new_fixture(&model).expect("guarded runtime should prepare");
-    assert!(runtime.discrete_rhs.is_empty());
-    assert_eq!(runtime.guarded_assignment_programs.len(), 1);
-    assert_eq!(runtime.guarded_assignment_programs[0].output_count(), 2);
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .discrete_rhs
+            .is_empty()
+    );
+    assert_eq!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .guarded_assignment_programs
+            .len(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .guarded_assignment_programs[0]
+            .output_count(),
+        2
+    );
     let mut y = Vec::new();
     let mut p = vec![1.0, 2.0, 0.0];
 
@@ -208,11 +235,11 @@ fn event_relation_cascade_model() -> solve::SolveModel {
     );
     solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 3),
+                vec!["reported".to_string(), "cascade".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["reported".to_string(), "cascade".to_string()],
-                    ..Default::default()
-                },
                 state_scalar_count: 2,
                 compiled_parameter_len: 3,
                 relation_memory_parameter_indices: vec![0, 1],
@@ -247,8 +274,8 @@ fn event_relation_cascade_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 1.0],
-        parameters: vec![0.0, 0.0, 0.0],
+        initial_y: vec![0.0, 1.0].into(),
+        parameters: vec![0.0, 0.0, 0.0].into(),
         ..Default::default()
     }
 }
@@ -257,8 +284,8 @@ fn event_relation_cascade_model() -> solve::SolveModel {
 fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
     let model = event_relation_cascade_model();
     let runtime = SolveRuntime::new_fixture(&model).expect("root cascade runtime should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -289,10 +316,10 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
 #[test]
 fn event_relation_override_releases_when_projected_input_reverses_sign() {
     let mut model = event_relation_cascade_model();
-    model.initial_y[1] = -1.0;
+    model.initial_y.set(1, -1.0).unwrap();
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
     let mut overrides = vec![(0, 1.0), (1, 1.0)];
@@ -337,14 +364,15 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
                     ]],
                     "whole_event_pass_implicit.mo",
                 )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                implicit_row_targets: (vec![Some(solve::scalar_slot_y(0))]).into(),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
+                    blocks: (vec![solve::AlgebraicProjectionBlock {
                         rows: vec![0],
                         y_indices: vec![0],
                         tearing: None,
                         alternate_charts: Vec::new(),
-                    }],
+                    }])
+                    .into(),
                 },
                 ..Default::default()
             },
@@ -366,8 +394,8 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
-        parameters: vec![0.0; 5],
+        initial_y: vec![1.0].into(),
+        parameters: vec![0.0; 5].into(),
         ..Default::default()
     };
     model
@@ -375,8 +403,8 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
         .validate_shape_contract()
         .expect("the typed event-iteration fixture is complete");
     let runtime = SolveRuntime::new_fixture(&model).expect("the event fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -436,10 +464,6 @@ fn whole_event_relation_row() -> Vec<solve::LinearOp> {
 
 fn whole_event_solve_layout() -> solve::SolveLayout {
     solve::SolveLayout {
-        solver_maps: solve::SolverNameIndexMaps {
-            names: vec!["algebraic".to_string()],
-            ..Default::default()
-        },
         algebraic_scalar_count: 1,
         compiled_parameter_len: 5,
         discrete_valued_scalar_names: vec!["mode".to_string(), "off".to_string()],
@@ -505,10 +529,6 @@ fn whole_event_discrete_system(relation_row: Vec<solve::LinearOp>) -> solve::Dis
 
 fn mixed_pre_solve_layout() -> solve::SolveLayout {
     solve::SolveLayout {
-        solver_maps: solve::SolverNameIndexMaps {
-            names: vec!["x".to_string()],
-            ..Default::default()
-        },
         variable_storage_runs: vec![
             solve::SolveVariableStorageRun {
                 base: solve::scalar_slot_p(0),
@@ -636,10 +656,10 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
             },
             ..Default::default()
         },
-        initial_y: vec![1.0],
+        initial_y: vec![1.0].into(),
         // The continuous pre lane is deliberately stale. Pass zero must seed
         // it from event_pre_y before projection mutates live y.
-        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0],
+        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0].into(),
         ..Default::default()
     };
     model
@@ -647,8 +667,8 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
         .validate_shape_contract()
         .expect("the mixed-pre fixture satisfies the Solve contract");
     let runtime = SolveRuntime::new_fixture(&model).expect("the mixed-pre fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -788,7 +808,7 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 5],
+        parameters: vec![0.0; 5].into(),
         ..Default::default()
     };
     model
@@ -797,7 +817,7 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
         .expect("clock-first-pass fixture satisfies the Solve contract");
     let runtime =
         SolveRuntime::new_fixture(&model).expect("clock-first-pass fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -917,7 +937,7 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 4],
+        parameters: vec![0.0; 4].into(),
         ..Default::default()
     };
     model
@@ -926,7 +946,7 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
         .expect("clock/relation ordering fixture satisfies the Solve contract");
     let runtime =
         SolveRuntime::new_fixture(&model).expect("clock/relation ordering fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -960,11 +980,11 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
 fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 2),
+                vec!["surface".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["surface".to_string()],
-                    ..Default::default()
-                },
                 state_scalar_count: 1,
                 compiled_parameter_len: 2,
                 // The first relation is scheduled/non-root; only the second
@@ -986,12 +1006,12 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
             },
             ..Default::default()
         },
-        initial_y: vec![-1.0],
-        parameters: vec![0.0, 0.0],
+        initial_y: vec![-1.0].into(),
+        parameters: vec![0.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("typed root target is a valid runtime");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
 
     runtime
         .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
@@ -1017,7 +1037,10 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
 fn algebraic_relation_partition_model() -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(Default::default(), 2, 2),
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 2),
+                vec!["state".to_string(), "algebraic".to_string()],
+            ),
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
                     vec![
@@ -1035,22 +1058,19 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
                     ],
                     "algebraic_relation_assignment.mo",
                 )),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                implicit_row_targets: (vec![None, Some(solve::scalar_slot_y(1))]).into(),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
+                    blocks: (vec![solve::AlgebraicProjectionBlock {
                         rows: vec![1],
                         y_indices: vec![1],
                         tearing: None,
                         alternate_charts: Vec::new(),
-                    }],
+                    }])
+                    .into(),
                 },
                 ..Default::default()
             },
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string(), "algebraic".to_string()],
-                    ..Default::default()
-                },
                 state_scalar_count: 1,
                 algebraic_scalar_count: 1,
                 compiled_parameter_len: 2,
@@ -1087,8 +1107,8 @@ fn algebraic_relation_partition_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, -1.0],
-        parameters: vec![-1.0, 0.0],
+        initial_y: vec![0.0, -1.0].into(),
+        parameters: vec![-1.0, 0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(
@@ -1105,7 +1125,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
     let model = algebraic_relation_partition_model();
     let runtime =
         SolveRuntime::new_fixture(&model).expect("typed relation partition should prepare");
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
 
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
@@ -1121,9 +1141,9 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
         "parameter-only relation memory stays fixed while the algebraic root joins the coupled closure"
     );
 
-    let mut overridden = model.parameters.clone();
+    let mut overridden = model.parameters.to_vec();
     let mut overrides = vec![(1, 0.0)];
-    let mut zero_y = model.initial_y.clone();
+    let mut zero_y = model.initial_y.to_vec();
     zero_y[1] = 0.0;
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
@@ -1133,7 +1153,7 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
             &mut overrides,
         )
         .expect("an exact-zero root retains its selected side");
-    assert_eq!(overridden, model.parameters);
+    assert_eq!(overridden, model.parameters.to_vec());
     assert_eq!(overrides, vec![(1, 0.0)]);
 
     runtime
@@ -1152,11 +1172,11 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
 fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                vec!["x".to_string(), "y".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "y".to_string()],
-                    ..Default::default()
-                },
                 algebraic_scalar_count: 2,
                 ..Default::default()
             },
@@ -1168,10 +1188,11 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
                     ],
                     "refresh_shadow.mo",
                 )),
-                implicit_row_targets: vec![
+                implicit_row_targets: (vec![
                     Some(solve::scalar_slot_y(1)),
                     Some(solve::scalar_slot_y(1)),
-                ],
+                ])
+                .into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1190,8 +1211,14 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     assert_eq!(plan.rows[0].target_index(), 1);
     assert!(!plan.causal_solution_certified);
     assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
-    assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![0, 1]);
-    assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![0, 1]);
+    assert_eq!(
+        plan.simultaneous_plan.blocks.scalar_blocks()[0].rows,
+        vec![0, 1]
+    );
+    assert_eq!(
+        plan.simultaneous_plan.blocks.scalar_blocks()[0].y_indices,
+        vec![0, 1]
+    );
 }
 
 #[test]
@@ -1230,7 +1257,7 @@ fn discrete_gather_retries_after_relation_refresh_and_preserves_settled_faults()
 /// memory is refreshed once before the source fault is retried.
 fn discrete_gather_retry_fixture(index: f64) -> (SolveRuntime, Vec<f64>, Vec<f64>) {
     let mut model = event_relation_cascade_model();
-    model.parameters = vec![0.0, 0.0, 1.0, -9.0];
+    model.parameters = vec![0.0, 0.0, 1.0, -9.0].into();
     model.problem.solve_layout.compiled_parameter_len = 4;
     model.problem.events.root_conditions = spanned_block(
         vec![vec![
@@ -1307,5 +1334,5 @@ fn discrete_gather_retry_fixture(index: f64) -> (SolveRuntime, Vec<f64>, Vec<f64
         vec![solve::IntegratorHistoryEffect::Preserve; 2];
     model.problem.discrete.clock_owners = vec![None; 2];
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
-    (runtime, model.initial_y, model.parameters)
+    (runtime, model.initial_y.to_vec(), model.parameters.to_vec())
 }

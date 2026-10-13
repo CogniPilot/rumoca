@@ -32,6 +32,7 @@
 
 mod constant_collection;
 mod enum_context;
+mod function_bindings;
 mod function_signatures;
 mod instanced;
 mod modifier_targets;
@@ -278,6 +279,7 @@ pub struct TypeChecker {
     /// inner map preserves the declaration slot from base type DefId to the
     /// effective instance type DefId.
     current_call_type_overrides: function_signatures::CallTypeOverrides,
+    reachable_function_bindings: Option<Vec<function_bindings::FunctionBindingContext>>,
     /// Type aliases whose targets could not be resolved during type-table
     /// construction (e.g. an MSL alias into a library that is not loaded).
     ///
@@ -310,6 +312,7 @@ impl TypeChecker {
             component_modifier_member_types: HashMap::new(),
             function_signatures: HashMap::new(),
             current_call_type_overrides: function_signatures::CallTypeOverrides::default(),
+            reachable_function_bindings: None,
             deferred_alias_errors: HashMap::new(),
         }
     }

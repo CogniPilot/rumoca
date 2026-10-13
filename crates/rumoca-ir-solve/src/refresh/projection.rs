@@ -38,6 +38,13 @@ impl ContinuousRefreshOwners {
         &self,
         canonical: &AlgebraicProjectionPlan,
     ) -> Result<(), ContinuousRefreshConstructionError> {
+        if let Some(blocks) = self.compact_projection() {
+            return if blocks == &canonical.blocks {
+                Ok(())
+            } else {
+                refresh_error("compact refresh recipe belongs to another projection".into())
+            };
+        }
         if !self.is_issued() {
             return Ok(());
         }
@@ -79,12 +86,12 @@ fn validate_projection_plan(
     canonical: &AlgebraicProjectionPlan,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     let mut seen = BTreeSet::new();
-    for (&index, block) in plan
-        .simultaneous_block_indices
-        .iter()
-        .zip(&plan.simultaneous_plan.blocks)
-    {
-        if !seen.insert(index) || canonical.blocks.get(index) != Some(block) {
+    for (local, &index) in plan.simultaneous_block_indices.iter().enumerate() {
+        let block = plan.simultaneous_plan.blocks.scalar_block_at(local);
+        if !seen.insert(index)
+            || block.is_none()
+            || canonical.blocks.scalar_block_at(index) != block
+        {
             return refresh_error(
                 "continuous refresh owner does not replay its canonical projection block"
                     .to_string(),
@@ -92,4 +99,48 @@ fn validate_projection_plan(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ProjectionBlocks, ProjectionStage, RefreshScalarProgramSource, ScalarSlot,
+        SolveVariableStorageRole, SolveVariableStorageRun, SolveVariableValueKind,
+    };
+
+    #[test]
+    fn scalar_refresh_replays_requested_ranged_receipt_and_rejects_changed_target() {
+        let canonical = AlgebraicProjectionPlan {
+            blocks: ProjectionBlocks::from_stages(vec![ProjectionStage::SingletonDeclarationRun {
+                source: RefreshScalarProgramSource::checked(0, 0).unwrap(),
+                first_row: 7,
+                declaration: 0,
+                storage: SolveVariableStorageRun {
+                    base: ScalarSlot::Y {
+                        index: 3,
+                        byte_offset: 24,
+                    },
+                    scalar_count: 65536,
+                    role: SolveVariableStorageRole::Algebraic,
+                    value_kind: SolveVariableValueKind::Real,
+                },
+            }])
+            .unwrap(),
+        };
+        let requested = canonical
+            .blocks
+            .scalar_block_at(65535)
+            .unwrap()
+            .into_owned();
+        let mut plan = RefreshPlan::default();
+        plan.simultaneous_plan.blocks = vec![requested.clone()].into();
+        plan.simultaneous_block_indices = vec![65535];
+        assert!(validate_projection_plan(&plan, &canonical).is_ok());
+        let mut changed = requested;
+        changed.y_indices[0] -= 1;
+        plan.simultaneous_plan.blocks = vec![changed].into();
+        assert!(validate_projection_plan(&plan, &canonical).is_err());
+        assert_eq!(canonical.blocks.stages().len(), 1);
+    }
 }

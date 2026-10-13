@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::portable_source_root_cache::{parse_version_components, strip_trailing_version_suffix};
+
 #[derive(Debug, Clone, Error)]
 #[error(
     "invalid Modelica package layout under '{}': {summary}",
@@ -887,7 +889,70 @@ fn discover_package_roots(path: &Path) -> Result<Vec<PathBuf>> {
         }
         roots.push(dir);
     }
-    Ok(roots)
+    select_one_provider_per_package(path, roots)
+}
+
+/// One candidate directory providing a top-level package of a source root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageProvider {
+    dir: PathBuf,
+    /// Parsed `Name X.Y.Z` suffix; `None` for an unversioned directory.
+    version: Option<Vec<u64>>,
+}
+
+impl PackageProvider {
+    fn new(dir: PathBuf) -> (String, Self) {
+        let dir_name = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let logical = strip_trailing_version_suffix(&dir_name);
+        let version = dir_name
+            .get(logical.len() + 1..)
+            .and_then(parse_version_components);
+        (logical, Self { dir, version })
+    }
+}
+
+/// Keep exactly one providing directory per top-level package name (MLS 13.4:
+/// a package is provided by one directory, a versioned `Name X.Y.Z` is
+/// preferred over an unversioned `Name`, and among versions the highest wins).
+/// The same version provided twice is ambiguous and refused.
+fn select_one_provider_per_package(path: &Path, roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let mut providers: BTreeMap<(PathBuf, String), Vec<PackageProvider>> = BTreeMap::new();
+    for dir in roots {
+        let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+        let (logical, provider) = PackageProvider::new(dir);
+        providers
+            .entry((parent, logical))
+            .or_default()
+            .push(provider);
+    }
+    let mut selected = Vec::new();
+    for ((_, logical), mut candidates) in providers {
+        candidates.sort_by(|a, b| b.version.cmp(&a.version));
+        if let [best, runner_up, ..] = candidates.as_slice()
+            && best.version == runner_up.version
+        {
+            let diagnostic = CommonDiagnostic::global_error(
+                "PKG-007",
+                format!(
+                    "package '{logical}' is provided twice at the same version by '{}' and '{}'",
+                    best.dir.display(),
+                    runner_up.dir.display()
+                ),
+            );
+            return Err(PackageLayoutError::new(
+                path.to_path_buf(),
+                vec![diagnostic],
+                SourceMap::new(),
+            )
+            .into());
+        }
+        selected.extend(candidates.into_iter().next().map(|best| best.dir));
+    }
+    selected.sort();
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -1129,5 +1194,56 @@ mod tests {
             files.iter().any(|f| f.file_name().unwrap() == "model.mo"),
             "should find the .mo file: {files:?}"
         );
+    }
+
+    fn write_package(root: &Path, dir: &str) {
+        let package_dir = root.join(dir);
+        fs::create_dir_all(&package_dir).expect("mkdir package");
+        fs::write(package_dir.join("package.mo"), "package Lib end Lib;").expect("write package");
+    }
+
+    fn source_root_dirs(root: &Path) -> Vec<String> {
+        let mut dirs: Vec<String> = collect_source_root_source_files(root)
+            .expect("collect")
+            .iter()
+            .filter_map(|file| file.parent()?.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        dirs.dedup();
+        dirs
+    }
+
+    #[test]
+    fn source_root_prefers_versioned_directory_over_unversioned_provider() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_package(temp.path(), "Lib");
+        write_package(temp.path(), "Lib 1.0.0");
+        write_package(temp.path(), "Lib 1.2.0");
+
+        assert_eq!(source_root_dirs(temp.path()), vec!["Lib 1.2.0".to_string()]);
+    }
+
+    #[test]
+    fn source_root_with_only_unversioned_directory_still_loads() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_package(temp.path(), "Lib");
+
+        assert_eq!(source_root_dirs(temp.path()), vec!["Lib".to_string()]);
+    }
+
+    #[test]
+    fn source_root_refuses_the_same_version_provided_twice() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_package(temp.path(), "Lib 1.0.0");
+        write_package(temp.path(), "Lib-1.0.0");
+
+        let error = collect_source_root_source_files(temp.path()).expect_err("ambiguous");
+        let layout = error
+            .downcast_ref::<PackageLayoutError>()
+            .expect("typed layout error");
+        let diagnostic = &layout.diagnostics()[0];
+        assert_eq!(diagnostic.code.as_deref(), Some("PKG-007"));
+        assert!(diagnostic.message.contains("Lib 1.0.0"));
+        assert!(diagnostic.message.contains("Lib-1.0.0"));
     }
 }

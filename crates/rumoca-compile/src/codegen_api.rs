@@ -38,7 +38,7 @@ pub fn render_ast_template_with_name(
 }
 
 pub use rumoca_phase_codegen::{
-    AlgorithmCodeTemplateRenderer, SolveTemplateRenderer,
+    AlgorithmCodeTemplateRenderer, NativeFmiTemplateRenderer, SolveTemplateRenderer,
     render_algorithm_code_template_with_artifact, render_solve_template_with_name,
 };
 

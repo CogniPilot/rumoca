@@ -5,16 +5,40 @@ description = "Experimental FMI 3 Co-Simulation WebAssembly component wrapping t
 execution_mode = "compiled"
 deployment_class = "wasm-component"
 readiness_level = 0
-completion_message = """Experimental FMI-LS-Wasm component crate written to: {{ out_dir }}
-The C sources under csrc/ are the shared FMI 3 kernel; src/lib.rs adapts the
-pinned WIT world onto them. Build for wasm32-wasip2 with the standard
-CC_wasm32_wasip2/AR_wasm32_wasip2 environment, then validate the component with
-wasm-tools.
+completion_message = """Compiled experimental FMI-LS-Wasm FMU written under: {{ out_dir }}
+The flat .fmu archive contains the shared C kernel compiled into its wasm32-wasip2
+component, same-session Co-Simulation metadata and layered-standard manifest.
 Contract: modelica/fmi-ls-wasm@c1aac17d392bec989fe2d059db3cc57bb7a0fff5 (non-normative draft)."""
 
 [package]
 root = "{{ model_name }}"
-required_files = ["Cargo.toml", "build.rs", "src/lib.rs", "csrc/model.c", "csrc/model.h", "csrc/rmc_rows.c", "csrc/rmc_isolators.c", "csrc/rmc_functions.c", "csrc/rmc_assign.c", "csrc/rmc_jacobian.c", "csrc/fmi3Functions.h", "wit/world.wit", "UPSTREAM.md", "upstream/LICENSE.txt", "csrc/LICENSE.txt"]
+required_files = ["modelDescription.xml", "extra/org.modelica.fmi-ls-wasm/manifest.xml", "binaries/wasm32-wasip2/Rumoca_{{ artifact.identities.fmu | replace('-', '_') }}.wasm"]
+build_only = ["Cargo.toml", "build.rs", "src", "csrc", "wit", "UPSTREAM.md", "upstream", "extra/org.modelica.fmi-ls-wasm/fmi3/fmi3Functions.h", "extra/org.modelica.fmi-ls-wasm/fmi3/fmi3FunctionTypes.h", "extra/org.modelica.fmi-ls-wasm/fmi3/fmi3PlatformTypes.h"]
+
+[[package.inputs]]
+name = "component"
+path = "binaries/wasm32-wasip2/Rumoca_{{ artifact.identities.fmu | replace('-', '_') }}.wasm"
+[package.inputs.build]
+kind = "cargo-wasm-component"
+manifest = "Cargo.toml"
+library = "rumoca_{{ artifact.identities.fmu | replace('-', '_') }}"
+wit-directory = "wit"
+world = "co-simulation-fmu"
+# Compiler/standard-library imports are separate from the retained FMI contract.
+# The adapter validates these exact interface IDs; their types come from the
+# decoded Rust artifact. A toolchain adding other imports requires a policy edit.
+allowed-extra-imports = '["wasi:clocks/wall-clock@0.2.6", "wasi:filesystem/types@0.2.6", "wasi:filesystem/preopens@0.2.6", "wasi:io/poll@0.2.6", "wasi:io/error@0.2.6", "wasi:io/streams@0.2.6", "wasi:cli/environment@0.2.6", "wasi:cli/exit@0.2.6", "wasi:cli/stdin@0.2.6", "wasi:cli/stdout@0.2.6", "wasi:cli/stderr@0.2.6", "wasi:cli/terminal-input@0.2.6", "wasi:cli/terminal-output@0.2.6", "wasi:cli/terminal-stdin@0.2.6", "wasi:cli/terminal-stdout@0.2.6", "wasi:cli/terminal-stderr@0.2.6"]'
+
+[package.archive]
+path = "{{ model_name }}.fmu"
+format = "zip"
+root = "flat"
+
+
+[fmi_deployment]
+interfaces = "co-simulation"
+variable_kinds = ["Real", "Integer", "Enumeration", "Boolean"]
+fmu_state = false
 
 [capabilities]
 continuous_states = true
@@ -105,3 +129,19 @@ template = "rmc_jacobian.c.jinja"
 [[files]]
 path = "UPSTREAM.md"
 template = "UPSTREAM.md.jinja"
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+
+[[files]]
+path = "extra/org.modelica.fmi-ls-wasm/manifest.xml"
+template = "manifest.xml.jinja"
+
+[[assets]]
+source = "upstream"
+dest = "extra/org.modelica.fmi-ls-wasm/upstream/"
+
+[[assets]]
+source = "fmi3-headers"
+dest = "extra/org.modelica.fmi-ls-wasm/fmi3/"

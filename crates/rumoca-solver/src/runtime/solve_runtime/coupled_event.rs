@@ -3,7 +3,7 @@ use crate::{
 };
 use rumoca_ir_solve as solve;
 
-use super::SolveRuntime;
+use super::ScalarExecutionView;
 use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
@@ -43,7 +43,7 @@ struct CoupledEventInventory {
 }
 
 struct CoupledEventSystem<'a> {
-    runtime: &'a SolveRuntime,
+    runtime: ScalarExecutionView<'a>,
     jvps: &'a CoupledEventJvps,
     snapshot: &'a DiscretePreSnapshot<'a>,
     base_y: &'a [f64],
@@ -54,7 +54,7 @@ struct CoupledEventSystem<'a> {
     max_iters: usize,
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     pub(super) fn solve_coupled_event_rows(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,
@@ -76,7 +76,7 @@ impl SolveRuntime {
         let mut unknowns = read_unknowns(&inventory.unknowns, input.y, input.p)?;
         let jvps = CoupledEventJvps::prepare(&self.model.artifacts.discrete)?;
         let system = CoupledEventSystem {
-            runtime: self,
+            runtime: *self,
             jvps: &jvps,
             snapshot,
             base_y: input.y,
@@ -126,12 +126,13 @@ impl SolveRuntime {
             unknowns: Vec::new(),
             residuals: Vec::new(),
         };
-        for block in &self
+        for block in self
             .model
             .problem
             .continuous
             .algebraic_projection_plan
             .blocks
+            .scalar_blocks()
         {
             if block.rows.len() != block.y_indices.len() {
                 return Err(RuntimeSolveError::solve_ir(format!(
@@ -157,7 +158,7 @@ impl SolveRuntime {
             .copied()
             .enumerate()
         {
-            if self.event_transaction_coverage.discrete_rows[row] {
+            if self.scalar.event_transaction_coverage.discrete_rows[row] {
                 continue;
             }
             if !self.discrete_row_active_at(row, t)? {
@@ -179,13 +180,14 @@ impl SolveRuntime {
         }
         self.append_guarded_coupled_inventory(&mut inventory, snapshot, t)?;
         for (row_index, row) in self
+            .scalar
             .structured_discrete_rows
             .rows()
             .iter()
             .copied()
             .enumerate()
         {
-            if self.event_transaction_coverage.structured_updates[row.update_index] {
+            if self.scalar.event_transaction_coverage.structured_updates[row.update_index] {
                 continue;
             }
             if !self.structured_discrete_row_active_at(row, t)? {
@@ -221,7 +223,7 @@ impl SolveRuntime {
             .iter()
             .enumerate()
         {
-            if self.event_transaction_coverage.guarded_assignments[program_index]
+            if self.scalar.event_transaction_coverage.guarded_assignments[program_index]
                 || !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)?
             {
                 continue;
@@ -366,8 +368,8 @@ impl CoupledEventSystem<'_> {
         p: &[f64],
         residual: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let mut implicit = vec![0.0; self.runtime.implicit_scalar_rhs.len()];
-        self.runtime.implicit_scalar_rhs.eval_with_context(
+        let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.len()];
+        self.runtime.scalar.implicit_scalar_rhs.eval_with_context(
             y,
             p,
             self.t,
@@ -482,6 +484,7 @@ impl CoupledEventSystem<'_> {
     ) -> Result<f64, RuntimeSolveError> {
         let row = self
             .runtime
+            .scalar
             .structured_discrete_rows
             .rows()
             .get(row_index)
@@ -639,7 +642,9 @@ mod tests {
     use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock};
 
     use super::*;
-    use crate::runtime::solve_runtime::{EventUpdateRowFilter, ProjectedEventUpdateInput};
+    use crate::runtime::solve_runtime::{
+        EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
+    };
 
     fn fixture_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
@@ -737,11 +742,11 @@ mod tests {
         let (implicit_full, implicit_y, discrete_jvp) = coupled_event_tangents();
         solve::SolveModel {
             problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                    vec!["z".to_string()],
+                ),
                 solve_layout: solve::SolveLayout {
-                    solver_maps: solve::SolverNameIndexMaps {
-                        names: vec!["z".to_string()],
-                        ..Default::default()
-                    },
                     algebraic_scalar_count: 1,
                     discrete_real_scalar_names: vec!["d".to_string()],
                     discrete_valued_scalar_names: vec!["mode".to_string()],
@@ -749,14 +754,15 @@ mod tests {
                 },
                 continuous: solve::ContinuousSolveSystem {
                     implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                    implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                    implicit_row_targets: (vec![Some(solve::scalar_slot_y(0))]).into(),
                     algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                        blocks: vec![solve::AlgebraicProjectionBlock {
+                        blocks: (vec![solve::AlgebraicProjectionBlock {
                             rows: vec![0],
                             y_indices: vec![0],
                             tearing: None,
                             alternate_charts: Vec::new(),
-                        }],
+                        }])
+                        .into(),
                     },
                     ..Default::default()
                 },
@@ -790,7 +796,7 @@ mod tests {
                 },
                 ..Default::default()
             },
-            initial_y: vec![0.0],
+            initial_y: vec![0.0].into(),
             ..Default::default()
         }
     }

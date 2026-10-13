@@ -1,4 +1,16 @@
-{#-
+#if defined(__GNUC__) || defined(__clang__)
+#define RMC_COLD __attribute__((cold))
+#else
+#define RMC_COLD
+#endif
+/* Symbols shared between the component's translation units stay out of the
+   dynamic symbol table; Windows objects have no such attribute and a static
+   build has no symbol table to hide them from. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32) && !defined(RMC_STATIC_BUILD)
+#define RMC_API __attribute__((visibility("hidden")))
+#else
+#define RMC_API
+#endif{#-
   Shared Model-Exchange algebraic refresh for the generated C components.
 
   One kernel, included by every C component target, settles algebraic
@@ -14,7 +26,7 @@
   The including template defines `ModelInstance` (with `time`, `y`, `p`),
   `Y_LEN`, and `RMC_LOG(m, message)`, and imports `scalar_op`.
 -#}
-{%- from "fmi-c-kernel.jinja" import scalar_op, c_string %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, store_range, store_target, c_string %}
 
 {%- macro c_array(name, type, values) -%}
 {%- if values|length > 0 %}
@@ -1217,10 +1229,17 @@ static inline int rmc_project_complete(ModelInstance* m, const size_t* entries, 
 static int rmc_asg_p{{ loop.index0 }}(ModelInstance* m) {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
 {%- for op in program.ops %}
+{%- if op.kind == "StoreOutputRange" and op.output_span is defined %}
+{{ store_range(op, "m->y", "1") }}
+{%- elif op.kind == "StoreOutputRange" %}
+{%- for output_index in op.output_indices %}
+    {{ store_target("m->y", none, output_index) }} = r[{{ op.start + loop.index0 * op.stride }}];
+    if (!isfinite(m->y[{{ output_index }}])) return 1;
+{%- endfor %}
+{%- else %}
 {{ scalar_op(op, "m->y", "-1") }}
 {%- if op.kind == "StoreOutput" %}    if (!isfinite(m->y[{{ op.output_index }}])) return 1;
-{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    if (!isfinite(m->y[{{ output_index }}])) return 1;
-{%- endfor %}
+{%- endif %}
 {%- endif %}
 {%- endfor %}
     return 0;
@@ -2045,11 +2064,17 @@ RMC_COLD static {{ prefix }}Status rmc_initialize(ModelInstance* m, double toler
     kernel, which the program units define. -#}
 {%- macro kernel_declarations(me) %}
 #if defined(__GNUC__) || defined(__clang__)
-#define RMC_API __attribute__((visibility("hidden")))
 #define RMC_COLD __attribute__((cold))
 #else
-#define RMC_API
 #define RMC_COLD
+#endif
+/* Symbols shared between the component's translation units stay out of the
+   dynamic symbol table; Windows objects have no such attribute and a static
+   build has no symbol table to hide them from. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32) && !defined(RMC_STATIC_BUILD)
+#define RMC_API __attribute__((visibility("hidden")))
+#else
+#define RMC_API
 #endif
 {%- if me.assign.plan.programs|length > 0 %}
 RMC_API int rmc_assign(ModelInstance* m, size_t first, size_t count);

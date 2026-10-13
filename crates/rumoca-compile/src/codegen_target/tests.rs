@@ -11,6 +11,7 @@ use rumoca_ir_dae::{
 };
 use std::path::Path;
 
+mod bulk_owner_union;
 mod projection_refusals;
 
 fn dae_with_placeholder_family() -> Dae {
@@ -181,122 +182,7 @@ template = "model.out.jinja"
 }
 
 fn solve_with_issued_exact_algebraic_assignment() -> rumoca_ir_solve::SolveProblem {
-    use rumoca_ir_solve as solve;
-
-    let implicit_rhs = exact_algebraic_fixture_source();
-    let row = solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
-        owner_id: solve::RefreshRowOwnerId::checked(0).expect("fixture owner fits"),
-        source: solve::RefreshScalarProgramSource::checked(0, 0).expect("fixture source fits"),
-        equation_index: 0,
-        output_offset: 0,
-        target_index: 0,
-        assignment_target: Some(0),
-        assignment_shape: Some(solve::TargetAssignmentShape::Direct {
-            target_y_index: 0,
-            expr_reg: 1,
-            target_scale: 1.0,
-            expr_eval_len: 2,
-        }),
-        direct_assignment_certified: true,
-        exact_assignment_certified: true,
-    })
-    .expect("fixture refresh row is valid");
-    let algebraic = solve::RefreshPlan {
-        simultaneous_plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: vec![0],
-                y_indices: vec![0],
-                tearing: None,
-                alternate_charts: Vec::new(),
-            }],
-        },
-        simultaneous_block_indices: vec![0],
-        rows: vec![row],
-        causal_seed_rows: solve::RefreshRowSelection::checked(1, [0])
-            .expect("fixture selection is valid"),
-        dynamic_causal_seed_rows: solve::RefreshRowSelection::checked(1, [0])
-            .expect("fixture selection is valid"),
-        value_stages: vec![solve::RefreshStage::ExactAssignments {
-            static_sequence: Default::default(),
-            dynamic_sequence: Default::default(),
-            static_rows: solve::RefreshRowSelection::default(),
-            dynamic_rows: solve::RefreshRowSelection::checked(1, [0])
-                .expect("fixture selection is valid"),
-        }],
-        causal_solution_certified: true,
-        ..solve::RefreshPlan::default()
-    };
-    let refresh_owners = solve::ContinuousRefreshOwners::checked_for_source(
-        &implicit_rhs,
-        algebraic,
-        solve::RefreshPlan::default(),
-        solve::RefreshPlan::default(),
-        solve::RefreshPlan::default(),
-        Vec::new(),
-    )
-    .expect("fixture refresh owners are valid");
-    let solve_layout = solve::SolveLayout {
-        solver_maps: solve::SolverNameIndexMaps {
-            names: vec!["y".to_string()],
-            name_to_idx: indexmap::IndexMap::from([("y".to_string(), 0)]),
-            base_to_indices: indexmap::IndexMap::from([("y".to_string(), vec![0])]),
-        },
-        algebraic_scalar_count: 1,
-        ..solve::SolveLayout::default()
-    };
-    let continuous = solve::ContinuousSolveSystem {
-        implicit_rhs: implicit_rhs.clone(),
-        residual: implicit_rhs,
-        implicit_row_targets: vec![Some(solve::ScalarSlot::Y {
-            index: 0,
-            byte_offset: 0,
-        })],
-        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: vec![0],
-                y_indices: vec![0],
-                tearing: None,
-                alternate_charts: Vec::new(),
-            }],
-        },
-        refresh_owners,
-        ..solve::ContinuousSolveSystem::default()
-    };
-    solve::SolveProblem {
-        layout: solve::VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0),
-        solve_layout,
-        continuous,
-        ..solve::SolveProblem::default()
-    }
-}
-
-fn exact_algebraic_fixture_source() -> rumoca_ir_solve::ComputeBlock {
-    use rumoca_ir_solve as solve;
-
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("exact-algebraic-target.mo"),
-        0,
-        1,
-    );
-    let provenance = rumoca_core::ProvenanceSpan::new(span, "exact algebraic target fixture")
-        .expect("fixture provenance is valid");
-    solve::ComputeBlock::from_scalar_program_block(
-        solve::ScalarProgramBlock::with_source_span(
-            vec![vec![
-                solve::LinearOp::LoadY { dst: 0, index: 0 },
-                solve::LinearOp::Const { dst: 1, value: 1.0 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Sub,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::StoreOutput { src: 2 },
-            ]],
-            provenance,
-        )
-        .expect("fixture scalar program is valid"),
-    )
+    bulk_owner_union::fixture(1)
 }
 
 fn unrelated_single_output_block() -> rumoca_ir_solve::ComputeBlock {
@@ -458,7 +344,7 @@ fn solve_with_dependent_algebraic_assignments() -> rumoca_ir_solve::SolveProblem
     use rumoca_ir_solve as solve;
 
     solve_with_dependent_algebraic_projection(solve::AlgebraicProjectionPlan {
-        blocks: vec![
+        blocks: (vec![
             solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
@@ -471,7 +357,8 @@ fn solve_with_dependent_algebraic_assignments() -> rumoca_ir_solve::SolveProblem
                 tearing: None,
                 alternate_charts: Vec::new(),
             },
-        ],
+        ])
+        .into(),
     })
 }
 
@@ -512,21 +399,13 @@ fn solve_with_dependent_algebraic_projection(
     )
     .expect("fixture refresh owners are internally consistent");
     let solve_layout = solve::SolveLayout {
-        solver_maps: solve::SolverNameIndexMaps {
-            names: vec!["y0".to_string(), "y1".to_string()],
-            name_to_idx: indexmap::IndexMap::from([("y0".to_string(), 0), ("y1".to_string(), 1)]),
-            base_to_indices: indexmap::IndexMap::from([
-                ("y0".to_string(), vec![0]),
-                ("y1".to_string(), vec![1]),
-            ]),
-        },
         algebraic_scalar_count: 2,
         ..solve::SolveLayout::default()
     };
     let continuous = solve::ContinuousSolveSystem {
         implicit_rhs: implicit_rhs.clone(),
         residual: implicit_rhs,
-        implicit_row_targets: vec![
+        implicit_row_targets: (vec![
             Some(solve::ScalarSlot::Y {
                 index: 0,
                 byte_offset: 0,
@@ -535,13 +414,17 @@ fn solve_with_dependent_algebraic_projection(
                 index: 1,
                 byte_offset: 8,
             }),
-        ],
+        ])
+        .into(),
         algebraic_projection_plan: projection,
         refresh_owners,
         ..solve::ContinuousSolveSystem::default()
     };
     solve::SolveProblem {
-        layout: solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 0),
+        layout: named_y_layout(
+            solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 0),
+            vec!["y0".to_owned(), "y1".to_owned()],
+        ),
         solve_layout,
         continuous,
         ..solve::SolveProblem::default()
@@ -740,7 +623,13 @@ fn exact_assignment_consumer_rejects_an_unowned_implicit_output() {
     let implicit_rhs = block_with_unowned_second_output();
     solve.continuous.implicit_rhs = implicit_rhs.clone();
     solve.continuous.residual = implicit_rhs;
-    solve.continuous.implicit_row_targets.push(None);
+    let mut targets = solve
+        .continuous
+        .implicit_row_targets
+        .scalar_targets()
+        .to_vec();
+    targets.push(None);
+    solve.continuous.implicit_row_targets = targets.into();
     let target = templates::builtin_targets()
         .iter()
         .find(|target| target.name == "fmi3")
@@ -753,20 +642,18 @@ fn exact_assignment_consumer_rejects_an_unowned_implicit_output() {
     assert!(
         error
             .to_string()
-            .contains("do not cover the required algebraic Y inventory")
+            .contains("do not cover required algebraic Y")
     );
 }
 
 #[test]
 fn exact_assignment_consumer_rejects_an_unissued_algebraic_suffix() {
     let solve = rumoca_ir_solve::SolveProblem {
-        layout: rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0),
+        layout: crate::codegen_target::tests::named_y_layout(
+            rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0),
+            vec!["y".to_string()],
+        ),
         solve_layout: rumoca_ir_solve::SolveLayout {
-            solver_maps: rumoca_ir_solve::SolverNameIndexMaps {
-                names: vec!["y".to_string()],
-                name_to_idx: indexmap::IndexMap::from([("y".to_string(), 0)]),
-                base_to_indices: indexmap::IndexMap::from([("y".to_string(), vec![0])]),
-            },
             algebraic_scalar_count: 1,
             ..rumoca_ir_solve::SolveLayout::default()
         },
@@ -784,7 +671,7 @@ fn exact_assignment_consumer_rejects_an_unissued_algebraic_suffix() {
     assert!(
         error
             .to_string()
-            .contains("do not cover the required algebraic Y inventory"),
+            .contains("do not cover required algebraic Y"),
         "unexpected unissued-algebraic error: {error:#}"
     );
 }
@@ -1157,11 +1044,14 @@ events = false
 #[test]
 fn explicit_rhs_target_rejects_required_algebraic_projection() {
     let mut solve = rumoca_ir_solve::SolveProblem::default();
-    solve
+    let mut blocks = solve
         .continuous
         .algebraic_projection_plan
         .blocks
-        .push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+        .scalar_blocks()
+        .to_vec();
+    blocks.push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+    solve.continuous.algebraic_projection_plan.blocks = blocks.into();
     let manifest = parse_manifest_with_ir_capabilities(
         "solve",
         r#"
@@ -1271,11 +1161,14 @@ fn exact_assignment_consumer_rejects_incomplete_algebraic_schedule() {
 #[test]
 fn residual_kernel_target_accepts_algebraic_projection_contract() {
     let mut solve = rumoca_ir_solve::SolveProblem::default();
-    solve
+    let mut blocks = solve
         .continuous
         .algebraic_projection_plan
         .blocks
-        .push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+        .scalar_blocks()
+        .to_vec();
+    blocks.push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+    solve.continuous.algebraic_projection_plan.blocks = blocks.into();
     let manifest = parse_manifest_with_ir_capabilities(
         "solve",
         r#"
@@ -1948,4 +1841,41 @@ fn target_asset_relative_path_rejects_paths_outside_root() {
         error.to_string().contains("is not beneath source root"),
         "unexpected error: {error:#}"
     );
+}
+
+// Authored scalar labels for bounded direct-IR tests, using the sole layout owner.
+
+use rumoca_ir_solve::{VarLayout, scalar_slot_y};
+
+pub(super) fn named_y_layout(layout: VarLayout, names: Vec<String>) -> VarLayout {
+    let y_scalars = if layout.y_scalars() == 0 {
+        names.len()
+    } else {
+        layout.y_scalars()
+    };
+    let mut bindings = layout.bindings().clone();
+    let mut shapes = indexmap::IndexMap::new();
+    let mut spans = indexmap::IndexMap::new();
+    for name in bindings.keys() {
+        if let Some(shape) = layout.shape(name.as_str()) {
+            shapes.insert(name.clone(), shape.to_vec());
+        }
+        if let Some(span) = layout.shape_span(name.as_str()) {
+            spans.insert(name.clone(), span);
+        }
+    }
+    for (index, name) in names.into_iter().enumerate() {
+        let slot = scalar_slot_y(index);
+        if layout.scalar_name_for_slot(slot).is_none() {
+            bindings.insert(rumoca_core::VarName::intern(&name), slot);
+        }
+    }
+    VarLayout::from_interned_parts_with_shapes_and_spans(
+        bindings,
+        shapes,
+        spans,
+        y_scalars,
+        layout.p_scalars(),
+    )
+    .expect("authored fixture labels preserve the original checked layout")
 }

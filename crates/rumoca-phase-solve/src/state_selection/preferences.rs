@@ -34,6 +34,7 @@ pub(super) fn prefer_or_retain<'source>(
     model: &'source dae::Dae,
     prepared: PreparedDae<'source>,
     overrides: &HashMap<String, f64>,
+    input_policy: dae::InputInitializationPolicy,
 ) -> Result<PreparedSelection<'source>, StructuralError> {
     let Some(request) = PreferenceRequest::of(model, &prepared) else {
         return Ok(PreparedSelection::retained(prepared));
@@ -47,7 +48,7 @@ pub(super) fn prefer_or_retain<'source>(
     }
     let mut alternate_selections = AlternateSelections::default();
     let candidate = match formal.construct_state_candidate_with_charts(|formal| {
-        let (selection, alternates, _) = select(formal, overrides)?;
+        let (selection, alternates, _) = select(formal, overrides, input_policy)?;
         alternate_selections = alternates;
         Ok(selection)
     }) {
@@ -87,8 +88,12 @@ pub(super) fn executes_preferred_basis(
             return Ok(None);
         }
         formal.inspect(|formal| {
-            select(formal, &HashMap::new())
-                .map(|(_, _, primary)| Some(basis_names(formal.source, &primary)))
+            select(
+                formal,
+                &HashMap::new(),
+                dae::InputInitializationPolicy::default(),
+            )
+            .map(|(_, _, primary)| Some(basis_names(formal.source, &primary)))
         })
     });
     match selected {

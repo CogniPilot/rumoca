@@ -250,7 +250,7 @@ fn a_while_predicate_sees_the_old_value_of_a_shared_capture() {
             &[x],
             &[d[0]],
             span(40622),
-            |r, car, cap, o| {
+            |r, car, cap, _binders, o| {
                 let _a = r.load(car[0], span(1))?;
                 let k = r.load(cap[0], span(2))?;
                 let e = r.project_element(k, vec![0], span(3))?;

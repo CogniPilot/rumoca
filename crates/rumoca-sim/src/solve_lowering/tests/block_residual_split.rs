@@ -35,7 +35,12 @@ fn check_splits(label: &str, model: &solve::SolveModel) -> usize {
             .expect("scalar residual programs");
     let prepared = PreparedScalarProgramBlock::new(implicit.clone()).expect("prepared programs");
     let structures = model.artifacts.continuous.structural.algebraic_projection();
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     let mut state = 0x9e37_79b9_u64;
     let mut checked = 0;
     for (index, (block, structure)) in blocks.iter().zip(structures).enumerate() {
@@ -290,7 +295,12 @@ fn fourbar1_splits_are_exact() {
     // its rows, so its passes evaluate the shared output selection once per
     // program and never the per-row batch.
     let structures = model.artifacts.continuous.structural.algebraic_projection();
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     assert!(
         blocks
             .iter()

@@ -32,6 +32,7 @@ pub(super) fn normalize(
     Ok(NormalizedFunctionReturns {
         statements: normalized,
         guards,
+        loop_selections: Vec::new(),
         has_returns: true,
     })
 }

@@ -9,7 +9,6 @@ use rumoca_ir_solve::fmi::{
     FmiVariableInput,
 };
 use rumoca_ir_solve::{SolveVariableStorageRole, SolveVariableValueKind};
-use serde::{Deserialize, Serialize};
 
 use crate::{SolveModelLoweringError, lower_solve_model};
 
@@ -27,12 +26,16 @@ pub enum FmiLoweringError {
         message: String,
         span: Span,
     },
+    #[error("exact FMI initialization for `{variable}` is invalid: {error}")]
+    ExactInitialization {
+        variable: String,
+        #[source]
+        error: rumoca_eval_dae::ExactInitialError,
+    },
     #[error(transparent)]
     SolveModel(#[from] SolveModelLoweringError),
     #[error(transparent)]
     Component(#[from] FmiComponentError),
-    #[error("FMI component wire is invalid: {0}")]
-    Wire(String),
 }
 
 impl FmiLoweringError {
@@ -43,75 +46,16 @@ impl FmiLoweringError {
                 Some(*span)
             }
             Self::SolveModel(error) => error.source_span(),
+            Self::ExactInitialization { error, .. } => Some(error.span),
             Self::Component(error) => error.span(),
-            Self::Wire(_) => None,
         }
     }
 }
 
-/// Current FMI component wire schema; every other version is rejected.
-///
-/// 2 carries each variable's declared `input`/`output` prefix where it differs
-/// from the exported causality. 3 replays into a component whose
-/// `RootLocationPlan` refines state-event brackets by its Illinois minmax
-/// method rather than bisection and applies every domain change within one
-/// location tolerance after the located left limit together
-/// (`RootTieBreak::ToleranceWindow`, SPEC_0044 ME-EVENT-004), so a replayed
-/// wire locates and groups its events as the compiler that wrote it does.
-pub const FMI_COMPONENT_SCHEMA_VERSION: u16 = 3;
-
-/// Borrowed, canonical construction inputs for one correlated FMI component.
-#[derive(Serialize)]
-pub struct FmiComponentWireRef<'model> {
-    schema_version: u16,
-    solve_model: crate::SolveModelWireRef<'model>,
-    variables: Vec<FmiVariableInput>,
-}
-
-/// Encode the still-correlated phase result without exposing either half as
-/// an independently selectable runtime input.
-pub fn fmi_component_wire<'wire>(
-    lowered: &'wire crate::LoweredSolveModel<'_>,
-) -> Result<FmiComponentWireRef<'wire>, FmiLoweringError> {
-    let variables = lowered.prepared_dae().inspect(lower_variables)?;
-    let solve_model = crate::solve_model_wire(lowered.model())
-        .map_err(|error| FmiLoweringError::Wire(error.to_string()))?;
-    Ok(FmiComponentWireRef {
-        schema_version: FMI_COMPONENT_SCHEMA_VERSION,
-        solve_model,
-        variables,
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FmiComponentWire {
-    schema_version: u16,
-    #[serde(deserialize_with = "crate::deserialize_solve_model")]
-    solve_model: rumoca_ir_solve::SolveModel,
-    variables: Vec<FmiVariableInput>,
-}
-
-/// Replay the canonical FMI wire through the same checked component
-/// construction used by fresh lowering.
-pub fn deserialize_fmi_component<'de, D>(deserializer: D) -> Result<FmiComponent, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let wire = FmiComponentWire::deserialize(deserializer)?;
-    if wire.schema_version != FMI_COMPONENT_SCHEMA_VERSION {
-        return Err(serde::de::Error::custom(format!(
-            "unsupported FMI component schema {}; expected {}",
-            wire.schema_version, FMI_COMPONENT_SCHEMA_VERSION
-        )));
-    }
-    FmiComponent::construct(wire.solve_model, wire.variables).map_err(serde::de::Error::custom)
-}
-
 /// Project one checked DAE into one checked executable FMI component.
 ///
-/// Every input here is a fact the Modelica declaration owns. The FMI-only
-/// maximum-step-duration local of SPEC_0044 §8 is not one of them: the checked
+/// Source declarations and explicit export-default ingredients remain distinct.
+/// The FMI-only maximum-step-duration local of SPEC_0044 §8 is derived: the checked
 /// component derives it from the delay partition of the kernel below, so this
 /// lowering neither names it nor decides whether it exists.
 pub fn lower_to_fmi_component(
@@ -130,15 +74,30 @@ pub fn lower_to_fmi_component(
 pub fn finish_fmi_component(
     lowered: crate::LoweredSolveModel<'_>,
 ) -> Result<FmiComponent, FmiLoweringError> {
-    let inputs = lowered.prepared_dae().inspect(lower_variables)?;
+    let inputs = lowered
+        .prepared_dae()
+        .inspect(|view| lower_variables(view, &lowered.input_initializations))?;
     let solve = lowered.into_model();
     FmiComponent::construct(solve, inputs).map_err(Into::into)
 }
 
-fn lower_variables(view: dae::DaeView<'_>) -> Result<Vec<FmiVariableInput>, FmiLoweringError> {
+fn lower_variables(
+    view: dae::DaeView<'_>,
+    issued: &[crate::model_values::InputInitializationFact],
+) -> Result<Vec<FmiVariableInput>, FmiLoweringError> {
     let mut numeric = rumoca_eval_dae::NumericEvaluator::new(view);
     view.variables()
-        .map(|(_, variable)| lower_variable(view, &mut numeric, variable))
+        .map(|(id, variable)| {
+            lower_variable(
+                view,
+                &mut numeric,
+                variable,
+                issued
+                    .binary_search_by_key(&(id.index() as usize), |fact| fact.index)
+                    .ok()
+                    .map(|index| &issued[index]),
+            )
+        })
         .collect()
 }
 
@@ -146,27 +105,30 @@ fn lower_variable<'dae>(
     view: dae::DaeView<'dae>,
     numeric: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
+    issued: Option<&crate::model_values::InputInitializationFact>,
 ) -> Result<FmiVariableInput, FmiLoweringError> {
-    let scalar_count = variable.scalar_count();
     let role = solve_role(variable.role());
     let causality = fmi_causality(variable.causality());
     let value_kind = solve_value_kind(variable)?;
-    let start = match numeric_attribute(numeric, variable, variable.start())? {
-        Some(values) => values,
-        None => numeric_attribute(numeric, variable, variable.binding())?
-            .unwrap_or_else(|| vec![0.0; scalar_count]),
+    let start = match issued {
+        Some(fact) => fact.source.clone(),
+        None => declaration_start(view, numeric, variable, value_kind)?,
     };
     Ok(FmiVariableInput {
         name: variable.name().to_string(),
-        scalar_names: (0..scalar_count)
-            .filter_map(|index| variable.scalar_name(index))
-            .collect(),
         role,
         value_kind,
         dimensions: variable.value_type().dimensions().to_vec(),
         start,
-        minimum: numeric_attribute(numeric, variable, variable.minimum())?,
-        maximum: numeric_attribute(numeric, variable, variable.maximum())?,
+        effective_input_default: issued.map(|fact| fact.effective.clone()),
+        minimum: match issued {
+            Some(fact) => fact.minimum.clone(),
+            None => numeric_attribute(numeric, variable, variable.minimum())?,
+        },
+        maximum: match issued {
+            Some(fact) => fact.maximum.clone(),
+            None => numeric_attribute(numeric, variable, variable.maximum())?,
+        },
         nominal: numeric_attribute(numeric, variable, variable.nominal())?,
         unit: variable.unit().map(str::to_owned),
         description: variable.description().map(str::to_owned),
@@ -182,9 +144,9 @@ fn lower_variable<'dae>(
     })
 }
 
-/// The per-scalar literal start of a `String` declaration: its `start`
-/// attribute, else its binding, when that is a string literal or an array of
-/// string literals (a scalar literal broadcasts over an array declaration).
+/// The per-scalar literal initialization of a `String` declaration. Inputs
+/// select their binding before their start; other roles retain start-first
+/// selection. A scalar literal broadcasts over an array declaration.
 /// Any other expression leaves the text start absent, and a consumer that
 /// needs one refuses the declaration rather than inventing a value.
 fn text_start<'dae>(
@@ -194,7 +156,14 @@ fn text_start<'dae>(
     if variable.value_type().scalar_type() != dae::ScalarType::String {
         return None;
     }
-    let expression = variable.start().or_else(|| variable.binding())?;
+    let expression = if variable.role() == dae::VariableRole::Input {
+        rumoca_eval_dae::declaration_initial_expression(
+            variable,
+            dae::InputInitializationPolicy::HostDrivenStart,
+        )
+    } else {
+        variable.start().or_else(|| variable.binding())
+    }?;
     let mut values = Vec::new();
     collect_string_literals(view, expression, &mut values)?;
     let count = variable.scalar_count();
@@ -235,16 +204,76 @@ fn collect_string_literals<'dae>(
     }
 }
 
+fn declaration_start<'dae>(
+    view: dae::DaeView<'dae>,
+    numeric: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    variable: dae::VariableView<'dae>,
+    value_kind: SolveVariableValueKind,
+) -> Result<rumoca_ir_solve::SolveDeclarationStart, FmiLoweringError> {
+    use rumoca_ir_solve::SolveDeclarationStart as Start;
+    let expression = rumoca_eval_dae::declaration_initial_expression(
+        variable,
+        dae::InputInitializationPolicy::HostDrivenStart,
+    );
+    let Some(expression) = expression else {
+        return Ok(Start::Missing {
+            value_kind,
+            count: variable.scalar_count(),
+        });
+    };
+    let error = |message: String, span| FmiLoweringError::NumericMetadata {
+        variable: variable.name().to_string(),
+        message,
+        span,
+    };
+    match value_kind {
+        SolveVariableValueKind::Real => numeric_attribute(numeric, variable, Some(expression))?
+            .map(Start::Real)
+            .ok_or_else(|| {
+                error(
+                    "Real source initialization is absent".into(),
+                    variable.declaration().span(),
+                )
+            }),
+        SolveVariableValueKind::Integer
+        | SolveVariableValueKind::Boolean
+        | SolveVariableValueKind::Enumeration => {
+            let exact =
+                rumoca_eval_dae::exact_initial_values(view, expression, variable.scalar_count())
+                    .map_err(|error| FmiLoweringError::ExactInitialization {
+                        variable: variable.name().to_string(),
+                        error,
+                    })?;
+            let converted = match exact {
+                rumoca_eval_dae::ExactDeclarationValues::Integer(values) => {
+                    crate::numeric_values::from_exact(&values).map(Start::Integer)
+                }
+                rumoca_eval_dae::ExactDeclarationValues::Enumeration(values) => {
+                    crate::numeric_values::from_exact(&values).map(Start::Enumeration)
+                }
+                rumoca_eval_dae::ExactDeclarationValues::Boolean(values) => {
+                    crate::numeric_values::from_exact(&values).map(Start::Boolean)
+                }
+            };
+            converted.map_err(|failure| error(failure.to_string(), variable.declaration().span()))
+        }
+        SolveVariableValueKind::String => Ok(Start::Missing {
+            value_kind,
+            count: variable.scalar_count(),
+        }),
+    }
+}
+
 fn numeric_attribute<'dae>(
     numeric: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
     variable: dae::VariableView<'dae>,
     expression: Option<dae::ExprId<'dae>>,
-) -> Result<Option<Vec<f64>>, FmiLoweringError> {
+) -> Result<Option<rumoca_ir_solve::SolveInitialValues>, FmiLoweringError> {
     let Some(expression) = expression else {
         return Ok(None);
     };
     if variable.scalar_count() == 0 {
-        return Ok(Some(Vec::new()));
+        return Ok(Some(rumoca_ir_solve::SolveInitialValues::default()));
     }
     if !matches!(
         variable.value_type().scalar_type(),
@@ -255,15 +284,20 @@ fn numeric_attribute<'dae>(
     ) {
         return Ok(None);
     }
-    let mut values =
-        numeric
-            .expression(expression)
-            .map_err(|error| FmiLoweringError::NumericMetadata {
-                variable: variable.name().to_string(),
-                message: error.to_string(),
-                span: error.span(),
-            })?;
-    variable.broadcast_values(&mut values);
+    let evaluated = if matches!(
+        variable.value_type().scalar_type(),
+        dae::ScalarType::Integer | dae::ScalarType::Enumeration
+    ) {
+        numeric.integer_attribute_values(expression)
+    } else {
+        numeric.expression_values(expression)
+    };
+    let mut values = evaluated.map_err(|error| FmiLoweringError::NumericMetadata {
+        variable: variable.name().to_string(),
+        message: error.to_string(),
+        span: error.span(),
+    })?;
+    values.broadcast(variable.scalar_count());
     if values.len() != variable.scalar_count() {
         return Err(FmiLoweringError::NumericMetadata {
             variable: variable.name().to_string(),
@@ -275,7 +309,13 @@ fn numeric_attribute<'dae>(
             span: variable.declaration().span(),
         });
     }
-    Ok(Some(values))
+    crate::numeric_values::from_source(&values)
+        .map(Some)
+        .map_err(|error| FmiLoweringError::NumericMetadata {
+            variable: variable.name().to_string(),
+            message: error.to_string(),
+            span: variable.declaration().span(),
+        })
 }
 
 /// Evaluate one numeric declaration attribute through the phase-owned DAE
@@ -284,7 +324,7 @@ pub fn numeric_attribute_values<'dae>(
     view: dae::DaeView<'dae>,
     variable: dae::VariableView<'dae>,
     expression: Option<dae::ExprId<'dae>>,
-) -> Result<Option<Vec<f64>>, FmiLoweringError> {
+) -> Result<Option<rumoca_ir_solve::SolveInitialValues>, FmiLoweringError> {
     numeric_attribute(
         &mut rumoca_eval_dae::NumericEvaluator::new(view),
         variable,
@@ -340,6 +380,9 @@ const fn declared_causality(causality: dae::DeclaredCausality) -> Option<FmiDecl
         dae::DeclaredCausality::Output => Some(FmiDeclaredCausality::Output),
     }
 }
+
+#[cfg(test)]
+mod declaration_start_tests;
 
 fn fmi_variability(variable: dae::VariableView<'_>) -> FmiVariability {
     match variable.variability() {

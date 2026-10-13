@@ -15,6 +15,7 @@ mod finite_counter_tests;
 /// [`liveness::LoopLocalStoreUnobserved`]; the remaining syntactic predicates
 /// are measured against the same dataflow answer by
 /// [`liveness_differential_tests`].
+mod incoming_value_flow;
 mod liveness;
 #[cfg(test)]
 mod liveness_corpus;
@@ -96,16 +97,7 @@ pub(super) fn compact_function_loops(
         .collect::<HashSet<_>>();
     let mut local_value_names = scalar_local_names;
     local_value_names.extend(array_local_names.iter().cloned());
-    let branch_local_names = local_value_names
-        .iter()
-        .filter(|name| {
-            !statements.iter().enumerate().any(|(ordinal, statement)| {
-                matches!(statement, rumoca_core::Statement::For { .. })
-                    && statements_read_incoming_name(&statements[ordinal + 1..], name)
-            })
-        })
-        .cloned()
-        .collect::<HashSet<_>>();
+    let branch_local_names = names_never_read_after_a_loop(statements, &local_value_names);
     let statements = prefix_breaks::truncate_prefix_breaks(statements);
     let affine_slices = AffineSliceRanges::new(shapes).rewrite_statements(&statements);
     let settled = inline_settled_shape_integer_locals(
@@ -865,6 +857,7 @@ fn inline_straight_line_scalar_definitions(
         let target = comp.to_var_name();
         if let Some(witness) =
             scalar_assignment_target(comp).and_then(|written| unobserved.get(&written))
+            && preserves_selected_assignment_owner(&rewritten_value)
             && !statements_partially_assign_name(&statements[ordinal + 1..], &target)
             && (!preserve_shared
                 || statements_read_count(&statements[ordinal + 1..], &target) <= 1)
@@ -888,116 +881,41 @@ fn inline_straight_line_scalar_definitions(
     inlined
 }
 
-#[derive(Clone, Copy)]
-struct IncomingValueFlow {
-    read: bool,
-    definitely_defined: bool,
-}
+#[cfg(test)]
+use incoming_value_flow::{statement_segments_read_incoming_name, statements_read_incoming_name};
 
-pub(super) fn statements_read_incoming_name(
+pub(super) use incoming_value_flow::{
+    StatementSequence, planned_sequences_define_names, planned_sequences_read_incoming_names,
+    planned_sequences_structurally_read_incoming_names, planned_statement_reads_incoming,
+    statements_read_incoming_names,
+};
+
+/// The names of `candidates` that no loop of `statements` is followed by a
+/// read of, before a whole write, in the statements after it.
+fn names_never_read_after_a_loop(
     statements: &[rumoca_core::Statement],
-    name: &VarName,
-) -> bool {
-    statement_segments_read_incoming_name(&[statements], name)
-}
-
-pub(super) fn statement_segments_read_incoming_name(
-    segments: &[&[rumoca_core::Statement]],
-    name: &VarName,
-) -> bool {
-    let mut definitely_defined = false;
-    for statements in segments {
-        for statement in *statements {
-            let flow = statement_incoming_value_flow(statement, name);
-            if !definitely_defined && flow.read {
-                return true;
-            }
-            definitely_defined |= flow.definitely_defined;
+    candidates: &HashSet<VarName>,
+) -> HashSet<VarName> {
+    let mut remaining = candidates.iter().collect::<Vec<_>>();
+    for (ordinal, statement) in statements.iter().enumerate() {
+        if remaining.is_empty() {
+            break;
         }
-    }
-    false
-}
-
-fn statement_incoming_value_flow(
-    statement: &rumoca_core::Statement,
-    name: &VarName,
-) -> IncomingValueFlow {
-    match statement {
-        rumoca_core::Statement::Assignment { comp, value, .. } => IncomingValueFlow {
-            read: expression_reads_name(value, name) || component_subscripts_read_name(comp, name),
-            definitely_defined: scalar_assignment_target(comp).as_ref() == Some(name),
-        },
-        rumoca_core::Statement::For {
-            indices, equations, ..
-        } => IncomingValueFlow {
-            read: indices
-                .iter()
-                .any(|index| expression_reads_name(&index.range, name))
-                || statements_read_incoming_name(equations, name),
-            // A compact domain may be empty, so its body cannot settle a value
-            // observed after the loop.
-            definitely_defined: false,
-        },
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            let read = cond_blocks.iter().any(|block| {
-                expression_reads_name(&block.cond, name)
-                    || statements_read_incoming_name(&block.stmts, name)
-            }) || else_block
-                .as_ref()
-                .is_some_and(|branch| statements_read_incoming_name(branch, name));
-            let definitely_defined = else_block.as_ref().is_some_and(|fallback| {
-                cond_blocks
-                    .iter()
-                    .all(|block| statements_definitely_define_name(&block.stmts, name))
-                    && statements_definitely_define_name(fallback, name)
-            });
-            IncomingValueFlow {
-                read,
-                definitely_defined,
-            }
+        if !matches!(statement, rumoca_core::Statement::For { .. }) {
+            continue;
         }
-        // MLS §11.2.1.1: a multiple-output call reads its arguments, then
-        // assigns each output; a whole scalar output defines its value. The
-        // subscripts selecting the callable are reads where the call runs.
-        rumoca_core::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-            ..
-        } => IncomingValueFlow {
-            read: comp
-                .component_ref()
-                .is_some_and(|callable| component_subscripts_read_name(callable, name))
-                || args
-                    .iter()
-                    .any(|argument| expression_reads_name(argument, name))
-                || outputs
-                    .iter()
-                    .flatten()
-                    .any(|output| component_subscripts_read_name(output, name)),
-            definitely_defined: outputs
-                .iter()
-                .flatten()
-                .any(|output| scalar_assignment_target(output).as_ref() == Some(name)),
-        },
-        _ => IncomingValueFlow {
-            read: statements_read_name(std::slice::from_ref(statement), name),
-            definitely_defined: false,
-        },
+        let read = statements_read_incoming_names(&statements[ordinal + 1..], &remaining);
+        remaining = remaining
+            .into_iter()
+            .zip(read)
+            .filter_map(|(name, read)| (!read).then_some(name))
+            .collect();
     }
+    remaining.into_iter().cloned().collect()
 }
 
-fn statements_definitely_define_name(
-    statements: &[rumoca_core::Statement],
-    name: &VarName,
-) -> bool {
-    statements
-        .iter()
-        .any(|statement| statement_incoming_value_flow(statement, name).definitely_defined)
+fn preserves_selected_assignment_owner(value: &Expression) -> bool {
+    !matches!(value, Expression::If { .. })
 }
 
 fn scalar_assignment_target(component: &rumoca_core::ComponentReference) -> Option<VarName> {

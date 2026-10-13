@@ -414,10 +414,13 @@ fn define_function<'dae>(
     for (name, _) in generated_boolean_values(plan) {
         plan_shapes.insert(name.clone(), Vec::new());
     }
+    let binders = HashMap::new();
     let symbols = FunctionSymbols {
         coordinates: &coordinates,
         functions: &functions,
         shapes: &plan_shapes,
+        binders: &binders,
+        domain: None,
     };
     body = lower_function_plan(construction, symbols, body, function, plan)?;
     construction.functions(|owner| owner.define(body, provenance))?;
@@ -616,7 +619,6 @@ fn lower_function_plan<'dae>(
             )?;
             let mut top_level = TopLevelDefinedness {
                 plan: definedness,
-                predicates: DefinednessPredicates::default(),
                 span: function.span,
             };
             let mut body = lower_function_statements(
@@ -627,8 +629,9 @@ fn lower_function_plan<'dae>(
                 statements,
                 Some(&mut top_level),
             )?;
-            top_level.predicates.assert_defined(
+            require_function_values(
                 construction,
+                symbols,
                 &mut body,
                 &definedness.returned,
                 function.span,

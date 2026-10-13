@@ -189,13 +189,7 @@
         mlirCpuTestArgs = builtins.concatStringsSep " " [
           "--package rumoca-exec-mlir"
           "--features required-mlir-cpu"
-          "--test benchmark_matmul"
-          "--test compile_basic"
-          "--test implicit_euler"
-          "--test integrate"
-          "--test linsolve_mlir"
-          "--test multi_fn_mlir"
-          "--test options"
+          "--test suite_mlir"
         ];
         mlirCpuTests =
           assert pkgs.lib.hasInfix ".#checks.x86_64-linux.mlir-cpu" (
@@ -207,6 +201,7 @@
               inherit cargoArtifacts;
               pname = "rumoca-mlir-cpu-tests";
               cargoExtraArgs = mlirCpuTestArgs;
+              cargoTestExtraArgs = "-- cpu::";
               nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ mlirCpuTools ];
               preCheck = ''
                 for tool in clang-18 llc-18 mlir-opt-18 mlir-translate-18; do
@@ -494,6 +489,7 @@
           in
           (templateRuntimeShell [
             pkgs.wasm-tools
+            pkgs.libxml2
             wasiCc
           ]).overrideAttrs
             (old: {

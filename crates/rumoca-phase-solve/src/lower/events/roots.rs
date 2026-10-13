@@ -70,14 +70,14 @@ fn flush_root_owner<'dae>(
         return Ok(());
     }
     let span = span.expect("a nonempty root owner group has provenance");
-    let output_start = rows.output_indices.len();
+    let output_start = rows.stored_output_count(span)?;
     let output_end = output_start
         .checked_add(relations.len())
         .ok_or_else(|| LowerError::contract("root output ordinal overflow", span))?;
     let program = layout
         .scalar_compiler(view, None)
         .root_program_outputs(relations.iter().copied())?;
-    rows.push_outputs(program, span, output_start..output_end);
+    rows.push_output_range(program, span, output_start..output_end);
     relations.clear();
     Ok(())
 }

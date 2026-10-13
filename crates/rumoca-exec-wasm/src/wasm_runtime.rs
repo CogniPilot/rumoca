@@ -1,7 +1,7 @@
 //! Direct browser-engine execution sharing the caller's wasm_bindgen memory.
 mod pool;
 
-use crate::WasmCompileError;
+use crate::{WasmCompileError, emit::MathImport};
 
 pub(super) struct WasmKernelRuntime {
     eval_function: js_sys::Function,
@@ -43,21 +43,7 @@ impl WasmKernelRuntime {
         Reflect::set(&env, &JsValue::from_str("memory"), &wasm_bindgen::memory()).map_err(
             |err| WasmCompileError::Backend(format!("memory import set failed: {err:?}")),
         )?;
-        install_math_import(&env, "abs")?;
-        install_math_import(&env, "sin")?;
-        install_math_import(&env, "cos")?;
-        install_math_import(&env, "tan")?;
-        install_math_import(&env, "asin")?;
-        install_math_import(&env, "acos")?;
-        install_math_import(&env, "atan")?;
-        install_math_import(&env, "sinh")?;
-        install_math_import(&env, "cosh")?;
-        install_math_import(&env, "tanh")?;
-        install_math_import(&env, "exp")?;
-        install_math_import(&env, "log")?;
-        install_math_import(&env, "log10")?;
-        install_math_import(&env, "pow")?;
-        install_math_import(&env, "atan2")?;
+        install_math_abi(&env)?;
 
         Reflect::set(&imports, &JsValue::from_str("env"), &env)
             .map_err(|err| WasmCompileError::Backend(format!("env import set failed: {err:?}")))?;
@@ -127,6 +113,61 @@ impl WasmKernelRuntime {
         self.call_status(y, p, time, scratch)
     }
 
+    pub(super) fn call_typed(
+        &self,
+        input: &[u64],
+        output: &mut [u64],
+        scratch: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        use wasm_bindgen::JsValue;
+        let input_ptr = ptr_to_wasm_i32(input.as_ptr())?;
+        let output_ptr = ptr_to_wasm_i32(output.as_ptr())?;
+        let scratch_ptr = ptr_to_wasm_i32(scratch.as_ptr())?;
+        let result = self
+            .eval_function
+            .call3(
+                &JsValue::NULL,
+                &JsValue::from_f64(f64::from(input_ptr)),
+                &JsValue::from_f64(f64::from(output_ptr)),
+                &JsValue::from_f64(f64::from(scratch_ptr)),
+            )
+            .map_err(|error| WasmCompileError::Backend(format!("typed call failed: {error:?}")))?;
+        status_value(result)
+    }
+
+    pub(super) fn call_native(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        time: f64,
+        scratch: &mut [u64],
+        lanes: &mut [u64],
+    ) -> Result<u32, WasmCompileError> {
+        use wasm_bindgen::JsValue;
+        let y_ptr = ptr_to_wasm_i32(y.as_ptr())?;
+        let p_ptr = ptr_to_wasm_i32(p.as_ptr())?;
+        let scratch_ptr = ptr_to_wasm_i32(scratch.as_ptr())?;
+        let lanes_ptr = if lanes.is_empty() {
+            0
+        } else {
+            ptr_to_wasm_i32(lanes.as_ptr())?
+        };
+        let result = self
+            .eval_function
+            .call5(
+                &JsValue::NULL,
+                &JsValue::from_f64(f64::from(y_ptr)),
+                &JsValue::from_f64(f64::from(p_ptr)),
+                &JsValue::from_f64(time),
+                &JsValue::from_f64(f64::from(scratch_ptr)),
+                &JsValue::from_f64(f64::from(lanes_ptr)),
+            )
+            .map_err(|error| {
+                WasmCompileError::Backend(format!("native assignment call failed: {error:?}"))
+            })?;
+        status_value(result)
+    }
+
     fn call_status(
         &self,
         y: &[f64],
@@ -151,35 +192,45 @@ impl WasmKernelRuntime {
             .map_err(|error| {
                 WasmCompileError::Backend(format!("assignment call failed: {error:?}"))
             })?;
-        let value = result
-            .as_f64()
-            .filter(|value| {
-                value.is_finite()
-                    && value.trunc() == *value
-                    && *value >= f64::from(i32::MIN)
-                    && *value <= f64::from(i32::MAX)
-            })
-            .ok_or_else(|| {
-                WasmCompileError::Backend("assignment export returned invalid i32 status".into())
-            })?;
-        Ok(value as i32 as u32)
+        status_value(result)
     }
 }
 
-fn install_math_import(env: &js_sys::Object, name: &str) -> Result<(), WasmCompileError> {
+fn status_value(result: wasm_bindgen::JsValue) -> Result<u32, WasmCompileError> {
+    let value = result
+        .as_f64()
+        .filter(|value| {
+            value.is_finite()
+                && value.trunc() == *value
+                && *value >= f64::from(i32::MIN)
+                && *value <= f64::from(i32::MAX)
+        })
+        .ok_or_else(|| {
+            WasmCompileError::Backend("WASM export returned invalid i32 status".into())
+        })?;
+    Ok(value as i32 as u32)
+}
+
+/// Import every math ABI symbol from this module's own exports, so the browser
+/// evaluates the same `libm` routines as the native guest and not the engine's
+/// `Math`, whose edge cases and last-ulp results differ.
+fn install_math_abi(env: &js_sys::Object) -> Result<(), WasmCompileError> {
     use js_sys::Reflect;
     use wasm_bindgen::JsValue;
 
-    let global = js_sys::global();
-    let math = Reflect::get(&global, &JsValue::from_str("Math"))
-        .map_err(|err| WasmCompileError::Backend(format!("Math global missing: {err:?}")))?;
-    let function = Reflect::get(&math, &JsValue::from_str(name))
-        .map_err(|err| WasmCompileError::Backend(format!("Math.{name} missing: {err:?}")))?;
-    Reflect::set(env, &JsValue::from_str(name), &function)
-        .map(|_| ())
-        .map_err(|err| {
-            WasmCompileError::Backend(format!("failed setting import Math.{name}: {err:?}"))
-        })
+    let exports = wasm_bindgen::exports();
+    for import in MathImport::ALL {
+        let name = import.symbol();
+        let function = Reflect::get(&exports, &JsValue::from_str(name)).map_err(|err| {
+            WasmCompileError::Backend(format!("math export {name} missing: {err:?}"))
+        })?;
+        Reflect::set(env, &JsValue::from_str(name), &function)
+            .map(|_| ())
+            .map_err(|err| {
+                WasmCompileError::Backend(format!("failed setting math import {name}: {err:?}"))
+            })?;
+    }
+    Ok(())
 }
 
 fn ptr_to_wasm_i32<T>(ptr: *const T) -> Result<u32, WasmCompileError> {

@@ -13,12 +13,13 @@ pub(super) fn lower_function_array_assembly<'dae>(
             let rumoca_core::Statement::Assignment { value, .. } = statement else {
                 unreachable!("analysis proves direct array-assembly assignments")
             };
-            lower_function_expression(
+            lower_function_expression_scoped(
                 construction,
                 symbols.coordinates,
                 symbols.functions,
                 symbols.shapes,
                 body,
+                symbols.binders,
                 value,
             )
         })

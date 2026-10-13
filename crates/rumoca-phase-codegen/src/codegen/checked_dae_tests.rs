@@ -1016,6 +1016,10 @@ fn assert_fold_definition_links(function: &serde_json::Value, source: FoldSource
             serde_json::to_value(provenance).unwrap()
         );
     }
+    assert!(definitions[0]["previous_target_definition"].is_null());
+    assert_eq!(definitions[1]["previous_target_definition"], 0);
+    assert_eq!(definitions[2]["previous_target_definition"], 1);
+    assert_eq!(definitions[3]["previous_target_definition"], 0);
     assert_eq!(
         function["folds"][0]["provenance"],
         serde_json::to_value(at("for k in 1:2 loop", 0)).unwrap()
@@ -1087,4 +1091,96 @@ fn symbolic_ode_targets_use_checked_declarations_and_solve_programs() {
         assert!(rendered.contains("PARAM_NAMES = []"));
         assert!(!template.contains("dae.p"));
     }
+}
+
+#[test]
+fn dae_template_projects_clock_transfer_by_exact_conversion_and_clock_identity() {
+    let source = "discrete Real u; discrete Real y; y = shiftSample(u, 2);";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("clock_transfer.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let transfer_at = at("shiftSample(u, 2)");
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("discrete Real u"),
+            )
+        })?;
+        let (u, y) = dae.variables(|variables| {
+            Ok((
+                variables.discrete_real(
+                    VarName::new("u"),
+                    real,
+                    at("discrete Real u"),
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.discrete_real(
+                    VarName::new("y"),
+                    real,
+                    at("discrete Real y"),
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let condition = dae.conditions(|conditions| conditions.reserve(transfer_at))?;
+        let tick = dae.expressions(|expressions| {
+            expressions
+                .at(transfer_at)
+                .literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        dae.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Discrete(tick), transfer_at)
+        })?;
+        let (base, shifted) = dae.clocks(|clocks| {
+            let base = clocks.triggered(condition, transfer_at)?;
+            let shifted = clocks.shifted(base, 2, condition, transfer_at)?;
+            clocks.own_discrete_real(base, u, at("discrete Real u"))?;
+            clocks.own_discrete_real(shifted, y, at("discrete Real y"))?;
+            Ok((base, shifted))
+        })?;
+        dae.expressions(|expressions| {
+            let value = expressions
+                .at(transfer_at)
+                .coordinate(dae::CoordinateInput::DiscreteReal(u))?;
+            expressions.at(transfer_at).clock_transfer(
+                dae::ClockTransferKind::ShiftSample {
+                    counter: 2,
+                    resolution: 1,
+                },
+                value,
+                base,
+                shifted,
+            )
+        })?;
+        Ok(())
+    })
+    .expect("a whole-tick shift of an event clock constructs");
+
+    let projected = dae_template_json(&dae).expect("checked DAE projects");
+    let expressions = projected["expressions"]
+        .as_array()
+        .expect("expressions are dense");
+    let transfer = expressions
+        .iter()
+        .find(|expression| expression["operation"]["kind"] == "clock_transfer")
+        .expect("the clock transfer is projected");
+    let operation = &transfer["operation"];
+    assert_eq!(
+        operation["conversion"],
+        serde_json::json!({ "shift_sample": { "counter": 2, "resolution": 1 } })
+    );
+    assert_eq!(operation["source_clock"], 0);
+    assert_eq!(operation["target_clock"], 1);
+    let source = operation["source"].as_u64().expect("source is an index") as usize;
+    assert_eq!(expressions[source]["operation"]["kind"], "coordinate");
+    assert_eq!(
+        transfer["provenance"],
+        serde_json::to_value(transfer_at).expect("provenance serializes")
+    );
 }

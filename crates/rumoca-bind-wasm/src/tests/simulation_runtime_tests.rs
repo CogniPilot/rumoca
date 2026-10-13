@@ -591,10 +591,14 @@ fn test_update_gpu_parameters_refreshes_parameter_bound_arrays() {
         .expect("prepare_gpu_simulation should cache the prepared GPU model");
     let payload: serde_json::Value =
         serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-    let mask_index = payload
-        .pointer("/var_layout/bindings/mask[2]/P/index")
-        .and_then(serde_json::Value::as_u64)
-        .expect("parameter-bound array member should be a P slot") as usize;
+    let layout: rumoca_ir_solve::VarLayout = serde_json::from_value(payload["var_layout"].clone())
+        .expect("GPU preparation payload carries a Solve variable layout");
+    let Some(rumoca_ir_solve::ScalarSlot::P {
+        index: mask_index, ..
+    }) = layout.binding("mask[2]")
+    else {
+        panic!("parameter-bound array member should be a P slot");
+    };
     assert_eq!(
         payload
             .get("p0")

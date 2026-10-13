@@ -74,7 +74,7 @@ pub fn visible_values_with_context(
     context: RowEvalContext<'_>,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
     model
-        .visible_names
+        .visible_names()
         .iter()
         .enumerate()
         .map(|(idx, name)| visible_value_with_context(model, idx, name, y, params, t, context))
@@ -165,24 +165,28 @@ fn visible_value_with_context(
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<f64, RuntimeSolveError> {
-    if model.visible_value_rows.len() == model.visible_names.len() {
-        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?;
+    if let Some(slot) = model.visible_projection().slot(visible_idx) {
+        let value = match slot {
+            solve::ScalarSlot::Y { index, .. } => y.get(index),
+            solve::ScalarSlot::P { index, .. } => params.get(index),
+            _ => None,
+        };
+        return value.copied().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!("visible storage `{name}` is out of range"))
+        });
+    }
+    let rows = model
+        .visible_projection()
+        .scalar_rows()
+        .map_err(|error| RuntimeSolveError::solve_ir(error.to_string()))?;
+    if visible_idx < rows.row_count() {
+        let evaluator = PreparedScalarProgramBlock::new(rows)?;
         return evaluator
             .eval_row_with_context(visible_idx, y, params, t, context)
             .map_err(Into::into);
     }
-    if let Some(idx) = runtime_parameter_index(&model.problem.solve_layout, name) {
-        return params.get(idx).copied().ok_or_else(|| {
-            RuntimeSolveError::solve_ir(format!("runtime slot `{name}` is out of range"))
-        });
-    }
-    if let Some(idx) = model.problem.solve_layout.solver_maps.name_to_idx.get(name) {
-        return y.get(*idx).copied().ok_or_else(|| {
-            RuntimeSolveError::solve_ir(format!("solver slot `{name}` is out of range"))
-        });
-    }
     Err(RuntimeSolveError::solve_ir(format!(
-        "visible trace name `{name}` is not in solve layout"
+        "visible projection point {visible_idx} for `{name}` has no checked observation row"
     )))
 }
 
@@ -304,7 +308,7 @@ mod tests {
             .clocks
             .periodic_event_schedules
             .push(periodic(period, 0.0));
-        model.parameters = vec![dynamic_deadline];
+        model.parameters = vec![dynamic_deadline].into();
         let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, 0.02);
 
         let (event_time, event) = next_runtime_event_stop(
@@ -388,7 +392,7 @@ mod tests {
         model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
         model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
         model.problem.events.has_terminal_event = true;
-        model.parameters = vec![target.next_up()];
+        model.parameters = vec![target.next_up()].into();
         let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, target);
 
         let (event_time, event) = next_runtime_event_stop(

@@ -5,7 +5,7 @@
 //! body enters it, so a call from outside the SCC is an ordinary owner that
 //! names an already issued member.
 
-use super::registration::{FunctionInterface, OwnerBody, assertion_layout};
+use super::registration::{FunctionFacts, FunctionInterface, OwnerBody, assertion_layout};
 use super::*;
 
 /// Issue the recursive owner group of `function`'s call SCC, once, when that
@@ -21,7 +21,7 @@ pub(super) fn register_group_of<'dae>(
     if !identities.examined_functions.insert(function) {
         return Ok(());
     }
-    let Some(members) = recursive_component(view, function)? else {
+    let Some(members) = recursive_component(view, function, arithmetic, identities)? else {
         return Ok(());
     };
     identities
@@ -35,13 +35,17 @@ pub(super) fn register_group_of<'dae>(
 fn recursive_component<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
+    arithmetic: solve::SolveArithmeticProfile,
+    identities: &mut CallRegistration<'dae>,
 ) -> Result<Option<Vec<dae::FunctionId<'dae>>>, solve::SolveProgramConstructionError> {
     let mut nodes = vec![function];
     let mut index = HashMap::from([(function, 0usize)]);
     let mut edges: Vec<Vec<usize>> = vec![Vec::new()];
     let mut next = 0;
     while next < nodes.len() {
-        for (_, callee) in function_calls(view, nodes[next])? {
+        let function = nodes[next];
+        let callees = body_callees(view, function, arithmetic, identities)?;
+        for &callee in callees.iter() {
             let target = *index.entry(callee).or_insert_with(|| {
                 nodes.push(callee);
                 edges.push(Vec::new());
@@ -69,8 +73,27 @@ fn recursive_component<'dae>(
     Ok(Some(members))
 }
 
+/// The functions a Modelica function body calls, in call order, read from the
+/// facts derived once per function; an external body calls nothing.
+fn body_callees<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionId<'dae>,
+    arithmetic: solve::SolveArithmeticProfile,
+    identities: &mut CallRegistration<'dae>,
+) -> Result<std::rc::Rc<[dae::FunctionId<'dae>]>, solve::SolveProgramConstructionError> {
+    let body = view
+        .function(function)
+        .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+    if body.is_external() {
+        return Ok(std::rc::Rc::from([]));
+    }
+    Ok(FunctionFacts::of(view, function, arithmetic, identities)?
+        .callees
+        .clone())
+}
+
 /// Each distinct call owner a Modelica function body names, with its callee.
-fn function_calls<'dae>(
+pub(super) fn function_calls<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
 ) -> Result<Vec<(dae::ExprId<'dae>, dae::FunctionId<'dae>)>, solve::SolveProgramConstructionError> {
@@ -87,7 +110,7 @@ fn function_calls<'dae>(
         .collect()
 }
 
-fn callee<'dae>(
+pub(super) fn callee<'dae>(
     view: dae::DaeView<'dae>,
     call: dae::ExprId<'dae>,
 ) -> Result<dae::FunctionId<'dae>, solve::SolveProgramConstructionError> {
@@ -118,6 +141,7 @@ struct MemberFunction<'dae> {
     function: dae::FunctionView<'dae>,
     calls: Vec<dae::ExprId<'dae>>,
     interface: FunctionInterface<'dae>,
+    inventory: assertions::FunctionAssertionInventory<'dae>,
 }
 
 /// The SCC's member functions and, in issue order, each call occurrence
@@ -125,6 +149,9 @@ struct MemberFunction<'dae> {
 struct GroupPlan<'dae> {
     functions: HashMap<dae::FunctionId<'dae>, MemberFunction<'dae>>,
     sites: Vec<(dae::ExprId<'dae>, dae::FunctionId<'dae>)>,
+    /// Whether every member body and every callee outside the SCC is scalar
+    /// storable; each member reaches the same closure.
+    scalar_storable: bool,
 }
 
 impl<'dae> GroupPlan<'dae> {
@@ -141,22 +168,30 @@ impl<'dae> GroupPlan<'dae> {
         let mut plan = Self {
             functions: HashMap::new(),
             sites: Vec::new(),
+            scalar_storable: true,
         };
         let mut bodies = Vec::with_capacity(members.len());
         for &member in members {
             let function = view
                 .function(member)
                 .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-            if let Some(assertion) = assertion_conditions(view, function)?.first() {
+            let inventory = assertions::FunctionAssertionInventory::discover(view, function)?;
+            plan.scalar_storable &= scalar_expansion::body_is_scalar_storable(view, function);
+            if let Some(assertion) = inventory.assertions.first() {
                 return Err(solve::SolveProgramConstructionError::RecursiveAssertion {
                     provenance: assertion.provenance.span(),
                 });
             }
-            bodies.push((member, function, nested_calls(view, function, &[])));
+            bodies.push((
+                member,
+                function,
+                nested_calls(view, function, &[]),
+                inventory,
+            ));
         }
         let calls = bodies
             .iter()
-            .flat_map(|(_, _, calls)| calls.iter().copied())
+            .flat_map(|(_, _, calls, _)| calls.iter().copied())
             .collect::<Vec<_>>();
         for call in calls {
             let target = callee(view, call)?;
@@ -166,13 +201,14 @@ impl<'dae> GroupPlan<'dae> {
             }
             let registered =
                 register_call(table, view, call, None, arithmetic, identities, active)?;
+            plan.scalar_storable &= registered.callee.scalar_storable;
             if !registered.callee.assertion_slots.is_empty() {
                 return Err(solve::SolveProgramConstructionError::RecursiveAssertion {
                     provenance: call_span(view, call)?,
                 });
             }
         }
-        for (member, function, calls) in bodies {
+        for (member, function, calls, inventory) in bodies {
             let interface = FunctionInterface::lower(view, function, arithmetic)?;
             plan.functions.insert(
                 member,
@@ -180,6 +216,7 @@ impl<'dae> GroupPlan<'dae> {
                     function,
                     calls,
                     interface,
+                    inventory,
                 },
             );
         }
@@ -210,6 +247,7 @@ impl<'dae> GroupPlan<'dae> {
                 Some(ordinal) => group_callee(
                     ids[ordinal],
                     &self.functions[&self.sites[ordinal].1].interface,
+                    self.scalar_storable,
                 ),
                 None => registered
                     .get(&call)
@@ -241,7 +279,8 @@ fn register_group<'dae>(
             identities.issue(span)?,
             interface.inputs.clone(),
             interface
-                .results
+                .result_layout
+                .leaves
                 .iter()
                 .cloned()
                 .map(solve::SolvePureCallOutput::result)
@@ -257,7 +296,7 @@ fn register_group<'dae>(
             let callees = plan.callees(view, registered, ids, member)?;
             let layout = assertion_layout(
                 view,
-                &[],
+                (&[], &std::collections::HashSet::new()),
                 &member.calls,
                 &callees,
                 member.interface.result_leaf_count(),
@@ -266,8 +305,8 @@ fn register_group<'dae>(
             let body = OwnerBody {
                 function: member.function,
                 interface: &member.interface,
-                callees,
-                assertion_count: 0,
+                callees: callees.into(),
+                inventory: &member.inventory,
                 layout,
             };
             body.lower(view, builder, inputs, outputs, call_span(view, call)?)
@@ -277,7 +316,11 @@ fn register_group<'dae>(
         let site = table
             .call_site(owner)
             .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance: span })?;
-        let callee = group_callee(owner, &plan.functions[&target].interface);
+        let callee = group_callee(
+            owner,
+            &plan.functions[&target].interface,
+            plan.scalar_storable,
+        );
         identities
             .calls
             .insert(call, RegisteredCall { callee, site });
@@ -289,13 +332,15 @@ fn register_group<'dae>(
 fn group_callee<'dae>(
     owner: solve::SolvePureCallOwnerId,
     interface: &FunctionInterface<'dae>,
+    scalar_storable: bool,
 ) -> CalleeInterface<'dae> {
     CalleeInterface {
         owner,
-        result_ranges: interface.result_ranges.clone().into_boxed_slice(),
+        result_layout: interface.result_layout.clone(),
         result_leaf_count: interface.result_leaf_count(),
         assertion_slots: std::sync::Arc::from(Vec::new()),
-        assertions: Box::new([]),
+        assertions: std::sync::Arc::from([]),
         recursive: true,
+        scalar_storable,
     }
 }

@@ -76,29 +76,27 @@ impl BlockResidualSplit {
 
     /// The preset and definition discipline of the two parts on their own.
     fn check_flow(&self) -> Result<(), BlockResidualSplitError> {
-        let mut defined = vec![false; self.register_count];
-        validate_part(&self.invariant, &mut defined)?;
-        let mut preset = vec![false; self.register_count];
+        let mut defined = DefinedRegisters::default();
+        validate_part(&self.invariant, &mut defined, self.register_count)?;
+        let mut preset = DefinedRegisters::default();
         for &register in self.live_out.iter() {
-            if !defined.get(register as usize).copied().unwrap_or(false) {
+            if !defined.contains(register) {
                 return Err(BlockResidualSplitError::UndefinedRegister { register });
             }
-            preset[register as usize] = true;
+            preset.insert(register, 1);
         }
         if let Some(register) = self
             .dependent
             .iter()
             .filter_map(|op| {
-                let start = op.dst_register()? as usize;
-                (start..start + op.dst_register_count()).find(|&r| preset.get(r) == Some(&true))
+                let start = op.dst_register()?;
+                preset.first_defined(start, op.dst_register_count())
             })
             .next()
         {
-            return Err(BlockResidualSplitError::ClobberedPreset {
-                register: register as Reg,
-            });
+            return Err(BlockResidualSplitError::ClobberedPreset { register });
         }
-        validate_part(&self.dependent, &mut preset)
+        validate_part(&self.dependent, &mut preset, self.register_count)
     }
 
     /// The invariant operations in program order.
@@ -160,7 +158,11 @@ impl BlockResidualSplit {
 
 /// Validate `part` in order over the registers `defined` already holds,
 /// marking each write.
-fn validate_part(part: &[LinearOp], defined: &mut [bool]) -> Result<(), BlockResidualSplitError> {
+fn validate_part(
+    part: &[LinearOp],
+    defined: &mut DefinedRegisters,
+    register_count: usize,
+) -> Result<(), BlockResidualSplitError> {
     let mut validation = ScalarProgramValidationCache::default();
     for (index, op) in part.iter().enumerate() {
         match validate_op_sources(op, index, &*defined, None, None, &mut validation) {
@@ -171,11 +173,10 @@ fn validate_part(part: &[LinearOp], defined: &mut [bool]) -> Result<(), BlockRes
             Err(_) => return Err(BlockResidualSplitError::Program),
         }
         if let Some(start) = op.dst_register() {
-            let end = start as usize + op.dst_register_count();
-            defined
-                .get_mut(start as usize..end)
-                .ok_or(BlockResidualSplitError::Program)?
-                .fill(true);
+            if start as usize + op.dst_register_count() > register_count {
+                return Err(BlockResidualSplitError::Program);
+            }
+            defined.insert(start, op.dst_register_count());
         }
     }
     Ok(())
@@ -198,7 +199,7 @@ fn invariant_positions(
             }
         }
     }
-    let mut hoisted_version = vec![false; register_count];
+    let mut hoisted_version = DefinedRegisters::default();
     let mut validation = ScalarProgramValidationCache::default();
     let mut positions = Vec::with_capacity(program.len());
     for (index, op) in program.iter().enumerate() {
@@ -213,7 +214,7 @@ fn invariant_positions(
             && validate_op_sources(op, index, &hoisted_version, None, None, &mut validation)
                 .is_ok();
         if let Some(range) = destination {
-            hoisted_version[range].fill(invariant);
+            hoisted_version.set(range.start as Reg, range.len(), invariant);
         }
         positions.push(invariant);
     }
@@ -235,7 +236,7 @@ fn live_out_registers(
                 .fill(true);
         }
     }
-    let mut defined = vec![false; register_count];
+    let mut defined = DefinedRegisters::default();
     let mut live_out = BTreeSet::new();
     let mut validation = ScalarProgramValidationCache::default();
     for (index, op) in dependent.iter().enumerate() {
@@ -246,15 +247,13 @@ fn live_out_registers(
                     if supplied.get(register as usize) == Some(&true)
                         && live_out.insert(register) =>
                 {
-                    defined[register as usize] = true;
+                    defined.insert(register, 1);
                 }
                 Err(_) => return None,
             }
         }
         if let Some(start) = op.dst_register() {
-            defined
-                .get_mut(start as usize..start as usize + op.dst_register_count())?
-                .fill(true);
+            defined.insert(start, op.dst_register_count());
         }
     }
     Some(live_out.into_iter().collect())

@@ -440,7 +440,12 @@ fn checked_b1b_row_substitutes_its_matched_derivative_definition() {
     solve
         .validate()
         .expect("the checked row satisfies Solve storage contracts");
-    assert_eq!(solve.solve_layout.solver_maps.names, ["x", "a"]);
+    assert_eq!(
+        solve
+            .solver_named_report(0..solve.solver_scalar_count())
+            .unwrap(),
+        ["x", "a"]
+    );
     assert_eq!(
         solve.discrete.update_targets,
         [solve.layout.binding("d").unwrap()]
@@ -486,7 +491,12 @@ fn check_wrapped_derivative_alias(wrappers: &[dae::UnaryOperator]) {
     let model = derivative_alias_model(false, wrappers);
     let solve =
         lower_solve_problem(&model).expect("signed equation wrappers preserve computability");
-    assert_eq!(solve.solve_layout.solver_maps.names, ["x", "a"]);
+    assert_eq!(
+        solve
+            .solver_named_report(0..solve.solver_scalar_count())
+            .unwrap(),
+        ["x", "a"]
+    );
     let derivative = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
         .expect("derivative has a checked execution view");
     let residual = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.residual)

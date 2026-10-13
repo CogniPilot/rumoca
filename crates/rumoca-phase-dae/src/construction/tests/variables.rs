@@ -216,6 +216,37 @@ fn top_level_connector_fields_retain_external_causality() {
 }
 
 #[test]
+fn protected_primitive_output_retains_prefix_without_public_causality() {
+    let source = TestSource::new("model M protected output Real hidden; end M;");
+    let mut model = test_model();
+    model.is_partial = true;
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "hidden",
+        "Real hidden",
+        18,
+        Vec::new(),
+        false,
+    );
+    let variable = model.variables.get_mut(&VarName::new("hidden")).unwrap();
+    variable.causality = Causality::Output(Default::default());
+    variable.is_protected = true;
+    variable.component_ref = Some(test_component_reference("hidden", variable.source_span));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let (_, variable) = view.variables().next().unwrap();
+        assert_eq!(variable.causality(), dae::VariableCausality::Local);
+        assert_eq!(
+            variable.declared_causality(),
+            dae::DeclaredCausality::Output
+        );
+        assert_eq!(variable.role(), dae::VariableRole::Output);
+    });
+}
+
+#[test]
 fn unused_expandable_member_is_not_a_runtime_coordinate() {
     let source = TestSource::new("model M Real x; equation x - 1.0; Real unused; end M;");
     let mut model = scalar_real_model(&source);

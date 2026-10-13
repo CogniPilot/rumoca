@@ -1,5 +1,6 @@
-//! Checked public Integer publication retains the FMI Int32 profile even when
-//! the internal MLS §3.7.2 quotient is an exact, wider signed Integer.
+//! Checked public Integer publication validates the whole request against the
+//! variant's Integer profile (FMI 2 Int32, FMI 3 Int64) before casting any value,
+//! even when the internal MLS §3.7.2 quotient is an exact, wider signed Integer.
 
 use super::*;
 
@@ -27,13 +28,13 @@ fn packaged_fmi_integer_publication_checks_the_whole_request_before_casting() {
         (
             "mod",
             ORIGINAL,
-            "{-7,5,0},{-2,3,0},{-1,4,0},{0,5,0},{1,6,0},{2,0,0},{7,5,0}",
+            "{-7,5},{-2,3},{-1,4},{0,5},{1,6},{2,0},{7,5}",
         ),
-        ("div", division.as_str(), "{2,1286742750677285.0,1}"),
+        ("div", division.as_str(), "{2,1286742750677285.0}"),
         (
             "bounds",
             BOUNDS,
-            "{-2,-2147483649.0,1},{-1,-2147483648.0,0},{0,2147483647.0,0},{1,2147483648.0,1}",
+            "{-2,-2147483649.0},{-1,-2147483648.0},{0,2147483647.0},{1,2147483648.0}",
         ),
     ];
     for (label, source, cases) in cases {
@@ -94,6 +95,7 @@ fn run_harness(fmu: &BuiltFmu, standard: &FmiStandard, cases: &str) {
 const FMI2: &str = r#"
 typedef fmi2Component Instance;
 typedef fmi2Integer Integer;
+#define PUBLIC_BITS 32
 typedef fmi2ValueReference Reference;
 #define SUCCESS fmi2OK
 #define FAILURE fmi2Error
@@ -117,7 +119,8 @@ static double settled(Instance m) { return ((ModelInstance*)m)->p[rmc_value_refe
 
 const FMI3: &str = r#"
 typedef fmi3Instance Instance;
-typedef fmi3Int32 Integer;
+typedef fmi3Int64 Integer;
+#define PUBLIC_BITS 64
 typedef fmi3ValueReference Reference;
 #define SUCCESS fmi3OK
 #define FAILURE fmi3Error
@@ -126,7 +129,7 @@ static Instance start(int cs, Integer input) {
         :fmi3InstantiateModelExchange("integer","@TOKEN@",NULL,0,0,NULL,NULL);
     const Reference vr=1;
     if (!m || fmi3EnterInitializationMode(m,0,0,0,1,0.01)!=SUCCESS
-        || fmi3SetInt32(m,&vr,1,&input,1)!=SUCCESS || fmi3ExitInitializationMode(m)!=SUCCESS) return NULL;
+        || fmi3SetInt64(m,&vr,1,&input,1)!=SUCCESS || fmi3ExitInitializationMode(m)!=SUCCESS) return NULL;
     if (!cs) {
         fmi3Boolean need,terminate,nominals,values,next; fmi3Float64 next_time;
         if (fmi3UpdateDiscreteStates(m,&need,&terminate,&nominals,&values,&next,&next_time)!=SUCCESS
@@ -134,7 +137,7 @@ static Instance start(int cs, Integer input) {
     }
     return m;
 }
-static int get(Instance m, const Reference* vr, Integer* out) { return fmi3GetInt32(m,vr,2,out,2); }
+static int get(Instance m, const Reference* vr, Integer* out) { return fmi3GetInt64(m,vr,2,out,2); }
 static int finish(Instance m) { int status=fmi3Terminate(m); fmi3FreeInstance(m); return status; }
 static double settled(Instance m) { return ((ModelInstance*)m)->p[rmc_value_references[2].base]; }
 "#;
@@ -158,14 +161,15 @@ static int integer_domains(void) {
 }
 int main(void) {
     CHECK(integer_domains()==0);
-    const struct { Integer input; double raw; int error; } cases[]={@CASES@};
+    const struct { Integer input; double raw; } cases[]={@CASES@};
     const Reference vr[2]={1,2}, wrong[2]={1,0};
     for (int cs=0;cs<2;++cs) for (size_t k=0;k<sizeof cases/sizeof cases[0];++k) {
         Instance m=start(cs,cases[k].input); CHECK(m);
         Integer values[2]={12345,6789};
         int status=get(m,vr,values);
         CHECK(settled(m)==cases[k].raw);
-        if (cases[k].error) CHECK(status==FAILURE && values[0]==12345 && values[1]==6789);
+        const int error=!rmc_integer_public_value(cases[k].raw,PUBLIC_BITS,0);
+        if (error) CHECK(status==FAILURE && values[0]==12345 && values[1]==6789);
         else CHECK(status==SUCCESS && values[0]==cases[k].input && (double)values[1]==cases[k].raw);
         values[0]=12345; values[1]=6789;
         CHECK(get(m,wrong,values)==FAILURE && values[0]==12345 && values[1]==6789);

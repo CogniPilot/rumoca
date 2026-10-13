@@ -1,13 +1,15 @@
 use std::cell::RefCell;
 use std::time::Instant;
 
-#[cfg(feature = "scheduled-sim")]
-use indexmap::IndexMap;
+scheduled_executor_items! {
+    use indexmap::IndexMap;
+}
 use rumoca_ir_dae as dae;
 
 use crate::BuildSimulationTimings;
-#[cfg(feature = "scheduled-sim")]
-use crate::SimulationSessionApi;
+scheduled_executor_items! {
+    use crate::SimulationSessionApi;
+}
 use crate::me_backend::{
     BackendSimulationSession, batch_options, instance_config, plugin_for_host,
 };
@@ -414,9 +416,10 @@ impl SimulationSession {
         })
     }
 
-    #[cfg(feature = "scheduled-sim")]
-    pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
-        self.inner.values_for(names)
+    scheduled_executor_items! {
+        pub(crate) fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, SimError> {
+            self.inner.values_for(names)
+        }
     }
 
     pub(crate) fn input_names(&self) -> &[String] {
@@ -427,9 +430,10 @@ impl SimulationSession {
         self.inner.variable_names()
     }
 
-    #[cfg(feature = "scheduled-sim")]
-    pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
-        None
+    scheduled_executor_items! {
+        pub(crate) fn max_schedule_advance_dt(&self) -> Option<f64> {
+            None
+        }
     }
 }
 
@@ -461,36 +465,37 @@ fn diagnostic_failure_stage(err: &SimulationDiagnosticError) -> SimFailureStage 
     }
 }
 
-#[cfg(feature = "scheduled-sim")]
-impl SimulationSessionApi for SimulationSession {
-    type Error = SimError;
+scheduled_executor_items! {
+    impl SimulationSessionApi for SimulationSession {
+        type Error = SimError;
 
-    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-        Self::reset(self, t_start)
-    }
+        fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
+            Self::reset(self, t_start)
+        }
 
-    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
-        Self::set_inputs(self, inputs)
-    }
+        fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
+            Self::set_inputs(self, inputs)
+        }
 
-    fn ensure_end_time(&mut self, target_time: f64) {
-        Self::ensure_end_time(self, target_time);
-    }
+        fn ensure_end_time(&mut self, target_time: f64) {
+            Self::ensure_end_time(self, target_time);
+        }
 
-    fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
-        Self::advance_to(self, target_time)
-    }
+        fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
+            Self::advance_to(self, target_time)
+        }
 
-    fn time(&self) -> f64 {
-        Self::time(self)
-    }
+        fn time(&self) -> f64 {
+            Self::time(self)
+        }
 
-    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
-        Self::get(self, name)
-    }
+        fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
+            Self::get(self, name)
+        }
 
-    fn max_schedule_advance_dt(&self) -> Option<f64> {
-        Self::max_schedule_advance_dt(self)
+        fn max_schedule_advance_dt(&self) -> Option<f64> {
+            Self::max_schedule_advance_dt(self)
+        }
     }
 }
 
@@ -634,7 +639,7 @@ mod native_policy_tests {
             t: f64,
             external_tables: &[rumoca_core::ExternalTableData],
             out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, external_tables, out);
             self.counters.expression.observe(&result);
             result
@@ -655,7 +660,7 @@ mod native_policy_tests {
             t: f64,
             seed: &[f64],
             external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<Option<f64>, String> {
+        ) -> Result<Option<f64>, rumoca_solver::RuntimeSolveError> {
             let result = self
                 .inner
                 .call_program_output(coordinate, y, p, t, seed, external_tables);
@@ -673,7 +678,7 @@ mod native_policy_tests {
             seed: &[f64],
             external_tables: &[rumoca_core::ExternalTableData],
             out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, seed, external_tables, out);
             self.counters.jacobian.observe(&result);
             result
@@ -692,7 +697,7 @@ mod native_policy_tests {
             p: &[f64],
             t: f64,
             external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<(), String> {
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(y, p, t, external_tables);
             self.counters.assignment.observe(&result);
             result
@@ -705,7 +710,11 @@ mod native_policy_tests {
     }
 
     impl CompiledSolveEventTransaction for CountingEventTransaction {
-        fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String> {
+        fn call(
+            &self,
+            input: &[f64],
+            output: &mut [f64],
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
             let result = self.inner.call(input, output);
             self.counters.event_transaction.observe(&result);
             result
@@ -786,7 +795,7 @@ mod native_policy_tests {
     impl ModelFixture {
         fn component(&self) -> solve::fmi::FmiComponent {
             let mut deserializer = serde_json::Deserializer::from_str(&self.component_wire);
-            rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+            rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut deserializer)
                 .expect("fixture FMI component replays")
         }
 
@@ -805,10 +814,13 @@ mod native_policy_tests {
             .expect("fixture compiles through checked ToDAE")
             .dae;
         let lowered =
-            crate::solve_lowering::lower_correlated_for_simulation_with_overrides(&dae, opts)
+            crate::solve_lowering::lower_correlated_for_native_execution_with_overrides(&dae, opts)
                 .expect("fixture lowers to a correlated Solve model");
         let model = lowered.model().clone();
-        let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
+        let component = rumoca_phase_solve::fmi::finish_fmi_component(lowered)
+            .expect("fixture FMI component constructs");
+        let root = component.runtime_view().retain_assertion_root();
+        let wire = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
             .expect("fixture FMI wire constructs");
         let component_wire = serde_json::to_string(&wire).expect("fixture FMI wire serializes");
         ModelFixture {
@@ -838,6 +850,36 @@ mod native_policy_tests {
                 "end NativeDiscriminator;\n",
             ),
             "NativeDiscriminator",
+            opts,
+        )
+    }
+
+    /// A sampled `when` that calls a user function: its event update is an
+    /// event-transaction program with a pure-call site.
+    fn event_fixture(opts: &SimOptions) -> ModelFixture {
+        lower(
+            r#"
+function increment
+  input Real value;
+  output Real result;
+algorithm
+  result := value + 1;
+end increment;
+
+model DeclinedEvent
+  Real x(start = 0, fixed = true);
+  Real z;
+  discrete Real n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  z = 0.5 * x + cos(time);
+algorithm
+  when sample(0.1, 0.1) then
+    n := increment(pre(n));
+  end when;
+end DeclinedEvent;
+"#,
+            "DeclinedEvent",
             opts,
         )
     }
@@ -915,8 +957,9 @@ mod native_policy_tests {
     }
 
     /// Mutation fixture: a backend whose compiles succeed but whose every
-    /// compiled call returns `Err`. Exact projection must propagate the error,
-    /// and the success/failure accounting must expose the failed execution.
+    /// compiled call returns `Err`. The error of whichever compiled call runs
+    /// first must propagate, and the success/failure accounting must expose the
+    /// failed execution.
     struct FailingCompiled;
 
     impl CompiledSolveExpression for FailingCompiled {
@@ -927,8 +970,8 @@ mod native_policy_tests {
             _t: f64,
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
-            Err("injected native expression failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native expression failure".into())
         }
     }
 
@@ -941,8 +984,8 @@ mod native_policy_tests {
             _seed: &[f64],
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
-            Err("injected native JVP failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native JVP failure".into())
         }
     }
 
@@ -953,14 +996,18 @@ mod native_policy_tests {
             _p: &[f64],
             _t: f64,
             _external_tables: &[rumoca_core::ExternalTableData],
-        ) -> Result<(), String> {
-            Err("injected native assignment failure".to_string())
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native assignment failure".into())
         }
     }
 
     impl CompiledSolveEventTransaction for FailingCompiled {
-        fn call(&self, _input: &[f64], _output: &mut [f64]) -> Result<(), String> {
-            Err("injected native event-transaction failure".to_string())
+        fn call(
+            &self,
+            _input: &[f64],
+            _output: &mut [f64],
+        ) -> Result<(), rumoca_solver::RuntimeSolveError> {
+            Err("injected native event-transaction failure".into())
         }
     }
 
@@ -988,6 +1035,45 @@ mod native_policy_tests {
             _schedule: &solve::ExactRefreshAssignmentSchedule,
         ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
             Ok(Rc::new(FailingCompiled))
+        }
+
+        fn compile_event_transaction(
+            &self,
+            _program: &solve::EventTransactionProgram,
+        ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+            Ok(Rc::new(FailingCompiled))
+        }
+    }
+
+    /// The production backend for every compile except event transactions,
+    /// whose compiled calls always fail.
+    struct FailingEventTransactionBackend {
+        inner: Rc<dyn SolveExecutionBackend>,
+    }
+
+    impl SolveExecutionBackend for FailingEventTransactionBackend {
+        fn compile_expression(
+            &self,
+            block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+            self.inner.compile_expression(block)
+        }
+
+        fn compile_jacobian_expression(
+            &self,
+            block: &solve::ScalarProgramBlock,
+        ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+            self.inner.compile_jacobian_expression(block)
+        }
+
+        fn compile_assignment_schedule(
+            &self,
+            source: &solve::ComputeBlock,
+            owners: &solve::ContinuousRefreshOwners,
+            schedule: &solve::ExactRefreshAssignmentSchedule,
+        ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+            self.inner
+                .compile_assignment_schedule(source, owners, schedule)
         }
 
         fn compile_event_transaction(
@@ -1040,31 +1126,7 @@ mod native_policy_tests {
     #[test]
     fn a_declined_program_is_recorded_in_the_session_receipt() {
         let opts = sim_opts(SimExecutionPolicy::Auto);
-        let model = lower(
-            r#"
-function increment
-  input Real value;
-  output Real result;
-algorithm
-  result := value + 1;
-end increment;
-
-model DeclinedEvent
-  Real x(start = 0, fixed = true);
-  Real z;
-  discrete Real n(start = 0, fixed = true);
-equation
-  der(x) = 1;
-  z = 0.5 * x + cos(time);
-algorithm
-  when sample(0.1, 0.1) then
-    n := increment(pre(n));
-  end when;
-end DeclinedEvent;
-"#,
-            "DeclinedEvent",
-            &opts,
-        );
+        let model = event_fixture(&opts);
         let handle = MeExecutionBackend::new(Rc::new(DecliningBackend));
         let mut session =
             super::SimulationSession::from_artifact(model.artifact(), opts, Some(handle))
@@ -1163,9 +1225,8 @@ end DeclinedEvent;
         let error = simulate_artifact(model.artifact(), &opts, Some(handle))
             .expect_err("native exact projection errors must reach the caller");
         assert!(
-            error
-                .to_string()
-                .contains("injected native assignment failure")
+            error.to_string().contains("injected native"),
+            "the first failing compiled call reaches the caller: {error}"
         );
         assert!(
             counters.total_failed() > 0,
@@ -1179,6 +1240,63 @@ end DeclinedEvent;
         assert!(
             !native_success_evidence_holds(&counters),
             "silent interpreter fallback must not satisfy the native-success evidence"
+        );
+    }
+
+    /// The compiled event transaction of a pure-call update executes natively
+    /// and its result is the one the session publishes.
+    #[test]
+    fn auto_native_bdf_path_executes_the_compiled_event_transaction() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = event_fixture(&opts);
+        let (_backend, counters, handle) = counting_handle(&model);
+        let result = simulate_artifact(model.artifact(), &opts, Some(handle))
+            .expect("native event run succeeds");
+        let counter = &counters.event_transaction;
+        assert!(
+            counter.succeeded.get() > 0,
+            "attempted={}",
+            counter.attempted.get()
+        );
+        assert_eq!(counter.failed.get(), 0);
+        let n = result
+            .names
+            .iter()
+            .position(|name| name == "n")
+            .expect("n is recorded");
+        let last = result.data[n].last().copied().expect("n has samples");
+        assert_eq!(last, 5.0, "five sample events fall in [0, 0.5]");
+    }
+
+    /// A compiled event transaction that fails reaches the caller.
+    #[test]
+    fn failing_native_event_transaction_reaches_the_caller() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = event_fixture(&opts);
+        let (_backend, counters, handle) = counting_handle_over(Rc::new(FailingBackend));
+        let error = simulate_artifact(model.artifact(), &opts, Some(handle))
+            .expect_err("a failed compiled call must not fall back silently");
+        assert!(error.to_string().contains("injected native"), "{error}");
+        assert!(counters.total_failed() > 0);
+    }
+
+    /// When every other compiled call succeeds, a failing compiled event
+    /// transaction is the error the caller sees.
+    #[test]
+    fn a_failing_compiled_event_transaction_is_the_error_the_caller_sees() {
+        let opts = sim_opts(SimExecutionPolicy::Auto);
+        let model = event_fixture(&opts);
+        let backend = Rc::new(FailingEventTransactionBackend {
+            inner: crate::native_execution::backend(&model.pure_calls),
+        });
+        let handle = MeExecutionBackend::new(backend);
+        let error = simulate_artifact(model.artifact(), &opts, Some(handle))
+            .expect_err("a failed compiled event transaction must not fall back silently");
+        assert!(
+            error
+                .to_string()
+                .contains("injected native event-transaction failure"),
+            "{error}"
         );
     }
 

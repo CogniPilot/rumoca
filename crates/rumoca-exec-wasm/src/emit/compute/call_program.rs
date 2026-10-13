@@ -1,12 +1,14 @@
 //! Checked call helpers share one status-returning, atomic assignment entrypoint.
 mod buffers;
+mod carried;
+pub(in crate::emit) mod glue;
 mod groups;
 pub(in crate::emit) mod layout;
 mod memo;
 mod transfer;
 use super::*;
 use crate::native_program::CompiledNativeCallProgramWasm;
-use crate::typed_call::program::ProgramHelpers;
+use crate::typed_call::program::{Demand, ProgramHelpers};
 use layout::CallProgramPlan;
 use rumoca_ir_solve as solve;
 
@@ -18,11 +20,36 @@ pub(crate) fn emit_native_call_assignment_module(
     emit_with_budget(schedule, layout, table, groups::FUNCTION_BYTES)
 }
 
+pub(crate) fn emit_native_call_assignment_module_with_policy(
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+    policy: crate::CheckedNativeWasmCapacityPolicy,
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    emit_with_policy(schedule, layout, table, groups::FUNCTION_BYTES, policy)
+}
+
 fn emit_with_budget(
     schedule: &solve::NativeRefreshAssignmentSchedule,
     layout: &VarLayout,
     table: &solve::SolvePureCallTable,
     budget: usize,
+) -> Result<CompiledNativeCallProgramWasm, String> {
+    emit_with_policy(
+        schedule,
+        layout,
+        table,
+        budget,
+        crate::CheckedNativeWasmCapacityPolicy::default(),
+    )
+}
+
+pub(crate) fn emit_with_policy(
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    layout: &VarLayout,
+    table: &solve::SolvePureCallTable,
+    budget: usize,
+    policy: crate::CheckedNativeWasmCapacityPolicy,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
     layout
         .validate_shape_contract()
@@ -36,21 +63,21 @@ fn emit_with_budget(
         .collect::<Vec<_>>();
     let sites = conditional::call_sites(&programs)?;
     require_checked_entry(schedule, &sites, &programs)?;
-    let mut helpers = ProgramHelpers::new(table, &sites).map_err(|e| e.to_string())?;
-    let imports = collect_imports(&programs)?
-        .into_iter()
-        .chain(helpers.math_imports().iter().copied())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut helpers = link_helpers(table, schedule, &plans, &sites)?;
+    let imports = linked_imports(&programs, &helpers)?;
     helpers.relocate(&imports).map_err(|e| e.to_string())?;
-    let (bodies, faults) = helpers.bodies(table).map_err(|e| e.to_string())?;
+    let (bodies, faults) = helpers.bodies(table, budget).map_err(|e| e.to_string())?;
     let rank = plans.iter().map(|plan| plan.rank).max().unwrap_or(0);
     // The checked entry always evaluates stages in private registers.
-    let arena = arena::ArenaPlan::required(&programs, rank)?;
-    let call_plan =
-        CallProgramPlan::new(&programs, &helpers, work.y_scalars(), arena.inner_counter)?
-            .with_schedule_lanes(schedule, layout)?;
+    let arena = arena::ArenaPlan::required_with_policy(&programs, rank, policy)?;
+    let call_plan = CallProgramPlan::for_schedule(
+        &programs,
+        &helpers,
+        arena.inner_counter,
+        schedule,
+        layout,
+        policy,
+    )?;
     let mut module = Module::new();
     let types = add_types(&mut module);
     let mut catalog = add_import_section(&mut module, &imports, &types);
@@ -71,7 +98,7 @@ fn emit_with_budget(
         schedule,
         &plans,
         &catalog,
-        arena,
+        arena.clone(),
         &call_plan,
         budget,
         &mut gather_faults,
@@ -87,6 +114,7 @@ fn emit_with_budget(
         functions.function(types.eval_type);
     }
     functions.function(types.eval_type);
+    functions.function(types.eval_type);
     module.section(&functions);
     arena.add_memory(&mut module);
     let mut exports = ExportSection::new();
@@ -94,37 +122,87 @@ fn emit_with_budget(
     exports.export(
         "eval_assignments",
         ExportKind::Func,
-        catalog.eval_function_index,
+        catalog.eval_function_index + 1,
     );
     module.section(&exports);
-    let mut function = Function::new(groups::locals(arena));
+    let mut function = Function::new(groups::locals(arena.clone()));
     let mut emitter = BodyEmitter::new(&catalog, &mut function);
+    emitter.arena = Some(arena.clone());
+    emitter.calls = Some(&call_plan);
+    emitter.begin_call_program(schedule)?;
+    groups::invoke(&mut emitter, first_group, outlined.len())?;
+    emitter.finish_call_program()?;
+    function.instruction(&Instruction::End);
+    let mut entry = Function::new(groups::locals(arena.clone()));
+    let mut emitter = BodyEmitter::new(&catalog, &mut entry);
     emitter.arena = Some(arena);
     emitter.calls = Some(&call_plan);
-    emitter.begin_call_program(layout, schedule.input_lanes())?;
-    groups::invoke(&mut emitter, first_group, outlined.len())?;
-    emitter.finish_call_program(schedule.derived_outputs())?;
-    function.instruction(&Instruction::End);
-    let mut code = CodeSection::new();
-    for body in bodies {
-        groups::check_size(&body, groups::FUNCTION_BYTES, "native typed helper")?;
-        code.function(&body);
-    }
-    for body in outlined {
-        code.function(&body);
-    }
-    groups::check_size(&function, budget, "native assignment entrypoint")?;
-    code.function(&function);
-    module.section(&code);
+    emitter.emit_call_program_entry(layout, schedule, catalog.eval_function_index)?;
+    entry.instruction(&Instruction::End);
+    append_code(&mut module, bodies, outlined, [function, entry], budget)?;
     Ok(CompiledNativeCallProgramWasm {
         bytes: module.finish(),
-        scratch_bytes: call_plan.bytes,
+        capacity_policy: policy,
+        scratch_bytes: call_plan.view().bytes,
         scratch_report: call_plan.scratch_report(helpers.owner_scratch(table)),
         faults,
         gather_faults: gather_faults.entries,
         math_imports: imports.iter().map(|import| import.symbol()).collect(),
         pooled_arena_bytes: None,
+        carried: schedule.carried_state().clone(),
     })
+}
+
+/// Link the helpers each root owner of the program calls, built for the outputs
+/// the stages read (SOLVE-C95).
+fn link_helpers(
+    table: &solve::SolvePureCallTable,
+    schedule: &solve::NativeRefreshAssignmentSchedule,
+    plans: &[KernelPlan<'_>],
+    sites: &[solve::SolvePureCallSite],
+) -> Result<ProgramHelpers, String> {
+    let demands = glue::root_demands(schedule, plans, sites);
+    ProgramHelpers::with_demands(table, sites, |site| {
+        demands
+            .get(&site.owner().index())
+            .cloned()
+            .unwrap_or_else(Demand::all)
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn append_code(
+    module: &mut Module,
+    bodies: Vec<Function>,
+    outlined: Vec<Function>,
+    entry: [Function; 2],
+    budget: usize,
+) -> Result<(), String> {
+    let mut code = CodeSection::new();
+    for body in bodies {
+        code.function(&body);
+    }
+    for body in outlined {
+        code.function(&body);
+    }
+    for function in &entry {
+        groups::check_size(function, budget, "native assignment entrypoint")?;
+        code.function(function);
+    }
+    module.section(&code);
+    Ok(())
+}
+
+fn linked_imports(
+    programs: &[Vec<LinearOp>],
+    helpers: &ProgramHelpers,
+) -> Result<Vec<MathImport>, String> {
+    Ok(collect_imports(programs)?
+        .into_iter()
+        .chain(helpers.math_imports().iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 /// The layout stages address: the host Y scalars followed by one private slot
@@ -151,7 +229,7 @@ fn require_checked_entry(
 ) -> Result<(), String> {
     if sites.is_empty()
         && schedule.derived_outputs().is_empty()
-        && schedule.input_lanes().is_empty()
+        && schedule.input_runs().is_empty()
         && !has_checked_model_operations(programs.iter().flatten())
     {
         return Err("native checked program has no checked operations".into());

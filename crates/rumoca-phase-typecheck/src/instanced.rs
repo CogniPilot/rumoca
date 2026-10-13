@@ -41,7 +41,10 @@ impl TypeChecker {
         // depend on each other through bindings and size(..) expressions.
         self.evaluate_all_dimensions_multi_pass(tree, overlay, &record_aliases);
         self.validate_dimensions(overlay);
+        let previous_function_bindings = self.reachable_function_bindings.replace(Vec::new());
         self.check_instanced_equations(tree, overlay, model_name, &type_table);
+        self.check_reachable_function_bindings(tree, &type_table);
+        self.reachable_function_bindings = previous_function_bindings;
         if !self.has_errors() {
             self.finalize_effective_types(overlay, &type_table);
         }
@@ -201,7 +204,7 @@ impl TypeChecker {
         roots
     }
 
-    fn expand_component_type_root_closure(
+    pub(crate) fn expand_component_type_root_closure(
         &self,
         tree: &ClassTree,
         type_table: &TypeTable,
@@ -614,7 +617,7 @@ impl TypeChecker {
         self.check_instanced_class_declaration(class, Some(class_instance_id), type_table);
     }
 
-    fn check_instanced_class_declaration(
+    pub(crate) fn check_instanced_class_declaration(
         &mut self,
         class: &ClassDef,
         class_instance_id: Option<InstanceId>,
@@ -757,19 +760,12 @@ impl TypeChecker {
                 std::mem::take(&mut self.current_call_type_overrides);
             self.current_call_type_overrides =
                 call_type_overrides_for_instance_scope(tree, overlay, &self.current_instance_scope);
-            walk_expression(self, binding_to_check, type_table);
-            if let Some(found) = self.infer_expression_type(binding_to_check, type_table) {
-                self.check_expected_expression_type(
-                    data.type_id,
-                    found,
-                    binding_to_check
-                        .get_location()
-                        .or(Some(&data.source_location)),
-                    "component binding type compatibility",
-                    "component binding here",
-                    type_table,
-                );
-            }
+            self.check_binding_expression(
+                data.type_id,
+                binding_to_check,
+                &data.source_location,
+                type_table,
+            );
             self.current_instance_scope = previous_scope;
             self.current_class_instance_id = previous_class_instance_id;
             self.current_call_type_overrides = previous_call_type_overrides;

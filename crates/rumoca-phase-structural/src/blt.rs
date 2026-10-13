@@ -14,9 +14,91 @@
 //! node set, so a whole-array ODE produces one block instead of one block (and
 //! one cloned [`UnknownId`]) per array element.
 
+mod declaration_runs;
+
+pub(crate) use declaration_runs::ErasedStructuredScalarBlock;
+pub use declaration_runs::StructuredFamilyContext;
+
 use crate::incidence::{Incidence, StructuredMatchingFamily};
 use crate::tarjan::tarjan_scc;
-use crate::types::{BltBlock, EquationRef, StructuredScalarBlock, UnknownId};
+use crate::types::{BltBlock, EquationRef, StructuralError, UnknownId};
+use rumoca_core::Span;
+
+#[derive(Debug, Clone)]
+pub struct StructuredScalarBlock<'dae> {
+    matching: std::sync::Arc<crate::incidence::StructuredMatchingFamily>,
+    context: Option<StructuredFamilyContext<'dae>>,
+}
+
+impl<'dae> StructuredScalarBlock<'dae> {
+    pub fn context(&self) -> Option<&StructuredFamilyContext<'dae>> {
+        self.context.as_ref()
+    }
+
+    pub fn shares_matching_owner(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.matching, &other.matching)
+    }
+
+    pub fn span(&self) -> Span {
+        self.matching.span
+    }
+
+    pub fn first_equation_index(&self) -> usize {
+        self.matching.first_equation_index
+    }
+
+    pub fn point_count(&self) -> usize {
+        self.matching.point_count
+    }
+
+    pub fn equations_per_point(&self) -> usize {
+        self.matching.equations_per_point
+    }
+
+    pub fn extents(&self) -> &[usize] {
+        &self.matching.extents
+    }
+
+    pub fn unknown_steps(&self) -> &[Vec<i64>] {
+        &self.matching.unknown_steps
+    }
+
+    pub fn row_range(&self) -> std::ops::Range<usize> {
+        self.matching
+            .row_range()
+            .expect("issued matching row range is checked")
+    }
+
+    #[must_use]
+    pub fn scalar_block_count(&self) -> usize {
+        self.matching
+            .row_count()
+            .expect("issued matching row count is checked")
+    }
+
+    pub fn scalar_rows(
+        &self,
+    ) -> impl Iterator<Item = Result<(EquationRef, usize), StructuralError>> + '_ {
+        (0..self.point_count()).flat_map(move |point| {
+            (0..self.equations_per_point()).map(move |position| {
+                self.scalar_row(point, position)
+                    .ok_or_else(|| StructuralError::ContractViolation {
+                        reason: format!(
+                            "compact family at f_x[{}] cannot address point {point}, body {position}",
+                            self.first_equation_index()
+                        ),
+                        span: self.span(),
+                    })
+            })
+        })
+    }
+
+    pub fn scalar_row(&self, point: usize, position: usize) -> Option<(EquationRef, usize)> {
+        self.matching
+            .candidate(point, position)
+            .map(|(equation, unknown)| (EquationRef(equation), unknown))
+    }
+}
 
 /// Build BLT blocks from the incidence data, matching, and dependency graph.
 ///
@@ -24,11 +106,12 @@ use crate::types::{BltBlock, EquationRef, StructuredScalarBlock, UnknownId};
 /// Since dependency edges point from dependent → dependency, this output order
 /// is already the correct BLT evaluation order (dependencies first).
 pub(crate) fn build_blt_blocks<'dae>(
+    view: Option<rumoca_ir_dae::DaeView<'dae>>,
     incidence: &Incidence<'dae>,
     match_eq: &[Option<usize>],
     adj: &[Vec<usize>],
 ) -> Vec<BltBlock<'dae>> {
-    let (structured, condensed) = split_self_contained_families(incidence, match_eq);
+    let (structured, condensed) = split_self_contained_families(view, incidence, match_eq);
     let Some(condensed) = condensed else {
         return sccs_to_blocks(tarjan_scc(incidence.n_eq, adj), incidence, match_eq);
     };
@@ -75,24 +158,30 @@ struct CondensedNodes {
 ///
 /// Returns `(blocks, None)` when no family qualifies, so the common
 /// (array-free) path allocates nothing extra.
-fn split_self_contained_families(
-    incidence: &Incidence<'_>,
+fn split_self_contained_families<'dae>(
+    view: Option<rumoca_ir_dae::DaeView<'dae>>,
+    incidence: &Incidence<'dae>,
     match_eq: &[Option<usize>],
-) -> (Vec<StructuredScalarBlock>, Option<CondensedNodes>) {
+) -> (Vec<StructuredScalarBlock<'dae>>, Option<CondensedNodes>) {
     let mut blocks = Vec::new();
     let mut keep: Option<Vec<bool>> = None;
     for family in &incidence.structured_matching {
         let Some(range) = family.row_range() else {
             continue;
         };
-        if !family_is_self_contained(family, incidence, match_eq) {
+        let Some(declarations) = family_is_self_contained(family, incidence, match_eq) else {
             continue;
-        }
+        };
         let flags = keep.get_or_insert_with(|| vec![true; incidence.n_eq]);
         if !claim_rows(flags, range) {
             continue;
         }
-        blocks.push(structured_scalar_block(family));
+        blocks.push(structured_scalar_block(
+            view,
+            family,
+            incidence,
+            declarations,
+        ));
     }
     if blocks.is_empty() {
         return (blocks, None);
@@ -140,25 +229,27 @@ fn claim_rows(flags: &mut [bool], range: std::ops::Range<usize>) -> bool {
 ///
 /// The scan is `O(rows)` slice comparisons on the CSR store, which is the same
 /// order as the Tarjan pass it replaces.
-fn family_is_self_contained(
+fn family_is_self_contained<'dae>(
     family: &StructuredMatchingFamily,
-    incidence: &Incidence<'_>,
+    incidence: &Incidence<'dae>,
     match_eq: &[Option<usize>],
-) -> bool {
-    let Some(range) = family.row_range() else {
-        return false;
-    };
+) -> Option<Option<Box<[UnknownId<'dae>]>>> {
+    let range = family.row_range()?;
     if range.end > incidence.n_eq || family.point_count == 0 || family.equations_per_point == 0 {
-        return false;
+        return None;
     }
+    let mut declarations = declaration_runs::base_declarations(family, incidence);
     for point in 0..family.point_count {
         for position in 0..family.equations_per_point {
-            if !row_is_self_contained(family, incidence, match_eq, point, position) {
-                return false;
+            let unknown = row_is_self_contained(family, incidence, match_eq, point, position)?;
+            if declarations.as_ref().is_some_and(|bases| {
+                !declaration_runs::matches_declaration(family, incidence, bases, unknown, position)
+            }) {
+                declarations = None;
             }
         }
     }
-    true
+    Some(declarations)
 }
 
 /// Whether one scalar row of `family` references exactly its own matched
@@ -169,24 +260,24 @@ fn row_is_self_contained(
     match_eq: &[Option<usize>],
     point: usize,
     position: usize,
-) -> bool {
-    let Some((row, unknown)) = family.candidate(point, position) else {
-        return false;
-    };
-    incidence.eq_unknowns.row(row) == [unknown]
-        && match_eq.get(row).copied().flatten() == Some(unknown)
+) -> Option<usize> {
+    let (row, unknown) = family.candidate(point, position)?;
+    (incidence.eq_unknowns.row(row) == [unknown]
+        && match_eq.get(row).copied().flatten() == Some(unknown))
+    .then_some(unknown)
 }
 
-fn structured_scalar_block(family: &StructuredMatchingFamily) -> StructuredScalarBlock {
+fn structured_scalar_block<'dae>(
+    view: Option<rumoca_ir_dae::DaeView<'dae>>,
+    family: &StructuredMatchingFamily,
+    incidence: &Incidence<'dae>,
+    declarations: Option<Box<[UnknownId<'dae>]>>,
+) -> StructuredScalarBlock<'dae> {
     StructuredScalarBlock {
-        span: family.span,
-        first_equation_index: family.first_equation_index,
-        equations_per_point: family.equations_per_point,
-        point_count: family.point_count,
-        extents: family.extents.clone(),
-        cell_strides: family.cell_strides.clone(),
-        base_unknowns: family.base_unknowns.clone(),
-        unknown_steps: family.unknown_steps.clone(),
+        matching: std::sync::Arc::new(family.clone()),
+        context: view.and_then(|view| {
+            declaration_runs::checked_source(view, family, incidence, declarations)
+        }),
     }
 }
 

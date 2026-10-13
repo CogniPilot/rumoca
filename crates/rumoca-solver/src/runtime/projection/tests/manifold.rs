@@ -43,12 +43,13 @@ impl ManifoldProjectionModel for PendulumManifoldModel {
 fn manifold_projection_uses_rectangular_minimum_norm_state_correction() {
     let model = PendulumManifoldModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![1.02, 0.03, 0.10, 0.04];
@@ -108,12 +109,13 @@ impl ManifoldProjectionModel for ImpossibleManifoldModel {
 fn failed_manifold_projection_rolls_back_every_y_slot() {
     let model = ImpossibleManifoldModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let original = vec![0.25, -0.75, 42.0];
@@ -133,12 +135,13 @@ fn failed_manifold_projection_rolls_back_every_y_slot() {
 fn initial_manifold_certification_checks_without_correcting_states() {
     let model = PendulumManifoldModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let consistent: [f64; 4] = [0.6, 0.8, -0.8, 0.6];

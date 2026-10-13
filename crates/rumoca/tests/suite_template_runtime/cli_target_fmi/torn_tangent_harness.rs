@@ -200,6 +200,7 @@ fn linked_block<'a>(
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .filter_map(|block| block.tearing.as_ref())
         .find(|tearing| {
@@ -284,7 +285,7 @@ fn run_harness(model: &str, source: &str, headers: &std::path::Path) -> (Report,
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .unwrap_or_else(|error| panic!("compile {model}: {error:?}"));
-    let component = rumoca_sim::lower_fmi_component(&compiled.dae)
+    let component = rumoca_sim::lower_fmi_export_component(&compiled.dae)
         .unwrap_or_else(|error| panic!("lower {model}: {error:?}"));
     let work = tempdir().expect("torn tangent harness work directory");
     let fmu = build_named_fmu(work.path(), &compiled, "fmi3", model);
@@ -416,7 +417,7 @@ fn a_selected_arm_conditional_in_a_torn_loop_matches_the_linked_plan() {
             .model("GuardedTear")
             .compile_str(&source, "GuardedTear.mo")
             .unwrap_or_else(|error| panic!("compile GuardedTear: {error:?}"));
-        let component = rumoca_sim::lower_fmi_component(&compiled.dae)
+        let component = rumoca_sim::lower_fmi_export_component(&compiled.dae)
             .unwrap_or_else(|error| panic!("lower GuardedTear: {error:?}"));
         let jvp = &component
             .runtime_view()

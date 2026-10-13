@@ -108,6 +108,7 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) {
+        self.queue_function_bindings(comp);
         self.check_builtin_function_call(comp, args, type_table);
         self.check_user_function_call_argument_types(comp, args, type_table);
     }
@@ -274,6 +275,8 @@ impl TypeChecker {
             .values()
             .filter_map(ComponentSemantics::from_declaration)
             .collect();
+
+        self.check_declaration_bindings(class, type_table);
 
         // Validate known builtin modifier value types now that local component
         // types are available in scope (e.g., `Real x(start = y)`).

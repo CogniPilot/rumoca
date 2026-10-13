@@ -336,7 +336,7 @@ fn affine_profiles_follow_output_indices_and_refuse_conflicting_block_ids() {
     );
     let mut plan = RefreshPlan {
         simultaneous_plan: crate::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 crate::AlgebraicProjectionBlock {
                     rows: vec![0, 2],
                     y_indices: vec![0, 1],
@@ -349,7 +349,8 @@ fn affine_profiles_follow_output_indices_and_refuse_conflicting_block_ids() {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         },
         simultaneous_block_indices: vec![10, 11],
         ..Default::default()
@@ -395,14 +396,15 @@ fn affinity_uses_compute_block_output_identity_across_program_nodes() {
     );
     let plan = RefreshPlan {
         simultaneous_plan: crate::AlgebraicProjectionPlan {
-            blocks: (0..2)
+            blocks: ((0..2)
                 .map(|index| crate::AlgebraicProjectionBlock {
                     rows: vec![index],
                     y_indices: vec![index],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 })
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         },
         simultaneous_block_indices: vec![0, 1],
         ..Default::default()

@@ -17,13 +17,58 @@ pub fn prepare_native_program(source: &str, model_name: &str) -> Result<String, 
     native_assignment_api::with_prepared_native_model(source, model_name, model_artifact)
 }
 
+/// Compile the same program with the model's carried state (SPEC_0040
+/// SOLVE-C101). `pairs` is a JSON array of `[output, input]` variable names,
+/// the host contract the package declares: the host feeds the Real output to
+/// the Real input of the same shape between evaluations. Each output is
+/// published into its input instead of into Y, so a host that feeds a step's
+/// next state to its next step moves nothing and a value the step returns
+/// unchanged is already in place. The artifact lists the runs under
+/// `abi.carried`; the host Y cells of a run are not written and P is not
+/// read-only.
+#[wasm_bindgen]
+pub fn prepare_native_program_carrying(
+    source: &str,
+    model_name: &str,
+    pairs: &str,
+) -> Result<String, WasmError> {
+    let pairs: Vec<(String, String)> = serde_json::from_str(pairs).map_err(|error| {
+        WasmError::new(format!(
+            "carried pairs are not [output, input] names: {error}"
+        ))
+    })?;
+    let pairs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(output, input)| (output.as_str(), input.as_str()))
+        .collect();
+    native_assignment_api::with_prepared_native_model(source, model_name, |model, source, name| {
+        let issued = native_assignment_api::checked_native_schedule(model)?;
+        let state = rumoca_ir_solve::NativeCarriedState::declared(&model.problem, issued, &pairs)
+            .map_err(|error| WasmError::new(format!("carried state refused: {error}")))?;
+        artifact(model, &issued.with_carried_state(state), source, name)
+    })
+}
+
 pub(crate) fn model_artifact(
     model: &rumoca_ir_solve::SolveModel,
     source: &str,
     model_name: &str,
 ) -> Result<String, WasmError> {
+    artifact(
+        model,
+        native_assignment_api::checked_native_schedule(model)?,
+        source,
+        model_name,
+    )
+}
+
+fn artifact(
+    model: &rumoca_ir_solve::SolveModel,
+    schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
+    source: &str,
+    model_name: &str,
+) -> Result<String, WasmError> {
     let problem = &model.problem;
-    let schedule = native_assignment_api::checked_native_schedule(model)?;
     let y_count = problem.layout.y_scalars();
     let p_count = problem.layout.p_scalars();
     let storage_bytes = y_count
@@ -98,9 +143,10 @@ pub(crate) fn model_artifact(
         "var_layout": host_layout(problem, schedule)?,
         "derived_outputs": derived_outputs(problem, schedule),
         "input_lanes": input_lanes(problem, schedule),
-        "input_names": problem.solve_layout.input_scalar_names(),
-        "parameters": model.parameters,
+        "input_names": problem.solve_layout.input_scalar_names().iter().collect::<Vec<_>>(),
+        "parameters": model.parameters.as_slice(),
         "issued_schedule": issued_schedule,
+        "call_sites": call_sites(&model.pure_calls),
     });
     let abi = response["abi"]
         .as_object_mut()
@@ -112,6 +158,58 @@ pub(crate) fn model_artifact(
     }
     serde_json::to_string(&response)
         .map_err(|error| WasmError::new(format!("native program JSON failed: {error}")))
+}
+
+/// The runs the program publishes into P instead of Y: byte offsets from the
+/// start of the Y and P regions, and the byte count of each.
+fn carried_runs(state: &rumoca_ir_solve::NativeCarriedState) -> serde_json::Value {
+    state
+        .runs()
+        .iter()
+        .map(|run| {
+            serde_json::json!({
+                "y_byte_offset": run.y_range().start * 8,
+                "p_byte_offset": run.p_range().start * 8,
+                "bytes": run.scalar_count() * 8,
+            })
+        })
+        .collect()
+}
+
+/// The Integer and Boolean lane runs the program publishes into the input lanes
+/// instead of the output lanes: byte offsets from the start of each lane
+/// region, and the byte count of each.
+fn carried_lane_runs(state: &rumoca_ir_solve::NativeCarriedState) -> serde_json::Value {
+    state
+        .lanes()
+        .iter()
+        .map(|lane| {
+            serde_json::json!({
+                "output_lane_byte_offset": lane.output_range().start,
+                "input_lane_byte_offset": lane.input_range().start,
+                "lane": lane.lane().as_str(),
+                "bytes": lane.bytes(),
+            })
+        })
+        .collect()
+}
+
+/// Static call sites per (caller, callee) owner pair: a callee evaluated once
+/// per authored occurrence has one site per occurrence (SOLVE-C73), so a host
+/// reads the repetition cost of an owner without running the module.
+fn call_sites(table: &rumoca_ir_solve::SolvePureCallTable) -> serde_json::Value {
+    table
+        .call_site_counts()
+        .into_iter()
+        .map(|count| {
+            serde_json::json!({
+                "caller": count.caller.index(),
+                "callee": count.callee.index(),
+                "callee_span": [count.callee_provenance.start.0, count.callee_provenance.end.0],
+                "sites": count.sites,
+            })
+        })
+        .collect()
 }
 
 type ProgramArtifact = (
@@ -128,6 +226,11 @@ fn compile_program(
 ) -> Result<ProgramArtifact, WasmError> {
     let checked_entry = requires_checked_entry(schedule);
     if !checked_entry {
+        if !schedule.carried_state().is_empty() {
+            return Err(WasmError::new(
+                "carried state belongs to the checked native program ABI",
+            ));
+        }
         let bytes = rumoca_exec_wasm::compile_native_assignment_schedule_wasm_bytes(
             schedule,
             &model.problem.layout,
@@ -168,20 +271,25 @@ fn compile_program(
                 "start":fault.provenance.start,"end":fault.provenance.end},
         })
     }));
+    let mut abi = serde_json::json!({
+        "arguments":["yPtr:i32","pPtr:i32","time:f64","scratchPtr:i32",
+            match (schedule.input_lane_bytes(), schedule.lane_bytes()) {
+                (0, 0) => "reservedZero:i32",
+                (0, _) => "outputLanesPtr:i32",
+                _ => "typedLanesPtr:i32",
+            }],
+        "result":"status:i32", "success_status":0, "scratch_bytes":compiled.scratch_bytes(),
+        "scratch_report":crate::native_scratch_report::scratch_report_json(compiled.scratch_report()),
+        "transactional_y":true,"p_readonly":schedule.carried_state().is_empty(),
+    });
+    if !schedule.carried_state().is_empty() {
+        abi["carried"] = carried_runs(schedule.carried_state());
+        abi["carried_lanes"] = carried_lane_runs(schedule.carried_state());
+    }
     Ok((
         compiled.module_bytes().to_vec(),
         "native-direct-program-f64-v3",
-        serde_json::json!({
-            "arguments":["yPtr:i32","pPtr:i32","time:f64","scratchPtr:i32",
-                match (schedule.input_lane_bytes(), schedule.lane_bytes()) {
-                    (0, 0) => "reservedZero:i32",
-                    (0, _) => "outputLanesPtr:i32",
-                    _ => "typedLanesPtr:i32",
-                }],
-            "result":"status:i32", "success_status":0, "scratch_bytes":compiled.scratch_bytes(),
-            "scratch_report":crate::native_scratch_report::scratch_report_json(compiled.scratch_report()),
-            "transactional_y":true,"p_readonly":true,
-        }),
+        abi,
         serde_json::json!(compiled.math_imports()),
         serde_json::json!(faults),
     ))
@@ -191,7 +299,7 @@ pub(crate) fn requires_checked_entry(
     schedule: &rumoca_ir_solve::NativeRefreshAssignmentSchedule,
 ) -> bool {
     !schedule.derived_outputs().is_empty()
-        || !schedule.input_lanes().is_empty()
+        || !schedule.input_runs().is_empty()
         || any_stage_operation(schedule, |operation| {
             matches!(
                 operation,
@@ -273,8 +381,7 @@ fn input_lanes(
 ) -> serde_json::Value {
     let names = lane_slot_names(problem, schedule);
     schedule
-        .input_lanes()
-        .iter()
+        .scalar_input_lanes()
         .map(|input| {
             serde_json::json!({
                 "name": names.get(&input.p_index()),
@@ -295,7 +402,7 @@ fn lane_slots(
         .derived_outputs()
         .iter()
         .map(|output| output.p_index())
-        .chain(schedule.input_lanes().iter().map(|input| input.p_index()))
+        .chain(schedule.scalar_input_lanes().map(|input| input.p_index()))
         .collect()
 }
 
@@ -307,19 +414,12 @@ fn lane_slot_names(
 ) -> std::collections::BTreeMap<usize, String> {
     let slots = lane_slots(schedule);
     let mut names = std::collections::BTreeMap::<usize, String>::new();
-    for (name, slot) in problem.layout.bindings() {
-        let rumoca_ir_solve::ScalarSlot::P { index, .. } = *slot else {
-            continue;
-        };
-        if !slots.contains(&index) {
-            continue;
-        }
-        let name = name.as_str();
-        let better = names.get(&index).is_none_or(|current| {
-            (name.contains('['), name.len()) > (current.contains('['), current.len())
-        });
-        if better {
-            names.insert(index, name.to_owned());
+    for index in slots {
+        if let Some(name) = problem
+            .layout
+            .scalar_name_for_slot(rumoca_ir_solve::scalar_slot_p(index))
+        {
+            names.insert(index, name);
         }
     }
     names

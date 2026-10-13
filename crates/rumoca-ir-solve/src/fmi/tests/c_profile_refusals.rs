@@ -54,6 +54,20 @@ fn assert_refused(message: &str, mutate: impl FnOnce(&mut SolveModel)) {
     );
 }
 
+#[test]
+fn c_profile_refuses_nonfinite_initialization_runs_without_dense_recovery() {
+    for value in [
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::from_bits(0x7ff8_0000_0000_1234),
+    ] {
+        assert_refused("non-finite initialization", |model| {
+            model.parameters.set(0, value).unwrap();
+            assert!(!model.parameters.has_dense_view());
+        });
+    }
+}
+
 /// One initialization residual row with the given role.
 fn one_initial_row(model: &mut SolveModel, role: InitializationRowRole) {
     let mut initialization = model.problem.initialization.clone().into_input();
@@ -104,6 +118,7 @@ fn solver_coordinates_that_do_not_fill_the_y_storage_are_refused() {
         |model| {
             one_initial_row(model, SETTLED);
             model.problem.layout = crate::VarLayout::from_parts(Default::default(), 1, 2);
+            model.initial_y = crate::SolveInitialValues::repeat(0.0, 1).unwrap();
         },
     );
 }
@@ -244,6 +259,7 @@ fn assertion_on_parameter(model: &mut SolveModel) {
         span: span(),
         origin: "assertion fixture".into(),
         clock_owner: None,
+        assertion_projection: None,
     }];
     events.action_conditions = rows(vec![vec![
         LinearOp::LoadP { dst: 0, index: 1 },
@@ -453,7 +469,16 @@ fn an_enumeration_variable_publishes_its_type_definition() {
         kind,
     )];
     input.value_kind = kind;
-    input.start = vec![2.0];
+    input.start = crate::SolveDeclarationStart::Enumeration(
+        crate::SolveExactInitialValues::construct(
+            1,
+            vec![crate::SolveExactInitialRun::Literal {
+                start: 0,
+                values: vec![2],
+            }],
+        )
+        .unwrap(),
+    );
     input.enumeration = Some(mode_declaration());
     let view = FmiComponent::construct(model, vec![input])
         .expect("an enumeration variable with its declaration is checked")

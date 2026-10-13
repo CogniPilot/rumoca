@@ -53,6 +53,10 @@ pub(in crate::refresh) struct ProgramPrefix<'a> {
 }
 
 impl<'a> ProgramPrefix<'a> {
+    pub(in crate::refresh) fn operations(self) -> &'a [LinearOp] {
+        self.operations
+    }
+
     pub(in crate::refresh) fn before(self, position: usize) -> Option<Self> {
         Some(Self {
             operations: self.operations.get(..position)?,
@@ -71,6 +75,28 @@ impl<'a> ProgramPrefix<'a> {
     pub(in crate::refresh) fn producer_position(self, register: Reg) -> Option<usize> {
         let (_, &(end, position)) = self.ranges.range(..=register).next_back()?;
         (u64::from(register) < end && position < self.operations.len()).then_some(position)
+    }
+
+    /// Every register is produced by this exact prefix, checked by ranges.
+    pub(in crate::refresh) fn contains_range(self, start: Reg, count: usize) -> bool {
+        let Some(end) = u64::from(start).checked_add(count as u64) else {
+            return false;
+        };
+        if end > u64::from(Reg::MAX) + 1 {
+            return false;
+        }
+        let mut cursor = u64::from(start);
+        while cursor < end {
+            let Some((_, &(limit, position))) = self.ranges.range(..=cursor as Reg).next_back()
+            else {
+                return false;
+            };
+            if limit <= cursor || position >= self.operations.len() {
+                return false;
+            }
+            cursor = limit.min(end);
+        }
+        true
     }
 
     /// Query compact producer ranges without enumerating tensor registers.

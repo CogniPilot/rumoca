@@ -68,8 +68,8 @@ fn parameter_settlement_follows_issued_output_indices() {
     };
     model.problem.solve_layout.variable_storage_runs[0].scalar_count = 2;
     input.dimensions = vec![2];
-    input.scalar_names = vec!["p[1]".into(), "p[2]".into()];
-    input.start = vec![0.0, 0.0];
+
+    input.start = vec![0.0, 0.0].into();
     let span = input.declaration;
     let mut initialization = model.problem.initialization.clone().into_input();
     initialization.update_rhs = ScalarProgramBlock::with_output_indices(

@@ -32,7 +32,7 @@ checked component state.
 ## Unsupported
 
 Public variables keep their FMI value types: Real as Float64, Integer and
-enumeration ordinals as Int32, Boolean as Boolean, and String parameters and
+enumeration ordinals as Int64, Boolean as Boolean, and String parameters and
 constants as String with their literal start text. A String whose declaration
 gives no literal start is refused.
 

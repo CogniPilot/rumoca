@@ -73,7 +73,7 @@ fn zero_array_equation_issues_complete_seeds_and_rejects_forged_wire() {
         let row = plan
             .causal_rows()
             .iter()
-            .find(|row| model.problem.solve_layout.solver_maps.names[row.target_index()] == name)
+            .find(|row| model.problem.solver_name(row.target_index()).unwrap() == name)
             .unwrap_or_else(|| panic!("{name} must have a causal assignment"));
         assert!(row.direct_assignment_certified());
         assert!(matches!(
@@ -158,6 +158,7 @@ fn state_dependent_tensor_coefficients_issue_block_affinity() {
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .enumerate()
         .filter(|(_, block)| block.y_indices.len() > 1)
@@ -226,13 +227,13 @@ fn state_dependent_linear_tensor_solve_matches_all_analytic_channels() {
 }
 
 #[test]
-fn model_wire_rederives_block_affinity_and_rejects_erased_interactions() {
+fn model_wire_rederives_block_affinity_without_a_wire_claim() {
     let compiled = Compiler::new()
         .model("BlockAffine.Probe")
         .compile_str(AFFINE_SOURCE, "block_affine.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let mut wire = serde_json::to_value(rumoca_sim::solve_model_wire(&model).unwrap()).unwrap();
+    let wire = serde_json::to_value(rumoca_sim::solve_model_wire(&model).unwrap()).unwrap();
     let original = serde_json::to_vec(&wire).unwrap();
     let restored =
         rumoca_sim::deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&original))
@@ -257,23 +258,7 @@ fn model_wire_rederives_block_affinity_and_rejects_erased_interactions() {
                 .algebraic_projection_block_is_affine(index)
         );
     }
-    let programs =
-        wire["problem"]["continuous"]["implicit_rhs"]["nodes"][0]["ScalarPrograms"]["programs"]
-            .as_array_mut()
-            .unwrap();
-    let site = programs
-        .iter_mut()
-        .flat_map(|program| program.as_array_mut().unwrap())
-        .find_map(|op| op.get_mut("PureCall"))
-        .unwrap();
-    let interactions = &mut site["site"]["affinity"][0]["nonlinear"];
-    assert!(!interactions.as_array().unwrap().is_empty());
-    *interactions = serde_json::json!([]);
-    let forged = serde_json::to_vec(&wire).unwrap();
-    assert!(
-        rumoca_sim::deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&forged))
-            .is_err()
-    );
+    super::record_output_dependencies::assert_owner_claims_are_derived(&wire, &model, &restored);
 }
 
 #[test]
@@ -292,11 +277,14 @@ fn coupled_refresh_projects_only_the_coupled_equations() {
             RefreshStage::ProjectionBlock { plan, .. } => Some(plan),
             _ => None,
         })
-        .flat_map(|plan| &plan.blocks)
+        .flat_map(|plan| plan.blocks.scalar_blocks())
         .flat_map(|block| &block.y_indices)
-        .map(|&index| model.problem.solve_layout.solver_maps.names[index].as_str())
+        .map(|&index| model.problem.solver_name(index).unwrap())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(projected, std::collections::BTreeSet::from(["a", "b"]));
+    assert_eq!(
+        projected,
+        std::collections::BTreeSet::from(["a".to_owned(), "b".to_owned()])
+    );
 }
 
 #[test]

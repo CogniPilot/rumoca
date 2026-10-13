@@ -2,23 +2,29 @@ mod construction_checks;
 mod domains;
 mod evaluable;
 mod external_functions;
+mod function_assigned_reads;
 mod function_checks;
-mod function_conditionals;
 mod function_derivatives;
 mod function_loop_capability;
 mod function_loops;
 mod function_reads;
+mod function_region_views;
+mod function_regions;
+use function_regions::FunctionRegion;
 mod function_scopes;
 pub(crate) mod initial_parameters;
 mod model_conditionals;
 mod runtime_quotients;
 pub use model_conditionals::{ModelArm, ModelConditional};
+pub(crate) mod scoped_conditionals;
 mod storage;
 mod value_types;
 mod variable_types;
 mod view;
 mod wire;
 
+pub use function_region_views::{FunctionBranchView, FunctionConditionalBodyView};
+pub use function_regions::{FunctionAssignedState, FunctionBranchFinish, FunctionBranchOwner};
 use initial_parameters::InitialParameterValueEntry;
 use std::marker::PhantomData;
 
@@ -61,10 +67,11 @@ use crate::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteRealId,
     DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
-    FunctionDefinitionId, FunctionDerivativeId, FunctionFoldId, FunctionId, FunctionParameterId,
-    FunctionValueId, InitializationEquationId, InitializationFamilyId, InputId,
-    ModelEventTransactionId, ModelEventTransactions, ParameterId, PreviousId, RelationId, RootId,
-    ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    FunctionConditionalId, FunctionDefinitionId, FunctionDerivativeId, FunctionFoldId, FunctionId,
+    FunctionParameterId, FunctionValueId, InitializationEquationId, InitializationFamilyId,
+    InputId, ModelEventTransactionId, ModelEventTransactions, ParameterId, PreviousId, RelationId,
+    RootId, ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId,
+    VariableId,
 };
 
 pub(crate) use construction_checks::{
@@ -167,11 +174,18 @@ pub(crate) use construction_checks::{
 /// 43 marks a B.1c owner whose targets are unread observations of a
 /// continuous-time definition, evaluated at every output point.
 /// 44 adds an optional continuation predicate to compact function folds: a
-/// bounded `while` loop is one fold that ends at its first false predicate.
+/// bounded `while` loop is one fold that ends at its first false predicate,
+/// which may read the pass's own binders (a run-time `for` bound).
 /// 45 requires source/generated provenance on every structured domain binder.
 /// 46 replays compact quotient boundaries through structured owner markers.
 /// 47 replays issued model conditional arm contexts and guarded quotient owners.
-pub const DAE_SCHEMA_VERSION: u16 = 47;
+/// 48 retains ordered function branch statements and reissues conditional
+/// output projections from their checked source owner during wire replay.
+/// 49 adds constructor-issued executed-path assignedness actions before
+/// partial value projections, without any operand for an unwritten path.
+/// 50 removes the superseded value-only conditional assignment-group wire;
+/// ordered conditional statements are the only function-branch owners.
+pub const DAE_SCHEMA_VERSION: u16 = 51;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -194,13 +208,12 @@ use variable_types::VariableTypeCapability;
 pub use view::{
     ConditionalExpressionOperands, ContinuousOwnerView, CoordinateView, DaeView, DomainView,
     ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView, ExternalArgumentView,
-    ExternalFunctionView, FunctionConditionalView, FunctionDefinitionValues,
-    FunctionDefinitionView, FunctionFoldView, FunctionParameterView, FunctionStatementView,
-    FunctionStatements, FunctionValueView, FunctionView, InitializationOwnerView,
-    ModelConditionalView, NativeBodyView, RangeBoundView, RangeView, RecordFieldLayout,
-    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
-    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
+    ExternalFunctionView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
+    FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
+    FunctionView, InitializationOwnerView, ModelConditionalView, NativeBodyView, RangeBoundView,
+    RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
+    RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
+    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView, broadcast_scalar_values,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -304,8 +317,9 @@ pub enum VariableCausality {
 /// of where the declaration sits in the instance hierarchy.
 ///
 /// [`VariableCausality`] is the exported causality, which is `Input` or
-/// `Output` only for a top-level declaration; a nested `output` is exported
-/// `Local` and keeps its prefix here.
+/// `Output` only for a public top-level interface, including inherited record
+/// fields; an internal component's `output` is exported `Local` and keeps its
+/// prefix here (SPEC_0040 DAE-C24).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclaredCausality {
@@ -372,11 +386,15 @@ pub(crate) struct FunctionEntry {
     /// Region that owned each definition when construction issued it.
     ///
     /// Element `n` answers for `definitions[n]`: `None` when the definition was
-    /// issued by the function's top-level body, and `Some(fold)` when the
-    /// lexically innermost open loop was that fold. The vector always advances
+    /// issued by the function's top-level body, and `Some(scope)` for the
+    /// lexically innermost open region. The vector always advances
     /// with `definitions`, so a definition identity and its issuing scope are
     /// one construction fact and cannot drift apart.
     pub(crate) definition_scopes: Vec<Option<u32>>,
+    scopes: Vec<FunctionScopeEntry>,
+    branches: Vec<FunctionBranchEntry>,
+    conditionals: Vec<ScopedFunctionConditionalEntry>,
+    unfilled_branches: usize,
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     inline: InlineAnnotation,
@@ -414,7 +432,7 @@ impl FunctionBodyEntry {
 
 #[derive(Debug, Clone, PartialEq)]
 struct FunctionBuildState {
-    current_values: Vec<Option<u32>>,
+    current_values: Vec<FunctionValueState>,
     statements: Vec<FunctionStatementWire>,
     carried_targets: rustc_hash::FxHashSet<u32>,
     iteration_local_targets: rustc_hash::FxHashSet<u32>,
@@ -423,15 +441,58 @@ struct FunctionBuildState {
     /// Every definition insertion reads this one field, so the issuing scope is
     /// recorded by the same act that issues the definition identity.
     active_fold: Option<u32>,
+    active_scope: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FunctionValueState {
+    Unassigned,
+    Assigned(u32),
+    Conditional { owner: u32, value: u32 },
+}
+
+impl FunctionValueState {
+    const fn definition(self) -> Option<u32> {
+        match self {
+            Self::Assigned(definition) => Some(definition),
+            Self::Unassigned | Self::Conditional { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionScopeEntry {
+    parent: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionBranchEntry {
+    scope: u32,
+    incoming: Vec<FunctionValueState>,
+    outgoing: Vec<FunctionValueState>,
+    statements: Vec<FunctionStatementWire>,
+    declaration: DaeProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ScopedFunctionConditionalEntry {
+    outputs: std::ops::Range<usize>,
+    conditions: Vec<u32>,
+    branches: Vec<u32>,
+    fallback: u32,
+    outgoing: Vec<FunctionValueState>,
+    domain: Option<u32>,
+    declaration: DaeProvenance,
 }
 
 struct FunctionLoopParent<'dae> {
     domain: Option<DomainId<'dae>>,
-    current_values: Vec<Option<u32>>,
+    current_values: Vec<FunctionValueState>,
     statements: Vec<FunctionStatementWire>,
     carried_targets: rustc_hash::FxHashSet<u32>,
     iteration_local_targets: rustc_hash::FxHashSet<u32>,
     active_fold: Option<u32>,
+    active_scope: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -465,12 +526,16 @@ pub(crate) struct FunctionDefinitionEntry {
 
 #[derive(Debug, Clone, PartialEq)]
 enum FunctionStatementWire {
+    RequireAssigned {
+        owner: u32,
+        target: u32,
+        definition: u32,
+    },
     Assignment {
         definition: u32,
     },
     AssignmentGroup {
         definitions: Vec<u32>,
-        conditional: Option<FunctionConditionalWire>,
     },
     Assertion {
         condition: u32,
@@ -483,13 +548,9 @@ enum FunctionStatementWire {
         statements: Vec<FunctionStatementWire>,
         provenance: DaeProvenance,
     },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct FunctionConditionalWire {
-    conditions: Vec<u32>,
-    branches: Vec<Vec<u32>>,
-    fallback: Vec<u32>,
+    ScopedConditional {
+        owner: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,6 +563,7 @@ pub(crate) struct FunctionDefinitionWire {
 pub(crate) struct FunctionFoldEntry {
     pub(crate) function: u32,
     pub(crate) ordinal: u32,
+    scope: u32,
     /// Owner-local ordinal of the loop this one is lexically nested inside.
     pub(crate) parent: Option<u32>,
     pub(crate) domain: u32,
@@ -610,6 +672,12 @@ struct FrozenStorage {
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,
     value_type_provenance: Box<[DaeProvenance]>,
+    /// Packed scalar width of every value type, derived once at freeze.
+    packed_value_counts: Box<[Option<usize>]>,
+    /// Per record type, the running sum of its field packed widths (one entry
+    /// past the last field), derived once at freeze; `None` for a non-record or
+    /// a record whose layout does not fit.
+    record_field_prefixes: Box<[Option<Box<[usize]>>]>,
     variables: Box<[VariableEntry]>,
     functions: Box<[FunctionEntry]>,
     function_folds: Box<[FunctionFoldEntry]>,
@@ -1304,6 +1372,7 @@ pub struct FunctionBody<'dae> {
     function: FunctionId<'dae>,
     construction: FunctionConstruction,
     domain: Option<DomainId<'dae>>,
+    scope: Option<u32>,
 }
 
 /// Non-owning linear capability for one compact function-loop transition.
@@ -1393,6 +1462,10 @@ impl<'dae> Functions<'_, 'dae> {
             output_values: Vec::new(),
             definitions: Vec::new(),
             definition_scopes: Vec::new(),
+            scopes: Vec::new(),
+            branches: Vec::new(),
+            conditionals: Vec::new(),
+            unfilled_branches: 0,
             folds: Vec::new(),
             declaration,
             inline,
@@ -1556,16 +1629,18 @@ impl<'dae> Functions<'_, 'dae> {
             });
         }
         entry.build = Some(FunctionBuildState {
-            current_values: vec![None; entry.values.len()],
+            current_values: vec![FunctionValueState::Unassigned; entry.values.len()],
             statements: Vec::new(),
             carried_targets: rustc_hash::FxHashSet::default(),
             iteration_local_targets: rustc_hash::FxHashSet::default(),
             active_fold: None,
+            active_scope: None,
         });
         Ok(FunctionBody {
             function: reservation.function,
             construction: reservation.construction,
             domain: None,
+            scope: None,
         })
     }
 
@@ -1616,7 +1691,7 @@ impl<'dae> Functions<'_, 'dae> {
             .current_values
             .get(value.ordinal() as usize)
             .copied()
-            .flatten()
+            .and_then(FunctionValueState::definition)
             .ok_or(DaeConstructionError::IncompleteDefinition {
                 kind: "function value",
                 index: value.ordinal(),
@@ -1660,6 +1735,7 @@ impl<'dae> Functions<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         for (target, value) in assignments {
             check_function_value_owner(body.function, *target, provenance)?;
+            check_function_assignment_target(self.storage, body, *target, provenance)?;
             let entry = function_value_entry(self.storage, *target, provenance)?;
             expect_function_body_expression(self.storage, body, *value, provenance)?;
             validate_function_value_reads(self.storage, body, *value, provenance)?;
@@ -1677,16 +1753,14 @@ impl<'dae> Functions<'_, 'dae> {
         for (target, value) in assignments {
             let definition = insert_function_definition(self.storage, *target, *value, provenance)?;
             let build = function_build_state_mut(self.storage, body);
-            build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+            build.current_values[target.ordinal() as usize] =
+                FunctionValueState::Assigned(definition.ordinal());
             definitions.push(definition.ordinal());
         }
         if !definitions.is_empty() {
             function_build_state_mut(self.storage, body)
                 .statements
-                .push(FunctionStatementWire::AssignmentGroup {
-                    definitions,
-                    conditional: None,
-                });
+                .push(FunctionStatementWire::AssignmentGroup { definitions });
         }
         Ok(())
     }
@@ -1704,8 +1778,8 @@ impl<'dae> Functions<'_, 'dae> {
 
     /// Append one MLS §8.3.7 assertion at its level to a Modelica function.
     ///
-    /// The mutable top-level body capability makes the action call-scoped and
-    /// prevents it from being inserted into a loop without a loop-action owner.
+    /// The linear body capability binds the action to its exact current region,
+    /// including the active compact loop domain when constructed inside a loop.
     /// Both expressions must belong to the exact current function-value state;
     /// the constructor stores no untyped call or rendered-name surrogate.
     pub fn assertion_with_level(
@@ -1716,13 +1790,6 @@ impl<'dae> Functions<'_, 'dae> {
         level: AssertionLevel,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        if body.domain.is_some() {
-            return Err(DaeConstructionError::InvalidBinderScope {
-                expected_domain: None,
-                found_domain: body.domain.map(DomainId::index).unwrap_or_default(),
-                span: provenance.span(),
-            });
-        }
         self.append_assertion(body, condition, message, level, provenance)
     }
 
@@ -1821,6 +1888,7 @@ impl<'dae> Functions<'_, 'dae> {
         value: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        check_function_assignment_target(self.storage, body, target, provenance)?;
         let entry = function_value_entry(self.storage, target, provenance)?;
         expect_function_body_expression(self.storage, body, value, provenance)?;
         validate_function_value_reads(self.storage, body, value, provenance)?;
@@ -1835,7 +1903,8 @@ impl<'dae> Functions<'_, 'dae> {
             .expect_value_type_compatible(entry.value_type, found, provenance)?;
         let definition = insert_function_definition(self.storage, target, value, provenance)?;
         let build = function_build_state_mut(self.storage, body);
-        build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+        build.current_values[target.ordinal() as usize] =
+            FunctionValueState::Assigned(definition.ordinal());
         build.statements.push(FunctionStatementWire::Assignment {
             definition: definition.ordinal(),
         });
@@ -1848,8 +1917,15 @@ impl<'dae> Functions<'_, 'dae> {
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
-        validate_function_dependencies(self.storage, &body, provenance)?;
         let function = body.function;
+        if self.storage.functions[function.index() as usize].unfilled_branches != 0 {
+            return Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function branch attachment",
+                index: function.index(),
+                span: provenance.span(),
+            });
+        }
+        validate_function_dependencies(self.storage, &body, provenance)?;
         let output_values = self.storage.functions[function.index() as usize]
             .output_values
             .clone();
@@ -1859,7 +1935,7 @@ impl<'dae> Functions<'_, 'dae> {
         let results = output_values
             .iter()
             .map(|value| {
-                build.current_values[*value as usize].ok_or(
+                build.current_values[*value as usize].definition().ok_or(
                     DaeConstructionError::IncompleteDefinition {
                         kind: "function output",
                         index: *value,

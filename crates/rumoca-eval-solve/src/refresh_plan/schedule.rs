@@ -22,6 +22,7 @@ pub(super) fn build_refresh_stages(
     let mut assignments = Vec::new();
     let targets = plan
         .blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.y_indices.iter().copied())
         .map(|target| (target, target))
@@ -37,7 +38,7 @@ pub(super) fn build_refresh_stages(
     if causal_solution_certified {
         push_causal_seed_sweep(&mut stages, rows, &static_targets)?;
     }
-    for (local_block_index, block) in plan.blocks.iter().enumerate() {
+    for (local_block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
         if let Some(row) = exact_singleton_row(block, &exact_rows)
             && (causal_solution_certified
                 || dependencies(&rows[row], &targets)
@@ -61,7 +62,7 @@ pub(super) fn build_refresh_stages(
                 .copied()
                 .unwrap_or(local_block_index),
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![block.clone()],
+                blocks: (vec![block.clone()]).into(),
             },
             seed_rows: projection_seed_rows(block, rows)?,
         });
@@ -223,7 +224,7 @@ mod tests {
     #[test]
     fn exact_runs_do_not_cross_coupled_projection_blocks() {
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
@@ -242,7 +243,8 @@ mod tests {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         };
         let stages = build_refresh_stages(
             &plan,
@@ -340,7 +342,7 @@ mod tests {
     #[test]
     fn reversed_causal_seed_order_is_preserved_before_projection() {
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
@@ -353,7 +355,8 @@ mod tests {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         };
 
         let rows = [exact_row(1), exact_row(0)];
@@ -389,7 +392,7 @@ mod tests {
             exact_row_for_target(3, 642),
         ];
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: [(0, 628), (1, 629), (3, 642), (2, 630)]
+            blocks: ([(0, 628), (1, 629), (3, 642), (2, 630)]
                 .into_iter()
                 .map(|(equation, target)| solve::AlgebraicProjectionBlock {
                     rows: vec![equation],
@@ -397,7 +400,8 @@ mod tests {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 })
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         };
 
         let stages = build_refresh_stages(
@@ -424,7 +428,7 @@ mod tests {
     fn uncertified_seed_order_retains_singleton_projection_blocks() {
         let rows = [exact_row(0), exact_row(1)];
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
@@ -437,7 +441,8 @@ mod tests {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         };
 
         let stages = build_refresh_stages(
@@ -466,14 +471,15 @@ mod tests {
     fn local_dependency_proof_retains_blt_order_instead_of_uncertified_seed_order() {
         let rows = [exact_row(2), exact_row(1), exact_row(0)];
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: (0..3)
+            blocks: ((0..3)
                 .map(|target| solve::AlgebraicProjectionBlock {
                     rows: vec![target],
                     y_indices: vec![target],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 })
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         };
         let stages = build_refresh_stages(
             &plan,
@@ -481,7 +487,14 @@ mod tests {
             &rows,
             &RefreshRowSelection::default(),
             false,
-            |row, _| Some(row.target_index().checked_sub(1).into_iter().collect()),
+            |row, _| {
+                Some(
+                    row.target_index()
+                        .checked_sub(1)
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                )
+            },
         )
         .unwrap();
         assert!(matches!(
@@ -495,14 +508,15 @@ mod tests {
     fn local_assignment_cannot_read_a_dependency_from_a_later_projection() {
         let rows = [exact_row(0), numerical_seed_row(1)];
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: (0..2)
+            blocks: ((0..2)
                 .map(|target| solve::AlgebraicProjectionBlock {
                     rows: vec![target],
                     y_indices: vec![target],
                     tearing: None,
                     alternate_charts: Vec::new(),
                 })
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         };
         let stages = build_refresh_stages(
             &plan,

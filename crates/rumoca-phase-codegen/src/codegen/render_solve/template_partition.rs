@@ -2,13 +2,19 @@ use super::*;
 
 #[derive(Debug)]
 pub(in crate::codegen) struct SolveRowsValue {
-    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+    rows: SolveRowsStorage,
 }
 
 impl SolveRowsValue {
     pub(in crate::codegen) fn new(rows: Vec<Vec<solve::LinearOp>>) -> Self {
         Self {
-            rows: Arc::new(rows),
+            rows: SolveRowsStorage::Owned(Arc::new(rows)),
+        }
+    }
+
+    pub(in crate::codegen) fn from_block(block: &solve::ScalarProgramBlock) -> Self {
+        Self {
+            rows: SolveRowsStorage::Checked(block.clone()),
         }
     }
 }
@@ -20,7 +26,7 @@ impl Object for SolveRowsValue {
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         let index = key.as_usize()?;
-        (index < self.rows.len()).then(|| {
+        (index < self.rows.programs().len()).then(|| {
             Value::from_object(SolveRowValue {
                 rows: self.rows.clone(),
                 index,
@@ -29,7 +35,7 @@ impl Object for SolveRowsValue {
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Seq(self.rows.len())
+        Enumerator::Seq(self.rows.programs().len())
     }
 }
 

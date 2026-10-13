@@ -31,7 +31,7 @@ pub(super) fn binding_parameter_reads<'dae>(
                     false
                 }
                 dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
-                    reads.insert(parameter.index());
+                    record_parameter_read(view, parameter, &mut reads);
                     false
                 }
                 _ => true,
@@ -42,6 +42,20 @@ pub(super) fn binding_parameter_reads<'dae>(
         }
     }
     Ok(reads)
+}
+
+/// Only declarations with the Parameter role are dependencies.
+fn record_parameter_read<'dae>(
+    view: dae::DaeView<'dae>,
+    parameter: dae::ParameterId<'dae>,
+    reads: &mut BTreeSet<u32>,
+) {
+    if view
+        .variable(parameter.into())
+        .is_some_and(|variable| variable.role() == dae::VariableRole::Parameter)
+    {
+        reads.insert(parameter.index());
+    }
 }
 
 /// Conditional operands are checked condition/value pairs plus one fallback.

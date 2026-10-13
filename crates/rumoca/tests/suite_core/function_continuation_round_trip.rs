@@ -238,9 +238,9 @@ fn a_fold_continuation_replays_from_the_wire_and_lowers_to_solve_rows() {
     }
 }
 
-/// The callee takes an array-maximum reduction, which has no directional
-/// body, so scalar differentiation expands the call in place and its
-/// flag-continued fold lowers through scalar inline lowering.
+/// The callee holds source-ordered conditionals, which the scalar row
+/// programs cannot represent, so its call keeps the typed owner and the
+/// owner body carries the flag-continued fold.
 const UNDIRECTED_GATES: &str = r#"
 function firstOverPeak
   input Real u;
@@ -277,13 +277,11 @@ equation
 end UndirectedGates;
 "#;
 
-/// Counts the typed calls, conditional regions, and continued fold programs
-/// of a Solve model.
+/// Counts the retained typed calls of a Solve model; the structured regions
+/// they execute are inspected in the owner bodies (`assert_typed_region`).
 #[derive(Default)]
 struct FoldCensus {
     typed_calls: usize,
-    continued_folds: usize,
-    conditional_regions: usize,
 }
 
 impl SolveVisitor for FoldCensus {
@@ -295,17 +293,8 @@ impl SolveVisitor for FoldCensus {
         _op_index: usize,
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
-        match op {
-            LinearOp::PureCall { .. } => self.typed_calls += 1,
-            LinearOp::FunctionConditional { .. } => self.conditional_regions += 1,
-            LinearOp::FunctionFold { program, .. }
-            | LinearOp::GuardedFunctionFold { program, .. }
-            | LinearOp::StoreOutputFunctionFold { program, .. }
-                if program.continuation.is_some() =>
-            {
-                self.continued_folds += 1;
-            }
-            _ => {}
+        if matches!(op, LinearOp::PureCall { .. }) {
+            self.typed_calls += 1;
         }
         Ok(())
     }
@@ -317,10 +306,6 @@ fn assert_typed_region(
     predicate: fn(&SolveOperation) -> bool,
 ) {
     assert!(census.typed_calls > 0, "the call uses its checked owner");
-    assert_eq!(
-        census.continued_folds, 0,
-        "no scalar inlining of the continued body"
-    );
     assert!(
         model
             .pure_calls
@@ -345,6 +330,10 @@ fn contains_typed_region(body: &TypedProgram, predicate: fn(&SolveOperation) -> 
                     contains_typed_region(if_true.body(), predicate)
                         || contains_typed_region(if_false.body(), predicate)
                 }
+                SolveOperation::AssignedConditional { program } => {
+                    contains_typed_region(program.if_true().body(), predicate)
+                        || contains_typed_region(program.if_false().body(), predicate)
+                }
                 SolveOperation::Map { body, .. } => contains_typed_region(body.body(), predicate),
                 _ => false,
             }
@@ -352,7 +341,7 @@ fn contains_typed_region(body: &TypedProgram, predicate: fn(&SolveOperation) -> 
 }
 
 #[test]
-fn a_continued_fold_with_an_extremum_uses_its_typed_directional_owner() {
+fn a_continued_fold_in_a_callee_keeps_its_typed_owner() {
     let compiled = Compiler::new()
         .model("UndirectedGates")
         .compile_str(UNDIRECTED_GATES, "undirected_gates.mo")
@@ -541,7 +530,7 @@ end Sweep;
 "#;
 
 #[test]
-fn a_guarded_fold_in_a_callee_under_an_outer_loop_uses_its_typed_owner() {
+fn a_guarded_fold_in_a_callee_under_an_outer_loop_keeps_its_typed_owner() {
     let compiled = Compiler::new()
         .model("Sweep")
         .compile_str(GUARDED_FOLDS_UNDER_LOOP, "sweep.mo")
@@ -558,7 +547,10 @@ fn a_guarded_fold_in_a_callee_under_an_outer_loop_uses_its_typed_owner() {
         .visit_solve_model(&model)
         .expect("the census walk is infallible");
     assert_typed_region(&model, &census, |operation| {
-        matches!(operation, SolveOperation::Conditional { .. })
+        matches!(
+            operation,
+            SolveOperation::Conditional { .. } | SolveOperation::AssignedConditional { .. }
+        )
     });
     let simulation = simulate_dae(&compiled.dae, &options).expect("the sweep simulates");
     let first = |name: &str| {

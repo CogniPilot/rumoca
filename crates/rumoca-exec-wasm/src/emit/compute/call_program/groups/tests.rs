@@ -23,6 +23,19 @@ fn fixture() -> (
     solve::SolvePureCallTable,
     solve::SolvePureCallSite,
 ) {
+    fixture_with_chain(0)
+}
+
+/// A positive `chain` replaces the unused conversion and power with that many
+/// sequential additions followed by a conversion that faults for huge inputs.
+fn fixture_with_chain(
+    chain: usize,
+) -> (
+    solve::NativeRefreshAssignmentSchedule,
+    VarLayout,
+    solve::SolvePureCallTable,
+    solve::SolvePureCallSite,
+) {
     let profile = solve::SolveArithmeticProfile::construct(
         solve::SolveRealFormat::Binary64,
         solve::SolveIntegerDomain::FULL,
@@ -37,6 +50,29 @@ fn fixture() -> (
             span(40),
             |builder, inputs, outputs| {
                 let x = builder.load(inputs[0], span(41))?;
+                if chain > 0 {
+                    let one = builder.constant(solve::SolveValue::real(profile, 1.), span(43))?;
+                    let mut value = x;
+                    for _ in 0..chain {
+                        value = builder.binary(
+                            solve::SolveBinaryOperator::Add,
+                            value,
+                            one,
+                            span(46),
+                        )?;
+                    }
+                    let scale =
+                        builder.constant(solve::SolveValue::real(profile, 1e-30), span(43))?;
+                    let scaled = builder.binary(
+                        solve::SolveBinaryOperator::Multiply,
+                        value,
+                        scale,
+                        span(47),
+                    )?;
+                    let to = solve::SolveConversionOperator::RealToIntegerTowardZero;
+                    builder.convert(to, scaled, span(47))?;
+                    return builder.store(outputs[0], value, span(45));
+                }
                 // This unused checked operation must still fail in a late group.
                 builder.convert(
                     solve::SolveConversionOperator::RealToIntegerTowardZero,
@@ -300,11 +336,123 @@ fn stage_groups_bound_actual_encoded_functions_and_keep_one_exported_entrypoint(
     }
     assert_eq!(exported, ["eval_assignments"]);
     let error = emit_with_budget(&schedule, &layout, &table, 32).unwrap_err();
-    assert!(error.contains("single native assignment stage"));
+    assert!(error.contains("FunctionBudgetExceeded"), "{error}");
     let production = emit_native_call_assignment_module(&schedule, &layout, &table).unwrap();
     assert!(
         body_sizes(production.module_bytes())
             .iter()
             .all(|size| *size <= FUNCTION_BYTES)
     );
+}
+
+#[test]
+fn explicit_capacity_preserves_actual_native_values_faults_and_restore() {
+    let (schedule, layout, table, _) = fixture();
+    let default = emit_with_budget(&schedule, &layout, &table, BUDGET).unwrap();
+    let policy = crate::CheckedNativeWasmCapacityPolicy::new(crate::NativeWasmCapacityRequest {
+        private_arena_bytes: 16 * 65_536,
+        public_scratch_bytes: 16 * 65_536,
+    })
+    .unwrap();
+    let explicit = emit_with_policy(&schedule, &layout, &table, BUDGET, policy).unwrap();
+    assert_eq!(explicit.capacity_policy(), policy);
+    assert_eq!(explicit.module_bytes(), default.module_bytes());
+    assert_eq!(explicit.faults(), default.faults());
+    assert_eq!(explicit.scratch_report(), default.scratch_report());
+    let mut original = Runner::new(&default, &layout);
+    let mut selected = Runner::new(&explicit, &layout);
+    for input in [1.25, -2.0, 1e300, 1.25] {
+        let actual = selected.run(input);
+        assert_eq!(actual, original.run(input));
+        if input == 1e300 {
+            assert_ne!(actual.0, 0);
+        } else {
+            assert_eq!(actual.0, 0);
+        }
+    }
+}
+
+#[test]
+fn integer_capture_runs_preserve_order_exact_pairs_and_nonadjacent_boundaries() {
+    let mut captures = Vec::new();
+    for (operation, cell, lane) in [
+        (2, 10, 80),
+        (2, 11, 88),
+        (2, 12, 112),
+        (3, 13, 120),
+        (3, 15, 128),
+    ] {
+        append_capture(&mut captures, operation, cell, lane).unwrap();
+    }
+    assert_eq!(
+        captures
+            .iter()
+            .map(|capture| capture.count)
+            .collect::<Vec<_>>(),
+        [2, 1, 1, 1]
+    );
+    let pairs = captures
+        .iter()
+        .flat_map(|capture| {
+            (0..capture.count).map(move |index| {
+                (
+                    capture.operation,
+                    capture.cell + index,
+                    capture.lane + 8 * index,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [
+            (2, 10, 80),
+            (2, 11, 88),
+            (2, 12, 112),
+            (3, 13, 120),
+            (3, 15, 128)
+        ]
+    );
+    let mut boundary = vec![crate::emit::IntegerCapture {
+        operation: 1,
+        cell: u32::MAX,
+        lane: u32::MAX - 7,
+        count: 1,
+    }];
+    append_capture(&mut boundary, 1, 0, 0).unwrap();
+    assert_eq!(boundary.len(), 2);
+}
+
+#[test]
+fn outlined_typed_helpers_match_unbounded_emission_and_oracle_and_keep_late_fault_identity() {
+    let (schedule, layout, table, site) = fixture_with_chain(400);
+    let baseline = emit_with_budget(&schedule, &layout, &table, usize::MAX).unwrap();
+    let bounded = emit_with_budget(&schedule, &layout, &table, BUDGET).unwrap();
+    let before_sizes = body_sizes(baseline.module_bytes());
+    let after_sizes = body_sizes(bounded.module_bytes());
+    assert!(
+        after_sizes.len() > before_sizes.len(),
+        "{before_sizes:?} {after_sizes:?}"
+    );
+    assert!(after_sizes.iter().all(|size| *size <= BUDGET));
+    assert_eq!(baseline.faults(), bounded.faults());
+    assert_eq!(baseline.scratch_bytes(), bounded.scratch_bytes());
+    let mut before = Runner::new(&baseline, &layout);
+    let mut after = Runner::new(&bounded, &layout);
+    for input in [-0., 0., 1.25, -2.] {
+        let actual = after.run(input);
+        assert_eq!(actual, before.run(input));
+        assert_eq!(actual.0, 0);
+        let first = oracle(&table, &site, input);
+        assert_eq!(actual.1[..COUNT - 1], vec![first; COUNT - 1]);
+    }
+    let failed = after.run(1e300);
+    assert_eq!(failed, before.run(1e300));
+    assert_ne!(failed.0, 0);
+    let fault = bounded
+        .faults()
+        .iter()
+        .find(|fault| fault.status == failed.0 as u32)
+        .unwrap();
+    assert_eq!(fault.provenance, span(47));
 }

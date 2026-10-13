@@ -197,25 +197,29 @@ impl TypeChecker {
             | OpBinary::Ge
             | OpBinary::And
             | OpBinary::Or => Some(type_table.boolean()),
-            OpBinary::Div | OpBinary::DivElem => {
-                let lhs = self.infer_expression_type(lhs, type_table)?;
-                let rhs = self.infer_expression_type(rhs, type_table)?;
-                let common = self.common_value_type(lhs, rhs, type_table)?;
+            OpBinary::Div | OpBinary::DivElem | OpBinary::Exp | OpBinary::ExpElem => {
+                let lhs_type = self.infer_expression_type(lhs, type_table)?;
+                let rhs_type = self.infer_expression_type(rhs, type_table)?;
+                let common = self.common_value_type(lhs_type, rhs_type, type_table)?;
                 let root = self.resolve_type_root(type_table, common);
-                matches!(
+                let numeric = matches!(
                     type_table.get(root),
                     Some(Type::Builtin(
                         rumoca_ir_ast::BuiltinType::Real | rumoca_ir_ast::BuiltinType::Integer
                     ))
-                )
-                .then_some(type_table.real())
-                .or(Some(common))
+                );
+                if numeric
+                    && (*op != OpBinary::Exp
+                        || self.infer_expression_shape(lhs, type_table)?.is_empty())
+                {
+                    Some(type_table.real())
+                } else {
+                    Some(common)
+                }
             }
             OpBinary::Add
             | OpBinary::Sub
             | OpBinary::Mul
-            | OpBinary::Exp
-            | OpBinary::ExpElem
             | OpBinary::AddElem
             | OpBinary::SubElem
             | OpBinary::MulElem
@@ -273,11 +277,14 @@ impl TypeChecker {
             | BuiltinFunction::FirstTick => Some(type_table.boolean()),
             // MLS 3.7 §3.7.1 expands `sign(v)` into an if-expression over Integer
             // literals, an Integer for either operand type.
+            // MLS 3.7 §10.3.3: `zeros` and `ones` are Integer arrays.
             BuiltinFunction::Integer
             | BuiltinFunction::Sign
             | BuiltinFunction::Ndims
             | BuiltinFunction::Size
-            | BuiltinFunction::Identity => Some(type_table.integer()),
+            | BuiltinFunction::Identity
+            | BuiltinFunction::Zeros
+            | BuiltinFunction::Ones => Some(type_table.integer()),
             BuiltinFunction::Sqrt
             | BuiltinFunction::Floor
             | BuiltinFunction::Ceil
@@ -294,8 +301,6 @@ impl TypeChecker {
             | BuiltinFunction::Exp
             | BuiltinFunction::Log
             | BuiltinFunction::Log10
-            | BuiltinFunction::Zeros
-            | BuiltinFunction::Ones
             | BuiltinFunction::Linspace
             | BuiltinFunction::Interval => Some(type_table.real()),
             BuiltinFunction::Clock => type_table.lookup("Clock"),

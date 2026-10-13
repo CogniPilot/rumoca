@@ -197,6 +197,7 @@ fn plan_staged_record(
                 available_fields,
                 finalize_fields: (field_indices.last() == Some(&final_index))
                     .then(|| field_names.clone()),
+                reads: Vec::new(),
             },
         );
     }
@@ -269,6 +270,7 @@ pub(super) fn validate_record_output_assembly(
             statement_count: count,
             fields,
             seed: None,
+            reads: Vec::new(),
         },
         count,
     )))

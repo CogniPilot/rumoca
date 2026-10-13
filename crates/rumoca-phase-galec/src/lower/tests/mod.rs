@@ -6,6 +6,7 @@ mod conditional_records;
 mod correlated_guards;
 mod dynamic_index_bounds;
 mod indexed_updates;
+mod scoped_function_branches;
 
 #[test]
 fn identity_element_is_integer_and_diagonal_by_index_equality() {

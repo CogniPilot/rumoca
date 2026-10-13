@@ -141,7 +141,10 @@ fn pure_calls(model: &rumoca_ir_solve::SolveModel) -> usize {
 }
 
 fn slot(model: &rumoca_ir_solve::SolveModel, name: &str) -> usize {
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let Some(slot) = names.iter().position(|candidate| candidate == name) else {
         panic!("`{name}` has a solver slot");
     };
@@ -158,7 +161,12 @@ fn constant_calls_fold_and_literal_bindings_are_read_as_literals() {
     assert_eq!(pure_calls(&lowered("ConstantCalls", &without_time)), 0);
     // `R.T[1, 2]` is bound to the literal 0, so `b` does not read `s`: `s` is
     // solved alone from the row of `a`, and `b` from its own row.
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     for name in ["s", "b"] {
         let index = slot(&model, name);
         let Some(block) = blocks.iter().find(|block| block.y_indices.contains(&index)) else {
@@ -233,7 +241,12 @@ fn a_constant_call_that_fails_is_a_compile_error_naming_the_call() {
 #[test]
 fn a_slider_loop_tears_into_two_angles_and_settles_without_dense_fallback() {
     let model = lowered("SliderLoop", SLIDER_LOOP);
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     let (a1, a2, s) = (slot(&model, "a1"), slot(&model, "a2"), slot(&model, "s"));
     let coupled = blocks
         .iter()
@@ -331,4 +344,56 @@ fn a_constant_string_array_element_renders_in_an_assertion_message() {
         message.contains("X[2] of water in moist air"),
         "the message selects the second substance name: {message}"
     );
+}
+
+const FUNCTION_BODY_CONSTANT_CALL: &str = "
+model FunctionBodyConstantCall
+  function table
+    input Real k;
+    output Real y[3];
+  algorithm
+    y := {k, 2*k, 3*k};
+  end table;
+  function gain
+    input Real u;
+    output Real y;
+  algorithm
+    y := u*table(2.0)[2];
+  end gain;
+  Real y;
+equation
+  y = gain(time);
+end FunctionBodyConstantCall;";
+
+/// Typed pure-call operations the function bodies of a lowered model hold.
+fn body_calls(model: &rumoca_ir_solve::SolveModel) -> usize {
+    serde_json::to_string(&model.pure_calls)
+        .expect("the pure-call table serializes")
+        .matches("\"Call\"")
+        .count()
+}
+
+#[test]
+fn a_constant_call_in_a_function_body_folds_once_instead_of_running_per_invocation() {
+    let model = lowered("FunctionBodyConstantCall", FUNCTION_BODY_CONSTANT_CALL);
+    assert_eq!(
+        body_calls(&model),
+        0,
+        "`table(2.0)` is the same in every invocation of `gain`"
+    );
+    let compiled = Compiler::new()
+        .model("FunctionBodyConstantCall")
+        .compile_str(FUNCTION_BODY_CONSTANT_CALL, "FunctionBodyConstantCall.mo")
+        .expect("the model is well formed");
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 1.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("the model simulates");
+    let y = result.names.iter().position(|n| n == "y").expect("y");
+    let last = *result.data[y].last().expect("a sample");
+    assert!((last - 4.0).abs() < 1e-9, "y(1) = 2*2*1: {last}");
 }

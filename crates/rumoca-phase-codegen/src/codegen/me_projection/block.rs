@@ -170,6 +170,7 @@ pub(super) fn block_record(
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .get(canonical)
         .ok_or_else(|| refuse(canonical, "is outside the canonical projection plan"))?;
     let structure = sources
@@ -251,13 +252,7 @@ pub(super) fn block_record(
 }
 
 fn row_target(problem: &solve::SolveProblem, row: usize) -> usize {
-    match problem
-        .continuous
-        .implicit_row_targets
-        .get(row)
-        .copied()
-        .flatten()
-    {
+    match problem.continuous.implicit_row_targets.target_at(row) {
         Some(solve::ScalarSlot::Y { index, .. }) => index + 1,
         _ => NO_TARGET,
     }
@@ -363,7 +358,7 @@ fn record_jacobian(
     table: &mut ProgramTable,
     canonical: usize,
     block: &solve::AlgebraicProjectionBlock,
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
     csr: &Csr,
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {
@@ -441,7 +436,8 @@ fn record_lane_calls(
     if !rumoca_eval_solve::projection_policy::jacobian_sources().colored_lanes {
         return Ok(());
     }
-    let Ok(plan) = solve::ColoredTangentPlan::derive(application) else {
+    let Ok(plan) = solve::ColoredTangentPlan::derive_sharing(application, &mut table.lane_catalog)
+    else {
         return Ok(());
     };
     let n = application.rows().len();
@@ -449,11 +445,11 @@ fn record_lane_calls(
     let mut calls = Vec::new();
     for call in plan.calls() {
         let lanes = call.colors.len();
-        let program = plan.programs()[call.program].as_ref().clone();
+        let program = std::sync::Arc::clone(&plan.programs()[call.program]);
         check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         let seeds = lane_seed_positions(program.ops(), &call.colors, application);
-        let function = table.lanes.push(program, span);
+        let function = table.lanes.intern(program, span);
         let seed_count = seeds.len();
         let seeds = table.push(seeds);
         let mut placements = Vec::with_capacity(3 * call.placements.len());
@@ -671,7 +667,10 @@ fn tangent_lanes(
         check_seed_loads(canonical, program.ops(), sources.seed_len, lanes)?;
         let outputs = program.lane_outputs();
         record.lane_max_outputs = record.lane_max_outputs.max(lanes * outputs);
-        functions.insert(index, (table.lanes.push(program.clone(), span), outputs));
+        let function = table
+            .lanes
+            .intern(std::sync::Arc::new(program.clone()), span);
+        functions.insert(index, (function, outputs));
     }
     record.lane_max = record.lane_max.max(lanes);
     Ok(functions)
@@ -809,7 +808,7 @@ fn record_elimination(
     table: &mut ProgramTable,
     canonical: usize,
     block: &solve::AlgebraicProjectionBlock,
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
     csr: &Csr,
     record: &mut BlockRecord,
 ) -> Result<(), CodegenError> {

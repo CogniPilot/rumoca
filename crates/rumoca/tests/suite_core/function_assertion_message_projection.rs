@@ -123,12 +123,14 @@ fn simulate(source: &str, model: &str, file: &str, t_end: f64) -> SimResult {
     .unwrap_or_else(|error| panic!("{model} simulates: {error}"))
 }
 
-/// Every `PureCall` owner a program projects, in emission order.
+/// Every pure-call owner a program projects, in emission order: a value
+/// `PureCall` or an assertion-observation projection of the same owner.
 fn projected_owners(program: &[solve::LinearOp]) -> Vec<solve::SolvePureCallOwnerId> {
     program
         .iter()
         .filter_map(|op| match op {
             solve::LinearOp::PureCall { site, .. } => Some(site.owner()),
+            solve::LinearOp::PureCallObservation { site, .. } => Some(site.value_site().owner()),
             _ => None,
         })
         .collect()

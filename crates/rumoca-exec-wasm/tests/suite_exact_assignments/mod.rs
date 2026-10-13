@@ -195,7 +195,11 @@ fn host_calls_check_the_issued_layout_before_execution() {
         let mut scratch = vec![0.; cells];
         let mut y = y;
         let error = compiled.call(&mut y, &[0.5], 0., &mut scratch).unwrap_err();
-        assert!(error.to_string().contains("execute only on wasm32"));
+        assert!(
+            error
+                .to_string()
+                .contains("no admitted engine on this target")
+        );
         assert_eq!(y, [2., 9., -0., 11., 13., 17.]);
     }
 }

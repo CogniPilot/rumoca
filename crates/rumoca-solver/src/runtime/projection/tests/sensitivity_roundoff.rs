@@ -42,17 +42,13 @@ impl ImplicitProjectionModel for AxialSensitivity {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, _: usize) -> Option<&str> {
-        None
-    }
 }
 
 #[test]
 fn a_large_direction_does_not_pollute_exact_zero_acceleration() {
     let model = AxialSensitivity {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0, 1, 2],
                     y_indices: vec![1, 2, 3],
@@ -65,7 +61,8 @@ fn a_large_direction_does_not_pollute_exact_zero_acceleration() {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         },
     };
     for direction in [1.0, -1.0] {

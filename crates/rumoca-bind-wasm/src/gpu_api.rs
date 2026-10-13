@@ -103,14 +103,8 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
         let state_count = solve_model.state_scalar_count();
         let state_names = solve_model
             .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .get(..state_count)
-            .ok_or_else(|| {
-                WasmError::new("wgsl-ode layout has fewer solver names than state scalar slots")
-            })?
-            .to_vec();
+            .solver_named_report(0..state_count)
+            .map_err(|error| WasmError::new(error.to_string()))?;
 
         // The GPU fixed-step RK4 driver uses `dt` as its output/sample interval
         // and `internal_dt` as its integration step. Models can set the latter
@@ -145,7 +139,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "wgsl": wgsl,
             "layout": layout,
             "var_layout": solve_model.problem.layout,
-            "input_names": solve_model.problem.solve_layout.input_scalar_names(),
+            "input_names": solve_model.problem.solve_layout.input_scalar_names().iter().collect::<Vec<_>>(),
             "y0": y0,
             "p0": p0,
             "n_states": state_count,

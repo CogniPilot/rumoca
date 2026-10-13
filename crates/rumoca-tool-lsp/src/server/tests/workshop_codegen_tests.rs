@@ -309,6 +309,14 @@ fn xml_attribute<'a>(element: &'a str, name: &str) -> &'a str {
         .expect("attribute value")
 }
 
+/// FMI 3 states a uniform start once for the whole declared dimension.
+fn broadcast_start(starts: Vec<f64>, extent: usize) -> Vec<f64> {
+    match starts[..] {
+        [only] => vec![only; extent],
+        _ => starts,
+    }
+}
+
 fn assert_fmi_preview(target: &str, files: &BTreeMap<String, String>) {
     let manifest_path = repository_root()
         .join("crates/rumoca-phase-codegen/src/templates")
@@ -365,6 +373,7 @@ fn assert_fmi_preview(target: &str, files: &BTreeMap<String, String>) {
             .split_whitespace()
             .map(|value| value.parse().expect("numeric state start"))
             .collect();
+        let starts = broadcast_start(starts, 2);
         assert_eq!(starts, vec![1.0, 1.0], "actual tensor starts");
         assert!(files["FmiTensorDecay/sources/buildDescription.xml"].contains("model.c"));
     } else {

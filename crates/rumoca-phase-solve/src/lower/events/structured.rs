@@ -249,7 +249,9 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                 Some((clock, _)) => layout
                     .scalar_compiler(view, None)
                     .clocked_program(clock, value, scalar)?,
-                None => layout.scalar_compiler(view, None).program(value, scalar)?,
+                None => layout
+                    .discrete_scalar_compiler(view, None)
+                    .program(value, scalar)?,
             };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.claim_scalar_event_owner(variable, target, span)?;
@@ -338,7 +340,7 @@ fn lower_call_projection_values<'dae>(
             continue;
         }
         let program = layout
-            .scalar_compiler(view, None)
+            .discrete_scalar_compiler(view, None)
             .aggregate_program(members.iter().map(|&index| values[index].value))?;
         let mut outputs = Vec::with_capacity(scalars);
         for &index in &members {

@@ -13,6 +13,9 @@ use rumoca_ir_solve::{
 };
 use serde::Serialize;
 
+mod observations;
+pub(super) use observations::observations;
+
 /// One segment of an assertion message.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +60,10 @@ pub(super) fn messages(problem: &SolveProblem) -> Result<AssertionMessages, Code
         spans: Vec::new(),
     };
     for action in &problem.events.actions {
+        if action.assertion_projection.is_some() {
+            out.parts.push(Vec::new());
+            continue;
+        }
         let mut parts = Vec::new();
         for part in &action.message.parts {
             parts.push(match part {
@@ -97,15 +104,19 @@ fn conversion(
         significant_digits,
     } = format;
     Conversion {
-        source: match source {
-            SolveStringConversionSource::Real => "real",
-            SolveStringConversionSource::Integer => "integer",
-            SolveStringConversionSource::Boolean => "boolean",
-        },
+        source: conversion_source(source),
         value: row(value),
         minimum_length: minimum_length.as_deref().map(&mut row),
         left_justified: left_justified.as_deref().map(&mut row),
         significant_digits: significant_digits.as_deref().map(&mut row),
+    }
+}
+
+fn conversion_source(source: SolveStringConversionSource) -> &'static str {
+    match source {
+        SolveStringConversionSource::Real => "real",
+        SolveStringConversionSource::Integer => "integer",
+        SolveStringConversionSource::Boolean => "boolean",
     }
 }
 
@@ -149,6 +160,7 @@ mod tests {
             span: rumoca_ir_solve::source_span_from_offsets(1, 0, 1),
             origin: "message encoding fixture".into(),
             clock_owner: None,
+            assertion_projection: None,
         }
     }
 

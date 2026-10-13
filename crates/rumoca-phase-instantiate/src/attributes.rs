@@ -21,6 +21,9 @@ pub(super) fn extract_component_attrs_and_binding(
 ) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
     let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx, imports)?;
+    if matches!(comp.causality, rumoca_core::Causality::Input(_)) && !attrs.start_is_explicit {
+        attrs.start = None;
+    }
     let (binding, binding_from_modification, binding_source_scope) = extract_binding(comp, mod_env);
     let binding_path = ast::QualifiedName::from_ident(&comp.name);
     let binding_modification = binding_from_modification

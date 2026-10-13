@@ -7,6 +7,11 @@
 //! property functions.
 
 use rumoca::Compiler;
+use rumoca_eval_solve::{
+    AssertionReport, CheckedEventObservationContext, RowEvalContext,
+    eval_scalar_program_block_with_context,
+};
+use rumoca_ir_solve::SolveEventActionKind;
 use rumoca_sim::{SimOptions, SimResult, simulate_dae_with_diagnostics};
 
 const SOURCE: &str = r#"
@@ -57,7 +62,7 @@ end Scopes;
 "#;
 
 fn simulate(offset: &str, shift: &str) -> Result<SimResult, String> {
-    let source = SOURCE.replace("OFFSET", offset).replace("SHIFT", shift);
+    let source = source(offset, shift);
     let compiled = Compiler::new()
         .model("Scopes")
         .compile_str(&source, "Scopes.mo")
@@ -99,14 +104,125 @@ fn calls_in_loops_and_conditions_keep_their_values_when_assertions_hold() {
     }
 }
 
+// SPEC_0036's source-ordered assertion cutover separates the values a row
+// computes from C25's checked message observation: the row expands the call
+// for its values, and only the exact table/program/action context consumes the
+// stopped invocation and its initialized first-failure captures.
+fn source(offset: &str, shift: &str) -> String {
+    SOURCE.replace("OFFSET", offset).replace("SHIFT", shift)
+}
+
+fn checked_reports(offset: &str, shift: &str) -> Vec<AssertionReport> {
+    let source = source(offset, shift);
+    let compiled = Compiler::new()
+        .model("Scopes")
+        .compile_str(&source, "Scopes.mo")
+        .unwrap_or_else(|error| panic!("the original Scopes source compiles: {error}"));
+    let model = rumoca_sim::lower_dae_for_simulation(&compiled.dae, &SimOptions::default())
+        .expect("the original Scopes source retains its checked call/action owners");
+    let events = &model.problem.events;
+    let observations = CheckedEventObservationContext::construct(
+        &model.pure_calls,
+        &events.action_conditions,
+        &events.actions,
+    )
+    .expect("the original table, program and actions issue one observation context");
+    let mut predicates = vec![0.0; events.action_conditions.len()];
+    eval_scalar_program_block_with_context(
+        &events.action_conditions,
+        &model.initial_y.to_vec(),
+        &model.parameters.to_vec(),
+        0.0,
+        RowEvalContext {
+            pure_calls: Some(&model.pure_calls),
+            event_observations: Some(&observations),
+            ..Default::default()
+        },
+        &mut predicates,
+    )
+    .expect("predicate-only observation consumes the actual stopped call");
+    let reports = observations.take_reports();
+    for report in &reports {
+        let action = &events.actions[report.action_index];
+        assert_eq!(report.kind, action.kind);
+        assert_eq!(report.span, action.span);
+        let provenance = rumoca_ir_dae::DaeProvenance::source(report.span)
+            .expect("the issued action retains its original source coordinate");
+        compiled.dae.inspect(|view| {
+            assert!(
+                (0..view.function_count())
+                    .filter_map(|index| view.function(view.function_id(index).unwrap()))
+                    .any(|function| function.statements().any(|statement| matches!(
+                        statement,
+                        rumoca_ir_dae::FunctionStatementView::Assertion { provenance, .. }
+                            if provenance.span() == report.span
+                    ))),
+                "C25 identifies an original checked authored assertion, not its model call"
+            );
+            assert_eq!(
+                view.source_text(provenance),
+                source.get(report.span.start.0..report.span.end.0),
+                "the checked report belongs to the original source map"
+            );
+        });
+    }
+    reports
+}
+
+fn assert_failure(offset: &str, shift: &str, call: &str, assertion: &str, message: &str) {
+    let source = source(offset, shift);
+    let error = simulate(offset, shift).expect_err("the original reached assertion stops the call");
+    assert!(
+        error.contains(&format!(
+            "Modelica assert failed at t=0.000000000: {message}"
+        )),
+        "the scheduled assertion owner reports its authored message: {error}"
+    );
+    assert!(
+        source.contains(call),
+        "the original reached model call is part of the source"
+    );
+    let reports = checked_reports(offset, shift);
+    let [report] = reports.as_slice() else {
+        panic!(
+            "the first fatal check produces one observation, got {}",
+            reports.len()
+        );
+    };
+    assert_eq!(report.kind, SolveEventActionKind::Assert);
+    assert_eq!(report.message, message);
+    let assertion_start = source
+        .find(assertion)
+        .expect("the original authored assertion");
+    assert_eq!(report.span.start.0, assertion_start);
+    let authored = source
+        .get(report.span.start.0..report.span.end.0)
+        .expect("the canonical authored assertion span belongs to the original source");
+    assert_eq!(authored, "assert", "the original checked assertion keyword");
+    assert!(
+        checked_reports("0", "0").is_empty(),
+        "healthy calls observe no failed assertion"
+    );
+}
+
 #[test]
 fn the_first_failing_loop_iteration_ends_the_call() {
-    let error = simulate("(-13)", "0").expect_err("g fails on the first iteration");
-    assert!(error.contains("x too small: -12"), "{error}");
+    assert_failure(
+        "(-13)",
+        "0",
+        "sumg(time + (-13), 3)",
+        "assert(x > -10,",
+        "x too small: -12",
+    );
 }
 
 #[test]
 fn a_call_in_a_condition_asserts_before_either_branch() {
-    let error = simulate("0", "20").expect_err("h fails in the condition");
-    assert!(error.contains("x too large"), "{error}");
+    assert_failure(
+        "0",
+        "20",
+        "pick(time + 20)",
+        "assert(x < 10,",
+        "x too large",
+    );
 }

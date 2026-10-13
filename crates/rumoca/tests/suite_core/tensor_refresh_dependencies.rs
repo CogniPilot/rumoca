@@ -17,6 +17,7 @@ fn lower(equations: &str) -> rumoca_ir_solve::SolveModel {
 fn projects(plan: &rumoca_ir_solve::RefreshPlan, index: usize) -> bool {
     plan.simultaneous_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .any(|block| block.y_indices.contains(&index))
 }
@@ -25,7 +26,10 @@ fn projects(plan: &rumoca_ir_solve::RefreshPlan, index: usize) -> bool {
 fn selected_tensor_assignment_does_not_refresh_unrelated_nonlinear_sibling() {
     for (member, values) in [(2, "{y,-x,0}"), (1, "{-x,y,0}")] {
         let model = lower(&format!("der(x)=a[{member}]; a={values}; y*y*y=x;"));
-        let names = &model.problem.solve_layout.solver_maps.names;
+        let names = model
+            .problem
+            .solver_named_report(0..model.solver_scalar_count())
+            .unwrap();
         let y = names.iter().position(|name| name == "y").unwrap();
         let owners = &model.problem.continuous.refresh_owners;
         assert!(projects(owners.algebraic(), y));
@@ -34,7 +38,7 @@ fn selected_tensor_assignment_does_not_refresh_unrelated_nonlinear_sibling() {
             "the exact a[{member}] assignment must not require its sibling's solve: {values}"
         );
         let runtime = SolveRuntime::new(&model).unwrap();
-        let mut guess = vec![-10.; names.len()];
+        let mut guess = vec![-10.; model.solver_scalar_count()];
         let mut output = [0.];
         runtime
             .eval_state_derivatives_with_guess_into(
@@ -83,14 +87,7 @@ fn assignment_coefficients_and_coupled_blocks_retain_their_dependencies() {
         "der(x)=a[2]; a={y,a[1]+x,0}; y*y*y=a[2];",
     ] {
         let model = lower(equations);
-        let y = model
-            .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .iter()
-            .position(|name| name == "y")
-            .unwrap();
+        let y = model.problem.solver_index("y").unwrap();
         assert!(projects(
             model.problem.continuous.refresh_owners.derivative(),
             y

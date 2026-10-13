@@ -1,6 +1,7 @@
 //! Exact reference-loop controls for the private coordinate extent certificate.
 use super::*;
 use crate::layout::{StorageClass, VariableSlot};
+mod metadata_budget;
 mod packing;
 
 fn with_compiler(test: impl FnOnce(&mut ScalarCompiler<'_, '_>, Span)) {
@@ -313,6 +314,25 @@ fn issued_operations_and_facts_are_charged_to_the_budget_before_their_memory_is_
         assert!(message.contains("register facts"), "{message}");
         assert!(message.contains("operations"), "{message}");
         assert!(issued < 200, "{issued}");
-        assert_eq!(compiler.next_register as usize, issued);
+        // A register can be admitted before its operation or fact is refused;
+        // the failed program is never issued, and neither metadata owner grows
+        // past its limit.
+        assert!(compiler.next_register as usize <= issued + 1);
     });
+}
+
+#[test]
+fn integer_values_beyond_binary64_exactness_are_refused_not_rounded() {
+    let span = Span::from_offsets(rumoca_core::SourceId::from_source_name("integer.mo"), 0, 1);
+    let limit = 1_i64 << 53;
+    for exact in [0, -1, limit, -limit] {
+        assert_eq!(integer_as_real(exact, span).unwrap(), exact as f64);
+    }
+    for inexact in [limit + 1, -limit - 1, i64::MAX, i64::MIN] {
+        let error = integer_as_real(inexact, span).unwrap_err();
+        assert!(
+            error.to_string().contains("not exactly representable"),
+            "{error}"
+        );
+    }
 }

@@ -43,6 +43,7 @@ component and MUST have unique post-instantiation identity.
 | Flat/DAE runtime components use instance-unique identity | Flatten and later | Reused classes create distinct unknowns |
 | `DefId(0)` is reserved for root/global scope | Core ids | Stable sentinel |
 | DefIds are local to a compilation unit | Whole compiler | No cross-unit global registry |
+| Flat output identity never includes a `DefId` or `TypeId` value | Flat ([FLAT-C07](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#0-flat-stage-contract-catalog-spec_0007-stage-2)) | Session-local numbers differ between compiles of one source; `Model::canonical_json` renumbers them by first appearance |
 
 Instance-unique identity may be represented by a dedicated instance `DefId`, or
 by a small structured key whose identity fields are all `DefId` /

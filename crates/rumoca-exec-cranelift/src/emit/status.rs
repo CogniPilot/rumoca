@@ -1,6 +1,7 @@
 //! Explicit failure propagation across private native kernel calls.
 
 use super::{CompileError, scratch};
+use crate::NativeSourceFault;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use cranelift_frontend::FunctionBuilder;
 
@@ -19,31 +20,39 @@ const INTEGER_ARITHMETIC_FAILURE: i64 = 8;
 pub(super) fn check(status: u8) -> Result<(), CompileError> {
     match status {
         0 => Ok(()),
-        1 => Err(CompileError::Input(
-            "native tensor index is out of bounds".into(),
-        )),
-        2 => Err(CompileError::Input(
-            "native tensor linear solve is singular or non-finite".into(),
-        )),
-        3 => Err(CompileError::Input(
-            "native Integer quotient has a zero divisor or no representable result".into(),
-        )),
+        1 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::TensorIndex,
+            message: "native tensor index is out of bounds".into(),
+        }),
+        2 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::LinearSolve,
+            message: "native tensor linear solve is singular or non-finite".into(),
+        }),
+        3 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::IntegerQuotient,
+            message: "native Integer quotient has a zero divisor or no representable result".into(),
+        }),
         NATIVE_BODY_FAILURE => Err(CompileError::Backend(
             "native body host call received operands outside its interface".into(),
         )),
-        NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::Input(
-            "a native foreign body reported an error for its operands".into(),
-        )),
-        6 => Err(CompileError::Input(
-            "recursive call exceeds the execution profile's depth limit".into(),
-        )),
-        7 => Err(CompileError::Input(
-            "Integer value is outside its domain or not exactly representable in the scalar ABI"
-                .into(),
-        )),
-        8 => Err(CompileError::Input(
-            "native Integer arithmetic left the checked target domain".into(),
-        )),
+        NATIVE_BODY_FOREIGN_ERROR => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::ForeignBody,
+            message: "a native foreign body reported an error for its operands".into(),
+        }),
+        6 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::RecursionDepth,
+            message: "recursive call exceeds the execution profile's depth limit".into(),
+        }),
+        7 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::ScalarPayload,
+            message:
+                "Integer value is outside its domain or not exactly representable in the scalar ABI"
+                    .into(),
+        }),
+        8 => Err(CompileError::SourceOperation {
+            kind: NativeSourceFault::IntegerArithmetic,
+            message: "native Integer arithmetic left the checked target domain".into(),
+        }),
         scratch::FAILURE => Err(CompileError::Backend(
             "native scratch allocation or frame contract failed".into(),
         )),
@@ -110,4 +119,30 @@ fn require(builder: &mut FunctionBuilder<'_>, valid: Value, failure: i64) {
     builder.ins().return_(&[status]);
     builder.switch_to_block(continuation);
     builder.seal_block(continuation);
+}
+
+/// An assertion-observation form stopped at its first failed Error-level
+/// assertion. It is not a failure: the stopping form has already published
+/// its predicate cells, and every enclosing observation form forwards them and
+/// stops in turn. The observing row absorbs it as success.
+pub(super) const ASSERTION_STOP: i64 = 9;
+
+/// Return from an observation form at its first failed Error-level assertion.
+pub(super) fn stop(builder: &mut FunctionBuilder<'_>) {
+    let status = builder.ins().iconst(types::I8, ASSERTION_STOP);
+    scratch::leave(builder);
+    builder.ins().return_(&[status]);
+}
+
+/// Split `status` into whether it is the assertion stop and the status with
+/// the stop read as success, so the caller propagates only genuine failures.
+pub(super) fn separate_stop(builder: &mut FunctionBuilder<'_>, status: Value) -> (Value, Value) {
+    let stopped = builder.ins().icmp_imm(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        status,
+        ASSERTION_STOP,
+    );
+    let success = builder.ins().iconst(types::I8, 0);
+    let failure = builder.ins().select(stopped, success, status);
+    (stopped, failure)
 }

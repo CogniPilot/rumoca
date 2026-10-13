@@ -1,7 +1,7 @@
 //! A complete pure-call input coordinate determined by immutable P/time/constant cells.
 //! Shared call results are reused only after successful complete-tuple evaluation.
 use super::*;
-use crate::typed_call::program::ProgramHelpers;
+use crate::typed_call::program::{CallAbi, ProgramHelpers};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Input {
@@ -13,9 +13,15 @@ enum Input {
 pub(super) struct Memo {
     site: solve::SolvePureCallSite,
     inputs: Vec<Input>,
-    pub flag: u32,
+    /// Whether the emitter has issued the call: the first occurrence in
+    /// execution order evaluates it and every later one reads the tuple.
+    issued: std::cell::Cell<bool>,
     pub tuple: u32,
     pub bytes: u32,
+    /// The buffer of each output returned by reference (zero for the others),
+    /// which the first evaluation builds the output in so that every later use
+    /// of the replayed result cell names a value that stays intact.
+    pub buffers: Vec<u32>,
 }
 
 pub(super) fn derive(
@@ -33,22 +39,39 @@ pub(super) fn derive(
                 continue;
             }
             let layout = helpers.layout(site).map_err(|e| e.to_string())?;
-            let flag = *bytes;
-            let tuple = flag.checked_add(8).ok_or("native memo flag overflow")?;
+            let tuple = *bytes;
             *bytes = tuple
                 .checked_add(layout.output)
-                .filter(|&n| n <= 64 * 1024 * 1024)
-                .ok_or("native whole-program memo exceeds 64 MiB")?;
+                .ok_or("native whole-program memo overflows memory32")?;
+            let buffers = reserve_buffers(&layout.abi, bytes)?;
             memos.push(Memo {
                 site: site.clone(),
                 inputs,
-                flag,
+                issued: std::cell::Cell::new(false),
                 tuple,
                 bytes: layout.output,
+                buffers,
             });
         }
     }
     Ok(memos)
+}
+
+/// Reserve a buffer for each output returned by reference.
+fn reserve_buffers(abi: &CallAbi, bytes: &mut u32) -> Result<Vec<u32>, String> {
+    abi.outputs
+        .iter()
+        .map(|output| {
+            if output.buffer_cell.is_none() {
+                return Ok(0);
+            }
+            let buffer = *bytes;
+            *bytes = buffer
+                .checked_add(output.bytes)
+                .ok_or("native whole-program memo overflows memory32")?;
+            Ok(buffer)
+        })
+        .collect()
 }
 
 pub(super) fn find<'a>(memos: &'a [Memo], prefix: &[LinearOp], op: &LinearOp) -> Option<&'a Memo> {
@@ -120,5 +143,16 @@ fn source(prefix: &[LinearOp], mut register: Reg, count: usize) -> Option<Input>
             }
             _ => return None,
         }
+    }
+}
+
+impl Memo {
+    /// Whether the occurrence being emitted is the one that evaluates the
+    /// call. Stages and their programs are emitted in execution order and every
+    /// occurrence is a top-level operation of a straight-line program, so the
+    /// first emitted occurrence is the first to run and no later occurrence can
+    /// run before it.
+    pub(super) fn issue(&self) -> bool {
+        !self.issued.replace(true)
     }
 }

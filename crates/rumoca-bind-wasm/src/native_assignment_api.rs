@@ -72,7 +72,7 @@ fn model_artifact(
     let carries_calls = crate::native_program_api::any_stage_operation(schedule, |operation| {
         matches!(operation, rumoca_ir_solve::LinearOp::PureCall { .. })
     });
-    if !schedule.derived_outputs().is_empty() || !schedule.input_lanes().is_empty() || carries_calls
+    if !schedule.derived_outputs().is_empty() || !schedule.input_runs().is_empty() || carries_calls
     {
         return Err(WasmError::new(
             "typed lanes and pure calls belong to the native program ABI, not the separate-stage copy ABI: its stage modules return no status and link no call table",
@@ -117,8 +117,8 @@ fn model_artifact(
             "output_offset": seed_count * 16, "output_capacity": max_output,
             "y_count": y_count, "p_count": p_count, "seed_count": seed_count },
         "var_layout": problem.layout,
-        "input_names": problem.solve_layout.input_scalar_names(),
-        "parameters": model.parameters,
+        "input_names": problem.solve_layout.input_scalar_names().iter().collect::<Vec<_>>(),
+        "parameters": model.parameters.as_slice(),
         "stages": stages,
     });
     serde_json::to_string(&response)

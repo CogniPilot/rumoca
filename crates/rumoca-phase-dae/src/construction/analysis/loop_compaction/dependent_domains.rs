@@ -248,9 +248,12 @@ fn require_entry_invariant_range(
     body: &[rumoca_core::Statement],
     span: Span,
 ) -> Result<(), ToDaeError> {
-    let mut references = Vec::new();
-    range.collect_var_refs(&mut references);
-    if references
+    // MLS §10.1: `size(x, i)` reads the declared shape of `x`, which a body
+    // write cannot change, so only value reads pin the entry snapshot.
+    let mut reads = super::super::ValueReads::default();
+    rumoca_core::ExpressionVisitor::visit_expression(&mut reads, range);
+    if reads
+        .names
         .iter()
         .any(|reference| super::loop_local_substitution::statements_assign_name(body, reference))
     {

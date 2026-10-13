@@ -5,8 +5,10 @@ use rumoca_ir_solve as solve;
 
 use crate::RuntimeSolveError;
 
+#[cfg(test)]
 use super::SolveRuntime;
 use super::event_update::{DiscretePreSnapshot, EventUpdateRowFilter};
+use super::{ScalarExecutionView, admitted_compiled_error};
 
 /// Result of one atomic transaction invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +83,7 @@ fn mark_action_coverage(transaction: &solve::EventTransactionProgram, event_acti
     }
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     pub(super) fn evaluate_event_transactions_for_snapshot(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,
@@ -95,7 +97,7 @@ impl SolveRuntime {
             return Ok(Vec::new());
         }
         let mut evaluated = Vec::new();
-        for transaction_index in 0..self.event_transaction_programs.len() {
+        for transaction_index in 0..self.scalar.event_transaction_programs.len() {
             let clock_owned =
                 self.model.problem.discrete.event_transactions[transaction_index].is_clock_owned();
             // Clock-owned transactions are issued outer-producer steps in the
@@ -274,22 +276,21 @@ impl SolveRuntime {
         time: f64,
     ) -> Result<(), RuntimeSolveError> {
         let transaction = self.event_transaction(transaction_index)?;
-        let mut input = self.event_transaction_input_scratch.borrow_mut();
+        let mut input = self.scalar.event_transaction_input_scratch.borrow_mut();
         transaction.load_input_payload(y, p, time, &mut input)?;
-        let mut outputs = self.event_transaction_output_scratch.borrow_mut();
+        let mut outputs = self.scalar.event_transaction_output_scratch.borrow_mut();
         let output = outputs.get_mut(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
         if let Some(compiled) = self
+            .scalar
             .compiled_event_transactions
             .get(transaction_index)
             .and_then(Option::as_ref)
         {
-            compiled.call(&input, output).map_err(|error| {
-                RuntimeSolveError::solve_ir(format!(
-                    "compiled event transaction {transaction_index} failed: {error}"
-                ))
-            })?;
+            compiled
+                .call(&input, output)
+                .map_err(|error| admitted_compiled_error("event transaction", &[], error))?;
             return Ok(());
         }
         transaction.eval_payload(&self.model.pure_calls, &input, output)?;
@@ -305,7 +306,7 @@ impl SolveRuntime {
         transaction_index: usize,
     ) -> Result<Option<usize>, RuntimeSolveError> {
         let transaction = self.event_transaction(transaction_index)?;
-        let outputs = self.event_transaction_output_scratch.borrow();
+        let outputs = self.scalar.event_transaction_output_scratch.borrow();
         let output = outputs.get(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
@@ -327,10 +328,11 @@ impl SolveRuntime {
                 .get(assertion)
                 .is_none_or(|indices| indices.iter().any(error_level))
         };
-        Ok(output[transaction.target_scalar_count()..]
+        Ok(transaction
+            .assertion_scalar_offsets()
             .iter()
             .enumerate()
-            .position(|(assertion, predicate)| *predicate == 0.0 && blocking(assertion)))
+            .position(|(assertion, &offset)| output[offset] == 0.0 && blocking(assertion)))
     }
 
     pub(super) fn event_transaction_assertion_failed(
@@ -344,11 +346,11 @@ impl SolveRuntime {
                 "event transaction assertion index is out of bounds",
             ));
         }
-        let outputs = self.event_transaction_output_scratch.borrow();
+        let outputs = self.scalar.event_transaction_output_scratch.borrow();
         let output = outputs.get(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
-        Ok(output[transaction.target_scalar_count() + assertion_index] == 0.0)
+        Ok(output[transaction.assertion_scalar_offsets()[assertion_index]] == 0.0)
     }
 
     /// Commit the complete target tuple after every predicate has succeeded.
@@ -369,7 +371,7 @@ impl SolveRuntime {
                 "event transaction targets cannot commit after a failed assertion",
             ));
         }
-        let outputs = self.event_transaction_output_scratch.borrow();
+        let outputs = self.scalar.event_transaction_output_scratch.borrow();
         let output = outputs.get(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
@@ -393,7 +395,8 @@ impl SolveRuntime {
         &self,
         transaction_index: usize,
     ) -> Result<&solve_eval::PreparedEventTransactionProgram, RuntimeSolveError> {
-        self.event_transaction_programs
+        self.scalar
+            .event_transaction_programs
             .get(transaction_index)
             .ok_or_else(|| {
                 RuntimeSolveError::solve_ir(format!(
@@ -446,7 +449,7 @@ pub(super) mod tests {
         let model = solve::SolveModel {
             problem,
             pure_calls,
-            parameters: vec![0.0; 4],
+            parameters: vec![0.0; 4].into(),
             ..solve::SolveModel::default()
         };
         model.validate().unwrap();
@@ -507,6 +510,7 @@ pub(super) mod tests {
                     span,
                     origin: "fixture".into(),
                     clock_owner: None,
+                    assertion_projection: None,
                 }],
                 assertion_action_indices: vec![vec![0]],
                 statement_count: 1,
@@ -623,6 +627,8 @@ pub(super) mod tests {
         };
         assert!(
             runtime
+                .scalar_execution()
+                .unwrap()
                 .apply_constant_discrete_rows_for_pre_snapshot(&first, &mut y, &mut p, 0.0, 0.0,)
                 .unwrap()
         );
@@ -638,6 +644,8 @@ pub(super) mod tests {
         };
         assert!(
             !runtime
+                .scalar_execution()
+                .unwrap()
                 .apply_constant_discrete_rows_for_pre_snapshot(&later, &mut y, &mut p, 0.0, 0.0,)
                 .unwrap()
         );

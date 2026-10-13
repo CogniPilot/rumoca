@@ -479,12 +479,15 @@ impl<'dae> ScalarSelector<'dae> {
                     )),
                 }
             }
-            dae::ExpressionOperation::Binary { operator, lhs, rhs } => integer_binary(
-                operator,
-                self.integer(lhs, scalar)?,
-                self.integer(rhs, scalar)?,
-                span,
-            ),
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                self.check_scalar_binary_projection(operator, lhs, rhs, span)?;
+                integer_binary(
+                    operator,
+                    self.integer(lhs, scalar)?,
+                    self.integer(rhs, scalar)?,
+                    span,
+                )
+            }
             dae::ExpressionOperation::Array(elements) => {
                 let first = elements.get(0).expect("checked array is nonempty");
                 let count = scalar_count(self.view, first);
@@ -512,6 +515,32 @@ impl<'dae> ScalarSelector<'dae> {
                 span,
             )),
         }
+    }
+
+    /// A scalar projection cannot evaluate a contraction or matrix power by
+    /// selecting operand leaves; typed tensor lowering owns those operations.
+    pub(super) fn check_scalar_binary_projection(
+        &self,
+        operator: dae::BinaryOperator,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let lhs_scalar = self.node(lhs).value_type().is_scalar();
+        let shape_owned = match operator {
+            dae::BinaryOperator::Multiply => {
+                !lhs_scalar && !self.node(rhs).value_type().is_scalar()
+            }
+            dae::BinaryOperator::Power => !lhs_scalar,
+            _ => false,
+        };
+        if shape_owned {
+            return Err(LowerError::non_computable(
+                "a scalar constant probe cannot evaluate a contraction or matrix power",
+                span,
+            ));
+        }
+        Ok(())
     }
 
     fn comprehension_integer(

@@ -1360,9 +1360,9 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
                 .split_whitespace()
                 .collect::<String>()
                 .replace(",};", "};")
-                == "pubuserumoca_phase_solve::{deserialize_solve_model,fmi::{deserialize_fmi_component,fmi_component_wire},lower_solve_artifacts,lower_solve_package,lower_solve_problem,solve_model_wire};"
+                == "pubuserumoca_phase_solve::{fmi::finish_fmi_component,lower_solve_package,lower_solve_problem};"
         }),
-        "rumoca-sim may expose checked Solve wire replay and solve lowering/artifact preparation as its simulation-preparation facade"
+        "rumoca-sim may expose correlated component completion and DAE-to-Solve lowering from the compiler phase"
     );
     assert!(
         root_exports
@@ -1373,8 +1373,11 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
     assert!(
         root_exports
             .iter()
-            .any(|export| export == "pub use rumoca_eval_solve::nan_trace;"),
-        "rumoca-sim may expose the NaN-trace module so the CLI can drive it without an env var"
+            .any(|export| {
+                export.split_whitespace().collect::<String>().replace(",};", "};")
+                    == "pubuserumoca_eval_solve::{artifacts::lower_solve_artifacts,fmi_wire::{deserialize_fmi_component,retained_fmi_component_wire},model_wire::{deserialize_solve_model,solve_model_wire},nan_trace};"
+            }),
+        "rumoca-sim must curate Solve-only artifact preparation, retained-root encoding, checked replay and NaN tracing from their evaluation owner"
     );
     assert!(
         !content.contains("pub use rumoca_solver::*")
@@ -1772,8 +1775,8 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
         "rumoca-ir-solve must own the backend-neutral row operation IR"
     );
     // SPEC_0045's identity ladder freezes the superseded scalar op vocabulary
-    // at 50
-    // variants — new Solve semantics land as typed operations only. The enum
+    // at 51 variants, including the typed C25 invocation-observation bridge.
+    // New Solve semantics land as typed operations only. The enum
     // is scheduled for rename to `ScalarOp` (wire-neutral; serde tags by
     // variant) and eventual deletion at the end of the migration ladder.
     // Adding a variant here requires amending the ratified structure decision.
@@ -1803,8 +1806,9 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
             .count()
     };
     assert_eq!(
-        variant_count, 50,
-        "superseded scalar op vocabulary is frozen at 50 variants; \
+        variant_count, 51,
+        "superseded scalar op vocabulary is frozen at 51 variants including \
+         its checked C25 observation bridge; \
          new semantics land as typed operations (core-structure decision §1)"
     );
     assert!(
@@ -1932,6 +1936,37 @@ use rumoca-eval-solve scalar fallback APIs at backend boundaries"
         !phase_solve_lib.contains("scalarize_compute"),
         "phase-solve must not publicly re-export scalarization helpers"
     );
+}
+
+#[test]
+fn test_checked_solve_derivation_and_wire_have_one_evaluation_owner() {
+    let root = workspace_root();
+    for moved in ["ad.rs", "ad", "artifacts.rs", "model_wire.rs"] {
+        assert!(
+            !root
+                .join("crates/rumoca-phase-solve/src")
+                .join(moved)
+                .exists(),
+            "Solve-only derivation and replay must not retain a second phase-owned implementation: {moved}"
+        );
+        assert!(
+            root.join("crates/rumoca-eval-solve/src")
+                .join(moved)
+                .exists()
+        );
+    }
+    let phase = fs::read_to_string(root.join("crates/rumoca-phase-solve/src/lib.rs")).unwrap();
+    assert!(!phase.contains("pub use rumoca_eval_solve"));
+    let metadata = fs::read_to_string(root.join("crates/rumoca-phase-solve/src/fmi.rs")).unwrap();
+    assert!(!metadata.contains("deserialize_fmi_component"));
+    assert!(!metadata.contains("FmiComponentWireRef"));
+    let fresh =
+        fs::read_to_string(root.join("crates/rumoca-phase-solve/src/model_values.rs")).unwrap();
+    assert!(fresh.contains("rumoca_eval_solve::artifacts::lower_solve_artifacts_with_calls"));
+    let replay =
+        fs::read_to_string(root.join("crates/rumoca-eval-solve/src/model_wire.rs")).unwrap();
+    assert!(replay.contains("super::artifacts::lower_solve_artifacts_with_calls"));
+    assert!(replay.contains("super::artifacts::replay_reduced_chart_artifacts"));
 }
 
 #[test]

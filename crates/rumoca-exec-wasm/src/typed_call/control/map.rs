@@ -35,63 +35,70 @@ impl<'a> Emitter<'a> {
         let sources = captures.iter().map(|r| self.reg(*r)).collect::<Vec<_>>();
         self.copy_pairs(&inputs[..captures.len()], &sources);
         let binders = &inputs[captures.len()..];
-        for (slot, binder) in binders.iter().zip(&domain.binders) {
-            self.store_integer(*slot, binder.lower);
+        if !Self::binders_in_locals(domain, false) {
+            self.store_first_binders(binders, domain);
         }
-        self.store_integer(child.counter, 0);
-        self.map_loop(index, body, domain, target, *output, binders)
+        let known = self.known_inputs(0, captures, domain.binders.len());
+        self.map_loop(index, (body, known), domain, (target, *output, binders))
     }
 
     fn map_loop(
         &mut self,
         index: usize,
-        region: &'a solve::SolveProgramRegion,
+        (region, known): (&'a solve::SolveProgramRegion, Facts),
         domain: &StructuredIndexDomain,
-        target: CellRange,
-        output: CellRange,
-        binders: &[CellRange],
+        (target, output, binders): (CellRange, CellRange, &[CellRange]),
     ) -> Result<(), TypedCallCompileError> {
         let plan = &self.plan.regions[index][0];
-        let count = domain
-            .scalar_count()
-            .map_err(|_| TypedCallCompileError::SizeLimit)?;
-        let last = if count == 0 {
-            Vec::new()
-        } else {
-            domain
-                .index_tuple_at(count - 1)
-                .map_err(|_| TypedCallCompileError::SizeLimit)?
-                .ok_or(TypedCallCompileError::SizeLimit)?
+        let Some((count, last)) = loops::passes(domain)? else {
+            return Ok(());
         };
-        self.push(I::Block(BlockType::Empty));
-        self.push(I::Loop(BlockType::Empty));
-        self.address(plan.counter);
-        self.push(I::I64Load(CELL));
-        self.push(I::I64Const(count as i64));
-        self.push(I::I64GeU);
-        self.push(I::BrIf(1));
+        if let Some(count) = self.program.unrolled_passes(index, self.observed) {
+            let site = unroll::UnrolledLoop {
+                index,
+                region,
+                plan,
+                domain,
+                count,
+                known,
+            };
+            return self.unrolled_map(site, (target, output));
+        }
+        let pass_loop = self.open_passes(domain, Self::binders_in_locals(domain, false));
+        let counter = pass_loop.counter;
+        let mut pass = RegionLoop::new(counter, region.body(), domain);
+        pass.binder_locals = loops::binder_locals(region.body(), pass_loop, domain);
+        pass.output = region
+            .body()
+            .slots()
+            .iter()
+            .find(|slot| slot.storage() == solve::SolveStorageClass::Output)
+            .map(|slot| MapOutput {
+                slot: slot.id().index(),
+                target,
+                bytes: output.bytes,
+                written: false,
+            });
+        let pass_output = pass.output.as_ref().map(|output| output.slot);
+        self.pending_loop = Some(pass);
+        self.pending_known = Some(known);
         self.region_body(index, 0, region, plan)?;
-        // Checked count × body bytes equals the complete destination extent.
-        // Counter < count proves this exact tuple copy stays within it.
-        self.address(target);
-        self.address(plan.counter);
-        self.push(I::I64Load(CELL));
-        self.push(I::I64Const(i64::from(output.bytes)));
-        self.push(I::I64Mul);
-        self.push(I::I32WrapI64);
-        self.push(I::I32Add);
-        self.address(output);
-        self.copy_addresses(output.bytes);
-        self.increment(plan.counter, 1);
-        self.address(plan.counter);
-        self.push(I::I64Load(CELL));
-        self.push(I::I64Const(count as i64));
-        self.push(I::I64GeU);
-        self.push(I::BrIf(1));
-        self.advance_binders(binders, domain, &last);
-        self.push(I::Br(0));
-        self.push(I::End);
-        self.push(I::End);
+        let written = std::mem::take(&mut self.written_outputs);
+        if !pass_output.is_some_and(|slot| written.contains(&slot)) {
+            // Checked count × body bytes equals the complete destination
+            // extent; a pass index below the count keeps this tuple copy
+            // within it.
+            self.address(target);
+            self.push(I::LocalGet(counter));
+            self.push(I::I64Const(i64::from(output.bytes)));
+            self.push(I::I64Mul);
+            self.push(I::I32WrapI64);
+            self.push(I::I32Add);
+            self.address(output);
+            self.copy_addresses(output.bytes);
+        }
+        self.next_pass(pass_loop, count, (binders, domain, &last));
+        self.close_passes(pass_loop);
         Ok(())
     }
 }

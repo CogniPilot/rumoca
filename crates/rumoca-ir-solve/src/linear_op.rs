@@ -8,9 +8,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
+use defined_registers::DefinedRegisters;
 
 mod block_split;
 mod dead_constants;
+mod dead_operations;
+mod defined_registers;
+mod fault_class;
 mod seed_invariance;
 mod shared_values;
 
@@ -18,6 +22,7 @@ pub(crate) use shared_values::{check_same_output, check_same_output_transformed}
 
 pub use block_split::{BlockResidualSplit, BlockResidualSplitError};
 pub use dead_constants::prune_dead_constants;
+pub use dead_operations::prune_unread_pure_operations;
 pub use shared_values::{
     AssignmentProgram, CappedValue, SHARED_VALUE_REGISTER_CAP, SharedValueError,
     SharedValueSegment, SharedValueSegments, share_program_values, shared_value_proof_failures,
@@ -144,7 +149,7 @@ impl TargetAssignmentShape {
     }
 
     /// Source registers determining the isolated value, excluding its old target.
-    pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
+    pub fn value_register_ranges(&self) -> impl Iterator<Item = (Reg, usize)> + '_ {
         let (fixed, terms): ([Option<Reg>; 2], &[(Reg, f64)]) = match self {
             Self::Zero { .. } => ([None, None], &[]),
             Self::Direct { expr_reg, .. } => ([Some(*expr_reg), None], &[]),
@@ -164,15 +169,23 @@ impl TargetAssignmentShape {
         fixed
             .into_iter()
             .flatten()
-            .chain(terms.iter().map(|(register, _)| *register))
+            .map(|register| (register, 1))
+            .chain(terms.iter().map(|(register, _)| (*register, 1)))
             .chain(
                 match self {
                     Self::TensorAffine { projection, .. } => Some(projection),
                     _ => None,
                 }
                 .into_iter()
-                .flat_map(|projection| projection.value_registers()),
+                .flat_map(|projection| projection.value_register_ranges()),
             )
+    }
+
+    /// Derived scalar view of the exact source-owned value ranges.
+    pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
+        self.value_register_ranges().flat_map(|(start, count)| {
+            (0..count).filter_map(move |offset| start.checked_add(u32::try_from(offset).ok()?))
+        })
     }
 
     #[must_use]
@@ -1242,6 +1255,14 @@ pub enum LinearOp {
         input_starts: Box<[Reg]>,
         site: SolvePureCallSite,
     },
+    /// Observe one exact source invocation for C25 roots/actions. Only its
+    /// ordered assertion predicates are results of this operation; a fatal
+    /// stop never publishes the value owner's missing ordinary result tuple.
+    PureCallObservation {
+        dst_start: Reg,
+        input_starts: Box<[Reg]>,
+        site: crate::SolveAssertionObservationSite,
+    },
     /// Invoke the checked compact directional relation of one issued typed
     /// pure-call owner. Inputs and outputs use its aggregate primal/tangent
     /// ABI; no function body or tensor coordinate is embedded here.
@@ -1368,6 +1389,7 @@ impl LinearOp {
             Self::GuardedFunctionFold { .. } => "GuardedFunctionFold",
             Self::FunctionConditional { .. } => "FunctionConditional",
             Self::PureCall { .. } => "PureCall",
+            Self::PureCallObservation { .. } => "PureCallObservation",
             Self::PureCallDirectional { .. } => "PureCallDirectional",
             Self::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
             Self::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
@@ -1414,6 +1436,7 @@ impl LinearOp {
             | Self::GuardedFunctionFold { dst_start, .. }
             | Self::FunctionConditional { dst_start, .. }
             | Self::PureCall { dst_start, .. }
+            | Self::PureCallObservation { dst_start, .. }
             | Self::PureCallDirectional { dst_start, .. }
             | Self::MatrixMultiply { dst_start, .. }
             | Self::TensorBinary { dst_start, .. }
@@ -1444,6 +1467,7 @@ impl LinearOp {
             }
             Self::FunctionConditional { program, .. } => program.result_count,
             Self::PureCall { site, .. } => site.output_scalar_count().unwrap_or(usize::MAX),
+            Self::PureCallObservation { site, .. } => site.output_scalar_count(),
             Self::PureCallDirectional { site, .. } => {
                 site.output_scalar_count().unwrap_or(usize::MAX)
             }
@@ -1554,6 +1578,15 @@ impl ScalarProgramRegisterFlow {
         )
     }
 
+    /// Register flow of a region that reads the captures of its enclosing
+    /// function conditional.
+    pub fn derive_with_conditional_captures(
+        program: &[LinearOp],
+        capture_count: usize,
+    ) -> Result<Self, ScalarProgramRegisterError> {
+        Self::derive_inner(program, None, Some(capture_count))
+    }
+
     fn derive_inner(
         program: &[LinearOp],
         fold_context: Option<(usize, usize, usize)>,
@@ -1596,7 +1629,7 @@ impl ScalarProgramRegisterFlow {
         conditional_capture_count: Option<usize>,
         validation: &mut ScalarProgramValidationCache,
     ) -> Result<Self, ScalarProgramRegisterError> {
-        let mut initialized = Vec::new();
+        let mut initialized = DefinedRegisters::default();
         let mut max_register = None;
         for (op_index, op) in program.iter().enumerate() {
             if let Some(register) = validate_op_sources(
@@ -1612,7 +1645,7 @@ impl ScalarProgramRegisterFlow {
             let dst_count = op.dst_register_count();
             if let Some(dst) = op.dst_register() {
                 let last = register_range_last(op_index, op.kind_name(), dst, dst_count)?;
-                mark_register_range_initialized(&mut initialized, dst, dst_count);
+                initialized.insert(dst, dst_count);
                 max_register = Some(max_register.map_or(last, |max: Reg| max.max(last)));
             }
         }
@@ -1722,21 +1755,6 @@ impl std::fmt::Display for ScalarProgramRegisterError {
     }
 }
 
-fn mark_register_initialized(initialized: &mut Vec<bool>, register: Reg) {
-    let index = register as usize;
-    if initialized.len() <= index {
-        initialized.resize(index + 1, false);
-    }
-    initialized[index] = true;
-}
-
-/// Mark one compact destination range as written by the operation at `dst`.
-fn mark_register_range_initialized(initialized: &mut Vec<bool>, dst: Reg, count: usize) {
-    for offset in 0..count {
-        mark_register_initialized(initialized, dst + offset as Reg);
-    }
-}
-
 /// Read-only context for one operation's source-register proof.
 ///
 /// Every extracted check needs the same row context, so bundling it keeps the
@@ -1748,31 +1766,67 @@ fn mark_register_range_initialized(initialized: &mut Vec<bool>, dst: Reg, count:
 /// set in time linear in it).
 #[derive(Clone, Copy)]
 pub(crate) struct Initialized<'a> {
-    flags: &'a [bool],
+    defined: &'a DefinedRegisters,
     reads: Option<&'a std::cell::RefCell<Vec<Reg>>>,
+    ranges: Option<&'a std::cell::RefCell<Vec<RegisterReadRange>>>,
+}
+
+/// One compact source range recorded by the canonical register-source rules.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RegisterReadRange {
+    pub start: Reg,
+    pub count: usize,
+    pub stride: usize,
 }
 
 impl<'a> Initialized<'a> {
     fn is_defined(self, register: Reg) -> bool {
+        if let Some(ranges) = self.ranges {
+            ranges.borrow_mut().push(RegisterReadRange {
+                start: register,
+                count: 1,
+                stride: 1,
+            });
+            return true;
+        }
         match self.reads {
             Some(reads) => {
                 reads.borrow_mut().push(register);
                 true
             }
-            None => self.flags.get(register as usize).copied().unwrap_or(false),
+            None => self.defined.contains(register),
         }
     }
-}
 
-impl<'a> From<&'a [bool]> for Initialized<'a> {
-    fn from(flags: &'a [bool]) -> Self {
-        Self { flags, reads: None }
+    /// The lowest undefined register of `start..start + len`; collecting modes
+    /// record each register of the range and find none undefined.
+    fn first_undefined(self, start: Reg, len: usize) -> Option<Reg> {
+        if self.reads.is_some() {
+            let last = start.saturating_add(len.saturating_sub(1) as Reg);
+            return (start..=last).find(|&register| !self.is_defined(register));
+        }
+        self.defined.first_undefined(start, len)
+    }
+
+    /// The first undefined register of the `count` registers `start`, `start + stride`, ...;
+    /// collecting modes record each register and find none undefined.
+    fn first_undefined_strided(self, start: Reg, count: usize, stride: usize) -> Option<Reg> {
+        if self.reads.is_some() {
+            return (0..count)
+                .map(|ordinal| start + (ordinal * stride) as Reg)
+                .find(|&register| !self.is_defined(register));
+        }
+        self.defined.first_undefined_strided(start, count, stride)
     }
 }
 
-impl<'a> From<&'a Vec<bool>> for Initialized<'a> {
-    fn from(flags: &'a Vec<bool>) -> Self {
-        Self::from(flags.as_slice())
+impl<'a> From<&'a DefinedRegisters> for Initialized<'a> {
+    fn from(defined: &'a DefinedRegisters) -> Self {
+        Self {
+            defined,
+            reads: None,
+            ranges: None,
+        }
     }
 }
 
@@ -1781,8 +1835,9 @@ impl<'a> From<&'a Vec<bool>> for Initialized<'a> {
 pub(crate) fn op_read_registers(op: &LinearOp) -> Option<Vec<Reg>> {
     let reads = std::cell::RefCell::new(Vec::new());
     let collecting = Initialized {
-        flags: &[],
+        defined: &DefinedRegisters::default(),
         reads: Some(&reads),
+        ranges: None,
     };
     let mut validation = ScalarProgramValidationCache::default();
     validate_op_sources(op, 0, collecting, None, None, &mut validation).ok()?;
@@ -1790,6 +1845,18 @@ pub(crate) fn op_read_registers(op: &LinearOp) -> Option<Vec<Reg>> {
     reads.sort_unstable();
     reads.dedup();
     Some(reads)
+}
+
+pub(crate) fn op_read_register_ranges(op: &LinearOp) -> Option<Vec<RegisterReadRange>> {
+    let ranges = std::cell::RefCell::new(Vec::new());
+    let collecting = Initialized {
+        defined: &DefinedRegisters::default(),
+        reads: None,
+        ranges: Some(&ranges),
+    };
+    let mut validation = ScalarProgramValidationCache::default();
+    validate_op_sources(op, 0, collecting, None, None, &mut validation).ok()?;
+    Some(ranges.into_inner())
 }
 
 #[derive(Clone, Copy)]
@@ -1949,6 +2016,10 @@ fn validate_op_sources<'a>(
         LinearOp::FunctionConditional { capture_start, ref program, .. } =>
             conditional_program(cx, capture_start, program, validation),
         LinearOp::PureCall { ref input_starts, ref site, .. } => pure_call(cx, input_starts, site),
+        LinearOp::PureCallObservation { ref input_starts, ref site, .. } => typed_call_sources(
+            cx, input_starts, site.value_site().inputs(), Some(site.output_scalar_count()),
+            "assertion observation interface has invalid input or output width",
+        ),
         LinearOp::PureCallDirectional { ref input_starts, ref site, .. } =>
             directional_call(cx, input_starts, site),
         LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } =>
@@ -2119,8 +2190,16 @@ fn indexed_register(
     let base_last = base
         .checked_add(last_offset)
         .ok_or_else(|| cx.tensor_error("tensor projection register range overflows"))?;
-    for offset in 0..count {
-        cx.require(base + (offset * stride) as Reg)?;
+    if let Some(ranges) = cx.initialized.ranges {
+        ranges.borrow_mut().push(RegisterReadRange {
+            start: base,
+            count,
+            stride,
+        });
+    } else {
+        for offset in 0..count {
+            cx.require(base + (offset * stride) as Reg)?;
+        }
     }
     let mut source_last = base_last;
     for (&extent, index) in dimensions.iter().zip(indices.iter()) {
@@ -2386,10 +2465,7 @@ fn nested_fold(
         return Err(cx.fold_error("nested fold initial/result layout is invalid"));
     }
     if program.capture_count != 0 {
-        let last = cx.range_last(capture_start, program.capture_count)?;
-        for offset in 0..program.capture_count {
-            cx.require(capture_start + offset as Reg)?;
-        }
+        let last = cx.require_range(capture_start, program.capture_count)?;
         max_register = Some(max_register.map_or(last, |current: Reg| current.max(last)));
     }
     if let Some(condition) = condition {
@@ -2409,10 +2485,7 @@ fn nested_fold_initial(
     match *source {
         FoldInitialSource::Registers { start, count } => {
             if count != 0 {
-                let last = cx.range_last(start, count)?;
-                for offset in 0..count {
-                    cx.require(start + offset as Reg)?;
-                }
+                let last = cx.require_range(start, count)?;
                 *max_register = Some(max_register.map_or(last, |current: Reg| current.max(last)));
             }
             Ok(count)
@@ -2911,7 +2984,7 @@ fn random_sources(cx: OpSources<'_>) -> Result<Option<Reg>, ScalarProgramRegiste
         LinearOp::ImpureRandomInit { seed, .. } => single_source(cx, seed),
         LinearOp::ImpureRandom { id, .. } => single_source(cx, id),
         LinearOp::ImpureRandomInteger { id, imin, imax, .. } => three_sources(cx, id, imin, imax),
-        _ => unreachable!("random source validation requires a random operation"),
+        _ => Err(cx.tensor_error("random source validation requires a random operation")),
     }
 }
 
@@ -2989,6 +3062,14 @@ fn require_strided_registers(
             start,
             len: count,
         })?;
+    if let Some(ranges) = initialized.ranges {
+        ranges.borrow_mut().push(RegisterReadRange {
+            start,
+            count,
+            stride,
+        });
+        return Ok(last);
+    }
     for term in 0..count {
         let register = start as usize + term * stride;
         require_register(op_index, operation, register as Reg, initialized)?;
@@ -3058,14 +3139,20 @@ fn require_register_range(
             len,
         },
     )?;
-    for register in start..=end {
-        if !initialized.is_defined(register) {
-            return Err(ScalarProgramRegisterError::UndefinedRegister {
-                op_index,
-                operation,
-                register,
-            });
-        }
+    if let Some(ranges) = initialized.ranges {
+        ranges.borrow_mut().push(RegisterReadRange {
+            start,
+            count: len,
+            stride: 1,
+        });
+        return Ok(end);
+    }
+    if let Some(register) = initialized.first_undefined(start, len) {
+        return Err(ScalarProgramRegisterError::UndefinedRegister {
+            op_index,
+            operation,
+            register,
+        });
     }
     Ok(end)
 }
@@ -3114,9 +3201,21 @@ fn require_strided_register_range(
             len: count,
         },
     )?;
-    for ordinal in 0..count {
-        let register = start + Reg::try_from(ordinal * stride).expect("checked output range");
-        require_register(op_index, operation, register, initialized)?;
+    if let Some(ranges) = initialized.ranges {
+        ranges.borrow_mut().push(RegisterReadRange {
+            start,
+            count,
+            stride,
+        });
+        return Ok(end);
+    }
+    // Every element lies in `start..=end`, so no element offset overflows.
+    if let Some(register) = initialized.first_undefined_strided(start, count, stride) {
+        return Err(ScalarProgramRegisterError::UndefinedRegister {
+            op_index,
+            operation,
+            register,
+        });
     }
     Ok(end)
 }

@@ -9,7 +9,10 @@ mod array_storage_views;
 mod array_trajectories;
 mod block_residual_split;
 mod coincident_strict;
+#[cfg(feature = "fmi")]
+mod fmi_export_defaults;
 mod function_returns;
+mod host_initialization;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod input_batches;
 mod jacobian_source_trajectories;
@@ -18,6 +21,10 @@ mod parameter_bindings;
 mod probe_jacobian;
 #[cfg(feature = "solver-rk45")]
 mod quotient_root_capture;
+scheduled_executor_items! {
+    #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+    mod session_api;
+}
 mod settled_initial_tangent;
 mod structure_report;
 mod tangent_jacobian;
@@ -769,9 +776,9 @@ fn string_declaration_does_not_block_numeric_runtime_vectors() {
         .expect("a String declaration must not be evaluated as a numeric runtime value");
 
     assert!(
-        !solve.visible_names.iter().any(|name| name == "method"),
+        !solve.visible_names().iter().any(|name| name == "method"),
         "a String declaration has no numeric trace column: {:?}",
-        solve.visible_names
+        solve.visible_names()
     );
 
     let result = simulate_dae(&dae, &SimOptions::default())

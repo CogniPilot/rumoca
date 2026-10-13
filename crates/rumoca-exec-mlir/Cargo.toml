@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[[test]]
+name = "suite_mlir"
+path = "tests/suite_mlir/main.rs"
+
 [features]
 # Cargo-native selector for the required MLIR CPU verification lane. Ordinary
 # workspace tests remain portable when MLIR is unavailable; the selected lane

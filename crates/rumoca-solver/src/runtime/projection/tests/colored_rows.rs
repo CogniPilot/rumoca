@@ -6,7 +6,7 @@ use super::*;
 
 struct ColoredRows {
     plan: solve::AlgebraicProjectionPlan,
-    structure: solve::JacobianStructure,
+    structure: solve::ColoredJacobianStructure,
     selected_calls: RefCell<Vec<usize>>,
     full_calls: Cell<usize>,
     missing_row: Option<usize>,
@@ -31,14 +31,15 @@ impl ColoredRows {
         .unwrap();
         Self {
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![4, 1, 3],
                     y_indices: vec![2, 0, 1],
                     tearing: None,
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
-            structure: solve::JacobianStructure::derived(pattern),
+            structure: solve::ColoredJacobianStructure::derived(pattern),
             selected_calls: RefCell::new(Vec::new()),
             full_calls: Cell::new(0),
             missing_row: None,
@@ -58,7 +59,7 @@ impl ColoredRows {
     }
 
     fn jacobian(&self) -> Result<DMatrix<f64>, RuntimeSolveError> {
-        let block = &self.plan.blocks[0];
+        let block = &self.plan.blocks.scalar_blocks()[0];
         initial::algebraic_block_jacobian(
             self,
             &[0.0; 5],
@@ -144,14 +145,10 @@ impl ImplicitProjectionModel for ColoredRows {
         &self.plan
     }
 
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
-
     fn algebraic_projection_block_structure(
         &self,
         _index: usize,
-    ) -> Option<&solve::JacobianStructure> {
+    ) -> Option<&solve::ColoredJacobianStructure> {
         Some(&self.structure)
     }
 }
@@ -209,8 +206,10 @@ fn colored_row_error_propagates_without_full_evaluation() {
 #[test]
 fn seed_projection_rejects_mismatched_structure_and_restores_seed() {
     let mut model = ColoredRows::new();
-    model.plan.blocks[0].rows = vec![4, 1];
-    model.plan.blocks[0].y_indices = vec![2, 1];
+    let mut blocks = model.plan.blocks.scalar_blocks().to_vec();
+    blocks[0].rows = vec![4, 1];
+    blocks[0].y_indices = vec![2, 1];
+    model.plan.blocks = blocks.into();
     let mut seed = [0.0, 8.0, 9.0, 0.0, 0.0, 0.0];
     let original = seed;
     let error = project_algebraic_seed_with_plan(
@@ -299,7 +298,7 @@ fn seed_projection_uses_coloring_and_preserves_known_directions() {
 #[test]
 fn a_structured_block_jacobian_stores_only_its_pattern_entries() {
     let model = ColoredRows::new();
-    let block = &model.plan.blocks[0];
+    let block = &model.plan.blocks.scalar_blocks()[0];
     let mut jacobian = initial::algebraic_block_jacobian(
         &model,
         &[0.0; 5],

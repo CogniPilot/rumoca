@@ -16,6 +16,17 @@ impl<'layout, 'dae> std::ops::Deref for EventCompilationContext<'layout, 'dae> {
 }
 
 impl<'dae> EventCompilationContext<'_, 'dae> {
+    /// A primal-only compiler for discrete updates: missing directional support does
+    /// not authorize expanding a checked compact call owner.
+    pub(super) fn discrete_scalar_compiler<'scope>(
+        &'scope self,
+        view: dae::DaeView<'dae>,
+        point: Option<(dae::DomainId<'dae>, &'scope [i64])>,
+    ) -> ScalarCompiler<'scope, 'dae> {
+        ScalarCompiler::for_discrete(view, self.layout, point)
+            .with_derivative_definitions(self.derivatives)
+    }
+
     pub(super) fn scalar_compiler<'scope>(
         &'scope self,
         view: dae::DaeView<'dae>,

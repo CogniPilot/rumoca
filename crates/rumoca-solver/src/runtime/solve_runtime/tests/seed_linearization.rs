@@ -16,7 +16,7 @@ impl CompiledSolveJacobianExpression for CountedJacobian {
         _: &[f64],
         _: &[rumoca_core::ExternalTableData],
         _: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("the fixture has one selected algebraic residual")
     }
 
@@ -28,7 +28,7 @@ impl CompiledSolveJacobianExpression for CountedJacobian {
         t: f64,
         seed: &[f64],
         _: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(coordinate, (1, 0));
         if seed[0] == 0.0 && seed[1] == 1.0 && seed.get(2).copied().unwrap_or(0.0) == 0.0 {
             self.matrix_calls.set(self.matrix_calls.get() + 1);
@@ -128,7 +128,7 @@ fn model() -> solve::SolveModel {
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
-    model.parameters = vec![1.0];
+    model.parameters = vec![1.0].into();
     model.problem.continuous.derivative_rhs =
         solve::ComputeBlock::from_scalar_program_block(spanned_block(
             vec![vec![
@@ -192,12 +192,16 @@ fn algebraic_seed_requests_reuse_one_fixed_coordinate_linearization() {
     let native = Rc::new(CountedJacobian {
         matrix_calls: Cell::new(0),
     });
-    runtime.compiled_implicit_full_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_full_jacobian_v = Some(native.clone());
     for (sx, sp) in [(1.0, 0.0), (-3.0, 2.0), (5.0, -1.0)] {
         let mut seed = [sx, 99.0, sp];
         runtime
+            .scalar_execution()
+            .unwrap()
             .seed_refresh_with_plan(
-                &runtime.algebraic_refresh,
+                &runtime.scalar_execution().unwrap().scalar.algebraic_refresh,
                 AlgebraicLinearization {
                     t: 0.0,
                     params: &[1.0],
@@ -226,8 +230,8 @@ fn project(
     time: f64,
     seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
-    runtime.seed_refresh_with_plan(
-        &runtime.algebraic_refresh,
+    runtime.scalar_execution().unwrap().seed_refresh_with_plan(
+        &runtime.scalar_execution().unwrap().scalar.algebraic_refresh,
         AlgebraicLinearization {
             t: time,
             params: p,
@@ -246,7 +250,9 @@ fn counted_runtime() -> (SolveRuntime, Rc<CountedJacobian>) {
     let native = Rc::new(CountedJacobian {
         matrix_calls: Cell::new(0),
     });
-    runtime.compiled_implicit_full_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_full_jacobian_v = Some(native.clone());
     (runtime, native)
 }
 
@@ -300,7 +306,8 @@ fn a_singular_coordinate_restores_seed_and_cannot_reuse_a_previous_matrix() {
 #[test]
 fn seed_linearizations_without_construction_proofs_are_not_retained() {
     let (mut runtime, native) = counted_runtime();
-    runtime.continuous_structural = solve::ContinuousStructuralArtifacts::default();
+    runtime.scalar_fixture_mut().continuous_structural =
+        solve::ContinuousStructuralArtifacts::default();
     for count in 1..=3 {
         let mut seed = [1.0, 99.0, 0.0];
         project(&runtime, &[4.0, 2.0], &[1.0], 0.0, &mut seed).unwrap();

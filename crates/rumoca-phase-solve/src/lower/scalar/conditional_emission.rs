@@ -20,22 +20,29 @@
 use super::functions::{FunctionConditionalRegisterRange, function_conditional_reg_offset};
 use super::*;
 
-/// What a finished conditional emission records, beyond the op it pushes.
+/// The value-cache entries a finished conditional emission records.
 pub(super) enum ConditionalOutcome<'dae> {
-    /// One conditional value expression. `definition` names the definition
-    /// whose right-hand side it is when the value was reached through one.
+    /// One conditional expression; `definition` identifies its right-hand-side
+    /// owner when reached through one.
     Value {
         expression: dae::ExprId<'dae>,
         cache_key: (u64, dae::ExprId<'dae>),
         definition: Option<(u64, dae::FunctionDefinitionId<'dae>)>,
     },
-    /// One conditional assignment group: every target definition reads its
-    /// result range.
-    Definitions {
-        definitions: Vec<dae::FunctionDefinitionView<'dae>>,
-        target_widths: Vec<usize>,
+    /// The outputs of one ordered function conditional, in the order their
+    /// values are stored in the program's result range.
+    Ordered {
         context: u64,
+        outputs: Vec<OrderedOutput<'dae>>,
     },
+}
+
+/// One output definition of an ordered function conditional and where its
+/// value sits in the program's result range.
+pub(super) struct OrderedOutput<'dae> {
+    pub(super) definition: dae::FunctionDefinitionId<'dae>,
+    pub(super) expression: dae::ExprId<'dae>,
+    pub(super) offset: usize,
 }
 
 /// A checked conditional program whose captures are still to be resolved.
@@ -238,18 +245,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         context: u64,
         span: Span,
     ) -> Result<Option<PendingConditionalEmission<'dae>>, LowerError> {
-        if let Some((definitions, conditional, _)) =
-            self.function_conditional_group(definition.id())
-        {
-            return Ok(
-                match self.prepare_function_conditional_group(&definitions, conditional, span)? {
-                    PreparedConditional::Packed(_) => None,
-                    PreparedConditional::Pending(pending) => Some(pending),
-                },
-            );
-        }
         let expression = definition.rhs();
         let node = self.node(expression);
+        if matches!(
+            node.operation(),
+            dae::ExpressionOperation::FunctionConditionalOutput { .. }
+        ) {
+            return self
+                .prepare_ordered_conditional(definition, span)
+                .map(|(pending, _)| Some(pending));
+        }
         let dae::ExpressionOperation::Conditional(operands) = node.operation() else {
             return Ok(None);
         };
@@ -291,13 +296,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             outcome,
             ..
         } = pending;
-        let capture_start = self.pack_function_conditional_capture_ranges(ranges, span)?;
+        let capture_start = self.pack_register_ranges(ranges, span)?;
         let start = self.register_range(program.result_count, span)?;
-        self.ops.push(solve::LinearOp::FunctionConditional {
+        self.emit(solve::LinearOp::FunctionConditional {
             dst_start: start,
             capture_start,
             program,
-        });
+        })?;
         match outcome {
             ConditionalOutcome::Value {
                 expression,
@@ -309,50 +314,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     self.function_definition_aggregate_cache.insert(key, start);
                 }
             }
-            ConditionalOutcome::Definitions {
-                definitions,
-                target_widths,
-                context,
-            } => {
-                self.cache_conditional_targets(&definitions, &target_widths, context, start, span)?
+            ConditionalOutcome::Ordered { context, outputs } => {
+                for output in outputs {
+                    let register = function_conditional_reg_offset(
+                        start,
+                        output.offset,
+                        span,
+                        "ordered function conditional output",
+                    )?;
+                    self.packed_expression_cache
+                        .insert((context, output.expression), register);
+                    self.function_definition_aggregate_cache
+                        .insert((context, output.definition), register);
+                }
             }
         }
         Ok(start)
-    }
-
-    fn cache_conditional_targets(
-        &mut self,
-        definitions: &[dae::FunctionDefinitionView<'dae>],
-        target_widths: &[usize],
-        context: u64,
-        start: solve::Reg,
-        span: Span,
-    ) -> Result<(), LowerError> {
-        let mut offset = 0usize;
-        for (definition, &width) in definitions.iter().zip(target_widths) {
-            let target = function_conditional_reg_offset(
-                start,
-                offset,
-                span,
-                "function-conditional target projection",
-            )?;
-            self.function_definition_aggregate_cache
-                .insert((context, definition.id()), target);
-            for scalar in 0..width {
-                self.function_definition_scalar_cache.insert(
-                    (context, definition.id(), scalar),
-                    function_conditional_reg_offset(
-                        target,
-                        scalar,
-                        span,
-                        "function-conditional scalar target",
-                    )?,
-                );
-            }
-            offset = offset.checked_add(width).ok_or_else(|| {
-                LowerError::contract("function-conditional target offset overflows", span)
-            })?;
-        }
-        Ok(())
     }
 }

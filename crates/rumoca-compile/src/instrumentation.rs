@@ -308,6 +308,50 @@ pub(crate) enum CacheInvalidationCause {
     DocumentRemoval,
 }
 
+/// A statistics counter.
+trait Counter {
+    fn with_cell<R>(&self, f: impl FnOnce(&AtomicU64) -> R) -> R;
+}
+
+impl Counter for AtomicU64 {
+    fn with_cell<R>(&self, f: impl FnOnce(&AtomicU64) -> R) -> R {
+        f(self)
+    }
+}
+
+/// A counter private to the thread that records it. The unit tests read the
+/// resolve counters as a delta around one compile, so a test counts only its
+/// own resolves however many tests run in parallel.
+#[cfg(test)]
+struct ThreadCounter(&'static std::thread::LocalKey<AtomicU64>);
+
+#[cfg(test)]
+impl Counter for ThreadCounter {
+    fn with_cell<R>(&self, f: impl FnOnce(&AtomicU64) -> R) -> R {
+        self.0.with(f)
+    }
+}
+
+/// Declare a resolve counter: process-wide, and thread-local under test.
+#[cfg(not(test))]
+macro_rules! resolve_counter {
+    ($name:ident) => {
+        static $name: AtomicU64 = AtomicU64::new(0);
+    };
+}
+
+#[cfg(test)]
+macro_rules! resolve_counter {
+    ($name:ident) => {
+        static $name: ThreadCounter = {
+            thread_local! {
+                static CELL: AtomicU64 = const { AtomicU64::new(0) };
+            }
+            ThreadCounter(&CELL)
+        };
+    };
+}
+
 static DOCUMENT_PARSE_CALLS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_PARSE_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_PARSE_ERROR_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -339,11 +383,11 @@ static SOURCE_ROOT_FILES_PARSED: AtomicU64 = AtomicU64::new(0);
 static SOURCE_ROOT_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static SOURCE_ROOT_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static SOURCE_ROOT_CACHE_DISABLED: AtomicU64 = AtomicU64::new(0);
-static STANDARD_RESOLVED_BUILDS: AtomicU64 = AtomicU64::new(0);
-static STANDARD_RESOLVED_BUILD_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
-static STANDARD_RESOLVED_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
-static STRICT_RESOLVED_BUILDS: AtomicU64 = AtomicU64::new(0);
-static STRICT_RESOLVED_BUILD_TOTAL_NANOS: AtomicU64 = AtomicU64::new(0);
+resolve_counter!(STANDARD_RESOLVED_BUILDS);
+resolve_counter!(STANDARD_RESOLVED_BUILD_TOTAL_NANOS);
+resolve_counter!(STANDARD_RESOLVED_CACHE_HITS);
+resolve_counter!(STRICT_RESOLVED_BUILDS);
+resolve_counter!(STRICT_RESOLVED_BUILD_TOTAL_NANOS);
 static SEMANTIC_NAVIGATION_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static SEMANTIC_NAVIGATION_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static SEMANTIC_NAVIGATION_BUILDS: AtomicU64 = AtomicU64::new(0);
@@ -380,16 +424,16 @@ static DOCUMENT_MUTATION_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static SOURCE_SET_MUTATION_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 static DOCUMENT_REMOVAL_INVALIDATIONS: AtomicU64 = AtomicU64::new(0);
 
-fn load(counter: &AtomicU64) -> u64 {
-    counter.load(Ordering::Relaxed)
+fn load(counter: &impl Counter) -> u64 {
+    counter.with_cell(|cell| cell.load(Ordering::Relaxed))
 }
 
-fn add(counter: &AtomicU64, amount: u64) {
-    counter.fetch_add(amount, Ordering::Relaxed);
+fn add(counter: &impl Counter, amount: u64) {
+    counter.with_cell(|cell| cell.fetch_add(amount, Ordering::Relaxed));
 }
 
-fn reset(counter: &AtomicU64) {
-    counter.store(0, Ordering::Relaxed);
+fn reset(counter: &impl Counter) {
+    counter.with_cell(|cell| cell.store(0, Ordering::Relaxed));
 }
 
 fn record_invalidation_cause(cause: CacheInvalidationCause) {

@@ -216,7 +216,12 @@ fn structural_inspection_reports_a_tearing_that_reaches_the_runtime() {
     assert_eq!(tearing.residual_equations.len(), 1);
     assert_eq!(tearing.causal_sequence.len(), 1);
     let solve = lower_dae_for_simulation(&dae, &options).expect("the coupled block lowers");
-    let blocks = &solve.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &solve
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     assert_eq!(blocks.len(), 1);
     let runtime_tearing = blocks[0]
         .tearing

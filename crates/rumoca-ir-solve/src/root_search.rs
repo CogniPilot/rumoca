@@ -7,7 +7,7 @@
 //! event-indicator inventory exposes exactly the searched rows, and generated
 //! code renders the same split. No executor classifies roots itself.
 
-use std::collections::BTreeSet;
+use crate::IndexIntervals;
 
 use std::ops::Range;
 
@@ -63,8 +63,8 @@ impl RootSearchPlan {
             .root()
             .static_causal_rows()
             .iter()
-            .map(|row| row.target_index())
-            .collect::<BTreeSet<_>>();
+            .map(|row| row.target_index());
+        let static_y = IndexIntervals::of(static_y);
         let layout = &problem.solve_layout;
         let inputs =
             layout.parameter_count..layout.parameter_count + layout.input_scalar_names.len();
@@ -105,18 +105,18 @@ pub fn root_neighborhoods(
 ) -> Result<Vec<Vec<usize>>, crate::StructuralPatternError> {
     let mut reads = Vec::new();
     for program in roots.programs() {
-        reads.extend(StructuralPattern::derive_output_y_dependencies(
+        reads.extend(StructuralPattern::derive_output_y_dependency_ranges(
             program, None,
         )?);
     }
     Ok(reads
         .iter()
         .enumerate()
-        .map(|(this, read): (usize, &BTreeSet<usize>)| {
+        .map(|(this, read): (usize, &std::sync::Arc<IndexIntervals>)| {
             reads
                 .iter()
                 .enumerate()
-                .filter(|(index, other)| *index == this || !read.is_disjoint(other))
+                .filter(|(index, other)| *index == this || !read.intersection(other).is_empty())
                 .map(|(index, _)| index)
                 .collect()
         })
@@ -125,7 +125,7 @@ pub fn root_neighborhoods(
 
 fn classify_block(
     roots: &ScalarProgramBlock,
-    static_y: &BTreeSet<usize>,
+    static_y: &IndexIntervals,
     inputs: &Range<usize>,
 ) -> Option<Vec<RootSearchRole>> {
     if !roots.uses_local_contiguous_output_indices() {
@@ -208,8 +208,8 @@ fn time_and_param_loads(first: &LinearOp, second: &LinearOp) -> Option<(Reg, Reg
 /// (`inputs` is the range of input slots). A row reading only fixed values,
 /// and no time, seed, or effect, keeps its Event Mode value but offers no
 /// surface to the continuous root finder.
-fn static_root(row: &[LinearOp], static_y: &BTreeSet<usize>, inputs: &Range<usize>) -> bool {
-    let Ok(y_dependencies) = StructuralPattern::derive_output_y_dependencies(row, None) else {
+fn static_root(row: &[LinearOp], static_y: &IndexIntervals, inputs: &Range<usize>) -> bool {
+    let Ok(y_dependencies) = StructuralPattern::derive_output_y_dependency_ranges(row, None) else {
         return false;
     };
     if y_dependencies
@@ -218,11 +218,11 @@ fn static_root(row: &[LinearOp], static_y: &BTreeSet<usize>, inputs: &Range<usiz
     {
         return false;
     }
-    StructuralPattern::derive_output_p_dependencies(row, None).is_ok_and(|dependencies| {
+    StructuralPattern::derive_output_p_dependency_ranges(row, None).is_ok_and(|dependencies| {
+        let inputs = IndexIntervals::range(inputs.start, inputs.end);
         dependencies
             .iter()
-            .flatten()
-            .all(|index| !inputs.contains(index))
+            .all(|dependencies| dependencies.intersection(&inputs).is_empty())
     }) && none_depend(StructuralPattern::derive_output_time_dependencies(
         row, None,
     )) && none_depend(StructuralPattern::derive_output_seed_dependencies(
@@ -278,7 +278,7 @@ mod tests {
         ];
         assert!(static_root(
             &parameter_tensor_root,
-            &BTreeSet::new(),
+            &IndexIntervals::default(),
             &INPUTS
         ));
 
@@ -299,12 +299,38 @@ mod tests {
         ];
         assert!(!static_root(
             &state_tensor_root,
-            &BTreeSet::from([3]),
+            &IndexIntervals::of([3]),
             &INPUTS
         ));
         assert!(static_root(
             &state_tensor_root,
-            &BTreeSet::from([3, 4]),
+            &IndexIntervals::of([3, 4]),
+            &INPUTS
+        ));
+    }
+
+    #[test]
+    fn a_static_root_over_a_huge_state_range_is_decided_without_expanding_it() {
+        let wide = 1usize << 40;
+        let root = vec![
+            crate::LinearOp::TensorLoad {
+                dst_start: 0,
+                input: crate::TensorInputKind::Y,
+                input_start: 0,
+                count: wide,
+                seed_start: None,
+                lanes: 1,
+            },
+            crate::LinearOp::StoreOutputRange {
+                start: 0,
+                count: 1,
+                stride: 1,
+            },
+        ];
+        assert!(static_root(&root, &IndexIntervals::range(0, wide), &INPUTS));
+        assert!(!static_root(
+            &root,
+            &IndexIntervals::range(1, wide),
             &INPUTS
         ));
     }
@@ -322,7 +348,11 @@ mod tests {
             },
             crate::LinearOp::StoreOutput { src: 2 },
         ];
-        assert!(!static_root(&time_root, &BTreeSet::new(), &INPUTS));
+        assert!(!static_root(
+            &time_root,
+            &IndexIntervals::default(),
+            &INPUTS
+        ));
     }
 
     #[test]
@@ -331,7 +361,11 @@ mod tests {
             crate::LinearOp::LoadSeed { dst: 0, index: 3 },
             crate::LinearOp::StoreOutput { src: 0 },
         ];
-        assert!(!static_root(&seed_root, &BTreeSet::new(), &INPUTS));
+        assert!(!static_root(
+            &seed_root,
+            &IndexIntervals::default(),
+            &INPUTS
+        ));
     }
 
     #[test]
@@ -346,13 +380,13 @@ mod tests {
         // clock-lane slots behind the inputs, stay fixed within an interval.
         for fixed in [0, 1, 4, 5, 9] {
             assert!(
-                static_root(&load(fixed), &BTreeSet::new(), &INPUTS),
+                static_root(&load(fixed), &IndexIntervals::default(), &INPUTS),
                 "{fixed}"
             );
         }
         for input in [2, 3] {
             assert!(
-                !static_root(&load(input), &BTreeSet::new(), &INPUTS),
+                !static_root(&load(input), &IndexIntervals::default(), &INPUTS),
                 "{input}"
             );
         }

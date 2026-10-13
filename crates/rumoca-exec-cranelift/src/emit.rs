@@ -1115,7 +1115,9 @@ fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
     row.iter().any(|operation| {
         matches!(
             operation,
-            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. }
+            LinearOp::PureCall { .. }
+                | LinearOp::PureCallDirectional { .. }
+                | LinearOp::PureCallObservation { .. }
         )
     })
 }
@@ -2075,6 +2077,9 @@ struct NestedFoldCallKey {
 struct PureCallResultKey {
     owner: rumoca_ir_solve::SolvePureCallOwnerId,
     directional: bool,
+    /// The observation form stops early and publishes only predicates, so its
+    /// result is never a stand-in for the value row.
+    observation: bool,
     inputs: Box<[u32]>,
 }
 
@@ -2091,6 +2096,16 @@ struct PureCallTarget<'a> {
     outputs: &'a [rumoca_ir_solve::SolvePureCallOutput],
     function: FuncId,
     directional: bool,
+    /// The outputs the site publishes to its registers.
+    published: PublishedOutputs<'a>,
+}
+
+/// Which outputs of a native owner call a site writes to its registers.
+#[derive(Clone, Copy)]
+enum PublishedOutputs<'a> {
+    All,
+    /// An assertion observation publishes only its ordered predicate outputs.
+    Predicates(&'a [usize]),
 }
 
 struct NestedFoldOutput<'a> {
@@ -2653,6 +2668,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 capture_start,
                 program,
             } => self.lower_function_conditional(dst_start, capture_start, &program),
+            LinearOp::PureCallObservation {
+                dst_start,
+                input_starts,
+                site,
+            } => self.lower_pure_call_observation(dst_start, &input_starts, &site),
             LinearOp::PureCall {
                 dst_start,
                 input_starts,
@@ -2753,6 +2773,35 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         input_starts: &[u32],
         site: &rumoca_ir_solve::SolvePureCallSite,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        self.lower_primal_call(dst_start, input_starts, site, PublishedOutputs::All)
+    }
+
+    /// An assertion observation runs the value owner's native helper, exactly
+    /// as an ordinary call of the same owner and inputs does, and publishes
+    /// only the ordered assertion predicates. The helper never stops on an
+    /// assertion, so a failing predicate reads as zero and the event-action
+    /// owner that scheduled the row keeps the authored failure and message.
+    fn lower_pure_call_observation(
+        &mut self,
+        dst_start: u32,
+        input_starts: &[u32],
+        site: &rumoca_ir_solve::SolveAssertionObservationSite,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        self.lower_primal_call(
+            dst_start,
+            input_starts,
+            site.value_site(),
+            PublishedOutputs::Predicates(site.predicate_outputs()),
+        )
+    }
+
+    fn lower_primal_call(
+        &mut self,
+        dst_start: u32,
+        input_starts: &[u32],
+        site: &rumoca_ir_solve::SolvePureCallSite,
+        published: PublishedOutputs<'_>,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
         let import = self
             .pure_call_functions
             .get(&site.owner())
@@ -2771,6 +2820,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 "typed pure-call native interface mismatch".to_string(),
             ));
         }
+        let function = match published {
+            PublishedOutputs::All => Some(import.function),
+            PublishedOutputs::Predicates(_) => import.observation,
+        }
+        .ok_or_else(|| {
+            CompileError::Backend(format!(
+                "typed pure-call owner {} has no native assertion observation",
+                site.owner().index()
+            ))
+        })?;
         self.lower_typed_pure_call(
             dst_start,
             input_starts,
@@ -2778,8 +2837,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 owner: site.owner(),
                 inputs: site.inputs(),
                 outputs: site.outputs(),
-                function: import.function,
+                function,
                 directional: false,
+                published,
             },
         )
     }
@@ -2823,6 +2883,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 outputs: site.outputs(),
                 function: directional.function,
                 directional: true,
+                published: PublishedOutputs::All,
             },
         )
     }
@@ -2839,14 +2900,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             outputs,
             function,
             directional,
+            published,
         } = target;
         let cache_key = PureCallResultKey {
             owner,
             directional,
+            observation: matches!(published, PublishedOutputs::Predicates(_)),
             inputs: input_starts.into(),
         };
         if let Some(output_slot) = self.pure_call_results.get(&cache_key).copied() {
-            self.load_typed_call_results(dst_start, outputs, output_slot)?;
+            self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
             return Ok(None);
         }
         let input_cells = inputs.iter().try_fold(0usize, |count, value_type| {
@@ -2887,34 +2950,67 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .ins()
             .call(function, &[input_ptr, output_ptr, arena]);
         let status = self.fb.inst_results(call)[0];
+        // An observation form that stopped at a failed Error-level assertion
+        // has published its predicates; that is its result, not a failure.
+        let status = match published {
+            PublishedOutputs::All => status,
+            PublishedOutputs::Predicates(_) => status::separate_stop(self.fb, status).1,
+        };
         status::propagate(self.fb, status);
         self.pure_call_results.insert(cache_key, output_slot);
-        self.load_typed_call_results(dst_start, outputs, output_slot)?;
+        self.publish_typed_call_results(dst_start, (outputs, published), output_slot)?;
         Ok(None)
     }
 
-    fn load_typed_call_results(
+    fn publish_typed_call_results(
         &mut self,
         dst_start: u32,
-        outputs: &[rumoca_ir_solve::SolvePureCallOutput],
+        (outputs, published): (
+            &[rumoca_ir_solve::SolvePureCallOutput],
+            PublishedOutputs<'_>,
+        ),
         output_slot: StackSlot,
     ) -> Result<(), CompileError> {
         let mut output_cell = 0usize;
-        for output in outputs {
-            for _ in 0..output.value_type().scalar_count() {
-                let value = scratch::stack_load(
-                    self.fb,
-                    typed_cell_type(output.value_type().element_type()),
-                    output_slot,
-                    stack_element_byte_offset(output_cell, "typed pure-call output")?,
-                );
-                let value = decode_typed_cell(self.fb, output.value_type().element_type(), value);
-                self.insert(
-                    checked_reg_offset(dst_start, output_cell, "typed pure-call output")?,
-                    value,
+        let mut published_cell = 0usize;
+        for (index, output) in outputs.iter().enumerate() {
+            let width = output.value_type().scalar_count() as usize;
+            let publishes = match published {
+                PublishedOutputs::All => true,
+                PublishedOutputs::Predicates(predicates) => predicates.contains(&index),
+            };
+            if publishes {
+                self.load_typed_call_output(
+                    output,
+                    (output_slot, output_cell),
+                    checked_reg_offset(dst_start, published_cell, "typed pure-call output")?,
                 )?;
-                output_cell += 1;
+                published_cell += width;
             }
+            output_cell += width;
+        }
+        Ok(())
+    }
+
+    /// Load one output's cells, starting at `first_cell`, into registers from `dst`.
+    fn load_typed_call_output(
+        &mut self,
+        output: &rumoca_ir_solve::SolvePureCallOutput,
+        (output_slot, first_cell): (StackSlot, usize),
+        dst: u32,
+    ) -> Result<(), CompileError> {
+        for offset in 0..output.value_type().scalar_count() as usize {
+            let value = scratch::stack_load(
+                self.fb,
+                typed_cell_type(output.value_type().element_type()),
+                output_slot,
+                stack_element_byte_offset(first_cell + offset, "typed pure-call output")?,
+            );
+            let value = decode_typed_cell(self.fb, output.value_type().element_type(), value);
+            self.insert(
+                checked_reg_offset(dst, offset, "typed pure-call output")?,
+                value,
+            )?;
         }
         Ok(())
     }
@@ -7031,6 +7127,7 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
                 LinearOp::PureCall { site, .. } => site.output_scalar_count().ok_or_else(|| {
                     CompileError::Backend("typed pure-call output width overflows".to_string())
                 })?,
+                LinearOp::PureCallObservation { site, .. } => site.output_scalar_count(),
                 LinearOp::PureCallDirectional { site, .. } => {
                     site.output_scalar_count().ok_or_else(|| {
                         CompileError::Backend(
@@ -7169,6 +7266,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
             | LinearOp::GuardedFunctionFold { .. }
             | LinearOp::FunctionConditional { .. }
             | LinearOp::PureCall { .. }
+            | LinearOp::PureCallObservation { .. }
             | LinearOp::PureCallDirectional { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
@@ -7201,6 +7299,9 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
 
 fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
     match op {
+        LinearOp::PureCallObservation { .. } => Err(CompileError::Backend(
+            "assertion observation is outside the simple row contract".to_string(),
+        )),
         LinearOp::Const { dst, value } => Ok(SimpleOp::Const { dst, value }),
         LinearOp::LoadTime { dst } => Ok(SimpleOp::LoadTime { dst }),
         LinearOp::LoadY { dst, index } => Ok(SimpleOp::LoadY {
@@ -7837,6 +7938,25 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
             }
             Ok(Some(last as usize))
         }
+        LinearOp::PureCallObservation {
+            dst_start,
+            input_starts,
+            site,
+        } => {
+            let mut last = checked_range_last_reg(
+                dst_start,
+                site.output_scalar_count(),
+                "assertion observation output",
+            )?;
+            for (start, value_type) in input_starts.iter().zip(site.value_site().inputs()) {
+                last = last.max(checked_range_last_reg(
+                    *start,
+                    value_type.scalar_count() as usize,
+                    "assertion observation input",
+                )?);
+            }
+            Ok(Some(last as usize))
+        }
         LinearOp::PureCallDirectional {
             dst_start,
             input_starts,
@@ -7912,6 +8032,7 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::GuardedFunctionFold { dst_start, .. }
         | LinearOp::FunctionConditional { dst_start, .. }
         | LinearOp::PureCall { dst_start, .. }
+        | LinearOp::PureCallObservation { dst_start, .. }
         | LinearOp::PureCallDirectional { dst_start, .. }
         | LinearOp::MatrixMultiply { dst_start, .. }
         | LinearOp::TensorBinary { dst_start, .. }
@@ -7937,6 +8058,19 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
 )]
 fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
     match op {
+        LinearOp::PureCallObservation {
+            input_starts, site, ..
+        } => {
+            if input_starts.len() != site.value_site().inputs().len() {
+                return Err(CompileError::Backend(
+                    "assertion observation input ABI mismatch".to_string(),
+                ));
+            }
+            for (start, value_type) in input_starts.iter().zip(site.value_site().inputs()) {
+                validate_reg_range_defined(defined, *start, value_type.scalar_count() as usize)?;
+            }
+            Ok(())
+        }
         LinearOp::PureCall {
             input_starts, site, ..
         } => {

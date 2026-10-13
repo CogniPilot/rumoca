@@ -189,7 +189,14 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
         &model.problem.events.root_conditions,
         &mut blocks,
     );
-    scalar("visible_value_rows", &model.visible_value_rows, &mut blocks);
+    scalar(
+        "visible_value_rows",
+        &model
+            .visible_projection()
+            .scalar_rows()
+            .expect("explicit scalar differential report"),
+        &mut blocks,
+    );
     blocks.retain(|named| !named.block.programs().is_empty() || named.unavailable.is_some());
     blocks
 }

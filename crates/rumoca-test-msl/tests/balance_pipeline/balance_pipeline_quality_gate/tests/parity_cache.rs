@@ -1,5 +1,19 @@
 use super::*;
 
+mod init_xml;
+
+const OMC_INIT_XML: &[u8] =
+    br#"<ModelVariables><ScalarVariable name="x" classType="rSta"/></ModelVariables>"#;
+
+fn write_omc_init_xml(root: &Path, model: &str, xml: &[u8]) -> PathBuf {
+    let relative = Path::new("omc_sim_work").join(
+        rumoca_test_msl::msl_tools::common::omc_init_xml_file_name(model),
+    );
+    fs::create_dir_all(root.join("omc_sim_work")).expect("mkdir OMC work");
+    fs::write(root.join(&relative), xml).expect("write exact OMC init XML");
+    relative
+}
+
 fn valid_simulation_parity_payload() -> Value {
     json!({
         "total_models": 7,
@@ -180,15 +194,17 @@ fn materialize_simulation_parity_cache_entry_strips_stale_rumoca_metrics() {
     let cache_path = temp.path().join("cache.json");
     let active_path = temp.path().join("active.json");
     let relative_trace = Path::new("sim_traces/omc/A.json");
-    let cached_trace = cache_path.with_extension("traces").join(relative_trace);
+    let cached_trace = cache_path.with_extension("artifacts").join(relative_trace);
     fs::create_dir_all(cached_trace.parent().expect("cached trace parent"))
         .expect("mkdir cached trace parent");
     fs::write(&cached_trace, b"cached OMC trace").expect("write cached OMC trace");
+    write_omc_init_xml(&cache_path.with_extension("artifacts"), "A", OMC_INIT_XML);
     fs::write(
         &cache_path,
         serde_json::to_vec_pretty(&json!({
-            "cache_trace_blake3": {
-                "sim_traces/omc/A.json": blake3::hash(b"cached OMC trace").to_hex().to_string()
+            "cache_omc_artifact_blake3": {
+                "sim_traces/omc/A.json": blake3::hash(b"cached OMC trace").to_hex().to_string(),
+                "omc_sim_work/A_init.xml": blake3::hash(OMC_INIT_XML).to_hex().to_string()
             },
             "runtime_comparison": {
                 "ratio_stats": {
@@ -263,6 +279,7 @@ fn simulation_parity_cache_carries_omc_traces_between_results_runs() {
     )
     .expect("mkdir trace parent");
     fs::write(first_results.join(relative_trace), b"omc trace bytes").expect("write OMC trace");
+    let relative_xml = write_omc_init_xml(&first_results, "A", OMC_INIT_XML);
     fs::write(
         &active_path,
         serde_json::to_vec_pretty(&json!({
@@ -287,6 +304,10 @@ fn simulation_parity_cache_carries_omc_traces_between_results_runs() {
         fs::read(second_results.join(relative_trace)).expect("read restored OMC trace"),
         b"omc trace bytes"
     );
+    assert_eq!(
+        fs::read(second_results.join(relative_xml)).expect("read restored OMC init XML"),
+        OMC_INIT_XML
+    );
 }
 
 #[test]
@@ -299,6 +320,7 @@ fn simulation_parity_cache_rejects_missing_and_stale_traces() {
     fs::create_dir_all(results.join(relative_trace).parent().expect("trace parent"))
         .expect("mkdir trace parent");
     fs::write(results.join(relative_trace), b"valid OMC trace").expect("write OMC trace");
+    write_omc_init_xml(&results, "A", OMC_INIT_XML);
     fs::write(
         &active_path,
         serde_json::to_vec_pretty(&json!({
@@ -334,7 +356,7 @@ fn simulation_parity_cache_rejects_missing_and_stale_traces() {
     };
     assert!(matches(), "fresh cache trace should validate");
 
-    let cached_trace = cache_path.with_extension("traces").join(relative_trace);
+    let cached_trace = cache_path.with_extension("artifacts").join(relative_trace);
     fs::write(&cached_trace, b"stale OMC trace").expect("corrupt cached trace");
     assert!(!matches(), "digest mismatch must invalidate cache");
     fs::remove_file(&cached_trace).expect("remove cached trace");
@@ -481,7 +503,7 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
                 "A": { "status": "error" },
                 "B": { "status": "error" }
             },
-            "cache_trace_blake3": {}
+            "cache_omc_artifact_blake3": {}
         }))
         .expect("serialize cache payload"),
     )

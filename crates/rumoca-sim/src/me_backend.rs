@@ -66,7 +66,7 @@ impl BackendSimulationSession {
             opts.max_wall_seconds,
         )?;
         let host = retained.into_lease(options)?;
-        let variable_names = host.output_names();
+        let variable_names = host.output_names()?;
         let plugin = plugin_for_host(&host, opts, integrator)?;
         let session = host.into_session(plugin)?;
         let input_names = session.input_names();

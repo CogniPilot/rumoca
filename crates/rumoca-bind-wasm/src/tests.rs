@@ -241,13 +241,13 @@ fn test_get_version() {
 
 #[test]
 fn test_get_git_commit() {
-    let identity = rumoca_core::build_identity();
+    let identity = rumoca_tool_build_info::build_identity();
     assert_eq!(get_git_commit().as_deref(), identity);
     let provenance = crate::compiler_provenance();
     assert_eq!(provenance["git_commit"].as_str(), identity);
     assert_eq!(
         provenance["git_merge_parents"],
-        serde_json::json!(rumoca_core::build_merge_parents())
+        serde_json::json!(rumoca_tool_build_info::build_merge_parents())
     );
     assert_eq!(provenance["version"], env!("CARGO_PKG_VERSION"));
 }

@@ -88,7 +88,6 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> EvalAtReport {
-        let names = &self.model.problem.solve_layout.solver_maps.names;
         let mut error = None;
 
         // `full_solver_y_into` seeds from the model's initial solver vector and
@@ -123,9 +122,10 @@ impl SolveRuntime {
             .iter()
             .enumerate()
             .map(|(index, &value)| EvalAtSlot {
-                name: names
-                    .get(index)
-                    .cloned()
+                name: self
+                    .model
+                    .problem
+                    .solver_name(index)
                     .unwrap_or_else(|| format!("y[{index}]")),
                 value,
             })
@@ -161,7 +161,7 @@ impl SolveRuntime {
             .iter()
             .enumerate()
             .map(|(index, &value)| EvalAtSlot {
-                name: names.get(index).map_or_else(
+                name: self.model.problem.solver_name(index).map_or_else(
                     || format!("der(state[{index}])"),
                     |name| format!("der({name})"),
                 ),

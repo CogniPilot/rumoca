@@ -5,6 +5,11 @@
 
 use crate::{OpBinary, eval_integer_slash};
 
+/// Binary64 represents every Integer in this contiguous inclusive range.
+pub fn integer_within_binary64_exact_range(value: i64) -> bool {
+    (-(1_i64 << 53)..=(1_i64 << 53)).contains(&value)
+}
+
 /// Integer binary operators supported by compile-time AST evaluators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerBinaryOperator {

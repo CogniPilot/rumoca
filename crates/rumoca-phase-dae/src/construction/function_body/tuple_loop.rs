@@ -9,6 +9,7 @@ pub(super) fn lower_function_loop_multi_output_call<'dae>(
     call: FunctionMultiOutputCall<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(call.span)?;
+    require_proven_loop_reads(construction, symbols, loop_body, call.argument_reads)?;
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {

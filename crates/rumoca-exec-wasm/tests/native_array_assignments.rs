@@ -234,7 +234,7 @@ fn array(
             rhs_stride: 1,
             lanes: 1,
         },
-        // A complete unused source prefix must still execute at the original Y.
+        // A pure computation nothing reads is not part of the stage.
         solve::LinearOp::Unary {
             dst: 3 * n,
             op: solve::UnaryOp::Sin,
@@ -460,12 +460,12 @@ fn native_permuted_affine_stage_and_array_stage_share_bounded_private_registers(
             .map(|i| p[i % columns * rows + i / columns])
             .chain(p[..9].iter().copied())
             .collect::<Vec<_>>();
-        program.execute(&vec![7.; count + 9], &p, &expected, &[7.]);
+        program.execute(&vec![7.; count + 9], &p, &expected, &[]);
     }
 }
 
 #[test]
-fn native_array_dependency_order_copies_every_value_bit_and_keeps_the_source_prefix() {
+fn native_array_dependency_order_copies_every_value_bit_and_drops_the_unread_prefix() {
     for count in [3, 225, 14_400] {
         let mut program = Program::new(
             vec![
@@ -492,7 +492,7 @@ fn native_array_dependency_order_copies_every_value_bit_and_keeps_the_source_pre
                 .map(|i| -19.75 + i as f64 * 0.001)
                 .collect::<Vec<_>>();
             let expected = p.iter().chain(&p).copied().collect::<Vec<_>>();
-            program.execute(&y, &p, &expected, &[y[count], y[0]]);
+            program.execute(&y, &p, &expected, &[]);
         }
         eprintln!("native array {count}: {} bytes", program.bytes);
         assert!(
@@ -703,12 +703,12 @@ fn native_private_arena_refuses_excess_storage_without_allocating_the_register_e
             solve::LinearOp::TensorFill {
                 dst_start: 10_000_000,
                 value_start: 1,
-                count: 1,
+                count: 9_000_000,
                 lanes: 1,
             },
         ],
         10_000_000,
-        10_000_001,
+        19_000_000,
     );
     let source = solve::ComputeBlock {
         nodes: vec![solve::ComputeNode::ScalarPrograms(
@@ -735,7 +735,7 @@ fn native_private_arena_refuses_excess_storage_without_allocating_the_register_e
 }
 
 #[test]
-fn native_matrix_and_broadcast_values_execute_after_the_unchanged_residual_prefix() {
+fn native_matrix_and_broadcast_values_execute_without_the_unread_residual_prefix() {
     let mut matrix = array(9, 0, solve::TensorInputKind::P, 0);
     matrix[3] = solve::LinearOp::Unary {
         dst: 54,
@@ -777,7 +777,7 @@ fn native_matrix_and_broadcast_values_execute_after_the_unchanged_residual_prefi
                 .sum()
         })
         .collect::<Vec<f64>>();
-    compiled.execute(&[2.; 9], &p, &expected, &[2.]);
+    compiled.execute(&[2.; 9], &p, &expected, &[]);
     for reverse in [false, true] {
         let mut ops = array(9, 0, solve::TensorInputKind::P, 0);
         ops[1] = solve::LinearOp::LoadP { dst: 9, index: 0 };
@@ -796,6 +796,51 @@ fn native_matrix_and_broadcast_values_execute_after_the_unchanged_residual_prefi
             }
         }
         let mut compiled = Program::new(vec![ops], 9, 1);
-        compiled.execute(&[2.; 9], &[-0.], &[-0.; 9], &[2.]);
+        compiled.execute(&[2.; 9], &[-0.], &[-0.; 9], &[]);
     }
+}
+
+#[test]
+fn native_sparse_virtual_registers_preserve_values_and_restore() {
+    let ops = rhs_program(
+        1,
+        vec![
+            load_p(1, 0, 1),
+            solve::LinearOp::TensorFill {
+                dst_start: 10_000_000,
+                value_start: 1,
+                count: 1,
+                lanes: 1,
+            },
+        ],
+        10_000_000,
+        10_000_001,
+    );
+    let mut program = Program::new(vec![ops], 1, 1);
+    for value in [3.0, -7.0, 3.0] {
+        program.execute(&[11.0], &[value], &[value], &[]);
+    }
+}
+
+/// A computation the isolated value reads stays in the stage and runs once at
+/// the original Y, while the residual that only subtracts it from the target
+/// does not.
+#[test]
+fn native_stage_keeps_the_math_call_its_value_reads() {
+    let ops = rhs_program(
+        1,
+        vec![
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+            solve::LinearOp::Unary {
+                dst: 2,
+                op: solve::UnaryOp::Sin,
+                arg: 1,
+            },
+        ],
+        2,
+        3,
+    );
+    let mut compiled = Program::new(vec![ops], 1, 1);
+    let p = [0.75_f64];
+    compiled.execute(&[9.], &p, &[p[0].sin()], &[p[0]]);
 }

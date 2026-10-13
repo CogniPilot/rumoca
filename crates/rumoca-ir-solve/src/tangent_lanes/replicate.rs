@@ -162,8 +162,74 @@ impl Replication {
             {
                 self.push_dual_packing(op_index, op)
             }
+            LinearOp::TensorTranspose {
+                dst_start,
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes: 1,
+            } if self.mixes_seed_dependence(
+                *src_start,
+                rows.saturating_mul(*columns).saturating_mul(*element_width),
+            ) =>
+            {
+                self.push_transpose_elements(
+                    op_index,
+                    op,
+                    (*dst_start, *src_start),
+                    (*rows, *columns, *element_width),
+                )
+            }
             _ => self.push_scalar(op_index, op),
         }
+    }
+
+    /// Whether the scalar run `count` registers from `start` holds both
+    /// seed-dependent and seed-independent values.
+    fn mixes_seed_dependence(&self, start: Reg, count: usize) -> bool {
+        if start as usize + count > self.registers {
+            return false;
+        }
+        let mut registers = (start..start + count as Reg).map(|register| self.per_lane(register));
+        registers
+            .next()
+            .is_some_and(|first| registers.any(|dependent| dependent != first))
+    }
+
+    /// Widen a scalar transpose of a block that mixes seed-independent and
+    /// seed-dependent values (an interleaved primal and tangent block) one
+    /// element at a time, so each output element is as seed-dependent as the
+    /// element it moves and a primal plane stays computed once.
+    fn push_transpose_elements(
+        &mut self,
+        op_index: usize,
+        op: &LinearOp,
+        (dst_start, src_start): (Reg, Reg),
+        (rows, columns, element_width): (usize, usize, usize),
+    ) -> Result<(), TangentLaneError> {
+        let count = rows * columns * element_width;
+        let scalar = |register: Reg| self.regions.slot(register) == Slot::Scalar;
+        if !(dst_start..dst_start + count as Reg).all(scalar)
+            || !(src_start..src_start + count as Reg).all(scalar)
+        {
+            return Err(unsupported(op_index, op));
+        }
+        for index in 0..count {
+            let (cell, inner) = (index / element_width, index % element_width);
+            let (row, column) = (cell / columns, cell % columns);
+            let destination = dst_start + index as Reg;
+            let source = src_start + ((column * rows + row) * element_width + inner) as Reg;
+            let dependent = self.per_lane(source);
+            for lane in 0..if dependent { self.lanes } else { 1 } {
+                self.ops.push(LinearOp::Move {
+                    dst: self.default_copy(lane, destination),
+                    src: self.read(lane, source),
+                });
+            }
+            self.mark_register(destination as usize, dependent, dependent);
+        }
+        Ok(())
     }
 
     fn touches_region(&self, op: &LinearOp) -> bool {

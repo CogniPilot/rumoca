@@ -30,7 +30,10 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
     check_artifact_blocks(&solve, p_len, &mut failures);
     check_program(
         "visible_value_rows",
-        &solve.visible_value_rows,
+        &solve
+            .visible_projection()
+            .scalar_rows()
+            .expect("explicit scalar census"),
         p_len,
         &mut failures,
     );

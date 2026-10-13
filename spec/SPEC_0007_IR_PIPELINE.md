@@ -79,6 +79,13 @@ The complete product and evidence requirements are normative in
 
 ### Stage 1 — AST (`rumoca-ir-ast`)
 
+Compile-session resolution follows the single-producer ownership row in
+[SPEC_0041 §2](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#2-session-owned-source-root-and-class-graph-catalog-spec_0029-10).
+Strict target compilation may consume the actual globally successful Standard
+resolved input; when Standard parse/global resolution fails it retains the
+isolated target-closure path. This does not equate distinct resolved or Flat
+inputs, change target lookup, or omit any later construction check.
+
 **Contents:** syntax, comments, spans.
 
 **Contract:**
@@ -127,7 +134,7 @@ generate simulation code.
 | Instantiation and flattening are separate logical phases | Instantiate modifications/overlay → typecheck → traverse overlay, expand connections, produce `flat::Model` |
 | Binding specialization follows [FLAT-C01](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#0-flat-stage-contract-catalog-spec_0007-stage-2) | Preserves parameter dependencies |
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
-| Function algorithms remain structured; conditional joins retain checked shared-branch correlation | Downstream projections preserve call cardinality without reconstructing control flow |
+| Function algorithms remain structured; conditional joins retain checked shared-branch correlation and ordered branch evaluation owners under DAE-C20 and DAE-C35 | Downstream projections preserve source order, activation, and call cardinality |
 | A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. It is never discarded or lowered as a multi-result call. |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
 | Initial algorithms support sequential scalar assignments and `if` conditionals targeting `fixed=false` parameters or discrete coordinates. Initial equations `m = value` / `pre(m) = value` produce the same discrete initial-value owner. Assertions retain enclosing branch conditions. | Discrete initial definitions prove scalar type, settled reads (a definition may read continuous coordinates, SPEC_0043 §4), and unique ownership; Solve seeds current and `pre` storage. Calculated parameters read only parameters/constants; reads of `fixed=false` parameters are re-applied after the projection. Algebraic/state/output/input algorithm targets, `when`, and non-`assert` call statements retain `ED013`. |
@@ -188,7 +195,7 @@ Only private current-version wire records derive `Deserialize`. Decoding
 constructs checked children and then the checked root; derived counts and
 indexes are recomputed rather than accepted as wire inputs.
 
-**Contract:** rows `DAE-C01`–`DAE-C31` in
+**Contract:** rows `DAE-C01`–`DAE-C35` in
 [SPEC_0040 §1](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#1-dae-stage-contract-catalog-spec_0007-stage-3).
 
 Non-Real `fixed=false` initialization definitions have checked owners distinct
@@ -248,7 +255,8 @@ pre-versioned payloads are rejected.
 
 `SolveProblem` owns the numerical DAE. Expensive or noncanonical products
 (mass-matrix form, Jacobian-vector programs) belong in `SolveArtifacts`.
-`rumoca-phase-solve` materializes them only on backend/template/runtime demand;
+`rumoca-phase-solve` orchestrates their materialization through the sole
+`rumoca-eval-solve` derivation only on backend/template/runtime demand;
 `lower_solve_problem` must not populate them eagerly.
 
 `SolveAlgorithmBlock` is constructed only from checked Algorithm Code under an
@@ -303,16 +311,7 @@ Tangents and non-additive lifts replay exact anchors.
 Additive lifts share acyclic source-row value/derivative proofs excluding replaced owners and lifted coordinates.
 Holonomic replacement excludes value identities; undoing lifts restores original equations.
 
-STRUCT-T03 reconstruction (aggregate rows: SPEC_0040 §3):
-
-| Rule | Owner | Why |
-|---|---|---|
-| Reconstruct a continuous Real vector only from a source-owned square linear system with state/invariant coefficients independent of that unknown | structural value and derivative proofs | Establishes the exact domain of the auxiliary solve |
-| Reconstruct dependent state vectors from affine scalar constraints and independent literal-array entries, including signed aliases; retain parent equations/projections and exclude the target from all anchors | structural state reconstruction | Close dependent kinematics without circular definitions |
-| Prefer an admitted direct source definition over an auxiliary solve for the same state | structural state selection | Avoid obscuring explicit kinematics with redundant implicit solves |
-| Follow exact function/array substitutions and independently defined derivatives; retain source residual owners and assertions | structural coefficient proof | Reconstruction must preserve source behavior |
-| Structural differentiation may select an exact whole-coordinate equality with proved state/invariant value anchors when executable causal-definition uniqueness is unavailable; selection must be acyclic and retain every source equation, including alternative definitions | structural substitution facts | Multiple equations constrain a coordinate without preventing exact substitution |
-| Differentiate `A*q=b` as `A*der(q)=der(b)-der(A)*q`, preserving exact zeros and only needed primal reads; manifold reconstruction uses proved state/invariant anchors on the same nonsingular domain | structural reconstruction | Preserve the original primal solve instead of recursively recomputing it |
+STRUCT-T03 reconstruction rows are cataloged in [SPEC_0040 §5](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#5-struct-t03-reconstruction-rows-spec_0007-structural-lowering-scope) and are normative by reference.
 
 **Placement requirement:**
 

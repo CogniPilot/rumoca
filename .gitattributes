@@ -7,3 +7,9 @@
 # Preserve upstream formatting in the pinned dependency; review its explicit
 # source patch through vendor/diffsol/RUMOCA_PATCH.md.
 vendor/diffsol/** -whitespace linguist-vendored
+# Preserve the byte-exact test-runner EOF in these qualified raw receipts.
+# Preserve byte-exact compiler/oracle output and first-attempt logs.
+# Preserve the exact perf column padding in the checked full-model census.
+
+# Preserve the licensed upstream schema bytes pinned in its UPSTREAM.md.
+crates/rumoca/tests/fixtures/fmi-ls-wasm-schema/fmi3LayeredStandardManifest.xsd whitespace=-trailing-space

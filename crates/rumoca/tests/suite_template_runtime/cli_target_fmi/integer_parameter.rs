@@ -44,7 +44,7 @@ from fmpy import read_model_description, simulate_fmu
 
 description = read_model_description(sys.argv[1])
 n = [v for v in description.modelVariables if v.name == 'n']
-assert len(n) == 1 and n[0].type in ('Integer', 'Int32'), [(v.name, v.type) for v in n]
+assert len(n) == 1 and n[0].type in ('Integer', 'Int64'), [(v.name, v.type) for v in n]
 names = ['x'] if description.fmiVersion.startswith('3') else ['x[1]', 'x[2]', 'x[3]']
 for interface in ['ModelExchange', 'CoSimulation']:
     trace = simulate_fmu(sys.argv[1], fmi_type=interface, stop_time=1.0,

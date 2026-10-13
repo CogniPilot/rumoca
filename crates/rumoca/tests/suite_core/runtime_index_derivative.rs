@@ -62,10 +62,12 @@ fn an_invalid_runtime_derivative_index_cannot_complete() {
         matches!(error.kind(), rumoca_sim::SimError::ModelExchangeSession(_)),
         "{error}"
     );
+    // The interpreter names the index and its axis; a native source fault
+    // (SOLVE-C25) reports the typed fault without the run-time operands.
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("tensor index 3 on axis 1 is outside 1..=2"),
+        message.contains("tensor index 3 on axis 1 is outside 1..=2")
+            || message.contains("native tensor index is out of bounds"),
         "{error}"
     );
 }

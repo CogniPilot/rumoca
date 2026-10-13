@@ -271,6 +271,9 @@ fn classify_function_loop(
         FunctionLoopLowering::Fold {
             targets,
             iteration_locals: Vec::new(),
+            selected_entry: None,
+            entry_reads: Vec::new(),
+            entry_seeds: Vec::new(),
         }
     }
 }
@@ -523,7 +526,7 @@ fn loop_targets(plans: &[FunctionStatementPlan], own_generated: bool) -> Vec<Var
             FunctionStatementPlan::RecordAssembly(assembly) => {
                 extend_unique_targets(&mut targets, [assembly.target.clone()]);
             }
-            FunctionStatementPlan::MultiOutputCall { outputs } => {
+            FunctionStatementPlan::MultiOutputCall { outputs, .. } => {
                 extend_unique_targets(
                     &mut targets,
                     outputs

@@ -1,12 +1,24 @@
 //! Native model call scheduling, from the unchanged source and checked owners.
+mod abs;
+mod call_identity;
+mod call_references;
+mod carried_lanes;
+mod carried_state;
 mod carried_updates;
+mod conditional_references;
 mod derived_discrete;
 mod families;
+mod fault_order;
+mod fold_carry;
 mod gathers;
 mod lazy_windows;
 mod maps;
+mod maximum;
 mod packed;
+mod power;
+mod raster_passes;
 mod registration;
+mod retained_product;
 mod return_arguments;
 mod returns;
 mod scratch_report;
@@ -49,8 +61,9 @@ impl CallExecution {
     }
 
     fn uninitialized(artifact: &serde_json::Value) -> Self {
-        let engine = wasmi::Engine::default();
+        let engine = wasmi::Engine::new(wasmi::Config::default().consume_fuel(true));
         let mut store = wasmi::Store::new(&engine, ());
+        store.set_fuel(u64::MAX).unwrap();
         let memory = wasmi::Memory::new(
             &mut store,
             wasmi::MemoryType::new(
@@ -154,6 +167,11 @@ impl CallExecution {
 }
 
 impl CallExecution {
+    /// Wasmi fuel units the module has consumed so far.
+    fn fuel_consumed(&self) -> u64 {
+        u64::MAX - self.store.get_fuel().unwrap()
+    }
+
     /// Write P and the typed input lanes, run the checked entry once and
     /// return its status with the host Y it published.
     fn run_typed(&mut self, p: &[f64]) -> (i32, Vec<f64>) {
@@ -174,6 +192,16 @@ impl CallExecution {
             .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
             .collect();
         (status, y)
+    }
+
+    /// The host P after the last call.
+    fn host_p(&self, count: usize) -> Vec<f64> {
+        let mut bytes = vec![0; count * 8];
+        self.memory.read(&self.store, self.p, &mut bytes).unwrap();
+        bytes
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect()
     }
 }
 

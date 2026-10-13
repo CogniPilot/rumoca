@@ -85,6 +85,10 @@ fn only_replaced_programs_are_prepared_and_the_result_matches_a_fresh_preparatio
         fresh.row_reverse_y_gradient_supported
     );
     assert_eq!(replaced.row_is_causal, fresh.row_is_causal);
+    assert_eq!(
+        replaced.row_requires_checked_observation,
+        fresh.row_requires_checked_observation
+    );
     assert_eq!(replaced.row_parameter_indices, fresh.row_parameter_indices);
     assert_eq!(
         replaced.row_parameter_static_y_gradient_params,

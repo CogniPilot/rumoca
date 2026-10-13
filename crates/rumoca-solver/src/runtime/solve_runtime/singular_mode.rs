@@ -9,7 +9,7 @@
 
 use super::*;
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     /// The unknowns of `block` and the branch combination its rows select at
     /// parameters `p`: every discrete coordinate and relation memory a row of
     /// the block reads, with its current value, and the rows that select a
@@ -19,19 +19,19 @@ impl SolveRuntime {
         block: &solve::AlgebraicProjectionBlock,
         p: &[f64],
     ) -> Option<(String, String)> {
-        let solver_names = &self.model.problem.solve_layout.solver_maps.names;
         let unknowns = block
             .y_indices
             .iter()
             .map(|&index| {
-                solver_names
-                    .get(index)
-                    .map_or_else(|| format!("y[{index}]"), Clone::clone)
+                self.model
+                    .problem
+                    .solver_name(index)
+                    .unwrap_or_else(|| format!("y[{index}]"))
             })
             .collect::<Vec<_>>()
             .join(", ");
         let mode_slots = self.mode_defining_parameter_slots();
-        let source = self.implicit_scalar_rhs.block();
+        let source = self.scalar.implicit_scalar_rhs.block();
         let mut read = BTreeSet::new();
         let mut conditional = BTreeSet::new();
         let mut output = 0;
@@ -86,24 +86,19 @@ impl SolveRuntime {
     }
 
     /// The unknown a row of the implicit system is matched to, by name.
-    fn row_target_name(&self, row: usize) -> String {
+    pub(super) fn row_target_name(&self, row: usize) -> String {
         match self
             .model
             .problem
             .continuous
             .implicit_row_targets
-            .get(row)
-            .copied()
-            .flatten()
+            .target_at(row)
         {
             Some(solve::ScalarSlot::Y { index, .. }) => self
                 .model
                 .problem
-                .solve_layout
-                .solver_maps
-                .names
-                .get(index)
-                .map_or_else(|| format!("y[{index}]"), Clone::clone),
+                .solver_name(index)
+                .unwrap_or_else(|| format!("y[{index}]")),
             _ => format!("row {row}"),
         }
     }
@@ -112,14 +107,6 @@ impl SolveRuntime {
     /// and runtime-assignment targets, and relation memories, by name.
     fn mode_defining_parameter_slots(&self) -> BTreeMap<usize, String> {
         let problem = &self.model.problem;
-        let mut names = BTreeMap::new();
-        for (name, slot) in problem.layout.bindings() {
-            if let solve::ScalarSlot::P { index, .. } = slot {
-                names
-                    .entry(*index)
-                    .or_insert_with(|| name.as_str().to_string());
-            }
-        }
         let mut slots = BTreeMap::new();
         let discrete = problem
             .discrete
@@ -128,9 +115,9 @@ impl SolveRuntime {
             .chain(&problem.discrete.runtime_assignment_targets);
         for slot in discrete {
             if let solve::ScalarSlot::P { index, .. } = slot {
-                let name = names
-                    .get(index)
-                    .cloned()
+                let name = problem
+                    .layout
+                    .scalar_name_for_slot(*slot)
                     .unwrap_or_else(|| format!("p[{index}]"));
                 slots.insert(*index, name);
             }

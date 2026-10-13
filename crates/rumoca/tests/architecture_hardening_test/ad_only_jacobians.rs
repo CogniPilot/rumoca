@@ -28,6 +28,18 @@ const VERIFICATION_BATTERIES: &[(&str, &str)] = &[
         "broadcast power JVPs against analytic values and independent primal differences",
     ),
     (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_abs.rs",
+        "typed absolute-value JVP against analytic values and independent differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_maximum.rs",
+        "typed maximum JVP against analytic values and independent differences",
+    ),
+    (
+        "crates/rumoca-eval-solve/src/typed_program/tests/directional_power.rs",
+        "typed power JVP against analytic values and independent differences",
+    ),
+    (
         "crates/rumoca-eval-solve/src/typed_program/tests/reduction_extrema.rs",
         "unique-extremum JVPs against analytic values and independent primal differences",
     ),

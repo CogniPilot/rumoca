@@ -41,7 +41,14 @@ fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
         solve.solve_layout.variable_storage_runs[0].role,
         rumoca_ir_solve::SolveVariableStorageRole::ExternalInput
     );
-    assert_eq!(solve.solve_layout.input_scalar_names, ["m"]);
+    assert_eq!(
+        solve
+            .solve_layout
+            .input_scalar_names
+            .iter()
+            .collect::<Vec<_>>(),
+        ["m"]
+    );
     assert!(solve.solve_layout.discrete_valued_scalar_names.is_empty());
     assert!(solve.discrete.event_iteration_plan.runs.is_empty());
 }
@@ -359,4 +366,45 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
         ]
     );
     solve.validate_shape_contract().unwrap();
+}
+
+#[test]
+fn an_array_input_retains_one_name_and_shape_for_all_of_its_scalars() {
+    let source = TestSource::new("input Integer frame[2, 3];");
+    let declaration = source.at(0, 26);
+    let model = dae::Dae::construct(source.map, |model| {
+        let frame = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Integer, [2, 3]),
+                declaration,
+            )
+        })?;
+        model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("frame"),
+                frame,
+                declaration,
+                dae::VariableAttributes {
+                    causality: dae::VariableCausality::Input,
+                    declared_causality: dae::DeclaredCausality::Input,
+                    ..Default::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let names = &solve.solve_layout.input_scalar_names;
+    assert_eq!(names.runs().len(), 1);
+    assert_eq!(names.runs()[0].dimensions(), [2, 3]);
+    assert_eq!(names.len(), 6);
+    assert_eq!(names.get(4).as_deref(), Some("frame[2,2]"));
+    assert_eq!(names.position("frame[2,3]"), Some(5));
+    assert_eq!(
+        solve.solve_layout.input_parameter_index("frame[1,2]"),
+        Some(1)
+    );
 }

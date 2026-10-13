@@ -106,8 +106,9 @@ fn dae_model_outcome_internal_with_options(
 
     notify_compile_phase(FailedPhase::Flatten, CompilePhaseEvent::Started);
     let flatten_start = maybe_start_timer();
+    let closure = reachable_closure_for_tree(tree, model_name);
     let (flat_outcome, flattened_built) =
-        flat_model_outcome_from_typed(tree, model_name, typed_outcome);
+        flat_model_outcome_from_typed(tree, model_name, &closure, typed_outcome);
     if flattened_built {
         maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
     }
@@ -203,6 +204,7 @@ pub(super) fn typed_model_outcome_from_instantiated(
 pub(super) fn flat_model_outcome_from_typed(
     tree: &ast::ClassTree,
     model_name: &str,
+    closure: &ReachableModelClosure,
     typed_outcome: TypedModelOutcome,
 ) -> (FlatModelOutcome, bool) {
     let overlay = match typed_outcome {
@@ -227,7 +229,14 @@ pub(super) fn flat_model_outcome_from_typed(
         }
     };
 
-    match flatten_ref_with_options(tree, &overlay, model_name, flatten_options_for_tree()) {
+    let target_closure = TargetClosure::new(tree, &closure.reachable_classes);
+    match flatten_ref_in_closure(
+        tree,
+        &overlay,
+        model_name,
+        flatten_options_for_tree(),
+        &target_closure,
+    ) {
         Ok(flat) => (
             FlatModelOutcome::Success(Box::new(FlatModelArtifactData { flat })),
             true,
@@ -272,9 +281,10 @@ pub(super) fn dae_model_outcome_from_flat(
 
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match to_dae(&artifact.flat, tree.source_map.clone()) {
-        Ok(dae) => match rumoca_phase_dae::construction_evidence(&artifact.flat) {
-            Ok((balance_detail, structural_selections)) => (
+    match rumoca_phase_dae::to_dae_with_evidence(&artifact.flat, tree.source_map.clone()) {
+        Ok(result) => {
+            let (dae, balance_detail, structural_selections) = result.into_parts();
+            (
                 DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
                     flat: Arc::new(artifact.flat),
                     dae: Arc::new(dae),
@@ -282,14 +292,8 @@ pub(super) fn dae_model_outcome_from_flat(
                     structural_selections,
                 })),
                 true,
-            ),
-            Err(error) => (
-                DaeModelOutcome::ToDaeError {
-                    error: Box::new(error),
-                },
-                true,
-            ),
-        },
+            )
+        }
         Err(error) => (
             DaeModelOutcome::ToDaeError {
                 error: Box::new(error),
@@ -596,4 +600,16 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
             .join()
             .expect("strict compile result consumer panicked")
     })
+}
+
+/// Reachability closure of `model_name` computed from `tree` alone, for
+/// compiles that run without a session query cache.
+pub(super) fn reachable_closure_for_tree(
+    tree: &ast::ClassTree,
+    model_name: &str,
+) -> ReachableModelClosure {
+    let dependencies = DependencyFingerprintCache::from_tree(tree);
+    let model_names = collect_model_names(&tree.definitions);
+    ReachabilityPlanner::new(dependencies.class_dependencies(), &model_names)
+        .model_closure(model_name)
 }

@@ -20,12 +20,12 @@ impl MeHostState {
         saved: &crate::fmi_me::MeFmuState,
         body: impl FnOnce() -> Result<T, MeSessionError>,
     ) -> Result<T, MeSessionError> {
-        let current = self.kernel.borrow().fmu_state();
+        let current = self.kernel.borrow()?.fmu_state()?;
         let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.kernel.borrow_mut().reset_to_fmu_state(saved)?;
+            self.kernel.borrow_mut()?.reset_to_fmu_state(saved)?;
             body()
         }));
-        let restoration = self.kernel.borrow_mut().reset_to_fmu_state(&current);
+        let restoration = self.kernel.borrow_mut()?.reset_to_fmu_state(&current);
         match attempted {
             Ok(attempted) => {
                 let closed = close_excursion(self.time, restoration, attempted);

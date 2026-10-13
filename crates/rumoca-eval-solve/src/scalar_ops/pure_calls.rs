@@ -123,6 +123,16 @@ impl<'a> Inliner<'a> {
         if input_starts.len() != owner.inputs().len() {
             return None;
         }
+        // Call-scoped assertions are observed through the owner, so an owner that
+        // holds one stays a typed call in the row: inlining its body would drop
+        // the observation the generated products report from.
+        if owner
+            .outputs()
+            .iter()
+            .any(|output| output.assertion_level().is_some())
+        {
+            return None;
+        }
         self.budget
             .reserve(owner.inputs().iter().try_fold(0usize, |total, value| {
                 total
@@ -536,10 +546,14 @@ impl Inliner<'_> {
                 domain,
                 initial,
                 captures,
+                state_captures,
                 destinations,
                 transition,
                 continuation,
             } => {
+                if !state_captures.is_empty() {
+                    return None;
+                }
                 let carried = self.fold(
                     domain,
                     frame.reads(initial)?,
@@ -838,7 +852,11 @@ impl Inliner<'_> {
                 owner,
                 arguments,
                 destinations,
+                assertion_forwarding,
             } => {
+                if !assertion_forwarding.is_empty() {
+                    return None;
+                }
                 let arguments = frame.reads(arguments)?;
                 let results = self.owner(*owner, arguments)?;
                 if results.len() != destinations.len() {
@@ -849,7 +867,13 @@ impl Inliner<'_> {
                 }
                 Some(())
             }
-            SolveOperation::LinearSolve { .. } | SolveOperation::Native { .. } => None,
+            // Assigned-state and assertion-forwarding programs keep their ordered
+            // state in the typed evaluator, never in scalar expansion.
+            SolveOperation::AssignedConditional { .. }
+            | SolveOperation::AssignedState { .. }
+            | SolveOperation::CheckAssertion { .. }
+            | SolveOperation::LinearSolve { .. }
+            | SolveOperation::Native { .. } => None,
         }
     }
 
@@ -865,8 +889,9 @@ impl Inliner<'_> {
     ) -> Option<Vec<Val>> {
         self.check_domain(domain, transition.body())?;
         for tuple in domain.index_tuple_iter().ok()? {
+            let point = binders(&tuple, self.table.arithmetic())?;
             if let Some(continuation) = continuation
-                && !self.continues(continuation, &carried, captures)?
+                && !self.continues(continuation, &carried, captures, &point)?
             {
                 break;
             }
@@ -878,7 +903,7 @@ impl Inliner<'_> {
             )?;
             let mut arguments = carried;
             arguments.extend(captures.iter().cloned());
-            arguments.extend(binders(&tuple, self.table.arithmetic())?);
+            arguments.extend(point);
             carried = self.region(transition, arguments)?;
         }
         Some(carried)
@@ -889,11 +914,17 @@ impl Inliner<'_> {
         continuation: &SolveProgramRegion,
         carried: &[Val],
         captures: &[Val],
+        point: &[Val],
     ) -> Option<bool> {
-        self.budget
-            .reserve(carried.len().checked_add(captures.len())?)?;
+        self.budget.reserve(
+            carried
+                .len()
+                .checked_add(captures.len())?
+                .checked_add(point.len())?,
+        )?;
         let mut arguments = carried.to_vec();
         arguments.extend(captures.iter().cloned());
+        arguments.extend(point.iter().cloned());
         let [predicate] = <[Val; 1]>::try_from(self.region(continuation, arguments)?).ok()?;
         match predicate.one()? {
             Elem::Const(SolveValueKind::Boolean(value)) => Some(value),

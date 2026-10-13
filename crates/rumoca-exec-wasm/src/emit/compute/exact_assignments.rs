@@ -47,11 +47,15 @@ fn emit_module_with_storage(
     private: bool,
     storage: arena::ArenaStorage,
 ) -> Result<CompiledNativeCallProgramWasm, String> {
-    ready.arena = ready.arena.with_storage(storage);
+    ready.arena = ready.arena.clone().with_storage(storage);
     let mut module = Module::new();
     let types = call_program::add_types(&mut module);
-    let mut catalog =
-        add_import_section_with_arena(&mut module, &ready.imports, &types, Some(ready.arena));
+    let mut catalog = add_import_section_with_arena(
+        &mut module,
+        &ready.imports,
+        &types,
+        Some(ready.arena.clone()),
+    );
     catalog.eval_function_index = catalog
         .eval_function_index
         .checked_add(
@@ -86,12 +90,14 @@ fn emit_module_with_storage(
     module.section(&code);
     Ok(CompiledNativeCallProgramWasm {
         bytes: module.finish(),
-        scratch_bytes: ready.calls.bytes,
+        capacity_policy: crate::CheckedNativeWasmCapacityPolicy::default(),
+        scratch_bytes: ready.calls.view().bytes,
         scratch_report: ready.scratch_report,
         faults: ready.faults,
         gather_faults,
         math_imports: ready.imports.iter().map(|import| import.symbol()).collect(),
         pooled_arena_bytes: ready.arena.pooled_bytes(),
+        carried: Default::default(),
     })
 }
 
@@ -105,7 +111,7 @@ fn emit_function(
     locals.extend([(2, ValType::I32), (1, ValType::I64)]);
     let mut function = Function::new(locals);
     let mut emitter = BodyEmitter::new(catalog, &mut function);
-    emitter.arena = Some(ready.arena);
+    emitter.arena = Some(ready.arena.clone());
     emitter.calls = Some(&ready.calls);
     emitter.gather_status_base = Some(
         u32::try_from(ready.faults.len())
@@ -125,6 +131,7 @@ fn emit_function(
             emit_commit(&mut emitter, &program.targets)?;
         }
     }
+    emitter.require_complete_root_programs()?;
     emitter.push(Instruction::I32Const(0));
     let gather_faults = std::mem::take(&mut emitter.gather_faults);
     function.instruction(&Instruction::End);

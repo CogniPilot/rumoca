@@ -2,41 +2,36 @@
 #[cfg(test)]
 mod tests;
 
-use super::{canonical_assignment_shape, producers::UniqueProgram};
-use crate::refresh::dependency::ScalarProgramYDependency;
-use crate::{LinearOp, Reg, TargetAssignmentShape};
+use super::{ProgramPrefix, canonical_assignment_shape, producers::UniqueProgram};
+use crate::refresh::dependency::{ScalarProgramYDependency, ScalarProgramYDependencyQueries};
+use crate::{LinearOp, ScalarProgramOutputStores, TargetAssignmentShape};
 
 /// Holds at most one analyzed prefix. Changing its exact store position drops
 /// the previous analysis, so scalar stores cannot accumulate quadratic caches.
-pub(in crate::refresh) struct CanonicalAssignmentQueries<'source> {
+pub struct CanonicalAssignmentQueries<'source> {
     source: &'source [LinearOp],
-    stores: Option<Vec<OutputStore>>,
+    stores: Option<ScalarProgramOutputStores>,
     prefix: Option<(usize, Option<PrefixAnalysis<'source>>)>,
+    dependencies: ScalarProgramYDependencyQueries<'source>,
     causal: bool,
+    any_shape: Option<(usize, bool)>,
     #[cfg(test)]
     prefix_builds: usize,
 }
 
-struct OutputStore {
-    first: usize,
-    end: usize,
-    position: usize,
-    start: Reg,
-    stride: usize,
-}
-
 struct PrefixAnalysis<'source> {
     producers: UniqueProgram<'source>,
-    dependencies: ScalarProgramYDependency<'source>,
 }
 
 impl<'source> CanonicalAssignmentQueries<'source> {
-    pub(in crate::refresh) fn new(source: &'source [LinearOp]) -> Self {
+    pub fn new(source: &'source [LinearOp]) -> Self {
         Self {
             source,
-            stores: output_stores(source),
+            stores: ScalarProgramOutputStores::new(source),
             prefix: None,
+            dependencies: ScalarProgramYDependencyQueries::new(source),
             causal: !source.iter().any(super::non_causal_assignment_operation),
+            any_shape: None,
             #[cfg(test)]
             prefix_builds: 0,
         }
@@ -46,11 +41,7 @@ impl<'source> CanonicalAssignmentQueries<'source> {
         self.causal
     }
 
-    pub(in crate::refresh) fn derive(
-        &mut self,
-        output_offset: usize,
-        target: usize,
-    ) -> Option<TargetAssignmentShape> {
+    pub fn derive(&mut self, output_offset: usize, target: usize) -> Option<TargetAssignmentShape> {
         let Some(stores) = self.stores.as_ref() else {
             // Optional index construction overflowed; the unchanged owner still
             // answers this exact query and all source validation stays in force.
@@ -60,20 +51,41 @@ impl<'source> CanonicalAssignmentQueries<'source> {
                 target,
             );
         };
-        let index = stores.partition_point(|store| store.end <= output_offset);
-        let store = stores.get(index)?;
-        let offset = output_offset.checked_sub(store.first)?;
-        let register = Reg::try_from(offset.checked_mul(store.stride)?)
-            .ok()
-            .and_then(|offset| store.start.checked_add(offset))?;
-        let position = store.position;
+        let (register, position) = stores.output(output_offset)?;
+        let (prefix, dependencies) = self.prepare_prefix(position)?;
+        canonical_assignment_shape(prefix, register, target, dependencies)
+    }
+
+    /// Whether any eligible target has an assignment shape for this output.
+    /// Only one output's Boolean and one exact prefix stay resident.
+    pub fn has_any(&mut self, output_offset: usize) -> bool {
+        if let Some((output, result)) = self.any_shape
+            && output == output_offset
+        {
+            return result;
+        }
+        let output = match &self.stores {
+            Some(stores) => stores.output(output_offset),
+            None => super::store_output_registers(self.source).nth(output_offset),
+        };
+        let result = output.is_some_and(|(register, position)| {
+            self.prepare_prefix(position)
+                .is_some_and(|(prefix, dependencies)| {
+                    super::has_assignment_shape(prefix, register, dependencies)
+                })
+        });
+        self.any_shape = Some((output_offset, result));
+        result
+    }
+
+    fn prepare_prefix(
+        &mut self,
+        position: usize,
+    ) -> Option<(ProgramPrefix<'_>, &ScalarProgramYDependency<'source>)> {
         if self.prefix.as_ref().map(|(position, _)| *position) != Some(position) {
             self.prefix = None;
             let source = self.source.get(..position)?;
-            let analysis = UniqueProgram::new(source).map(|producers| PrefixAnalysis {
-                producers,
-                dependencies: ScalarProgramYDependency::new(source),
-            });
+            let analysis = UniqueProgram::new(source).map(|producers| PrefixAnalysis { producers });
             self.prefix = Some((position, analysis));
             #[cfg(test)]
             {
@@ -82,47 +94,11 @@ impl<'source> CanonicalAssignmentQueries<'source> {
         }
         let (_, analysis) = self.prefix.as_ref()?;
         let analysis = analysis.as_ref()?;
-        canonical_assignment_shape(
+        Some((
             analysis.producers.view(),
-            register,
-            target,
-            &analysis.dependencies,
-        )
+            self.dependencies.prefix(position)?,
+        ))
     }
-}
-
-/// One record per store instruction, including ranged stores. The original
-/// output iterator skips offsets whose register arithmetic overflows; valid
-/// offsets form a prefix, whose exact length is computed without enumeration.
-fn output_stores(source: &[LinearOp]) -> Option<Vec<OutputStore>> {
-    let mut stores = Vec::new();
-    let mut first = 0usize;
-    for (position, operation) in source.iter().enumerate() {
-        let (start, count, stride) = match *operation {
-            LinearOp::StoreOutput { src } => (src, 1, 0),
-            LinearOp::StoreOutputRange {
-                start,
-                count,
-                stride,
-            } => (start, count, stride),
-            _ => continue,
-        };
-        let valid_count = ((Reg::MAX - start) as usize)
-            .checked_div(stride)
-            .map_or(count, |last| count.min(last.saturating_add(1)));
-        let end = first.checked_add(valid_count)?;
-        if end != first {
-            stores.push(OutputStore {
-                first,
-                end,
-                position,
-                start,
-                stride,
-            });
-        }
-        first = end;
-    }
-    Some(stores)
 }
 
 /// Construction-local source identity. At most one original program and one

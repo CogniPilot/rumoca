@@ -118,10 +118,20 @@ fn real_value(value: f64) -> rumoca_eval_solve::TypedValue {
 }
 
 #[test]
-fn shared_nested_calls_preserve_distinct_arguments_directions_and_assertions() {
+fn shared_nested_calls_preserve_distinct_arguments_and_first_assertion_stop() {
     let table = lower_root_call(&call_dag(2));
     let root = table.owners().last().unwrap();
     for x in [-0.75_f64, -0.25, 2.0] {
+        if x <= 0.0 {
+            let failure =
+                rumoca_eval_solve::eval_pure_call_checked(&table, root.id(), &[real_value(x)])
+                    .unwrap_err();
+            assert!(matches!(
+                failure,
+                rumoca_eval_solve::TypedProgramEvalError::AssertionFailed { .. }
+            ));
+            continue;
+        }
         let values =
             rumoca_eval_solve::eval_pure_call(&table, root.id(), &[real_value(x)]).unwrap();
         assert_eq!(
@@ -137,26 +147,53 @@ fn shared_nested_calls_preserve_distinct_arguments_directions_and_assertions() {
                 &[solve::SolveValueKind::Boolean(argument > 0.0)]
             );
         }
+    }
+}
+
+#[test]
+fn nested_checked_assertions_issue_directional_owner() {
+    let table = lower_root_call(&call_dag(2));
+    let root = table.owners().last().unwrap();
+    for x in [0.25_f64, 2.0] {
+        let primal =
+            rumoca_eval_solve::eval_pure_call(&table, root.id(), &[real_value(x)]).unwrap();
+        assert_eq!(
+            primal[0].elements(),
+            &[solve::SolveValueKind::Real64(
+                (10.0 * x * x + 6.0 * x + 2.0).to_bits()
+            )]
+        );
         for seed in [1.0, -0.5] {
             let values = rumoca_eval_solve::eval_pure_call_directional(
                 &table,
                 root.id(),
                 &[real_value(x), real_value(seed)],
             )
-            .unwrap();
+            .expect("nested checked assertions must retain their directional owner");
+            assert_eq!(values[0].elements(), primal[0].elements());
             assert_eq!(
                 values[1].elements(),
                 &[solve::SolveValueKind::Real64(
                     ((20.0 * x + 6.0) * seed).to_bits()
                 )]
             );
-            for (predicate, argument) in values[2..].iter().zip(arguments) {
-                assert_eq!(
-                    predicate.elements(),
-                    &[solve::SolveValueKind::Boolean(argument > 0.0)]
-                );
+            assert_eq!(values.len(), primal.len() + 1);
+            for (predicate, expected) in values[2..].iter().zip(&primal[1..]) {
+                assert_eq!(predicate.elements(), expected.elements());
             }
         }
+    }
+    for x in [-0.75_f64, -0.25] {
+        let failure = rumoca_eval_solve::eval_pure_call_directional_checked(
+            &table,
+            root.id(),
+            &[real_value(x), real_value(1.0)],
+        )
+        .expect_err("the first nested source assertion stops directional execution");
+        assert!(matches!(
+            failure,
+            rumoca_eval_solve::TypedProgramEvalError::AssertionFailed { .. }
+        ));
     }
 }
 
@@ -175,10 +212,26 @@ fn finishing_a_call_table_discards_its_source_registration_scope() {
         let mut registry = PureCallRegistry::new();
         for _ in 0..2 {
             let registered = registry.register_root(view, call).unwrap();
-            assert_eq!(
-                registry.register_root(view, call).unwrap().callee.owner,
-                registered.callee.owner
-            );
+            let reused = registry.register_root(view, call).unwrap();
+            assert_eq!(reused.callee.owner, registered.callee.owner);
+            assert!(std::sync::Arc::ptr_eq(
+                &reused.callee.assertions,
+                &registered.callee.assertions
+            ));
+            assert!(!registered.callee.assertions.is_empty());
+            for (original, shared) in registered
+                .callee
+                .assertions
+                .iter()
+                .zip(reused.callee.assertions.iter())
+            {
+                assert!(std::sync::Arc::ptr_eq(
+                    &original.message_values,
+                    &shared.message_values
+                ));
+                assert_eq!(original.predicate_output, shared.predicate_output);
+                assert_eq!(original.provenance, shared.provenance);
+            }
             let table = registry.finish();
             assert_eq!(table.owners().len(), 5);
             let values = rumoca_eval_solve::eval_pure_call(
@@ -193,4 +246,76 @@ fn finishing_a_call_table_discards_its_source_registration_scope() {
             );
         }
     });
+}
+
+/// A root call over `depth` levels of composition whose innermost function
+/// either converts a Real to an Integer or only squares its input.
+fn storable_dag(depth: usize, converts: bool) -> dae::Dae {
+    let mut sources = SourceMap::new();
+    let source = sources.add("scalar_storable.mo", "function leaf parent root");
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 8)).unwrap();
+    dae::Dae::construct(sources, |model| {
+        let real = model.types(|t| t.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
+        let (mut function, ()) = model.function(
+            dae::FunctionSignature::new(VarName::new("leaf"), [real], [real], at),
+            |model, reservation| {
+                let input =
+                    model.functions(|f| f.parameter(&reservation, VarName::new("u"), 0, at))?;
+                let output =
+                    model.functions(|f| f.output(&reservation, VarName::new("y"), 0, at))?;
+                let value = model.expressions(|e| {
+                    let input = e.at(at).function_parameter(input)?;
+                    let operand = converts
+                        .then(|| e.at(at).builtin(dae::PureBuiltin::Integer, [input]))
+                        .transpose()?
+                        .unwrap_or(input);
+                    e.at(at)
+                        .binary(dae::BinaryOperator::Multiply, input, operand)
+                })?;
+                let mut body = model.functions(|f| f.begin(reservation, at))?;
+                model.functions(|f| {
+                    f.assign(&mut body, output, value, at)?;
+                    f.define(body, at)
+                })
+            },
+        )?;
+        for level in 0..depth {
+            function = compose_calls(model, real, at, function, level != 0)?;
+        }
+        model.expressions(|e| {
+            let input = e.at(at).literal(dae::DaeLiteral::Real(3.0))?;
+            e.at(at).call(function, 0, [input])
+        })?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// The one call issued at model level by `storable_dag`.
+fn model_level_call(view: dae::DaeView<'_>) -> dae::ExprId<'_> {
+    (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .find(|expression| {
+            view.expression(*expression).is_some_and(|node| {
+                node.function_scope().is_none()
+                    && matches!(node.operation(), dae::ExpressionOperation::Call { .. })
+            })
+        })
+        .unwrap()
+}
+
+#[test]
+fn registered_callee_carries_the_transitive_scalar_storable_fact() {
+    for depth in [0, 1, 3] {
+        for converts in [false, true] {
+            storable_dag(depth, converts).inspect(|view| {
+                let call = model_level_call(view);
+                let registered = PureCallRegistry::new().register_root(view, call).unwrap();
+                assert_eq!(
+                    registered.callee.scalar_storable, !converts,
+                    "depth {depth}, converts {converts}"
+                );
+            });
+        }
+    }
 }

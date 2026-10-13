@@ -98,7 +98,7 @@ impl PermutedReluctance {
             slots,
             rows,
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![block],
+                blocks: (vec![block]).into(),
             },
         }
     }
@@ -164,12 +164,13 @@ impl PermutedReluctance {
     /// solve against the torn solve from the identical warm start.
     fn dense_plan(&self) -> solve::AlgebraicProjectionPlan {
         solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: self.rows.to_vec(),
                 y_indices: self.slots.to_vec(),
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         }
     }
 }
@@ -265,7 +266,7 @@ impl ImplicitProjectionModel for PermutedReluctance {
         &self.plan
     }
 
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
+    fn target_name_for_row(&self, row_idx: usize) -> Option<String> {
         self.logical_equation_of_row(row_idx).map(|equation| {
             [
                 "r_mFe.flux_split",
@@ -274,6 +275,7 @@ impl ImplicitProjectionModel for PermutedReluctance {
                 "r_mFe.R_m",
                 "r_mFe.V_m",
             ][equation]
+                .to_owned()
         })
     }
 }

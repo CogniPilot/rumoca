@@ -8,6 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+/// `sq` holds a source-ordered conditional, which the scalar rows cannot
+/// represent, so every call keeps its typed owner instead of expanding in
+/// place.
 const SOURCE: &str = "
 function sq
   input Real u;
@@ -15,7 +18,9 @@ function sq
 algorithm
   y := 0;
   for i in 1:3 loop
-    y := y + u*u/3;
+    if u*u >= 0 then
+      y := y + u*u/3;
+    end if;
   end for;
 end sq;
 function wrap
@@ -151,8 +156,9 @@ fn identical_pure_call_owners_render_one_routed_family() {
         let source = c_sources(target);
         assert_families(target, &source, "");
         assert_families(target, &source, "directional_");
-        // Call sites only: every program calls a wrapper as `if (wrapper(...))`.
-        let sq_sites = symbols(&source, "if (rumoca_scalar_pure_").len();
+        // Call sites only: every program calls a wrapper as
+        // `int status=wrapper(...)`.
+        let sq_sites = symbols(&source, "int status=rumoca_scalar_pure_").len();
         assert!(
             sq_sites >= 3,
             "{target}: every scalar-program call site is emitted ({sq_sites})"

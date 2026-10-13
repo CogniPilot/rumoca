@@ -133,8 +133,8 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
         proof: &AffineScalarDerivative<'dae>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let src = proof.lower(&mut self)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src })?;
+        self.finish_operations()
     }
 }
 

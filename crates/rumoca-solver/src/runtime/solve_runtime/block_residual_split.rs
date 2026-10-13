@@ -6,6 +6,7 @@
 //! stores its live-out values and the dependent program reads them as its
 //! seed vector.
 
+use super::ScalarExecutionView;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -15,9 +16,7 @@ use rumoca_eval_solve::{
 use rumoca_ir_solve::{self as solve, BlockResidualSplit};
 use rustc_hash::FxHashMap;
 
-use super::{
-    CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend, SolveRuntime,
-};
+use super::{CompiledSolveExpression, CompiledSolveJacobianExpression, SolveExecutionBackend};
 use crate::RuntimeSolveError;
 
 /// The prepared splits of one projection block, in residual program order.
@@ -112,6 +111,7 @@ pub(super) fn block_residual_splits(
     shared: Option<SharedSplits<'_>>,
 ) -> Box<[Option<Rc<BlockSplits>>]> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .zip(structures.algebraic_projection())
         .enumerate()
@@ -147,6 +147,7 @@ impl<'a> SharedSplits<'a> {
     ) -> Self {
         let by_rows = plan
             .blocks
+            .scalar_blocks()
             .iter()
             .enumerate()
             .map(|(index, block)| (block.rows.as_slice(), index))
@@ -172,7 +173,8 @@ impl<'a> SharedSplits<'a> {
             return None;
         }
         let index = *self.by_rows.get(block.rows.as_slice())?;
-        (self.plan.blocks[index] == *block).then(|| self.splits.get(index).cloned())?
+        (self.plan.blocks.scalar_blocks()[index] == *block)
+            .then(|| self.splits.get(index).cloned())?
     }
 }
 
@@ -205,7 +207,7 @@ fn prepared_block_splits(
 
 fn block_splits(
     block: &solve::AlgebraicProjectionBlock,
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
     implicit: &PreparedScalarProgramBlock,
 ) -> Option<Vec<(usize, PreparedBlockResidualSplit)>> {
     let sources: Vec<usize> = match structure.residual_output_evaluation() {
@@ -272,39 +274,54 @@ fn compile_block_splits(
     })
 }
 
-impl SolveRuntime {
+fn split_execution_result(
+    result: Result<bool, RuntimeSolveError>,
+) -> Result<bool, RuntimeSolveError> {
+    match result {
+        Err(error @ RuntimeSolveError::CompiledExecution { .. }) => Err(error),
+        Err(_) => Ok(false),
+        result => result,
+    }
+}
+
+impl ScalarExecutionView<'_> {
     /// Evaluate the invariant parts of plan block `block` at the call's
     /// incoming point, compiled when the residual programs are. A failure
     /// reports nothing and leaves no values, so the call evaluates the unsplit
     /// programs and raises their error; a declining compiled call leaves the
     /// call unsplit.
-    pub(super) fn begin_block_residual_split(&self, block: usize, y: &[f64], p: &[f64], t: f64) {
-        self.active_split.set(None);
+    pub(super) fn begin_block_residual_split(
+        &self,
+        block: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar.active_split.set(None);
         if !rumoca_eval_solve::projection_policy::block_residual_split() {
-            return;
+            return Ok(());
         }
-        let Some(Some(splits)) = self.block_splits.get(block) else {
-            return;
+        let Some(Some(splits)) = self.scalar.block_splits.get(block) else {
+            return Ok(());
         };
-        let compiled = self.compiled_implicit_rhs.is_some();
+        let compiled = self.scalar.compiled_implicit_rhs.is_some();
         if compiled && splits.compiled.is_none() {
-            return;
+            return Ok(());
         }
         let mut values = splits.values.borrow_mut();
         let mut scratch = splits.scratch.borrow_mut();
         for (ordinal, split) in splits.splits.iter().enumerate() {
             let evaluated = match &splits.compiled {
-                Some(programs) if compiled => programs
-                    .invariant
-                    .call_program_outputs(
+                Some(programs) if compiled => {
+                    split_execution_result(programs.invariant.call_program_outputs(
                         ordinal,
                         y,
                         p,
                         t,
                         self.model.external_tables.as_slice(),
                         &mut scratch,
-                    )
-                    .unwrap_or(false),
+                    ))?
+                }
                 _ => split
                     .eval_invariant((y, p, t), self.row_eval_context(), &mut scratch)
                     .is_ok(),
@@ -312,7 +329,7 @@ impl SolveRuntime {
             let range = splits.offsets[ordinal]..splits.offsets[ordinal + 1];
             if !evaluated || scratch.len() != range.len() {
                 count(|counts| counts.fallbacks += 1);
-                return;
+                return Ok(());
             }
             values[range].copy_from_slice(&scratch);
         }
@@ -320,13 +337,15 @@ impl SolveRuntime {
             counts.calls += 1;
             counts.invariant_evaluations += splits.splits.len() as u64;
         });
-        self.active_split
+        self.scalar
+            .active_split
             .set(Some(ActiveBlockSplit { block, compiled }));
+        Ok(())
     }
 
     /// End the block projection call: its invariant values are discarded.
     pub(super) fn end_block_residual_split(&self) {
-        self.active_split.set(None);
+        self.scalar.active_split.set(None);
     }
 
     /// Evaluate residual program `program` through the active split, or
@@ -338,17 +357,22 @@ impl SolveRuntime {
         program: usize,
         (y, p, t): (&[f64], &[f64], f64),
         out: &mut Vec<f64>,
-    ) -> Option<()> {
-        let active = self.active_split.get()?;
-        let splits = self.block_splits.get(active.block)?.as_ref()?;
-        let &ordinal = splits.ordinals.get(&program)?;
+    ) -> Result<Option<()>, RuntimeSolveError> {
+        let Some(active) = self.scalar.active_split.get() else {
+            return Ok(None);
+        };
+        let Some(Some(splits)) = self.scalar.block_splits.get(active.block) else {
+            return Ok(None);
+        };
+        let Some(&ordinal) = splits.ordinals.get(&program) else {
+            return Ok(None);
+        };
         let values = splits.values.borrow();
         let evaluated = match &splits.compiled {
             // The compiled dependent programs share the block's values as
             // their seed vector.
-            Some(programs) if active.compiled => programs
-                .dependent
-                .call_program_outputs(
+            Some(programs) if active.compiled => {
+                split_execution_result(programs.dependent.call_program_outputs(
                     ordinal,
                     JacobianEvalInputs {
                         y,
@@ -358,8 +382,8 @@ impl SolveRuntime {
                     },
                     self.model.external_tables.as_slice(),
                     out,
-                )
-                .unwrap_or(false),
+                ))?
+            }
             _ => {
                 let range = splits.offsets[ordinal]..splits.offsets[ordinal + 1];
                 splits.splits[ordinal]
@@ -367,7 +391,7 @@ impl SolveRuntime {
                     .is_ok()
             }
         };
-        evaluated.then(|| count(|counts| counts.dependent_evaluations += 1))
+        Ok(evaluated.then(|| count(|counts| counts.dependent_evaluations += 1)))
     }
 
     /// Evaluate the single output of residual program `program` through the
@@ -378,13 +402,18 @@ impl SolveRuntime {
         &self,
         program: usize,
         (y, p, t): (&[f64], &[f64], f64),
-    ) -> Option<f64> {
-        if self.implicit_scalar_rhs.row_output_count(program) != Some(1) {
-            return None;
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        if self.scalar.implicit_scalar_rhs.row_output_count(program) != Some(1) {
+            return Ok(None);
         }
-        let mut out = self.split_row_scratch.borrow_mut();
-        self.eval_split_residual_program(program, (y, p, t), &mut out)?;
-        out.first().copied()
+        let mut out = self.scalar.split_row_scratch.borrow_mut();
+        if self
+            .eval_split_residual_program(program, (y, p, t), &mut out)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        Ok(out.first().copied())
     }
 }
 
@@ -438,7 +467,7 @@ impl ResidualRowBatch {
     /// unless they are the rows and split already assigned.
     fn assign(
         &mut self,
-        runtime: &SolveRuntime,
+        runtime: ScalarExecutionView<'_>,
         rows: &[usize],
         split: Option<(usize, &BlockSplits)>,
     ) {
@@ -452,12 +481,13 @@ impl ResidualRowBatch {
         self.dependent.clear();
         self.direct.clear();
         self.batched = rows.iter().enumerate().all(|(slot, &row)| {
-            let Some((program, offset)) = runtime.implicit_scalar_rhs.row_output_position(row)
+            let Some((program, offset)) =
+                runtime.scalar.implicit_scalar_rhs.row_output_position(row)
             else {
                 return false;
             };
             let ordinal = split
-                .filter(|_| runtime.implicit_scalar_rhs.row_output_count(program) == Some(1))
+                .filter(|_| runtime.scalar.implicit_scalar_rhs.row_output_count(program) == Some(1))
                 .and_then(|(_, splits)| splits.ordinals.get(&program).copied());
             match ordinal {
                 Some(ordinal) => self.dependent.push((ordinal, 0), slot),
@@ -474,7 +504,7 @@ impl ResidualRowBatch {
     }
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     /// The compiled residuals of `rows`, in order, into `out`: exactly what
     /// the per-row evaluation yields, each row through the entry it would
     /// take there (the active compiled split's dependent program for a
@@ -489,21 +519,26 @@ impl SolveRuntime {
         (y, p, t): (&[f64], &[f64], f64),
         out: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
-        let Some(compiled) = &self.compiled_implicit_rhs else {
+        let Some(compiled) = &self.scalar.compiled_implicit_rhs else {
             return Ok(false);
         };
-        let split = match self.active_split.get() {
+        let split = match self.scalar.active_split.get() {
             None => None,
             Some(active) if active.compiled => {
-                match self.block_splits.get(active.block).and_then(Option::as_ref) {
+                match self
+                    .scalar
+                    .block_splits
+                    .get(active.block)
+                    .and_then(Option::as_ref)
+                {
                     Some(splits) if splits.compiled.is_none() => return Ok(false),
                     splits => splits.map(|splits| (active.block, splits.as_ref())),
                 }
             }
             Some(_) => return Ok(false),
         };
-        let mut batch = self.residual_row_batch.borrow_mut();
-        batch.assign(self, rows, split);
+        let mut batch = self.scalar.residual_row_batch.borrow_mut();
+        batch.assign(*self, rows, split);
         if !batch.batched {
             return Ok(false);
         }
@@ -530,14 +565,17 @@ impl SolveRuntime {
                 tables,
                 &mut dependent.values,
             );
-            if !matches!(called, Ok(true)) {
+            if !split_execution_result(called)? {
                 return Ok(false);
             }
         }
         if !direct.coordinates.is_empty()
-            && !compiled
-                .call_program_outputs_at(&direct.coordinates, (y, p, t), tables, &mut direct.values)
-                .map_err(RuntimeSolveError::solve_ir)?
+            && !compiled.call_program_outputs_at(
+                &direct.coordinates,
+                (y, p, t),
+                tables,
+                &mut direct.values,
+            )?
         {
             return Ok(false);
         }

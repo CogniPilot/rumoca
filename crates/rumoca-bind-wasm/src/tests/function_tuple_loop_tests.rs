@@ -12,6 +12,9 @@ pub(super) fn execute(
     let _guard = session_test_guard();
     let raw = crate::native_program_api::prepare_native_program(source, model).unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let layout: rumoca_ir_solve::VarLayout =
+        serde_json::from_value(artifact["var_layout"].clone()).unwrap();
+    layout.validate_shape_contract().unwrap();
     assert_eq!(artifact["profile"], "native-direct-program-f64-v3");
     assert_eq!(artifact["abi"]["transactional_y"], true);
     let bytes = artifact["module_bytes"]
@@ -52,9 +55,9 @@ pub(super) fn execute(
             write_lane(&mut lanes, lane, value);
             continue;
         }
-        let index = artifact["var_layout"]["bindings"][name]["P"]["index"]
-            .as_u64()
-            .unwrap() as usize;
+        let Some(rumoca_ir_solve::ScalarSlot::P { index, .. }) = layout.binding(name) else {
+            panic!("input `{name}` must have a checked P slot");
+        };
         parameters[index] = value;
     }
     let parameter_bytes = parameters
@@ -96,9 +99,9 @@ pub(super) fn execute(
     outputs
         .iter()
         .map(|name| {
-            let index = artifact["var_layout"]["bindings"][*name]["Y"]["index"]
-                .as_u64()
-                .unwrap() as usize;
+            let Some(rumoca_ir_solve::ScalarSlot::Y { index, .. }) = layout.binding(name) else {
+                panic!("output `{name}` must have a checked Y slot");
+            };
             let mut cell = [0; 8];
             memory.read(&store, index * 8, &mut cell).unwrap();
             f64::from_le_bytes(cell)

@@ -39,7 +39,7 @@ fn program(
             rhs_stride: 1,
             lanes: 1,
         },
-        // The unused prefix remains part of the original evaluation obligation.
+        // An unread pure literal is not part of the stage.
         LinearOp::Const {
             dst: 3 * width,
             value: -0.0,
@@ -85,11 +85,14 @@ fn terminal_scalar_stores_keep_one_compact_stage_per_original_program() {
         let ComputeNode::ScalarPrograms(value) = &stage.value_kernel().nodes[0] else {
             panic!("value")
         };
-        assert_eq!(value.programs()[0].len(), 5);
-        assert!(operations_match(&value.programs()[0][..4], &original[..4]));
+        // The target load, the difference and the unused literal are not read
+        // by the isolated store.
+        assert_eq!(value.programs()[0].len(), 2);
+        assert_only_fault_free_operations_dropped(&original, &value.programs()[0]);
+        assert!(operations_match(&value.programs()[0][..1], &original[1..2]));
         assert_eq!(value.program_spans(), [span()]);
         assert_eq!(
-            value.programs()[0][4],
+            value.programs()[0][1],
             LinearOp::StoreOutputRange {
                 start: count as u32,
                 count,
@@ -163,7 +166,7 @@ fn scalar_target_loads(count: usize) -> Vec<LinearOp> {
 }
 
 #[test]
-fn scalar_target_producers_keep_exact_register_identity_and_source_order() {
+fn scalar_target_producers_keep_exact_register_identity_and_the_value_the_store_reads() {
     for reverse_definitions in [false, true] {
         let mut operations = scalar_target_loads(3);
         if reverse_definitions {
@@ -175,9 +178,11 @@ fn scalar_target_producers_keep_exact_register_identity_and_source_order() {
         let ComputeNode::ScalarPrograms(value) = &schedule.stages[0].value_kernel().nodes[0] else {
             panic!("value")
         };
+        assert_eq!(value.programs()[0].len(), 2);
+        assert_only_fault_free_operations_dropped(&operations, &value.programs()[0]);
         assert!(operations_match(
-            &value.programs()[0][..6],
-            &operations[..6]
+            &value.programs()[0][..1],
+            &operations[3..4]
         ));
         let y = [9.0, -3.0, 1e100];
         let p = [-0.0, 0.0, 0.25];
@@ -332,7 +337,11 @@ fn unused_typed_call_inputs_remain_independent_of_every_owned_target() {
                 site: site.clone(),
             },
         );
-        let result = derive(&source(vec![operations], None), &targets(3), &layout);
+        let result = derive(
+            &source(vec![operations.clone()], None),
+            &targets(3),
+            &layout,
+        );
         if input_start == 0 {
             assert_eq!(
                 result.unwrap_err().0,
@@ -344,19 +353,17 @@ fn unused_typed_call_inputs_remain_independent_of_every_owned_target() {
             else {
                 panic!("value")
             };
-            assert!(matches!(value.programs()[0][4], LinearOp::PureCall { .. }));
+            assert!(matches!(value.programs()[0][1], LinearOp::PureCall { .. }));
+            assert_only_fault_free_operations_dropped(&operations, &value.programs()[0]);
         }
     }
 }
 
-/// A discrete program that stores several rows (SOLVE-C82) yields, per row, the
-/// program with only that row's store, whether the store is scalar or one
-/// element of a range.
+/// A shared discrete program is borrowed intact for every output, including
+/// scalar and range stores; its canonical call operation indices never move.
 #[test]
-fn a_row_of_a_multi_output_discrete_program_keeps_only_its_own_store() {
+fn multi_output_discrete_rows_borrow_one_canonical_program() {
     use super::super::derived_discrete::row_program;
-
-    let span = Span::from_offsets(SourceId::from_source_name("RowProgram.mo"), 0, 1);
     let program = vec![
         LinearOp::Const { dst: 0, value: 5.0 },
         LinearOp::Const { dst: 1, value: 6.0 },
@@ -368,17 +375,63 @@ fn a_row_of_a_multi_output_discrete_program_keeps_only_its_own_store() {
             stride: 1,
         },
     ];
-    let block =
-        ScalarProgramBlock::with_output_indices(vec![program], vec![span], vec![0, 1, 2]).unwrap();
+    let block = ScalarProgramBlock::with_output_indices(vec![program], vec![span()], vec![0, 1, 2])
+        .unwrap();
     for (row, register) in [(0, 0), (1, 1), (2, 2)] {
-        let (index, operations, src) = row_program(&block, row).unwrap();
+        let (index, operations, src, _) = row_program(&block, row).unwrap();
         assert_eq!(index, 0);
         assert_eq!(src, register);
-        assert_eq!(operations.len(), 4);
-        assert_eq!(
-            operations.last(),
-            Some(&LinearOp::StoreOutput { src: register })
-        );
-        assert_eq!(ScalarProgramBlock::program_output_count(&operations), 1);
+        assert!(std::ptr::eq(operations, block.program(0).unwrap()));
+        assert_eq!(ScalarProgramBlock::program_output_count(operations), 3);
+    }
+}
+
+/// One ranged discrete owner issues one value kernel regardless of extent;
+/// publication order is independent of its canonical output/store order.
+#[test]
+fn discrete_stage_keeps_one_program_for_every_output() {
+    for count in [3, 350, 17150] {
+        let operations = vec![
+            LinearOp::Const { dst: 0, value: 5.0 },
+            LinearOp::TensorFill {
+                dst_start: 1,
+                value_start: 0,
+                count,
+                lanes: 1,
+            },
+            LinearOp::StoreOutputRange {
+                start: 1,
+                count,
+                stride: 1,
+            },
+        ];
+        let block = ScalarProgramBlock::with_program_spans(vec![operations], vec![span()]).unwrap();
+        let outputs = (0..count)
+            .rev()
+            .map(|row| NativeDerivedOutput {
+                row,
+                p_index: count - row,
+                work_index: row,
+                lane: NativeOutputLane::Real,
+                lane_offset: 8 * row,
+                integer_source: None,
+            })
+            .collect::<Vec<_>>();
+        let refs = outputs.iter().collect::<Vec<_>>();
+        let layout = VarLayout::from_parts(Default::default(), count, count);
+        let family = super::super::scalar::derive_discrete(
+            &refs,
+            &block,
+            &std::collections::BTreeMap::new(),
+            &layout,
+        )
+        .unwrap();
+        assert_eq!(family.stage.target_count(), count);
+        let [ComputeNode::ScalarPrograms(kernel)] = family.stage.value_kernel.nodes.as_slice()
+        else {
+            panic!("one scalar kernel");
+        };
+        assert_eq!(kernel.programs().len(), 1);
+        assert_eq!(kernel.programs()[0].len(), 3);
     }
 }

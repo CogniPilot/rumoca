@@ -617,19 +617,33 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
         panic!("the matched algebraic row must be executable by the runtime");
     };
     assert_eq!(implicit.output_indices(), [0]);
+    assert_single_algebraic_projection(&solve);
+}
+
+fn assert_single_algebraic_projection(solve: &rumoca_ir_solve::SolveProblem) {
     assert_eq!(
-        solve.continuous.implicit_row_targets,
-        [Some(ScalarSlot::Y {
+        solve.continuous.implicit_row_targets.target_at(0),
+        Some(ScalarSlot::Y {
             index: 0,
             byte_offset: 0,
-        })]
+        })
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].rows,
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .scalar_blocks()[0]
+            .rows,
         [0]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .scalar_blocks()[0]
+            .y_indices,
         [0]
     );
 }
@@ -702,18 +716,28 @@ fn algebraic_projection_keeps_equation_rows_distinct_from_y_indices() {
     };
     assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
-        solve.continuous.implicit_row_targets,
-        [Some(ScalarSlot::Y {
+        solve.continuous.implicit_row_targets.target_at(0),
+        Some(ScalarSlot::Y {
             index: 1,
             byte_offset: 8,
-        })]
+        })
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].rows,
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .scalar_blocks()[0]
+            .rows,
         [0]
     );
     assert_eq!(
-        solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .scalar_blocks()[0]
+            .y_indices,
         [1]
     );
     solve

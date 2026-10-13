@@ -1,12 +1,12 @@
+use super::ScalarExecutionView;
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
 use crate::RuntimeSolveError;
 
-use super::SolveRuntime;
 use super::event_update::DiscretePreSnapshot;
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     pub(super) fn guarded_assignment_active_at(
         &self,
         program_index: usize,
@@ -45,6 +45,7 @@ impl SolveRuntime {
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
         let prepared = self
+            .scalar
             .guarded_assignment_programs
             .get(program_index)
             .ok_or_else(|| {
@@ -53,27 +54,30 @@ impl SolveRuntime {
                 ))
             })?;
         if let Some(compiled) = self
+            .scalar
             .compiled_guarded_assignments
             .borrow()
             .get(&program_index)
             .cloned()
         {
-            out.resize(prepared.output_count(), 0.0);
-            if compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out.as_mut_slice(),
-                )
-                .is_ok()
-            {
-                return Ok(());
-            }
+            let mut scratch = self.scalar.compiled_output_scratch.borrow_mut();
+            super::resize_runtime_values(
+                &mut scratch,
+                prepared.output_count(),
+                0.0,
+                "compiled guarded assignment outputs",
+            )?;
+            compiled
+                .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+                .map_err(|error| {
+                    super::admitted_compiled_error("guarded assignment", &[prepared.span()], error)
+                })?;
+            super::copy_runtime_values_into(out, &scratch, "guarded assignment output commit")?;
+            return Ok(());
         } else {
             self.compile_guarded_assignment(program_index);
             if self
+                .scalar
                 .compiled_guarded_assignments
                 .borrow()
                 .contains_key(&program_index)
@@ -87,18 +91,20 @@ impl SolveRuntime {
     }
 
     fn compile_guarded_assignment(&self, program_index: usize) {
-        let Some(backend) = &self.execution_backend else {
+        let Some(backend) = &self.scalar.execution_backend else {
             return;
         };
         if self
+            .scalar
             .failed_guarded_assignments
             .borrow()
             .contains(&program_index)
         {
             return;
         }
-        let Some(prepared) = self.guarded_assignment_programs.get(program_index) else {
-            self.failed_guarded_assignments
+        let Some(prepared) = self.scalar.guarded_assignment_programs.get(program_index) else {
+            self.scalar
+                .failed_guarded_assignments
                 .borrow_mut()
                 .insert(program_index);
             return;
@@ -111,7 +117,8 @@ impl SolveRuntime {
             Ok(block) => block,
             Err(error) => {
                 super::trace_native_execution_failure(program_index, &error.to_string());
-                self.failed_guarded_assignments
+                self.scalar
+                    .failed_guarded_assignments
                     .borrow_mut()
                     .insert(program_index);
                 return;
@@ -119,13 +126,15 @@ impl SolveRuntime {
         };
         match backend.compile_expression(&block) {
             Ok(expression) => {
-                self.compiled_guarded_assignments
+                self.scalar
+                    .compiled_guarded_assignments
                     .borrow_mut()
                     .insert(program_index, expression);
             }
             Err(error) => {
                 super::trace_native_execution_failure(program_index, &error);
-                self.failed_guarded_assignments
+                self.scalar
+                    .failed_guarded_assignments
                     .borrow_mut()
                     .insert(program_index);
             }

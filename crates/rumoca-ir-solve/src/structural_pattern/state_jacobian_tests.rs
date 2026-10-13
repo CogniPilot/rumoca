@@ -15,11 +15,12 @@ fn provenance() -> PatternProvenance {
 
 fn plan_solving(y_indices: Vec<usize>) -> AlgebraicProjectionPlan {
     AlgebraicProjectionPlan {
-        blocks: vec![AlgebraicProjectionBlock {
+        blocks: (vec![AlgebraicProjectionBlock {
             rows: vec![0],
             y_indices,
             ..AlgebraicProjectionBlock::default()
-        }],
+        }])
+        .into(),
     }
 }
 

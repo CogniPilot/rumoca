@@ -24,7 +24,18 @@ pub(super) struct WarningLog {
     diagnostics: Vec<SimDiagnostic>,
 }
 
-impl SolveRuntime {
+impl WarningLog {
+    pub(super) fn diagnostics(&self) -> Vec<SimDiagnostic> {
+        self.diagnostics.clone()
+    }
+
+    pub(super) fn diagnostics_since(&self, first: usize) -> (Vec<SimDiagnostic>, usize) {
+        let count = self.diagnostics.len();
+        (self.diagnostics[first.min(count)..].to_vec(), count)
+    }
+}
+
+impl ScalarExecutionView<'_> {
     /// Report every violated, not yet reported warning action among
     /// `values`, the evaluated action conditions at `(y, p, t)`.
     pub(super) fn report_violated_warnings(
@@ -33,9 +44,11 @@ impl SolveRuntime {
         y: &[f64],
         p: &[f64],
         t: f64,
+        context: RowEvalContext<'_>,
     ) -> Result<(), RuntimeSolveError> {
         let actions = &self.model.problem.events.actions;
-        let mut log = self.warning_log.borrow_mut();
+        let mut pending = Vec::new();
+        let log = self.warning_log.borrow();
         for (row, (action, value)) in actions.iter().zip(values).enumerate() {
             if action.kind != solve::SolveEventActionKind::Warning
                 || *value <= 0.5
@@ -43,16 +56,23 @@ impl SolveRuntime {
             {
                 continue;
             }
-            let message =
-                solve_eval::eval_event_action_message(action, y, p, t, self.row_eval_context())?;
+            let message = solve_eval::eval_event_action_message(action, y, p, t, context)?;
+            pending.push((
+                row,
+                SimDiagnostic {
+                    code: WARNING_ASSERTION_CODE,
+                    time: t,
+                    message,
+                    span: action.span,
+                    origin: action.origin.clone(),
+                },
+            ));
+        }
+        drop(log);
+        let mut log = self.warning_log.borrow_mut();
+        for (row, diagnostic) in pending {
             log.reported.insert(row);
-            log.diagnostics.push(SimDiagnostic {
-                code: WARNING_ASSERTION_CODE,
-                time: t,
-                message,
-                span: action.span,
-                origin: action.origin.clone(),
-            });
+            log.diagnostics.push(diagnostic);
         }
         Ok(())
     }
@@ -102,7 +122,7 @@ impl SolveRuntime {
                 .filter(|(row, action)| {
                     action.kind == solve::SolveEventActionKind::Warning
                         && action.clock_owner.is_none()
-                        && !self.event_transaction_coverage.event_actions[*row]
+                        && !self.scalar.event_transaction_coverage.event_actions[*row]
                         && !log.reported.contains(row)
                 })
                 .map(|(row, _)| row)
@@ -114,28 +134,22 @@ impl SolveRuntime {
         let mut action_p = copy_runtime_values(p, "warning observation parameters")?;
         write_clock_activation_params(&self.model, &mut action_p, t);
         let mut values = vec![0.0; events.actions.len()];
-        self.eval_selected_outputs_with_native(
+        let observations = self.event_observations();
+        let context = RowEvalContext {
+            event_observations: Some(&observations),
+            ..self.row_eval_context()
+        };
+        self.eval_selected_outputs_with_context(
             SpecializedRows {
-                block: &self.event_action_conditions,
-                cache: &self.compiled_event_action_rows,
-                failed: &self.failed_event_action_rows,
+                block: &self.scalar.event_action_conditions,
+                cache: &self.scalar.compiled_event_action_rows,
+                failed: &self.scalar.failed_event_action_rows,
             },
             &rows,
             RowEvalPoint { y, p: &action_p, t },
             &mut values,
+            context,
         )?;
-        self.report_violated_warnings(&values, y, &action_p, t)
-    }
-
-    /// Forget the diagnostics of an earlier run of this runtime. A run starts
-    /// when its component enters initialization, and a component built only
-    /// to probe the integrator choice runs the same initialization first.
-    pub fn reset_diagnostics(&self) {
-        *self.warning_log.borrow_mut() = WarningLog::default();
-    }
-
-    /// The diagnostics reported so far, in order of first occurrence.
-    pub fn diagnostics(&self) -> Vec<SimDiagnostic> {
-        self.warning_log.borrow().diagnostics.clone()
+        self.report_violated_warnings(&values, y, &action_p, t, context)
     }
 }

@@ -83,14 +83,14 @@ fn ordinary_parameter_guard_in_structured_family_retains_runtime_selection() {
     .unwrap();
     let artifact: serde_json::Value = serde_json::from_str(&artifact).unwrap();
     let mut execution = CallExecution::new(&artifact);
-    let mut parameters = artifact["parameters"]
+    let parameters = artifact["parameters"]
         .as_array()
         .unwrap()
         .iter()
         .map(|value| value.as_f64().unwrap())
         .collect::<Vec<_>>();
     for enabled in [0.0, 1.0, 0.0] {
-        parameters[slot(&artifact, "enabled", "P")] = enabled;
+        execution.set_input("enabled", i64::from(enabled == 1.0));
         let actual = execution.run(&parameters);
         for (index, input) in [2.0_f64, -5.0, 0.25].into_iter().enumerate() {
             let expected = if enabled == 1.0 {
@@ -153,7 +153,7 @@ fn runtime_first_guard_keeps_later_structural_windows_lazy_and_recalibratable() 
         )] = value;
     }
     for override_value in [0.0, 1.0, 0.0] {
-        parameters[slot(&artifact, "override", "P")] = override_value;
+        execution.set_input("override", i64::from(override_value == 1.0));
         let actual = execution.run(&parameters);
         for index in 0..90 {
             let row = index / 10;

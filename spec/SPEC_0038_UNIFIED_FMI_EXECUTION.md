@@ -10,6 +10,13 @@ GALEC/Production Code is the primary safety-oriented code-generation path.
 
 ## Specification
 
+The proposed once-built direct-native FMI-LS guest and its closed artifact-to-replayed-root binding are specified by SPEC_0044 rows ME-LSW-003 through ME-LSW-006. These rows grant no implementation or platform admission before their owning qualification gates pass.
+
+Its native library linkage refinement MUST check the actual emitted module and
+shared runtime memory contract under SPEC_0044 ME-LSW-003c before static entry
+admission. Structural library compatibility alone does not establish that the
+guest's allocator, resource buffers, or fresh source root own that entry.
+
 ```text
 Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
                                       |
@@ -25,6 +32,8 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | All FMI forms consume one checked kernel | FMI lowering | Prevent semantic drift |
 | ME and CS are capability profiles, not backends | target discovery | Avoid duplicate lowering |
 | Native, packaged, and Wasm are deployment forms | FMI packaging | Packaging cannot change behavior |
+| Deployment admission retains one checked inventory and artifact session; externally compiled assets publish only as a complete declared product | checked capability profile and generic packaging | SPEC_0044 ME-LSW-002 |
+| Direct-native publication derives canonical metadata and its build request internally from the same consumed emitted-library/source pair. Native metadata admission checks every published getter, including parameters and constants, against the existing schedule/storage owner; parameter setters are admitted only before `ExitInitializationMode`. The facade retains the original artifact binding through transactional archive publication. | Native publication facade | SPEC_0044 ME-LSW-003e |
 | The only solver-facing model interface is FMI 3 ME | simulation runtime | Remove the competing private model API |
 | In-process simulation hosts FMI 3 ME with Diffsol | simulation runtime | One lifecycle |
 | FMI CS embeds an FMI 3 ME host plus a selected integrator | CS runtime | Reuse integration semantics |
@@ -35,23 +44,18 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Numerical plugins implement only `MeIntegratorBackend` | solver implementations | A new solver supplies numerical advance/reset; it cannot invoke FMI lifecycle transitions, schedule observations, or construct traces |
 | `MeSimulationSession` is the incremental master algorithm | solver facade | Batch simulation, live stepping, inputs, reset, events, timeouts, and observation ordering share one state machine |
 | `FmiComponent` is the only linked or packaged component source | checked FMI projection | Runtime and emitted metadata share one inventory |
+| Modelica Integer uses FMI 3 Int64; FMI 2 narrowing checks source starts and bounds before rendering, and checks every dynamic read before conversion | checked FMI inventory and adapters | A narrower deployment cannot silently truncate |
+| Native ME instances follow the retained-instance contract: one original immutable Solve root with a once-resolved start time, one private retained owner and lifecycle, pending-resource activation and refusal, original-default Reset, a closed execution inventory, and no retained assertion authority on analysis copies | Native ME execution, SPEC_0044 ME-NAT-001 through ME-NAT-017 | Engine availability, pre-init writes and resource brands survive failures; Instantiate and Reset cannot invent a second resolution or lifecycle |
 | Component operations are exact FMI 3.0.2 semantic projections | FMI component | Private extensions cannot become solver dependencies |
 | Integrator boundary values use checked constructors and private fields | solver facade | Invalid outcomes never enter the master algorithm |
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
 | Completed-step callbacks execute their event/history dependencies and never evaluate state derivatives solely to populate a cache | FMI component | Numerical plugins request derivatives when their method needs them |
 | A speculative event-left observation retains its sampled state and pre-callback FMU snapshot; output evaluation is deferred until publication is required, with the current component state restored on every exit | FMI host | Unpublished candidates must not force complete algebraic evaluation on every integration step |
-| Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
-| Algebraic sensitivities may reuse matrices and factorizations only for constructor-certified repeatable primal/JVP blocks at identical full Y/P/time coordinates, bound to their issued block and immutable table/call context | FMI component | Seeds share a matrix |
-| Algebraic sensitivity acceptance uses the solved direction's coordinate scales and a fresh original JVP at unchanged tolerance; primal matrix reuse MUST NOT reuse primal or previous-direction acceptance scales | numerical projection | A derivative direction can change magnitude independently of its primal coordinates |
-| Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |
-| Derivative and root refreshes certify convergence of every recovered algebraic coordinate as well as the reduced residual; a reused derivative coordinate carries the same accuracy obligation | FMI component numerical projection | Small tear residuals can conceal amplified coordinate errors and move or erase an event |
-| Torn coordinate certification bounds the linearized recovered correction before adding it to floating-point coordinates; a rounded no-op is not convergence evidence | numerical projection | Rounding can hide a large recovered-coordinate error |
-| Reduced affine factorization solves the complete original right-hand side and recovers every coordinate, including during mandatory original-residual refinement. Failed reduced factorization or refinement retains the full implicit solve from the same arithmetic origin and unchanged tolerances. | affine numerical projection | Reduction cannot discard small-coordinate corrections or manufacture convergence |
-| At a bitwise-identical derivative-settled coordinate, root evaluation may omit covered value stages and execute only a construction-issued checked-BLT remainder; it may omit the complete refresh only when that remainder is empty | FMI component | Remove duplicate work without turning a warm start into an unchecked semantic shortcut |
-| Settled-coordinate caches invalidate on lifecycle or parameter mutation | FMI component | Never reuse stale algebraics |
-| An empty checked manifold-projection artifact certifies that continuous-state projection returns unchanged without settling observation algebraics | FMI component | Do not execute algebraic work for a structurally absent constraint system |
+| Settled-coordinate, factorization, and warm-start reuse, and certification of recovered algebraic coordinates, are valid only under SPEC_0044 ME-NUM-001 through ME-NUM-010 | FMI component numerical projection | Reuse is non-semantic; stale or unchecked reuse cannot move or erase an event |
 | Wasm uses the FMI layered-standard WIT profile | Wasm adapter | Avoid a private ABI |
+| Deployment admits accessor/interface capabilities on the correlated FMI component before any execution-backend refinement; C admission is a separate consuming refinement | `rumoca-ir-solve::fmi`, SPEC_0044 ME-DEP-001 | Deployment does not require C |
 | Native and Wasm hosts expose batched state/variable access | FMI host | Avoid per-scalar boundary overhead |
+| Within one fully validated typed getter request, consecutive ordinary time/Y/P reads share one completed public observation; derivative/indicator reads end that scope before executing their own observation and evaluation | Generated FMI getter, SPEC_0044 ME-BATCH-001 | One request-local observation, no cross-request cache or added runtime dirty bit |
 | `rumoca-input` writes model inputs only through typed FMI setters | input/runtime boundary | One input lifecycle |
 | Input mappings resolve to FMI value references before execution | scenario preparation | Reject unknown or mistyped inputs early |
 | Input clocks use `fmi3SetClock`; structural parameters use Configuration Mode | input/runtime boundary | Preserve FMI lifecycle |
@@ -116,42 +120,7 @@ floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
 
 ### Phasing
 
-Code movement MUST prove bit-identical traces against each phase's prior binary,
-except where stated below.
-
-| Phase | Scope | Exit evidence |
-|---|---|---|
-| 1 | Internal ME kernel trait in `rumoca-solver` and one `SolveModel` projection; migrate the rk-like session onto it | Bit-identical traces vs. the pre-migration binary; the rk-like crate links Solve IR from no dependency table except `dev-dependencies`, so no production path there can name it |
-| 2 | Replace the transitional extended kernel surface with the strict FMI 3.0.2 ME component and importer contracts; construct one checked FMI component aggregate | Official-schema-valid model description, exhaustive finite lifecycle tests plus bounded symbolic checks where justified, and bit-identical traces except for separately proved semantic fixes |
-| 3 | FMI CS profile as an ME host plus a selected integrator | ME/CS trace parity on one kernel artifact |
-| 4 | Packaged FMU and Wasm deployment forms | Linked-versus-packaged and native-versus-Wasm lifecycle parity |
-
-#### Acceptance Contract: the reduced state-only system
-
-Phase 2 deletes the Diffsol backend's general/implicit DAE construction, so the
-reduced state-only ODE becomes the only system a state-carrying model is
-integrated as. Per SPEC_0008 *Acceptance Contract Before Rejection*, the new
-rejection path ships with the shapes that stay legal:
-
-- [ ] `EX002` (`SimError::StateOnlyPathUnavailable`) rejects a state-carrying
-      model whose state-derivative rows read a solver coordinate that the
-      algebraic projection plan cannot produce, or that does not present one
-      derivative row per continuous state;
-      accepts (a) models with zero continuous states, which keep the no-state
-      runtime path, (b) models whose derivative rows read only continuous
-      states, and (c) models whose non-state reads are transitively produced by
-      the algebraic projection plan — including chains through several producer
-      rows, and including algebraic counts far above any MSL model's;
-      owned by `rumoca-solver-diffsol::bdf::require_state_only_bdf`, with the
-      rejection minted in `rumoca-solver-diffsol::error::StateOnlyRejection`
-      and bucketed by `rumoca-worker::failure_classification` at
-      `SimFailureStage::BackendBuild`;
-      evidence `rumoca-solver-diffsol/src/tests/state_path_integration.rs::state_only_bdf_accepts_projection_backed_derivative_dependencies`
-      (acceptance plus its ablation),
-      `::state_only_bdf_accepts_transitive_projection_dependencies` (chained
-      producers), and
-      `::simulate_rejects_an_unprojectable_derivative_dependency_by_name`
-      (the rejection reaches the caller by name).
+Code movement MUST prove bit-identical traces against each phase's prior binary, except where stated in the ledger. The phase ledger, exit evidence, and the reduced state-only acceptance contract (`EX002`) are cataloged in [SPEC_0044 §10](SPEC_0044_FMI_EXECUTION_CATALOG.md#10-phasing-ledger-and-state-only-acceptance-contract).
 
 ### External I/O Profile Semantics
 

@@ -16,10 +16,34 @@ use rumoca_ir_flat as flat;
 pub use balance::{BalanceBreakdown, BalanceDetail};
 pub use errors::{ToDaeError, ToDaeResult};
 
+/// A completed canonical DAE and the source analysis that issued its evidence.
+///
+/// Only this phase constructs the result, after every DAE construction check
+/// succeeds. Consumers move its matched parts without analyzing Flat again.
+pub struct DaeConstructionResult {
+    dae: dae::Dae,
+    balance_detail: BalanceDetail,
+    structural_selections: Vec<StructuralSelection>,
+}
+
+impl DaeConstructionResult {
+    pub fn into_parts(self) -> (dae::Dae, BalanceDetail, Vec<StructuralSelection>) {
+        (self.dae, self.balance_detail, self.structural_selections)
+    }
+}
+
 /// Construct the canonical DAE while transferring the source-map snapshot that
 /// resolves every retained provenance range.
 pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
     construction::construct(flat, source_map)
+}
+
+/// Construct the canonical DAE and its evidence from one prepared Flat analysis.
+pub fn to_dae_with_evidence(
+    flat: &flat::Model,
+    source_map: SourceMap,
+) -> Result<DaeConstructionResult, ToDaeError> {
+    construction::construct_with_evidence(flat, source_map)
 }
 
 pub use construction::StructuralSelection;

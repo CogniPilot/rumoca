@@ -2,32 +2,8 @@
 
 use super::*;
 
-const SOURCE: &str = r#"
-function ReturnFeature
-  input Boolean first;
-  input Real samples[1];
-  input Integer k;
-  output Real result;
-algorithm
-  result := 0;
-  if first then
-    result := 1;
-    return;
-  elseif samples[k] > 0 then
-    result := 2;
-    return;
-  end if;
-  result := 3;
-end ReturnFeature;
-model ReturnPredicates
-  input Boolean first = true;
-  input Real samples[1] = {5};
-  input Integer k = 1;
-  output Real result;
-equation
-  result = ReturnFeature(first, samples, k);
-end ReturnPredicates;
-"#;
+pub(super) const SOURCE: &str =
+    include_str!("../../../../../rumoca/tests/fixtures/native_return_predicates.mo");
 
 #[test]
 fn native_wasm_return_predicates_preserve_inactive_and_active_gathers() {

@@ -57,6 +57,17 @@ impl TypeChecker {
         type_def_id: Option<DefId>,
         type_table: &TypeTable,
     ) -> TypeId {
+        // An unqualified virtual type keeps its original declaration slot;
+        // the current call context supplies the effective implementation.
+        let type_def_id = type_def_id.map(|declared| {
+            if crate::path_utils::is_qualified_class_name(name) {
+                declared
+            } else {
+                self.current_call_type_overrides
+                    .specialized_declared_type(None, declared)
+                    .unwrap_or(declared)
+            }
+        });
         // Prefer DefId-based resolution for user-defined types.
         if let Some(type_id) = type_def_id
             .and_then(|def_id| self.resolve_type_from_def_anchor(def_id, name, type_table))

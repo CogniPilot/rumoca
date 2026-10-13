@@ -4,18 +4,39 @@
 
 use super::*;
 
+pub(in crate::construction) fn require_function_values<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    names: &[VarName],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, span)?;
+    for name in names {
+        function_body::require_current_function_value(
+            construction,
+            symbols,
+            body,
+            name,
+            provenance,
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::construction) struct FunctionSymbols<'symbols, 'dae> {
     pub(in crate::construction) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
     pub(in crate::construction) functions: &'symbols FunctionRegistry<'symbols, 'dae>,
     pub(in crate::construction) shapes: &'symbols ShapeEnvironment,
+    pub(in crate::construction) binders: &'symbols HashMap<VarName, dae::DomainBinderId<'dae>>,
+    pub(in crate::construction) domain: Option<dae::DomainId<'dae>>,
 }
 
-/// The MLS §12.4.4 definedness plan of a function's top-level sequence and
-/// the predicates its conditionals have produced so far.
-pub(in crate::construction) struct TopLevelDefinedness<'plan, 'dae> {
+/// The MLS §12.4.4 ordered use and return checks of a function sequence.
+pub(in crate::construction) struct TopLevelDefinedness<'plan> {
     pub(in crate::construction) plan: &'plan FunctionDefinednessPlan,
-    pub(in crate::construction) predicates: DefinednessPredicates<'dae>,
     /// The function declaration, which owns the return-point assertions.
     pub(in crate::construction) span: Span,
 }
@@ -26,7 +47,7 @@ pub(in crate::construction) fn lower_function_statements<'dae>(
     mut body: dae::FunctionBody<'dae>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
-    mut definedness: Option<&mut TopLevelDefinedness<'_, 'dae>>,
+    mut definedness: Option<&mut TopLevelDefinedness<'_>>,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
     let mut index = 0usize;
@@ -37,29 +58,7 @@ pub(in crate::construction) fn lower_function_statements<'dae>(
             && let Some(names) = definedness.plan.asserted_reads.get(&index)
         {
             let span = statement.source_span().unwrap_or(definedness.span);
-            definedness
-                .predicates
-                .assert_defined(construction, &mut body, names, span)?;
-        }
-        if let (Some(definedness), FunctionStatementPlan::If { .. }) =
-            (definedness.as_deref_mut(), plan)
-            && let Some(partial) = definedness.plan.partial_joins.get(&index)
-        {
-            let span = statement.source_span().unwrap_or(definedness.span);
-            let partial = definedness
-                .predicates
-                .partial_targets(construction, partial, span)?;
-            let defined = lower_top_level_conditional(
-                construction,
-                symbols,
-                &mut body,
-                statement,
-                plan,
-                &partial,
-            )?;
-            definedness.predicates.record(defined);
-            index += 1;
-            continue;
+            require_function_values(construction, symbols, &mut body, names, span)?;
         }
         if let FunctionStatementPlan::ArrayAssembly(assembly) = plan {
             let statement_count = assembly.direct_count + usize::from(assembly.loop_plan.is_some());
@@ -119,9 +118,28 @@ pub(in crate::construction) fn lower_function_statement<'dae>(
                 target,
                 value,
                 span,
+                proven_reads,
+                selected,
                 ..
             },
-        ) => lower_generated_boolean_assignment(construction, symbols, body, target, value, *span),
+        ) => match selected {
+            Some(selected) => lower_function_statement(
+                construction,
+                symbols,
+                body,
+                &selected.source,
+                &selected.plan,
+            ),
+            None => lower_generated_boolean_assignment(
+                construction,
+                symbols,
+                body,
+                target,
+                value,
+                *span,
+                proven_reads,
+            ),
+        },
         (
             rumoca_core::Statement::Assignment { value, span, .. },
             FunctionStatementPlan::Assignment(plan),
@@ -171,25 +189,10 @@ pub(in crate::construction) fn lower_function_statement<'dae>(
             FunctionStatementPlan::If { .. } | FunctionStatementPlan::ProvenBranch { .. },
         ) => lower_function_conditional_statement(construction, symbols, body, statement, plan),
         (
-            rumoca_core::Statement::FunctionCall {
-                comp, args, span, ..
-            },
-            FunctionStatementPlan::MultiOutputCall { outputs },
-        ) => lower_multi_output_statement(construction, symbols, body, comp, args, *span, outputs),
-        (
-            rumoca_core::Statement::FunctionCall {
-                comp, args, span, ..
-            },
-            FunctionStatementPlan::RecordMultiOutputAssembly(plan),
-        ) => lower_record_multi_output_statement(
-            construction,
-            symbols,
-            body,
-            comp,
-            args,
-            *span,
-            plan,
-        ),
+            statement @ rumoca_core::Statement::FunctionCall { .. },
+            plan @ (FunctionStatementPlan::MultiOutputCall { .. }
+            | FunctionStatementPlan::RecordMultiOutputAssembly(_)),
+        ) => lower_function_call_statement(construction, symbols, body, statement, plan),
         (_, FunctionStatementPlan::ArrayAssemblyMember) => {
             unreachable!("array assembly members are consumed by their leading owner")
         }
@@ -206,6 +209,49 @@ pub(in crate::construction) fn lower_function_statement<'dae>(
     }
 }
 
+fn lower_function_call_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: dae::FunctionBody<'dae>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    match (statement, plan) {
+        (
+            rumoca_core::Statement::FunctionCall {
+                comp, args, span, ..
+            },
+            FunctionStatementPlan::MultiOutputCall {
+                outputs,
+                argument_reads,
+            },
+        ) => lower_multi_output_statement(
+            construction,
+            symbols,
+            body,
+            comp,
+            args,
+            *span,
+            (outputs, argument_reads),
+        ),
+        (
+            rumoca_core::Statement::FunctionCall {
+                comp, args, span, ..
+            },
+            FunctionStatementPlan::RecordMultiOutputAssembly(plan),
+        ) => lower_record_multi_output_statement(
+            construction,
+            symbols,
+            body,
+            comp,
+            args,
+            *span,
+            plan,
+        ),
+        _ => unreachable!("a function-call plan owns its source call"),
+    }
+}
+
 pub(in crate::construction) fn lower_multi_output_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
@@ -213,13 +259,15 @@ pub(in crate::construction) fn lower_multi_output_statement<'dae>(
     callee: &rumoca_core::Reference,
     args: &[Expression],
     span: Span,
-    outputs: &[Option<FunctionAssignmentPlan>],
+    planned: (&[Option<FunctionAssignmentPlan>], &[(VarName, Span)]),
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let (outputs, argument_reads) = planned;
     let call = FunctionMultiOutputCall {
         callee,
         args,
         span,
         outputs,
+        argument_reads,
     };
     lower_function_multi_output_call(construction, symbols, &mut body, call)?;
     Ok(body)
@@ -234,20 +282,22 @@ pub(in crate::construction) fn lower_runtime_function_assertion<'dae>(
     let assertion = function_assertion(statement, symbols.functions.flat)
         .expect("analysis already validates the assertion statement")
         .expect("a runtime assertion plan owns an assertion statement");
-    let condition = lower_function_expression(
+    let condition = lower_function_expression_scoped(
         construction,
         symbols.coordinates,
         symbols.functions,
         symbols.shapes,
         &body,
+        symbols.binders,
         assertion.condition,
     )?;
-    let message = lower_function_expression(
+    let message = lower_function_expression_scoped(
         construction,
         symbols.coordinates,
         symbols.functions,
         symbols.shapes,
         &body,
+        symbols.binders,
         assertion.message,
     )?;
     let provenance = dae::DaeProvenance::source(assertion.span)?;
@@ -287,7 +337,7 @@ pub(in crate::construction) fn lower_record_multi_output_statement<'dae>(
 pub(in crate::construction) fn lower_function_conditional_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    mut body: dae::FunctionBody<'dae>,
+    body: dae::FunctionBody<'dae>,
     statement: &rumoca_core::Statement,
     plan: &FunctionStatementPlan,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
@@ -301,8 +351,7 @@ pub(in crate::construction) fn lower_function_conditional_statement<'dae>(
     };
     match plan {
         FunctionStatementPlan::If { .. } => {
-            lower_top_level_conditional(construction, symbols, &mut body, statement, plan, &[])?;
-            Ok(body)
+            lower_ordered_function_conditional(construction, symbols, body, statement, plan)
         }
         FunctionStatementPlan::ProvenBranch {
             selected,
@@ -316,49 +365,6 @@ pub(in crate::construction) fn lower_function_conditional_statement<'dae>(
     }
 }
 
-/// Lower one runtime conditional of a sequence, returning the definedness
-/// predicate of each target in `partial`.
-pub(in crate::construction) fn lower_top_level_conditional<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
-    statement: &rumoca_core::Statement,
-    plan: &FunctionStatementPlan,
-    partial: &[PartialTarget<'dae>],
-) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
-    let (
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
-            span,
-        },
-        FunctionStatementPlan::If {
-            branches,
-            fallback,
-            targets,
-        },
-    ) = (statement, plan)
-    else {
-        unreachable!("a runtime conditional plan owns a conditional statement")
-    };
-    let binders = HashMap::new();
-    lower_function_conditional(
-        construction,
-        body,
-        FunctionConditional {
-            symbols,
-            binders: &binders,
-            blocks: cond_blocks,
-            fallback: else_block.as_deref(),
-            branch_plans: branches,
-            fallback_plans: fallback.as_deref(),
-            targets,
-            partial,
-            span: *span,
-        },
-    )
-}
-
 pub(in crate::construction) struct FunctionAssignment<'statement> {
     pub(in crate::construction) value: &'statement Expression,
     pub(in crate::construction) span: Span,
@@ -370,6 +376,7 @@ pub(in crate::construction) struct FunctionMultiOutputCall<'statement> {
     pub(in crate::construction) args: &'statement [Expression],
     pub(in crate::construction) span: Span,
     pub(in crate::construction) outputs: &'statement [Option<FunctionAssignmentPlan>],
+    pub(in crate::construction) argument_reads: &'statement [(VarName, Span)],
 }
 
 /// Lower one MLS §11.2.1.1 multi-result call statement.
@@ -386,7 +393,8 @@ pub(in crate::construction) fn lower_function_multi_output_call<'dae>(
     call: FunctionMultiOutputCall<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(call.span)?;
-    let binders = HashMap::new();
+    let binders = symbols.binders;
+    function_body::require_proven_function_reads(construction, symbols, body, call.argument_reads)?;
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {
@@ -398,7 +406,7 @@ pub(in crate::construction) fn lower_function_multi_output_call<'dae>(
             owner_clock: None,
             source_comprehension_binders: None,
         },
-        &binders,
+        binders,
         call.callee,
         call.args,
         provenance,
@@ -418,10 +426,6 @@ pub(in crate::construction) fn lower_function_multi_output_call<'dae>(
     for ((_, plan), mut value) in selected.into_iter().zip(results) {
         let target = function_value_coordinate(symbols.coordinates, plan.target());
         if !plan.subscripts().is_empty() {
-            let base = plan
-                .seed()
-                .map(|seed| lower_function_value_seed(construction, seed, call.span))
-                .transpose()?;
             value = lower_function_array_update(
                 construction,
                 FunctionArrayUpdate {
@@ -434,8 +438,8 @@ pub(in crate::construction) fn lower_function_multi_output_call<'dae>(
                         owner_clock: None,
                         source_comprehension_binders: None,
                     },
-                    binders: &binders,
-                    base,
+                    binders,
+                    base: None,
                     target,
                     subscripts: plan.subscripts(),
                     value,
@@ -458,6 +462,12 @@ pub(in crate::construction) fn lower_function_record_multi_output_assembly<'dae>
     plan: &FunctionRecordCallAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(span)?;
+    function_body::require_proven_function_reads(
+        construction,
+        symbols,
+        body,
+        &plan.argument_reads,
+    )?;
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {
@@ -469,7 +479,7 @@ pub(in crate::construction) fn lower_function_record_multi_output_assembly<'dae>
             owner_clock: None,
             source_comprehension_binders: None,
         },
-        &HashMap::new(),
+        symbols.binders,
         callee,
         args,
         provenance,
@@ -501,23 +511,31 @@ pub(in crate::construction) fn lower_function_assignment<'dae>(
     assignment: FunctionAssignment<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let target = function_value_coordinate(symbols.coordinates, assignment.plan.target());
-    let mut value = lower_function_expression(
+    function_body::require_proven_function_reads(
+        construction,
+        symbols,
+        body,
+        assignment.plan.proven_reads(),
+    )?;
+    let mut value = lower_function_expression_scoped(
         construction,
         symbols.coordinates,
         symbols.functions,
         symbols.shapes,
         body,
+        symbols.binders,
         assignment.value,
     )?;
     let provenance = dae::DaeProvenance::source(assignment.span)?;
     let subscripts = assignment.plan.subscripts();
     if !subscripts.is_empty() {
-        let binders = HashMap::new();
-        let mut base = None;
-        if let Some(seed) = assignment.plan.seed() {
-            let seeded = lower_function_value_seed(construction, seed, assignment.span)?;
-            base = Some(seeded);
-        }
+        function_body::require_proven_function_reads(
+            construction,
+            symbols,
+            body,
+            assignment.plan.base_reads(),
+        )?;
+        let binders = symbols.binders;
         value = lower_function_array_update(
             construction,
             FunctionArrayUpdate {
@@ -530,8 +548,8 @@ pub(in crate::construction) fn lower_function_assignment<'dae>(
                     owner_clock: None,
                     source_comprehension_binders: None,
                 },
-                binders: &binders,
-                base,
+                binders,
+                base: None,
                 target,
                 subscripts,
                 value,
@@ -559,16 +577,27 @@ pub(in crate::construction) fn lower_function_loop<'dae>(
     mut body: dae::FunctionBody<'dae>,
     input: FunctionLoop<'_>,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    if input.domain.scalar_count().is_ok_and(|count| count == 0) {
+        return Ok(body);
+    }
     let owner = dae::DaeProvenance::source(input.span)?;
     let domain_provenance = match input.binder_spans {
         [span] => dae::DaeProvenance::source(*span)?,
         _ => owner,
     };
-    let domain = construction
-        .domains(|domains| domains.structured(input.domain.clone(), domain_provenance))?;
+    let domain = construction.domains(|domains| match symbols.domain {
+        Some(parent) => domains.nested(parent, input.domain.clone(), domain_provenance),
+        None => domains.structured(input.domain.clone(), domain_provenance),
+    })?;
     let (indices, statements) =
         flattened_function_loop_source(input.indices, input.source_statements, input.source_depth);
-    let binders = lower_function_binders(construction, domain, &indices, input.binder_spans)?;
+    let mut binders = symbols.binders.clone();
+    binders.extend(lower_function_binders(
+        construction,
+        domain,
+        &indices,
+        input.binder_spans,
+    )?);
     let mut loop_shapes = symbols.shapes.clone();
     for binder in binders.keys() {
         // A loop binder is a scalar whose value varies over the iteration, so
@@ -579,6 +608,8 @@ pub(in crate::construction) fn lower_function_loop<'dae>(
         coordinates: symbols.coordinates,
         functions: symbols.functions,
         shapes: &loop_shapes,
+        binders: &binders,
+        domain: Some(domain),
     };
     match input.lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
@@ -599,17 +630,26 @@ pub(in crate::construction) fn lower_function_loop<'dae>(
         FunctionLoopLowering::Fold {
             targets,
             iteration_locals,
+            entry_reads,
+            selected_entry,
+            entry_seeds,
         } => lower_function_fold(
             construction,
             loop_symbols,
             body,
             FunctionFold {
                 domain,
+                structured: input.domain,
                 binders: &binders,
                 statements,
                 plans: input.plans,
                 targets,
                 iteration_locals,
+                entry_reads,
+                entry_seeds,
+                selected_condition: selected_entry
+                    .as_ref()
+                    .map(|entry| analysis::selected_loop_entry(entry, input.span)),
                 owner,
             },
         ),

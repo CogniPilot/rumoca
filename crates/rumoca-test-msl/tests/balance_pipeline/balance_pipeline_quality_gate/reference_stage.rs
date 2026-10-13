@@ -99,8 +99,7 @@ fn ensure_simulation_parity_reference(
             sim_cache_entry.display()
         );
         run_simulation_parity_reference_command(context, sim_targets_path, true)?;
-        persist_simulation_parity_cache_entry(&omc_simulation_reference, &sim_cache_entry)?;
-        return Ok(());
+        return finish_simulation_parity_reference(&omc_simulation_reference, &sim_cache_entry);
     }
 
     let canonical_cache_matches =
@@ -124,8 +123,17 @@ fn ensure_simulation_parity_reference(
         );
         run_simulation_parity_reference_command(context, sim_targets_path, true)?;
     }
-    persist_simulation_parity_cache_entry(&omc_simulation_reference, &sim_cache_entry)?;
-    Ok(())
+    finish_simulation_parity_reference(&omc_simulation_reference, &sim_cache_entry)
+}
+
+pub(super) fn finish_simulation_parity_reference(active: &Path, cache: &Path) -> io::Result<()> {
+    if !simulation_parity_cache_has_required_metrics(active)? {
+        return Err(io::Error::other(format!(
+            "OMC reference '{}' lacks required runtime, trace, or state-selection measurements",
+            active.display()
+        )));
+    }
+    persist_simulation_parity_cache_entry(active, cache)
 }
 
 /// Run the OMC reference + trace-comparison stage.

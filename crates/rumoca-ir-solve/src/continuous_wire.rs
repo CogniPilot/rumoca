@@ -11,9 +11,10 @@ use serde::de::Error as _;
 use serde::ser::{Error as _, SerializeStruct};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::projection_stages::ImplicitRowTargetsWire;
 use crate::{
     AlgebraicProjectionPlan, ChartExchange, ChartPlanDelta, ComputeBlock, ContinuousRefreshOwners,
-    ContinuousSolveSystem, ReducedChart, ReducedChartSet, ScalarSlot,
+    ContinuousSolveSystem, ReducedChart, ReducedChartSet,
 };
 
 /// One chart on the wire: its partition, trial conditioning, and plan delta.
@@ -126,7 +127,7 @@ impl Serialize for ContinuousSolveSystem {
 #[derive(Deserialize)]
 struct ContinuousSolveSystemWire {
     implicit_rhs: ComputeBlock,
-    implicit_row_targets: Vec<Option<ScalarSlot>>,
+    implicit_row_targets: ImplicitRowTargetsWire,
     algebraic_projection_plan: AlgebraicProjectionPlan,
     residual: ComputeBlock,
     manifold_residual: ComputeBlock,
@@ -144,7 +145,10 @@ impl<'de> Deserialize<'de> for ContinuousSolveSystem {
         let wire = ContinuousSolveSystemWire::deserialize(deserializer)?;
         let mut system = Self {
             implicit_rhs: wire.implicit_rhs,
-            implicit_row_targets: wire.implicit_row_targets,
+            implicit_row_targets: crate::ImplicitRowTargets::from_wire(
+                wire.implicit_row_targets,
+                &wire.algebraic_projection_plan.blocks,
+            ),
             algebraic_projection_plan: wire.algebraic_projection_plan,
             residual: wire.residual,
             manifold_residual: wire.manifold_residual,

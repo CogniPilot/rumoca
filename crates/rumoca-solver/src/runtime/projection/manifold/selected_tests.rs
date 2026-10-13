@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 
 struct Model {
     plan: solve::AlgebraicProjectionPlan,
-    structure: solve::JacobianStructure,
+    structure: solve::ColoredJacobianStructure,
     directional: PreparedScalarProgramBlock,
     programs: RefCell<Vec<usize>>,
     full_calls: Cell<usize>,
@@ -97,22 +97,25 @@ impl Model {
         let block = program();
         let mut model = solve::SolveModel::default();
         model.problem.solve_layout.state_scalar_count = 5;
-        model.problem.solve_layout.solver_maps.names =
-            (0..5).map(|index| format!("x{index}")).collect();
+        model.problem.layout = crate::fixture_layout::named_y_layout(
+            model.problem.layout.clone(),
+            (0..5).map(|index| format!("x{index}")).collect(),
+        );
         model.problem.layout = solve::VarLayout::from_parts(Default::default(), 5, 1);
-        model.initial_y = vec![0.0; 5];
-        model.parameters = vec![2.0];
+        model.initial_y = vec![0.0; 5].into();
+        model.parameters = vec![2.0].into();
         model.problem.continuous.manifold_residual =
             solve::ComputeBlock::from_scalar_program_block(block.clone());
         model.artifacts.continuous.manifold_jacobian_v =
             solve::ComputeBlock::from_scalar_program_block(block.clone());
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![2, 1, 0],
                 y_indices: vec![4, 3, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         };
         model.problem.continuous.manifold_projection_plan = plan.clone();
         let (artifacts, _) =
@@ -130,8 +133,15 @@ impl Model {
     }
 
     fn jacobian(&self, k: f64, t: f64) -> Result<DMatrix<f64>, RuntimeSolveError> {
-        manifold_block_jacobian(self, &[0.0; 5], &[k], t, &self.plan.blocks[0], 0)
-            .map(|jacobian| jacobian.as_dense().into_owned())
+        manifold_block_jacobian(
+            self,
+            &[0.0; 5],
+            &[k],
+            t,
+            &self.plan.blocks.scalar_blocks()[0],
+            0,
+        )
+        .map(|jacobian| jacobian.as_dense().into_owned())
     }
 }
 
@@ -209,7 +219,10 @@ impl ManifoldProjectionModel for Model {
     fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-    fn manifold_projection_block_structure(&self, _: usize) -> Option<&solve::JacobianStructure> {
+    fn manifold_projection_block_structure(
+        &self,
+        _: usize,
+    ) -> Option<&solve::ColoredJacobianStructure> {
         Some(&self.structure)
     }
 }

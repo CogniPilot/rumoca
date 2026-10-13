@@ -1,5 +1,5 @@
 {#- Follows the whitespace convention stated in `typed_arithmetic.jinja`. -#}
-{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary %}
+{%- from "fmi-typed-arithmetic.jinja" import copy, binary, integer_binary, domain_check %}
 {%- macro bounds(index, extent) -%}
 if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% endmacro %}
@@ -8,21 +8,7 @@ if (r{{ index }}[0]<1 || r{{ index }}[0]>{{ extent }}) return 1;
 {% set dst = "r" ~ op.destination -%}
 {% set ty = program.register_types[op.destination] -%}
 {% if op.operation in ["scale", "matrix_multiply", "cross"] and (ty.scalar.kind != "real" or ty.scalar.profile.format != "binary64") %}{{ fail("unsupported-feature:fmi.c.pure-call: non-Real tensor arithmetic") }}{% endif -%}
-{% if op.operation == "reduce" -%}
-{% set operators = {"sum":"add", "product":"multiply", "minimum":"min", "maximum":"max", "all":"and"} -%}
-{% if op.operator not in operators or not (((ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64") or ty.scalar.kind == "integer") and op.operator != "all" or (ty.scalar.kind == "boolean" and op.operator in ["all", "minimum", "maximum"])) %}{{ fail("unsupported-feature:fmi.c.pure-call: reduction type or operator") }}{% endif -%}
-{% set count = program.register_types[op.operand].scalar_count -%}
-{#- Match the typed evaluator's eval_reduce: seed with the first element, then
-    combine in order. An extra identity changes NaNs and signed zeros. -#}
-{{ dst }}[0]=r{{ op.operand }}[0];
-for (size_t k=1; k<{{ count }}; ++k) {
-{% if ty.scalar.kind == "integer" -%}
-{{ integer_binary(operators[op.operator], dst ~ "[0]", dst ~ "[0]", "r" ~ op.operand ~ "[k]") -}}
-{% else -%}
-{{ dst }}[0] = {{ binary(operators[op.operator], dst ~ "[0]", "r" ~ op.operand ~ "[k]") }};
-{% endif -%}
-}
-{% elif op.operation == "fill" -%}
+{% if op.operation == "fill" -%}
 for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k]=r{{ op.value }}[0];
 {% elif op.operation == "identity" -%}
 {% set size = ty.dimensions[0] -%}
@@ -63,6 +49,28 @@ for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) for (
 for (size_t i=0; i<{{ rows }}; ++i) for (size_t j=0; j<{{ columns }}; ++j) { double sum=0.0; for (size_t k=0; k<{{ inner }}; ++k) sum+=r{{ op.lhs }}[i*{{ inner }}+k]*r{{ op.rhs }}[k*{{ columns }}+j]; {{ dst }}[i*{{ columns }}+j]=sum; }
 {% elif op.operation == "cross" -%}
 {% for i in range(3) %}{{ dst }}[{{ i }}]=r{{ op.lhs }}[{{ (i+1)%3 }}]*r{{ op.rhs }}[{{ (i+2)%3 }}]-r{{ op.lhs }}[{{ (i+2)%3 }}]*r{{ op.rhs }}[{{ (i+1)%3 }}];{% endfor %}
+{% elif op.operation == "reduce" -%}
+{% set operators = {"sum":"add", "product":"multiply", "minimum":"min", "maximum":"max", "all":"and"} -%}
+{% if op.operator not in operators or not (((ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64") or ty.scalar.kind == "integer") and op.operator != "all" or (ty.scalar.kind == "boolean" and op.operator in ["all", "minimum", "maximum"])) %}{{ fail("unsupported-feature:fmi.c.pure-call: reduction type or operator") }}{% endif -%}
+{% set count = program.register_types[op.operand].scalar_count -%}
+{% set operator = operators[op.operator] -%}
+{#- Checked tensors are nonempty; preserve the canonical first-element seed
+    and source order rather than introducing an extra identity operation. -#}
+{% if count == 0 -%}
+{{ fail("unsupported-feature:fmi.c.pure-call: empty typed tensor reduction") }}
+{% else -%}
+{{ dst }}[0]=r{{ op.operand }}[0];
+for (size_t k=1; k<{{ count }}; ++k) {
+{% set a = dst ~ "[0]" -%}
+{% set b = "r" ~ op.operand ~ "[k]" -%}
+{% if ty.scalar.kind == "integer" -%}
+{{ integer_binary(operator, a, a, b) -}}
+{{ domain_check(dst, ty) -}}
+{% else -%}
+{{ dst }}[0]={{ binary(operator, a, b, ty) }};
+{% endif -%}
+}
+{% endif -%}
 {% elif op.operation in ["project_element", "project_element_dynamic", "update_element"] -%}
 {% set shape = program.register_types[op.aggregate].dimensions -%}
 { size_t index=0;
@@ -126,7 +134,7 @@ for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {
 {% if ty.scalar.kind == "integer" -%}
 {{ integer_binary(op.operator, dst ~ "[k]", b if op.scalar_on_lhs else a, a if op.scalar_on_lhs else b) -}}
 {% else -%}
-{{ dst }}[k]={{ binary(op.operator, b if op.scalar_on_lhs else a, a if op.scalar_on_lhs else b) }};
+{{ dst }}[k]={{ binary(op.operator, b if op.scalar_on_lhs else a, a if op.scalar_on_lhs else b, ty) }};
 {% endif -%}
 }
 {% elif op.operation in ["project_slice", "update_slice"] -%}

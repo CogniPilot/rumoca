@@ -150,7 +150,10 @@ fn a_delayed_model_publishes_one_calculated_maximum_step_duration_local() {
     assert_eq!(bound.description(), Some(MAX_STEP_DURATION_DESCRIPTION));
     assert_eq!(bound.backing(), &FmiValueBacking::MaxStepDuration);
     assert_eq!(bound.start(), None);
-    assert_eq!(bound.scalar_names(), [MAX_STEP_DURATION_NAME]);
+    assert_eq!(
+        bound.scalar_names().collect::<Vec<_>>(),
+        [MAX_STEP_DURATION_NAME]
+    );
 }
 
 #[test]
@@ -218,5 +221,58 @@ fn an_undelayed_model_publishes_no_maximum_step_duration_local() {
     assert_eq!(
         component.derivative_value_reference_base_fmi3(),
         u32::try_from(runs).expect("fixture inventory is small") + 1
+    );
+}
+
+#[test]
+fn retained_fmi_capsule_rebuilds_component_locals_from_the_same_source_root() {
+    use serde::de::IntoDeserializer;
+    let original = component(&delayed_state_model());
+    let root = original.runtime_view().retain_assertion_root();
+    assert_eq!(root.resolved_start_time(), None);
+    let declarations = root.fmi_declaration_inputs().collect::<Vec<_>>();
+    assert!(
+        declarations
+            .iter()
+            .all(|input| input.name != MAX_STEP_DURATION_NAME)
+    );
+    assert!(
+        original
+            .variables()
+            .iter()
+            .any(|variable| variable.name() == MAX_STEP_DURATION_NAME)
+    );
+    let wire = serde_json::to_value(
+        rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        wire["variables"],
+        serde_json::to_value(&declarations).unwrap()
+    );
+    assert_eq!(
+        wire["schema_version"],
+        rumoca_eval_solve::fmi_wire::FMI_COMPONENT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        wire["solve_model"]["schema_version"],
+        rumoca_eval_solve::model_wire::SOLVE_MODEL_SCHEMA_VERSION
+    );
+    let replay =
+        rumoca_eval_solve::fmi_wire::deserialize_fmi_component(wire.into_deserializer()).unwrap();
+    let recovered = replay.runtime_view().retain_assertion_root();
+    assert_eq!(recovered.resolved_start_time(), None);
+    assert_eq!(
+        serde_json::to_value(recovered.fmi_declaration_inputs().collect::<Vec<_>>()).unwrap(),
+        serde_json::to_value(declarations).unwrap()
+    );
+    assert_eq!(replay.variables().len(), original.variables().len());
+    assert_eq!(
+        replay
+            .variables()
+            .iter()
+            .filter(|variable| variable.name() == MAX_STEP_DURATION_NAME)
+            .count(),
+        1
     );
 }

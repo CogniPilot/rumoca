@@ -59,10 +59,12 @@ pub(super) struct RootConditionPlan {
     pub(super) search_rows: Vec<usize>,
 }
 
-pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleValuePlan> {
-    let rows = &model.visible_value_rows;
-    if rows.row_count() != model.visible_names.len()
-        || rows.output_count() != model.visible_names.len()
+pub(super) fn visible_value_plan(
+    rows: &solve::ScalarProgramBlock,
+    visible_count: usize,
+) -> Option<VisibleValuePlan> {
+    if rows.row_count() != visible_count
+        || rows.output_count() != visible_count
         || !rows.uses_local_contiguous_output_indices()
     {
         return None;

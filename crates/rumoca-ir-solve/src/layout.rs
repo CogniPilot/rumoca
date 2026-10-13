@@ -1,9 +1,12 @@
+mod identity;
+mod scalar_views;
+
 use indexmap::IndexMap;
 use rumoca_core::{ComponentReference, Span, Subscript, VarName};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
-const F64_BYTES: usize = std::mem::size_of::<f64>();
+pub(crate) const F64_BYTES: usize = std::mem::size_of::<f64>();
 
 fn intern_key_map<T>(values: IndexMap<String, T>) -> IndexMap<VarName, T> {
     values
@@ -433,7 +436,7 @@ impl VarLayout {
     /// concrete element name like `x[2,3]` (1-based, row-major). Returns `None` when
     /// the name is not a subscripted element, the base has no contiguous slot, or any
     /// subscript is out of bounds.
-    fn derive_array_element_binding(&self, name: &str) -> Option<ScalarSlot> {
+    pub fn derive_array_element_binding(&self, name: &str) -> Option<ScalarSlot> {
         let scalar = rumoca_core::parse_scalar_name(name)?;
         let base = VarName::intern(scalar.base);
         let root = self.bindings.get(&base).copied()?;
@@ -774,7 +777,7 @@ pub fn scalar_slot_p(index: usize) -> ScalarSlot {
 mod tests {
     use super::*;
 
-    fn layout_source_span(source: u64, start: usize, end: usize) -> Span {
+    pub(super) fn layout_source_span(source: u64, start: usize, end: usize) -> Span {
         let source_name = format!("ir_solve_layout_source_{source}.mo");
         Span::from_offsets(
             rumoca_core::SourceId::from_source_name(&source_name),
@@ -1120,5 +1123,47 @@ mod tests {
         .expect("constant array shape is represented by indexed constant slots");
 
         assert_eq!(layout.validate_shape_contract(), Ok(()));
+    }
+
+    #[test]
+    fn solver_range_projection_refuses_noncontiguous_indexed_y_declaration() {
+        let layout = VarLayout::from_parts_with_shapes_and_indexed_bindings(
+            [("state".to_string(), scalar_slot_y(0))].into(),
+            [("state".to_string(), vec![2])].into(),
+            [(
+                ComponentReferenceKey::generated("state"),
+                vec![
+                    IndexedScalarSlot {
+                        indices: vec![1],
+                        slot: scalar_slot_y(1),
+                    },
+                    IndexedScalarSlot {
+                        indices: vec![2],
+                        slot: scalar_slot_y(0),
+                    },
+                ],
+            )]
+            .into(),
+            2,
+            0,
+        )
+        .unwrap();
+        assert_eq!(layout.validate_shape_contract(), Ok(()));
+        let slots = layout.indexed_slots("state").unwrap();
+        assert_eq!(slots[0].indices, vec![1]);
+        assert_eq!(slots[0].slot, scalar_slot_y(1));
+        assert_eq!(slots[1].indices, vec![2]);
+        assert_eq!(slots[1].slot, scalar_slot_y(0));
+        assert!(layout.y_declaration_ranges().is_err());
+        assert!(layout.validate_named_y_coverage(2).is_err());
+        let problem = crate::SolveProblem {
+            layout,
+            solve_layout: crate::SolveLayout {
+                state_scalar_count: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(problem.solver_declaration_range("state"), None);
     }
 }

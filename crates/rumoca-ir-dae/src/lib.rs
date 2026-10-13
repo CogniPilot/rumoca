@@ -122,6 +122,7 @@ mod events;
 mod expr_query;
 mod expression;
 mod ids;
+mod input_policy;
 mod model;
 mod model_event_transactions;
 mod native_table;
@@ -151,7 +152,7 @@ pub use events::{
 };
 pub use expr_query::{
     ExpressionTraversal, expr_contains_der_of, expr_contains_der_of_any, expr_contains_var,
-    expr_refers_to_var, for_each_expression, for_each_expression_pruned,
+    expr_reads_binder_of, expr_refers_to_var, for_each_expression, for_each_expression_pruned,
 };
 pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,
@@ -161,19 +162,21 @@ pub use ids::InitialParameterValueId;
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
-    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionDerivativeId,
-    FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
-    ParameterId, PeriodicClockId, PreviousId, RelationId, RootId, StateId, StructuredRootId,
-    TerminalId, TimeEventId, ValueTypeId, VariableId,
+    DomainBinderId, DomainId, EventActionId, ExprId, FunctionConditionalId, FunctionDefinitionId,
+    FunctionDerivativeId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
+    InitialDiscreteValueId, InitializationEquationId, InitializationFamilyId, InputId,
+    ModelEventTransactionId, ParameterId, PeriodicClockId, PreviousId, RelationId, RootId, StateId,
+    StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
+pub use input_policy::InputInitializationPolicy;
 pub use model::initial_parameters::InitialParameterValueView;
 pub use model::{
     ConditionalExpressionOperands, ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae,
     DaeConstruction, DaeView, DeclaredCausality, DomainView, Domains, ExpressionKind,
     ExpressionOperands, ExpressionOperation, ExpressionView, ExternalArgument,
     ExternalArgumentView, ExternalFunctionBody, ExternalFunctionView, ExternalLanguage,
-    ExternalLinkage, FunctionBody, FunctionConditionalView, FunctionDefinitionValues,
+    ExternalLinkage, FunctionAssignedState, FunctionBody, FunctionBranchFinish,
+    FunctionBranchOwner, FunctionBranchView, FunctionConditionalBodyView, FunctionDefinitionValues,
     FunctionDefinitionView, FunctionDerivativeView, FunctionFoldView, FunctionLoop,
     FunctionParameterView, FunctionPurity, FunctionReservation, FunctionScopeRelation,
     FunctionScopeView, FunctionSignature, FunctionStatementView, FunctionStatements,

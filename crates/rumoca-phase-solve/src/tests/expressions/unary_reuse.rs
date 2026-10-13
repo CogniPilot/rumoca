@@ -120,7 +120,7 @@ fn numerical_ad_reuses_primal_geometry_for_sine_and_cosine() {
         LinearOp::StoreOutput { src: 3 },
     ]];
     let derived = ScalarProgramBlock::with_source_span(
-        crate::lower_scalar_program_block_ad(&primal).unwrap(),
+        rumoca_eval_solve::ad::lower_scalar_program_block_ad(&primal).unwrap(),
         provenance,
     )
     .unwrap();

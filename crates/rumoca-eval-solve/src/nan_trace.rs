@@ -86,20 +86,19 @@ pub fn report_state_derivative(
     if !nan_trace_enabled() {
         return;
     }
-    let names = &model.problem.solve_layout.solver_maps.names;
     report_nonfinite(
         "state-derivative inputs (solver_y after projection)",
         t,
         solver_y,
         |index| {
-            names
-                .get(index)
-                .cloned()
+            model
+                .problem
+                .solver_name(index)
                 .unwrap_or_else(|| format!("y[{index}]"))
         },
     );
     report_nonfinite("state-derivative output", t, derivatives, |index| {
-        names.get(index).map_or_else(
+        model.problem.solver_name(index).map_or_else(
             || format!("der(state[{index}])"),
             |name| format!("der({name})"),
         )

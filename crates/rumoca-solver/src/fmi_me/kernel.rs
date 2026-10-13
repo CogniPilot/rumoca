@@ -1,10 +1,26 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{OnceCell, RefCell},
+    rc::Rc,
+};
 
 mod chart_switch;
 mod committed_seed;
 mod component;
 mod dynamic_chart;
 mod event_boundary;
+mod input_transaction;
+#[cfg(all(test, feature = "native-wasm"))]
+pub(in crate::fmi_me) use component::fail_initialization_entry;
+pub(in crate::fmi_me) use input_transaction::AcceptedInputWrite;
+#[cfg(test)]
+pub(in crate::fmi_me) use input_transaction::fail_input_restore;
+#[cfg(all(test, feature = "native-wasm"))]
+pub(in crate::fmi_me) use input_transaction::snapshot_count;
+#[cfg(feature = "native-wasm")]
+mod native_typed;
+
+#[cfg(feature = "native-wasm")]
+pub use native_typed::{MePendingNativeComponent, MePendingNativeState};
 
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
@@ -125,6 +141,8 @@ pub struct SolveMeKernel {
     /// swaps this pointer to `reduced_chart_runtimes[active_chart]` when the
     /// completed-step detector requests a basis change.
     runtime: Rc<SolveRuntime>,
+    #[cfg(feature = "native-wasm")]
+    native_transport: Option<RefCell<rumoca_exec_wasm::NativeTransport>>,
     /// The runtime-executable image of every reduced state selection chart, and
     /// the geometry the detector and the basis transition need. `None` for every
     /// model without a folding first-integral group, keeping that path inert.
@@ -144,7 +162,7 @@ pub struct SolveMeKernel {
     /// The component's root-location rules (SPEC_0044 ME-EVENT-004).
     root_location: rumoca_ir_solve::fmi::RootLocationPlan,
     instance_brand: Rc<()>,
-    instance_name: &'static str,
+    instance_name: std::sync::Arc<str>,
     lifecycle: MeLifecycle,
 
     /// FMI `tolerance`.
@@ -201,7 +219,7 @@ pub struct SolveMeKernel {
     max_step_duration_value_reference: Option<u32>,
     last_projection_changed: bool,
     termination: Option<SimTermination>,
-    output_meta: Vec<SimVariableMeta>,
+    visible_report: OnceCell<(Vec<String>, Vec<SimVariableMeta>)>,
     /// The settled full solver vector `exit_initialization_mode` produced, so
     /// the initial `update_discrete_states` continues from the same vector
     /// instead of rebuilding one.
@@ -214,6 +232,8 @@ pub struct SolveMeKernel {
 /// synthesize a state that bypasses lifecycle or buffer invariants.
 #[derive(Clone)]
 pub(crate) struct MeKernelSnapshot {
+    #[cfg(feature = "native-wasm")]
+    native_transport: Option<rumoca_exec_wasm::NativeTransportSnapshot>,
     lifecycle: MeState,
     stop_time: f64,
     time: f64,
@@ -275,12 +295,74 @@ pub(super) fn event_right_limit_state_derivatives(
 }
 
 impl SolveMeKernel {
+    pub(super) fn instance_configuration(&self) -> MeInstanceConfig {
+        MeInstanceConfig {
+            instance_name: self.instance_name.clone(),
+            tolerance: self.tolerance,
+            start_time: self.time,
+            stop_time: self.stop_time,
+            executor: self.refresh_executor,
+        }
+    }
+
+    pub(super) fn has_native_resource(&self) -> bool {
+        #[cfg(feature = "native-wasm")]
+        {
+            self.native_transport.is_some()
+        }
+        #[cfg(not(feature = "native-wasm"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(feature = "native-wasm")]
+    pub(super) fn native_start_time(&self) -> Option<f64> {
+        self.native_transport.as_ref().and_then(|transport| {
+            transport
+                .borrow()
+                .product()
+                .inputs()
+                .root()
+                .resolved_start_time()
+        })
+    }
+
+    pub(super) fn initialization_state(&self) -> MeState {
+        self.lifecycle.state()
+    }
+
     /// The component's root-location rules.
     pub(crate) const fn root_location(&self) -> &rumoca_ir_solve::fmi::RootLocationPlan {
         &self.root_location
     }
 
+    pub(crate) fn continuous_state_count(&self) -> usize {
+        self.state_count
+    }
+
+    pub(in crate::fmi_me) fn source_model(&self) -> &rumoca_ir_solve::SolveModel {
+        &self.runtime.model
+    }
+    pub(crate) fn event_indicator_count(&self) -> usize {
+        self.indicator_plan.len()
+    }
+    pub(crate) fn needs_completed_integrator_step(&self) -> bool {
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn visible_report_is_materialized(&self) -> bool {
+        self.visible_report.get().is_some()
+    }
+
     pub(crate) fn model_description(&self) -> MeModelDescription<'_> {
+        let (names, metadata) = self.visible_report.get_or_init(|| {
+            (
+                self.runtime.model.visible_names(),
+                convert_variable_meta(&self.runtime.model.visible_metadata()),
+            )
+        });
         MeModelDescription {
             continuous_state_count: self.state_count,
             event_indicator_count: self.indicator_plan.len(),
@@ -289,9 +371,9 @@ impl SolveMeKernel {
             // they have no continuous delay channel, so the current component
             // profile honestly requires the call for every model.
             needs_completed_integrator_step: true,
-            output_names: &self.runtime.model.visible_names,
+            output_names: names,
             input_names: self.runtime.model.problem.solve_layout.input_scalar_names(),
-            output_meta: &self.output_meta,
+            output_meta: metadata,
         }
     }
 
@@ -318,6 +400,17 @@ impl SolveMeKernel {
             .problem
             .solve_layout
             .input_parameter_index(name)
+            .filter(|&index| {
+                #[cfg(feature = "native-wasm")]
+                {
+                    self.native_parameter_is_real(index)
+                }
+                #[cfg(not(feature = "native-wasm"))]
+                {
+                    let _ = index;
+                    true
+                }
+            })
             .map(|index| MeValueRef {
                 backing: MeFloat64Backing::InputParameter(index),
                 instance_brand: Rc::clone(&self.instance_brand),
@@ -425,7 +518,7 @@ impl SolveMeKernel {
 
     pub(crate) fn terminate(&mut self) -> Result<(), MeError> {
         self.require_lifecycle_transition(MeLifecycleCommand::Terminate)?;
-        rumoca_eval_solve::trace_solve_row_eval_snapshot(self.instance_name);
+        rumoca_eval_solve::trace_solve_row_eval_snapshot(&self.instance_name);
         self.commit_lifecycle_transition(MeLifecycleCommand::Terminate)
     }
 
@@ -682,11 +775,11 @@ impl SolveMeKernel {
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("record_outputs")?;
         self.require_observation_brand(observation)?;
-        if series.columns_mut().len() != self.runtime.model.visible_names.len() {
+        if series.columns_mut().len() != self.runtime.model.visible_projection.scalar_count() {
             return Err(contract(format!(
                 "output series has {} columns for {} visible outputs",
                 series.columns_mut().len(),
-                self.runtime.model.visible_names.len(),
+                self.runtime.model.visible_projection.scalar_count(),
             )));
         }
         self.runtime
@@ -718,6 +811,10 @@ impl SolveMeKernel {
         self.runtime.diagnostics()
     }
 
+    pub(crate) fn diagnostics_since(&self, first: usize) -> (Vec<crate::SimDiagnostic>, usize) {
+        self.runtime.diagnostics_since(first)
+    }
+
     pub(crate) fn get_outputs(
         &self,
         observation: &MeObservation,
@@ -726,6 +823,12 @@ impl SolveMeKernel {
     ) -> Result<(), MeError> {
         self.require_active_lifecycle("get_outputs")?;
         self.require_observation_brand(observation)?;
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            return Err(contract(
+                "native outputs require original typed FMI value references",
+            ));
+        }
         *values = self.runtime.visible_values(
             &observation.solver_y,
             &observation.parameters,
@@ -747,38 +850,115 @@ impl SolveMeKernel {
                 values.len()
             )));
         }
-        if let Some((reference, value)) =
-            refs.iter()
-                .zip(values.iter().copied())
-                .find(|(reference, value)| {
-                    !Rc::ptr_eq(&reference.instance_brand, &self.instance_brand)
-                        || !matches!(
-                            reference.backing,
-                            MeFloat64Backing::InputParameter(index) if index < self.params.len()
-                        )
-                        || !value.is_finite()
-                })
-        {
-            return Err(contract(format!(
-                "Float64 value reference {:?} with value {value} is not a writable input for {} parameters",
-                reference.backing,
-                self.params.len(),
-            )));
+        let indices = self.writable_float64_inputs(refs, values)?;
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            let batches: Vec<_> = indices
+                .iter()
+                .zip(values)
+                .map(|(index, value)| (*index, std::slice::from_ref(value)))
+                .collect();
+            return self.commit_native_float64_inputs(&batches);
         }
-        let checkpoint = self.fmu_state();
-        for (reference, value) in refs.iter().zip(values.iter().copied()) {
-            let MeFloat64Backing::InputParameter(index) = reference.backing else {
-                unreachable!("the complete batch was proved writable above");
-            };
-            self.params[index] = value;
+        let checkpoint = self.fmu_state()?;
+        for (index, value) in indices.iter().zip(values.iter().copied()) {
+            self.params[*index] = value;
         }
         self.clear_runtime_caches();
+        #[cfg(feature = "native-wasm")]
+        if let Err(error) = self.sync_native_coordinates() {
+            return Err(self.restore_after_failed_write(&checkpoint, error));
+        }
         if let Err(error) = self.commit_delay_point() {
-            self.reset_to_fmu_state(&checkpoint)
-                .expect("a same-instance internal checkpoint is always restorable");
-            return Err(error);
+            return Err(self.restore_after_failed_write(&checkpoint, error));
         }
         Ok(())
+    }
+
+    /// Every reference belongs to this instance and addresses a readable native cell.
+    #[cfg(feature = "native-wasm")]
+    fn check_native_float64_reads(
+        &self,
+        transport: &RefCell<rumoca_exec_wasm::NativeTransport>,
+        refs: &[MeValueRef],
+    ) -> Result<(), MeError> {
+        for reference in refs {
+            if !Rc::ptr_eq(&reference.instance_brand, &self.instance_brand) {
+                return Err(contract(
+                    "Float64 value reference belongs to a different ME instance",
+                ));
+            }
+            match reference.backing {
+                MeFloat64Backing::InputParameter(index) => transport
+                    .borrow()
+                    .check_float64_inputs(index, 1)
+                    .map_err(native_typed::transport_error)?,
+                MeFloat64Backing::MaxStepDuration(value_reference)
+                    if self.max_step_duration_value_reference == Some(value_reference) => {}
+                MeFloat64Backing::MaxStepDuration(_) => {
+                    return Err(contract(
+                        "maximum-step-duration value reference is undeclared",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Parameter index of every reference when the whole batch is writable.
+    fn writable_float64_inputs(
+        &self,
+        refs: &[MeValueRef],
+        values: &[f64],
+    ) -> Result<Vec<usize>, MeError> {
+        refs.iter()
+            .zip(values.iter().copied())
+            .map(|(reference, value)| {
+                let MeFloat64Backing::InputParameter(index) = reference.backing else {
+                    return Err(self.unwritable_float64(reference, value));
+                };
+                let writable = Rc::ptr_eq(&reference.instance_brand, &self.instance_brand)
+                    && index < self.params.len()
+                    && value.is_finite()
+                    && self.native_float64_admits(index);
+                if writable {
+                    Ok(index)
+                } else {
+                    Err(self.unwritable_float64(reference, value))
+                }
+            })
+            .collect()
+    }
+
+    fn native_float64_admits(&self, index: usize) -> bool {
+        #[cfg(feature = "native-wasm")]
+        {
+            self.native_parameter_is_real(index)
+        }
+        #[cfg(not(feature = "native-wasm"))]
+        {
+            let _ = index;
+            true
+        }
+    }
+
+    fn unwritable_float64(&self, reference: &MeValueRef, value: f64) -> MeError {
+        contract(format!(
+            "Float64 value reference {:?} with value {value} is not a writable input for {} parameters",
+            reference.backing,
+            self.params.len(),
+        ))
+    }
+
+    /// Roll a failed parameter write back to the checkpoint taken before it;
+    /// a restore that also fails is reported together with the write error.
+    fn restore_after_failed_write(&mut self, checkpoint: &MeFmuState, error: MeError) -> MeError {
+        match self.reset_to_fmu_state(checkpoint) {
+            Ok(()) => error,
+            Err(restore) => contract(format!(
+                "{error}; restoring the pre-write checkpoint also failed: {restore}"
+            )),
+        }
     }
 
     pub(crate) fn get_float64(
@@ -793,6 +973,16 @@ impl SolveMeKernel {
                 refs.len(),
                 values.len()
             )));
+        }
+        #[cfg(feature = "native-wasm")]
+        if refs.iter().any(|reference| {
+            matches!(reference.backing, MeFloat64Backing::InputParameter(index) if !self.native_parameter_is_real(index))
+        }) {
+            return Err(contract("Float64 getters cannot read native Integer or Boolean cells"));
+        }
+        #[cfg(feature = "native-wasm")]
+        if let Some(transport) = &self.native_transport {
+            self.check_native_float64_reads(transport, refs)?;
         }
         for (reference, value) in refs.iter().zip(values) {
             if !Rc::ptr_eq(&reference.instance_brand, &self.instance_brand) {
@@ -822,17 +1012,26 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    pub(crate) fn fmu_state(&self) -> MeFmuState {
-        MeFmuState {
+    pub(crate) fn fmu_state(&self) -> Result<MeFmuState, MeError> {
+        #[cfg(test)]
+        input_transaction::count_snapshot();
+        Ok(MeFmuState {
             component: MeKernelSnapshot {
+                #[cfg(feature = "native-wasm")]
+                native_transport: self
+                    .native_transport
+                    .as_ref()
+                    .map(|transport| transport.borrow().snapshot())
+                    .transpose()
+                    .map_err(native_typed::transport_error)?,
                 lifecycle: self.lifecycle.state(),
                 stop_time: self.stop_time,
                 time: self.time,
                 event_boundary: self.event_boundary,
                 post_event_eval_time: self.post_event_eval_time,
                 event_anchor_time: self.event_anchor_time,
-                states: self.states.clone(),
-                params: self.params.clone(),
+                states: snapshot_values(&self.states)?,
+                params: snapshot_values(&self.params)?,
                 stop_schedule: self.stop_schedule.clone(),
                 pending_event_entry: self.pending_event_entry,
                 last_event_entry: self.last_event_entry,
@@ -840,34 +1039,54 @@ impl SolveMeKernel {
                 advance_state_to_event_right_limit: self.advance_state_to_event_right_limit,
                 state_time_coincidence: self.state_time_coincidence,
                 initial_event_pending: self.initial_event_pending,
-                pending_root_crossings: self.pending_root_crossings.clone(),
-                frozen_indicator_positive: self.frozen_indicator_positive.clone(),
-                pending_event_pre_y: self.pending_event_pre_y.clone(),
-                pending_event_pre_p: self.pending_event_pre_p.clone(),
-                boundary_event_pre_y: self.boundary_event_pre_y.clone(),
-                boundary_event_pre_p: self.boundary_event_pre_p.clone(),
-                solver_y_guess: self.solver_y_guess.borrow().clone(),
+                pending_root_crossings: snapshot_values(&self.pending_root_crossings)?,
+                frozen_indicator_positive: snapshot_values(&self.frozen_indicator_positive)?,
+                pending_event_pre_y: self
+                    .pending_event_pre_y
+                    .as_ref()
+                    .map(|values| snapshot_values(values))
+                    .transpose()?,
+                pending_event_pre_p: self
+                    .pending_event_pre_p
+                    .as_ref()
+                    .map(|values| snapshot_values(values))
+                    .transpose()?,
+                boundary_event_pre_y: self
+                    .boundary_event_pre_y
+                    .as_ref()
+                    .map(|values| snapshot_values(values))
+                    .transpose()?,
+                boundary_event_pre_p: self
+                    .boundary_event_pre_p
+                    .as_ref()
+                    .map(|values| snapshot_values(values))
+                    .transpose()?,
+                solver_y_guess: snapshot_values(&self.solver_y_guess.borrow())?,
                 committed_seed: self.committed_seed.borrow().clone(),
-                delay_params_scratch: self.delay_params_scratch.borrow().clone(),
-                delay_solver_y_scratch: self.delay_solver_y_scratch.borrow().clone(),
+                delay_params_scratch: snapshot_values(&self.delay_params_scratch.borrow())?,
+                delay_solver_y_scratch: snapshot_values(&self.delay_solver_y_scratch.borrow())?,
                 derivative_cache: self.derivative_cache.borrow().clone(),
                 root_cache: self.root_cache.borrow().clone(),
                 continuous_linearization_cache: self
                     .continuous_linearization_cache
                     .borrow()
                     .clone(),
-                initial_observations: self.initial_observations.clone(),
+                initial_observations: snapshot_values(&self.initial_observations)?,
                 max_step_duration: self.max_step_duration,
                 last_projection_changed: self.last_projection_changed,
                 termination: self.termination.clone(),
-                settled_initialization_y: self.settled_initialization_y.clone(),
+                settled_initialization_y: self
+                    .settled_initialization_y
+                    .as_ref()
+                    .map(|values| snapshot_values(values))
+                    .transpose()?,
                 active_chart: self.active_chart,
                 active_reference: self.active_reference,
                 pending_basis_change: self.pending_basis_change.clone(),
                 runtimes: self.chart_runtime_snapshots(),
             },
             instance_brand: Rc::clone(&self.instance_brand),
-        }
+        })
     }
 
     pub(crate) fn reset_to_fmu_state(&mut self, saved: &MeFmuState) -> Result<(), MeError> {
@@ -877,6 +1096,19 @@ impl SolveMeKernel {
             ));
         }
         let state = &saved.component;
+        #[cfg(feature = "native-wasm")]
+        match (&self.native_transport, &state.native_transport) {
+            (Some(transport), Some(snapshot)) => transport
+                .borrow_mut()
+                .restore(snapshot)
+                .map_err(|error| contract(error.to_string()))?,
+            (None, None) => {}
+            _ => {
+                return Err(contract(
+                    "native snapshot profile differs from this instance",
+                ));
+            }
+        }
         self.stop_time = state.stop_time;
         self.time = state.time;
         self.event_boundary = state.event_boundary;
@@ -1227,4 +1459,13 @@ fn project_event_algebraics(
 /// SPEC_0038 "Unsupported lifecycle capability fails before execution".
 fn validate_explicit_solve_model(model: &rumoca_ir_solve::SolveModel) -> Result<(), MeError> {
     super::validation::validate_explicit_solve_model(model)
+}
+
+fn snapshot_values<T: Clone>(source: &[T]) -> Result<Vec<T>, MeError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(source.len())
+        .map_err(|_| contract("component snapshot allocation refused"))?;
+    values.extend_from_slice(source);
+    Ok(values)
 }

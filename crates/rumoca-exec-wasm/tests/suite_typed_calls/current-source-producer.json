@@ -1,0 +1,37 @@
+{
+  "compilerRevision": "228cff40c1cbb577cc49395626d9649535b00d4b",
+  "compilerSourceSha256": "01d42072ef3d51d64ea2b7f3d91060b4d54ee925ee448c594553b7f6b9ed0336",
+  "producerBinarySha256": "4e3a8ec9c251fb049253a4435f296e85e4424cfd28c48da63e76270bb13d7ec4",
+  "files": [
+    {
+      "file": "fixed_tables/baseline.json",
+      "bytes": 10038,
+      "sha256": "2d6003c0ac8983a5ea366dded37f7233eb7f278d5b31d483c0a4366ab028fc60"
+    },
+    {
+      "file": "fixed_tables/gain-two.json",
+      "bytes": 10038,
+      "sha256": "a469bd82c4736a6ea6dd38f81c07a6e4687d88093dc6bd528463cbbd1d9d3412"
+    },
+    {
+      "file": "fixed_tables/subtract.json",
+      "bytes": 10043,
+      "sha256": "041a4113cfc0e4008999a0350b10389f13a7c3172e6a7df4a6449bc1d90585df"
+    },
+    {
+      "file": "fixed_integer_tables/baseline.json",
+      "bytes": 7976,
+      "sha256": "ed2d8ec6d653a343b280fb227298069b62d79aeaa097ff7b6e95e1039335dcca"
+    },
+    {
+      "file": "tensor_tables/baseline.json",
+      "bytes": 14132,
+      "sha256": "a2a834fdc165dbe3c10ddbda7bd0c129158f378ccd10d1a3f4d03a857163d9e0"
+    },
+    {
+      "file": "tensor_tables/gain-two.json",
+      "bytes": 14141,
+      "sha256": "ea1fc77d9395d13f90d7c343f7bc5b0f1868ba4a49504d4e38754922e993c38b"
+    }
+  ]
+}

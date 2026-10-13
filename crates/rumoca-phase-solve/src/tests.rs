@@ -9,6 +9,7 @@ use rumoca_ir_solve::{ComputeNode, LinearOp, ScalarSlot};
 
 use crate::{LowerError, lower_solve_package, lower_solve_problem};
 
+mod affine_blocks;
 mod affine_derivatives;
 mod charts;
 mod clocks;
@@ -19,23 +20,28 @@ mod expressions;
 mod fmi;
 mod initial_discrete_values;
 mod initialization;
+mod initialization_owner;
+mod input_storage;
 mod sampling;
 mod scalar_affine;
+mod scoped_assignments;
 mod temporal;
 
-struct TestSource {
-    map: SourceMap,
+pub(crate) use scoped_assignments::{scoped_assignment_body, scoped_assignment_loop};
+
+pub(crate) struct TestSource {
+    pub(crate) map: SourceMap,
     source: rumoca_core::SourceId,
 }
 
 impl TestSource {
-    fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         let mut map = SourceMap::new();
         let source = map.add("solve.mo", text);
         Self { map, source }
     }
 
-    fn at(&self, start: usize, end: usize) -> dae::DaeProvenance {
+    pub(crate) fn at(&self, start: usize, end: usize) -> dae::DaeProvenance {
         dae::DaeProvenance::source(Span::from_offsets(self.source, start, end)).unwrap()
     }
 }

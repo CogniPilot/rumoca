@@ -107,6 +107,10 @@ pub enum SolveProblemShapeContractError {
     DerivativeStateStorage {
         detail: String,
     },
+    /// Same-root solver declaration storage or a requested named report.
+    SolverStorage {
+        detail: String,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -253,7 +257,9 @@ impl SolveProblemShapeContractError {
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
-            Self::ContinuousRefreshOwner { .. } | Self::DerivativeStateStorage { .. } => None,
+            Self::ContinuousRefreshOwner { .. }
+            | Self::DerivativeStateStorage { .. }
+            | Self::SolverStorage { .. } => None,
             Self::ScalarProgramMissingProvenance { .. } => None,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
@@ -284,6 +290,9 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             }
             Self::DerivativeStateStorage { detail } => {
                 write!(f, "derivative state storage is invalid: {detail}")
+            }
+            Self::SolverStorage { detail } => {
+                write!(f, "solver storage is invalid: {detail}")
             }
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }
@@ -560,7 +569,7 @@ fn fmt_affine_shape_contract_error(
             "{context} node {node_index} {dimension} load stride at op {op_position} overflows \
              affine index arithmetic"
         ),
-        _ => unreachable!("non-affine shape error was handled by the outer formatter"),
+        _ => write!(f, "{error:?}"),
     }
 }
 
@@ -621,7 +630,7 @@ fn fmt_index_shape_contract_error(
             root_index,
             ..
         } => write!(f, "{context} root {root_index} has invalid periodic timing"),
-        _ => unreachable!("non-index shape error was handled by the outer formatter"),
+        _ => write!(f, "{error:?}"),
     }
 }
 

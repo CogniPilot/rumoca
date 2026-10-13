@@ -17,6 +17,8 @@ pub mod iterative_solve;
 pub mod jacobian;
 #[cfg(not(kani))]
 pub mod mass_matrix;
+#[cfg(all(not(kani), any(test, feature = "native-wasm")))]
+pub mod native_wasm_error;
 #[cfg(not(kani))]
 pub mod pre_params;
 #[cfg(not(kani))]

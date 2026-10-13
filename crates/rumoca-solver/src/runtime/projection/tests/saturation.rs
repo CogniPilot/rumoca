@@ -121,14 +121,17 @@ impl ImplicitProjectionModel for SaturatingReluctanceModel {
         &self.plan
     }
 
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
-        Some(match row_idx {
-            0 => "r_mFe.B",
-            1 => "r_mFe.mu_r",
-            2 => "r_mFe.G_m",
-            3 => "r_mFe.R_m",
-            _ => "r_mFe.V_m",
-        })
+    fn target_name_for_row(&self, row_idx: usize) -> Option<String> {
+        Some(
+            match row_idx {
+                0 => "r_mFe.B",
+                1 => "r_mFe.mu_r",
+                2 => "r_mFe.G_m",
+                3 => "r_mFe.R_m",
+                _ => "r_mFe.V_m",
+            }
+            .to_owned(),
+        )
     }
 }
 
@@ -136,12 +139,13 @@ fn saturating_reluctance_model(total_flux: f64) -> SaturatingReluctanceModel {
     SaturatingReluctanceModel {
         total_flux,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1, 2, 3, 4],
                 y_indices: vec![0, 1, 2, 3, 4],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     }
 }
@@ -250,7 +254,9 @@ impl PartlySolvableProjectionModel {
 
     fn new(blocks: Vec<solve::AlgebraicProjectionBlock>) -> Self {
         Self {
-            plan: solve::AlgebraicProjectionPlan { blocks },
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: blocks.into(),
+            },
         }
     }
 
@@ -307,12 +313,15 @@ impl ImplicitProjectionModel for PartlySolvableProjectionModel {
         &self.plan
     }
 
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
-        Some(if row_idx == 0 {
-            "solvable"
-        } else {
-            "unsolvable"
-        })
+    fn target_name_for_row(&self, row_idx: usize) -> Option<String> {
+        Some(
+            if row_idx == 0 {
+                "solvable"
+            } else {
+                "unsolvable"
+            }
+            .to_owned(),
+        )
     }
 }
 

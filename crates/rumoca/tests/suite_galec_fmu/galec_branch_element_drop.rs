@@ -304,7 +304,8 @@ fn definition_body<'a>(source: &'a str, name: &str) -> &'a str {
 
 /// Sizes of each contiguous run of literal-indexed writes to `array` in `body`.
 ///
-/// A branch's element writes are emitted as a contiguous block, so the run
+/// A branch's element writes are emitted as one block (each write may carry
+/// its own trace comment), so the run
 /// sizes are the per-branch write counts. Tensor-loop initializations index by
 /// an induction variable, not a literal, so they are excluded and do not join a
 /// branch run.
@@ -314,6 +315,11 @@ fn assignment_runs(body: &str, array: &str) -> Vec<usize> {
     let mut current = 0usize;
     for line in body.lines() {
         let trimmed = line.trim_start();
+        // Trace comments and blank separators between consecutive writes do
+        // not end the branch block.
+        if trimmed.is_empty() || trimmed.starts_with("/*") {
+            continue;
+        }
         let is_literal_write = trimmed.starts_with(&prefix)
             && trimmed.contains('=')
             && trimmed

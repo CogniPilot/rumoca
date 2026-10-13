@@ -186,9 +186,14 @@ impl TrajectoryProblem {
     }
 
     /// Solver-variable names in solver order (states first).
-    #[must_use]
-    pub fn variable_names(&self) -> &[String] {
-        &self.runtime.model.problem.solve_layout.solver_maps.names
+    pub fn variable_names(&self) -> Result<Vec<String>, TrajectoryError> {
+        self.runtime
+            .model
+            .problem
+            .solver_named_report(0..self.runtime.model.solver_scalar_count())
+            .map_err(|error| TrajectoryError::InvalidRequest {
+                reason: error.to_string(),
+            })
     }
 
     #[must_use]
@@ -411,7 +416,7 @@ pub fn forward_sensitivity_trajectory(
     );
     let mut trajectory = ForwardSensitivityTrajectory {
         times: Vec::with_capacity(times.len()),
-        variables: problem.variable_names().to_vec(),
+        variables: problem.variable_names()?,
         parameters: problem
             .parameters()
             .iter()

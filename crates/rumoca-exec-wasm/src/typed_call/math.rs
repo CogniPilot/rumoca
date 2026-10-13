@@ -33,6 +33,14 @@ pub(super) fn binary(operator: solve::SolveBinaryOperator) -> Option<MathImport>
 pub(super) fn collect(program: &solve::TypedProgram, imports: &mut BTreeSet<MathImport>) {
     for operation in program.operations() {
         match operation.operation() {
+            solve::SolveOperation::CheckAssertion {
+                message: solve::SolveAssertionMessage::Captures { program },
+                ..
+            } => collect(program.body(), imports),
+            solve::SolveOperation::AssignedConditional { program } => {
+                collect(program.if_true().body(), imports);
+                collect(program.if_false().body(), imports);
+            }
             solve::SolveOperation::Unary { operator, .. } => imports.extend(unary(*operator)),
             solve::SolveOperation::Binary { operator, .. }
             | solve::SolveOperation::BroadcastBinary { operator, .. } => {

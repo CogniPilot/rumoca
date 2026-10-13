@@ -21,12 +21,13 @@ fn application(source: &ScalarProgramBlock) -> ProjectionJacobianApplication {
         StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
             .unwrap();
     let plan = AlgebraicProjectionPlan {
-        blocks: vec![AlgebraicProjectionBlock {
+        blocks: (vec![AlgebraicProjectionBlock {
             rows: vec![0, 1],
             y_indices: vec![0, 1],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     let artifacts = ContinuousStructuralArtifacts::derived(
         None,

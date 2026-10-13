@@ -70,6 +70,14 @@ the use site or by the owning spec. They MUST NOT mask errors, unresolved
 references, malformed IR, shape/type mismatches, or missing compiler analysis
 results.
 
+Compiled execution distinguishes backend/interface failures, source faults and
+numerical trial failures structurally. Optional entry points decline before execution;
+admitted errors propagate through owning transactions, with output committed only on
+success and issued source context retained. Existing numerical recovery, certified
+split replay and deferred event-source-fault policies remain authoritative; backend
+failures never enter those retries. Pure-call errors retain these categories and honest
+native index context. Error text cannot determine category or provenance.
+
 ### Option vs Result in Semantic Code
 
 `Option<T>` is allowed only when absence is a valid semantic outcome or when a
@@ -218,45 +226,7 @@ pub trait PhaseError {
 ```
 
 ### Phase Error Pattern
-
-Each phase defines errors in a local `errors.rs`, derives `thiserror::Error` and
-`miette::Diagnostic` for the message/code/label, and implements `PhaseError` by
-handing the retained spans to `miette_phase_error_to_diagnostic`:
-
-```rust
-//! rumoca-phase-resolve/src/errors.rs
-
-#[derive(Debug, Clone, Error, MietteDiagnostic)]
-pub enum ResolveError {
-    #[error("undefined reference: `{name}` not found")]
-    #[diagnostic(
-        code(rumoca::resolve::ER002),
-        help("check that the name is declared before use")
-    )]
-    UndefinedReference {
-        name: String,
-        #[label("not found in scope")]
-        span: Span,
-    },
-    // ER001, ER003, ER004 follow the same shape.
-}
-
-impl PhaseError for ResolveError {
-    fn to_diagnostic(&self) -> Diagnostic {
-        let span = match self {
-            Self::UndefinedReference { span, .. } => span,
-            // ... one arm per variant
-        };
-        miette_phase_error_to_diagnostic(self, std::slice::from_ref(span))
-    }
-}
-```
-
-Miette labels carry byte offsets but not source identity, so the phase error
-retains the original `Span` values and passes them in `#[label]` order. Callers
-emit with `ctx.diags.emit(err.to_diagnostic())` or bubble the `Result`, per the
-propagation table above. Typecheck defines `TypeCheckError` in
-`crates/rumoca-phase-typecheck/src/lib.rs` rather than in an `errors.rs`.
+Each phase defines errors in a local `errors.rs`, derives `thiserror::Error` and `miette::Diagnostic`, and implements `PhaseError` through `miette_phase_error_to_diagnostic`. [SPEC_0050 catalog §1](SPEC_0050_TRACE_EVIDENCE_CATALOG.md#1-phase-error-pattern-example-spec_0008) is normative by reference.
 
 ### Common Diagnostic Infrastructure
 

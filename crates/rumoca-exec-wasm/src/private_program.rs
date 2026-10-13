@@ -7,7 +7,7 @@ pub struct CompiledPrivateProgramWasm {
     y: usize,
     p: usize,
     outputs: usize,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: crate::WasmKernelRuntime,
 }
 
@@ -45,26 +45,19 @@ impl CompiledPrivateProgramWasm {
                 "private program lengths differ from issued layout".into(),
             ));
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let status = self.runtime.call_private(y, p, time, scratch)?;
             if status != 0 {
-                let fault = self.faults().iter().find(|fault| fault.status == status);
-                let gather = self
-                    .gather_faults()
-                    .iter()
-                    .find(|fault| fault.status == status);
-                return Err(WasmCompileError::Backend(format!(
-                    "private source fault status {status}: {fault:?}, {gather:?}"
-                )));
+                return Err(self.artifact.status_error(status));
             }
             Ok(())
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
             let _ = (y, p, time, scratch);
             Err(WasmCompileError::Input(
-                "compiled private programs execute only on wasm32".into(),
+                "compiled private programs have no admitted engine on this target".into(),
             ))
         }
     }
@@ -80,7 +73,7 @@ pub fn compile_private_program_wasm(
         .map_err(|error| WasmCompileError::Input(error.to_string()))?;
     let artifact = crate::emit::emit_private_program_module(block, layout, table)
         .map_err(WasmCompileError::Backend)?;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let runtime = crate::WasmKernelRuntime::new_with_arena(
         artifact.module_bytes(),
         "eval_private",
@@ -91,7 +84,7 @@ pub fn compile_private_program_wasm(
         y: layout.y_scalars(),
         p: layout.p_scalars(),
         outputs: block.stored_output_count(),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         runtime,
     })
 }

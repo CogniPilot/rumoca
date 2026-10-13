@@ -151,6 +151,10 @@ const OPERATORS: &[Operator] = &[
     ("sq", "s[{i}]^2", 1),
     ("cu", "s[{i}]^3", 1),
     ("pow4", "s[{i}]^4", 1),
+    ("p17", "s[{i}]^17", 1),
+    ("p31", "s[{i}]^31", 1),
+    ("pm3", "s[{i}]^(-3)", 1),
+    ("p0", "s[{i}]^0", 1),
     ("ex", "exp(-s[{i}])", 1),
     ("lg", "log(s[{i}] + 1)", 1),
     ("lg10", "log10(s[{i}] + 1)", 1),
@@ -165,9 +169,9 @@ const OPERATORS: &[Operator] = &[
 ];
 
 // A binder-valued exponent (`s[i]^i`) is not in the table: the scalar spelling
-// sees a literal Integer exponent, which lowers as a product for 2 and 3
-// (`product_power_factors`), while the owner evaluates the binder at run time
-// with `powf`, so the two may differ in the last bit by construction.
+// sees a literal Integer exponent, which lowers as the plan of
+// `modelica_integer_power` (SOLVE-C86), and the owner evaluates the binder at
+// run time with the same recurrence.
 
 const FAMILY_SIZE: usize = 4;
 
@@ -218,9 +222,12 @@ fn owner_and_scalar_rows_agree_bit_for_bit_for_every_admitted_operator() {
             "{name}: the explicit spelling is no family: {:?}",
             scalar.interiors
         );
+        // SOLVE-C86: a Real power with a literal Integer exponent lowers as the
+        // plan of `modelica_integer_power` in the scalar rows, so no operator
+        // in the table issues owners in the explicit spelling.
         assert_eq!(
             scalar.residual_calls, 0,
-            "{name}: the explicit spelling has no owner"
+            "{name}: owners of the explicit spelling"
         );
         let names = (1..=FAMILY_SIZE)
             .map(|i| format!("{name}[{i}]"))

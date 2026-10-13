@@ -172,7 +172,7 @@ struct OriginPoint<'a> {
     p: &'a [f64],
     t: f64,
     block: &'a solve::AlgebraicProjectionBlock,
-    structure: Option<&'a solve::JacobianStructure>,
+    structure: Option<&'a solve::ColoredJacobianStructure>,
 }
 
 impl AffineLinearization {
@@ -213,7 +213,7 @@ impl AffineLinearization {
         } = point;
         let (jacobian, by_rows) =
             affine_block_jacobian(model, candidate, (p, t), block, structure, storage)?;
-        let pattern = structure.map(solve::JacobianStructure::pattern);
+        let pattern = structure.map(solve::ColoredJacobianStructure::pattern);
         let (row_scales, variable_scales) =
             algebraic_block_scales(model, candidate, block, &jacobian, pattern);
         let row_magnitudes = jacobian_row_magnitudes(&jacobian, pattern);
@@ -365,7 +365,7 @@ fn affine_block_jacobian<M: ImplicitProjectionModel>(
     candidate: &[f64],
     (p, t): (&[f64], f64),
     block: &solve::AlgebraicProjectionBlock,
-    structure: Option<&solve::JacobianStructure>,
+    structure: Option<&solve::ColoredJacobianStructure>,
     storage: Option<BlockJacobian>,
 ) -> Result<(BlockJacobian, bool), RuntimeSolveError> {
     let storage = match (storage, structure) {
@@ -396,7 +396,7 @@ struct AffineBlockSystem<'a, M> {
     linearization: AffineLinearization,
     /// The model scales the refinement's certificate reads.
     certificate_scales: CertificateScales,
-    structure: Option<&'a solve::JacobianStructure>,
+    structure: Option<&'a solve::ColoredJacobianStructure>,
     tolerance: f64,
     prefer_torn: bool,
     used_torn: std::cell::Cell<bool>,
@@ -417,7 +417,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
     fn residual(&self, y: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
         if let Some(selection) = self
             .structure
-            .and_then(solve::JacobianStructure::residual_output_evaluation)
+            .and_then(solve::ColoredJacobianStructure::residual_output_evaluation)
         {
             let mut residual = vec![0.0; self.block.rows.len()];
             if self.model.eval_implicit_residual_outputs(
@@ -448,7 +448,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             residual,
             row_scales: &self.linearization.row_scales,
             variable_scales: &self.linearization.variable_scales,
-            structure: self.structure.map(solve::JacobianStructure::pattern),
+            structure: self.structure.map(solve::ColoredJacobianStructure::pattern),
             tolerance: self.tolerance,
             revision: Some(self.linearization.revision),
         };
@@ -484,7 +484,7 @@ impl<M: ImplicitProjectionModel> AffineBlockSystem<'_, M> {
             // residual certificate uses this candidate's coordinate scales.
             let origin = OriginRowScales {
                 jacobian: &self.linearization.jacobian,
-                structure: self.structure.map(solve::JacobianStructure::pattern),
+                structure: self.structure.map(solve::ColoredJacobianStructure::pattern),
                 scales: &self.linearization.row_scales,
                 magnitudes: &self.linearization.row_magnitudes,
                 derived: &self.linearization.row_derived,

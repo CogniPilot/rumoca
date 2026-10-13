@@ -26,8 +26,10 @@ fn required_mlir_cpu_lane_is_wired_fail_closed() {
         "options",
     ];
     let flake = repository_file("flake.nix");
+    let cpu_modules = repository_file("crates/rumoca-exec-mlir/tests/suite_mlir/cpu.rs");
     for required in [
         "mlir-cpu = mlirCpuTests;",
+        "--test suite_mlir",
         "--features required-mlir-cpu",
         "clang-18 llc-18 mlir-opt-18 mlir-translate-18",
     ] {
@@ -38,10 +40,12 @@ fn required_mlir_cpu_lane_is_wired_fail_closed() {
     }
     for test in selected_tests {
         assert!(
-            flake.contains(&format!("--test {test}")),
+            cpu_modules.contains(&format!("mod {test};")),
             "required MLIR CPU lane does not select `{test}`"
         );
-        let source = repository_file(&format!("crates/rumoca-exec-mlir/tests/{test}.rs"));
+        let source = repository_file(&format!(
+            "crates/rumoca-exec-mlir/tests/suite_mlir/cpu/{test}.rs"
+        ));
         assert!(
             source.contains("support::missing_cpu_tool(tool)"),
             "`{test}` does not route missing CPU tools through the fail-closed helper"
@@ -51,7 +55,7 @@ fn required_mlir_cpu_lane_is_wired_fail_closed() {
             "`{test}` can still silently skip in the required CPU lane"
         );
     }
-    let support = repository_file("crates/rumoca-exec-mlir/tests/support/mod.rs");
+    let support = repository_file("crates/rumoca-exec-mlir/tests/suite_mlir/support.rs");
     assert!(
         support.contains("#[cfg(feature = \"required-mlir-cpu\")]")
             && support.contains("panic!(\"required MLIR CPU tool is unavailable: {tool}\")"),

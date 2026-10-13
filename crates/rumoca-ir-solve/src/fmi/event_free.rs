@@ -37,7 +37,8 @@
 //! unrestricted [`super::FmiCodegenView`] remains available to a future
 //! event-capable renderer under ME-EVENT-002's later gate.
 
-use super::metadata::{FmiVariable, SerializedFmiVariables};
+use super::metadata::FmiVariable;
+use super::metadata_projection::SerializedFmiVariables;
 use super::{FmiCodegenView, FmiMetadata};
 use crate::{SolveEventClass, SolveModel, solve_event_class};
 use serde::Serialize;
@@ -91,7 +92,7 @@ pub enum FmiEventFreeError {
 /// ```
 #[derive(Debug)]
 pub struct FmiEventFreeCodegenView {
-    pub(super) metadata: FmiMetadata,
+    pub(super) metadata: Arc<FmiMetadata>,
     pub(super) co_simulation: super::CoSimulationStepPlan,
     pub(super) model: Arc<SolveModel>,
 }
@@ -125,7 +126,7 @@ impl FmiEventFreeCodegenView {
     }
 
     #[must_use]
-    pub const fn derivative_value_reference_base_fmi3(&self) -> u32 {
+    pub fn derivative_value_reference_base_fmi3(&self) -> u32 {
         self.metadata.derivative_value_reference_base_fmi3()
     }
 

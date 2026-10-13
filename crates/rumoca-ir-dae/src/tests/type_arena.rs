@@ -165,3 +165,90 @@ fn wire_replay_rejects_one_effective_identity_with_two_layouts() {
         "{error}"
     );
 }
+
+#[test]
+fn packed_scalar_count_is_derived_once_per_type_for_nested_record_arrays() {
+    let source = TestSource::new("derivative = df");
+    let at = source.source("derivative = df", 0);
+    let mut ids = Vec::new();
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| types.derived(ValueType::array(ScalarType::Real, [3]), at))?;
+        let flag = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Boolean), at))?;
+        let inner = dae.types(|types| {
+            types.record(
+                VarName::new("R"),
+                [(VarName::new("v"), real), (VarName::new("valid"), flag)],
+                at,
+            )
+        })?;
+        let outer = dae.types(|types| {
+            types.record_array(
+                VarName::new("Outer"),
+                [(VarName::new("r"), inner), (VarName::new("flag"), flag)],
+                [2],
+                at,
+            )
+        })?;
+        ids = vec![real.index(), flag.index(), inner.index(), outer.index()];
+        Ok(())
+    })
+    .unwrap();
+    let decoded: Dae = serde_json::from_str(&serde_json::to_string(&dae).unwrap()).unwrap();
+    for dae in [&dae, &decoded] {
+        dae.inspect(|view| {
+            let counts: Vec<_> = ids
+                .iter()
+                .map(|index| view.packed_scalar_count(view.value_type_id(*index as usize).unwrap()))
+                .collect();
+            assert_eq!(counts, [Some(3), Some(1), Some(4), Some(10)]);
+        });
+    }
+}
+
+#[test]
+fn record_field_layout_reads_the_prefix_widths_derived_at_construction() {
+    let source = TestSource::new("derivative = df");
+    let at = source.source("derivative = df", 0);
+    let mut ids = Vec::new();
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| types.derived(ValueType::array(ScalarType::Real, [3]), at))?;
+        let flag = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Boolean), at))?;
+        let inner = dae.types(|types| {
+            types.record(
+                VarName::new("R"),
+                [(VarName::new("v"), real), (VarName::new("valid"), flag)],
+                at,
+            )
+        })?;
+        let outer = dae.types(|types| {
+            types.record_array(
+                VarName::new("Outer"),
+                [(VarName::new("r"), inner), (VarName::new("flag"), flag)],
+                [2],
+                at,
+            )
+        })?;
+        ids = vec![real.index(), inner.index(), outer.index()];
+        Ok(())
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let id = |slot: usize| view.value_type_id(ids[slot] as usize).unwrap();
+        let layout = |slot: usize, field: usize| {
+            view.record_field_layout(id(slot), field).map(|l| {
+                (
+                    l.outer_count(),
+                    l.record_width(),
+                    l.field_offset(),
+                    l.field_width(),
+                )
+            })
+        };
+        assert_eq!(layout(1, 0), Some((1, 4, 0, 3)));
+        assert_eq!(layout(1, 1), Some((1, 4, 3, 1)));
+        assert_eq!(layout(2, 0), Some((2, 5, 0, 4)));
+        assert_eq!(layout(2, 1), Some((2, 5, 4, 1)));
+        assert_eq!(layout(1, 2), None);
+        assert_eq!(layout(0, 0), None);
+    });
+}

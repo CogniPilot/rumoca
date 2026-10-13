@@ -1,6 +1,7 @@
 //! SPEC_0053 §1: a redundant loop closure decides reduction from the source.
 
 use rumoca_core::{SourceMap, Span, VarName};
+use rumoca_ir_dae as dae;
 
 use super::*;
 use rumoca_phase_structural::prepare_for_solve;
@@ -92,19 +93,33 @@ fn a_redundant_loop_closure_reduces_to_the_basis_the_reducer_selects() {
         prepared.manifold_requires_reduction(),
         "the reducer classifies the closure redundant"
     );
-    let through_reducer = reduce_or_retain(&model, prepared, &overrides).unwrap();
-    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &overrides)
-        .unwrap()
-        .expect("the closure decides reduction without the reducer");
+    let through_reducer = reduce_or_retain(
+        &model,
+        prepared,
+        &overrides,
+        dae::InputInitializationPolicy::default(),
+    )
+    .unwrap();
+    let decided = reduce_loop_closure(
+        &SourceStructuralAnalysis::of(&model),
+        &overrides,
+        dae::InputInitializationPolicy::default(),
+    )
+    .unwrap()
+    .expect("the closure decides reduction without the reducer");
     assert_eq!(
         decided.integrated_names().unwrap(),
         through_reducer.integrated_names().unwrap()
     );
     let direct = pendulum(false);
     assert!(
-        reduce_loop_closure(&SourceStructuralAnalysis::of(&direct), &overrides)
-            .unwrap()
-            .is_none()
+        reduce_loop_closure(
+            &SourceStructuralAnalysis::of(&direct),
+            &overrides,
+            dae::InputInitializationPolicy::default()
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -115,17 +130,21 @@ fn a_loop_closure_selection_names_each_generated_state_by_its_source() {
     // the source scalar (and formal order) its projection equation equates it
     // to, and those names are the selection's integrated basis.
     let model = pendulum(true);
-    let decided = reduce_loop_closure(&SourceStructuralAnalysis::of(&model), &HashMap::new())
-        .unwrap()
-        .expect("the closure decides reduction without the reducer");
+    let decided = reduce_loop_closure(
+        &SourceStructuralAnalysis::of(&model),
+        &HashMap::new(),
+        dae::InputInitializationPolicy::default(),
+    )
+    .unwrap()
+    .expect("the closure decides reduction without the reducer");
     let mut basis = decided.integrated_names().unwrap();
     basis.sort();
     assert_eq!(basis.len(), 2, "a closed pendulum integrates two scalars");
     let lowered = crate::lower_solve_model(&model, &HashMap::new(), |_| {}).unwrap();
     let mut sources = lowered
         .model()
-        .variable_meta
-        .iter()
+        .visible_metadata()
+        .into_iter()
         .filter(|meta| meta.is_state)
         .map(|meta| {
             meta.state_coordinate

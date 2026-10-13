@@ -54,7 +54,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 they carry the lookup catalogs split out of their parent spec under SPEC_0000
 §3/§3a size budgets. Every row in an annex is normative by reference from the
 parent section that links it (SPEC_0007→0040, SPEC_0029→0041, SPEC_0034→0042,
-SPEC_0036→0043, SPEC_0038→0044, SPEC_0033→0050). `SPEC_0047` serves three
+SPEC_0036→0043, SPEC_0032→0043, SPEC_0038→0044, SPEC_0033→0050, SPEC_0008→0050, SPEC_0045→0047). `SPEC_0047` serves three
 parents — SPEC_0045, SPEC_0046, and SPEC_0048 — and each gate row names the
 parent rule it covers. `SPEC_0049` serves SPEC_0045 and SPEC_0048. It is bound
 by SEV-001/002/007 (grammar and coverage), SEV-011/024 (contract

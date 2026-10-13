@@ -330,6 +330,12 @@ pub(crate) enum ExprNode {
         source_clock: u32,
         target_clock: u32,
     },
+    FunctionConditionalOutput {
+        function: u32,
+        conditional: u32,
+        value: u32,
+        definition_ordinal: u32,
+    },
 }
 
 impl ExprNode {
@@ -343,7 +349,8 @@ impl ExprNode {
             | Self::Coordinate(_)
             | Self::FunctionValue { .. }
             | Self::FunctionFoldParameter { .. }
-            | Self::FunctionFoldOutput { .. } => {}
+            | Self::FunctionFoldOutput { .. }
+            | Self::FunctionConditionalOutput { .. } => {}
             Self::Unary { operand, .. }
             | Self::Field { base: operand, .. }
             | Self::Comprehension { body: operand, .. }

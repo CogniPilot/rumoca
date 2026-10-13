@@ -3,10 +3,16 @@ mod arrays;
 mod builtins;
 mod call_scoped_actions;
 pub(in crate::lower) use call_scoped_actions::action_kind;
+mod affine_derivative_systems;
 mod conditional_emission;
 mod conditions;
 mod constants;
+pub(in crate::lower) use affine_derivative_systems::{
+    AffineDerivativeSystem, AffineDerivativeSystems, AffineDerivativeUnknown,
+};
+mod contiguous_ranges;
 mod coordinates;
+pub(in crate::lower) use coordinates::integer_is_exact_binary64;
 mod current_definitions;
 pub(in crate::lower) use current_definitions::DefinitionOwner;
 mod family_calls;
@@ -14,11 +20,13 @@ mod functions;
 mod integer_quotient;
 mod literal_values;
 mod operators;
+mod ordered_conditional;
 mod quotient_activation;
 mod quotient_memory;
 mod region_catalog;
 mod register_folding;
 mod register_ledger;
+pub(super) use register_ledger::MetadataBudget;
 mod selected_arm;
 mod selector;
 
@@ -69,74 +77,6 @@ pub(super) struct AffineDerivativeRow<'dae> {
     pub(super) scalar: usize,
     pub(super) domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
 }
-
-#[derive(Clone, Copy)]
-pub(super) struct AffineDerivativeUnknown<'dae> {
-    pub(super) state: dae::StateId<'dae>,
-    pub(super) scalar: usize,
-}
-
-#[derive(Clone)]
-pub(super) struct AffineDerivativeSystem<'dae> {
-    pub(super) rows: Vec<AffineDerivativeRow<'dae>>,
-    pub(super) unknowns: Vec<AffineDerivativeUnknown<'dae>>,
-    pub(super) span: Span,
-}
-
-#[derive(Default)]
-pub(super) struct AffineDerivativeSystems<'dae> {
-    systems: Vec<AffineDerivativeSystem<'dae>>,
-    unknowns: HashMap<(u32, usize), (usize, usize)>,
-}
-
-impl<'dae> AffineDerivativeSystems<'dae> {
-    pub(super) fn construct(
-        systems: Vec<AffineDerivativeSystem<'dae>>,
-    ) -> Result<Self, LowerError> {
-        let mut unknowns = HashMap::new();
-        for (system, definition) in systems.iter().enumerate() {
-            for (component, unknown) in definition.unknowns.iter().enumerate() {
-                claim_affine_derivative_unknown(
-                    &mut unknowns,
-                    system,
-                    component,
-                    *unknown,
-                    definition.span,
-                )?;
-            }
-        }
-        Ok(Self { systems, unknowns })
-    }
-
-    fn definition(
-        &self,
-        state: dae::StateId<'dae>,
-        scalar: usize,
-    ) -> Option<(usize, usize, &AffineDerivativeSystem<'dae>)> {
-        let (system, component) = *self.unknowns.get(&(state.index(), scalar))?;
-        Some((system, component, &self.systems[system]))
-    }
-}
-
-fn claim_affine_derivative_unknown(
-    unknowns: &mut HashMap<(u32, usize), (usize, usize)>,
-    system: usize,
-    component: usize,
-    unknown: AffineDerivativeUnknown<'_>,
-    span: Span,
-) -> Result<(), LowerError> {
-    if unknowns
-        .insert((unknown.state.index(), unknown.scalar), (system, component))
-        .is_some()
-    {
-        return Err(LowerError::contract(
-            "a state derivative belongs to two affine systems",
-            span,
-        ));
-    }
-    Ok(())
-}
-
 /// Parameter bindings a program must recompute instead of loading from storage.
 ///
 /// The parameter set evaluates a binding once, before the initialization system
@@ -246,6 +186,9 @@ struct FunctionFoldOutputCacheKey<'dae> {
     function_context: u64,
     fold: dae::FunctionFoldId<'dae>,
     dependencies: Vec<FunctionFoldCacheDependency<'dae>>,
+    /// The branch guards the emitted fold runs under: a fold lowered inside one
+    /// selected arm is not available to a sibling arm.
+    guards: Vec<(ActivationCondition<'dae>, bool)>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -314,7 +257,7 @@ struct DeferredFoldCaptures<'dae> {
     fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
     symbolic_domain_points: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
     packed_expressions: HashMap<dae::ExprId<'dae>, (solve::Reg, usize)>,
-    packed_capture_ranges: HashMap<dae::ExprId<'dae>, usize>,
+    packed_capture_ranges: HashMap<(solve::Reg, usize), usize>,
     sources: Vec<solve::Reg>,
     locals: HashMap<solve::Reg, solve::Reg>,
 }
@@ -391,6 +334,9 @@ struct DeferredFunctionConditionalCaptures<'dae> {
     slots: HashMap<FunctionConditionalCaptureSource<'dae>, usize>,
     width: usize,
     visible: RegionVisiblePoints<'dae>,
+    /// The ordered branch scope whose own definitions this region computes
+    /// instead of capturing from its owner.
+    local_scope: Option<dae::FunctionScopeView<'dae>>,
 }
 
 /// The enclosing-fold values an inner fold may read.
@@ -421,14 +367,8 @@ struct RegionVisiblePoints<'dae> {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-enum FunctionConditionalOwnerValue<'dae> {
-    Definitions(Vec<dae::FunctionDefinitionId<'dae>>),
-    Expression(dae::ExprId<'dae>),
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionConditionalOwnerKey<'dae> {
-    value: FunctionConditionalOwnerValue<'dae>,
+    expression: dae::ExprId<'dae>,
     function_arguments: Vec<FunctionArgumentsFrame<'dae>>,
     activation_path: Vec<(ActivationCondition<'dae>, bool)>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
@@ -484,6 +424,12 @@ type TensorBinaryKey<'dae> = (
     dae::ExprId<'dae>,
     dae::ExprId<'dae>,
 );
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScalarCallUse {
+    Primal,
+    PrimalAndDirectional,
+}
 
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
@@ -555,6 +501,7 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     >,
     active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
     call_action_compilation: bool,
+    call_use: ScalarCallUse,
     suppress_function_assertions: bool,
     /// The context identities of every compiler forked from one root: an
     /// identity is allocated once and read by all of them.
@@ -618,10 +565,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             function_fold_program_cache: HashMap::new(),
             active_call_assertions: HashSet::new(),
             call_action_compilation: false,
+            call_use: ScalarCallUse::PrimalAndDirectional,
             suppress_function_assertions: false,
             contexts: Rc::default(),
             context_stack: Vec::new(),
             context_id: 0,
+        }
+    }
+
+    /// Discrete updates execute primal values; missing directional support
+    /// does not authorize expanding their checked compact call owner.
+    pub(super) fn for_discrete(
+        view: dae::DaeView<'dae>,
+        layout: &'layout LoweredLayout<'dae>,
+        domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
+    ) -> Self {
+        Self {
+            call_use: ScalarCallUse::Primal,
+            ..Self::new(view, layout, domain_point)
         }
     }
 
@@ -725,6 +686,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             function_context: self.owning_function_context(fold.function()),
             fold,
             dependencies,
+            guards: self.activation_path[self.fold_guard_base.min(self.activation_path.len())..]
+                .iter()
+                .map(|guard| (guard.condition, guard.expected))
+                .collect(),
         }
     }
 
@@ -817,8 +782,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     /// Compile several scalar projections into one source-owned program.
@@ -833,9 +798,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         for (expression, scalar) in outputs {
             let output = self.expression(expression, scalar)?;
-            self.ops.push(solve::LinearOp::StoreOutput { src: output });
+            self.emit(solve::LinearOp::StoreOutput { src: output })?;
         }
-        Ok(solve::prune_dead_constants(self.ops))
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     /// Compile complete aggregate expressions before projecting their scalar
@@ -889,16 +854,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let start = self.pack_expression(expression)?;
             let count = scalar_count(self.view, expression);
             if count == 1 {
-                self.ops.push(solve::LinearOp::StoreOutput { src: start });
+                self.emit(solve::LinearOp::StoreOutput { src: start })?;
             } else {
-                self.ops.push(solve::LinearOp::StoreOutputRange {
+                self.emit(solve::LinearOp::StoreOutputRange {
                     start,
                     count,
                     stride: 1,
-                });
+                })?;
             }
         }
-        Ok(solve::prune_dead_constants(std::mem::take(&mut self.ops)))
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     pub(super) fn clocked_program(
@@ -909,8 +874,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         self.active_clock = Some(clock);
         let output = self.expression(expression, scalar)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     /// Compile the source of MLS §16.5.1 `sample(u)` against event-entry
@@ -925,8 +890,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.active_clock = Some(clock);
         self.sampled_source = true;
         let output = self.expression(expression, scalar)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     /// Compile `slot - Σ ±termᵢ` into one residual program.
@@ -943,14 +908,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let coordinate = self.register(span)?;
         match slot {
-            solve::ScalarSlot::Y { index, .. } => self.ops.push(solve::LinearOp::LoadY {
+            solve::ScalarSlot::Y { index, .. } => self.emit(solve::LinearOp::LoadY {
                 dst: coordinate,
                 index,
-            }),
-            solve::ScalarSlot::P { index, .. } => self.ops.push(solve::LinearOp::LoadP {
+            })?,
+            solve::ScalarSlot::P { index, .. } => self.emit(solve::LinearOp::LoadP {
                 dst: coordinate,
                 index,
-            }),
+            })?,
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
                 return Err(LowerError::contract(
                     "a stated initial value names a coordinate with no runtime storage",
@@ -968,9 +933,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             };
             residual = self.binary(operator, residual, value, span)?;
         }
-        self.ops
-            .push(solve::LinearOp::StoreOutput { src: residual });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: residual })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     /// Compile `slot - start` for one exact scalar initialization equation.
@@ -985,14 +949,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let coordinate = self.register(span)?;
         match slot {
-            solve::ScalarSlot::Y { index, .. } => self.ops.push(solve::LinearOp::LoadY {
+            solve::ScalarSlot::Y { index, .. } => self.emit(solve::LinearOp::LoadY {
                 dst: coordinate,
                 index,
-            }),
-            solve::ScalarSlot::P { index, .. } => self.ops.push(solve::LinearOp::LoadP {
+            })?,
+            solve::ScalarSlot::P { index, .. } => self.emit(solve::LinearOp::LoadP {
                 dst: coordinate,
                 index,
-            }),
+            })?,
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
                 return Err(LowerError::contract(
                     "a stated initial value names a coordinate with no runtime storage",
@@ -1007,9 +971,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             None => coordinate,
         };
-        self.ops
-            .push(solve::LinearOp::StoreOutput { src: residual });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: residual })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     pub(super) fn scaled_derivative_program(
@@ -1022,8 +985,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let coefficient = self.expression(input.coefficient, input.coefficient_scalar)?;
         let output = self.affine_quotient(numerator, coefficient, input.span)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(solve::prune_dead_constants(self.ops))
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        Ok(solve::prune_dead_constants(self.finish_operations()?))
     }
 
     pub(super) fn packed_pair(
@@ -1033,7 +996,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<(solve::Reg, solve::Reg, solve::Reg, Vec<solve::LinearOp>), LowerError> {
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;
-        Ok((lhs_start, rhs_start, self.next_register, self.ops))
+        Ok((
+            lhs_start,
+            rhs_start,
+            self.next_register,
+            self.finish_operations()?,
+        ))
     }
 
     /// Compile an already-proved affine residual block as `A * der(x) = b`.
@@ -1049,7 +1017,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<(solve::Reg, solve::Reg, solve::Reg, Vec<solve::LinearOp>), LowerError> {
         let (matrix_start, rhs_start) = self.affine_derivative_registers(rows, unknowns, span)?;
-        Ok((matrix_start, rhs_start, self.next_register, self.ops))
+        Ok((
+            matrix_start,
+            rhs_start,
+            self.next_register,
+            self.finish_operations()?,
+        ))
     }
 
     fn affine_derivative_registers(
@@ -1124,13 +1097,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
         };
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::LinearSolveComponent {
+        self.emit(solve::LinearOp::LinearSolveComponent {
             dst,
             matrix_start,
             rhs_start,
             n,
             component,
-        });
+        })?;
         Ok(Some(dst))
     }
 
@@ -1229,6 +1202,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         expression: dae::ExprId<'dae>,
     ) -> Result<solve::Reg, LowerError> {
         let span = self.node(expression).provenance().span();
+        if crate::lower::typed_functions::ExactExpressionForm::is_real_integer_power(
+            self.view, expression,
+        ) {
+            return self.pack_exact_expression(expression, span);
+        }
         match self.node(expression).operation() {
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
                 parameter,
@@ -1240,6 +1218,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 return self.pack_function_definition(definition, span);
+            }
+            dae::ExpressionOperation::FunctionConditionalOutput { definition, .. } => {
+                return self.pack_function_conditional_output(definition, span);
             }
             dae::ExpressionOperation::Call {
                 function,
@@ -1298,6 +1279,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     return self.pack_expression(alias);
                 }
             }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                if let Some(operand) = self.identity_operand_aggregate(operator, lhs, rhs) {
+                    return self.pack_expression(operand);
+                }
+            }
             _ => {}
         }
         let count = scalar_count(self.view, expression);
@@ -1308,31 +1294,41 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.pack_registers(&values, span)
     }
 
+    fn pack_fold_registers(
+        &mut self,
+        values: &[solve::Reg],
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if let Some(&start) = self.fold_register_pack_cache.get(values) {
+            return Ok(start);
+        }
+        let start = self.pack_registers(values, span)?;
+        self.fold_register_pack_cache.insert(values.to_vec(), start);
+        Ok(start)
+    }
+
     fn pack_registers(
         &mut self,
         values: &[solve::Reg],
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        if let Some(&start) = values.first()
-            && values
-                .iter()
-                .copied()
-                .enumerate()
-                .all(|(offset, register)| {
-                    u32::try_from(offset)
-                        .ok()
-                        .and_then(|offset| start.checked_add(offset))
-                        == Some(register)
-                })
-        {
-            return Ok(start);
+        let mut ranges: Vec<functions::FunctionConditionalRegisterRange> = Vec::new();
+        for &register in values {
+            if let Some(last) = ranges.last_mut()
+                && u32::try_from(last.count)
+                    .ok()
+                    .and_then(|count| last.start.checked_add(count))
+                    == Some(register)
+            {
+                last.count += 1;
+            } else {
+                ranges.push(functions::FunctionConditionalRegisterRange {
+                    start: register,
+                    count: 1,
+                });
+            }
         }
-        let start = self.next_register;
-        for &value in values {
-            let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::Move { dst, src: value });
-        }
-        Ok(start)
+        self.pack_register_ranges(&ranges, span)
     }
 
     fn expression(
@@ -1456,6 +1452,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.expression_cache.insert(key, result);
             return Ok(result);
         }
+        if crate::lower::typed_functions::ExactExpressionForm::is_real_integer_power(
+            self.view, expression,
+        ) {
+            let start = self.pack_expression(expression)?;
+            let result = functions::function_conditional_reg_offset(
+                start,
+                scalar,
+                node.provenance().span(),
+                "exact power scalar view",
+            )?;
+            self.expression_cache.insert(key, result);
+            return Ok(result);
+        }
         if !matches!(node.operation(), dae::ExpressionOperation::Literal(_))
             && let Some(value) = self.exact_literal(expression, scalar)
         {
@@ -1551,6 +1560,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.function_definition_value(definition, scalar, node.provenance().span())
             }
+            dae::ExpressionOperation::FunctionConditionalOutput { definition, .. } => self
+                .function_conditional_output_scalar(definition, scalar, node.provenance().span()),
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 self.function_fold_parameter(fold, carried, scalar, node.provenance().span())
             }
@@ -1691,15 +1702,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let dst = self.register(span)?;
         match slot {
             solve::ScalarSlot::Y { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadY { dst, index });
+                self.emit(solve::LinearOp::LoadY { dst, index })?;
             }
             solve::ScalarSlot::P { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadP { dst, index });
+                self.emit(solve::LinearOp::LoadP { dst, index })?;
             }
-            solve::ScalarSlot::Time => self.ops.push(solve::LinearOp::LoadTime { dst }),
+            solve::ScalarSlot::Time => self.emit(solve::LinearOp::LoadTime { dst })?,
             solve::ScalarSlot::Constant(value) => {
-                self.ops.push(solve::LinearOp::Const { dst, value });
-                self.ledger.set_real(dst, value);
+                self.emit(solve::LinearOp::Const { dst, value })?;
+                self.ledger.set_real(dst, value)?;
             }
         }
         Ok(dst)
@@ -1713,12 +1724,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::Select {
+        self.emit(solve::LinearOp::Select {
             dst,
             cond: condition,
             if_true: when_true,
             if_false: when_false,
-        });
+        })?;
         let value = match self.integer_register(condition) {
             Some(0) => self.integer_register(when_false),
             Some(_) => self.integer_register(when_true),
@@ -1727,15 +1738,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             None => None,
         };
-        self.set_integer_register(dst, value);
+        self.set_integer_register(dst, value)?;
         Ok(dst)
     }
 
     fn constant(&mut self, value: f64, span: Span) -> Result<solve::Reg, LowerError> {
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::Const { dst, value });
-        self.ledger.set_real(dst, value);
-        self.set_integer_register(dst, exact_i64(value));
+        self.emit(solve::LinearOp::Const { dst, value })?;
+        self.ledger.set_real(dst, value)?;
+        self.set_integer_register(dst, exact_i64(value))?;
         Ok(dst)
     }
 
@@ -1743,8 +1754,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.ledger.integer(register)
     }
 
-    fn set_integer_register(&mut self, register: solve::Reg, value: Option<i64>) {
-        self.ledger.set_integer(register, value);
+    fn set_integer_register(
+        &mut self,
+        register: solve::Reg,
+        value: Option<i64>,
+    ) -> Result<(), LowerError> {
+        self.ledger.set_integer(register, value)
+    }
+
+    /// Every operation is admitted before the private buffer grows.
+    fn emit(&mut self, operation: solve::LinearOp) -> Result<(), LowerError> {
+        self.ledger.admit_operation(self.ops.len() + 1)?;
+        self.ops.push(operation);
+        Ok(())
+    }
+
+    fn finish_operations(&mut self) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.ledger.finish(self.ops.len())?;
+        Ok(std::mem::take(&mut self.ops))
     }
 
     /// Allocate one scalar register.

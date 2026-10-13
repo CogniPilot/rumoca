@@ -5,13 +5,45 @@
 //! the private entry encoder writes those values through. They carry no
 //! inventory identity, order, or membership. The gated thing is the *template
 //! encoding*, the exact key set a version template consumes, and it has one
-//! producer, [`SerializedFmiVariables`], reachable only from the proved
+//! producer, [`super::metadata_projection::SerializedFmiVariables`], reachable only from the proved
 //! [`super::FmiEventFreeCodegenView`] or [`super::FmiCCodegenView`].
 
-use crate::{SolveVariableStorageRole, SolveVariableValueKind};
+use crate::{
+    SolveDeclarationStart, SolveInitialValues, SolveVariableStorageRole, SolveVariableValueKind,
+};
 use rumoca_core::Span;
-use serde::ser::{SerializeMap, Serializer};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
+
+/// Numeric fields of the canonical checked FMI declaration projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FmiNumericAttribute {
+    Start,
+    StartFmi3,
+    Minimum,
+    Maximum,
+    Nominal,
+}
+
+impl FmiNumericAttribute {
+    pub const ALL: [Self; 5] = [
+        Self::Start,
+        Self::StartFmi3,
+        Self::Minimum,
+        Self::Maximum,
+        Self::Nominal,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::StartFmi3 => "start_fmi3",
+            Self::Minimum => "minimum",
+            Self::Maximum => "maximum",
+            Self::Nominal => "nominal",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,7 +87,6 @@ pub enum FmiValueBacking {
     SolveStorage {
         role: SolveVariableStorageRole,
         storage: FmiStorageRun,
-        scalar_names: Vec<String>,
     },
     /// No storage run backs the entry: the component derives its value from
     /// the complete current delay-time partition of the kernel it describes.
@@ -87,7 +118,7 @@ impl FmiValueBacking {
     /// implementation: the owner is encodable only as part of the entry that
     /// carries it, which is itself encodable only through the proved
     /// type-state.
-    fn serialize_into<M: SerializeMap>(&self, entries: &mut M) -> Result<(), M::Error> {
+    pub(super) fn serialize_into<M: SerializeMap>(&self, entries: &mut M) -> Result<(), M::Error> {
         match self {
             Self::SolveStorage { role, storage, .. } => {
                 entries.serialize_entry("backing", "solve_storage")?;
@@ -113,10 +144,12 @@ pub struct FmiVariable {
     pub(super) backing: FmiValueBacking,
     /// Absent where FMI forbids the attribute, which `initial="calculated"`
     /// does; a present value is the checked per-scalar start.
-    pub(super) start: Option<Vec<f64>>,
-    pub(super) minimum: Option<Vec<f64>>,
-    pub(super) maximum: Option<Vec<f64>>,
-    pub(super) nominal: Option<Vec<f64>>,
+    pub(super) start_allowed: bool,
+    pub(super) declaration_start: SolveDeclarationStart,
+    pub(super) effective_input_default: Option<super::FmiInputInstantiationDefault>,
+    pub(super) minimum: Option<SolveInitialValues>,
+    pub(super) maximum: Option<SolveInitialValues>,
+    pub(super) nominal: Option<SolveInitialValues>,
     /// The per-scalar literal start of a `String` entry, absent for every
     /// other kind and for a `String` whose declaration gives no literal.
     pub(super) text_start: Option<Vec<String>>,
@@ -140,24 +173,53 @@ pub struct FmiVariable {
 }
 
 impl FmiVariable {
+    pub fn numeric_attribute(&self, attribute: FmiNumericAttribute) -> Option<&SolveInitialValues> {
+        match attribute {
+            FmiNumericAttribute::Start | FmiNumericAttribute::StartFmi3 => self.start(),
+            FmiNumericAttribute::Minimum => self.minimum(),
+            FmiNumericAttribute::Maximum => self.maximum(),
+            FmiNumericAttribute::Nominal => self.nominal(),
+        }
+    }
+    /// A complete source Repeat can use FMI 3's scalar start broadcast.
+    pub fn numeric_attribute_count(&self, attribute: FmiNumericAttribute) -> Option<usize> {
+        if matches!(
+            attribute,
+            FmiNumericAttribute::Start | FmiNumericAttribute::StartFmi3
+        ) {
+            let values = self.typed_start()?;
+            let broadcast = attribute == FmiNumericAttribute::StartFmi3 && values.is_repeat();
+            return Some(if broadcast { 1 } else { values.len() });
+        }
+        self.numeric_attribute(attribute)
+            .map(SolveInitialValues::len)
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// This entry's scalar identities, in scalar order.
-    ///
-    /// A storage-backed entry names one scalar per storage slot, and its
-    /// backing owns those names. The derived local is one scalar whose
-    /// identity is the entry's own name, lent here rather than stored a second
-    /// time, so an FMI 2 scalar projection covers it without special-casing
-    /// the name.
+    /// Logical scalar extent of this checked declaration or derived local.
     #[must_use]
-    pub fn scalar_names(&self) -> &[String] {
-        match &self.backing {
-            FmiValueBacking::SolveStorage { scalar_names, .. } => scalar_names,
-            FmiValueBacking::MaxStepDuration => std::slice::from_ref(&self.name),
+    pub fn scalar_count(&self) -> usize {
+        self.backing
+            .storage()
+            .map_or(1, |storage| storage.scalar_count())
+    }
+
+    /// Derive one scalar name from this declaration's checked shape.
+    #[must_use]
+    pub fn scalar_name(&self, index: usize) -> Option<String> {
+        if index >= self.scalar_count() {
+            return None;
         }
+        rumoca_core::scalar_component_name(&self.name, &self.dimensions, index)
+    }
+
+    /// Scalar identities are ephemeral projections, never retained owners.
+    pub fn scalar_names(&self) -> impl ExactSizeIterator<Item = String> + '_ {
+        (0..self.scalar_count()).map(|index| self.scalar_name(index).expect("checked scalar shape"))
     }
 
     /// The Solve storage role this entry carries, absent for the derived
@@ -191,23 +253,77 @@ impl FmiVariable {
     /// The checked per-scalar start values, absent where FMI forbids the
     /// attribute.
     #[must_use]
-    pub fn start(&self) -> Option<&[f64]> {
-        self.start.as_deref()
+    pub fn start(&self) -> Option<&SolveInitialValues> {
+        self.typed_start().and_then(SolveDeclarationStart::real)
+    }
+
+    pub fn typed_start(&self) -> Option<&SolveDeclarationStart> {
+        self.start_allowed.then(|| self.instantiation_start())
+    }
+    pub fn declaration_start(&self) -> &SolveDeclarationStart {
+        &self.declaration_start
+    }
+    /// Original instantiation authority; it does not change source authorship.
+    pub fn instantiation_start(&self) -> &SolveDeclarationStart {
+        self.effective_input_default
+            .as_ref()
+            .map_or(&self.declaration_start, |default| default.values())
+    }
+    pub fn effective_input_default(&self) -> Option<&super::FmiInputInstantiationDefault> {
+        self.effective_input_default.as_ref()
+    }
+
+    pub fn fmi3_type(&self) -> &'static str {
+        match self.value_kind {
+            SolveVariableValueKind::Real => "Float64",
+            SolveVariableValueKind::Integer => "Int64",
+            SolveVariableValueKind::Enumeration => "Enumeration",
+            SolveVariableValueKind::Boolean => "Boolean",
+            SolveVariableValueKind::String => "String",
+        }
+    }
+
+    pub fn fmi2_integer_admitted(&self) -> bool {
+        if !matches!(
+            self.value_kind,
+            SolveVariableValueKind::Integer | SolveVariableValueKind::Enumeration
+        ) {
+            return true;
+        }
+        let start_valid = match self.instantiation_start() {
+            SolveDeclarationStart::Integer(values) | SolveDeclarationStart::Enumeration(values) => {
+                values.runs().all(|run| match run {
+                    crate::SolveExactInitialRun::Repeat { value, .. } => {
+                        i32::try_from(*value).is_ok()
+                    }
+                    crate::SolveExactInitialRun::Literal { values, .. } => {
+                        values.iter().all(|value| i32::try_from(*value).is_ok())
+                    }
+                })
+            }
+            SolveDeclarationStart::Missing { .. } => true,
+            _ => false,
+        };
+        start_valid
+            && [self.minimum(), self.maximum()]
+                .into_iter()
+                .flatten()
+                .all(fmi2_integer_attribute_admitted)
     }
 
     #[must_use]
-    pub fn minimum(&self) -> Option<&[f64]> {
-        self.minimum.as_deref()
+    pub fn minimum(&self) -> Option<&SolveInitialValues> {
+        self.minimum.as_ref()
     }
 
     #[must_use]
-    pub fn maximum(&self) -> Option<&[f64]> {
-        self.maximum.as_deref()
+    pub fn maximum(&self) -> Option<&SolveInitialValues> {
+        self.maximum.as_ref()
     }
 
     #[must_use]
-    pub fn nominal(&self) -> Option<&[f64]> {
-        self.nominal.as_deref()
+    pub fn nominal(&self) -> Option<&SolveInitialValues> {
+        self.nominal.as_ref()
     }
 
     #[must_use]
@@ -269,72 +385,6 @@ impl FmiVariable {
     #[must_use]
     pub const fn value_reference_fmi3(&self) -> u32 {
         self.value_reference_fmi3
-    }
-}
-
-/// The one inventory encoding, borrowed from the single owned inventory.
-///
-/// [`FmiVariable`] deliberately implements no `Serialize` of its own, so
-/// possessing an entry (or a whole unrestricted inventory through
-/// [`super::FmiComponent::variables`] or [`super::FmiCodegenView::metadata`])
-/// is not the ability to encode one. This wrapper is the only encoder, it is
-/// private to the FMI module, and it borrows: no entry is cloned, no order is
-/// re-derived, and no second inventory exists to drift.
-///
-/// The only construction site is [`super::FmiEventFreeCodegenView`]'s
-/// `Serialize`, which is reachable only after the narrowing proved the
-/// component event-free.
-pub(super) struct SerializedFmiVariables<'inventory> {
-    variables: &'inventory [FmiVariable],
-}
-
-impl<'inventory> SerializedFmiVariables<'inventory> {
-    pub(super) const fn borrowing(variables: &'inventory [FmiVariable]) -> Self {
-        Self { variables }
-    }
-}
-
-impl Serialize for SerializedFmiVariables<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.variables.iter().map(SerializedFmiVariable))
-    }
-}
-
-/// One entry of the encoding above, in the inventory's own order.
-///
-/// Rendering reads the same entry the checked views expose: the derived scalar
-/// identities rather than the stored ones, the typed backing owner, and a
-/// `start` key only where the entry has one to give.
-struct SerializedFmiVariable<'entry>(&'entry FmiVariable);
-
-impl Serialize for SerializedFmiVariable<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let variable = self.0;
-        let mut entry = serializer.serialize_map(None)?;
-        entry.serialize_entry("name", &variable.name)?;
-        entry.serialize_entry("scalar_names", variable.scalar_names())?;
-        entry.serialize_entry("value_kind", &variable.value_kind)?;
-        entry.serialize_entry("dimensions", &variable.dimensions)?;
-        variable.backing.serialize_into(&mut entry)?;
-        if let Some(start) = &variable.start {
-            entry.serialize_entry("start", start)?;
-        }
-        entry.serialize_entry("minimum", &variable.minimum)?;
-        entry.serialize_entry("maximum", &variable.maximum)?;
-        entry.serialize_entry("nominal", &variable.nominal)?;
-        entry.serialize_entry("text_start", &variable.text_start)?;
-        entry.serialize_entry("enumeration", &variable.enumeration)?;
-        entry.serialize_entry("unit", &variable.unit)?;
-        entry.serialize_entry("description", &variable.description)?;
-        entry.serialize_entry("causality", &variable.causality)?;
-        entry.serialize_entry("declared_causality", &variable.declared_causality)?;
-        entry.serialize_entry("variability", &variable.variability)?;
-        entry.serialize_entry("initial", &variable.initial)?;
-        entry.serialize_entry("initial_unknown", &variable.is_initial_unknown())?;
-        entry.serialize_entry("tunable", &variable.tunable)?;
-        entry.serialize_entry("declaration", &variable.declaration)?;
-        entry.serialize_entry("value_reference_fmi3", &variable.value_reference_fmi3)?;
-        entry.end()
     }
 }
 
@@ -415,7 +465,7 @@ pub(super) const fn initial_for_storage(
 }
 
 impl FmiVariable {
-    fn is_initial_unknown(&self) -> bool {
+    pub(super) fn is_initial_unknown(&self) -> bool {
         self.causality == FmiCausality::CalculatedParameter
             || (matches!(
                 self.initial,
@@ -427,16 +477,17 @@ impl FmiVariable {
 
 /// Unchecked lowering input consumed only by `FmiComponent::construct`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FmiVariableInput {
     pub name: String,
-    pub scalar_names: Vec<String>,
     pub role: SolveVariableStorageRole,
     pub value_kind: SolveVariableValueKind,
     pub dimensions: Vec<u32>,
-    pub start: Vec<f64>,
-    pub minimum: Option<Vec<f64>>,
-    pub maximum: Option<Vec<f64>>,
-    pub nominal: Option<Vec<f64>>,
+    pub start: SolveDeclarationStart,
+    pub effective_input_default: Option<super::FmiInputDefaultInput>,
+    pub minimum: Option<SolveInitialValues>,
+    pub maximum: Option<SolveInitialValues>,
+    pub nominal: Option<SolveInitialValues>,
     pub unit: Option<String>,
     pub description: Option<String>,
     pub causality: FmiCausality,
@@ -457,4 +508,53 @@ pub struct FmiVariableInput {
     /// declaration (MLS §4.9.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enumeration: Option<rumoca_core::EnumerationDeclaration>,
+}
+
+impl FmiVariable {
+    /// Original declaration ingredients only; no derived local or VR proof.
+    pub(crate) fn source_input(&self) -> Option<FmiVariableInput> {
+        Some(FmiVariableInput {
+            name: self.name.clone(),
+            role: self.role()?,
+            value_kind: self.value_kind,
+            dimensions: self.dimensions.clone(),
+            start: self.declaration_start.clone(),
+            effective_input_default: self
+                .effective_input_default
+                .as_ref()
+                .map(|default| default.input()),
+            minimum: self.minimum.clone(),
+            maximum: self.maximum.clone(),
+            nominal: self.nominal.clone(),
+            unit: self.unit.clone(),
+            description: self.description.clone(),
+            causality: self.causality,
+            declared_causality: self.declared_causality,
+            variability: self.variability,
+            tunable: self.tunable,
+            evaluable: self.evaluable,
+            declaration: self
+                .declaration
+                .expect("checked storage declaration retains its source"),
+            text_start: self.text_start.clone(),
+            enumeration: self.enumeration.clone(),
+        })
+    }
+}
+
+fn fmi2_integer_attribute_admitted(values: &SolveInitialValues) -> bool {
+    values.runs().all(|run| {
+        run.repeated_bits().map_or_else(
+            || {
+                run.literal_bits()
+                    .is_some_and(|bits| bits.iter().copied().all(fmi2_integer_bits_admitted))
+            },
+            fmi2_integer_bits_admitted,
+        )
+    })
+}
+
+fn fmi2_integer_bits_admitted(bits: u64) -> bool {
+    let value = f64::from_bits(bits);
+    value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) && value.trunc() == value
 }

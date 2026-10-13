@@ -63,6 +63,7 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
             .continuous
             .algebraic_projection_plan
             .blocks
+            .scalar_blocks()
             .iter()
             .any(|block| block.rows.len() == 3 && block.y_indices.len() == 3),
         "gear torque projection must remain a coupled block (3x3 after the STRUCT-T02 \

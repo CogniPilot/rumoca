@@ -55,9 +55,11 @@ impl BodyEmitter<'_> {
                 .map_err(|_| "native root frame overflows")?,
         );
         let frame = workspace::Frame::new(parent_end, program)?;
-        let source_capture = capture_start
-            .checked_add(self.register_base)
-            .ok_or("native capture source overflows")?;
+        let source_capture = if program.capture_count == 0 {
+            0
+        } else {
+            self.physical_arena_register(capture_start)?
+        };
         self.copy_conditional_cells(frame.capture, source_capture, program.capture_count)?;
         let parent_operation = self.operation_ordinal;
         for (index, arm) in program.arms.iter().enumerate() {
@@ -100,9 +102,7 @@ impl BodyEmitter<'_> {
         for _ in &program.arms {
             self.push(Instruction::End);
         }
-        let destination = destination
-            .checked_add(self.register_base)
-            .ok_or("native conditional destination overflows")?;
+        let destination = self.physical_arena_register(destination)?;
         // Captures and the complete selected tuple occupy disjoint private
         // frames. No parent result register changes before selected-arm success.
         self.copy_conditional_cells(destination, frame.output, program.result_count)

@@ -605,6 +605,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::ExpressionOperation::FunctionValue { .. }
+            | dae::ExpressionOperation::FunctionConditionalOutput { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
                 unreachable!("function-owner reconstruction seeds scoped expression identities")
@@ -805,8 +806,26 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let folded = self.variables[parameter.index() as usize]
                     .folded
                     .as_deref()?;
-                match (folded.scalar, &*folded.values) {
-                    (dae::ScalarType::Boolean, [value]) => Some(*value != 0.0),
+                match (
+                    folded.scalar,
+                    folded.values.len(),
+                    folded.values.runs().next(),
+                ) {
+                    (
+                        dae::ScalarType::Boolean,
+                        1,
+                        Some(rumoca_eval_dae::NumericInitialRun::Repeat {
+                            value: rumoca_eval_dae::NumericSourceScalar::Boolean(value),
+                            ..
+                        }),
+                    ) => Some(value),
+                    (
+                        dae::ScalarType::Boolean,
+                        1,
+                        Some(rumoca_eval_dae::NumericInitialRun::Literal(
+                            [rumoca_eval_dae::NumericSourceScalar::Boolean(value)],
+                        )),
+                    ) => Some(*value),
                     _ => None,
                 }
             }

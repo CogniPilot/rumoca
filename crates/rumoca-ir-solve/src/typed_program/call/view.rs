@@ -44,6 +44,13 @@ impl<'owner> SolvePureCallTableView<'owner> {
         }
     }
 
+    pub(in crate::typed_program) const fn as_primal(self) -> Self {
+        Self {
+            directional: false,
+            ..self
+        }
+    }
+
     pub(in crate::typed_program) fn get(
         self,
         index: usize,

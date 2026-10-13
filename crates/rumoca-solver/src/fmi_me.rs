@@ -64,6 +64,7 @@
 mod decline_log;
 pub mod driver;
 pub mod fixed_step;
+pub(crate) mod instance;
 pub mod integrator;
 mod kernel;
 pub(crate) mod lifecycle;
@@ -89,6 +90,8 @@ pub use integrator::{
     trial_discard_count,
 };
 pub use kernel::SolveMeKernel;
+#[cfg(feature = "native-wasm")]
+pub use kernel::{MePendingNativeComponent, MePendingNativeState};
 pub use session::{
     MeAdvanceOutcome, MeComponentHost, MeOutputCursor, MePluginArity, MeRetainedComponent,
     MeSessionError, MeSessionLoss, MeSessionOptions, MeSessionOptionsInput, MeSimulationSession,
@@ -119,8 +122,8 @@ enum MeModelSourceInner<'a> {
 /// The checked pieces an [`MeModelSource`] resolves to: the Solve model, the
 /// ordered event-indicator inventory, the optional max-step value reference,
 /// and the structural-configuration capability.
-type MeModelParts<'a> = (
-    &'a rumoca_ir_solve::SolveModel,
+type MeModelParts = (
+    crate::SolveRuntimeModel,
     rumoca_ir_solve::fmi::FmiIndicatorPlan,
     Option<u32>,
     lifecycle::MeConfigurationCapability,
@@ -184,7 +187,7 @@ impl<'a> MeModelSource<'a> {
 
     pub(crate) fn into_parts(
         self,
-    ) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
+    ) -> Result<MeModelParts, rumoca_ir_solve::fmi::FmiComponentError> {
         match self.0 {
             MeModelSourceInner::Correlated(view) => {
                 let configuration = match view.configuration_capability() {
@@ -198,7 +201,8 @@ impl<'a> MeModelSource<'a> {
                         lifecycle::MeConfigurationCapability::TunableStructuralParameter
                     }
                 };
-                let (model, metadata, inventory) = view.into_parts();
+                let model = crate::SolveRuntimeModel::retained(view.retain_assertion_root());
+                let (_, metadata, inventory) = view.into_parts();
                 Ok((
                     model,
                     inventory.plan().clone(),
@@ -214,7 +218,7 @@ impl<'a> MeModelSource<'a> {
                 max_step_duration_value_reference,
                 configuration,
             } => Ok((
-                model,
+                crate::SolveRuntimeModel::copied(model),
                 rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
                     .plan()
                     .clone(),
@@ -442,6 +446,14 @@ pub enum MeError {
     #[error("{message}")]
     Evaluation { message: String },
 
+    /// An admitted backend or ABI operation failed, outside numerical trial recovery.
+    #[error("compiled {context} execution failed: {message}")]
+    CompiledExecution {
+        context: &'static str,
+        message: String,
+        source_spans: Box<[rumoca_core::Span]>,
+    },
+
     /// A state derivative evaluated to a non-finite value.
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
@@ -528,6 +540,15 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
     fn from(value: crate::runtime::solve_ops::RuntimeSolveError) -> Self {
         use crate::runtime::solve_ops::RuntimeSolveError as Runtime;
         match value {
+            Runtime::CompiledExecution {
+                context,
+                message,
+                source_spans,
+            } => Self::CompiledExecution {
+                context,
+                message,
+                source_spans,
+            },
             Runtime::SolveIr { message, span } | Runtime::SourceFault { message, span } => {
                 Self::Evaluation {
                     message: match span {
@@ -575,7 +596,7 @@ impl From<rumoca_eval_solve::EvalSolveError> for MeError {
 #[derive(Debug, Clone)]
 pub struct MeInstanceConfig {
     /// FMI `instanceName`; also labels the component's eval-trace snapshot.
-    instance_name: &'static str,
+    instance_name: std::sync::Arc<str>,
     /// FMI relative integration `tolerance` (`toleranceDefined = true`).
     tolerance: f64,
     /// FMI `startTime`.
@@ -589,17 +610,37 @@ pub struct MeInstanceConfig {
 }
 
 impl MeInstanceConfig {
+    #[must_use]
+    pub fn instance_name(&self) -> &str {
+        &self.instance_name
+    }
+
+    #[must_use]
+    pub const fn relative_tolerance(&self) -> f64 {
+        self.tolerance
+    }
+
+    #[must_use]
+    pub const fn start_time(&self) -> f64 {
+        self.start_time
+    }
+
+    #[must_use]
+    pub fn stop_time(&self) -> Option<f64> {
+        self.stop_time.is_finite().then_some(self.stop_time)
+    }
     /// Construct the complete checked FMI Model Exchange instance request.
     ///
     /// The tolerance is FMI's relative integration tolerance. Keeping the
     /// fields private prevents a concrete solver adapter from substituting an
     /// absolute tolerance or bypassing the horizon proof.
     pub fn new(
-        instance_name: &'static str,
+        instance_name: impl Into<std::sync::Arc<str>>,
         relative_tolerance: f64,
         start_time: f64,
         stop_time: f64,
     ) -> Result<Self, MeError> {
+        let instance_name = instance_name.into();
         if instance_name.is_empty() {
             return Err(MeError::Contract {
                 reason: "ME instance name must not be empty".to_owned(),
@@ -630,12 +671,26 @@ impl MeInstanceConfig {
     /// clock definitions and the current time only, with no preparation
     /// horizon past which scheduled events stop being announced.
     pub fn open_ended(
-        instance_name: &'static str,
+        instance_name: impl Into<std::sync::Arc<str>>,
         relative_tolerance: f64,
         start_time: f64,
     ) -> Result<Self, MeError> {
         let mut config = Self::new(instance_name, relative_tolerance, start_time, start_time)?;
         config.stop_time = f64::INFINITY;
+        Ok(config)
+    }
+
+    fn restarted_at(&self, start_time: f64, stop_time: Option<f64>) -> Result<Self, MeError> {
+        if !start_time.is_finite()
+            || stop_time.is_some_and(|stop| !stop.is_finite() || stop < start_time)
+        {
+            return Err(MeError::Contract {
+                reason: "ME restart requires a finite coordinate within its horizon".to_owned(),
+            });
+        }
+        let mut config = self.clone();
+        config.start_time = start_time;
+        config.stop_time = stop_time.unwrap_or(f64::INFINITY);
         Ok(config)
     }
 
@@ -663,7 +718,7 @@ pub struct MeModelDescription<'a> {
     /// `SolveMeKernel::get_outputs`, in value-reference order.
     pub output_names: &'a [String],
     /// Names of every writable input variable.
-    pub input_names: &'a [String],
+    pub input_names: &'a rumoca_ir_solve::SolveScalarNames,
     /// Per-output metadata (causality/variability) for result reporting.
     pub output_meta: &'a [SimVariableMeta],
 }

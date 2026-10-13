@@ -61,7 +61,7 @@ fn source(programs: Vec<Vec<LinearOp>>) -> ComputeBlock {
 }
 
 #[test]
-fn conditional_captures_preserve_original_prefix_and_scoped_namespace() {
+fn conditional_captures_keep_the_fallible_conditional_and_its_scoped_namespace() {
     let operations = operations(body(), LinearOp::LoadP { dst: 2, index: 1 });
     let block = source(vec![operations.clone()]);
     let layout = VarLayout::from_parts(Default::default(), 1, 2);
@@ -69,9 +69,13 @@ fn conditional_captures_preserve_original_prefix_and_scoped_namespace() {
     let ComputeNode::ScalarPrograms(value) = &schedule.stages()[0].value_kernel().nodes[0] else {
         panic!("scalar")
     };
+    // The residual `target - value` is not read by the isolated store, so the
+    // target load and the difference are dropped; the conditional is kept.
+    assert_eq!(value.programs()[0].len(), 4);
+    assert_only_fault_free_operations_dropped(&operations, &value.programs()[0]);
     assert!(operations_match(
-        &operations[..4],
-        &value.programs()[0][..4]
+        &operations[1..4],
+        &value.programs()[0][..3]
     ));
     assert_eq!(
         value.programs()[0].last(),

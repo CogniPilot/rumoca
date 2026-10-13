@@ -34,7 +34,7 @@ fn tensor_moment_issues_a_force_isolator_and_rejects_forged_projection_wire() {
         .algebraic()
         .causal_rows()
         .iter()
-        .find(|row| model.problem.solve_layout.solver_maps.names[row.target_index()] == "force[2]")
+        .find(|row| model.problem.solver_name(row.target_index()).unwrap() == "force[2]")
         .expect("the force inside the moment equation requires an exact seed");
     assert!(row.exact_assignment_certified());
     assert!(!row.direct_assignment_certified());

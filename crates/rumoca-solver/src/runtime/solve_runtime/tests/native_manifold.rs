@@ -28,14 +28,14 @@ impl CompiledSolveExpression for Expression {
         t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail.get() {
             return Err("native manifold residual failed".into());
         }
         self.prepared
             .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 }
 
@@ -48,7 +48,7 @@ impl CompiledSolveJacobianExpression for Expression {
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         self.programs
             .borrow_mut()
@@ -67,7 +67,7 @@ impl CompiledSolveJacobianExpression for Expression {
                 },
                 out,
             )
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 
     fn call_program_outputs(
@@ -76,7 +76,7 @@ impl CompiledSolveJacobianExpression for Expression {
         inputs: solve_eval::JacobianEvalInputs<'_>,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         self.programs.borrow_mut().push(program);
         if self.fail.get() || self.failing_program.get() == Some(program) {
@@ -195,12 +195,13 @@ fn runtime(backend: Rc<Backend>) -> SolveRuntime {
             "native_manifold_directional.mo",
         ));
     model.problem.continuous.manifold_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![0],
             y_indices: vec![0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
@@ -216,7 +217,9 @@ fn manifold_callbacks_use_the_prepared_native_backend() {
             ..Default::default()
         });
         let runtime = runtime(backend.clone());
-        let projection = RuntimeManifoldProjection { runtime: &runtime };
+        let projection = RuntimeManifoldProjection {
+            runtime: runtime.scalar_execution().unwrap(),
+        };
         let mut residual = [0.0];
         let mut directional = [0.0];
         // Only the state prefix is supplied; an unrelated algebraic slot is absent.
@@ -305,7 +308,7 @@ fn independent_runtime(backend: Rc<Backend>) -> SolveRuntime {
     model.artifacts.continuous.manifold_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(programs(true));
     model.problem.continuous.manifold_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![
+        blocks: (vec![
             solve::AlgebraicProjectionBlock {
                 rows: vec![1],
                 y_indices: vec![0],
@@ -318,7 +321,8 @@ fn independent_runtime(backend: Rc<Backend>) -> SolveRuntime {
                 tearing: None,
                 alternate_charts: Vec::new(),
             },
-        ],
+        ])
+        .into(),
     };
     model.problem.continuous.refresh_owners =
         solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();

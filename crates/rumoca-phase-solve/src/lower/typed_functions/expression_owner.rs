@@ -1,4 +1,6 @@
-//! Integer quotients and comparisons use the canonical typed expression owner.
+//! Exact computed Integer actuals, Integer-exponent Real powers, and Integer
+//! quotients and comparisons use one canonical typed expression owner
+//! (SPEC_0040 SOLVE-C85/C86).
 
 use super::*;
 use crate::lower::call_scoped_actions::CallAssertionProjection;
@@ -20,11 +22,45 @@ pub(crate) struct ExactExpressionForm<'dae> {
 
 #[derive(Clone, Copy)]
 enum ExpressionInput<'dae> {
+    /// A model coordinate, passed to the owner as a scalar input.
     Coordinate(ModelCoordinateKey<'dae>),
+    /// A loop-binder value the expression reads, passed after the coordinates.
     Binder(dae::DomainId<'dae>, u32),
 }
 
+/// What an expression may contain to be owned.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Containment {
+    /// Coordinates and binders only: a computed Integer actual or an
+    /// Integer-exponent Real power.
+    Closed,
+    /// Nested pure calls are registered with their assertion ownership: an
+    /// Integer quotient or comparison.
+    WithCalls,
+}
+
 impl<'dae> ExactExpressionForm<'dae> {
+    /// The owner form of a computed Integer actual or an Integer-exponent Real
+    /// power; an expression outside those forms or reading a call is refused.
+    pub(crate) fn admit(
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Self, solve::SolveProgramConstructionError> {
+        let node = view
+            .expression(expression)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
+        let provenance = node.provenance().span();
+        let admitted = !node.value_type().is_record()
+            && (node.value_type().scalar_type() == dae::ScalarType::Integer
+                || Self::is_real_integer_power(view, expression));
+        if !admitted {
+            return Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance });
+        }
+        Self::collect(view, expression, Containment::Closed)
+    }
+
+    /// The owner form of an Integer quotient or comparison, or `None` for any
+    /// other expression.
     pub(crate) fn try_admit(
         view: dae::DaeView<'dae>,
         expression: dae::ExprId<'dae>,
@@ -35,6 +71,17 @@ impl<'dae> ExactExpressionForm<'dae> {
         if !needs_integer_owner(view, node) {
             return Ok(None);
         }
+        Self::collect(view, expression, Containment::WithCalls).map(Some)
+    }
+
+    fn collect(
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+        containment: Containment,
+    ) -> Result<Self, solve::SolveProgramConstructionError> {
+        let node = view
+            .expression(expression)
+            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
         let provenance = node.provenance().span();
         let mut supported = true;
         let mut readers = HashMap::new();
@@ -51,7 +98,11 @@ impl<'dae> ExactExpressionForm<'dae> {
                     supported &=
                         collect_coordinate_reader(coordinate, node, expression, &mut readers);
                 }
+                dae::ExpressionOperation::Call { .. } => {
+                    supported &= containment == Containment::WithCalls;
+                }
                 dae::ExpressionOperation::FunctionValue { .. }
+                | dae::ExpressionOperation::FunctionConditionalOutput { .. }
                 | dae::ExpressionOperation::FunctionFoldParameter { .. }
                 | dae::ExpressionOperation::FunctionFoldOutput { .. }
                 | dae::ExpressionOperation::ClockTransfer { .. }
@@ -80,7 +131,34 @@ impl<'dae> ExactExpressionForm<'dae> {
                     (ExpressionInput::Binder(domain, ordinal), ty, expression)
                 }),
         );
-        Ok(Some(Self { expression, inputs }))
+        Ok(Self { expression, inputs })
+    }
+
+    pub(crate) fn is_real_integer_power(
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> bool {
+        let Some(node) = view.expression(expression) else {
+            return false;
+        };
+        if node.value_type().scalar_type() != dae::ScalarType::Real {
+            return false;
+        }
+        let dae::ExpressionOperation::Binary { operator, lhs, rhs } = node.operation() else {
+            return false;
+        };
+        super::super::literal_power_plan(view, operator, lhs, rhs).is_none()
+            && matches!(
+                operator,
+                dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+            )
+            && view
+                .expression(rhs)
+                .is_some_and(|rhs| rhs.value_type().scalar_type() == dae::ScalarType::Integer)
+            && (operator == dae::BinaryOperator::ElementwisePower
+                || view
+                    .expression(lhs)
+                    .is_some_and(|lhs| lhs.value_type().is_scalar()))
     }
 
     pub(crate) fn input_readers(&self) -> impl Iterator<Item = dae::ExprId<'dae>> + '_ {
@@ -189,11 +267,14 @@ impl<'dae> PureCallRegistry<'dae> {
                     .assertion
                     .project_outputs(entry.source_result_count, target_start)
             })
-            .collect::<Result<Box<[_]>, _>>()?;
-        let mut outputs = vec![solve::SolvePureCallOutput::result(output)];
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut outputs = vec![solve::SolvePureCallOutput::result(output.clone())];
         outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
         let recursive = callees.values().any(|callee| callee.recursive);
+        let scalar_storable = callees.values().all(|callee| callee.scalar_storable);
         let identity = self.identities.issue(provenance)?;
+        let callees = std::sync::Arc::new(callees);
+        let predicate_ranges = std::sync::Arc::new(predicate_ranges);
         let owner = self.table.add_owner(
             identity,
             inputs,
@@ -201,10 +282,11 @@ impl<'dae> PureCallRegistry<'dae> {
             provenance,
             |builder, inputs, outputs| {
                 let mut lowerer = form.load_inputs(view, builder, inputs, provenance)?;
-                lowerer.callees = callees;
-                lowerer.predicate_ranges = predicate_ranges;
+                lowerer.callees = std::sync::Arc::clone(&callees);
+                lowerer.predicate_ranges = std::sync::Arc::clone(&predicate_ranges);
                 lowerer.predicate_values = vec![None; assertion_slots.len()];
                 lowerer.assertion_slots = assertion_slots.clone();
+                lowerer.assertion_output_base = 1;
                 let value = lowerer
                     .expression(form.expression)?
                     .only_register(provenance)?;
@@ -227,11 +309,15 @@ impl<'dae> PureCallRegistry<'dae> {
             site,
             callee: CalleeInterface {
                 owner,
-                result_ranges: std::iter::once(0..1).collect(),
+                result_layout: std::sync::Arc::new(FunctionResultsLayout::scalar_expression(
+                    node.value_type_id(),
+                    output,
+                )),
                 result_leaf_count: 1,
                 assertion_slots,
-                assertions,
+                assertions: assertions.into(),
                 recursive,
+                scalar_storable,
             },
         };
         self.identities.expressions.insert(

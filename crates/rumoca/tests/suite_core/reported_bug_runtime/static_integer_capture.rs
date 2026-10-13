@@ -21,17 +21,34 @@ fn integer_literal_call_capture_keeps_exact_values_or_refuses_the_scalar_abi() {
         assert_eq!(report.derivatives[0].value, expected);
     }
     let compiled = compile(&source("Integer", "9007199254740993"), "IntegerCapture");
-    let error = rumoca_sim::lower_solve_problem(&compiled.dae)
-        .expect_err("scalar ABI cannot preserve this original Integer");
+    // SOLVE-C85: an exact computed Integer actual is issued as a typed owner
+    // result, so the scalar ABI refuses it where that result is produced:
+    // at lowering when it folds, otherwise at evaluation, with the original
+    // capture span either way.
+    let message = match rumoca_sim::lower_solve_problem(&compiled.dae) {
+        Err(error) => {
+            assert!(
+                error.source_span().is_some(),
+                "the original capture retains its source fault"
+            );
+            error.to_string()
+        }
+        Ok(_) => {
+            let native = rumoca_sim::lower_for_simulation_with_overrides(
+                &compiled.dae,
+                &SimOptions::default(),
+            )
+            .expect("the typed owner lowers");
+            let runtime = rumoca_solver::SolveRuntime::new(&native).unwrap();
+            let report = runtime.eval_at(0.0, &[1.0], &native.parameters, 1e-10, 32);
+            report
+                .error
+                .expect("scalar ABI cannot preserve this original Integer")
+        }
+    };
     assert!(
-        error
-            .to_string()
-            .contains("not exactly representable in the scalar ABI"),
-        "{error}"
-    );
-    assert!(
-        error.source_span().is_some(),
-        "the original capture retains its source fault"
+        message.contains("not exactly representable in the scalar ABI"),
+        "{message}"
     );
 }
 

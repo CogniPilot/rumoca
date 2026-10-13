@@ -15,6 +15,8 @@ pub(super) enum Operand {
     Cells(CellRange),
     /// The first cell of a range, whatever the cell index.
     Fixed(CellRange),
+    /// A single-cell register, wherever its value lives.
+    Register(solve::SolveRegisterId),
 }
 
 impl Emitter<'_> {
@@ -67,19 +69,45 @@ impl Emitter<'_> {
             self.scalar(destination),
             solve::SolveScalarType::Real { .. }
         );
+        if self.program.register_types()[destination.index()].scalar_count() == 1 {
+            // Bounded operands prove an Integer result cannot fault.
+            let proven = self.interval(destination).is_some();
+            self.begin_result(destination);
+            match spanned.operation() {
+                O::Unary {
+                    operator, operand, ..
+                } => self.unary(*operator, *operand, proven, status),
+                O::Binary {
+                    operator, lhs, rhs, ..
+                } => {
+                    let scalar = self.scalar(*lhs);
+                    let operands = (Operand::Register(*lhs), Operand::Register(*rhs));
+                    self.binary(*operator, scalar, operands, proven, status);
+                }
+                O::Compare {
+                    operator, lhs, rhs, ..
+                } => self.compare(*operator, *lhs, *rhs),
+                O::Convert {
+                    operator, operand, ..
+                } => self.convert(*operator, *operand, status),
+                _ => unreachable!("numeric operation dispatch"),
+            }
+            self.end_result(destination);
+            return Ok(());
+        }
         let destination = self.reg(destination);
         self.cells(destination.bytes / 8, |e| {
             e.cell_address(destination);
             match spanned.operation() {
                 O::Unary {
                     operator, operand, ..
-                } => e.unary(*operator, *operand, status),
+                } => e.unary(*operator, *operand, false, status),
                 O::Binary {
                     operator, lhs, rhs, ..
                 } => {
                     let scalar = e.scalar(*lhs);
                     let (lhs, rhs) = (Operand::Cells(e.reg(*lhs)), Operand::Cells(e.reg(*rhs)));
-                    e.binary(*operator, scalar, (lhs, rhs), status);
+                    e.binary(*operator, scalar, (lhs, rhs), false, status);
                 }
                 O::Compare {
                     operator, lhs, rhs, ..
@@ -145,7 +173,7 @@ impl Emitter<'_> {
         let element = self.scalar(*aggregate);
         self.cells(destination.bytes / 8, |e| {
             e.cell_address(destination);
-            e.binary(*operator, element, operands, status);
+            e.binary(*operator, element, operands, false, status);
             e.push(if real_result {
                 I::F64Store(CELL)
             } else {
@@ -170,12 +198,13 @@ impl Emitter<'_> {
         &mut self,
         operator: solve::SolveUnaryOperator,
         operand: solve::SolveRegisterId,
+        proven: bool,
         status: u32,
     ) {
         use solve::SolveUnaryOperator as U;
         match self.scalar(operand) {
             solve::SolveScalarType::Real { .. } => {
-                self.load_cell(self.reg(operand), true);
+                self.load_register(operand, true);
                 match operator {
                     U::Negate => self.push(I::F64Neg),
                     U::Abs => self.push(I::F64Abs),
@@ -191,12 +220,12 @@ impl Emitter<'_> {
                 }
             }
             solve::SolveScalarType::Boolean => {
-                self.load_cell(self.reg(operand), false);
+                self.load_register(operand, false);
                 self.push(I::I64Eqz);
                 self.push(I::I64ExtendI32U);
             }
             solve::SolveScalarType::Integer(domain) => {
-                self.integer_unary(operator, operand, domain, status);
+                self.integer_unary(operator, operand, domain, proven, status);
             }
         }
     }
@@ -206,17 +235,20 @@ impl Emitter<'_> {
         operator: solve::SolveUnaryOperator,
         operand: solve::SolveRegisterId,
         domain: solve::SolveIntegerDomain,
+        proven: bool,
         status: u32,
     ) {
         use solve::SolveUnaryOperator as U;
-        self.load_cell(self.reg(operand), false);
+        self.load_register(operand, false);
         self.push(I::LocalSet(5));
         match operator {
             U::Negate | U::Abs => {
-                self.push(I::LocalGet(5));
-                self.push(I::I64Const(i64::MIN));
-                self.push(I::I64Eq);
-                self.fail_if(status);
+                if !proven {
+                    self.push(I::LocalGet(5));
+                    self.push(I::I64Const(i64::MIN));
+                    self.push(I::I64Eq);
+                    self.fail_if(status);
+                }
                 self.push(I::I64Const(0));
                 self.push(I::LocalGet(5));
                 self.push(I::I64Sub);
@@ -242,7 +274,9 @@ impl Emitter<'_> {
             _ => unreachable!("checked unary admission"),
         }
         self.push(I::LocalSet(7));
-        self.integer_domain(domain, status);
+        if !proven {
+            self.integer_domain(domain, status);
+        }
         self.push(I::LocalGet(7));
     }
 
@@ -268,6 +302,7 @@ impl Emitter<'_> {
         operator: solve::SolveBinaryOperator,
         scalar: solve::SolveScalarType,
         (lhs, rhs): (Operand, Operand),
+        proven: bool,
         status: u32,
     ) {
         use solve::SolveBinaryOperator as B;
@@ -305,8 +340,10 @@ impl Emitter<'_> {
                 self.push(I::LocalSet(5));
                 self.load_operand(rhs, false);
                 self.push(I::LocalSet(6));
-                self.integer_binary(operator, status);
-                self.integer_domain(domain, status);
+                self.integer_binary(operator, proven, status);
+                if !proven {
+                    self.integer_domain(domain, status);
+                }
                 self.push(I::LocalGet(7));
             }
         }
@@ -320,6 +357,7 @@ impl Emitter<'_> {
         };
         match operand {
             Operand::Cells(range) => self.load_cell(range, real),
+            Operand::Register(register) => self.load_register(register, real),
             Operand::Fixed(range) => {
                 self.address(range);
                 self.push(load);
@@ -327,13 +365,13 @@ impl Emitter<'_> {
         }
     }
 
-    fn integer_binary(&mut self, operator: solve::SolveBinaryOperator, status: u32) {
+    fn integer_binary(&mut self, operator: solve::SolveBinaryOperator, proven: bool, status: u32) {
         use solve::SolveBinaryOperator as B;
         if matches!(
             operator,
             B::IntegerQuotient | B::IntegerModulo | B::IntegerRemainder
         ) {
-            self.integer_quotient(operator, status);
+            self.integer_quotient(operator, proven, status);
             return;
         }
         self.push(I::LocalGet(5));
@@ -355,6 +393,9 @@ impl Emitter<'_> {
             _ => unreachable!("checked integer admission"),
         }
         self.push(I::LocalSet(7));
+        if proven {
+            return;
+        }
         match operator {
             B::Add | B::Subtract => self.integer_add_overflow(operator, status),
             B::Multiply => self.integer_multiply_overflow(status),
@@ -421,8 +462,8 @@ impl Emitter<'_> {
         rhs: solve::SolveRegisterId,
     ) {
         let real = matches!(self.scalar(lhs), solve::SolveScalarType::Real { .. });
-        self.load_cell(self.reg(lhs), real);
-        self.load_cell(self.reg(rhs), real);
+        self.load_register(lhs, real);
+        self.load_register(rhs, real);
         self.push(compare_instruction(operator, real));
         self.push(I::I64ExtendI32U);
     }
@@ -435,11 +476,11 @@ impl Emitter<'_> {
     ) {
         use solve::SolveConversionOperator as C;
         if operator == C::IntegerToReal {
-            self.load_cell(self.reg(operand), false);
+            self.load_register(operand, false);
             self.push(I::F64ConvertI64S);
             return;
         }
-        self.load_cell(self.reg(operand), true);
+        self.load_register(operand, true);
         self.push(if operator == C::RealToIntegerTowardZero {
             I::F64Trunc
         } else {

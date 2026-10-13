@@ -1,6 +1,36 @@
 use super::*;
 
 impl SolveRuntime {
+    pub fn current_dynamic_time_event_stop(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        current_t: f64,
+    ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
+        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+    }
+
+    pub fn next_runtime_event_stop(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        stop_schedule: &mut SolveStopSchedule,
+        current_t: f64,
+        target: f64,
+    ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
+        next_runtime_event_stop(
+            &self.model,
+            &self.runtime_state,
+            y,
+            params,
+            stop_schedule,
+            current_t,
+            target,
+        )
+    }
+}
+
+impl ScalarExecutionView<'_> {
     pub fn update_relation_memory_from_state(
         &self,
         t: f64,
@@ -66,38 +96,6 @@ impl SolveRuntime {
         Ok(())
     }
 
-    pub fn current_dynamic_time_event_stop(
-        &self,
-        y: &[f64],
-        params: &[f64],
-        current_t: f64,
-    ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
-    }
-
-    pub fn next_runtime_event_stop(
-        &self,
-        y: &[f64],
-        params: &[f64],
-        stop_schedule: &mut SolveStopSchedule,
-        current_t: f64,
-        target: f64,
-    ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        next_runtime_event_stop(
-            &self.model,
-            &self.runtime_state,
-            y,
-            params,
-            stop_schedule,
-            current_t,
-            target,
-        )
-    }
-
-    pub fn dynamic_time_event_stop_reads_solver_y(&self) -> bool {
-        !self.model.problem.events.dynamic_time_event_rhs.is_empty()
-    }
-
     pub fn apply_initialization_updates(
         &self,
         y: &mut [f64],
@@ -130,7 +128,7 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         self.apply_prepared_update_rows_until_stable(
-            &self.runtime_assignment_rhs,
+            &self.scalar.runtime_assignment_rhs,
             &self.model.problem.discrete.runtime_assignment_targets,
             y,
             p,
@@ -148,7 +146,7 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         self.apply_prepared_update_rows_until_stable(
-            &self.post_commit_assignment_rhs,
+            &self.scalar.post_commit_assignment_rhs,
             &self.model.problem.discrete.post_commit_assignment_targets,
             y,
             p,
@@ -176,7 +174,7 @@ impl SolveRuntime {
                 targets.len()
             )));
         }
-        let mut values = self.update_values_scratch.borrow_mut();
+        let mut values = self.scalar.update_values_scratch.borrow_mut();
         values.resize(targets.len(), 0.0);
         let mut changed_any = false;
         for _ in 0..max_iters {
@@ -561,10 +559,15 @@ impl SolveRuntime {
         }
         // Candidate relation memory feeds runtime aliases used by the projection.
         // Evaluate those aliases in this mode before certifying its coordinates.
-        if self.run_runtime_assignments(input).is_err()
-            || project_algebraics(input.y, input.p).is_err()
-        {
-            return Ok(false);
+        match self.run_runtime_assignments(input) {
+            Err(error @ RuntimeSolveError::CompiledExecution { .. }) => return Err(error),
+            Err(_) => return Ok(false),
+            Ok(_) => {}
+        }
+        match project_algebraics(input.y, input.p) {
+            Err(error @ RuntimeSolveError::CompiledExecution { .. }) => return Err(error),
+            Err(_) => return Ok(false),
+            Ok(_) => {}
         }
         let roots = self.eval_root_conditions_from_solver_y(input.t, input.y, input.p)?;
         let domains = &self.model.problem.events.root_zero_domains;
@@ -1018,10 +1021,15 @@ impl SolveRuntime {
         // clock lane, owner and `when` leaf alike, as not ticking.
         let clocks_tick = self.write_event_pass_clock_params(&mut action_p, t, row_filter);
         let mut values = vec![0.0; events.actions.len()];
-        let mut active_rows = self.event_action_active_row_indices.borrow_mut();
+        let observations = self.event_observations();
+        let context = RowEvalContext {
+            event_observations: Some(&observations),
+            ..self.row_eval_context()
+        };
+        let mut active_rows = self.scalar.event_action_active_row_indices.borrow_mut();
         active_rows.clear();
         for (row, action) in events.actions.iter().enumerate() {
-            if self.event_transaction_coverage.event_actions[row] {
+            if self.scalar.event_transaction_coverage.event_actions[row] {
                 continue;
             }
             let active = match action.clock_owner {
@@ -1034,27 +1042,34 @@ impl SolveRuntime {
                 active_rows.push(row);
             }
         }
-        self.eval_selected_outputs_with_native(
+        self.eval_selected_outputs_with_context(
             SpecializedRows {
-                block: &self.event_action_conditions,
-                cache: &self.compiled_event_action_rows,
-                failed: &self.failed_event_action_rows,
+                block: &self.scalar.event_action_conditions,
+                cache: &self.scalar.compiled_event_action_rows,
+                failed: &self.scalar.failed_event_action_rows,
             },
             &active_rows,
             RowEvalPoint { y, p: &action_p, t },
             &mut values,
+            context,
         )?;
         self.project_event_transaction_action_values(t, row_filter, &mut values)?;
-        self.report_violated_warnings(&values, y, &action_p, t)?;
-        self.report_model_messages(&values, y, &action_p, t)?;
-        match solve_eval::event_action_request_from_values(
+        let request = solve_eval::event_action_request_from_values(
             events,
             y,
             &action_p,
             t,
-            self.row_eval_context(),
-            values,
-        )? {
+            context,
+            values.clone(),
+        )?;
+        if !matches!(
+            request,
+            solve_eval::EventActionRequest::AssertionFailed { .. }
+        ) {
+            self.report_violated_warnings(&values, y, &action_p, t, context)?;
+            self.report_model_messages(&values, y, &action_p, t)?;
+        }
+        match request {
             solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
             solve_eval::EventActionRequest::AssertionFailed { message } => {
                 Ok(EventActionOutcome::AssertionFailed { time: t, message })
@@ -1072,7 +1087,7 @@ impl SolveRuntime {
         params: &[f64],
         t: f64,
     ) -> Result<(), RuntimeSolveError> {
-        let mut values = self.visible_scratch.borrow_mut();
+        let mut values = self.scalar.visible_scratch.borrow_mut();
         self.visible_values_into(solver_y, params, t, &mut values)?;
         push_visible_values(data, &values)
     }
@@ -1095,14 +1110,19 @@ impl SolveRuntime {
         t: f64,
         values: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(plan) = &self.visible_value_plan {
+        if let Some(plan) = &self.scalar.visible_value_plan {
             resize_runtime_values(values, plan.entries.len(), 0.0, "visible values")?;
             self.write_planned_visible_values(plan, y, params, t, values)?;
             return Ok(());
         }
-        if self.visible_value_rows.len() == self.model.visible_names.len() {
-            resize_runtime_values(values, self.visible_value_rows.len(), 0.0, "visible values")?;
-            self.visible_value_rows.eval_with_context(
+        if self.scalar.visible_value_rows.len() == self.model.visible_projection.scalar_count() {
+            resize_runtime_values(
+                values,
+                self.scalar.visible_value_rows.len(),
+                0.0,
+                "visible values",
+            )?;
+            self.scalar.visible_value_rows.eval_with_context(
                 y,
                 params,
                 t,
@@ -1132,9 +1152,9 @@ impl SolveRuntime {
         if !plan.expression_rows.is_empty() {
             self.eval_single_output_rows_with_native(
                 SpecializedRows {
-                    block: &self.visible_value_rows,
-                    cache: &self.compiled_visible_rows,
-                    failed: &self.failed_visible_rows,
+                    block: &self.scalar.visible_value_rows,
+                    cache: &self.scalar.compiled_visible_rows,
+                    failed: &self.scalar.failed_visible_rows,
                 },
                 &plan.expression_rows,
                 RowEvalPoint { y, p: params, t },
@@ -1152,14 +1172,14 @@ impl SolveRuntime {
         t: f64,
         names: &[String],
     ) -> Result<IndexMap<String, f64>, RuntimeSolveError> {
-        if self.visible_value_rows.len() == self.model.visible_names.len() {
+        if self.scalar.visible_value_rows.len() == self.model.visible_projection.scalar_count() {
             return self.visible_values_for_names_from_rows(y, params, t, names);
         }
         let all_values = self.visible_values(y, params, t)?;
         let mut values = IndexMap::new();
         reserve_runtime_index_map_capacity(&mut values, names.len(), "visible name values")?;
         for name in names {
-            let Some(idx) = self.visible_name_index.get(name).copied() else {
+            let Some(idx) = self.scalar.visible_name_index.get(name).copied() else {
                 continue;
             };
             let value = all_values.get(idx).copied().ok_or_else(|| {
@@ -1194,18 +1214,18 @@ impl SolveRuntime {
         params: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        let Some(idx) = self.visible_name_index.get(name).copied() else {
+        let Some(idx) = self.scalar.visible_name_index.get(name).copied() else {
             return Ok(None);
         };
-        if idx >= self.visible_value_rows.len() {
+        if idx >= self.scalar.visible_value_rows.len() {
             return Err(visible_value_index_error(
                 name,
                 idx,
-                self.visible_value_rows.len(),
+                self.scalar.visible_value_rows.len(),
                 "visible value rows",
             ));
         }
-        let value = self.visible_value_rows.eval_row_with_context(
+        let value = self.scalar.visible_value_rows.eval_row_with_context(
             idx,
             y,
             params,
@@ -1272,21 +1292,23 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.compiled_derivative_rhs.as_ref()
-            && compiled
-                .call(
-                    solver_y,
-                    params,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
-        {
+        if let Some(compiled) = self.scalar.compiled_derivative_rhs.as_ref() {
+            compiled.call(
+                solver_y,
+                params,
+                t,
+                self.model.external_tables.as_slice(),
+                out,
+            )?;
             return self.validate_finite_derivatives(out);
         }
-        self.derivative_rhs
-            .eval_with_context(solver_y, params, t, self.row_eval_context(), out)?;
+        self.scalar.derivative_rhs.eval_with_context(
+            solver_y,
+            params,
+            t,
+            self.row_eval_context(),
+            out,
+        )?;
         self.validate_finite_derivatives(out)
     }
 
@@ -1298,9 +1320,8 @@ impl SolveRuntime {
             if !value.is_finite() {
                 let state_name = self
                     .model
-                    .visible_names
-                    .get(idx)
-                    .cloned()
+                    .visible_projection()
+                    .name(idx)
                     .unwrap_or_else(|| format!("state[{idx}]"));
                 return Err(RuntimeSolveError::NonFiniteDerivative { state_name });
             }

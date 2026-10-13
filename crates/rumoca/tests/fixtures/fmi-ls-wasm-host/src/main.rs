@@ -7,6 +7,14 @@
 //!       Advances the Co-Simulation from `t_start` to `t_stop` in `dt` steps
 //!       and prints a CSV trace (`time` plus one column per value reference).
 
+mod actual_native_linkage;
+mod assertion_order;
+mod internal_linkage;
+mod logging;
+mod native_fmi;
+mod native_fmi_capacity;
+mod typed_values;
+
 use anyhow::{Context, Result, bail, ensure};
 use wasmtime::component::{Component, Linker, ResourceAny};
 use wasmtime::{Config, Engine, Store};
@@ -22,6 +30,15 @@ use fmi::fmi3::types::Status;
 struct HostState {
     wasi: WasiCtx,
     table: wasmtime::component::ResourceTable,
+    messages: Vec<LogMessage>,
+}
+
+#[derive(Debug, PartialEq)]
+struct LogMessage {
+    instance_name: String,
+    status: Status,
+    category: String,
+    message: String,
 }
 
 impl WasiView for HostState {
@@ -34,7 +51,20 @@ impl WasiView for HostState {
 }
 
 impl fmi::fmi3::callbacks::Host for HostState {
-    fn log_message(&mut self, _: String, _: Status, _: String, _: String) {}
+    fn log_message(
+        &mut self,
+        instance_name: String,
+        status: Status,
+        category: String,
+        message: String,
+    ) {
+        self.messages.push(LogMessage {
+            instance_name,
+            status,
+            category,
+            message,
+        });
+    }
     fn clock_update(&mut self) {}
     fn lock_preemption(&mut self) {}
     fn unlock_preemption(&mut self) {}
@@ -70,6 +100,7 @@ fn load(component_path: &str, token: &str) -> Result<Fmu> {
         HostState {
             wasi: WasiCtxBuilder::new().build(),
             table: wasmtime::component::ResourceTable::new(),
+            messages: Vec::new(),
         },
     );
     let world = CoSimulationFmu::instantiate(&mut store, &component, &linker)?;
@@ -78,7 +109,15 @@ fn load(component_path: &str, token: &str) -> Result<Fmu> {
         .fmi_fmi3_co_simulation()
         .co_simulation_instance()
         .call_instantiate_co_simulation(
-            &mut store, "rumoca-test", token, "", false, false, false, false, &[],
+            &mut store,
+            "rumoca-test",
+            token,
+            "",
+            false,
+            false,
+            false,
+            false,
+            &[],
         )?
         .context("component rejected the checked token")?;
     Ok(Fmu {
@@ -102,8 +141,29 @@ fn run_lifecycle(component_path: &str, token: &str) -> Result<()> {
     let mut fmu = load(component_path, token)?;
     let interface = fmu.world.fmi_fmi3_co_simulation().co_simulation_instance();
     ensure!(
-        interface.call_enter_initialization_mode(&mut fmu.store, fmu.instance, None, 0.0, Some(1.0))?
-            == Status::Ok
+        interface
+            .call_instantiate_co_simulation(
+                &mut fmu.store,
+                "foreign-token-instance",
+                "foreign-token",
+                "",
+                false,
+                false,
+                false,
+                false,
+                &[]
+            )?
+            .is_none(),
+        "foreign instantiation token acquired an instance"
+    );
+    ensure!(
+        interface.call_enter_initialization_mode(
+            &mut fmu.store,
+            fmu.instance,
+            None,
+            0.0,
+            Some(1.0)
+        )? == Status::Ok
     );
     ensure!(
         interface.call_set_input_derivatives(&mut fmu.store, fmu.instance, &[], &[])?
@@ -161,7 +221,10 @@ fn run_lifecycle(component_path: &str, token: &str) -> Result<()> {
 }
 
 fn run_trace(component_path: &str, token: &str, args: &[String]) -> Result<()> {
-    ensure!(args.len() >= 4, "trace needs t_start t_stop dt and value references");
+    ensure!(
+        args.len() >= 4,
+        "trace needs t_start t_stop dt and value references"
+    );
     let t_start: f64 = args[0].parse().context("t_start")?;
     let t_stop: f64 = args[1].parse().context("t_stop")?;
     let dt: f64 = args[2].parse().context("dt")?;
@@ -233,8 +296,15 @@ fn main() -> Result<()> {
     let component_path = args[1].as_str();
     let token = args[2].as_str();
     match mode {
+        "internal-linkage" => internal_linkage::run(component_path),
+        "actual-native-linkage" => actual_native_linkage::run(component_path, token),
+        "native-fmi" => native_fmi::run(component_path, token, &args[3..]),
+        "native-fmi-capacity" => native_fmi_capacity::run(component_path, token, &args[3..]),
         "lifecycle" => run_lifecycle(component_path, token),
         "trace" => run_trace(component_path, token, &args[3..]),
+        "typed" => typed_values::run(component_path, token, &args[3..]),
+        "logging" => logging::run(component_path, token, &args[3..]),
+        "assertion-order" => assertion_order::run(component_path, token, &args[3..]),
         other => bail!("unknown mode {other}"),
     }
 }

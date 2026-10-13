@@ -18,6 +18,7 @@ rumoca-allocator = { workspace = true }
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-phase-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 # Canonical `ES0xx` registry used by `diagnostic_codes` instead of re-declaring
 # the codes the MSL result schema reports.
 rumoca-phase-structural = { workspace = true }
@@ -28,6 +29,9 @@ rumoca-phase-structural = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "report"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+
+[dev-dependencies]
+rumoca-solver = { workspace = true }
 
 [lints]
 workspace = true

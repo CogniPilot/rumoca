@@ -55,6 +55,7 @@ dtypes = ["f64"]
 [[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
+shared_as = "fmi3-modelDescription.xml.jinja"
 id = "fmu"
 
 [[files]]

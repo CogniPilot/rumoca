@@ -487,7 +487,7 @@ fn prepare_rebuild<'source, 'target>(
         target,
         base,
         facts,
-        candidate,
+        (candidate, request.literal_expressions),
         &mut rebuilt_state,
         &mut quotients,
     )?;

@@ -16,7 +16,7 @@ impl ParallelResistances {
             offset,
             equation_scale,
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![0, 1, 2],
                     y_indices: vec![0, 1, 2],
                     tearing: Some(solve::BlockTearing {
@@ -36,7 +36,8 @@ impl ParallelResistances {
                         ],
                     }),
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
         }
     }
@@ -90,10 +91,6 @@ impl ImplicitProjectionModel for ParallelResistances {
         &self.plan
     }
 
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
-
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
@@ -128,7 +125,10 @@ fn rounded_tear_step_declines_and_restores_incoming_values() {
         0.0,
         TornBlock {
             index: 0,
-            tearing: model.plan.blocks[0].tearing.as_ref().unwrap(),
+            tearing: model.plan.blocks.scalar_blocks()[0]
+                .tearing
+                .as_ref()
+                .unwrap(),
         },
         1e-8,
         true,
@@ -182,7 +182,10 @@ fn well_conditioned_torn_block_still_settles_without_dense_recovery() {
         0.0,
         TornBlock {
             index: 0,
-            tearing: model.plan.blocks[0].tearing.as_ref().unwrap(),
+            tearing: model.plan.blocks.scalar_blocks()[0]
+                .tearing
+                .as_ref()
+                .unwrap(),
         },
         1e-8,
         true,

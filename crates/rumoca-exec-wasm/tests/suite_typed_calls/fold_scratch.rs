@@ -55,7 +55,7 @@ fn windowed_pass() -> (solve::SolvePureCallTable, solve::SolvePureCallSite) {
                     &[initial],
                     &[raster, enabled],
                     span(814),
-                    |r, carried, captures, outputs| {
+                    |r, carried, captures, _binders, outputs| {
                         r.load(carried[0], span(815))?;
                         r.load(captures[0], span(816))?;
                         let enabled = r.load(captures[1], span(817))?;
@@ -91,9 +91,10 @@ fn a_read_only_raster_read_by_a_windowed_loop_adds_no_scratch() {
     let compiled = compile_pure_call_wasm(&table, &site).unwrap();
     // Output 8000, the zero constant 8 and the carried raster 8000 (its initial
     // value, rewritten in place), then one pass of private storage: the binder
-    // 8, the element read in the copying arm 8 and the loop counter 8. The raster input, the
-    // conditional result, the transition output and the predicate's inputs and
-    // output are all borrowed ranges.
+    // 8, the loop counter 8 and the predicate's own binder 8. The element read
+    // in the copying arm lives in a wasm local. The raster input, the
+    // conditional result, the transition output and the predicate's tuple and
+    // capture inputs and output are all borrowed ranges.
     assert_eq!(compiled.layout().scratch_bytes, 2 * BYTES + 8 + 8 + 8 + 8);
     let mut runner = Runner::new(&compiled);
     for enabled in [true, false] {

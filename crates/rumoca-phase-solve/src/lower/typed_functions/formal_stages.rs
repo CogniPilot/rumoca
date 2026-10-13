@@ -9,7 +9,8 @@ use rumoca_phase_structural::{FormalDerivativeStage, FormalDerivativeView, Forma
 
 use super::model_coordinates::collect_model_coordinate_types;
 use super::{
-    ExpressionLowerer, LoweredValue, PureCallRegistry, arithmetic_profile, lower_primitive_type,
+    AssertionSlot, EagerScope, ExpressionLowerer, FunctionAssertionMessage, LoweredValue,
+    PureCallRegistry, arithmetic_profile, lower_primitive_type,
 };
 
 /// Analysis kernels retain their issuing formal root. They are not a prepared
@@ -47,7 +48,7 @@ pub(crate) struct FormalExpressionProgram<'formal> {
 }
 
 pub struct FormalResidualAssertion<'formal> {
-    message: dae::ExprId<'formal>,
+    message: FunctionAssertionMessage<'formal>,
     provenance: dae::DaeProvenance,
 }
 
@@ -94,7 +95,7 @@ impl<'source, 'formal> FormalResidualProgram<'source, 'formal> {
 }
 
 impl<'formal> FormalResidualAssertion<'formal> {
-    pub fn message(&self) -> dae::ExprId<'formal> {
+    pub fn message(&self) -> FunctionAssertionMessage<'formal> {
         self.message
     }
     pub fn provenance(&self) -> dae::DaeProvenance {
@@ -334,7 +335,6 @@ impl<'formal> PureCallRegistry<'formal> {
             collect_model_coordinate_types(view, bodies.iter().map(|body| body.value), [], at)?;
         let (callees, predicate_ranges, assertions, assertion_slots) =
             self.register_expression_calls(view, bodies.iter().map(|body| (body.value, ())))?;
-        let predicate_count = assertions.len();
         let inputs = coordinates
             .iter()
             .map(|(_, value_type)| lower_primitive_type(view, *value_type, arithmetic_profile()))
@@ -346,10 +346,7 @@ impl<'formal> PureCallRegistry<'formal> {
                     .map(solve::SolvePureCallOutput::result)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        outputs.extend(
-            std::iter::repeat_with(solve::SolvePureCallOutput::assertion_predicate)
-                .take(predicate_count),
-        );
+        outputs.extend(assertion_slots.iter().map(AssertionSlot::output));
         let residual_outputs = bodies.len();
         let identity = self.identities.issue(at)?;
         let owner =
@@ -370,37 +367,32 @@ impl<'formal> PureCallRegistry<'formal> {
                         model_coordinates,
                         parameters: HashMap::new(),
                         function_values: HashMap::new(),
-                        conditional_groups: HashMap::new(),
                         fold_parameters: HashMap::new(),
                         fold_values: HashMap::new(),
                         binders: HashMap::new(),
-                        callees,
-                        predicate_ranges,
+                        callees: callees.into(),
+                        predicate_ranges: predicate_ranges.into(),
                         cache: HashMap::new(),
                         call_values: HashMap::new(),
                         predicate_values: vec![None; assertion_slots.len()],
                         assertion_slots: assertion_slots.clone(),
                         next_direct_assertion: 0,
                         direct_assertion_count: 0,
+                        direct_assertions: std::sync::Arc::from([]),
+                        assertion_output_base: residual_outputs,
+                        loop_statements: Default::default(),
+                        conditional_statements: Default::default(),
+                        assigned_values: HashMap::new(),
                         totality: HashMap::new(),
+                        implied_guards: Vec::new(),
+                        eager: EagerScope::default(),
                     };
                     for (&body, &output) in bodies.iter().zip(outputs) {
                         let value = lowerer.residual_body(body, domain.as_ref(), at)?;
                         lowerer.builder.store(output, value, at)?;
                     }
-                    for (predicate, &output) in lowerer
-                        .predicate_values
-                        .into_iter()
-                        .zip(assertion_slots.iter())
-                        .filter(|(_, slot)| slot.is_predicate())
-                        .map(|(value, _)| value)
-                        .zip(&outputs[residual_outputs..])
-                    {
-                        let value = predicate.ok_or(
-                            solve::SolveProgramConstructionError::InvalidCallOutput {
-                                provenance: at,
-                            },
-                        )?;
+                    for (slot, &output) in outputs[residual_outputs..].iter().enumerate() {
+                        let value = lowerer.published_slot(slot, at)?;
                         lowerer.builder.store(output, value, at)?;
                     }
                     Ok(())

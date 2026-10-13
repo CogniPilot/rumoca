@@ -70,6 +70,7 @@ fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
             .render_str("{{ real_extremum_prelude('c') }}", ())
             .unwrap(),
     );
+    source.push_str(OBSERVER_TYPE);
     for (name, operator, scalar) in [
         ("sum3", Reduction::Sum, REAL),
         ("product3", Reduction::Product, REAL),
@@ -118,8 +119,8 @@ fn generated_reductions_execute_with_ordered_values_and_ieee_edges() {
 }
 
 const HARNESS: &str = r#"
-#define RUN(fn, input) assert(fn((const void*[]){input}, (void*[]){&result}) == 0)
-#define RUN_INTEGER(fn, input) assert(fn((const void*[]){input}, (void*[]){&integer_result}) == 0)
+#define RUN(fn, input) assert(fn((const void*[]){input}, (void*[]){&result}, NULL) == 0)
+#define RUN_INTEGER(fn, input) assert(fn((const void*[]){input}, (void*[]){&integer_result}, NULL) == 0)
 int main(void) {
     double result, ordinary[] = {5.0, 10.0, 15.0};
     RUN(sum3, ordinary); assert(result == 30.0);
@@ -144,11 +145,11 @@ int main(void) {
     RUN(min3, nans); assert(result == 7.0);
     RUN(max3, nans); assert(result == 7.0);
     bool flags[] = {true, true, true}, all;
-    assert(all3((const void*[]){flags}, (void*[]){&all}) == 0 && all);
+    assert(all3((const void*[]){flags}, (void*[]){&all}, NULL) == 0 && all);
     flags[1] = false;
-    assert(all3((const void*[]){flags}, (void*[]){&all}) == 0 && !all);
-    assert(min_bool3((const void*[]){flags}, (void*[]){&all}) == 0 && !all);
-    assert(max_bool3((const void*[]){flags}, (void*[]){&all}) == 0 && all);
+    assert(all3((const void*[]){flags}, (void*[]){&all}, NULL) == 0 && !all);
+    assert(min_bool3((const void*[]){flags}, (void*[]){&all}, NULL) == 0 && !all);
+    assert(max_bool3((const void*[]){flags}, (void*[]){&all}, NULL) == 0 && all);
     int64_t integer_result, integers[] = {-3, 2, -4};
     RUN_INTEGER(sum_integer3, integers); assert(integer_result == -5);
     RUN_INTEGER(product_integer3, integers); assert(integer_result == 24);
@@ -163,10 +164,10 @@ int main(void) {
     RUN_INTEGER(max_integer3, wide); assert(integer_result == INT64_C(9007199254740995));
     int64_t overflow[] = {INT64_MAX, 1, 0};
     integer_result = 177;
-    assert(sum_integer3((const void*[]){overflow}, (void*[]){&integer_result}) != 0);
+    assert(sum_integer3((const void*[]){overflow}, (void*[]){&integer_result}, NULL) != 0);
     assert(integer_result == 177);
     overflow[1] = 2;
-    assert(product_integer3((const void*[]){overflow}, (void*[]){&integer_result}) != 0);
+    assert(product_integer3((const void*[]){overflow}, (void*[]){&integer_result}, NULL) != 0);
     assert(integer_result == 177);
     return 0;
 }
@@ -186,3 +187,8 @@ fn reductions_outside_the_supported_profile_fail_during_rendering() {
         assert!(render(&program(operator, scalar, 3), "unsupported").is_err());
     }
 }
+
+/// The assertion observer the generated typed-function signature names; these
+/// reductions carry no assertion, so every call passes no observer.
+const OBSERVER_TYPE: &str = "typedef struct { void* context; int (*observe)(void*, size_t, const void* const[], size_t); } RmcAssertionObserver;\n\
+static inline double rumoca_real64(uint64_t bits) { double value; memcpy(&value, &bits, sizeof(value)); return value; }\n";

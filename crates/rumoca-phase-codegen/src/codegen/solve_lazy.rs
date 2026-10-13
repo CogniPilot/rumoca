@@ -11,7 +11,7 @@
 //! iterate the typed ops directly with zero materialization.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
 use minijinja::Value;
@@ -19,6 +19,9 @@ use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
 use crate::errors::CodegenError;
+
+mod fmi;
+pub(super) use fmi::native_value as native_fmi_value;
 
 // ── Kernel handles ───────────────────────────────────────────────────────────
 
@@ -38,8 +41,13 @@ pub(super) enum SolveRenderHandle {
         /// the problem, so scalar targets can inline `PureCall` ops.
         pure_calls: Option<Arc<solve::SolvePureCallTable>>,
     },
-    Fmi(Arc<solve::fmi::FmiCCodegenView>),
+    Fmi(Arc<FmiRenderOwner>),
     Model(Arc<solve::SolveModel>),
+}
+
+pub(super) struct FmiRenderOwner {
+    component: Arc<solve::fmi::FmiCCodegenView>,
+    value: OnceLock<Result<Value, CodegenError>>,
 }
 
 impl SolveRenderHandle {
@@ -77,13 +85,16 @@ impl SolveRenderHandle {
     }
 
     pub(super) fn fmi(component: solve::fmi::FmiCCodegenView) -> Self {
-        Self::Fmi(Arc::new(component))
+        Self::Fmi(Arc::new(FmiRenderOwner {
+            component: Arc::new(component),
+            value: OnceLock::new(),
+        }))
     }
 
     pub(super) fn problem(&self) -> &solve::SolveProblem {
         match self {
             Self::Standalone { problem, .. } => problem,
-            Self::Fmi(component) => component.problem(),
+            Self::Fmi(owner) => owner.component.problem(),
             Self::Model(model) => &model.problem,
         }
     }
@@ -91,8 +102,15 @@ impl SolveRenderHandle {
     pub(super) fn artifacts(&self) -> &solve::SolveArtifacts {
         match self {
             Self::Standalone { artifacts, .. } => artifacts,
-            Self::Fmi(component) => component.artifacts(),
+            Self::Fmi(owner) => owner.component.artifacts(),
             Self::Model(model) => &model.artifacts,
+        }
+    }
+
+    pub(super) fn pure_calls(&self) -> Option<&solve::SolvePureCallTable> {
+        match self {
+            Self::Standalone { .. } | Self::Model(_) => None,
+            Self::Fmi(owner) => Some(owner.component.pure_calls()),
         }
     }
 
@@ -103,11 +121,14 @@ impl SolveRenderHandle {
     /// handed a component outside its checked event profile. Component
     /// construction already guarantees the inventory shape; the renderer
     /// constructor checks its remaining capability domain before this handle
-    /// exists, so there is no case to reject here.
-    pub(super) fn fmi_value(&self) -> Value {
+    /// exists. Projection errors propagate to both renderer entry points.
+    pub(super) fn fmi_value(&self) -> Result<Value, CodegenError> {
         match self {
-            Self::Standalone { .. } | Self::Model(_) => Value::default(),
-            Self::Fmi(component) => Value::from_serialize(component.as_ref()),
+            Self::Standalone { .. } | Self::Model(_) => Ok(Value::default()),
+            Self::Fmi(owner) => owner
+                .value
+                .get_or_init(|| fmi::value(Arc::clone(&owner.component)))
+                .clone(),
         }
     }
 }
@@ -115,11 +136,29 @@ impl SolveRenderHandle {
 /// Runtime values of a complete lowered model. Large program inventories keep
 /// the same lazy program views as the canonical Solve problem.
 pub(super) fn model_value(model: Arc<solve::SolveModel>) -> Result<Value, CodegenError> {
-    let visible_rows = Arc::new(model.visible_value_rows.clone());
+    // The retained model carries the demanded visible projection; templates
+    // read its derived scalar names, metadata and checked value rows.
+    let view = model.visible_projection();
+    let visible_rows = Arc::new(
+        view.scalar_rows()
+            .map_err(|error| CodegenError::template(error.detail))?,
+    );
+    let visible_names = Value::from_serialize(
+        (0..view.scalar_count())
+            .map(|point| view.name(point))
+            .collect::<Vec<_>>(),
+    );
+    let variable_meta = Value::from_serialize(
+        (0..view.scalar_count())
+            .map(|point| view.metadata(point))
+            .collect::<Vec<_>>(),
+    );
     let visible = scalar_program_block_value(visible_rows.clone());
     let visible_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
         visible_rows,
     )?);
+    let directional_owners =
+        super::pure_call_families::directional_owners_value(&model.pure_calls)?;
     Ok(lazy_map(
         &[
             "initial_y",
@@ -137,15 +176,13 @@ pub(super) fn model_value(model: Arc<solve::SolveModel>) -> Result<Value, Codege
             "initial_y" => Some(Value::from_serialize(&model.initial_y)),
             "parameters" => Some(Value::from_serialize(&model.parameters)),
             "solver_nominals" => Some(Value::from_serialize(&model.solver_nominals)),
-            "visible_names" => Some(Value::from_serialize(&model.visible_names)),
+            "visible_names" => Some(visible_names.clone()),
             "visible_value_rows" => Some(visible.clone()),
             "visible_value_plan" => Some(visible_plan.clone()),
-            "variable_meta" => Some(Value::from_serialize(&model.variable_meta)),
+            "variable_meta" => Some(variable_meta.clone()),
             "external_tables" => Some(Value::from_serialize(&model.external_tables)),
             "pure_calls" => Some(Value::from_serialize(&model.pure_calls)),
-            "pure_call_directional_owners" => Some(
-                super::pure_call_families::directional_owners_value(&model.pure_calls),
-            ),
+            "pure_call_directional_owners" => Some(directional_owners.clone()),
             _ => None,
         },
     ))
@@ -539,6 +576,7 @@ fn algebraic_tearing_value(problem: &solve::SolveProblem) -> Result<Value, Codeg
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .map(|block| torn_block_value(&prepared, block))
         .collect::<Result<Vec<_>, _>>()?;
@@ -629,6 +667,7 @@ fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> boo
     let expected_targets = continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.y_indices.iter().copied())
         .collect::<std::collections::BTreeSet<_>>();
@@ -642,7 +681,7 @@ fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> boo
     if owners.algebraic().simultaneous_plan != continuous.algebraic_projection_plan
         || owners.algebraic().simultaneous_block_indices
             != (0..continuous.algebraic_projection_plan.blocks.len()).collect::<Vec<_>>()
-        || !owners.algebraic_exact_assignment_stages_cover()
+        || !exact_assignment_stages_render_scalar(owners)
     {
         return false;
     }
@@ -676,7 +715,9 @@ fn algebraic_assignment_ownership_complete(problem: &solve::SolveProblem) -> boo
         {
             return false;
         }
-        rows.extend(program.row_owners().iter().copied());
+        if position == 0 {
+            rows.extend(program.row_owners().iter().copied());
+        }
     }
     assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
 }
@@ -941,161 +982,184 @@ fn ordered_exact_algebraic_assignments(
     Some(assignments)
 }
 
-// SPEC_0021: Exception - exhaustive lazy routing of the discrete render fields.
-#[allow(clippy::too_many_lines)]
-fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
-    let scalar =
-        super::discrete_render_view::DiscreteRenderView::checked(&handle.problem().discrete)?;
-    let rhs = scalar_program_block_value(Arc::new(scalar.rhs));
-    let rhs_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-        Arc::new(handle.problem().discrete.rhs.clone()),
-    )?);
-    let runtime_assignment_plan =
-        Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-            Arc::new(handle.problem().discrete.runtime_assignment_rhs.clone()),
-        )?);
-    let post_commit_assignment_plan =
-        Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-            Arc::new(handle.problem().discrete.post_commit_assignment_rhs.clone()),
-        )?);
-    let guarded_assignment_plan = guarded_assignment_plan(&handle.problem().discrete)?;
-    let structured_rhs =
-        compute_block_value(Arc::new(handle.problem().discrete.structured_rhs.clone()))?;
-    let structured_assignments = handle
-        .problem()
-        .discrete
-        .structured_updates
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            handle
-                .problem()
-                .discrete
+const DISCRETE_KEYS: &[&str] = &[
+    "runtime_assignment_rhs",
+    "runtime_assignment_plan",
+    "runtime_assignment_targets",
+    "runtime_assignment_roles",
+    "post_commit_assignment_rhs",
+    "post_commit_assignment_plan",
+    "guarded_assignment_plan",
+    "guarded_assignment_targets",
+    "event_iteration_plan",
+    "event_transactions",
+    "clock_partition_order",
+    "clock_owners",
+    "row_roles",
+    "structured_row_roles",
+    "guarded_assignment_clock_owners",
+    "structured_update_count",
+    "structured_rhs",
+    "structured_assignments",
+    "structured_clock_owners",
+    "clock_partition_intermediate_count",
+    "clock_partition_intermediate_plan",
+    "clock_partition_intermediate_targets",
+    "clock_partition_intermediate_clocks",
+    "post_commit_assignment_targets",
+    "post_commit_assignment_runtime_rows",
+    "rhs",
+    "rhs_plan",
+    "update_targets",
+    "pre_modes",
+    "observation_refresh",
+];
+
+/// The discrete fields whose plans are built once, when the view is created.
+struct DiscretePlans {
+    rhs: Value,
+    rhs_plan: Value,
+    runtime_assignment_plan: Value,
+    post_commit_assignment_plan: Value,
+    guarded_assignment_plan: Value,
+    structured_rhs: Value,
+    structured_assignments: Value,
+    clock_intermediate_plan: Value,
+    targets: Vec<solve::ScalarSlot>,
+    pre_modes: Vec<solve::DiscreteEventPreMode>,
+    observation_refresh: Vec<bool>,
+}
+
+fn plan_value(block: &solve::ScalarProgramBlock) -> Result<Value, CodegenError> {
+    Ok(Value::from_object(
+        super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block.clone()))?,
+    ))
+}
+
+fn structured_assignments_value(
+    discrete: &solve::DiscreteSolveSystem,
+) -> Result<Value, CodegenError> {
+    let assignments = (0..discrete.structured_updates.len())
+        .map(|index| {
+            discrete
                 .structured_assignments(index)
                 .map_err(|error| CodegenError::template(error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let structured_assignments = Value::from_serialize(&structured_assignments);
-    let clock_intermediate_plan = Value::from_object(
-        super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(
-            handle
-                .problem()
-                .discrete
-                .clock_partition_intermediates
-                .clone(),
-        ))?,
-    );
-    let targets = scalar.targets;
-    let pre_modes = scalar.pre_modes;
-    let observation_refresh = scalar.observation_refresh;
-    Ok(lazy_map(
-        &[
-            "runtime_assignment_rhs",
-            "runtime_assignment_plan",
-            "runtime_assignment_targets",
-            "runtime_assignment_roles",
-            "post_commit_assignment_rhs",
-            "post_commit_assignment_plan",
-            "guarded_assignment_plan",
-            "guarded_assignment_targets",
-            "event_iteration_plan",
-            "event_transactions",
-            "clock_partition_order",
-            "clock_owners",
-            "row_roles",
-            "structured_row_roles",
-            "guarded_assignment_clock_owners",
-            "structured_update_count",
-            "structured_rhs",
-            "structured_assignments",
-            "structured_clock_owners",
-            "clock_partition_intermediate_count",
-            "clock_partition_intermediate_plan",
-            "clock_partition_intermediate_targets",
-            "clock_partition_intermediate_clocks",
-            "post_commit_assignment_targets",
-            "post_commit_assignment_runtime_rows",
-            "rhs",
-            "rhs_plan",
-            "update_targets",
-            "pre_modes",
-            "observation_refresh",
-        ],
-        move |k| {
-            let d = &handle.problem().discrete;
-            match k {
-                "rhs" => Some(rhs.clone()),
-                "rhs_plan" => Some(rhs_plan.clone()),
-                "runtime_assignment_plan" => Some(runtime_assignment_plan.clone()),
-                "post_commit_assignment_plan" => Some(post_commit_assignment_plan.clone()),
-                "guarded_assignment_plan" => Some(guarded_assignment_plan.clone()),
-                "guarded_assignment_targets" => Some(Value::from_serialize(
-                    d.guarded_assignments
-                        .iter()
-                        .map(|program| program.target_ranges())
-                        .collect::<Vec<_>>(),
-                )),
-                "event_iteration_plan" => Some(Value::from_serialize(&d.event_iteration_plan)),
-                "event_transactions" => Some(Value::from_serialize(&d.event_transactions)),
-                "clock_partition_order" => Some(Value::from_serialize(&d.clock_partition_order)),
-                "clock_owners" => Some(Value::from_serialize(&d.clock_owners)),
-                "row_roles" => Some(Value::from_serialize(&d.row_roles)),
-                "structured_row_roles" => Some(Value::from_serialize(
-                    d.structured_updates
-                        .iter()
-                        .map(|update| update.role)
-                        .collect::<Vec<_>>(),
-                )),
-                "guarded_assignment_clock_owners" => Some(Value::from_serialize(
-                    d.guarded_assignments
-                        .iter()
-                        .map(|program| program.clock_owner())
-                        .collect::<Vec<_>>(),
-                )),
-                "clock_partition_intermediate_plan" => Some(clock_intermediate_plan.clone()),
-                "clock_partition_intermediate_targets" => Some(Value::from_serialize(
-                    &d.clock_partition_intermediate_targets,
-                )),
-                "clock_partition_intermediate_clocks" => Some(Value::from_serialize(
-                    &d.clock_partition_intermediate_clocks,
-                )),
-                "structured_rhs" => Some(structured_rhs.clone()),
-                "structured_assignments" => Some(structured_assignments.clone()),
-                "structured_clock_owners" => Some(Value::from_serialize(
-                    d.structured_updates
-                        .iter()
-                        .map(|update| update.clock_owner)
-                        .collect::<Vec<_>>(),
-                )),
-                "structured_update_count" => Some(Value::from(d.structured_updates.len())),
-                "clock_partition_intermediate_count" => {
-                    Some(Value::from(d.clock_partition_intermediates.len()))
-                }
-                "runtime_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
-                    d.runtime_assignment_rhs.clone(),
-                ))),
-                "runtime_assignment_targets" => {
-                    Some(Value::from_serialize(&d.runtime_assignment_targets))
-                }
-                "runtime_assignment_roles" => {
-                    Some(Value::from_serialize(&d.runtime_assignment_roles))
-                }
-                "post_commit_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
-                    d.post_commit_assignment_rhs.clone(),
-                ))),
-                "post_commit_assignment_targets" => {
-                    Some(Value::from_serialize(&d.post_commit_assignment_targets))
-                }
-                "post_commit_assignment_runtime_rows" => Some(Value::from_serialize(
-                    &d.post_commit_assignment_runtime_rows,
-                )),
-                "update_targets" => Some(Value::from_serialize(&targets)),
-                "pre_modes" => Some(Value::from_serialize(&pre_modes)),
-                "observation_refresh" => Some(Value::from_serialize(&observation_refresh)),
-                _ => None,
-            }
-        },
-    ))
+    Ok(Value::from_serialize(&assignments))
+}
+
+impl DiscretePlans {
+    fn build(discrete: &solve::DiscreteSolveSystem) -> Result<Self, CodegenError> {
+        let scalar = super::discrete_render_view::DiscreteRenderView::checked(discrete)?;
+        Ok(Self {
+            rhs: scalar_program_block_value(Arc::new(scalar.rhs)),
+            rhs_plan: plan_value(&discrete.rhs)?,
+            runtime_assignment_plan: plan_value(&discrete.runtime_assignment_rhs)?,
+            post_commit_assignment_plan: plan_value(&discrete.post_commit_assignment_rhs)?,
+            guarded_assignment_plan: guarded_assignment_plan(discrete)?,
+            structured_rhs: compute_block_value(Arc::new(discrete.structured_rhs.clone()))?,
+            structured_assignments: structured_assignments_value(discrete)?,
+            clock_intermediate_plan: plan_value(&discrete.clock_partition_intermediates)?,
+            targets: scalar.targets,
+            pre_modes: scalar.pre_modes,
+            observation_refresh: scalar.observation_refresh,
+        })
+    }
+
+    /// Fields served from the precomputed plans.
+    fn planned(&self, key: &str) -> Option<Value> {
+        Some(match key {
+            "rhs" => self.rhs.clone(),
+            "rhs_plan" => self.rhs_plan.clone(),
+            "runtime_assignment_plan" => self.runtime_assignment_plan.clone(),
+            "post_commit_assignment_plan" => self.post_commit_assignment_plan.clone(),
+            "guarded_assignment_plan" => self.guarded_assignment_plan.clone(),
+            "clock_partition_intermediate_plan" => self.clock_intermediate_plan.clone(),
+            "structured_rhs" => self.structured_rhs.clone(),
+            "structured_assignments" => self.structured_assignments.clone(),
+            "update_targets" => Value::from_serialize(&self.targets),
+            "pre_modes" => Value::from_serialize(&self.pre_modes),
+            "observation_refresh" => Value::from_serialize(&self.observation_refresh),
+            _ => return None,
+        })
+    }
+}
+
+/// Row, role, clock and event fields read straight from the system.
+fn discrete_row_field(d: &solve::DiscreteSolveSystem, key: &str) -> Option<Value> {
+    Some(match key {
+        "guarded_assignment_targets" => Value::from_serialize(
+            d.guarded_assignments
+                .iter()
+                .map(|program| program.target_ranges())
+                .collect::<Vec<_>>(),
+        ),
+        "event_iteration_plan" => Value::from_serialize(&d.event_iteration_plan),
+        "event_transactions" => Value::from_serialize(&d.event_transactions),
+        "clock_partition_order" => Value::from_serialize(&d.clock_partition_order),
+        "clock_owners" => Value::from_serialize(&d.clock_owners),
+        "row_roles" => Value::from_serialize(&d.row_roles),
+        "structured_row_roles" => Value::from_serialize(
+            d.structured_updates
+                .iter()
+                .map(|update| update.role)
+                .collect::<Vec<_>>(),
+        ),
+        "guarded_assignment_clock_owners" => Value::from_serialize(
+            d.guarded_assignments
+                .iter()
+                .map(|program| program.clock_owner())
+                .collect::<Vec<_>>(),
+        ),
+        "structured_clock_owners" => Value::from_serialize(
+            d.structured_updates
+                .iter()
+                .map(|update| update.clock_owner)
+                .collect::<Vec<_>>(),
+        ),
+        "structured_update_count" => Value::from(d.structured_updates.len()),
+        "clock_partition_intermediate_count" => Value::from(d.clock_partition_intermediates.len()),
+        "clock_partition_intermediate_targets" => {
+            Value::from_serialize(&d.clock_partition_intermediate_targets)
+        }
+        "clock_partition_intermediate_clocks" => {
+            Value::from_serialize(&d.clock_partition_intermediate_clocks)
+        }
+        _ => return None,
+    })
+}
+
+/// Runtime and post-commit assignment fields read straight from the system.
+fn discrete_assignment_field(d: &solve::DiscreteSolveSystem, key: &str) -> Option<Value> {
+    Some(match key {
+        "runtime_assignment_rhs" => {
+            scalar_program_block_value(Arc::new(d.runtime_assignment_rhs.clone()))
+        }
+        "runtime_assignment_targets" => Value::from_serialize(&d.runtime_assignment_targets),
+        "runtime_assignment_roles" => Value::from_serialize(&d.runtime_assignment_roles),
+        "post_commit_assignment_rhs" => {
+            scalar_program_block_value(Arc::new(d.post_commit_assignment_rhs.clone()))
+        }
+        "post_commit_assignment_targets" => {
+            Value::from_serialize(&d.post_commit_assignment_targets)
+        }
+        "post_commit_assignment_runtime_rows" => {
+            Value::from_serialize(&d.post_commit_assignment_runtime_rows)
+        }
+        _ => return None,
+    })
+}
+
+fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
+    let plans = DiscretePlans::build(&handle.problem().discrete)?;
+    Ok(lazy_map(DISCRETE_KEYS, move |key| {
+        let discrete = &handle.problem().discrete;
+        plans
+            .planned(key)
+            .or_else(|| discrete_row_field(discrete, key))
+            .or_else(|| discrete_assignment_field(discrete, key))
+    }))
 }
 
 fn delay_value(partition: &solve::SolveDelayPartition) -> Result<Value, CodegenError> {
@@ -1361,6 +1425,7 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "schema_version",
             "layout",
             "solve_layout",
+            "state_names",
             "continuous",
             "initialization",
             "discrete",
@@ -1372,6 +1437,9 @@ pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenErr
             "schema_version" => Some(Value::from(handle.problem().schema_version)),
             "layout" => Some(Value::from_serialize(&handle.problem().layout)),
             "solve_layout" => Some(Value::from_serialize(&handle.problem().solve_layout)),
+            "state_names" => Some(Value::from_object(super::solver_names::SolverStateReport(
+                handle.clone(),
+            ))),
             "continuous" => Some(continuous.clone()),
             "discrete" => Some(discrete.clone()),
             "events" => Some(events.clone()),
@@ -1420,4 +1488,19 @@ fn guarded_assignment_plan(discrete: &solve::DiscreteSolveSystem) -> Result<Valu
     Ok(Value::from_object(
         super::scalar_program_plan::ScalarProgramPlan::new(Arc::new(block))?,
     ))
+}
+
+/// Whether the algebraic refresh is made only of exact assignments that a
+/// scalar target can render. A compact singleton declaration run has no
+/// scalar block receipt (so the canonical cover query refuses it), but its
+/// ordered exact assignment programs are the same scalar assignments; the
+/// ownership walk that follows checks every target and row against them.
+fn exact_assignment_stages_render_scalar(owners: &solve::ContinuousRefreshOwners) -> bool {
+    !owners.has_compact_source_recipe()
+        && !owners.algebraic().rows.is_empty()
+        && owners
+            .algebraic()
+            .value_stages
+            .iter()
+            .all(|stage| !matches!(stage, solve::RefreshStage::ProjectionBlock { .. }))
 }

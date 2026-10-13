@@ -118,11 +118,11 @@ pub(super) fn parity_cache_entry_path(kind: &str, cache_key: &str) -> PathBuf {
         .join(format!("{cache_key}.json"))
 }
 
-fn simulation_parity_cache_trace_dir(cache_path: &Path) -> PathBuf {
-    cache_path.with_extension("traces")
+fn simulation_parity_cache_artifact_dir(cache_path: &Path) -> PathBuf {
+    cache_path.with_extension("artifacts")
 }
 
-const CACHE_TRACE_DIGESTS_FIELD: &str = "cache_trace_blake3";
+const CACHE_ARTIFACT_DIGESTS_FIELD: &str = "cache_omc_artifact_blake3";
 
 fn safe_relative_cache_path(path: &Path) -> bool {
     path.is_relative()
@@ -131,12 +131,12 @@ fn safe_relative_cache_path(path: &Path) -> bool {
             .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
-fn cached_omc_trace_paths(payload: &serde_json::Value) -> Option<Vec<PathBuf>> {
+fn cached_omc_artifact_paths(payload: &serde_json::Value) -> Option<Vec<PathBuf>> {
     let Some(models) = payload.get("models").and_then(serde_json::Value::as_object) else {
         return Some(Vec::new());
     };
     let mut paths = Vec::new();
-    for model in models.values() {
+    for (name, model) in models {
         if model.get("status").and_then(serde_json::Value::as_str) != Some("success") {
             continue;
         }
@@ -148,11 +148,18 @@ fn cached_omc_trace_paths(payload: &serde_json::Value) -> Option<Vec<PathBuf>> {
             return None;
         }
         paths.push(path);
+        let xml = Path::new("omc_sim_work").join(
+            rumoca_test_msl::msl_tools::common::omc_init_xml_file_name(name),
+        );
+        if !safe_relative_cache_path(&xml) {
+            return None;
+        }
+        paths.push(xml);
     }
     Some(paths)
 }
 
-fn cached_trace_digest(path: &Path) -> io::Result<String> {
+fn cached_artifact_digest(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -166,35 +173,36 @@ fn cached_trace_digest(path: &Path) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn attach_cached_trace_digests(
+fn attach_cached_artifact_digests(
     payload: &mut serde_json::Value,
     source_root: &Path,
 ) -> io::Result<()> {
-    let paths = cached_omc_trace_paths(payload)
-        .ok_or_else(|| io::Error::other("OMC cache contains an unsafe or missing trace path"))?;
+    let paths = cached_omc_artifact_paths(payload).ok_or_else(|| {
+        io::Error::other("OMC cache contains an unsafe or missing OMC artifact path")
+    })?;
     let mut digests = serde_json::Map::new();
     for relative_path in paths {
         let source = source_root.join(&relative_path);
         digests.insert(
             relative_path.to_string_lossy().into_owned(),
-            cached_trace_digest(&source)?.into(),
+            cached_artifact_digest(&source)?.into(),
         );
     }
-    payload[CACHE_TRACE_DIGESTS_FIELD] = digests.into();
+    payload[CACHE_ARTIFACT_DIGESTS_FIELD] = digests.into();
     Ok(())
 }
 
-fn cached_traces_are_valid(cache_path: &Path, payload: &serde_json::Value) -> io::Result<bool> {
-    let Some(paths) = cached_omc_trace_paths(payload) else {
+fn cached_artifacts_are_valid(cache_path: &Path, payload: &serde_json::Value) -> io::Result<bool> {
+    let Some(paths) = cached_omc_artifact_paths(payload) else {
         return Ok(false);
     };
     let Some(digests) = payload
-        .get(CACHE_TRACE_DIGESTS_FIELD)
+        .get(CACHE_ARTIFACT_DIGESTS_FIELD)
         .and_then(serde_json::Value::as_object)
     else {
         return Ok(false);
     };
-    let trace_root = simulation_parity_cache_trace_dir(cache_path);
+    let artifact_root = simulation_parity_cache_artifact_dir(cache_path);
     for relative_path in paths {
         let key = relative_path.to_string_lossy();
         let Some(expected) = digests
@@ -203,36 +211,34 @@ fn cached_traces_are_valid(cache_path: &Path, payload: &serde_json::Value) -> io
         else {
             return Ok(false);
         };
-        let trace_path = trace_root.join(&relative_path);
-        if !trace_path.is_file() || cached_trace_digest(&trace_path)? != expected {
+        let artifact_path = artifact_root.join(&relative_path);
+        if !artifact_path.is_file() || cached_artifact_digest(&artifact_path)? != expected {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-fn transfer_cached_omc_traces(
+fn transfer_cached_omc_artifacts(
     payload: &serde_json::Value,
     source_root: &Path,
     destination_root: &Path,
 ) -> io::Result<()> {
-    let paths = cached_omc_trace_paths(payload)
-        .ok_or_else(|| io::Error::other("OMC cache contains an unsafe or missing trace path"))?;
+    let paths = cached_omc_artifact_paths(payload).ok_or_else(|| {
+        io::Error::other("OMC cache contains an unsafe or missing OMC artifact path")
+    })?;
     for relative_path in paths {
         let source = source_root.join(&relative_path);
-        if !source.is_file() {
-            continue;
-        }
         let destination = destination_root.join(&relative_path);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
-        link_or_copy_cached_omc_trace(&source, &destination)?;
+        link_or_copy_cached_omc_artifact(&source, &destination)?;
     }
     Ok(())
 }
 
-fn link_or_copy_cached_omc_trace(source: &Path, destination: &Path) -> io::Result<()> {
+fn link_or_copy_cached_omc_artifact(source: &Path, destination: &Path) -> io::Result<()> {
     match fs::symlink_metadata(destination) {
         Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
             fs::remove_file(destination)?;
@@ -279,9 +285,9 @@ pub(super) fn materialize_simulation_parity_cache_entry(
                 cache_path.display()
             ))
         })?;
-    if !cached_traces_are_valid(cache_path, &payload)? {
+    if !cached_artifacts_are_valid(cache_path, &payload)? {
         return Err(io::Error::other(format!(
-            "simulation parity cache '{}' has missing or stale OMC traces",
+            "simulation parity cache '{}' has missing or stale OMC artifacts",
             cache_path.display()
         )));
     }
@@ -290,9 +296,9 @@ pub(super) fn materialize_simulation_parity_cache_entry(
     }
     let sanitized = sanitize_simulation_parity_cache_payload(payload);
     let active_root = active_path.parent().unwrap_or_else(|| Path::new("."));
-    transfer_cached_omc_traces(
+    transfer_cached_omc_artifacts(
         &sanitized,
-        &simulation_parity_cache_trace_dir(cache_path),
+        &simulation_parity_cache_artifact_dir(cache_path),
         active_root,
     )?;
     fs::write(
@@ -369,11 +375,11 @@ pub(super) fn persist_simulation_parity_cache_entry(
     }
     let mut sanitized = sanitize_simulation_parity_cache_payload(payload);
     let active_root = active_path.parent().unwrap_or_else(|| Path::new("."));
-    attach_cached_trace_digests(&mut sanitized, active_root)?;
-    transfer_cached_omc_traces(
+    attach_cached_artifact_digests(&mut sanitized, active_root)?;
+    transfer_cached_omc_artifacts(
         &sanitized,
         active_root,
-        &simulation_parity_cache_trace_dir(cache_path),
+        &simulation_parity_cache_artifact_dir(cache_path),
     )?;
     fs::write(
         cache_path,
@@ -492,7 +498,7 @@ pub(super) fn simulation_parity_cache_matches(
             return Ok(false);
         }
     }
-    cached_traces_are_valid(path, &payload)
+    cached_artifacts_are_valid(path, &payload)
 }
 
 pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>

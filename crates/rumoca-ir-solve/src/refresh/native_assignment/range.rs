@@ -6,10 +6,59 @@ mod segments;
 
 use super::*;
 use crate::refresh::assignment_shape::producers::{ProgramPrefix, UniqueProgram};
-use crate::{
-    BinaryOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock, ScalarSlot, TensorInputKind,
-};
+use crate::{BinaryOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock, TensorInputKind};
 use segments::{derive_segments, store_segments, trailing_scalar_tuple};
+
+/// The source owner selected one complete original ranged store. The existing
+/// segmented isolator retains the whole fault-sensitive prefix, not a new kernel.
+pub(super) fn derive_selected_store(
+    source: RefreshScalarProgramSource,
+    outputs: Range<usize>,
+    operations: &[LinearOp],
+    store_position: usize,
+    span: rumoca_core::Span,
+    layout: &VarLayout,
+    target: impl FnOnce() -> Checked<Range<usize>>,
+) -> Checked<Family> {
+    let Some(LinearOp::StoreOutputRange {
+        start,
+        count,
+        stride,
+    }) = operations.get(store_position)
+    else {
+        return refused("projection run does not select a canonical ranged store");
+    };
+    let selected = segments::Segment {
+        start: *start,
+        count: *count,
+        stride: *stride,
+    };
+    derive_segments(
+        source,
+        outputs,
+        operations,
+        &[selected],
+        span,
+        layout,
+        target,
+    )
+}
+
+/// Consume checked per-store paired targets while executing the original
+/// shared prefix once. The source-store order becomes the kernel placement.
+pub(super) fn derive_with_segment_targets(
+    source: RefreshScalarProgramSource,
+    outputs: Range<usize>,
+    operations: &[LinearOp],
+    span: rumoca_core::Span,
+    layout: &VarLayout,
+    targets: impl FnOnce() -> Checked<Vec<Range<usize>>>,
+) -> Checked<Family> {
+    let segments = store_segments(operations);
+    segments::derive_paired_segments(
+        source, outputs, operations, &segments, span, layout, targets,
+    )
+}
 
 /// Returned values alone do not prove a call's numerical-failure dependence.
 /// Every complete input cell must be independent of this stage's unknown target.
@@ -116,14 +165,30 @@ pub(super) fn derive(
     outputs: Range<usize>,
     operations: &[LinearOp],
     span: rumoca_core::Span,
-    targets: &[Option<ScalarSlot>],
+    targets: TargetInventory<'_>,
     layout: &VarLayout,
 ) -> Checked<Family> {
+    derive_with_target(source, outputs.clone(), operations, span, layout, || {
+        targets.dense_run(source, outputs, layout)
+    })
+}
+
+/// The enclosing source/layout owner supplies the exact correlated target run.
+/// Its receipt is consumed at the original target-check position, preserving
+/// the existing source refusal order for both terminal and segmented stores.
+pub(super) fn derive_with_target(
+    source: RefreshScalarProgramSource,
+    outputs: Range<usize>,
+    operations: &[LinearOp],
+    span: rumoca_core::Span,
+    layout: &VarLayout,
+    target: impl FnOnce() -> Checked<Range<usize>>,
+) -> Checked<Family> {
+    let count = outputs.len();
+    let target = || checked_target_run(target()?, count, layout);
     let segments = store_segments(operations);
     if segments.len() > 1 && !trailing_scalar_tuple(operations, &segments) {
-        return derive_segments(
-            source, outputs, operations, &segments, span, targets, layout,
-        );
+        return derive_segments(source, outputs, operations, &segments, span, layout, target);
     }
     let (prefix, stores, start, count) = terminal_outputs(operations)?;
     crate::ScalarProgramRegisterFlow::derive(prefix).map_err(|_| {
@@ -132,7 +197,7 @@ pub(super) fn derive(
     if count == 0 || outputs.len() != count {
         return refused("native tensor program has multiple or empty output ranges");
     }
-    let target_range = target_range(targets, outputs.clone(), layout)?;
+    let target_range = target()?;
     if stores.len() > 1
         && prefix
             .iter()
@@ -145,7 +210,8 @@ pub(super) fn derive(
     ))?;
     let dependencies = dependency::derive(producers.view(), &target_range, layout)?;
     independent_call_inputs(producers.view(), &dependencies)?;
-    // Retain every original operation, even unused/fault-sensitive prefixes.
+    // Retain every original operation that can fail or has an effect; the
+    // pure residual the isolator replaces is dropped when nothing reads it.
     // Only the final output switches from the residual to its exact value.
     let mut values = prefix.to_vec();
     let (value, stride) = if scalar_tuple::is_packed(producers.view(), start) {
@@ -156,11 +222,20 @@ pub(super) fn derive(
         let registers =
             scalar_tuple::derive(producers.view(), start, &target_range, &dependencies)?;
         (scalar_tuple::pack(&mut values, &registers)?, 1)
+    } else if exact_target_load(producers.view(), start, &target_range) {
+        // The residual is the owned target range itself: the equation
+        // `target - (+0)` after exact folding, so every cell is assigned +0.
+        let zero = next_register(&values)?;
+        values.push(LinearOp::Const {
+            dst: zero,
+            value: 0.0,
+        });
+        (zero, 0)
     } else {
         isolated_value(producers.view(), start, count, &target_range, &dependencies)?
     };
     let value = if stride == 0 {
-        let start = next_register(prefix)?;
+        let start = next_register(&values)?;
         values.push(LinearOp::TensorFill {
             dst_start: start,
             value_start: value,
@@ -176,6 +251,7 @@ pub(super) fn derive(
         count,
         stride: stride.max(1),
     });
+    let values = crate::prune_unread_pure_operations(values);
     let value_kernel = ScalarProgramBlock::with_program_spans(vec![values], vec![span])
         .map_err(|_| NativeRefreshAssignmentRefusal("malformed native tensor value projection"))?;
     Ok(Family {
@@ -196,6 +272,18 @@ pub(super) fn derive(
             .collect(),
         outputs,
     })
+}
+
+fn checked_target_run(
+    target: Range<usize>,
+    output_count: usize,
+    layout: &VarLayout,
+) -> Checked<Range<usize>> {
+    if target.start > target.end || target.len() != output_count || target.end > layout.y_scalars()
+    {
+        return refused("native tensor targets are not one bounded dense injective range");
+    }
+    Ok(target)
 }
 
 /// One original program may end in a range store or consecutive scalar stores.
@@ -255,43 +343,6 @@ fn next_register(operations: &[LinearOp]) -> Checked<Reg> {
     end.ok_or(NativeRefreshAssignmentRefusal(
         "native tensor broadcast register range overflows",
     ))
-}
-
-fn target_range(
-    targets: &[Option<ScalarSlot>],
-    outputs: Range<usize>,
-    layout: &VarLayout,
-) -> Checked<Range<usize>> {
-    let selected = targets.get(outputs).ok_or(NativeRefreshAssignmentRefusal(
-        "native tensor outputs exceed the target inventory",
-    ))?;
-    let index = |slot| match slot {
-        Some(ScalarSlot::Y { index, byte_offset }) if index.checked_mul(8) == Some(byte_offset) => {
-            Some(index)
-        }
-        _ => None,
-    };
-    let start = selected
-        .first()
-        .copied()
-        .and_then(index)
-        .ok_or(NativeRefreshAssignmentRefusal(
-            "native tensor output has no owned Y target",
-        ))?;
-    let end = start
-        .checked_add(selected.len())
-        .ok_or(NativeRefreshAssignmentRefusal(
-            "native tensor target range overflows",
-        ))?;
-    if end > layout.y_scalars()
-        || selected
-            .iter()
-            .enumerate()
-            .any(|(offset, &slot)| index(slot) != start.checked_add(offset))
-    {
-        return refused("native tensor targets are not one bounded dense injective range");
-    }
-    Ok(start..end)
 }
 
 fn isolated_value(

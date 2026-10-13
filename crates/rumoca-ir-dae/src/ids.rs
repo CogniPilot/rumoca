@@ -106,6 +106,8 @@ owner_local_ids! {
     FunctionDefinitionId, function: FunctionId;
     /// Owner-local identity of one function loop transition.
     FunctionFoldId, function: FunctionId;
+    /// Owner-local identity of one ordered function conditional.
+    FunctionConditionalId, function: FunctionId;
 }
 branded_ids! {
     /// Identity of one compact comprehension/equation domain.

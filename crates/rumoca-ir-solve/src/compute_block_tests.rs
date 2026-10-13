@@ -466,7 +466,9 @@ fn derivative_problem_names_its_states_as_solver_coordinates() {
     assert_eq!(problem.solve_layout.state_scalar_count, 1);
     assert_eq!(problem.solve_layout.solver_scalar_count(), 1);
     assert_eq!(
-        problem.solve_layout.solver_maps.names,
+        problem
+            .solver_named_report(0..problem.solver_scalar_count())
+            .unwrap(),
         vec!["x".to_string()]
     );
 }

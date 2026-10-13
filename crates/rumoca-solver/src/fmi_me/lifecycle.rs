@@ -202,4 +202,13 @@ impl MeLifecycle {
     pub(crate) const fn is_terminated(self) -> bool {
         matches!(self.state, MeState::Terminated)
     }
+
+    pub(crate) fn require_active(self, operation: &'static str) -> Result<(), super::MeError> {
+        if self.is_terminated() {
+            return Err(super::MeError::Contract {
+                reason: format!("{operation} called after the component was terminated"),
+            });
+        }
+        Ok(())
+    }
 }

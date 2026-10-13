@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::concatenate;
 use super::{
     ProgramPrefix, ScalarProgramYDependency, binary_operands, producer_position, target_load_index,
 };
@@ -69,6 +70,10 @@ fn additive_operands(program: ProgramPrefix<'_>, register: Reg) -> Option<[Optio
     }
     match program.operation(producer_position(program, register)?)? {
         LinearOp::Move { src, .. } => Some([Some((*src, 1.0)), None]),
+        LinearOp::TensorConcatenate { .. } => Some([
+            Some((concatenate::source_register(program, register)?, 1.0)),
+            None,
+        ]),
         LinearOp::Unary {
             op: UnaryOp::Neg,
             arg,

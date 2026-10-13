@@ -53,6 +53,7 @@ fn block(rows: &[usize], columns: &[usize]) -> AlgebraicProjectionBlock {
 fn dense_oracle(matrix: &[Vec<bool>], plan: &AlgebraicProjectionPlan) -> Vec<bool> {
     let mut prior = vec![false; matrix.len()];
     plan.blocks
+        .scalar_blocks()
         .iter()
         .map(|block| {
             let result = block.y_indices.iter().any(|&column| {
@@ -78,7 +79,7 @@ fn original_column_rows_oracle(
     let column_rows = source.column_rows();
     let mut earlier_rows = vec![false; source.rows() as usize];
     let mut invalidations = Vec::with_capacity(plan.blocks.len());
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         let invalidates =
             block
                 .y_indices
@@ -124,12 +125,13 @@ fn permutations(pattern: &StructuralPattern, matrix: &[Vec<bool>]) {
     let columns = pattern.columns() as usize;
     for offset in 0..rows {
         let plan = AlgebraicProjectionPlan {
-            blocks: (0..rows)
+            blocks: ((0..rows)
                 .map(|index| {
                     let row = (index + offset) % rows;
                     block(&[row, row], &[row % columns, (row + 2) % columns])
                 })
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         };
         compare(pattern, matrix, &plan);
     }
@@ -144,7 +146,7 @@ fn full_empty_diagonal_and_csr_preserve_ordered_dense_results() {
     assert!(matches!(empty_pattern.view(), StructuralPatternView::Empty));
     permutations(&empty_pattern, &empty);
     let diagonal = (0..5)
-        .map(|row| (0..7).map(|column| column == row).collect())
+        .map(|row| (0..7).map(|column| column == row).collect::<Vec<_>>())
         .collect::<Vec<_>>();
     let diagonal_pattern = seed_pattern(&diagonal, 7);
     assert!(matches!(
@@ -241,12 +243,13 @@ fn affine_domains_keep_shifted_rows_and_signed_strides() {
 fn overlapping_rows_and_target_ranges_commit_only_after_the_current_block() {
     let matrix = vec![vec![true; 4]; 3];
     let plan = AlgebraicProjectionPlan {
-        blocks: vec![
+        blocks: (vec![
             block(&[], &[0, 1]),
             block(&[0, 1], &[2, 3]),
             block(&[1, 2], &[]),
             block(&[2], &[3, 2, 1, 0]),
-        ],
+        ])
+        .into(),
     };
     compare(&full(3, 4), &matrix, &plan);
     assert_eq!(
@@ -265,7 +268,7 @@ fn invalid_targets_and_rows_keep_exact_refusals_after_a_full_intersection() {
         block(&[1], &[usize::MAX]),
     ] {
         let plan = AlgebraicProjectionPlan {
-            blocks: vec![block(&[0], &[0]), invalid],
+            blocks: (vec![block(&[0], &[0]), invalid]).into(),
         };
         let actual = derive_algebraic_reverse_invalidations(Some(&pattern), &plan).unwrap_err();
         let oracle = original_column_rows_oracle(&pattern, &plan).unwrap_err();
@@ -278,7 +281,7 @@ fn invalid_targets_and_rows_keep_exact_refusals_after_a_full_intersection() {
 #[test]
 fn missing_source_and_zero_extents_preserve_the_original_results() {
     let invalid = AlgebraicProjectionPlan {
-        blocks: vec![block(&[usize::MAX], &[usize::MAX])],
+        blocks: (vec![block(&[usize::MAX], &[usize::MAX])]).into(),
     };
     assert_eq!(
         derive_algebraic_reverse_invalidations(None, &invalid).unwrap(),
@@ -289,14 +292,14 @@ fn missing_source_and_zero_extents_preserve_the_original_results() {
             0,
             3,
             AlgebraicProjectionPlan {
-                blocks: vec![block(&[], &[0, 2])],
+                blocks: (vec![block(&[], &[0, 2])]).into(),
             },
         ),
         (
             3,
             0,
             AlgebraicProjectionPlan {
-                blocks: vec![block(&[0, 2], &[])],
+                blocks: (vec![block(&[0, 2], &[])]).into(),
             },
         ),
         (0, 0, AlgebraicProjectionPlan::default()),
@@ -317,7 +320,10 @@ fn unchanged_28800_row_full_relation_and_empty_plan_do_not_expand_adjacency() {
         Vec::<bool>::new()
     );
     let plan = AlgebraicProjectionPlan {
-        blocks: (0..28800).map(|row| block(&[row], &[row])).collect(),
+        blocks: ((0..28800)
+            .map(|row| block(&[row], &[row]))
+            .collect::<Vec<_>>())
+        .into(),
     };
     let result = derive_algebraic_reverse_invalidations(Some(&pattern), &plan).unwrap();
     assert_eq!(result.len(), 28800);

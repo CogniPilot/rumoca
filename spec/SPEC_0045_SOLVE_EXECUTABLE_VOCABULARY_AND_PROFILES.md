@@ -50,8 +50,18 @@ ownership ([SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md)).
 | SEV-003 | The canonical executable product is an opaque package binding ONE concrete profile value; Binary32 and Binary64 are different roots before folding, CSE, AD, and range proofs (`16_777_217`). | `rumoca-phase-solve` | Profiles change results |
 | SEV-004 | Lowering code and immutable inputs are shared; an executable profile-neutral body is not. | `rumoca-phase-solve` | Inputs, not bodies |
 | SEV-005 | Rank-0 and rank-N are values of one grammar: no scalar-versus-tensor GRAPH-KIND bit, graph-kind conversion, cache, AD path, or call ABI. Explicit numeric conversions inside the one grammar remain REQUIRED by SEV-010/022. Opcodes are shape-polymorphic only where the algebra is identical. | `rumoca-ir-solve` | Flavors duplicate proofs |
-| SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; a scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Views are not owners |
+| SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; its current 51-variant boundary includes the checked `PureCallObservation` invocation bridge required by SPEC_0036's source-ordered assertion cutover. That bridge carries the issued typed observation site, never a function body or independent assertion semantics. A scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Typed invocation observations preserve first fault without a second semantics |
 | SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. An UNCLASSIFIED variant — one absent from SPEC_0049 §1 — fails every matcher and total dispatcher until classified. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
+
+A source-owned `Conditional` may publish the complete empty ordinary result
+tuple. Such a flow region retains its checked inputs, provenance and ordered
+body, including calls, assertion checks and folds. Exactly the selected arm
+executes; its first fault stops before later effects, and an unselected arm
+cannot fault. An empty tuple does not authorize deleting the conditional or
+its effects, manufacturing a numeric result, or admitting an all-empty
+pure-call result interface. Region slot, profile and assigned-state publication
+checks apply unchanged; empty ordinary publication satisfies only the ordinary
+tuple's zero cardinality.
 
 **Why:** CasADi is the cited warning, precisely. `SX` builds one scalar node per
 element while `MX` admits matrix-valued primitives, so `3*x+y` on a 2-vector is
@@ -142,13 +152,7 @@ Defeated alternatives are
 [SPEC_0047 §3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#3-rejected-alternatives).
 
 ### 9. Reversal Gates
-
-| ID | Reopening | Requires |
-|----|-----------|----------|
-| SEV-110 | A second canonical graph | ALL of: a genuinely different stage contract; an operation not representable in the grammar plus a checked target view; an INDEPENDENT semantic oracle for the second graph; a checked relation preserving type, profile, effect, and provenance identity across the boundary; and NAMED wire, AD, and capability proof-cost budgets it must stay within. Unrepresentability plus speed is not sufficient |
-| SEV-111 | A new core type family | A product inexpressible as a semantics-preserving ABI mapping, an independent oracle, AND two consumers or one safety-critical consumer with parity evidence |
-| SEV-113 | A profile-neutral construction recipe | Three-profile parity plus preregistered compile and RSS benefit; it stays non-executable |
-| SEV-114 | Abandoning the §2 factoring | Cross-factor escapes exceed 20%, or boilerplate exceeds 15% without reducing proof surface; keeping it needs ≥30% fewer unrelated touch sites with ≤3% evaluator and ≤5% wire regressions |
+Reopening a decided design (a second canonical graph, a new core type family, a profile-neutral construction recipe, abandoning the factoring) requires the evidence its SEV-110 through SEV-114 row names. [SPEC_0047 catalog §11](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#11-reversal-gates-spec_0045-9) is normative by reference.
 
 ## References
 

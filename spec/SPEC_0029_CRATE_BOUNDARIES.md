@@ -130,6 +130,15 @@ tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution (pending:
 2026-08-08 plan, M3-4); it MUST NOT depend on a Tier 4/5 crate. The state
 machine and driver stay in `rumoca-solver::runtime`. SPEC_0038 moves the FMI 3
 ME master driver to `rumoca-solver::fmi_me`; `runtime` keeps its Solve helpers.
+Mechanical scalar/tensor JVP artifact derivation from issued Solve programs and
+complete current-version Solve/FMI wire replay belong to `rumoca-eval-solve`.
+Fresh phase construction and replay MUST call that single implementation.
+These operations consume checked Solve/core data; DAE and formal-source
+lowering remain phase-owned. Replay MUST NOT issue a caller-selected linked
+entry capability or acquire a phase dependency.
+The private pure-call directional constructor remains an IR-local checked
+construction operation; it issues the call's tangent-relation invariant rather
+than a model artifact or source-language lowering decision.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
 delegate to Solve lowering or evaluation.
 
@@ -285,33 +294,14 @@ Generic documented artifact commands may hash rendered bytes, validate a
 declared schema, and assemble the declared graph without understanding eFMI or
 another target format. Generic on-disk package assembly is owned by the
 `fmu-packaging` feature and MUST NOT depend on scheduled simulation, transports,
-input devices, viewers, or process control.
+input devices, viewers, or process control. Its immutable build inventory,
+slot request and sealed adapter-result ownership are cataloged in SPEC_0041 §4;
+a type-only adapter dependency enables no tool factory.
 
-Target assets follow the same ownership rule. Builtin target discovery embeds
-arbitrary assets declared beneath a target directory; external targets resolve
-declared asset sources relative to their own directory. Rust MUST NOT maintain
-a target-format bundle registry or map names such as an eFMI schema bundle to
-hardcoded files.
-
-Target-specific semantic lowering is a compiler phase, not code generation.
-`rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
-`galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
-It MAY contain small IR-specific adapters under `views/` when they expose only
-typed, read-only semantic data. Checked export data and constructors belong to
-their `rumoca-ir-*` crate; semantic projection belongs to its
-`rumoca-phase-*` crate; all target syntax and presentation belong to the target
-directory.
-
-Within `rumoca-phase-codegen`, `src/codegen/` is reserved for the public
-MiniJinja extension-command surface. Rendering orchestration belongs in generic
-renderer modules and IR adapters belong under `src/views/`. Every registered
-command MUST be pure, deterministic, target-neutral, fail closed, and have
-documented template syntax, typed inputs/outputs, failure behavior, complexity,
-and focused tests. A single registry is the source of truth for registration
-and user-facing command documentation. Commands may return semantic values or
-checked arithmetic/query results; they MUST NOT return target-language
-fragments or perform lowering, name resolution, type repair, target dispatch,
-file assembly, or escaping for a particular output language.
+Target asset discovery, target-directory ownership of target syntax, and the
+`rumoca-phase-codegen` source layout and template-command
+rules are cataloged in
+[SPEC_0041 §7](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#7-codegen-target-and-command-ownership-catalog-spec_0029-12).
 
 Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
 generated or template-context text with formatting, concatenation, replacement,
@@ -333,7 +323,7 @@ Workspace crates use six tiers. Dependencies flow downward.
 
 ```
 Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
-Tier 5 — Integration/runtime: codec/input/solver/sim/opt/viz/tool-lsp families
+Tier 5 — Integration/runtime: codec/input/solver/sim/opt/viz/tool-lsp families; std-only tool-build-info
 Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
 Tier 2 — IR data: rumoca-ir-*
@@ -343,6 +333,10 @@ Tier 1 — Foundation: rumoca-core
 Within Tier 3, phases MUST compose through IR/evaluation crates rather than depend on other phases.
 Shared prerequisite analyses are the sole reasoned, bidirectionally gated
 exception; test fixtures are outside this production rule.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| The optional `rumoca-solver/native-wasm` feature consumes sealed `rumoca-exec-wasm` products and owns their canonical runtime error mapping; the execution crate never depends on the solver | Linked FMI kernel | Concrete entry execution preserves the dependency DAG |
 
 Input-boundary and simulation-composition ownership is
 [SPEC_0041 §5](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#5-input-and-simulation-composition-catalog-spec_0029-dependency-tiers).

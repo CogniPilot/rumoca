@@ -175,7 +175,9 @@ fn checked_gather_only_programs_keep_integer_bounds_status_transaction_and_recov
 fn checked_region_gather_faults_execute_only_in_selected_region() {
     let (schedule, layout, table) = fixture(true, false);
     let artifact = emit_with_budget(&schedule, &layout, &table, BUDGET).unwrap();
-    assert_eq!(artifact.gather_faults()[0].region_path, vec![(2, 2)]);
+    // The stage program omits the unread target load, so the conditional is its
+    // second operation.
+    assert_eq!(artifact.gather_faults()[0].region_path, vec![(1, 2)]);
     let mut runner = Runner::new(&artifact, &layout);
     assert_eq!(runner.run(0.).1, vec![7f64.to_bits(); COUNT]);
     assert_eq!(runner.run(1.).1, vec![42f64.to_bits(); COUNT]);

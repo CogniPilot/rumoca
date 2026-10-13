@@ -29,6 +29,7 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
         r#"install_generated_files(&staging_dir);"#,
         r#"let checked_in_dir = Path::new("src/generated");"#,
         r#"install_generated_if_changed(&staged, &checked_in)"#,
+        "generation_is_current(",
         r#"println!("cargo:rerun-if-changed=src/modelica.par");"#,
         r#"println!("cargo:rerun-if-changed=build_support.rs");"#,
     ] {
@@ -46,6 +47,8 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
         .expect("read parser build support");
     for required in [
         "pub(crate) fn install_generated_if_changed",
+        "pub(crate) fn generation_is_current",
+        r#"pub(crate) const PAROL_VERSION: &str = "4.2.2";"#,
         "Ok(existing) if existing == generated => return Ok(false)",
         "fs::write(checked_in, generated)?",
     ] {
@@ -55,12 +58,21 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
         );
     }
 
+    assert_eq!(
+        build_support,
+        fs::read_to_string(root.join("crates/rumoca-phase-parse-galec/build_support.rs"))
+            .expect("read GALEC parser build support"),
+        "both parser crates must share one generation-stamp implementation"
+    );
+
     let galec_build_rs = fs::read_to_string(root.join("crates/rumoca-phase-parse-galec/build.rs"))
         .expect("read GALEC parser build.rs");
     for required in [
-        r#"Builder::with_explicit_output_dir("src/parse/generated")"#,
+        r#"Builder::with_explicit_output_dir(&staging_dir)"#,
         r#".grammar_file(par_file)"#,
         r#".parser_output_file("galec_parser.rs")"#,
+        "generation_is_current(",
+        "install_generated_if_changed(",
         r#".actions_output_file("galec_grammar_trait.rs")"#,
         r#"println!("cargo:rerun-if-changed=src/parse/galec.par");"#,
     ] {

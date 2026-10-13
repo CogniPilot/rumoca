@@ -38,7 +38,7 @@ impl TornSingularIsolatorModel {
         Self {
             singular_isolator_calls: Cell::new(0),
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![0, 1],
                     y_indices: vec![0, 1],
                     tearing: Some(solve::BlockTearing {
@@ -51,7 +51,8 @@ impl TornSingularIsolatorModel {
                         }],
                     }),
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
         }
     }
@@ -124,14 +125,6 @@ impl ImplicitProjectionModel for TornSingularIsolatorModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
-        match row_idx {
-            0 => Some("loop.split"),
-            1 => Some("loop.gain"),
-            _ => None,
-        }
-    }
 }
 
 /// A single-row block whose certified exact assignment for `y[0]` has a
@@ -148,12 +141,13 @@ impl SingletonSingularIsolatorModel {
         Self {
             singular_isolator_calls: Cell::new(0),
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
                     tearing: None,
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
         }
     }
@@ -217,10 +211,6 @@ impl ImplicitProjectionModel for SingletonSingularIsolatorModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("x")
-    }
 }
 
 /// What the isolator probe reports from `eval_implicit_target_value`, so the
@@ -240,7 +230,9 @@ impl IsolatorProbeModel {
     fn new(outcome: IsolatorOutcome) -> Self {
         Self {
             outcome,
-            plan: solve::AlgebraicProjectionPlan { blocks: vec![] },
+            plan: solve::AlgebraicProjectionPlan {
+                blocks: (vec![]).into(),
+            },
         }
     }
 }
@@ -290,10 +282,6 @@ impl ImplicitProjectionModel for IsolatorProbeModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
     }
 }
 

@@ -84,7 +84,9 @@ pub(super) fn combined_initial_projection_plan(
             alternate_charts: Vec::new(),
         });
     }
-    Ok(solve::AlgebraicProjectionPlan { blocks })
+    Ok(solve::AlgebraicProjectionPlan {
+        blocks: blocks.into(),
+    })
 }
 
 pub(super) fn combined_parameter_seed_index(
@@ -134,6 +136,7 @@ where
 
 pub(super) fn projection_rows(plan: &solve::AlgebraicProjectionPlan) -> Vec<usize> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.rows.iter().copied())
         .collect()
@@ -144,6 +147,7 @@ pub(super) fn projection_unknown_values(
     y: &[f64],
 ) -> Vec<f64> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.y_indices.iter().map(|&index| y[index]))
         .collect()
@@ -156,6 +160,7 @@ pub(super) fn restore_projection_unknown_values(
 ) {
     for (index, value) in plan
         .blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.y_indices.iter().copied())
         .zip(values.iter().copied())
@@ -168,7 +173,7 @@ pub(super) fn seed_nonfinite_projection_unknowns(
     y: &mut [f64],
     plan: &solve::AlgebraicProjectionPlan,
 ) {
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         for &index in &block.y_indices {
             if !y[index].is_finite() {
                 y[index] = 0.0;
@@ -245,7 +250,7 @@ pub(super) fn project_initial_variables_by_plan<M: AlgebraicProjectionModel>(
             trace_initial_projection_iteration(model, plan, &residual, iteration);
         }
         let mut changed = false;
-        for (block_index, block) in plan.blocks.iter().enumerate() {
+        for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
             let update = project_initial_block(model, y, p, t, block, block_index, tol)?;
             changed |= update.changed;
         }
@@ -303,8 +308,12 @@ fn trace_initial_projection_iteration<M: AlgebraicProjectionModel>(
                 residual_sort_key(**lhs).total_cmp(&residual_sort_key(**rhs))
             })
             .map(|(row, _)| row);
-        let worst_block =
-            worst_row.and_then(|row| plan.blocks.iter().find(|block| block.rows.contains(&row)));
+        let worst_block = worst_row.and_then(|row| {
+            plan.blocks
+                .scalar_blocks()
+                .iter()
+                .find(|block| block.rows.contains(&row))
+        });
         let worst_initial_target = worst_row
             .and_then(|row| model.initial_target(row))
             .and_then(y_index_for_slot)
@@ -330,6 +339,7 @@ fn trace_initial_projection_iteration<M: AlgebraicProjectionModel>(
 pub(super) fn initial_plan_projection_indices(plan: &solve::AlgebraicProjectionPlan) -> Vec<usize> {
     let mut indices = plan
         .blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.y_indices.iter().copied())
         .collect::<Vec<_>>();
@@ -363,6 +373,7 @@ pub(super) fn initial_residual_at(
 
 pub(super) fn initial_plan_rows(plan: &solve::AlgebraicProjectionPlan) -> Vec<usize> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .flat_map(|block| block.rows.iter().copied())
         .collect()
@@ -421,7 +432,7 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
     let jacobian = initial_block_jacobian(model, y, p, t, rows, y_indices)?;
     let structure = model
         .initial_projection_block_structure(block_index)
-        .map(solve::JacobianStructure::pattern);
+        .map(solve::ColoredJacobianStructure::pattern);
     let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales, structure);
     let context = InitialBlockDeltaCtx {
         row_scales: &row_scales,
@@ -475,7 +486,7 @@ fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
         structure: context
             .model
             .initial_projection_block_structure(context.block_index)
-            .map(solve::JacobianStructure::pattern),
+            .map(solve::ColoredJacobianStructure::pattern),
         tolerance: context.tol,
     });
     let Some(delta) = delta else {
@@ -518,7 +529,7 @@ pub(super) fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
         .map(|&index| {
             model
                 .variable_name_for_y_index(index)
-                .unwrap_or("<unnamed>")
+                .unwrap_or_else(|| "<unnamed>".to_owned())
         })
         .collect::<Vec<_>>();
     let targets = rows
@@ -528,7 +539,7 @@ pub(super) fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
                 .initial_target(row)
                 .and_then(y_index_for_slot)
                 .and_then(|index| model.variable_name_for_y_index(index))
-                .unwrap_or("<none>")
+                .unwrap_or_else(|| "<none>".to_owned())
         })
         .collect::<Vec<_>>();
     let decomposition = jacobian.as_dense().into_owned().svd(true, true);
@@ -564,7 +575,7 @@ pub(super) fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
 pub(super) fn trace_initial_projection_nullspace<M: AlgebraicProjectionModel>(
     model: &M,
     rows: &[usize],
-    variables: &[&str],
+    variables: &[String],
     left_vectors: Option<&DMatrix<f64>>,
     right_vectors_transposed: Option<&DMatrix<f64>>,
 ) {
@@ -585,7 +596,7 @@ pub(super) fn trace_initial_projection_nullspace<M: AlgebraicProjectionModel>(
         variables
             .iter()
             .enumerate()
-            .map(|(index, &variable)| (variable, vectors[(null_index, index)]))
+            .map(|(index, variable)| (variable.as_str(), vectors[(null_index, index)]))
             .collect::<Vec<_>>()
     });
     tracing::debug!(
@@ -896,7 +907,7 @@ pub(super) fn algebraic_block_jacobian(
     t: f64,
     rows: &[usize],
     y_indices: &[usize],
-    structure: Option<&solve::JacobianStructure>,
+    structure: Option<&solve::ColoredJacobianStructure>,
 ) -> Result<BlockJacobian, RuntimeSolveError> {
     let jacobian = match structure {
         Some(structure) => BlockJacobian::compact(structure.compact_layout()),
@@ -915,7 +926,7 @@ pub(super) fn algebraic_block_jacobian_in(
     p: &[f64],
     t: f64,
     coordinates: (&[usize], &[usize]),
-    structure: Option<&solve::JacobianStructure>,
+    structure: Option<&solve::ColoredJacobianStructure>,
     jacobian: BlockJacobian,
 ) -> Result<BlockJacobian, RuntimeSolveError> {
     algebraic_block_jacobian_by_rows_in(model, (y, p, t), coordinates, structure, jacobian)
@@ -928,7 +939,7 @@ pub(super) fn algebraic_block_jacobian_by_rows_in(
     model: &dyn ImplicitProjectionModel,
     (y, p, t): (&[f64], &[f64], f64),
     (rows, y_indices): (&[usize], &[usize]),
-    structure: Option<&solve::JacobianStructure>,
+    structure: Option<&solve::ColoredJacobianStructure>,
     mut jacobian: BlockJacobian,
 ) -> Result<(BlockJacobian, bool), RuntimeSolveError> {
     if let Some(structure) = structure {
@@ -968,7 +979,7 @@ pub(super) fn algebraic_block_jacobian_by_rows_in(
                 residual_idx,
                 y_indices,
                 gradient: &reverse_gradient,
-                structure: structure.map(solve::JacobianStructure::pattern),
+                structure: structure.map(solve::ColoredJacobianStructure::pattern),
                 model,
             },
         );
@@ -1085,7 +1096,7 @@ fn fill_colored_algebraic_rows(
     jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
 ) -> Result<(), RuntimeSolveError> {
     let AlgebraicBlockPoint {
         model,
@@ -1154,7 +1165,7 @@ fn fill_colored_groups(
     jacobian: &mut BlockJacobian,
     block: AlgebraicBlockPoint<'_>,
     selected_rows: &[bool],
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
     (column_rows, seed): (&[Vec<usize>], &mut [f64]),
 ) -> Result<(), RuntimeSolveError> {
     let AlgebraicBlockPoint {

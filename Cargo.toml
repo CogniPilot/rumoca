@@ -57,6 +57,7 @@ members = [
     "crates/rumoca-ir-galec",
     # Compile pipeline and tools
     "crates/rumoca-compile",
+    "crates/rumoca-tool-build-info",
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
@@ -71,6 +72,7 @@ members = [
     "crates/rumoca-exec-cranelift",
     "crates/rumoca-exec-mlir",
     "crates/rumoca-exec-wasm",
+    "crates/rumoca-runtime-fmi-ls",
 ]
 
 [workspace.package]
@@ -136,7 +138,8 @@ rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
-rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
+rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm", default-features = false }
+rumoca-tool-build-info = { path = "crates/rumoca-tool-build-info" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
@@ -210,7 +213,10 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 # harnesses warning-free without a blanket `allow`, so a *typo* in any other
 # cfg name still warns. `cfg(coverage_nightly)` is set by `cargo llvm-cov` on
 # a nightly toolchain and gates the one coverage exemption (SPEC_0025 §4).
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(coverage_nightly)'] }
+# `cfg(rumoca_qualification)` is set only by the qualification machine run
+# (see CONTRIBUTING.md); a cargo feature cannot gate it because `--all-features`
+# would enable it on every CI run.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(coverage_nightly)', 'cfg(rumoca_qualification)'] }
 unsafe_code = "deny"
 unreachable_pub = "deny"
 unnameable_types = "deny"

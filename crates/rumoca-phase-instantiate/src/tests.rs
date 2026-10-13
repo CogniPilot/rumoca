@@ -1503,3 +1503,43 @@ fn local_attribute_modification_keeps_instance_qualification() {
     );
     assert_eq!(attrs.start, Some(start_expr));
 }
+
+#[test]
+fn input_default_start_does_not_issue_authored_presence() {
+    for (ty, default) in [
+        ("Real", make_int_expr(0)),
+        ("Integer", make_int_expr(0)),
+        ("Boolean", make_bool_expr(false)),
+    ] {
+        let mut comp = make_component("u", ty, None);
+        comp.start = default.clone();
+        let tree = ast::ClassTree::default();
+        let empty = ast::ModificationEnvironment::new();
+        let effective = IndexMap::default();
+        let eval = make_eval_ctx(&tree, &empty, &effective);
+        let ordinary = extract_component_attrs_and_binding(&comp, &empty, &eval, &[]).unwrap();
+        assert_eq!(ordinary.attrs.start, Some(default.clone()));
+        comp.causality = rumoca_core::Causality::Input(make_token("input"));
+        let missing = extract_component_attrs_and_binding(&comp, &empty, &eval, &[]).unwrap();
+        assert!(missing.attrs.start.is_none());
+        comp.binding = Some(default.clone());
+        let bound = extract_component_attrs_and_binding(&comp, &empty, &eval, &[]).unwrap();
+        assert_eq!(bound.binding, Some(default.clone()));
+        assert!(bound.attrs.start.is_none());
+        comp.modifications.insert("start".into(), default.clone());
+        let explicit = extract_component_attrs_and_binding(&comp, &empty, &eval, &[]).unwrap();
+        assert_eq!(explicit.attrs.start, Some(default.clone()));
+        assert!(explicit.attrs.start_is_explicit);
+        comp.modifications.clear();
+        let mut modifications = ast::ModificationEnvironment::new();
+        modifications.add(
+            ast::QualifiedName::from_dotted("u.start"),
+            ast::ModificationValue::simple(default.clone()),
+        );
+        let eval = make_eval_ctx(&tree, &modifications, &effective);
+        let inherited =
+            extract_component_attrs_and_binding(&comp, &modifications, &eval, &[]).unwrap();
+        assert_eq!(inherited.attrs.start, Some(default));
+        assert!(inherited.attrs.start_is_explicit);
+    }
+}

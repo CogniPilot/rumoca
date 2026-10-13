@@ -1,4 +1,5 @@
 mod guarded_loop_analysis;
+mod iteration_local_decisions;
 mod loop_definitions;
 mod top_level_definedness;
 
@@ -8,10 +9,12 @@ use crate::construction::function_shapes::ProvenValue;
 pub(super) use guarded_loop_analysis::statement_reads_target;
 use guarded_loop_analysis::{confine_guarded_seeds, seed_guarded_sequence_scratch};
 use loop_definitions::resolve_function_loop_definitions;
+pub(in crate::construction) use loop_definitions::{SelectedLoopEntry, selected_loop_entry};
 use rumoca_core::Progression;
 use std::rc::Rc;
 use top_level_definedness::{
-    after_top_level_statement, before_top_level_statement, validate_top_level_statements,
+    after_top_level_statement, before_top_level_statement, later_top_level_uses,
+    validate_top_level_statements,
 };
 
 pub(super) fn validate_functions(
@@ -45,6 +48,7 @@ fn certify_function(
     validate_function_declaration(function, flat, &certificate.values)?;
     let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
     let roles = function_expression_roles(function, flat);
+    let record_roots = record_field_roots(function, flat);
     let staged_record_fields = HashSet::new();
     let loop_binders = HashSet::new();
     let scalars = super::guard_facts::ValueKinds::of(function, flat);
@@ -52,11 +56,13 @@ fn certify_function(
         function,
         flat,
         roles: &roles,
+        record_roots: &record_roots,
         static_integers: &static_integers,
         comprehension_values: None,
         shapes: &certificate.values,
         shape_analysis: shapes,
         generated_booleans: &[],
+        snapshot_loops: &[],
         staged_record_fields: &staged_record_fields,
         loop_binders: &loop_binders,
         scalars: &scalars,
@@ -142,10 +148,13 @@ fn validate_statement_function(
     let normalized = normalize_function_source(function, &function.body, context, true)?;
     let roles = roles_with_guards(context.roles, &normalized.guards);
     let shapes = shapes_with_guards(context.shapes, &normalized.guards);
+    let snapshot_loops =
+        branch_snapshots::bind_loop_selections(&normalized.statements, &normalized.loop_selections);
     let normalized_context = FunctionValidationContext {
         roles: &roles,
         shapes: &shapes,
         generated_booleans: &normalized.guards,
+        snapshot_loops: &snapshot_loops,
         ..context
     };
     let mut definitions = FunctionDefinitions::new(function);
@@ -162,7 +171,6 @@ fn validate_statement_function(
         normalized_context,
         &mut definitions,
     )?;
-    entry_seeds.extend(definitions.take_contradiction_seeds());
     require_total_outputs(function, &definitions)?;
     Ok(FunctionPlan::Statements {
         statements,
@@ -186,10 +194,13 @@ fn validate_nonreturn_path(
         normalize_function_source(function, &nonreturn_path(&function.body), context, false)?;
     let roles = roles_with_guards(context.roles, &nonreturn.guards);
     let shapes = shapes_with_guards(context.shapes, &nonreturn.guards);
+    let snapshot_loops =
+        branch_snapshots::bind_loop_selections(&nonreturn.statements, &nonreturn.loop_selections);
     let nonreturn_context = FunctionValidationContext {
         roles: &roles,
         shapes: &shapes,
         generated_booleans: &nonreturn.guards,
+        snapshot_loops: &snapshot_loops,
         ..context
     };
     let mut definitions = FunctionDefinitions::new(function);
@@ -256,11 +267,20 @@ fn normalize_function_source(
             context.flat,
         )?
     };
+    let function_values = function
+        .outputs
+        .iter()
+        .chain(&function.locals)
+        .map(|value| VarName::new(&value.name))
+        .collect::<Vec<_>>();
+    let compacted = super::assignment_conditionals::normalize(&compacted, &function_values);
     let mut guards = returned.guards.clone();
-    let statements = branch_snapshots::snapshot_loop_conditionals(&compacted, &mut guards)?;
+    let (statements, loop_selections) =
+        branch_snapshots::snapshot_loop_conditionals_with_entries(&compacted, &mut guards)?;
     Ok(function_returns::NormalizedFunctionReturns {
         statements,
         guards,
+        loop_selections,
         has_returns: returned.has_returns,
     })
 }
@@ -410,7 +430,7 @@ pub(super) fn validate_function_statements(
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
     let mut plans = plan_function_statements(statements, context)?;
-    annotate_iteration_locals(statements, &mut plans, context, &[], &[]);
+    annotate_iteration_locals(statements, &mut plans, context)?;
     resolve_function_definitions(statements, &mut plans, context, definitions)?;
     Ok(plans)
 }
@@ -418,122 +438,105 @@ pub(super) fn validate_function_statements(
 /// Separate nonescaping per-iteration scratch from the fold's carried tuple.
 ///
 /// This is deliberately conservative. A candidate must be a declared local,
-/// receive a dominating whole definition on every iteration before any read,
-/// and have no read after the loop or across an enclosing back edge. Anything
+/// have no incoming base or value read on any executed path,
+/// nor a read after the loop or across an enclosing back edge. Anything
 /// not proved here remains carried and keeps the older, more general semantics.
-fn annotate_iteration_locals<'a>(
-    statements: &'a [rumoca_core::Statement],
+fn annotate_iteration_locals(
+    statements: &[rumoca_core::Statement],
     plans: &mut [FunctionStatementPlan],
     context: FunctionValidationContext<'_>,
-    enclosing_suffix: &[&'a [rumoca_core::Statement]],
-    back_edges: &[&'a [rumoca_core::Statement]],
-) {
-    debug_assert_eq!(statements.len(), plans.len());
-    let locals = context
-        .function
-        .locals
-        .iter()
-        .map(|local| VarName::new(&local.name))
-        .collect::<HashSet<_>>();
-    let generated = context
-        .generated_booleans
-        .iter()
-        .filter(|guard| !guard.mutable)
-        .map(|guard| guard.target.clone())
-        .collect::<HashSet<_>>();
-    for index in 0..statements.len() {
-        let mut suffix = Vec::with_capacity(enclosing_suffix.len() + 1);
-        suffix.push(&statements[index + 1..]);
-        suffix.extend_from_slice(enclosing_suffix);
-        match (&statements[index], &mut plans[index]) {
-            (
-                rumoca_core::Statement::For {
-                    indices, equations, ..
-                },
-                FunctionStatementPlan::For {
-                    lowering,
-                    statements: body_plans,
-                    source_depth,
-                    ..
-                },
-            ) => {
-                let (_, body) = flattened_function_loop_source(indices, equations, *source_depth);
-                classify_iteration_local_targets(
-                    lowering,
-                    (body, body_plans),
-                    (&locals, &generated),
-                    &suffix,
-                    back_edges,
-                );
-                let mut nested_back_edges = Vec::with_capacity(back_edges.len() + 1);
-                nested_back_edges.push(body);
-                nested_back_edges.extend_from_slice(back_edges);
-                annotate_iteration_locals(body, body_plans, context, &suffix, &nested_back_edges);
-            }
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    ..
-                },
-                FunctionStatementPlan::If {
-                    branches, fallback, ..
-                },
-            ) => {
-                for (block, branch) in cond_blocks.iter().zip(branches) {
-                    annotate_iteration_locals(&block.stmts, branch, context, &suffix, back_edges);
-                }
-                if let (Some(source), Some(branch)) = (else_block.as_deref(), fallback.as_mut()) {
-                    annotate_iteration_locals(source, branch, context, &suffix, back_edges);
-                }
-            }
-            _ => {}
-        }
-    }
+) -> Result<(), ToDaeError> {
+    iteration_local_decisions::annotate(statements, plans, context)
 }
 
-fn classify_iteration_local_targets(
-    lowering: &mut FunctionLoopLowering,
+fn iteration_local_targets(
+    lowering: &FunctionLoopLowering,
     (body, body_plans): (&[rumoca_core::Statement], &[FunctionStatementPlan]),
     (locals, generated): (&HashSet<VarName>, &HashSet<VarName>),
-    suffix: &[&[rumoca_core::Statement]],
-    back_edges: &[&[rumoca_core::Statement]],
-) {
-    let FunctionLoopLowering::Fold {
-        targets,
-        iteration_locals,
-    } = lowering
-    else {
-        return;
+    (prefix, suffix, back_edges): (
+        &[loop_compaction::StatementSequence<'_>],
+        &[loop_compaction::StatementSequence<'_>],
+        &[loop_compaction::StatementSequence<'_>],
+    ),
+    context: FunctionValidationContext<'_>,
+) -> Vec<VarName> {
+    let FunctionLoopLowering::Fold { targets, .. } = lowering else {
+        return Vec::new();
     };
-    let mut retained = Vec::with_capacity(targets.len());
-    for target in std::mem::take(targets) {
-        // A generated selection's scope certificate already proves it is read
-        // only after its definition in this body; dominance places that
-        // definition on every iteration.
-        if generated.contains(&target) {
-            if loop_has_dominating_whole_definition(body, body_plans, &target) {
-                iteration_locals.push(target);
-            } else {
-                retained.push(target);
-            }
-            continue;
+    let body = loop_compaction::StatementSequence {
+        statements: body,
+        plans: Some(body_plans),
+    };
+    let regions = std::iter::once(vec![body])
+        .chain(suffix.iter().map(|sequence| vec![*sequence]))
+        .chain(std::iter::once(back_edges.to_vec()))
+        .collect::<Vec<_>>();
+    // Each region is walked once for every candidate that no earlier region
+    // has already shown to read its incoming value.
+    let mut candidates = targets
+        .iter()
+        .filter(|target| !generated.contains(*target) && locals.contains(*target))
+        .collect::<Vec<_>>();
+    for region in &regions {
+        if candidates.is_empty() {
+            break;
         }
-        let local = locals.contains(&target)
-            && loop_has_dominating_whole_definition(body, body_plans, &target)
-            && !loop_compaction::statements_read_incoming_name(body, &target)
-            && !loop_compaction::statements_partially_assign_name(body, &target)
-            && !suffix
-                .iter()
-                .any(|segment| loop_compaction::statements_read_name(segment, &target))
-            && !loop_compaction::statement_segments_read_incoming_name(back_edges, &target);
-        if local {
-            iteration_locals.push(target);
-        } else {
-            retained.push(target);
+        let reads =
+            loop_compaction::planned_sequences_read_incoming_names(region, &candidates, context);
+        candidates = candidates
+            .into_iter()
+            .zip(reads)
+            .filter_map(|(target, read)| (!read).then_some(target))
+            .collect();
+    }
+    let candidates = keep_carried_with_entry_definition(candidates, &regions, prefix);
+    targets
+        .iter()
+        .filter(|target| {
+            if generated.contains(*target) {
+                loop_has_dominating_whole_definition(body.statements, body_plans, target, context)
+            } else {
+                candidates.contains(target)
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Leave carried every candidate whose reads only a guard excludes from its
+/// undefined paths, when a definition on every path reaches the loop.
+///
+/// Such a local leaves each iteration with a definition that exists only
+/// where its guard holds. Reading it under that guard needs the checked
+/// assigned-state read, which targets that cannot hold an optional
+/// executed-path value refuse. A carried value instead enters the loop with
+/// the definition made before it, and the guard facts still prove every
+/// read. A candidate nothing defines before the loop keeps its
+/// iteration-local slot, which needs no entry value.
+fn keep_carried_with_entry_definition<'a>(
+    candidates: Vec<&'a VarName>,
+    regions: &[Vec<loop_compaction::StatementSequence<'_>>],
+    prefix: &[loop_compaction::StatementSequence<'_>],
+) -> Vec<&'a VarName> {
+    let mut guard_dependent = vec![false; candidates.len()];
+    for region in regions {
+        let reads = loop_compaction::planned_sequences_structurally_read_incoming_names(
+            region,
+            &candidates,
+        );
+        for (flag, read) in guard_dependent.iter_mut().zip(reads) {
+            *flag |= read;
         }
     }
-    *targets = retained;
+    if !guard_dependent.contains(&true) {
+        return candidates;
+    }
+    let defined = loop_compaction::planned_sequences_define_names(prefix, &candidates);
+    candidates
+        .into_iter()
+        .zip(guard_dependent.into_iter().zip(defined))
+        .filter_map(|(target, (dependent, defined))| (!(dependent && defined)).then_some(target))
+        .collect()
 }
 
 /// Prove that one iteration defines `target` unconditionally before any
@@ -548,9 +551,13 @@ fn loop_has_dominating_whole_definition(
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
     target: &VarName,
+    context: FunctionValidationContext<'_>,
 ) -> bool {
     debug_assert_eq!(statements.len(), plans.len());
     for (statement, plan) in statements.iter().zip(plans) {
+        if loop_compaction::planned_statement_reads_incoming(statement, plan, target, context) {
+            return false;
+        }
         let defines_whole = match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 assignment.target() == target && assignment.is_whole()
@@ -559,7 +566,7 @@ fn loop_has_dominating_whole_definition(
             FunctionStatementPlan::GeneratedBooleanAssignment {
                 target: generated, ..
             } => generated == target,
-            FunctionStatementPlan::MultiOutputCall { outputs } => outputs
+            FunctionStatementPlan::MultiOutputCall { outputs, .. } => outputs
                 .iter()
                 .flatten()
                 .any(|output| output.target() == target && output.is_whole()),
@@ -655,6 +662,12 @@ pub(super) fn plan_function_statements(
                 target: guard.target.clone(),
                 value: guard.value.clone(),
                 span: guard.span,
+                proven_reads: Vec::new(),
+                selected: super::assignment_conditionals::selected_capture(
+                    &guard.target,
+                    &guard.value,
+                    guard.span,
+                ),
             });
             index += 1;
             continue;
@@ -936,6 +949,8 @@ fn validate_function_assignment_target(
     Ok(FunctionAssignmentPlan {
         target,
         subscripts: subscripts.clone().into_boxed_slice(),
+        proven_reads: Vec::new(),
+        base_reads: Vec::new(),
         seed: None,
     })
 }
@@ -1095,7 +1110,10 @@ fn plan_multi_output_call_receivers(
             context,
         )?));
     }
-    Ok(FunctionStatementPlan::MultiOutputCall { outputs })
+    Ok(FunctionStatementPlan::MultiOutputCall {
+        outputs,
+        argument_reads: Vec::new(),
+    })
 }
 
 fn plan_record_multi_output_assembly(
@@ -1189,6 +1207,7 @@ fn plan_record_multi_output_assembly(
         });
     }
     Ok(Some(FunctionRecordCallAssemblyPlan {
+        argument_reads: Vec::new(),
         target: VarName::new(&target.name),
         fields,
     }))
@@ -1265,15 +1284,15 @@ fn resolve_sequence_definitions(
 ) -> Result<(), ToDaeError> {
     debug_assert_eq!(statements.len(), plans.len());
     let seeds = seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let later_uses = definedness
+        .is_some()
+        .then(|| later_top_level_uses(statements, plans, context.function));
     let mut index = 0usize;
     while index < statements.len() {
-        let partial_before = match definedness.as_deref_mut() {
-            Some(plan) => {
-                before_top_level_statement(statements, plans, index, context, definitions, plan)
-            }
-            None => Vec::new(),
-        };
-        let count = match &plans[index] {
+        if let (Some(plan), Some(later_uses)) = (definedness.as_deref_mut(), &later_uses) {
+            before_top_level_statement(statements, plans, index, later_uses, definitions, plan);
+        }
+        let count = match &mut plans[index] {
             FunctionStatementPlan::RecordFieldAssembly(assembly) => {
                 resolve_record_field_assembly_definitions(
                     &statements[index..index + assembly.statement_count],
@@ -1285,7 +1304,7 @@ fn resolve_sequence_definitions(
             }
             plan => {
                 if let FunctionStatementPlan::RecordAssembly(assembly) = plan {
-                    require_record_assembly_readable(
+                    assembly.reads = require_record_assembly_readable(
                         &statements[index..index + assembly.statement_count],
                         context,
                         definitions,
@@ -1300,16 +1319,8 @@ fn resolve_sequence_definitions(
                 1
             }
         };
-        if let Some(plan) = definedness.as_deref_mut() {
-            after_top_level_statement(
-                statements,
-                plans,
-                index,
-                &partial_before,
-                context,
-                definitions,
-                plan,
-            )?;
+        if definedness.is_some() {
+            after_top_level_statement(statements, plans, index, definitions);
         }
         definitions.advance_facts_over(&statements[index..index + count], context);
         index += count;
@@ -1318,23 +1329,36 @@ fn resolve_sequence_definitions(
     Ok(())
 }
 
+fn extend_unique_reads(reads: &mut Vec<(VarName, Span)>, new: Vec<(VarName, Span)>) {
+    for read in new {
+        if !reads.contains(&read) {
+            reads.push(read);
+        }
+    }
+}
+
 /// A record assembly reads its field values where its group stands.
 fn require_record_assembly_readable(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,
     definitions: &FunctionDefinitions,
-) -> Result<(), ToDaeError> {
+) -> Result<Vec<(VarName, Span)>, ToDaeError> {
+    let mut reads = Vec::new();
     for statement in statements {
         if let rumoca_core::Statement::Assignment { value, span, .. } = statement {
             definitions.require_readable(value, context, *span)?;
+            extend_unique_reads(
+                &mut reads,
+                definitions.proven_assignment_reads(value, context, *span),
+            );
         }
     }
-    Ok(())
+    Ok(reads)
 }
 
 fn resolve_record_field_assembly_definitions(
     statements: &[rumoca_core::Statement],
-    assembly: &FunctionRecordFieldAssemblyPlan,
+    assembly: &mut FunctionRecordFieldAssemblyPlan,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
@@ -1343,6 +1367,10 @@ fn resolve_record_field_assembly_definitions(
             unreachable!("record field assembly contains assignments")
         };
         definitions.require_readable(value, context, *span)?;
+        extend_unique_reads(
+            &mut assembly.reads,
+            definitions.proven_assignment_reads(value, context, *span),
+        );
     }
     let staged = function_record_field_name(&assembly.target, &assembly.field.name);
     definitions.define_whole(&staged);
@@ -1371,15 +1399,100 @@ fn resolve_function_definition(
                 target,
                 value,
                 span,
+                proven_reads,
+                selected,
                 ..
             },
-        ) => resolve_generated_boolean_definition(value, target, *span, context, definitions)?,
+        ) => {
+            if let Some(selected) = selected {
+                resolve_function_definition(
+                    &selected.source,
+                    &mut selected.plan,
+                    context,
+                    definitions,
+                )?;
+                definitions.assign_facts(target, value, context);
+            } else {
+                resolve_generated_boolean_definition(
+                    value,
+                    target,
+                    *span,
+                    proven_reads,
+                    context,
+                    definitions,
+                )?;
+            }
+        }
         (
             rumoca_core::Statement::Assignment { value, span, .. },
             FunctionStatementPlan::Assignment(assignment),
         ) => {
             resolve_function_assignment_definition(value, *span, assignment, context, definitions)?
         }
+        (
+            statement @ rumoca_core::Statement::If { .. },
+            plan @ (FunctionStatementPlan::If { .. } | FunctionStatementPlan::ProvenBranch { .. }),
+        ) => resolve_function_conditional_definition(statement, plan, context, definitions)?,
+        (
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            },
+            FunctionStatementPlan::For {
+                domain,
+                lowering,
+                statements: body,
+                source_depth,
+                ..
+            },
+        ) => resolve_function_loop_definitions(
+            (indices, equations, *span),
+            (domain, *source_depth, lowering, body),
+            context,
+            definitions,
+        )?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::MultiOutputCall {
+                outputs,
+                argument_reads,
+            },
+        ) => resolve_multi_output_definitions(
+            args,
+            *span,
+            (outputs, argument_reads),
+            context,
+            definitions,
+        )?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::RecordMultiOutputAssembly(assembly),
+        ) => resolve_record_multi_output(args, *span, assembly, context, definitions)?,
+        (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
+            definitions.define_whole(&assembly.target)
+        }
+        (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
+            definitions.define_whole(&assembly.target)
+        }
+        (_, FunctionStatementPlan::ArrayAssemblyMember)
+        | (_, FunctionStatementPlan::RecordAssemblyMember)
+        | (_, FunctionStatementPlan::RecordFieldAssemblyMember) => {}
+        (_, FunctionStatementPlan::RecordFieldAssembly(_)) => {
+            unreachable!("record field assemblies are resolved with their source run")
+        }
+        _ => unreachable!("function planning aligns statement and plan shapes"),
+    }
+    Ok(())
+}
+
+fn resolve_function_conditional_definition(
+    statement: &rumoca_core::Statement,
+    plan: &mut FunctionStatementPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    match (statement, plan) {
         (
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -1390,11 +1503,16 @@ fn resolve_function_definition(
                 branches,
                 fallback,
                 targets,
+                condition_reads,
             },
         ) => {
             *targets = resolve_planned_conditional(
                 (cond_blocks, else_block.as_deref(), *span),
-                (branches, fallback.as_mut()),
+                FunctionConditionalPlans {
+                    branches,
+                    fallback: fallback.as_mut(),
+                    condition_reads,
+                },
                 context,
                 definitions,
             )?
@@ -1417,46 +1535,7 @@ fn resolve_function_definition(
                 selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
             resolve_function_definitions(selected, branch, context, definitions)?;
         }
-        (
-            rumoca_core::Statement::For {
-                indices,
-                equations,
-                span,
-            },
-            FunctionStatementPlan::For {
-                domain,
-                lowering,
-                statements: body,
-                source_depth,
-                ..
-            },
-        ) => resolve_function_loop_definitions(
-            (indices, equations, *span),
-            (domain, *source_depth, lowering, body),
-            context,
-            definitions,
-        )?,
-        (
-            rumoca_core::Statement::FunctionCall { args, span, .. },
-            FunctionStatementPlan::MultiOutputCall { outputs },
-        ) => resolve_multi_output_definitions(args, *span, outputs, context, definitions)?,
-        (
-            rumoca_core::Statement::FunctionCall { args, span, .. },
-            FunctionStatementPlan::RecordMultiOutputAssembly(assembly),
-        ) => resolve_record_multi_output(args, *span, &assembly.target, context, definitions)?,
-        (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
-            definitions.define_whole(&assembly.target)
-        }
-        (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
-            definitions.define_whole(&assembly.target)
-        }
-        (_, FunctionStatementPlan::ArrayAssemblyMember)
-        | (_, FunctionStatementPlan::RecordAssemblyMember)
-        | (_, FunctionStatementPlan::RecordFieldAssemblyMember) => {}
-        (_, FunctionStatementPlan::RecordFieldAssembly(_)) => {
-            unreachable!("record field assemblies are resolved with their source run")
-        }
-        _ => unreachable!("function planning aligns statement and plan shapes"),
+        _ => unreachable!("a conditional plan owns its source conditional"),
     }
     Ok(())
 }
@@ -1467,32 +1546,23 @@ fn resolve_planned_conditional(
         Option<&[rumoca_core::Statement]>,
         Span,
     ),
-    plan: (
-        &mut [Vec<FunctionStatementPlan>],
-        Option<&mut Vec<FunctionStatementPlan>>,
-    ),
+    plan: FunctionConditionalPlans<'_>,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<VarName>, ToDaeError> {
-    resolve_function_conditional(
-        source.0,
-        source.1,
-        plan.0,
-        plan.1,
-        source.2,
-        context,
-        definitions,
-    )
+    resolve_function_conditional(source.0, source.1, plan, source.2, context, definitions)
 }
 
 fn resolve_generated_boolean_definition(
     value: &Expression,
     target: &VarName,
     span: Span,
+    proven_reads: &mut Vec<(VarName, Span)>,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     definitions.require_readable(value, context, span)?;
+    *proven_reads = definitions.proven_assignment_reads(value, context, span);
     definitions.define_whole(target);
     // The capture holds its condition's value from here on, so a branch it
     // selects later sees that condition's facts.
@@ -1500,17 +1570,30 @@ fn resolve_generated_boolean_definition(
     Ok(())
 }
 
+fn prove_call_argument_reads(
+    arguments: &[Expression],
+    span: Span,
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+) -> Result<Vec<(VarName, Span)>, ToDaeError> {
+    let mut reads = Vec::new();
+    // MLS §11.2.1.1 reads every argument before defining receivers.
+    for argument in arguments {
+        definitions.require_readable(argument, context, span)?;
+        reads.extend(definitions.proven_assignment_reads(argument, context, span));
+    }
+    Ok(reads)
+}
+
 fn resolve_record_multi_output(
     arguments: &[Expression],
     span: Span,
-    target: &VarName,
+    assembly: &mut FunctionRecordCallAssemblyPlan,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    for argument in arguments {
-        definitions.require_readable(argument, context, span)?;
-    }
-    definitions.define_whole(target);
+    assembly.argument_reads = prove_call_argument_reads(arguments, span, context, definitions)?;
+    definitions.define_whole(&assembly.target);
     Ok(())
 }
 
@@ -1532,14 +1615,15 @@ fn resolve_function_assertion_definition(
 fn resolve_multi_output_definitions(
     arguments: &[Expression],
     span: Span,
-    outputs: &mut [Option<FunctionAssignmentPlan>],
+    planned: (
+        &mut [Option<FunctionAssignmentPlan>],
+        &mut Vec<(VarName, Span)>,
+    ),
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    // MLS §11.2.1.1 reads every argument before defining receivers.
-    for argument in arguments {
-        definitions.require_readable(argument, context, span)?;
-    }
+    let (outputs, argument_reads) = planned;
+    *argument_reads = prove_call_argument_reads(arguments, span, context, definitions)?;
     for plan in outputs.iter_mut().flatten() {
         for expression in plan.subscripts().iter().filter_map(subscript_expression) {
             definitions.require_readable(expression, context, span)?;
@@ -1564,17 +1648,26 @@ fn resolve_function_assignment_definition(
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     definitions.require_readable(value, context, span)?;
+    assignment.proven_reads = definitions.proven_assignment_reads(value, context, span);
     for expression in assignment
         .subscripts
         .iter()
         .filter_map(subscript_expression)
     {
         definitions.require_readable(expression, context, span)?;
+        assignment
+            .proven_reads
+            .extend(definitions.proven_assignment_reads(expression, context, span));
     }
     if assignment.is_whole() {
         definitions.define_whole(&assignment.target);
         return Ok(());
     }
+    assignment.base_reads = definitions.proven_carried_entry_reads(
+        std::slice::from_ref(assignment.target()),
+        context,
+        span,
+    );
     let seed =
         definitions.write_elements(&assignment.target, &assignment.subscripts, context, span)?;
     assignment.seed = assignment.seed.take().or(seed);

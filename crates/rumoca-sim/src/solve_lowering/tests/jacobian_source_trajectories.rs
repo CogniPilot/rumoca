@@ -43,7 +43,7 @@ fn colored_plan_counts(dae: &rumoca_ir_dae::Dae) -> (usize, usize) {
     let structures = model.artifacts.continuous.structural.algebraic_projection();
     let applications = structures
         .iter()
-        .filter_map(solve::JacobianStructure::jacobian_application);
+        .filter_map(solve::ColoredJacobianStructure::jacobian_application);
     applications.fold(
         (0, 0),
         |(refused, widened), application| match ColoredTangentPlan::derive(application) {

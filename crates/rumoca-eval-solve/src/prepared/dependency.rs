@@ -36,6 +36,8 @@ pub(crate) fn row_reads_y_index(program: &[LinearOp], target: usize) -> bool {
 /// dependency views can enumerate only producer coordinates intersecting the
 /// ranges without rebuilding one load operation per lane.
 pub(crate) fn row_y_input_ranges(program: &[LinearOp]) -> Vec<Range<usize>> {
+    #[cfg(test)]
+    crate::refresh_plan::record_input_range_walk();
     let mut ranges = Vec::new();
     collect_y_input_ranges(program, &mut ranges);
     ranges.sort_unstable_by_key(|range| (range.start, range.end));
@@ -140,6 +142,7 @@ pub(super) fn op_can_fail(op: &LinearOp) -> bool {
             .any(|index| matches!(index, rumoca_ir_solve::TensorIndex::Runtime(_))),
         LinearOp::LinearSolveComponent { .. }
         | LinearOp::PureCall { .. }
+        | LinearOp::PureCallObservation { .. }
         | LinearOp::PureCallDirectional { .. }
         | LinearOp::TableBounds { .. }
         | LinearOp::TableLookup { .. }

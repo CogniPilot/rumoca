@@ -160,7 +160,7 @@ fn property_absent_configuration_capability_rejects_entry() {
             run_to_event_mode(&mut kernel);
         }
         let before = observable_state(&kernel);
-        let checkpoint = kernel.fmu_state();
+        let checkpoint = kernel.fmu_state().unwrap();
         let error = kernel
             .enter_configuration_mode()
             .expect_err("a component without structural parameters rejects Configuration Mode");
@@ -182,7 +182,7 @@ fn property_fixed_configuration_capability_admits_only_initial_entry() {
         .expect("initial configuration exits to Instantiated");
     run_to_event_mode(&mut kernel);
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
     let error = kernel
         .enter_configuration_mode()
         .expect_err("a fixed structural parameter does not admit reconfiguration");
@@ -197,7 +197,7 @@ fn property_fixed_configuration_capability_admits_only_initial_entry() {
 fn property_facade_transition_relation_is_exact(state: MeState, command: MeLifecycleCommand) {
     let mut kernel = kernel_in_state_for_command(state, command);
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
     let result = apply_lifecycle_command(&mut kernel, command);
     match expected_tunable_transition(state, command) {
         Ok(expected) => {
@@ -242,7 +242,7 @@ fn property_non_finite_setters_are_transactional(index: u8) {
         .set_continuous_states(&[1.5])
         .expect("the finite baseline state is valid");
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
     let non_finite = non_finite_from_index(index);
 
     let error = kernel
@@ -282,7 +282,7 @@ fn property_rejected_value_reference_batch_is_transactional(case: u8) {
     let mut out_of_range = valid.clone();
     out_of_range.backing = MeFloat64Backing::InputParameter(usize::MAX);
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
 
     let result = match case % 6 {
         0 => kernel.set_float64(&[valid], &[]),
@@ -309,7 +309,7 @@ fn property_rejected_host_buffers_are_transactional(case: u8) {
     };
     let mut kernel = instantiate(&model);
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
     match case % 9 {
         0 => {
             let mut states = vec![7.0, 8.0];
@@ -408,9 +408,9 @@ fn property_foreign_instance_capabilities_are_rejected(case: u8) {
         .value_reference("u")
         .expect("the first fixture exposes one input");
     let foreign_observation = first.observe().expect("the first fixture is observable");
-    let foreign_snapshot = first.fmu_state();
+    let foreign_snapshot = first.fmu_state().unwrap();
     let before = observable_state(&second);
-    let checkpoint = second.fmu_state();
+    let checkpoint = second.fmu_state().unwrap();
 
     match case % 3 {
         0 => {
@@ -493,7 +493,7 @@ fn property_terminated_facade_is_fail_closed(operation: ActiveFacadeOperation) {
         .expect("the fixture exposes one input");
     kernel.terminate().expect("the fixture can terminate");
     let before = observable_state(&kernel);
-    let checkpoint = kernel.fmu_state();
+    let checkpoint = kernel.fmu_state().unwrap();
     let mut scalar_buffer = vec![7.0];
     let mut state_buffer = [7.0];
     let mut sensitivity = [7.0];
@@ -546,7 +546,7 @@ fn property_snapshot_restores_observable_state(target: MeState) {
         &model,
         MeConfigurationCapability::TunableStructuralParameter,
     );
-    let instantiated = kernel.fmu_state();
+    let instantiated = kernel.fmu_state().unwrap();
     if target != MeState::Terminated {
         drive_to_state(&mut kernel, target);
     }
@@ -566,7 +566,7 @@ fn property_snapshot_restores_observable_state(target: MeState) {
         kernel.terminate().expect("the saved state can terminate");
     }
     let expected_outputs = active_outputs(&kernel, target);
-    let saved = kernel.fmu_state();
+    let saved = kernel.fmu_state().unwrap();
     let expected = observable_state(&kernel);
     mutate_away_from_snapshot(&mut kernel, target, &instantiated);
     kernel

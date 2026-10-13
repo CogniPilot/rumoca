@@ -19,7 +19,7 @@ pub(super) fn derive_algebraic_reverse_invalidations(
     }
     let mut earlier = PriorRowDependencies::new(source);
     let mut invalidations = Vec::with_capacity(plan.blocks.len());
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         // Every target is checked, even after the first intersecting target.
         // This block's rows become earlier only after all its targets are read.
         let invalidates = block.y_indices.iter().try_fold(false, |found, &column| {

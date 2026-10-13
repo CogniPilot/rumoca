@@ -19,8 +19,13 @@ thiserror = { workspace = true }
 [build-dependencies]
 parol = { workspace = true }
 
+[[test]]
+name = "generated_output_stability"
+path = "build_support.rs"
+
 [dev-dependencies]
 rumoca-phase-codegen = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

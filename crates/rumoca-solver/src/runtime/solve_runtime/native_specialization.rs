@@ -33,35 +33,42 @@ pub(super) struct RowEvalPoint<'a> {
     pub(super) t: f64,
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     pub(super) fn compile_discrete_specialization(&self, program: usize) {
-        let Some(backend) = &self.execution_backend else {
+        let Some(backend) = &self.scalar.execution_backend else {
             return;
         };
-        if self.failed_discrete_rows.borrow().contains(&program) {
+        if self.scalar.failed_discrete_rows.borrow().contains(&program) {
             return;
         }
-        let (program_ops, output_count, guard_expectations) =
-            if let Some(specialization) = self.discrete_rhs.specialized_row_program(program) {
-                (
-                    specialization.program,
-                    specialization.output_count,
-                    specialization.guard_expectations,
-                )
-            } else {
-                let Some(program_ops) = self.discrete_rhs.block().programs().get(program).cloned()
-                else {
-                    return;
-                };
-                let Some(output_count) = self.discrete_rhs.row_output_count(program) else {
-                    return;
-                };
-                (program_ops, output_count, Vec::new().into_boxed_slice())
+        let (program_ops, output_count, guard_expectations) = if let Some(specialization) =
+            self.scalar.discrete_rhs.specialized_row_program(program)
+        {
+            (
+                specialization.program,
+                specialization.output_count,
+                specialization.guard_expectations,
+            )
+        } else {
+            let Some(program_ops) = self
+                .scalar
+                .discrete_rhs
+                .block()
+                .programs()
+                .get(program)
+                .cloned()
+            else {
+                return;
             };
+            let Some(output_count) = self.scalar.discrete_rhs.row_output_count(program) else {
+                return;
+            };
+            (program_ops, output_count, Vec::new().into_boxed_slice())
+        };
         let Some(total_outputs) = output_count.checked_add(guard_expectations.len()) else {
             return;
         };
-        let Some(span) = self.discrete_rhs.block().program_span(program) else {
+        let Some(span) = self.scalar.discrete_rhs.block().program_span(program) else {
             return;
         };
         let block = match solve::ScalarProgramBlock::with_output_indices(
@@ -72,7 +79,10 @@ impl SolveRuntime {
             Ok(block) => block,
             Err(error) => {
                 trace_native_execution_failure(program, &error.to_string());
-                self.failed_discrete_rows.borrow_mut().insert(program);
+                self.scalar
+                    .failed_discrete_rows
+                    .borrow_mut()
+                    .insert(program);
                 return;
             }
         };
@@ -80,7 +90,10 @@ impl SolveRuntime {
             Ok(expression) => expression,
             Err(error) => {
                 trace_native_execution_failure(program, &error);
-                self.failed_discrete_rows.borrow_mut().insert(program);
+                self.scalar
+                    .failed_discrete_rows
+                    .borrow_mut()
+                    .insert(program);
                 return;
             }
         };
@@ -92,11 +105,13 @@ impl SolveRuntime {
             guards = guard_expectations.len(),
             "compiled discrete specialization"
         );
-        self.compiled_discrete_rows
+        self.scalar
+            .compiled_discrete_rows
             .borrow_mut()
             .entry(program)
             .or_default()
             .push(CompiledDiscreteSpecialization {
+                source_span: span,
                 expression,
                 output_count,
                 guard_expectations,
@@ -156,6 +171,24 @@ impl SolveRuntime {
         point: RowEvalPoint<'_>,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let observations = (std::ptr::eq(rows.block, &self.scalar.root_condition_rows)
+            || std::ptr::eq(rows.block, &self.scalar.event_action_conditions))
+        .then(|| self.event_observations());
+        let context = RowEvalContext {
+            event_observations: observations.as_ref(),
+            ..self.row_eval_context()
+        };
+        self.eval_selected_outputs_with_context(rows, output_indices, point, out, context)
+    }
+
+    pub(super) fn eval_selected_outputs_with_context(
+        &self,
+        rows: SpecializedRows<'_>,
+        output_indices: &[usize],
+        point: RowEvalPoint<'_>,
+        out: &mut [f64],
+        context: RowEvalContext<'_>,
+    ) -> Result<(), RuntimeSolveError> {
         let SpecializedRows {
             block,
             cache,
@@ -185,7 +218,7 @@ impl SolveRuntime {
                 point.y,
                 point.p,
                 point.t,
-                self.row_eval_context(),
+                context,
                 &mut values,
             )?;
             copy_interpreted_program_outputs(&values, program, &selected, out)?;
@@ -212,28 +245,28 @@ impl SolveRuntime {
                 .output_count
                 .checked_add(compiled.guard_expectations.len())
                 .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
-            let mut scratch = self.compiled_output_scratch.borrow_mut();
+            let mut scratch = self.scalar.compiled_output_scratch.borrow_mut();
             scratch.resize(total_outputs, 0.0);
-            let called = compiled.expression.call(
-                point.y,
-                point.p,
-                point.t,
-                self.model.external_tables.as_slice(),
-                &mut scratch,
-            );
-            if let Err(error) = &called {
-                tracing::debug!(
-                    target: "rumoca_solver::native_execution",
-                    program,
-                    %error,
-                    "compiled specialization call failed"
-                );
-            }
-            let valid = called.is_ok()
-                && scratch[compiled.output_count..]
-                    .iter()
-                    .zip(&compiled.guard_expectations)
-                    .all(|(actual, expected)| (*actual != 0.0) == *expected);
+            compiled
+                .expression
+                .call(
+                    point.y,
+                    point.p,
+                    point.t,
+                    self.model.external_tables.as_slice(),
+                    &mut scratch,
+                )
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "program specialization",
+                        &[compiled.source_span],
+                        error,
+                    )
+                })?;
+            let valid = scratch[compiled.output_count..]
+                .iter()
+                .zip(&compiled.guard_expectations)
+                .all(|(actual, expected)| (*actual != 0.0) == *expected);
             if !valid {
                 continue;
             }
@@ -265,9 +298,9 @@ impl SolveRuntime {
                 .output_count
                 .checked_add(compiled.guard_expectations.len())
                 .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
-            let mut scratch = self.compiled_output_scratch.borrow_mut();
+            let mut scratch = self.scalar.compiled_output_scratch.borrow_mut();
             scratch.resize(total_outputs, 0.0);
-            let valid = compiled
+            compiled
                 .expression
                 .call(
                     point.y,
@@ -276,11 +309,17 @@ impl SolveRuntime {
                     self.model.external_tables.as_slice(),
                     &mut scratch,
                 )
-                .is_ok()
-                && scratch[compiled.output_count..]
-                    .iter()
-                    .zip(&compiled.guard_expectations)
-                    .all(|(actual, expected)| (*actual != 0.0) == *expected);
+                .map_err(|error| {
+                    admitted_compiled_error(
+                        "single-output specialization",
+                        &[compiled.source_span],
+                        error,
+                    )
+                })?;
+            let valid = scratch[compiled.output_count..]
+                .iter()
+                .zip(&compiled.guard_expectations)
+                .all(|(actual, expected)| (*actual != 0.0) == *expected);
             if !valid {
                 continue;
             }
@@ -307,9 +346,15 @@ impl SolveRuntime {
             cache,
             failed,
         } = rows;
-        let Some(backend) = &self.execution_backend else {
+        let Some(backend) = &self.scalar.execution_backend else {
             return;
         };
+        // Only the checked event-action adapter evaluates an observation, so
+        // no backend is asked to compile the program, now or on any later
+        // evaluation.
+        if prepared.program_requires_checked_observation(row) {
+            return;
+        }
         if failed.borrow().contains(&row) {
             return;
         }
@@ -351,6 +396,7 @@ impl SolveRuntime {
             .entry(row)
             .or_default()
             .push(CompiledDiscreteSpecialization {
+                source_span: span,
                 expression,
                 output_count,
                 guard_expectations,

@@ -8,17 +8,18 @@
 use super::conditional_emission::{
     ConditionalOutcome, PendingConditionalEmission, PreparedConditional,
 };
+use super::contiguous_ranges::contiguous_start;
 use super::*;
 
 type RecordCondition<'dae> = (dae::ExprId<'dae>, solve::Reg, dae::ExprId<'dae>);
 type FoldInvariantIndexBase<'dae> = (dae::ExprId<'dae>, (solve::Reg, usize));
 
-struct PendingFunctionConditionalRegion<'dae> {
+pub(super) struct PendingFunctionConditionalRegion<'dae> {
     ops: Vec<solve::LinearOp>,
     captures: Vec<FunctionConditionalCaptureSource<'dae>>,
 }
 
-type PendingFunctionConditionalArm<'dae> = (
+pub(super) type PendingFunctionConditionalArm<'dae> = (
     PendingFunctionConditionalRegion<'dae>,
     PendingFunctionConditionalRegion<'dae>,
 );
@@ -68,53 +69,6 @@ enum PendingFoldTensorNode<'dae> {
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
-    pub(super) fn function_conditional_group(
-        &self,
-        definition: dae::FunctionDefinitionId<'dae>,
-    ) -> Option<(
-        Vec<dae::FunctionDefinitionView<'dae>>,
-        dae::FunctionConditionalView<'dae>,
-        usize,
-    )> {
-        // SPEC_0021: Exception - exhaustive recursive dispatch over function statements.
-        #[allow(clippy::excessive_nesting)]
-        fn find<'dae>(
-            statements: dae::FunctionStatements<'dae>,
-            target: dae::FunctionDefinitionId<'dae>,
-        ) -> Option<(
-            Vec<dae::FunctionDefinitionView<'dae>>,
-            dae::FunctionConditionalView<'dae>,
-            usize,
-        )> {
-            for statement in statements {
-                match statement {
-                    dae::FunctionStatementView::AssignmentGroup {
-                        definitions,
-                        conditional: Some(conditional),
-                    } => {
-                        let definitions = definitions.iter().collect::<Vec<_>>();
-                        if let Some(ordinal) = definitions
-                            .iter()
-                            .position(|candidate| candidate.id() == target)
-                        {
-                            return Some((definitions, conditional, ordinal));
-                        }
-                    }
-                    dae::FunctionStatementView::For { statements, .. } => {
-                        if let Some(group) = find(statements, target) {
-                            return Some(group);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            None
-        }
-
-        let function = self.view.function(definition.function())?;
-        find(function.statements(), definition)
-    }
-
     /// Lower one SSA definition in the semantic context that owns it.
     ///
     /// A definition may be read from several later conditional arms. Those
@@ -160,44 +114,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.function_definition_scalar_cache.insert(key, register);
             return Ok(register);
         }
-        if let Some((definitions, conditional, ordinal)) =
-            self.function_conditional_group(definition.id())
-        {
-            let suspended = self.switch_context(context);
-            let result = self.pack_function_conditional_group(
-                &definitions,
-                conditional,
-                definition.provenance().span(),
-            );
-            self.restore_context(suspended);
-            let start = result?;
-            let preceding = definitions[..ordinal].iter().try_fold(
-                0usize,
-                |count, value| -> Result<usize, LowerError> {
-                    count
-                        .checked_add(self.function_conditional_value_width(value.rhs())?)
-                        .ok_or_else(|| {
-                            LowerError::contract(
-                                "function-conditional result offset overflows",
-                                definition.provenance().span(),
-                            )
-                        })
-                },
-            )?;
-            let offset = preceding.checked_add(scalar).ok_or_else(|| {
-                LowerError::contract(
-                    "function-conditional scalar projection overflows",
-                    definition.provenance().span(),
-                )
-            })?;
-            return function_conditional_reg_offset(
-                start,
-                offset,
-                definition.provenance().span(),
-                "function-conditional scalar projection",
-            );
-        }
         let suspended = self.switch_context(context);
+        let arm_guards = self.suspend_later_activations(definition.id().function());
         let node = self.node(definition.rhs());
         let result = if matches!(node.operation(), dae::ExpressionOperation::Conditional(_))
             && !node.value_type().is_record()
@@ -214,6 +132,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } else {
             self.expression(definition.rhs(), scalar)
         };
+        self.resume_later_activations(arm_guards);
         self.restore_context(suspended);
         let register = result?;
         self.function_definition_scalar_cache.insert(key, register);
@@ -260,41 +179,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )?]
             };
-            let register = self.pack_function_conditional_capture_ranges(&ranges, span)?;
+            let register = self.pack_register_ranges(&ranges, span)?;
             self.function_definition_aggregate_cache
                 .insert(key, register);
             return Ok(register);
-        }
-        if let Some((definitions, conditional, ordinal)) =
-            self.function_conditional_group(definition.id())
-        {
-            let suspended = self.switch_context(context);
-            let result = self.pack_function_conditional_group(
-                &definitions,
-                conditional,
-                definition.provenance().span(),
-            );
-            self.restore_context(suspended);
-            let start = result?;
-            let preceding = definitions[..ordinal].iter().try_fold(
-                0usize,
-                |count, value| -> Result<usize, LowerError> {
-                    count
-                        .checked_add(self.function_conditional_value_width(value.rhs())?)
-                        .ok_or_else(|| {
-                            LowerError::contract(
-                                "function-conditional aggregate offset overflows",
-                                definition.provenance().span(),
-                            )
-                        })
-                },
-            )?;
-            return function_conditional_reg_offset(
-                start,
-                preceding,
-                definition.provenance().span(),
-                "function-conditional aggregate projection",
-            );
         }
         let suspended = self.switch_context(context);
         let result = self.pack_expression(definition.rhs());
@@ -303,156 +191,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.function_definition_aggregate_cache
             .insert(key, register);
         Ok(register)
-    }
-
-    fn pack_function_conditional_group(
-        &mut self,
-        definitions: &[dae::FunctionDefinitionView<'dae>],
-        conditional: dae::FunctionConditionalView<'dae>,
-        span: Span,
-    ) -> Result<solve::Reg, LowerError> {
-        match self.prepare_function_conditional_group(definitions, conditional, span)? {
-            PreparedConditional::Packed(start) => Ok(start),
-            PreparedConditional::Pending(pending) => self.emit_conditional(pending),
-        }
-    }
-
-    // SPEC_0021: Exception - exhaustive construction of a checked conditional assignment group.
-    #[allow(clippy::too_many_lines)]
-    pub(super) fn prepare_function_conditional_group(
-        &mut self,
-        definitions: &[dae::FunctionDefinitionView<'dae>],
-        conditional: dae::FunctionConditionalView<'dae>,
-        span: Span,
-    ) -> Result<PreparedConditional<'dae>, LowerError> {
-        let first = definitions
-            .first()
-            .ok_or_else(|| LowerError::contract("function conditional has no targets", span))?;
-        let context = self.owning_function_context(first.id().function());
-        if let Some(&start) = self
-            .function_definition_aggregate_cache
-            .get(&(context, first.id()))
-        {
-            return Ok(PreparedConditional::Packed(start));
-        }
-        if conditional.branch_count() != conditional.conditions().len() {
-            return Err(LowerError::contract(
-                "function conditional condition/branch count mismatch",
-                span,
-            ));
-        }
-
-        let target_widths = definitions
-            .iter()
-            .map(|definition| self.function_conditional_value_width(definition.rhs()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let owner_key =
-            self.function_conditional_owner_key(FunctionConditionalOwnerValue::Definitions(
-                definitions
-                    .iter()
-                    .map(|definition| definition.id())
-                    .collect(),
-            ));
-        let cached = owner_key.as_ref().and_then(|key| {
-            self.function_conditional_owners
-                .and_then(|owners| owners.borrow().owners.get(key).cloned())
-        });
-        if let Some(cached) = cached {
-            if cached.program.target_widths.as_ref() != target_widths.as_slice() {
-                return Err(LowerError::contract(
-                    "function-conditional owner target layout changed across exact call frames",
-                    span,
-                ));
-            }
-            let capture_sources = cached
-                .capture_sources
-                .into_iter()
-                .map(|source| source.with_context(context))
-                .collect();
-            return PendingConditionalEmission::checked(
-                cached.program,
-                capture_sources,
-                span,
-                ConditionalOutcome::Definitions {
-                    definitions: definitions.to_vec(),
-                    target_widths,
-                    context,
-                },
-            )
-            .map(PreparedConditional::Pending);
-        }
-        let conditions = conditional.conditions().collect::<Vec<_>>();
-        let mut pending_arms = Vec::with_capacity(conditional.branch_count());
-        for (ordinal, &condition) in conditions.iter().enumerate() {
-            let prior_inactive = conditions[..ordinal]
-                .iter()
-                .copied()
-                .map(|condition| (condition, false))
-                .collect::<Vec<_>>();
-            let condition_program = self
-                .fork_for_function_conditional_region(
-                    first.id().function(),
-                    context,
-                    &prior_inactive,
-                )
-                .function_conditional_condition_program(condition)?;
-            let branch = conditional.branch(ordinal).ok_or_else(|| {
-                LowerError::contract("function conditional branch is missing", span)
-            })?;
-            let mut selected = prior_inactive;
-            selected.push((condition, true));
-            let result_program = self
-                .fork_for_function_conditional_region(first.id().function(), context, &selected)
-                .function_conditional_result_program(branch, span)?;
-            pending_arms.push((condition_program, result_program));
-        }
-        let fallback_guards = conditions
-            .iter()
-            .copied()
-            .map(|condition| (condition, false))
-            .collect::<Vec<_>>();
-        let pending_fallback = self
-            .fork_for_function_conditional_region(first.id().function(), context, &fallback_guards)
-            .function_conditional_result_program(conditional.fallback(), span)?;
-        let owner = match (owner_key.as_ref(), self.function_conditional_owners) {
-            (Some(_), Some(owners)) => Some(owners.borrow_mut().issue().ok_or_else(|| {
-                LowerError::contract("function-conditional owner id overflow", span)
-            })?),
-            _ => None,
-        };
-        let (program, capture_sources) = Self::checked_function_conditional_program(
-            owner,
-            target_widths.clone(),
-            pending_arms,
-            pending_fallback,
-            span,
-        )?;
-        if let (Some(key), Some(owners)) = (owner_key, self.function_conditional_owners) {
-            let previous = owners.borrow_mut().owners.insert(
-                key,
-                CachedFunctionConditionalProgram {
-                    program: program.clone(),
-                    capture_sources: capture_sources.clone(),
-                },
-            );
-            if previous.is_some() {
-                return Err(LowerError::contract(
-                    "function-conditional owner was issued twice",
-                    span,
-                ));
-            }
-        }
-        PendingConditionalEmission::checked(
-            program,
-            capture_sources,
-            span,
-            ConditionalOutcome::Definitions {
-                definitions: definitions.to_vec(),
-                target_widths,
-                context,
-            },
-        )
-        .map(PreparedConditional::Pending)
     }
 
     pub(super) fn pack_lazy_conditional_value(
@@ -493,14 +231,60 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("conditional value has no function owner", span))?;
         let owner_context = self.owning_function_context(owner_function);
         let result_count = self.function_conditional_value_width(expression)?;
-        let owner_key = self
-            .function_conditional_owner_key(FunctionConditionalOwnerValue::Expression(expression));
+        let (program, capture_sources) = self.issued_conditional_program(
+            expression,
+            vec![result_count],
+            owner_context,
+            span,
+            |compiler| {
+                compiler.lazy_conditional_regions(operands, owner_function, owner_context, span)
+            },
+        )?;
+        PendingConditionalEmission::checked(
+            program,
+            capture_sources,
+            span,
+            ConditionalOutcome::Value {
+                expression,
+                cache_key,
+                definition,
+            },
+        )
+        .map(PreparedConditional::Pending)
+    }
+
+    /// The checked program of the conditional owned by `expression`, reused
+    /// from the exact call frame that already issued it, else built from the
+    /// regions `build` returns and issued under that frame's identity.
+    pub(super) fn issued_conditional_program(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        target_widths: Vec<usize>,
+        owner_context: u64,
+        span: Span,
+        build: impl FnOnce(
+            &mut Self,
+        ) -> Result<
+            (
+                Vec<PendingFunctionConditionalArm<'dae>>,
+                PendingFunctionConditionalRegion<'dae>,
+            ),
+            LowerError,
+        >,
+    ) -> Result<
+        (
+            Arc<solve::FunctionConditionalProgram>,
+            Vec<FunctionConditionalCaptureSource<'dae>>,
+        ),
+        LowerError,
+    > {
+        let owner_key = self.function_conditional_owner_key(expression);
         let cached = owner_key.as_ref().and_then(|key| {
             self.function_conditional_owners
                 .and_then(|owners| owners.borrow().owners.get(key).cloned())
         });
         if let Some(cached) = cached {
-            if cached.program.target_widths.as_ref() != [result_count] {
+            if cached.program.target_widths.as_ref() != target_widths.as_slice() {
                 return Err(LowerError::contract(
                     "function-conditional expression owner result layout changed",
                     span,
@@ -511,20 +295,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .into_iter()
                 .map(|source| source.with_context(owner_context))
                 .collect();
-            return PendingConditionalEmission::checked(
-                cached.program,
-                capture_sources,
-                span,
-                ConditionalOutcome::Value {
-                    expression,
-                    cache_key,
-                    definition,
-                },
-            )
-            .map(PreparedConditional::Pending);
+            return Ok((cached.program, capture_sources));
         }
-        let (pending_arms, pending_fallback) =
-            self.lazy_conditional_regions(operands, owner_function, owner_context, span)?;
+        let (pending_arms, pending_fallback) = build(self)?;
         let owner = match (owner_key.as_ref(), self.function_conditional_owners) {
             (Some(_), Some(owners)) => Some(owners.borrow_mut().issue().ok_or_else(|| {
                 LowerError::contract("function-conditional owner id overflow", span)
@@ -533,7 +306,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         };
         let (program, capture_sources) = Self::checked_function_conditional_program(
             owner,
-            vec![result_count],
+            target_widths,
             pending_arms,
             pending_fallback,
             span,
@@ -553,17 +326,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ));
             }
         }
-        PendingConditionalEmission::checked(
-            program,
-            capture_sources,
-            span,
-            ConditionalOutcome::Value {
-                expression,
-                cache_key,
-                definition,
-            },
-        )
-        .map(PreparedConditional::Pending)
+        Ok((program, capture_sources))
     }
 
     fn lazy_conditional_regions(
@@ -655,7 +418,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(())
     }
 
-    fn checked_function_conditional_program(
+    pub(super) fn checked_function_conditional_program(
         owner: Option<solve::FunctionConditionalOwnerId>,
         target_widths: Vec<usize>,
         pending_arms: Vec<PendingFunctionConditionalArm<'dae>>,
@@ -705,9 +468,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok((Arc::new(checked), capture_sources.sources))
     }
 
-    fn function_conditional_owner_key(
+    pub(super) fn function_conditional_owner_key(
         &self,
-        value: FunctionConditionalOwnerValue<'dae>,
+        expression: dae::ExprId<'dae>,
     ) -> Option<FunctionConditionalOwnerKey<'dae>> {
         // Symbolic fold registers are local views of a compact domain, not a
         // stable call-frame identity across independently lowered rows. Their
@@ -725,7 +488,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return None;
         }
         Some(FunctionConditionalOwnerKey {
-            value,
+            expression,
             function_arguments: self.function_arguments.clone(),
             activation_path: self
                 .activation_path
@@ -740,7 +503,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         })
     }
 
-    fn function_conditional_value_width(
+    pub(super) fn function_conditional_value_width(
         &self,
         expression: dae::ExprId<'dae>,
     ) -> Result<usize, LowerError> {
@@ -789,13 +552,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         })
     }
 
-    fn function_conditional_condition_program(
+    pub(super) fn function_conditional_condition_program(
         mut self,
         expression: dae::ExprId<'dae>,
     ) -> Result<PendingFunctionConditionalRegion<'dae>, LowerError> {
         let span = self.node(expression).provenance().span();
         let output = self.expression(expression, 0)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
         self.finish_function_conditional_region(span)
     }
 
@@ -813,26 +576,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     let start =
                         self.pack_record_field(expression, field, node.provenance().span())?;
                     let count = self.record_field_scalar_count(expression, field);
-                    self.ops.push(solve::LinearOp::StoreOutputRange {
+                    self.emit(solve::LinearOp::StoreOutputRange {
                         start,
                         count,
                         stride: 1,
-                    });
+                    })?;
                 }
             } else {
                 let start = self.pack_expression(expression)?;
                 let count = self.function_conditional_value_width(expression)?;
-                self.ops.push(solve::LinearOp::StoreOutputRange {
+                self.emit(solve::LinearOp::StoreOutputRange {
                     start,
                     count,
                     stride: 1,
-                });
+                })?;
             }
         }
         self.finish_function_conditional_region(span)
     }
 
-    fn finish_function_conditional_region(
+    pub(super) fn finish_function_conditional_region(
         mut self,
         span: Span,
     ) -> Result<PendingFunctionConditionalRegion<'dae>, LowerError> {
@@ -846,7 +609,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?;
         Ok(PendingFunctionConditionalRegion {
-            ops: self.ops,
+            ops: self.finish_operations()?,
             captures: captures.sources,
         })
     }
@@ -902,6 +665,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
         compiler.call_action_compilation = self.call_action_compilation;
+        compiler.call_use = self.call_use;
         compiler.suppress_function_assertions = self.suppress_function_assertions;
         compiler.contexts = Rc::clone(&self.contexts);
         compiler.context_stack = self.context_stack.clone();
@@ -915,6 +679,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 slots: HashMap::new(),
                 width: 0,
                 visible,
+                local_scope: None,
             });
         compiler.function_conditional_owners = self.function_conditional_owners;
         compiler
@@ -930,7 +695,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .is_some_and(|captures| {
                 captures.owner_function == definition.function()
                     && captures.owner_context == context
+                    && !captures.local_scope.is_some_and(|scope| {
+                        scope.relation(definition) == Some(dae::FunctionScopeRelation::Region)
+                    })
             })
+    }
+
+    /// Let this conditional region compute, rather than capture, the
+    /// definitions its ordered branch scope issued.
+    pub(super) fn with_region_scope(mut self, scope: dae::FunctionScopeView<'dae>) -> Self {
+        if let Some(captures) = self.deferred_function_conditional_captures.as_mut() {
+            captures.local_scope = Some(scope);
+        }
+        self
     }
 
     fn function_conditional_capture_range(
@@ -954,12 +731,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let index_start = self.function_conditional_capture_slot(source, span)?;
         let dst_start = self.register_range(count, span)?;
-        self.ops
-            .push(solve::LinearOp::LoadFunctionConditionalCaptureRange {
-                dst_start,
-                index_start,
-                count,
-            });
+        self.emit(solve::LinearOp::LoadFunctionConditionalCaptureRange {
+            dst_start,
+            index_start,
+            count,
+        })?;
         self.deferred_function_conditional_captures
             .as_mut()
             .expect("checked conditional capture remains active")
@@ -1137,36 +913,51 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
-    pub(super) fn pack_function_conditional_capture_ranges(
+    pub(super) fn pack_register_ranges(
         &mut self,
         ranges: &[FunctionConditionalRegisterRange],
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let total = ranges.iter().try_fold(0usize, |count, range| {
-            count.checked_add(range.count).ok_or_else(|| {
-                LowerError::contract("function-conditional capture range total overflows", span)
-            })
+            count
+                .checked_add(range.count)
+                .ok_or_else(|| LowerError::contract("register pack range total overflows", span))
         })?;
+        let width = u32::try_from(total)
+            .map_err(|_| LowerError::contract("register pack range exceeds u32", span))?;
+        for range in ranges.iter().filter(|range| range.count != 0) {
+            let end = u32::try_from(range.count)
+                .ok()
+                .and_then(|count| range.start.checked_add(count))
+                .ok_or_else(|| {
+                    LowerError::contract("register pack source range overflows", span)
+                })?;
+            if end > self.next_register {
+                return Err(LowerError::contract(
+                    "register pack source range is not allocated in this program",
+                    span,
+                ));
+            }
+        }
         if total == 0 {
             return Ok(self.next_register);
         }
         if let [range] = ranges {
             return Ok(range.start);
         }
-        let dimensions = vec![u32::try_from(total).map_err(|_| {
-            LowerError::contract("function-conditional capture range exceeds u32", span)
-        })?]
-        .into_boxed_slice();
+        if let Some(start) = contiguous_start(ranges.iter().map(|range| (range.start, range.count)))
+        {
+            return Ok(start);
+        }
+        let dimensions = vec![width].into_boxed_slice();
         let sources = ranges
             .iter()
+            .filter(|range| range.count != 0)
             .map(|range| {
                 Ok(solve::TensorConcatenateSource {
                     start: range.start,
                     dimensions: vec![u32::try_from(range.count).map_err(|_| {
-                        LowerError::contract(
-                            "function-conditional capture segment exceeds u32",
-                            span,
-                        )
+                        LowerError::contract("register pack segment exceeds u32", span)
                     })?]
                     .into_boxed_slice(),
                 })
@@ -1174,14 +965,39 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .collect::<Result<Vec<_>, LowerError>>()?
             .into_boxed_slice();
         let dst_start = self.register_range(total, span)?;
-        self.ops.push(solve::LinearOp::TensorConcatenate {
+        self.emit(solve::LinearOp::TensorConcatenate {
             dst_start,
             sources,
             dimensions,
             axis: 0,
             lanes: 1,
-        });
+        })?;
         Ok(dst_start)
+    }
+
+    /// A definition is a statement the function already executed before any later
+    /// branch, so lowering it from inside a branch suspends the branch guards
+    /// entered after the owning call frame: its work is not guarded by them.
+    fn suspend_later_activations(
+        &mut self,
+        function: dae::FunctionId<'dae>,
+    ) -> Vec<ActivationGuard<'dae>> {
+        let Some(base) = self
+            .function_arguments
+            .iter()
+            .rposition(|frame| frame.function == function)
+            .map(|index| self.function_arguments[index].activation_base)
+        else {
+            return Vec::new();
+        };
+        if base >= self.activation_path.len() {
+            return Vec::new();
+        }
+        self.activation_path.split_off(base)
+    }
+
+    fn resume_later_activations(&mut self, guards: Vec<ActivationGuard<'dae>>) {
+        self.activation_path.extend(guards);
     }
 
     pub(super) fn switch_context(&mut self, context: u64) -> (u64, Vec<u64>) {
@@ -1231,40 +1047,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )?
                 .start);
         }
-        if let Some((definitions, conditional, ordinal)) =
-            self.function_conditional_group(definition.id())
-        {
-            let suspended = self.switch_context(context);
-            let result = self.pack_function_conditional_group(&definitions, conditional, span);
-            self.restore_context(suspended);
-            let start = result?;
-            let target_offset = definitions[..ordinal].iter().try_fold(
-                0usize,
-                |offset, value| -> Result<usize, LowerError> {
-                    offset
-                        .checked_add(self.function_conditional_value_width(value.rhs())?)
-                        .ok_or_else(|| {
-                            LowerError::contract(
-                                "function-conditional record target offset overflows",
-                                span,
-                            )
-                        })
-                },
-            )?;
-            let field_offset =
-                self.function_conditional_record_field_offset(definition.rhs(), field, span)?;
-            return function_conditional_reg_offset(
-                start,
-                target_offset.checked_add(field_offset).ok_or_else(|| {
-                    LowerError::contract(
-                        "function-conditional record projection offset overflows",
-                        span,
-                    )
-                })?,
-                span,
-                "function-conditional record projection",
-            );
-        }
         let suspended = self.switch_context(context);
         let result = self.pack_record_field(definition.rhs(), field, span);
         self.restore_context(suspended);
@@ -1303,44 +1085,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 scalar,
                 span,
                 "function-conditional record scalar view",
-            );
-        }
-        if let Some((definitions, conditional, ordinal)) =
-            self.function_conditional_group(definition.id())
-        {
-            let suspended = self.switch_context(context);
-            let result = self.pack_function_conditional_group(&definitions, conditional, span);
-            self.restore_context(suspended);
-            let start = result?;
-            let target_offset = definitions[..ordinal].iter().try_fold(
-                0usize,
-                |offset, value| -> Result<usize, LowerError> {
-                    offset
-                        .checked_add(self.function_conditional_value_width(value.rhs())?)
-                        .ok_or_else(|| {
-                            LowerError::contract(
-                                "function-conditional record target offset overflows",
-                                span,
-                            )
-                        })
-                },
-            )?;
-            let field_offset =
-                self.function_conditional_record_field_offset(definition.rhs(), field, span)?;
-            let offset = target_offset
-                .checked_add(field_offset)
-                .and_then(|offset| offset.checked_add(scalar))
-                .ok_or_else(|| {
-                    LowerError::contract(
-                        "function-conditional record scalar offset overflows",
-                        span,
-                    )
-                })?;
-            return function_conditional_reg_offset(
-                start,
-                offset,
-                span,
-                "function-conditional record scalar projection",
             );
         }
         let suspended = self.switch_context(context);
@@ -1668,10 +1412,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 LowerError::contract("fold capture escaped its checked nested fold", span)
             })?;
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::LoadFoldCapture {
+        self.emit(solve::LinearOp::LoadFoldCapture {
             dst,
             index: capture_index,
-        });
+        })?;
         let deferred = self
             .deferred_fold_captures
             .as_mut()
@@ -2115,7 +1859,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let base = self.pack_registers(&candidates, span)?;
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::LoadIndexedRegister {
+        self.emit(solve::LinearOp::LoadIndexedRegister {
             dst,
             base,
             stride: 1,
@@ -2125,7 +1869,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .map(solve::TensorIndex::Runtime)
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-        });
+        })?;
         Ok(dst)
     }
 
@@ -2364,9 +2108,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut binder_registers = Vec::with_capacity(domain.structured().binders.len());
         for dimension in 0..domain.structured().binders.len() {
             let dst = update.register(span)?;
-            update
-                .ops
-                .push(solve::LinearOp::LoadFoldIndex { dst, dimension });
+            update.emit(solve::LinearOp::LoadFoldIndex { dst, dimension })?;
             binder_registers.push(dst);
         }
         update
@@ -2378,10 +2120,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut carried = Vec::with_capacity(value.len());
             for _ in value {
                 let dst = update.register(span)?;
-                update.ops.push(solve::LinearOp::LoadFoldCarried {
+                update.emit(solve::LinearOp::LoadFoldCarried {
                     dst,
                     index: carried_index,
-                });
+                })?;
                 carried.push(dst);
                 carried_index += 1;
             }
@@ -2404,9 +2146,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             {
                 for element in 0..width {
                     let output = update.packed_lane(expression, element, span)?;
-                    update
-                        .ops
-                        .push(solve::LinearOp::StoreOutput { src: output });
+                    update.emit(solve::LinearOp::StoreOutput { src: output })?;
                 }
             }
             carried_base = carried_base.checked_add(width).ok_or_else(|| {
@@ -2425,7 +2165,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .as_ref()
             .map(|deferred| deferred.sources.clone())
             .unwrap_or_default();
-        let continuation = match fold_view.continuation() {
+        let continuation = match self.scalar_fold_continuation(fold_view) {
             Some(condition) => Some(self.lower_fold_continuation(
                 (fold, condition, &initial_widths),
                 &mut capture_registers,
@@ -2448,7 +2188,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 domain.structured().clone(),
                 carried_count,
                 capture_registers.len(),
-                update.ops,
+                update.finish_operations()?,
             )
             .and_then(|program| match continuation {
                 Some(ops) => program.with_continuation(ops),
@@ -2461,7 +2201,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?,
         );
-        self.ops.push(match activation {
+        self.emit(match activation {
             Some(activation) => solve::LinearOp::GuardedFunctionFold {
                 dst_start,
                 initial_start,
@@ -2475,7 +2215,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 capture_start,
                 program,
             },
-        });
+        })?;
         let mut folded = Vec::with_capacity(initial_widths.len());
         let mut offset = 0usize;
         for width in initial_widths {
@@ -2526,7 +2266,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .view
             .function_fold(fold)
             .ok_or_else(|| LowerError::contract("function fold identity does not resolve", span))?;
-        if fold_view.continuation().is_some() {
+        if self.scalar_fold_continuation(fold_view).is_some() {
             return Err(LowerError::contract(
                 "an assertion inside a bounded while loop has no checked Solve owner",
                 span,
@@ -2571,9 +2311,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut binder_registers = Vec::with_capacity(domain.structured().binders.len());
         for dimension in 0..domain.structured().binders.len() {
             let dst = update.register(span)?;
-            update
-                .ops
-                .push(solve::LinearOp::LoadFoldIndex { dst, dimension });
+            update.emit(solve::LinearOp::LoadFoldIndex { dst, dimension })?;
             binder_registers.push(dst);
         }
         update
@@ -2586,20 +2324,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut carried = Vec::with_capacity(width);
             for _ in 0..width {
                 let dst = update.register(span)?;
-                update.ops.push(solve::LinearOp::LoadFoldCarried {
+                update.emit(solve::LinearOp::LoadFoldCarried {
                     dst,
                     index: carried_index,
-                });
+                })?;
                 carried.push(dst);
                 carried_index += 1;
             }
             carried_values.push(carried);
         }
         let previous_safe = update.register(span)?;
-        update.ops.push(solve::LinearOp::LoadFoldCarried {
+        update.emit(solve::LinearOp::LoadFoldCarried {
             dst: previous_safe,
             index: carried_index,
-        });
+        })?;
         update.function_fold_values.push((fold, carried_values));
 
         let update_expressions = fold_view.update_values().rhs_iter().collect::<Vec<_>>();
@@ -2631,9 +2369,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             if !compact_tensor && !compact_nested {
                 for element in 0..scalar_width {
                     let output = update.packed_lane(expression, element, span)?;
-                    update
-                        .ops
-                        .push(solve::LinearOp::StoreOutput { src: output });
+                    update.emit(solve::LinearOp::StoreOutput { src: output })?;
                 }
             }
             let consumed = if compact_nested { nested_run } else { 1 };
@@ -2659,9 +2395,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let safe_at_point = update.binary(dae::BinaryOperator::Or, inactive, condition, span)?;
         let all_safe =
             update.binary(dae::BinaryOperator::And, previous_safe, safe_at_point, span)?;
-        update
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: all_safe });
+        update.emit(solve::LinearOp::StoreOutput { src: all_safe })?;
 
         let mut capture_sources = captures;
         if let Some(deferred) = update.deferred_fold_captures.as_ref() {
@@ -2675,7 +2409,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 domain.structured().clone(),
                 carried_count,
                 capture_sources.len(),
-                update.ops,
+                update.finish_operations()?,
             )
             .map_err(|error| {
                 LowerError::contract(
@@ -2684,7 +2418,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?,
         );
-        self.ops.push(match outer_activation {
+        self.emit(match outer_activation {
             Some(activation) => solve::LinearOp::GuardedFunctionFold {
                 dst_start,
                 initial_start,
@@ -2698,7 +2432,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 capture_start,
                 program,
             },
-        });
+        })?;
         dst_start
             .checked_add(u32::try_from(carried_count - 1).map_err(|_| {
                 LowerError::contract("function assertion fold output count exceeds u32", span)
@@ -2811,7 +2545,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        self.ops.push(solve::LinearOp::StoreOutputFunctionFold {
+        self.emit(solve::LinearOp::StoreOutputFunctionFold {
             initial: initial.into_boxed_slice(),
             capture_start,
             program,
@@ -2819,7 +2553,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             count: width,
             condition,
             nested_when_true,
-        });
+        })?;
         Ok(true)
     }
 
@@ -2857,9 +2591,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let mut binder_registers = Vec::with_capacity(domain.structured().binders.len());
         for dimension in 0..domain.structured().binders.len() {
             let dst = update.register(span)?;
-            update
-                .ops
-                .push(solve::LinearOp::LoadFoldIndex { dst, dimension });
+            update.emit(solve::LinearOp::LoadFoldIndex { dst, dimension })?;
             binder_registers.push(dst);
         }
         update
@@ -2894,9 +2626,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             if !compact_tensor && !compact_nested {
                 for element in 0..scalar_width {
                     let output = update.packed_lane(expression, element, span)?;
-                    update
-                        .ops
-                        .push(solve::LinearOp::StoreOutput { src: output });
+                    update.emit(solve::LinearOp::StoreOutput { src: output })?;
                 }
             }
             let consumed = if compact_nested { nested_run } else { 1 };
@@ -2920,7 +2650,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let Some(deferred) = update.deferred_fold_captures.as_ref() {
             capture_sources.extend_from_slice(&deferred.sources);
         }
-        let continuation = match fold_view.continuation() {
+        let continuation = match self.scalar_fold_continuation(fold_view) {
             Some(condition) => Some(self.lower_fold_continuation(
                 (fold, condition, widths),
                 &mut capture_sources,
@@ -2933,7 +2663,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 domain.structured().clone(),
                 carried_count,
                 capture_sources.len(),
-                update.ops,
+                update.finish_operations()?,
             )
             .and_then(|program| match continuation {
                 Some(ops) => program.with_continuation(ops),
@@ -2969,10 +2699,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut carried = Vec::with_capacity(width);
             for _ in 0..width {
                 let dst = self.register(span)?;
-                self.ops.push(solve::LinearOp::LoadFoldCarried {
+                self.emit(solve::LinearOp::LoadFoldCarried {
                     dst,
                     index: carried_index,
-                });
+                })?;
                 carried.push(dst);
                 carried_index += 1;
             }
@@ -2980,6 +2710,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         self.function_fold_values.push((fold, carried_values));
         Ok(())
+    }
+
+    /// The early-exit predicate the scalar fold program carries. A predicate
+    /// that reads a binder of the fold's own domain is a typed-program fact
+    /// only: the scalar program evaluates its total transition on every pass,
+    /// which yields the same carried tuple, so it keeps no predicate.
+    fn scalar_fold_continuation(
+        &self,
+        fold_view: dae::FunctionFoldView<'dae>,
+    ) -> Option<dae::ExprId<'dae>> {
+        fold_view.continuation().filter(|condition| {
+            !dae::expr_reads_binder_of(self.view, *condition, fold_view.domain())
+        })
     }
 
     /// Lower a bounded `while` fold's continuation predicate as its own
@@ -3010,13 +2753,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .extend_from_slice(&capture_sources[issued..]);
         region.load_fold_carried(fold, widths, span)?;
         let predicate = region.packed_lane(condition, 0, span)?;
-        region
-            .ops
-            .push(solve::LinearOp::StoreOutput { src: predicate });
+        region.emit(solve::LinearOp::StoreOutput { src: predicate })?;
         if let Some(deferred) = region.deferred_fold_captures.as_ref() {
             capture_sources.clone_from(&deferred.sources);
         }
-        Ok(region.ops)
+        region.finish_operations()
     }
 
     fn nested_fold_output_run(&self, expressions: &[dae::ExprId<'dae>], start: usize) -> usize {
@@ -3180,7 +2921,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 None => next,
             });
         }
-        self.ops.push(solve::LinearOp::StoreOutputFoldTensorUpdate {
+        self.emit(solve::LinearOp::StoreOutputFoldTensorUpdate {
             source_base: carried_base,
             source_stride: 1,
             dimensions: dimensions.into_boxed_slice(),
@@ -3193,7 +2934,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             nodes: Box::new([solve::FoldTensorNode::Update { base: 0, update: 0 }]),
             result: 1,
             lanes: 1,
-        });
+        })?;
         Ok(true)
     }
 
@@ -3578,7 +3319,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 update: index as u32,
             })
             .collect::<Vec<_>>();
-        self.ops.push(solve::LinearOp::StoreOutputFoldTensorUpdate {
+        self.emit(solve::LinearOp::StoreOutputFoldTensorUpdate {
             source_base: carried_base,
             source_stride: 1,
             dimensions: dimensions.into_boxed_slice(),
@@ -3586,7 +3327,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             result: nodes.len() as u32,
             nodes: nodes.into_boxed_slice(),
             lanes: 1,
-        });
+        })?;
         Ok(true)
     }
 
@@ -3597,38 +3338,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             expression = definition.rhs();
         }
         expression
-    }
-
-    fn pack_fold_registers(
-        &mut self,
-        values: &[solve::Reg],
-        span: Span,
-    ) -> Result<solve::Reg, LowerError> {
-        if let Some(&start) = self.fold_register_pack_cache.get(values) {
-            return Ok(start);
-        }
-        if let Some(&start) = values.first()
-            && values
-                .iter()
-                .copied()
-                .enumerate()
-                .all(|(offset, register)| {
-                    u32::try_from(offset)
-                        .ok()
-                        .and_then(|offset| start.checked_add(offset))
-                        == Some(register)
-                })
-        {
-            self.fold_register_pack_cache.insert(values.to_vec(), start);
-            return Ok(start);
-        }
-        let start = self.next_register;
-        for &src in values {
-            let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::Move { dst, src });
-        }
-        self.fold_register_pack_cache.insert(values.to_vec(), start);
-        Ok(start)
     }
 
     fn inherited_fold_capture_registers(&self) -> Vec<solve::Reg> {
@@ -4114,6 +3823,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
         compiler.call_action_compilation = self.call_action_compilation;
+        compiler.call_use = self.call_use;
         compiler.suppress_function_assertions = self.suppress_function_assertions;
         compiler.contexts = Rc::clone(&self.contexts);
         compiler.context_stack = self.context_stack.clone();
@@ -4176,12 +3886,43 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )
             })
-            .and_then(|argument| self.expression(argument, scalar));
+            .and_then(|argument| self.expression_for_formal(argument, parameter, scalar, span));
         self.activation_path.extend(suspended_activations);
         self.function_arguments.push(frame);
         self.function_arguments.append(&mut suspended_frames);
         self.resume_context(context);
         lowered
+    }
+
+    /// One scalar of the actual bound to `parameter`. An Integer actual of a
+    /// Real formal converts to the nearest binary64 (MLS 3.7 section 10.6), so
+    /// an Integer literal beyond 2^53 rounds here instead of being refused as
+    /// Integer-typed row storage.
+    fn expression_for_formal(
+        &mut self,
+        argument: dae::ExprId<'dae>,
+        parameter: dae::FunctionParameterId<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let formal_is_real = self
+            .view
+            .function(parameter.function())
+            .and_then(|function| function.parameter_types().get(parameter.ordinal() as usize))
+            .and_then(|value_type| self.view.value_type(value_type))
+            .is_some_and(|value| value.scalar_type() == dae::ScalarType::Real);
+        if formal_is_real && let Some(rounded) = self.integer_literal_value(argument) {
+            return self.constant(rounded as f64, span);
+        }
+        self.expression(argument, scalar)
+    }
+
+    /// The value of `argument` when it is an Integer literal.
+    fn integer_literal_value(&self, argument: dae::ExprId<'dae>) -> Option<i64> {
+        match self.view.expression(argument)?.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => Some(*value),
+            _ => None,
+        }
     }
 
     pub(super) fn pack_function_parameter(
@@ -4268,12 +4009,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::NativeTableOperator::Lookup => {
                 let column = self.native_table_argument(arguments, 1, span)?;
                 let input = self.native_table_argument(arguments, 2, span)?;
-                self.ops.push(solve::LinearOp::TableLookup {
+                self.emit(solve::LinearOp::TableLookup {
                     dst,
                     table_id,
                     column,
                     input,
-                });
+                })?;
             }
             dae::NativeTableOperator::Slope => {
                 let column = self.native_table_argument(arguments, 1, span)?;
@@ -4281,40 +4022,40 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 let derivative =
                     self.native_table_argument(arguments, arguments.len() - 1, span)?;
                 let slope = self.register(span)?;
-                self.ops.push(solve::LinearOp::TableLookupSlope {
+                self.emit(solve::LinearOp::TableLookupSlope {
                     dst: slope,
                     table_id,
                     column,
                     input,
-                });
-                self.ops.push(solve::LinearOp::Binary {
+                })?;
+                self.emit(solve::LinearOp::Binary {
                     dst,
                     op: solve::BinaryOp::Mul,
                     lhs: slope,
                     rhs: derivative,
-                });
+                })?;
             }
             dae::NativeTableOperator::BoundsMin => {
-                self.ops.push(solve::LinearOp::TableBounds {
+                self.emit(solve::LinearOp::TableBounds {
                     dst,
                     table_id,
                     max: false,
-                });
+                })?;
             }
             dae::NativeTableOperator::BoundsMax => {
-                self.ops.push(solve::LinearOp::TableBounds {
+                self.emit(solve::LinearOp::TableBounds {
                     dst,
                     table_id,
                     max: true,
-                });
+                })?;
             }
             dae::NativeTableOperator::NextEvent => {
                 let time = self.native_table_argument(arguments, 1, span)?;
-                self.ops.push(solve::LinearOp::TableNextEvent {
+                self.emit(solve::LinearOp::TableNextEvent {
                     dst,
                     table_id,
                     time,
-                });
+                })?;
             }
         }
         Ok(Some(dst))
@@ -4547,6 +4288,91 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(scheduled)
     }
 
+    /// The inline-versus-retain decision for one call site, made once at
+    /// construction. A site whose compact ABI is entirely scalar and whose
+    /// body, with every callee, holds nothing only the typed owner executes
+    /// lowers to scalar ops, which the scalar row programs run without the
+    /// typed interpreter, whether or not a directional relation exists. A
+    /// site with a tensor argument or result, or with source-ordered
+    /// conditionals or checks, keeps its compact owner when that owner has a
+    /// directional relation. Discrete primal calls retain their compact
+    /// owner, and recursive bodies have no finite expansion.
+    fn call_site_expands_in_place(
+        &self,
+        function: dae::FunctionId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        span: Span,
+    ) -> Result<bool, LowerError> {
+        if self.active_clock.is_some()
+            || self.call_action_compilation
+            || !(self.call_use == ScalarCallUse::PrimalAndDirectional
+                || self.derivative_seeds.is_some())
+            || registered.callee.recursive
+        {
+            return Ok(false);
+        }
+        // MLS 3.7 section 12.4 evaluates every actual before the call. The
+        // compact owner packs each input strictly, while an in-place expansion
+        // demands only the registers its outputs read, so an actual that can
+        // fault keeps the compact owner.
+        if !self.call_arguments_are_total(&arguments.iter().collect::<Vec<_>>()) {
+            return Ok(false);
+        }
+        // Scalar row storage is binary64: an Integer it cannot hold keeps the
+        // call typed whether or not a directional relation exists.
+        if !registered.callee.scalar_storable
+            || !self.integer_arguments_are_storable(function, arguments, span)?
+        {
+            return Ok(false);
+        }
+        // The generated-C scalar refresh calls a callee holding assertions or
+        // loops as its ordinary function, whose observation owner carries the
+        // assertions; only a seeded derivative lowering needs the body in the
+        // calling row.
+        if self.layout.refresh_profile == crate::RefreshProfile::Scalar
+            && self.derivative_seeds.is_none()
+            && crate::lower::typed_functions::holds_assertion_or_loop(self.view, function)
+                .map_err(|error| LowerError::contract(error.to_string(), span))?
+        {
+            return Ok(false);
+        }
+        if registered.site.directional().is_none() {
+            return Ok(true);
+        }
+        Ok(site_has_scalar_abi(&registered.site)
+            && crate::lower::typed_functions::is_scalar_expandable(self.view, function)
+                .map_err(|error| LowerError::contract(error.to_string(), span))?)
+    }
+
+    /// Whether every Integer-typed argument holds only Integer values scalar
+    /// row storage represents exactly. A Real input converts its argument, so
+    /// that conversion rounds the value and stays expandable.
+    fn integer_arguments_are_storable(
+        &self,
+        function: dae::FunctionId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        span: Span,
+    ) -> Result<bool, LowerError> {
+        let function = self.view.function(function).ok_or_else(|| {
+            LowerError::contract("typed pure-call function does not resolve", span)
+        })?;
+        Ok(arguments
+            .iter()
+            .zip(function.parameter_types().iter())
+            .filter(|(_, value_type)| {
+                self.view
+                    .value_type(*value_type)
+                    .is_some_and(|value| value.scalar_type() == dae::ScalarType::Integer)
+            })
+            .all(|(argument, _)| {
+                !crate::lower::typed_functions::expressions_hold_inexact_integer(
+                    self.view,
+                    [argument],
+                )
+            }))
+    }
+
     pub(super) fn emit_typed_pure_call(
         &mut self,
         call: dae::ExprId<'dae>,
@@ -4586,14 +4412,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .borrow_mut()
             .register_root(self.view, call)
             .map_err(|error| LowerError::contract(error.to_string(), span))?;
-        // A call without a directional relation is expanded in place for
-        // scalar differentiation, except one that can enter a SOLVE-C62
-        // recursive group: that body has no finite expansion.
-        if self.active_clock.is_none()
-            && !self.call_action_compilation
-            && registered.site.directional().is_none()
-            && !registered.callee.recursive
-        {
+        let expands_in_place =
+            self.call_site_expands_in_place(function, arguments, &registered, span)?;
+        if expands_in_place && self.derivative_seeds.is_some() {
             return Ok(None);
         }
         let function_id = function;
@@ -4606,6 +4427,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "typed pure-call argument count does not match its function",
                 span,
             ));
+        }
+        // Record arguments take the existing record fallback.
+        if expands_in_place
+            && function.parameter_types().iter().any(|value_type| {
+                self.view
+                    .value_type(value_type)
+                    .is_none_or(|value| value.is_record())
+            })
+        {
+            return Ok(None);
         }
         let mut input_starts = Vec::new();
         for (argument, value_type) in arguments
@@ -4630,16 +4461,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
+        if expands_in_place
+            && self.expandable_call_expands(function_id, &registered, &input_starts, span)?
+        {
+            return Ok(None);
+        }
         let output_count = registered
             .site
             .output_scalar_count()
             .ok_or_else(|| LowerError::contract("typed pure-call output width overflows", span))?;
         let start = self.register_call_results(function_id, output_count, span)?;
-        self.ops.push(solve::LinearOp::PureCall {
+        self.emit(solve::LinearOp::PureCall {
             dst_start: start,
             input_starts: input_starts.into_boxed_slice(),
             site: registered.site.clone(),
-        });
+        })?;
         self.typed_pure_call_cache
             .insert(key, (start, registered.clone()));
         if !self.call_action_compilation && !registered.callee.assertions.is_empty() {
@@ -4655,7 +4491,73 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(Some((start, registered)))
     }
 
-    fn pack_typed_call_input_leaves(
+    /// Whether an expandable call site expands instead of keeping its owner.
+    ///
+    /// A retained call evaluates its body's assertions in the row that reads it,
+    /// while the registered owner schedules them as event actions with their
+    /// authored messages, so a callee holding assertions always expands: the row
+    /// computes values only. A call that reads the solver state, or a parameter
+    /// without a directional relation to carry its seed, expands as well.
+    fn expandable_call_expands(
+        &self,
+        function: dae::FunctionId<'dae>,
+        registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
+        input_starts: &[solve::Reg],
+        span: Span,
+    ) -> Result<bool, LowerError> {
+        if !registered.callee.assertions.is_empty()
+            || !self.typed_call_inputs_are_y_independent(input_starts, &registered.site)
+        {
+            return Ok(true);
+        }
+        if registered.site.directional().is_some() || !self.reads_parameters() {
+            return Ok(false);
+        }
+        crate::lower::typed_functions::is_scalar_expandable(self.view, function)
+            .map_err(|error| LowerError::contract(error.to_string(), span))
+    }
+
+    /// Whether the row reads a parameter. A call without a directional relation
+    /// cannot carry a parameter seed, so it expands in place instead.
+    fn reads_parameters(&self) -> bool {
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                solve::LinearOp::LoadP { .. }
+                    | solve::LinearOp::LoadIndexedP { .. }
+                    | solve::LinearOp::TensorLoad {
+                        input: solve::TensorInputKind::P,
+                        ..
+                    }
+            )
+        })
+    }
+
+    /// A primal call needs no directional relation when every actual input
+    /// has an issued empty solver-Y footprint. Unknown footprints decline.
+    fn typed_call_inputs_are_y_independent(
+        &self,
+        starts: &[solve::Reg],
+        site: &solve::SolvePureCallSite,
+    ) -> bool {
+        let Some(ranges) = starts
+            .iter()
+            .zip(site.inputs())
+            .map(|(&start, value_type)| {
+                start
+                    .checked_add(value_type.scalar_count())
+                    .map(|end| start..end)
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        solve::ScalarProgramYDependency::new(&self.ops)
+            .footprint(ranges.into_iter().flatten())
+            .is_some_and(|footprint| footprint.is_empty())
+    }
+
+    pub(super) fn pack_typed_call_input_leaves(
         &mut self,
         argument: dae::ExprId<'dae>,
         value_type: dae::ValueTypeId<'dae>,
@@ -4673,7 +4575,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(());
         }
         if !value.is_record() {
-            starts.push(self.pack_typed_scalar_argument(argument, value.scalar_type())?);
+            let start = if value.scalar_type() == dae::ScalarType::Integer
+                && self.integer_argument_needs_typed_owner(argument)
+            {
+                self.pack_exact_expression(argument, span)?
+            } else if value.scalar_type() == dae::ScalarType::Real
+                && let Some(literal) = self.integer_literal_value(argument)
+            {
+                self.constant(literal as f64, span)?
+            } else {
+                self.pack_typed_scalar_argument(argument, value.scalar_type())?
+            };
+            starts.push(start);
             return Ok(());
         }
         if !value.dimensions().is_empty() {
@@ -4700,9 +4613,107 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             {
                 continue;
             }
+            if field_value.scalar_type() == dae::ScalarType::Integer
+                && self.pack_integer_record_field(argument, field, field_type, span, starts)?
+            {
+                continue;
+            }
             starts.push(self.pack_record_field(argument, field, span)?);
         }
         Ok(())
+    }
+
+    fn pack_integer_record_field(
+        &mut self,
+        argument: dae::ExprId<'dae>,
+        field: usize,
+        field_type: dae::ValueTypeId<'dae>,
+        span: Span,
+        starts: &mut Vec<solve::Reg>,
+    ) -> Result<bool, LowerError> {
+        match self.node(argument).operation() {
+            dae::ExpressionOperation::Record(fields) => {
+                let expression = fields.get(field).ok_or_else(|| {
+                    LowerError::contract("typed Integer record field is missing", span)
+                })?;
+                self.pack_typed_call_input_leaves(expression, field_type, span, starts)?;
+                Ok(true)
+            }
+            dae::ExpressionOperation::Coordinate(_) | dae::ExpressionOperation::Call { .. } => {
+                Ok(false)
+            }
+            _ => Err(LowerError::contract(
+                "computed Integer record field requires an exact typed expression owner",
+                span,
+            )),
+        }
+    }
+
+    fn integer_argument_needs_typed_owner(&self, argument: dae::ExprId<'dae>) -> bool {
+        match self.node(argument).operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => {
+                value.unsigned_abs() > (1_u64 << 53)
+            }
+            dae::ExpressionOperation::Coordinate(_) | dae::ExpressionOperation::Call { .. } => {
+                false
+            }
+            // A field of a call result or of a model record reads the stored
+            // exact value, like the call result or coordinate it projects.
+            dae::ExpressionOperation::Field { base, .. } => {
+                self.integer_argument_needs_typed_owner(base)
+            }
+            dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply,
+                lhs,
+                rhs,
+            } => {
+                !self.exact_integer_input_scaling(lhs, rhs)
+                    && !self.exact_integer_input_scaling(rhs, lhs)
+            }
+            _ => true,
+        }
+    }
+
+    fn exact_integer_input_scaling(
+        &self,
+        input: dae::ExprId<'dae>,
+        factor: dae::ExprId<'dae>,
+    ) -> bool {
+        matches!(
+            self.node(input).operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Input(_))
+        ) && self.node(input).value_type().scalar_type() == dae::ScalarType::Integer
+            && self.exact_integer_power_of_two_constant(factor)
+    }
+
+    pub(super) fn pack_exact_expression(
+        &mut self,
+        argument: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let form = crate::lower::typed_functions::ExactExpressionForm::admit(self.view, argument)
+            .map_err(|error| LowerError::contract(error.to_string(), span))?;
+        let site = self
+            .layout
+            .pure_calls
+            .borrow_mut()
+            .register_exact_expression(self.view, &form)
+            .map_err(|error| LowerError::contract(error.to_string(), span))?
+            .site;
+        let inputs = form
+            .input_readers()
+            .map(|reader| self.pack_expression(reader))
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = site
+            .output_scalar_count()
+            .ok_or_else(|| LowerError::contract("typed expression result width overflows", span))?;
+        let start = self.register_range(count, span)?;
+        self.emit(solve::LinearOp::PureCall {
+            dst_start: start,
+            input_starts: inputs.into_boxed_slice(),
+            site,
+        })?;
+        Ok(start)
     }
 
     /// Resolve the checked result definition one call lowers through.
@@ -4743,87 +4754,39 @@ fn typed_call_result_scalar_range(
     output: usize,
     span: Span,
 ) -> Result<std::ops::Range<usize>, LowerError> {
-    let leaves = registered.callee.result_ranges.get(output).ok_or_else(|| {
-        LowerError::contract("typed pure-call result ordinal is out of range", span)
-    })?;
-    let scalar_offset = |leaf: usize| {
-        registered.site.outputs()[..leaf]
-            .iter()
-            .try_fold(0usize, |count, output| {
-                count.checked_add(output.value_type().scalar_count() as usize)
-            })
-    };
-    let start = scalar_offset(leaves.start)
-        .ok_or_else(|| LowerError::contract("typed pure-call result offset overflows", span))?;
-    let end = scalar_offset(leaves.end)
-        .ok_or_else(|| LowerError::contract("typed pure-call result offset overflows", span))?;
-    Ok(start..end)
+    registered
+        .callee
+        .result_layout
+        .scalar_range(output)
+        .ok_or_else(|| {
+            LowerError::contract(
+                "typed pure-call result ordinal or offset is out of range",
+                span,
+            )
+        })
 }
 
-/// The offset, among a typed pure call's flattened result scalars, of scalar
-/// `scalar` of record field `field` of result `output` (a packed lane when the
-/// field is itself a record).
+/// Locate a packed field scalar through the function's immutable typed layout.
 fn typed_call_record_field_scalar<'dae>(
-    view: dae::DaeView<'dae>,
+    _view: dae::DaeView<'dae>,
     function: dae::FunctionId<'dae>,
     registered: &crate::lower::typed_functions::RegisteredCall<'dae>,
     output: usize,
     (field, scalar): (usize, usize),
     span: Span,
 ) -> Result<usize, LowerError> {
-    let function = view.function(function).ok_or_else(|| {
-        LowerError::contract("typed pure-call record function does not resolve", span)
-    })?;
-    let result_type = function.result_types().get(output).ok_or_else(|| {
-        LowerError::contract("typed pure-call record result is out of range", span)
-    })?;
-    let record = view.value_type(result_type).ok_or_else(|| {
-        LowerError::contract("typed pure-call record result type does not resolve", span)
-    })?;
-    if !record.is_record() || !record.dimensions().is_empty() {
-        return Err(LowerError::contract(
-            "typed pure-call field projection does not name one record",
-            span,
-        ));
-    }
-    let result_leaves = registered.callee.result_ranges.get(output).ok_or_else(|| {
-        LowerError::contract("typed pure-call record result is out of range", span)
-    })?;
-    let (leaf, leaf_scalar) = crate::lower::typed_functions::record_field_scalar_leaf(
-        view,
-        result_type,
-        field,
-        scalar,
-    )
-    .map_err(|_| LowerError::contract("typed pure-call record field is out of range", span))?;
-    let leaf = result_leaves.start + leaf;
-    let leaf_width = registered
-        .site
-        .outputs()
-        .get(leaf)
-        .filter(|_| leaf < result_leaves.end)
-        .map(|output| output.value_type().scalar_count() as usize)
-        .ok_or_else(|| {
-            LowerError::contract("typed pure-call record field is out of range", span)
-        })?;
-    if leaf_scalar >= leaf_width {
-        return Err(LowerError::contract(
-            "typed pure-call record scalar projection is out of range",
-            span,
-        ));
-    }
-    typed_call_scalar_offset(registered, leaf)
-        .and_then(|offset| offset.checked_add(leaf_scalar))
-        .ok_or_else(|| LowerError::contract("typed pure-call record field offset overflows", span))
+    registered
+        .callee
+        .result_layout
+        .record_scalar(function, output, field, scalar)
+        .ok_or_else(|| LowerError::contract("typed pure-call record field is out of range", span))
 }
 
-fn typed_call_scalar_offset(
-    registered: &crate::lower::typed_functions::RegisteredCall<'_>,
-    leaf: usize,
-) -> Option<usize> {
-    registered.site.outputs()[..leaf]
+/// Whether every input and output of the call site is a scalar, so the owner
+/// body has no compact tensor ABI to preserve.
+fn site_has_scalar_abi(site: &solve::SolvePureCallSite) -> bool {
+    site.inputs()
         .iter()
-        .try_fold(0usize, |count, output| {
-            count.checked_add(output.value_type().scalar_count() as usize)
-        })
+        .chain(site.outputs().iter().map(|output| output.value_type()))
+        .all(|value_type| value_type.dimensions().is_empty())
 }

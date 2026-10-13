@@ -92,9 +92,7 @@ use self::reconstruction::{
     rebuild_holonomic_constraint, rebuild_with_state_demotion_and_manifold,
 };
 use self::source::ReductionSource;
-use crate::{
-    BltBlock, EquationRef, SortedDae, StructuralError, StructuredScalarBlock, UnknownId, sort,
-};
+use crate::{BltBlock, EquationRef, SortedDae, StructuralError, UnknownId, sort};
 
 pub use self::alias_quotient::{
     AliasClassReport, AliasMemberReport, AliasQuotientReport, AliasRefusal,
@@ -251,15 +249,26 @@ enum ErasedBltBlock {
         unknowns: Vec<ErasedUnknown>,
         tearing: Option<crate::tearing::TearingResult>,
     },
-    StructuredScalar(StructuredScalarBlock),
+    StructuredScalar(crate::blt::ErasedStructuredScalarBlock),
 }
 
 #[derive(Clone, Copy)]
-enum ErasedUnknown {
+pub(super) enum ErasedUnknown {
     Derivative { variable: u32, scalar: u32 },
     Algebraic { variable: u32, scalar: u32 },
     Solver(usize),
     Unmatched { equation: usize },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedBinding<'dae> {
+    view: dae::DaeView<'dae>,
+}
+
+impl<'dae> PreparedBinding<'dae> {
+    pub(crate) fn view(self) -> dae::DaeView<'dae> {
+        self.view
+    }
 }
 
 impl PreparedStructuralAnalysis {
@@ -324,7 +333,7 @@ impl ErasedBltBlock {
                 unknowns: unknowns.into_iter().map(ErasedUnknown::erase).collect(),
                 tearing,
             },
-            BltBlock::StructuredScalar(block) => Self::StructuredScalar(block),
+            BltBlock::StructuredScalar(block) => Self::StructuredScalar(block.erase()),
         }
     }
 
@@ -343,13 +352,15 @@ impl ErasedBltBlock {
                 unknowns: unknowns.iter().map(|unknown| unknown.bind(view)).collect(),
                 tearing: tearing.clone(),
             },
-            Self::StructuredScalar(block) => BltBlock::StructuredScalar(block.clone()),
+            Self::StructuredScalar(block) => {
+                BltBlock::StructuredScalar(block.bind(PreparedBinding { view }))
+            }
         }
     }
 }
 
 impl ErasedUnknown {
-    fn erase(unknown: UnknownId<'_>) -> Self {
+    pub(super) fn erase(unknown: UnknownId<'_>) -> Self {
         match unknown {
             UnknownId::Derivative { state, scalar } => Self::Derivative {
                 variable: state.index(),
@@ -364,7 +375,7 @@ impl ErasedUnknown {
         }
     }
 
-    fn bind<'dae>(self, view: dae::DaeView<'dae>) -> UnknownId<'dae> {
+    pub(super) fn bind<'dae>(self, view: dae::DaeView<'dae>) -> UnknownId<'dae> {
         match self {
             Self::Derivative { variable, scalar } => {
                 let id = view

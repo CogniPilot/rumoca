@@ -1,3 +1,4 @@
+use super::ScalarExecutionView;
 use crate::{
     EventActionOutcome, EventPreMode, RuntimeEventStop, RuntimeSolveError,
     commit_pre_params_after_event, initial_runtime_event_stop,
@@ -5,7 +6,7 @@ use crate::{
 };
 
 use super::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, SeededConditionMemory, SolveRuntime,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, SeededConditionMemory,
     support::copy_runtime_values,
 };
 
@@ -109,11 +110,7 @@ fn trace_value_matches(left: f64, right: f64, tol: f64) -> bool {
     (left - right).abs() <= tol.max(1.0e-12) * scale
 }
 
-impl SolveRuntime {
-    pub fn set_initial_event_flag(&self, p: &mut [f64], value: bool) {
-        super::set_initial_event_flag(&self.model, p, value);
-    }
-
+impl ScalarExecutionView<'_> {
     /// Whether `p` holds `initial()` true.
     pub(super) fn initial_event_flag(&self, p: &[f64]) -> bool {
         self.model

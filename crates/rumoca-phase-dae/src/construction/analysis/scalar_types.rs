@@ -1,3 +1,5 @@
+//! Canonical scalar types of effective function and variable declarations.
+
 use super::*;
 
 pub(in crate::construction) fn effective_function_scalar_type(

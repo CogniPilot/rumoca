@@ -251,6 +251,33 @@ fn incoming_read_predicate_against_liveness() {
     );
 }
 
+/// Asking about every name in one walk answers exactly what asking about each
+/// name alone answers, so sharing the walk across names changes no decision.
+#[test]
+fn one_walk_over_all_names_matches_one_walk_per_name() {
+    let names = value_names();
+    let name_refs = names.iter().collect::<Vec<_>>();
+    let mut programs = 0usize;
+    for_each_program(&mut |program| {
+        let together = statements_read_incoming_names(program, &name_refs);
+        assert_eq!(together.len(), names.len());
+        for (name, together) in names.iter().zip(together) {
+            assert_eq!(
+                together,
+                statements_read_incoming_name(program, name),
+                "`{}` in: {}",
+                name.as_str(),
+                render(program)
+            );
+        }
+        programs += 1;
+    });
+    assert!(
+        programs > 40_000,
+        "the corpus shrank to {programs} programs"
+    );
+}
+
 /// `statements_read_name` is the coarsest of the predicates; it must still
 /// never miss a live read, because a missed read deletes a live store.
 #[test]
@@ -846,7 +873,7 @@ fn loop_local_evidence(
             substituted: &substituted,
             body_prefix: sample.body_prefix,
             enclosing_bodies: &sample.enclosing_bodies,
-            exit: sample.exit,
+            exit: &[sample.exit],
             live_on_exit: &sample.live_on_exit,
         },
     )

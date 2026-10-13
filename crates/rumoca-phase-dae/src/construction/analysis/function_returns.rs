@@ -98,6 +98,7 @@ pub(super) fn validate_guarded_function_return(
 pub(super) struct NormalizedFunctionReturns {
     pub(super) statements: Vec<rumoca_core::Statement>,
     pub(super) guards: Vec<GeneratedBooleanDefinition>,
+    pub(super) loop_selections: Vec<super::branch_snapshots::SnapshotLoopSelection>,
     pub(super) has_returns: bool,
 }
 
@@ -206,6 +207,7 @@ pub(super) fn normalize_function_returns(
     Ok(NormalizedFunctionReturns {
         statements: normalized,
         guards,
+        loop_selections: Vec::new(),
         has_returns,
     })
 }
@@ -347,7 +349,7 @@ fn validate_return_definitions(
                 ) => (vec![value], vec![assignment]),
                 (
                     rumoca_core::Statement::FunctionCall { args, .. },
-                    FunctionStatementPlan::MultiOutputCall { outputs },
+                    FunctionStatementPlan::MultiOutputCall { outputs, .. },
                 ) => (args.iter().collect(), outputs.iter().flatten().collect()),
                 _ => return unsupported_return_shape(function, statement),
             };

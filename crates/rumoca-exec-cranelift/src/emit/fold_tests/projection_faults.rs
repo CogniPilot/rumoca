@@ -96,8 +96,10 @@ fn check_call(row: &[LinearOp], native: &CompiledResidualRows, index: f64) {
         );
     }
     assert!(
-        matches!(actual, Err(CompileError::Input(ref message))
-        if message == "native tensor index is out of bounds"),
+        matches!(actual, Err(CompileError::SourceOperation {
+            kind: crate::NativeSourceFault::TensorIndex,
+            ref message,
+        }) if message == "native tensor index is out of bounds"),
         "{actual:?}"
     );
     assert_eq!(output, [-123.0], "fault returns before scalar publication");

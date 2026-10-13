@@ -13,7 +13,7 @@ pub(crate) fn emit_native_assignment_module(
                 .into(),
         );
     }
-    if !schedule.input_lanes().is_empty() {
+    if !schedule.input_runs().is_empty() {
         return Err("typed input lanes are read only by the checked native program entry".into());
     }
     layout
@@ -34,7 +34,7 @@ pub(crate) fn emit_native_assignment_module(
     let types = add_type_section(&mut module);
     let catalog = add_import_section(&mut module, &imports, &types);
     add_function_section(&mut module, types.eval_type);
-    if let Some(arena) = arena {
+    if let Some(arena) = &arena {
         arena.add_memory(&mut module);
     }
     let mut exports = ExportSection::new();
@@ -45,7 +45,7 @@ pub(crate) fn emit_native_assignment_module(
         catalog.eval_function_index,
     );
     module.section(&exports);
-    let (locals, counter) = if let Some(arena) = arena {
+    let (locals, counter) = if let Some(arena) = &arena {
         (arena.locals(), LOCAL_BASE + 2)
     } else {
         program_locals(max_registers(&programs)?, rank)?
@@ -78,6 +78,7 @@ pub(crate) fn emit_native_assignment_module(
             }
         }
     }
+    emitter.require_complete_root_programs()?;
     function.instruction(&Instruction::End);
     let mut code = CodeSection::new();
     code.function(&function);

@@ -49,7 +49,8 @@ fn compute_contains_function_fold_projection<'dae>(
         }
         dae::for_each_expression(view, root, |_, node| match node.operation() {
             dae::ExpressionOperation::FunctionFoldParameter { .. }
-            | dae::ExpressionOperation::FunctionFoldOutput { .. } => found = true,
+            | dae::ExpressionOperation::FunctionFoldOutput { .. }
+            | dae::ExpressionOperation::FunctionConditionalOutput { .. } => found = true,
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 pending.push(definition.rhs());
             }

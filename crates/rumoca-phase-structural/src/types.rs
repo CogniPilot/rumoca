@@ -3,6 +3,8 @@
 use rumoca_core::{Diagnostic, Label, PhaseError, PrimaryLabel, Span};
 use rumoca_ir_dae as dae;
 
+pub use crate::blt::{StructuredFamilyContext, StructuredScalarBlock};
+
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct EquationRef(pub usize);
 
@@ -31,63 +33,6 @@ pub enum UnknownId<'dae> {
 }
 
 #[derive(Debug, Clone)]
-pub struct StructuredScalarBlock {
-    pub span: Span,
-    pub first_equation_index: usize,
-    pub equations_per_point: usize,
-    pub point_count: usize,
-    pub extents: Vec<usize>,
-    pub cell_strides: Vec<usize>,
-    pub base_unknowns: Vec<usize>,
-    pub unknown_steps: Vec<Vec<i64>>,
-}
-
-impl StructuredScalarBlock {
-    #[must_use]
-    pub fn scalar_block_count(&self) -> usize {
-        self.point_count
-            .checked_mul(self.equations_per_point)
-            .expect("checked structured block row count is representable")
-    }
-
-    pub fn scalar_rows(
-        &self,
-    ) -> impl Iterator<Item = Result<(EquationRef, usize), StructuralError>> + '_ {
-        (0..self.point_count).flat_map(move |point| {
-            (0..self.equations_per_point).map(move |position| {
-                self.scalar_row(point, position)
-                    .ok_or_else(|| StructuralError::ContractViolation {
-                        reason: format!(
-                            "compact family at f_x[{}] cannot address point {point}, body {position}",
-                            self.first_equation_index
-                        ),
-                        span: self.span,
-                    })
-            })
-        })
-    }
-
-    fn scalar_row(&self, point: usize, position: usize) -> Option<(EquationRef, usize)> {
-        let equation = point
-            .checked_mul(self.equations_per_point)?
-            .checked_add(position)?
-            .checked_add(self.first_equation_index)?;
-        let mut unknown = i64::try_from(*self.base_unknowns.get(position)?).ok()?;
-        for (dimension, step) in self.unknown_steps.get(position)?.iter().enumerate() {
-            let stride = *self.cell_strides.get(dimension)?;
-            let extent = *self.extents.get(dimension)?;
-            let coordinate = if stride == 0 || extent == 0 {
-                0
-            } else {
-                (point / stride) % extent
-            };
-            unknown = unknown.checked_add(i64::try_from(coordinate).ok()?.checked_mul(*step)?)?;
-        }
-        Some((EquationRef(equation), usize::try_from(unknown).ok()?))
-    }
-}
-
-#[derive(Debug, Clone)]
 pub enum BltBlock<'dae> {
     Scalar {
         equation: EquationRef,
@@ -100,7 +45,7 @@ pub enum BltBlock<'dae> {
         /// Local indices address `equations` and `unknowns` by position.
         tearing: Option<crate::tearing::TearingResult>,
     },
-    StructuredScalar(StructuredScalarBlock),
+    StructuredScalar(StructuredScalarBlock<'dae>),
 }
 
 impl BltBlock<'_> {

@@ -15,9 +15,13 @@ mod checked_dae_diagnostic_tests;
 #[cfg(test)]
 mod checked_dae_tests;
 #[cfg(test)]
+mod checked_function_region_tests;
+#[cfg(test)]
 mod codegen_test_support;
 mod dae_backend;
 mod dae_diagnostics;
+#[cfg(test)]
+mod discrete_input_render_tests;
 mod discrete_render_view;
 mod expr_config;
 mod flat_family_loops;
@@ -34,8 +38,14 @@ mod galec_golden_tests;
 mod galec_manifest_template_tests;
 mod lazy_scalar_projection;
 mod me_projection;
+mod native_fmi_renderer;
+pub use native_fmi_renderer::NativeFmiTemplateRenderer;
+#[cfg(test)]
+mod native_range_render_tests;
 #[cfg(test)]
 mod native_scalar_laziness_tests;
+#[cfg(test)]
+mod native_start_render_tests;
 mod pure_call_families;
 mod real_extremum;
 mod render_expr;
@@ -54,6 +64,7 @@ mod solve_renderer;
 mod solve_sparse_output_tests;
 #[cfg(test)]
 mod solve_template_context_tests;
+mod solver_names;
 #[cfg(test)]
 mod stencil_codegen_tests;
 mod symbol_alloc;
@@ -763,6 +774,10 @@ fn create_environment() -> Environment<'static> {
     // (fail closed). See `binary32_bound_str` / `int32_bound_str`.
     env.add_filter("binary32_bound", binary32_bound_filter);
     env.add_filter("int32_bound", int32_bound_filter);
+    env.add_function(
+        "inactive_assertion_message",
+        pure_call_families::inactive_assertion_message,
+    );
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.

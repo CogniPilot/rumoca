@@ -15,6 +15,7 @@ impl Clone for PreparedScalarProgramBlock {
             row_requirements: self.row_requirements.clone(),
             row_reverse_y_gradient_supported: self.row_reverse_y_gradient_supported.clone(),
             row_is_causal: self.row_is_causal.clone(),
+            row_requires_checked_observation: self.row_requires_checked_observation.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             row_tensor_affine_assignments: self.row_tensor_affine_assignments.clone(),
             row_parameter_indices: self.row_parameter_indices.clone(),
@@ -36,6 +37,7 @@ struct PreparedRow {
     requirement: RowInputRequirements,
     reverse_y_gradient_supported: bool,
     is_causal: bool,
+    requires_checked_observation: bool,
     assignment_shapes: Box<[(usize, TargetAssignmentShape)]>,
     tensor_affine_assignments: tensor_affine_assignment::PreparedTensorAffineAssignments,
     parameter_indices: Box<[usize]>,
@@ -79,6 +81,9 @@ fn prepare_row(
         requirement,
         reverse_y_gradient_supported: reverse_y_gradient_supported(row),
         is_causal: !row.iter().any(non_causal_linear_op),
+        requires_checked_observation: row
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::PureCallObservation { .. })),
         assignment_shapes,
         tensor_affine_assignments,
         parameter_static_y_gradient_params: parameter_static_y_gradient(row)
@@ -155,6 +160,11 @@ impl PreparedScalarProgramBlock {
                 "prepared row causality count",
                 block_span,
             )?,
+            row_requires_checked_observation: prepared_vec_with_capacity(
+                row_count,
+                "prepared row observation count",
+                block_span,
+            )?,
             row_assignment_shapes: prepared_vec_with_capacity(
                 row_count,
                 "prepared row assignment shape count",
@@ -223,6 +233,8 @@ impl PreparedScalarProgramBlock {
         self.row_reverse_y_gradient_supported
             .push(row.reverse_y_gradient_supported);
         self.row_is_causal.push(row.is_causal);
+        self.row_requires_checked_observation
+            .push(row.requires_checked_observation);
         self.row_assignment_shapes.push(row.assignment_shapes);
         self.row_tensor_affine_assignments
             .push(row.tensor_affine_assignments);
@@ -237,6 +249,7 @@ impl PreparedScalarProgramBlock {
         self.row_requirements[row_idx] = row.requirement;
         self.row_reverse_y_gradient_supported[row_idx] = row.reverse_y_gradient_supported;
         self.row_is_causal[row_idx] = row.is_causal;
+        self.row_requires_checked_observation[row_idx] = row.requires_checked_observation;
         self.row_assignment_shapes[row_idx] = row.assignment_shapes;
         self.row_tensor_affine_assignments[row_idx] = row.tensor_affine_assignments;
         self.row_parameter_indices[row_idx] = row.parameter_indices;

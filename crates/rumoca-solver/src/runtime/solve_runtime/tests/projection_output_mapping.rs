@@ -14,20 +14,20 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
     .expect("valid nonidentity residual output mapping");
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 1),
+                vec!["output".to_string(), "sample".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["output".to_string(), "sample".to_string()],
-                    ..Default::default()
-                },
                 algebraic_scalar_count: 2,
                 compiled_parameter_len: 1,
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(residual),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                implicit_row_targets: (vec![None, Some(solve::scalar_slot_y(1))]).into(),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![
+                    blocks: (vec![
                         solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![1],
@@ -40,14 +40,15 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
                             tearing: None,
                             alternate_charts: Vec::new(),
                         },
-                    ],
+                    ])
+                    .into(),
                 },
                 ..Default::default()
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![1.0],
+        initial_y: vec![0.0, 0.0].into(),
+        parameters: vec![1.0].into(),
         ..Default::default()
     };
     // Both primal and tangent retain program outputs [1, 0]; projection rows
@@ -66,7 +67,7 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
     mapped_tangent_matches_directional_difference(&model);
     derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &model.parameters, 1.0e-12, 4)

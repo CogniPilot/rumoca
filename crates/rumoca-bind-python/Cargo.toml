@@ -19,6 +19,7 @@ doc = false
 # FMI rendering backs the fmi2/fmi3/fmi-ls-wasm targets `targets()` lists.
 rumoca = { workspace = true, features = ["fmi"] }
 rumoca-core = { workspace = true }
+rumoca-tool-build-info = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-sim = { workspace = true, features = [
     "scheduled-sim",

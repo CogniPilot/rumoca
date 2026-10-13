@@ -1,5 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
-{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function, integer_publication %}
+{%- from "fmi-c-kernel.jinja" import scalar_op, assertions, assertion_lifecycle, value_array, initial_values, rmc_kind, text_fields, text_table, cs_integrator, cs_integrator_function, integer_publication %}
 {%- set cs_integrate = cs_integrator(fmi) %}
 {%- from "fmi-me-projection.jinja" import refresh_values, workspace_fields, workspace_reset %}
 {%- from "fmi-scalar-events.jinja" import scalar_events, event_reset, cs_events %}
@@ -7,10 +7,10 @@
 {{ text_table(fmi_text_starts) }}
 
 static void initialize_values(ModelInstance* m) {
-{{- value_array("initial_y", "Y_LEN", fmi.initial_y) }}
-{{- value_array("initial_p", "P_LEN", fmi.initial_parameters) }}
+{{- initial_values("m->y", fmi.initial_y, "initial_y") }}
+{{- initial_values("m->p", fmi.initial_parameters, "initial_p") }}
     m->assertions_initialized=false; m->assertion_failed=false; m->parameters_dirty=true; m->tolerance=0.0; m->rmc_cs_substep=0.0; rmc_release_text(m);{% if fmi.assertions and (solve.events.actions | selectattr("kind", "equalto", "Warning") | list | length > 0) %} memset(m->rmc_warned, 0, sizeof(m->rmc_warned));{% endif %}{{ workspace_reset(me_refresh) }}{{ event_reset(fmi) }}
-    memcpy(m->y, initial_y, sizeof(m->y)); memcpy(m->p, initial_p, sizeof(m->p)); m->time = 0.0;
+    m->time = 0.0;
 }
 {% if fmi.assertions and (solve.events.actions | rejectattr("kind", "equalto", "Warning") | list | length > 0) %}
 static void log_assertion(ModelInstance* m, const char* message) { if (m->logger) m->logger(m->environment, fmi3Error, "assertion", message); }
@@ -89,8 +89,8 @@ static fmi3Status evaluate_derivatives(ModelInstance* m) {
 {%- endif %}
 {#- One row per FMI 3 value reference, indexed by the reference itself: time
     is 0, the variables are 1..N in inventory order and the state derivatives
-    follow (the renderer refuses any other numbering). Integer values are
-    Int32, enumeration ordinals Int64, and Boolean values Boolean, all held in
+    follow (the renderer refuses any other numbering). Integer values and
+    enumeration ordinals are Int64 and Boolean values Boolean, all held in
     the numeric storage run; String values live in the instance text table. -#}
 enum RmcColumn { RMC_COLUMN_TIME, RMC_COLUMN_Y, RMC_COLUMN_P, RMC_COLUMN_DERIVATIVE, RMC_COLUMN_TEXT, RMC_COLUMN_INDICATOR };
 enum RmcKind { RMC_KIND_FLOAT64, RMC_KIND_INT32, RMC_KIND_INT64, RMC_KIND_BOOLEAN, RMC_KIND_STRING };
@@ -102,7 +102,7 @@ static const RmcValueReference rmc_value_references[] = {
 {%- set text = namespace(base=0) %}
 {%- for variable in fmi.variables %}{% if loop.index0 % 6 == 0 %}
    {% endif %} {
-{%- if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {{ rmc_kind(variable, "RMC_KIND_INT64") }}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ text.base }}{% set text.base = text.base + variable.storage.scalar_count %}{% else %}{{ variable.storage.base }}{% endif %}, {{ variable.storage.scalar_count }}, {{ variable.enumeration.literals|length if variable.enumeration else 0 }}},
+{%- if variable.value_kind == "String" %}RMC_COLUMN_TEXT{% elif variable.storage.column == "y" %}RMC_COLUMN_Y{% elif variable.storage.column == "p" %}RMC_COLUMN_P{% else %}{{ fail("unsupported-feature:fmi.c.value-reference-column " ~ variable.storage.column) }}{% endif %}, {{ rmc_kind(variable, "RMC_KIND_INT64", "RMC_KIND_INT64") }}, {% if variable.role == "State" %}RMC_ACCESS_STATE{% elif variable.causality == "input" %}RMC_ACCESS_INPUT{% elif variable.causality == "parameter" %}{% if variable.tunable %}RMC_ACCESS_TUNABLE_PARAMETER{% else %}RMC_ACCESS_PARAMETER{% endif %}{% else %}RMC_ACCESS_FIXED{% endif %}, {{ 1 if variable.causality == "parameter" and variable.value_kind != "String" else 0 }}, {% if variable.value_kind == "String" %}{{ text.base }}{% set text.base = text.base + variable.storage.scalar_count %}{% else %}{{ variable.storage.base }}{% endif %}, {{ variable.storage.scalar_count }}, {{ variable.enumeration.literals|length if variable.enumeration else 0 }}},
 {%- endfor %}
 {%- set derivative = namespace(ordinal=0, base=0) %}
 {%- for variable in fmi.variables %}{% if variable.role == "State" %}{% if derivative.ordinal % 6 == 0 %}
@@ -150,8 +150,8 @@ static bool rmc_request(const ModelInstance* m, const fmi3ValueReference vr[], s
     }
     return total == nvalues;
 }
-/* Pure storage access after all requested refreshes have completed. */
-static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref) {
+/* Pure storage access once the reference's observation has completed. */
+static const double* rmc_numeric_storage(const ModelInstance* m, const RmcValueReference* ref) {
     switch (ref->column) {
     case RMC_COLUMN_TIME: return &m->time;
     case RMC_COLUMN_Y: return m->y;
@@ -163,27 +163,31 @@ static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReferenc
     default: return NULL;
     }
 }
+/* ME-BATCH-001: one completed public observation supplies consecutive ordinary
+   copies within this validated request. Other columns end that local scope. */
+static const double* rmc_numeric_source(ModelInstance* m, const RmcValueReference* ref, bool* ordinary_settled) {
+    bool ordinary = ref->column == RMC_COLUMN_TIME || ref->column == RMC_COLUMN_Y || ref->column == RMC_COLUMN_P;
+    if (!ordinary) *ordinary_settled = false;
+    if (!*ordinary_settled && settle_public_values(m) != fmi3OK) return NULL;
+    *ordinary_settled = ordinary;
+    if (ref->column == RMC_COLUMN_DERIVATIVE && evaluate_derivatives(m) != fmi3OK) return NULL;
+{%- if fmi.scalar_events %}
+    if (ref->column == RMC_COLUMN_INDICATOR && rmc_event_indicators(m, m->rmc_indicator) != fmi3OK) return NULL;
+{%- endif %}
+    return rmc_numeric_storage(m, ref);
+}
 {{ integer_publication() }}
 #define RMC_GET_NUMERIC(Name, Type, KIND, VALID, CONVERT) \
 FMI_EXPORT fmi3Status fmi3Get##Name(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, Type values[], size_t nvalues) { \
-    ModelInstance* m = i; size_t cursor = 0; \
+    ModelInstance* m = i; size_t cursor = 0; bool ordinary_settled = false; \
     if (!m || (!vr && nvr) || (!values && nvalues) || !rmc_request(m, vr, nvr, nvalues, KIND, false)) return fmi3Error; \
-    bool derivatives = false, indicators = false; \
     for (size_t k = 0; k < nvr; ++k) { \
-        const RmcValueReference* ref = &rmc_value_references[vr[k]]; \
-        derivatives |= ref->column == RMC_COLUMN_DERIVATIVE; \
-        indicators |= ref->column == RMC_COLUMN_INDICATOR; \
-    } \
-    if (nvr && (settle_public_values(m) != fmi3OK || (derivatives && evaluate_derivatives(m) != fmi3OK))) return fmi3Error; \
-{% if fmi.scalar_events %}    if (indicators && rmc_event_indicators(m, m->rmc_indicator) != fmi3OK) return fmi3Error; \
-{% else %}    (void)indicators; \
-{% endif %}    for (size_t k = 0; k < nvr; ++k) { \
-        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref, &ordinary_settled); \
         if (!source) return fmi3Error; \
         for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; (void)value; if (!(VALID)) return fmi3Error; } \
     } \
     for (size_t k = 0; k < nvr; ++k) { \
-        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_source(m, ref); \
+        const RmcValueReference* ref = &rmc_value_references[vr[k]]; const double* source = rmc_numeric_storage(m, ref); \
         for (size_t j = 0; j < ref->count; ++j) { double value = source[ref->base + j]; values[cursor++] = CONVERT; } \
     } \
     return fmi3OK; \
@@ -203,13 +207,13 @@ FMI_EXPORT fmi3Status fmi3Set##Name(fmi3Instance i, const fmi3ValueReference vr[
     } \
     return fmi3OK; \
 }
-RMC_GET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, true, value)
+RMC_GET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, isfinite(value), value)
 RMC_SET_NUMERIC(Float64, fmi3Float64, RMC_KIND_FLOAT64, isfinite(value), value)
 RMC_GET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, rmc_integer_public_value(value, 32, ref->literals), (fmi3Int32)value)
 RMC_SET_NUMERIC(Int32, fmi3Int32, RMC_KIND_INT32, true, (double)value)
 RMC_GET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, rmc_integer_public_value(value, 64, ref->literals), (fmi3Int64)value)
-RMC_SET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, rmc_ordinal_valid(ref, value), (double)value)
-RMC_GET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, true, value != 0.0)
+RMC_SET_NUMERIC(Int64, fmi3Int64, RMC_KIND_INT64, rmc_ordinal_valid(ref, value) && value >= -9007199254740992LL && value <= 9007199254740992LL, (double)value)
+RMC_GET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, value == 0.0 || value == 1.0, value != 0.0)
 RMC_SET_NUMERIC(Boolean, fmi3Boolean, RMC_KIND_BOOLEAN, true, value ? 1.0 : 0.0)
 FMI_EXPORT fmi3Status fmi3GetString(fmi3Instance i, const fmi3ValueReference vr[], size_t nvr, fmi3String values[], size_t nvalues) {
     ModelInstance* m = i; size_t cursor = 0;

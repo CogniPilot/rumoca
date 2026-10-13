@@ -26,7 +26,7 @@ use std::{
 };
 
 use super::MeIntegrationError;
-use crate::fmi_me::{MeError, MeTime, SolveMeKernel};
+use crate::fmi_me::{MeError, MeTime, instance::MeKernelCell};
 
 thread_local! {
     static TRIAL_DISCARDS: Cell<u64> = const { Cell::new(0) };
@@ -86,9 +86,10 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
 
 /// The sole production derivative source: the one leased FMI component.
 struct KernelDerivatives {
-    kernel: Rc<RefCell<SolveMeKernel>>,
+    kernel: Rc<MeKernelCell>,
     state_count: usize,
     state_jacobian_columns: Option<Rc<[Vec<usize>]>>,
+    discards_failed_trials: bool,
 }
 
 impl MeDerivativeComponent for KernelDerivatives {
@@ -103,7 +104,7 @@ impl MeDerivativeComponent for KernelDerivatives {
         event_boundary: Option<f64>,
         out: &mut [f64],
     ) -> Result<(), MeError> {
-        let mut kernel = self.kernel.borrow_mut();
+        let mut kernel = self.kernel.borrow_mut()?;
         kernel.set_time(MeTime::new(time, event_boundary))?;
         kernel.set_continuous_states(states)?;
         kernel.continuous_state_derivatives_into(out)
@@ -117,14 +118,14 @@ impl MeDerivativeComponent for KernelDerivatives {
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError> {
-        let mut kernel = self.kernel.borrow_mut();
+        let mut kernel = self.kernel.borrow_mut()?;
         kernel.set_time(MeTime::new(time, event_boundary))?;
         kernel.set_continuous_states(states)?;
         kernel.get_directional_derivative(seed, out)
     }
 
     fn discards_failed_trials(&self) -> bool {
-        self.kernel.borrow().switches_reduced_charts()
+        self.discards_failed_trials
     }
 
     fn state_jacobian_columns(&self) -> Option<&[Vec<usize>]> {
@@ -370,14 +371,16 @@ pub(in crate::fmi_me) struct MeDerivativeController {
 
 impl MeDerivativeController {
     /// The production controller over the one leased FMI component.
-    pub(in crate::fmi_me) fn over_kernel(kernel: Rc<RefCell<SolveMeKernel>>) -> Self {
-        let state_count = kernel.borrow().model_description().continuous_state_count;
-        let state_jacobian_columns = kernel.borrow().state_jacobian_columns();
-        Self::over_component(Box::new(KernelDerivatives {
+    pub(in crate::fmi_me) fn over_kernel(kernel: Rc<MeKernelCell>) -> Result<Self, MeError> {
+        let state_count = kernel.borrow()?.continuous_state_count();
+        let state_jacobian_columns = kernel.borrow()?.state_jacobian_columns();
+        let discards_failed_trials = kernel.borrow()?.switches_reduced_charts();
+        Ok(Self::over_component(Box::new(KernelDerivatives {
             kernel,
             state_count,
             state_jacobian_columns,
-        }))
+            discards_failed_trials,
+        })))
     }
 
     pub(in crate::fmi_me) fn over_component(component: Box<dyn MeDerivativeComponent>) -> Self {

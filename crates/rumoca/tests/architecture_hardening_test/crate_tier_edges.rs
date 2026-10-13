@@ -2,7 +2,8 @@
 //!
 //! Policy: SPEC_0029 §"Dependency Tiers" ("dependencies flow downward") and
 //! §3b ("Runtime Policy Ownership"). `rumoca-eval-solve` is a Tier 3 crate: it
-//! is a pure Solve-IR row evaluator / scalarizer. Component-private evaluation
+//! owns Solve-IR evaluation, differentiation, scalarization and checked replay.
+//! Component-private evaluation
 //! (`SolveRuntime`) lives in `rumoca-solver::runtime`; the sole master driver
 //! and session live in `rumoca-solver::fmi_me`.
 //!
@@ -26,6 +27,7 @@ const EVAL_SOLVE_DEPENDENCIES: &[&str] = &[
     "nalgebra",
     "rumoca-core",
     "rumoca-ir-solve",
+    "serde",
     "tracing",
 ];
 

@@ -784,7 +784,7 @@ impl<'dae> InitialIncidence<'dae> {
             return;
         }
         match space.derivatives.algebraic_definition(variable, scalar) {
-            Some(definition) => self.pending.push(definition.clone()),
+            Some(definition) => self.pending.push(definition.into_owned()),
             None => self.exclude(solve::InitializationCoordinateKind::Algebraic),
         }
     }

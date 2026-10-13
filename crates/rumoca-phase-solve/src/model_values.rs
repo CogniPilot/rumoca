@@ -1,3 +1,5 @@
+mod input_defaults;
+
 use std::collections::HashMap;
 
 use rumoca_core::Span;
@@ -5,7 +7,8 @@ use rumoca_eval_dae::{NumericEvaluationError, NumericEvaluationErrorKind, Numeri
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
-use crate::{LowerError, lower_selection, lower_solve_artifacts};
+use crate::{LowerError, lower_selection};
+pub(crate) use input_defaults::InputInitializationFact;
 
 /// Failure while constructing the complete executable Solve root from one DAE.
 #[derive(Debug)]
@@ -52,6 +55,7 @@ pub struct LoweredSolveModel<'source> {
     formal_aliases: rumoca_phase_structural::AliasQuotientReport,
     program_seconds: f64,
     runtime_value_seconds: f64,
+    pub(crate) input_initializations: Vec<InputInitializationFact>,
 }
 
 /// Phase-owned milestones in complete Solve-model construction.
@@ -112,30 +116,21 @@ impl LoweredSolveModel<'_> {
             });
         }
         let state_count = self.model.state_scalar_count();
-        let state_names = self
+        let index = self
             .model
             .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .get(..state_count)
-            .ok_or_else(|| SolveModelLoweringError::InvalidOverride {
-                message: "state count exceeds the checked Solve name layout".to_owned(),
-            })?;
-        let index = state_names
-            .iter()
-            .position(|candidate| candidate == name)
+            .solver_index(name)
+            .filter(|index| *index < state_count)
             .ok_or_else(|| SolveModelLoweringError::InvalidOverride {
                 message: format!("`{name}` is not a state of this model"),
             })?;
-        let target = self.model.initial_y.get_mut(index).ok_or_else(|| {
+        self.model.initial_y.set(index, value).map_err(|_| {
             SolveModelLoweringError::InvalidOverride {
                 message: format!(
                     "state `{name}` has no initial-value slot in the checked Solve model"
                 ),
             }
         })?;
-        *target = value;
         Ok(())
     }
 
@@ -149,21 +144,58 @@ impl LoweredSolveModel<'_> {
 pub fn lower_solve_model<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
+    begin_stage: impl FnMut(SolveModelLoweringStage),
+) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
+    lower_solve_model_with_input_policy(
+        model,
+        overrides,
+        dae::InputInitializationPolicy::default(),
+        begin_stage,
+    )
+}
+
+/// Construct a Solve root under an explicit pre-write input contract.
+pub fn lower_solve_model_with_input_policy<'source>(
+    model: &'source dae::Dae,
+    overrides: &HashMap<String, f64>,
+    input_policy: dae::InputInitializationPolicy,
+    begin_stage: impl FnMut(SolveModelLoweringStage),
+) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
+    lower_solve_model_for_profile(
+        model,
+        overrides,
+        input_policy,
+        crate::RefreshProfile::default(),
+        begin_stage,
+    )
+}
+
+/// Construct a Solve root whose refresh owners are issued for `profile`.
+pub fn lower_solve_model_for_profile<'source>(
+    model: &'source dae::Dae,
+    overrides: &HashMap<String, f64>,
+    input_policy: dae::InputInitializationPolicy,
+    profile: crate::RefreshProfile,
     mut begin_stage: impl FnMut(SolveModelLoweringStage),
 ) -> Result<LoweredSolveModel<'source>, SolveModelLoweringError> {
     begin_stage(SolveModelLoweringStage::Programs);
     let program_start = rumoca_core::maybe_start_timer();
-    let selection = prepare_selection(model, overrides)?;
-    let package = lower_selection(&selection, overrides)?;
+    let selection = prepare_selection(model, overrides, input_policy)?;
+    let package = lower_selection(&selection, overrides, profile)?;
     let prepared = selection.primary;
     let formal_aliases = selection.formal_aliases;
     let problem = package.problem;
-    let artifacts = lower_solve_artifacts(&problem)?;
+    let artifacts = rumoca_eval_solve::artifacts::lower_solve_artifacts_with_calls(
+        &problem,
+        &package.pure_calls,
+        solve::MassMatrix::Identity,
+    )
+    .map_err(crate::LowerError::from)?;
     let program_seconds = rumoca_core::maybe_elapsed_seconds(program_start);
 
     begin_stage(SolveModelLoweringStage::RuntimeValues);
     let runtime_value_start = rumoca_core::maybe_start_timer();
-    let vectors = runtime_vectors(&prepared, &problem, overrides)?;
+    let vectors = runtime_vectors(&prepared, &problem, overrides, input_policy)?;
     let solve_model = solve::SolveModel {
         problem,
         pure_calls: package.pure_calls,
@@ -172,9 +204,7 @@ pub fn lower_solve_model<'source>(
         solver_nominals: vectors.solver_nominals,
         parameters: vectors.parameters,
         external_tables: solve::ExternalTables::new(model.external_tables().to_vec()),
-        visible_names: vectors.visible_names,
-        visible_value_rows: vectors.visible_value_rows,
-        variable_meta: vectors.variable_meta,
+        visible_projection: vectors.visible_projection,
     };
     solve_model.validate().map_err(LowerError::from)?;
     let runtime_value_seconds = rumoca_core::maybe_elapsed_seconds(runtime_value_start);
@@ -184,6 +214,7 @@ pub fn lower_solve_model<'source>(
         formal_aliases,
         program_seconds,
         runtime_value_seconds,
+        input_initializations: vectors.input_initializations,
     })
 }
 
@@ -192,40 +223,52 @@ pub fn lower_solve_model<'source>(
 fn prepare_selection<'source>(
     model: &'source dae::Dae,
     overrides: &HashMap<String, f64>,
+    input_policy: dae::InputInitializationPolicy,
 ) -> Result<crate::state_selection::PreparedSelection<'source>, LowerError> {
-    crate::state_selection::prepare(model, overrides).map_err(|error| LowerError::Structural {
-        reason: error.to_string(),
-        span: error.source_span(),
-    })
+    crate::state_selection::prepare_with_input_policy(model, overrides, input_policy).map_err(
+        |error| LowerError::Structural {
+            reason: error.to_string(),
+            span: error.source_span(),
+        },
+    )
 }
 
 struct RuntimeVectors {
-    initial_y: Vec<f64>,
+    initial_y: solve::SolveInitialValues,
     solver_nominals: Vec<f64>,
-    parameters: Vec<f64>,
-    visible_names: Vec<String>,
-    visible_value_rows: solve::ScalarProgramBlock,
-    variable_meta: Vec<solve::SolveVariableMeta>,
+    parameters: solve::SolveInitialValues,
+    visible_projection: solve::VisibleProjection,
+    input_initializations: Vec<InputInitializationFact>,
 }
 
 fn runtime_vectors(
     prepared: &rumoca_phase_structural::PreparedDae<'_>,
     problem: &solve::SolveProblem,
     overrides: &HashMap<String, f64>,
+    input_policy: dae::InputInitializationPolicy,
 ) -> Result<RuntimeVectors, SolveModelLoweringError> {
     let model = prepared.as_dae();
     prepared.inspect(|system| {
         let view = system.view;
-        let evaluator = NumericEvaluator::with_overrides(view, |variable, scalar| {
-            variable
-                .scalar_name(scalar)
-                .and_then(|name| overrides.get(&name).copied())
-        });
+        let evaluator = NumericEvaluator::with_input_policy(
+            view,
+            |variable, scalar| {
+                if overrides.is_empty() {
+                    return None;
+                }
+                variable
+                    .scalar_name(scalar)
+                    .and_then(|name| overrides.get(&name).copied())
+            },
+            input_policy,
+        );
         RuntimeVectorBuilder {
             model,
             view,
             problem,
             evaluator,
+            input_policy,
+            overrides,
             state_coordinates: StateCoordinateSources::of(&system)?,
             phasors: crate::phasor_sources::PhasorSources::of(view),
         }
@@ -233,44 +276,109 @@ fn runtime_vectors(
     })
 }
 
-struct RuntimeVectorBuilder<'model, 'dae, F> {
+struct RuntimeVectorBuilder<'model, 'dae, 'supplied, F> {
     model: &'model dae::Dae,
     view: dae::DaeView<'dae>,
     problem: &'model solve::SolveProblem,
     evaluator: NumericEvaluator<'dae, F>,
+    input_policy: dae::InputInitializationPolicy,
+    overrides: &'supplied HashMap<String, f64>,
     state_coordinates: StateCoordinateSources<'dae>,
     phasors: crate::phasor_sources::PhasorSources,
 }
 
-impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, F>
+impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, '_, F>
 where
     F: FnMut(dae::VariableView<'dae>, usize) -> Option<f64>,
 {
+    fn reserve_unwritten_input(
+        &self,
+        id: dae::VariableId<'dae>,
+        variable: dae::VariableView<'dae>,
+    ) -> Result<bool, SolveModelLoweringError> {
+        if self.input_policy != dae::InputInitializationPolicy::HostDrivenStart
+            || variable.role() != dae::VariableRole::Input
+            || rumoca_eval_dae::declaration_initial_expression(variable, self.input_policy)
+                .is_some()
+        {
+            return Ok(false);
+        }
+        let fail = || {
+            runtime_error(
+                "unwritten input has no matching checked parameter storage reservation",
+                variable.declaration().span(),
+            )
+        };
+        let run = self
+            .problem
+            .solve_layout
+            .variable_storage_runs
+            .get(id.index() as usize)
+            .ok_or_else(fail)?;
+        let solve::ScalarSlot::P { index, .. } = run.base else {
+            return Err(fail());
+        };
+        let end = index.checked_add(run.scalar_count).ok_or_else(fail)?;
+        if run.role != solve::SolveVariableStorageRole::ExternalInput
+            || run.scalar_count != variable.scalar_count()
+            || end > self.problem.layout.p_scalars()
+        {
+            return Err(fail());
+        }
+        let supplied = self.overrides.keys().any(|name| {
+            matches!(self.problem.layout.binding(name), Some(solve::ScalarSlot::P { index: slot, .. }) if (index..end).contains(&slot))
+        });
+        Ok(!supplied)
+    }
+
     fn build(mut self) -> Result<RuntimeVectors, SolveModelLoweringError> {
         let mut columns = RuntimeColumns {
-            initial_y: vec![0.0; self.problem.layout.y_scalars()],
+            initial_y: solve::SolveInitialValues::repeat(0.0, self.problem.layout.y_scalars())
+                .map_err(|error| runtime_error(error.to_string(), first_span(self.view)))?,
             solver_nominals: vec![1.0; self.problem.layout.y_scalars()],
-            parameters: vec![0.0; self.problem.layout.p_scalars()],
+            parameters: solve::SolveInitialValues::repeat(0.0, self.problem.layout.p_scalars())
+                .map_err(|error| runtime_error(error.to_string(), first_span(self.view)))?,
         };
         self.seed_homotopy_continuation(&mut columns)?;
+        let mut input_initializations = Vec::new();
 
         for (id, variable) in self.view.variables() {
             if is_non_numeric(variable) {
                 continue;
             }
-            let values = self.evaluator.initial_value(id).map_err(evaluation_error)?;
+            if self.reserve_unwritten_input(id, variable)? {
+                continue;
+            }
+            let values = if variable.role() == dae::VariableRole::Input
+                && self.input_policy == dae::InputInitializationPolicy::FmiExportDefaults
+            {
+                let issued = self
+                    .evaluator
+                    .input_initialization(id)
+                    .map_err(evaluation_error)?;
+                input_initializations.push(input_defaults::convert(
+                    id,
+                    variable,
+                    &issued,
+                    self.problem.solve_layout.variable_storage_runs[id.index() as usize].value_kind,
+                )?);
+                issued.numerical_values()
+            } else {
+                self.evaluator
+                    .initial_values(id)
+                    .map_err(evaluation_error)?
+            };
             let nominals = self.variable_nominals(variable)?;
-            self.write_variable(variable, &values, &nominals, &mut columns)?;
+            self.write_variable(id, variable, &values, &nominals, &mut columns)?;
         }
         self.seed_alias_class_starts(&mut columns)?;
-        let (visible_names, visible_value_rows, variable_meta) = self.visible_projections()?;
+        let visible_projection = self.visible_projections()?;
         Ok(RuntimeVectors {
             initial_y: columns.initial_y,
             solver_nominals: columns.solver_nominals,
             parameters: columns.parameters,
-            visible_names,
-            visible_value_rows,
-            variable_meta,
+            visible_projection,
+            input_initializations,
         })
     }
 
@@ -298,74 +406,94 @@ where
             return Ok(());
         };
         let len = columns.parameters.len();
-        let slot = columns.parameters.get_mut(index).ok_or_else(|| {
+        columns.parameters.set(index, 1.0).map_err(|_| {
             runtime_error(
-                format!(
-                    "initial homotopy parameter index {index} is outside the {len} runtime \
-                     parameters"
-                ),
+                format!("initial homotopy parameter index {index} is outside the {len} runtime parameters"),
                 first_span(self.view),
             )
         })?;
-        *slot = 1.0;
         Ok(())
     }
 
-    fn visible_projections(
-        &self,
-    ) -> Result<
-        (
-            Vec<String>,
-            solve::ScalarProgramBlock,
-            Vec<solve::SolveVariableMeta>,
-        ),
-        SolveModelLoweringError,
-    > {
-        let mut names = Vec::new();
-        let mut programs = Vec::new();
-        let mut spans = Vec::new();
-        let mut metadata = Vec::new();
+    fn visible_projections(&self) -> Result<solve::VisibleProjection, SolveModelLoweringError> {
+        let mut declarations = Vec::new();
         for (id, variable) in self
             .view
             .variables()
             .filter(|(_, variable)| is_visible_role(variable.role()) && !is_non_numeric(*variable))
         {
-            for scalar in 0..variable.scalar_count() {
-                let name = scalar_name(variable, scalar)?;
-                let slot = visible_variable_slot(self.problem, id, variable, scalar, &name)?;
-                programs.push(slot_projection(slot, variable.declaration().span())?);
-                spans.push(variable.declaration().span());
-                metadata.push(self.variable_meta(id, variable, scalar, name.clone()));
-                names.push(name);
-            }
+            let attributes = self.visible_attributes(variable);
+            let state_coordinates = self
+                .state_coordinates
+                .state
+                .as_ref()
+                .filter(|(state, _)| *state == id)
+                .map_or_else(Vec::new, |(_, sources)| {
+                    sources.iter().cloned().enumerate().collect()
+                });
+            declarations.push(solve::VisibleProjectionInput::Declaration(Box::new(
+                solve::VisibleDeclarationInput {
+                    declaration: id.index() as usize,
+                    binding: rumoca_core::VarName::intern(variable.name().as_str()),
+                    attributes,
+                    state_coordinates,
+                    phasors: self.phasors.declaration_sources(id),
+                },
+            )));
         }
-        let rows = solve::ScalarProgramBlock::with_program_spans(programs, spans)
-            .map_err(|error| runtime_error(error.to_string(), first_span(self.view)))?;
-        Ok((names, rows, metadata))
+        solve::VisibleProjection::construct(self.problem, declarations).map_err(|error| {
+            runtime_error(
+                error.to_string(),
+                error.span.unwrap_or_else(|| first_span(self.view)),
+            )
+        })
     }
 
     fn write_variable(
         &self,
+        id: dae::VariableId<'dae>,
         variable: dae::VariableView<'dae>,
-        values: &[f64],
+        values: &rumoca_eval_dae::NumericInitialValues,
         nominals: &[f64],
         columns: &mut RuntimeColumns,
     ) -> Result<(), SolveModelLoweringError> {
-        for scalar in 0..variable.scalar_count() {
-            let name = scalar_name(variable, scalar)?;
-            let slot = variable_slot(self.problem, variable, &name)?;
-            match slot {
-                solve::ScalarSlot::Y { index, .. } => {
-                    columns.initial_y[index] = values[scalar];
-                    columns.solver_nominals[index] = nominals[scalar];
+        let span = variable.declaration().span();
+        let fail = |message: &str| runtime_error(message.to_owned(), span);
+        let run = self
+            .problem
+            .solve_layout
+            .variable_storage_runs
+            .get(id.index() as usize)
+            .filter(|run| {
+                run.scalar_count == variable.scalar_count() && values.len() == run.scalar_count
+            })
+            .ok_or_else(|| fail("initial value has no matching checked declaration storage run"))?;
+        let source =
+            crate::numeric_values::from_source(values).map_err(|error| fail(&error.to_string()))?;
+        match run.base {
+            solve::ScalarSlot::Y { index, .. } => {
+                columns
+                    .initial_y
+                    .replace(index, &source)
+                    .map_err(|error| fail(&error.to_string()))?;
+                let end = index
+                    .checked_add(run.scalar_count)
+                    .ok_or_else(|| fail("nominal storage extent overflow"))?;
+                let target = columns
+                    .solver_nominals
+                    .get_mut(index..end)
+                    .ok_or_else(|| fail("nominal storage is outside its checked column"))?;
+                if target.len() != nominals.len() {
+                    return Err(fail("nominal source disagrees with declaration storage"));
                 }
-                solve::ScalarSlot::P { index, .. } => columns.parameters[index] = values[scalar],
-                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
-                    return Err(runtime_error(
-                        format!("checked variable `{name}` was assigned a non-storage slot"),
-                        variable.declaration().span(),
-                    ));
-                }
+                target.copy_from_slice(nominals);
+            }
+            solve::ScalarSlot::P { index, .. } => columns
+                .parameters
+                .replace(index, &source)
+                .map_err(|error| fail(&error.to_string()))?,
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
+                return Err(fail("checked variable was assigned a non-storage slot"));
             }
         }
         Ok(())
@@ -426,8 +554,14 @@ where
         let anchors = self.alias_class_anchors(&classes, &columns.initial_y);
         for index in 0..columns.initial_y.len() {
             let (root, sign) = classes.find(index);
+            if classes.size[root] == 1 {
+                continue;
+            }
             if let Some(anchor) = anchors[root].filter(|anchor| !anchor.conflicting) {
-                columns.initial_y[index] = sign * anchor.value;
+                columns
+                    .initial_y
+                    .set(index, sign * anchor.value)
+                    .map_err(|error| runtime_error(error.to_string(), first_span(self.view)))?;
             }
         }
         Ok(())
@@ -457,7 +591,7 @@ where
     fn alias_class_anchors(
         &self,
         classes: &SignedUnionFind,
-        initial_y: &[f64],
+        initial_y: &solve::SolveInitialValues,
     ) -> Vec<Option<AliasAnchor>> {
         let mut anchors = vec![None; initial_y.len()];
         for (_, variable) in self.view.variables() {
@@ -473,7 +607,7 @@ where
         classes: &SignedUnionFind,
         variable: dae::VariableView<'dae>,
         scalar: usize,
-        initial_y: &[f64],
+        initial_y: &solve::SolveInitialValues,
         anchors: &mut [Option<AliasAnchor>],
     ) {
         if variable.fixed_scalar(scalar) != Some(true) {
@@ -482,7 +616,9 @@ where
         let Some(index) = y_slot_index(self.problem, variable, scalar) else {
             return;
         };
-        let value = initial_y[index];
+        let Some(value) = initial_y.value(index) else {
+            return;
+        };
         if !value.is_finite() {
             return;
         }
@@ -490,28 +626,13 @@ where
         merge_alias_anchor(&mut anchors[root], value * sign);
     }
 
-    fn variable_meta(
+    fn visible_attributes(
         &self,
-        id: dae::VariableId<'dae>,
         variable: dae::VariableView<'dae>,
-        scalar: usize,
-        name: String,
-    ) -> solve::SolveVariableMeta {
-        let time_domain = self
-            .problem
-            .solve_layout
-            .variable_declarations
-            .get(id.index() as usize)
-            .expect("checked Solve declaration catalog follows dense DAE identity")
-            .time_domain();
-        solve::SolveVariableMeta {
-            name,
+    ) -> solve::VisibleSourceAttributes {
+        solve::VisibleSourceAttributes {
             source_span: variable.declaration().span(),
-            role: role_name(variable.role()).to_string(),
-            is_state: variable.role() == dae::VariableRole::State,
-            value_type: Some(format!("{:?}", variable.value_type().scalar_type())),
             variability: Some(format!("{:?}", variable.variability())),
-            time_domain: Some(time_domain.as_str().to_string()),
             unit: variable.unit().map(str::to_string),
             start: variable
                 .start()
@@ -525,13 +646,8 @@ where
             nominal: variable
                 .nominal()
                 .and_then(|expression| self.expression_source(expression)),
-            // Reporting metadata only: initialization reads `fixed` per scalar
-            // (initial_pins), so a non-uniform continuous `fixed` reducing to
-            // None here does not affect the solve.
             fixed: variable.fixed_uniform(),
             description: variable.description().map(str::to_string),
-            state_coordinate: self.state_coordinates.source(id, scalar),
-            phasor: self.phasors.source(id, scalar),
         }
     }
 
@@ -541,28 +657,10 @@ where
     }
 }
 
-fn visible_variable_slot(
-    problem: &solve::SolveProblem,
-    id: dae::VariableId<'_>,
-    variable: dae::VariableView<'_>,
-    scalar: usize,
-    name: &str,
-) -> Result<solve::ScalarSlot, SolveModelLoweringError> {
-    problem
-        .solve_layout
-        .variable_scalar_slot(id.index() as usize, scalar)
-        .ok_or_else(|| {
-            runtime_error(
-                format!("checked variable `{name}` has no typed Solve slot"),
-                variable.declaration().span(),
-            )
-        })
-}
-
 struct RuntimeColumns {
-    initial_y: Vec<f64>,
+    initial_y: solve::SolveInitialValues,
     solver_nominals: Vec<f64>,
-    parameters: Vec<f64>,
+    parameters: solve::SolveInitialValues,
 }
 
 /// The generated state a reduced state selection integrates and, per state
@@ -583,15 +681,6 @@ impl<'dae> StateCoordinateSources<'dae> {
             }
         })?;
         Ok(Self { state })
-    }
-
-    fn source(
-        &self,
-        id: dae::VariableId<'dae>,
-        scalar: usize,
-    ) -> Option<solve::SolveStateCoordinate> {
-        let (state, sources) = self.state.as_ref()?;
-        (*state == id).then(|| sources[scalar].clone())
     }
 }
 
@@ -617,23 +706,6 @@ fn is_visible_role(role: dae::VariableRole) -> bool {
             | dae::VariableRole::DiscreteReal
             | dae::VariableRole::DiscreteValue
     )
-}
-
-fn slot_projection(
-    slot: solve::ScalarSlot,
-    span: Span,
-) -> Result<Vec<solve::LinearOp>, SolveModelLoweringError> {
-    let load = match slot {
-        solve::ScalarSlot::Y { index, .. } => solve::LinearOp::LoadY { dst: 0, index },
-        solve::ScalarSlot::P { index, .. } => solve::LinearOp::LoadP { dst: 0, index },
-        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
-            return Err(runtime_error(
-                "visible DAE coordinate does not map to writable Solve storage",
-                span,
-            ));
-        }
-    };
-    Ok(vec![load, solve::LinearOp::StoreOutput { src: 0 }])
 }
 
 /// Resolve a causal definition that is a whole-coordinate alias, returning the
@@ -725,14 +797,20 @@ fn merge_alias_anchor(anchor: &mut Option<AliasAnchor>, root_value: f64) {
 }
 
 /// The solver Y slot of one scalar of a variable, when it has one.
-fn y_slot_index(
+///
+/// A Y variable occupies one contiguous run in row-major scalar order, so
+/// element `scalar` lives at the variable's base slot plus `scalar`; no
+/// element name is rendered or parsed.
+pub(crate) fn y_slot_index(
     problem: &solve::SolveProblem,
     variable: dae::VariableView<'_>,
     scalar: usize,
 ) -> Option<usize> {
-    let name = variable.scalar_name(scalar)?;
-    match problem.layout.binding(&name)? {
-        solve::ScalarSlot::Y { index, .. } => Some(index),
+    if variable.value_type().is_record() || scalar >= variable.scalar_count() {
+        return None;
+    }
+    match problem.layout.bindings().get(variable.name())? {
+        solve::ScalarSlot::Y { index, .. } => index.checked_add(scalar),
         _ => None,
     }
 }
@@ -900,34 +978,6 @@ pub(crate) fn single_index_scalar<'dae>(
     (scalar < scalar_count).then_some(scalar)
 }
 
-fn scalar_name(
-    variable: dae::VariableView<'_>,
-    scalar: usize,
-) -> Result<String, SolveModelLoweringError> {
-    variable.scalar_name(scalar).ok_or_else(|| {
-        runtime_error(
-            format!(
-                "checked variable `{}` has no scalar name at ordinal {scalar}",
-                variable.name()
-            ),
-            variable.declaration().span(),
-        )
-    })
-}
-
-fn variable_slot(
-    problem: &solve::SolveProblem,
-    variable: dae::VariableView<'_>,
-    name: &str,
-) -> Result<solve::ScalarSlot, SolveModelLoweringError> {
-    problem.layout.binding(name).ok_or_else(|| {
-        runtime_error(
-            format!("checked variable `{name}` has no Solve storage slot"),
-            variable.declaration().span(),
-        )
-    })
-}
-
 fn evaluation_error(error: NumericEvaluationError) -> SolveModelLoweringError {
     if error.kind() == NumericEvaluationErrorKind::InvalidOverride {
         SolveModelLoweringError::InvalidOverride {
@@ -943,19 +993,6 @@ fn expression_span<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>
         .expect("finalized expression identity resolves")
         .provenance()
         .span()
-}
-
-const fn role_name(role: dae::VariableRole) -> &'static str {
-    match role {
-        dae::VariableRole::Parameter => "parameter",
-        dae::VariableRole::Constant => "constant",
-        dae::VariableRole::Input => "input",
-        dae::VariableRole::State => "state",
-        dae::VariableRole::Algebraic => "algebraic",
-        dae::VariableRole::Output => "output",
-        dae::VariableRole::DiscreteReal => "discrete-real",
-        dae::VariableRole::DiscreteValue => "discrete-valued",
-    }
 }
 
 fn first_span(view: dae::DaeView<'_>) -> Span {

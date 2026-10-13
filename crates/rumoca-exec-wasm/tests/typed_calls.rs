@@ -2,7 +2,7 @@
 mod native_call_program;
 mod suite_typed_calls;
 use rumoca_core::{SourceId, Span};
-use rumoca_eval_solve::{TypedValue, eval_pure_call};
+use rumoca_eval_solve::{TypedValue, eval_pure_call_checked};
 use rumoca_exec_wasm::{
     CompiledTypedCallWasm, TypedCallCompileError, TypedCallFaultKind, compile_pure_call_wasm,
 };
@@ -137,7 +137,7 @@ fn oracle(
             TypedValue::construct(value_type.clone(), values.clone()).unwrap()
         })
         .collect::<Vec<_>>();
-    eval_pure_call(table, site.owner(), &typed).map(|outputs| {
+    eval_pure_call_checked(table, site.owner(), &typed).map(|outputs| {
         cells(
             outputs
                 .iter()

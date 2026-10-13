@@ -27,3 +27,33 @@ impl Emitter<'_> {
         self.push(I::End);
     }
 }
+
+impl Emitter<'_> {
+    /// Advance the binders held in the locals from `first`, innermost first,
+    /// as `advance_binders` advances their slots.
+    pub(super) fn advance_binder_locals(
+        &mut self,
+        first: u32,
+        domain: &StructuredIndexDomain,
+        last: &[i64],
+    ) {
+        self.push(I::Block(BlockType::Empty));
+        for (ordinal, (binder, final_value)) in domain.binders.iter().zip(last).enumerate().rev() {
+            let local = first + ordinal as u32;
+            self.push(I::LocalGet(local));
+            self.push(I::I64Const(*final_value));
+            self.push(I::I64Eq);
+            self.push(I::If(BlockType::Empty));
+            self.push(I::I64Const(binder.lower));
+            self.push(I::LocalSet(local));
+            self.push(I::Else);
+            self.push(I::LocalGet(local));
+            self.push(I::I64Const(binder.step));
+            self.push(I::I64Add);
+            self.push(I::LocalSet(local));
+            self.push(I::Br(1));
+            self.push(I::End);
+        }
+        self.push(I::End);
+    }
+}

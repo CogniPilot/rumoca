@@ -1,42 +1,42 @@
 //! MLS 3.7 section 12.4.1: a function body is a sequence of assignments, each
 //! reading the values the previous ones produced. A long straight chain of
-//! conditionals, every one capturing its predecessor, lowers to Solve with one
-//! pending emission per link kept on the heap, so its length is not bounded by
-//! the native stack.
-//!
-//! The array-product reduction has no directional body, so scalar
-//! differentiation expands the call and exercises conditional capture emission.
+//! conditionals, every one reading its predecessor, lowers to Solve as one typed
+//! pure-call owner with a conditional per link. Every phase that walks the
+//! chain (call-owner construction, conditional emission, the phasor-source
+//! proofs) keeps its pending work on the heap, so the length of the chain is
+//! not bounded by the native stack.
 
 use rumoca::Compiler;
-use rumoca_ir_solve::{LinearOp, LinearOpSliceKind, SolveVisitor};
+use rumoca_ir_solve::{SolveOperation, TypedProgram};
 use rumoca_sim::{SimOptions, eval_dae_at};
 
 /// Links in each chain.
 const LINKS: usize = 3000;
 
-/// Stack of the lowering thread. A capture resolved by a nested call spends a
-/// few hundred bytes per link, so a chain of `LINKS` overflows it; the
-/// explicit pending-emission stack spends none. Source compilation and runtime
+/// Stack of the lowering thread. A reduction that recurses once per link spends
+/// a few hundred bytes per link, so a chain of `LINKS` overflows it; an
+/// explicit work stack spends none. Source compilation and runtime
 /// inspection have their own fixed stack frames and run on the test thread.
 const LOWERING_STACK_BYTES: usize = 256 * 1024;
 
-#[derive(Default)]
-struct ConditionalCensus(usize);
-
-impl SolveVisitor for ConditionalCensus {
-    type Error = std::convert::Infallible;
-
-    fn visit_linear_op(
-        &mut self,
-        _kind: LinearOpSliceKind,
-        _op_index: usize,
-        op: &LinearOp,
-    ) -> Result<(), Self::Error> {
-        if matches!(op, LinearOp::FunctionConditional { .. }) {
-            self.0 += 1;
-        }
-        Ok(())
-    }
+/// Conditional operations in `program`, nested regions included; a total
+/// scalar conditional lowers as one `Select`, so a selection counts as one.
+fn conditional_count(program: &TypedProgram) -> usize {
+    program
+        .operations()
+        .iter()
+        .map(|spanned| match spanned.operation() {
+            SolveOperation::AssignedConditional { program } => {
+                1 + conditional_count(program.if_true().body())
+                    + conditional_count(program.if_false().body())
+            }
+            SolveOperation::Conditional {
+                if_true, if_false, ..
+            } => 1 + conditional_count(if_true.body()) + conditional_count(if_false.body()),
+            SolveOperation::Select { .. } => 1,
+            _ => 0,
+        })
+        .sum()
 }
 
 fn chain_value(body: &str) -> f64 {
@@ -80,13 +80,16 @@ end Probe;
             .join()
             .expect("the chain lowers within the bounded stack")
     });
-    let mut census = ConditionalCensus::default();
-    census
-        .visit_solve_model(lowered.model())
-        .expect("infallible census");
+    let conditionals = lowered
+        .model()
+        .pure_calls
+        .owners()
+        .iter()
+        .map(|owner| conditional_count(owner.body()))
+        .sum::<usize>();
     assert!(
-        census.0 >= LINKS,
-        "the chain must exercise scalar conditional emission"
+        conditionals >= LINKS,
+        "the chain must lower as one conditional per link, found {conditionals}"
     );
     drop(lowered);
     let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)

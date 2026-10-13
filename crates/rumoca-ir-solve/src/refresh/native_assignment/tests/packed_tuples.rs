@@ -61,14 +61,9 @@ fn targets(count: usize) -> Vec<Option<ScalarSlot>> {
 }
 
 #[test]
-fn move_packed_tuples_keep_one_original_stage_and_ordered_prefix() {
+fn move_packed_tuples_keep_one_original_stage_and_the_loads_its_values_read() {
     for (count, reverse, stores) in [(3, false, false), (160, true, false), (14_400, false, true)] {
         let original = operations(count, reverse, stores);
-        let split = if stores {
-            original.len() - count
-        } else {
-            original.len() - 1
-        };
         let schedule = derive(&source(original.clone()), &targets(count), &layout(count)).unwrap();
         assert_eq!(schedule.stages.len(), 1);
         let stage = &schedule.stages[0];
@@ -77,10 +72,17 @@ fn move_packed_tuples_keep_one_original_stage_and_ordered_prefix() {
             panic!("one tuple value program")
         };
         assert_eq!(block.program_spans(), [span()]);
-        assert!(operations_match(
-            &block.programs()[0][..split],
-            &original[..split]
-        ));
+        // The target loads, the residual differences and the original tuple
+        // packing are not read by the isolated projection.
+        let split = block.programs()[0].len() - count - 1;
+        let loads = (0..count)
+            .map(|i| LinearOp::LoadP {
+                dst: (4 * i + 1) as u32,
+                index: i,
+            })
+            .collect::<Vec<_>>();
+        assert!(operations_match(&block.programs()[0][..split], &loads));
+        assert_only_fault_free_operations_dropped(&original, &block.programs()[0]);
         let projection = &block.programs()[0][split..];
         assert_eq!(projection.len(), count + 1);
         for (i, operation) in projection[..count].iter().enumerate() {

@@ -130,6 +130,9 @@ impl<'dae> ScalarSelector<'dae> {
         active.push(expression);
         let result = match node.operation() {
             dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => Ok(*value),
+            // A Real-valued constant converts an Integer literal the way MLS 3.7
+            // section 10.6 converts Integer to Real: to the nearest binary64, exact
+            // or not. Integer-typed storage keeps the exactness proof instead.
             dae::ExpressionOperation::Literal(
                 dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
             ) => Ok(*value as f64),
@@ -149,11 +152,24 @@ impl<'dae> ScalarSelector<'dae> {
                 }
             }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                self.check_scalar_binary_projection(operator, lhs, rhs, span)?;
                 let lhs_scalar = scalar_operand(self.view, lhs, scalar);
                 let rhs_scalar = scalar_operand(self.view, rhs, scalar);
-                let lhs = self.constant_real_inner(lhs, lhs_scalar, reach, active)?;
-                let rhs = self.constant_real_inner(rhs, rhs_scalar, reach, active)?;
-                constant_binary(operator, lhs, rhs, span)
+                let lhs_value = self.constant_real_inner(lhs, lhs_scalar, reach, active)?;
+                if matches!(
+                    operator,
+                    dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+                ) && self.node(rhs).value_type().scalar_type() == dae::ScalarType::Integer
+                {
+                    let exponent = self.integer(rhs, rhs_scalar)?;
+                    finite_constant(
+                        rumoca_core::modelica_integer_power(lhs_value, exponent),
+                        span,
+                    )
+                } else {
+                    let rhs_value = self.constant_real_inner(rhs, rhs_scalar, reach, active)?;
+                    constant_binary(operator, lhs_value, rhs_value, span)
+                }
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 self.constant_builtin(builtin, arguments, scalar, reach, span, active)

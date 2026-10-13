@@ -1,28 +1,88 @@
 //! WASM execution adapter for prepared Solve-IR row kernels.
 
+/// Whether this build links the host engine, which issues the private static
+/// receiver entry for retained native preparations.
+pub const HOST_ENGINE_ENTRY: bool = cfg!(all(feature = "host-engine", not(target_arch = "wasm32")));
+
+mod component_build;
+mod cost_model;
+#[cfg(feature = "component-build")]
+pub use component_build::NativeLinkableModelLibrary;
+#[cfg(all(not(target_arch = "wasm32"), feature = "component-build"))]
+pub use component_build::build_wasm_component;
+pub use component_build::{CompiledWasmComponent, NativeModelLibrary};
+#[cfg(feature = "component-build")]
+pub use component_build::{
+    CoreModuleArgument, CoreModuleAssembly, CoreModuleDraft, compose_core_modules,
+};
+#[cfg(all(not(target_arch = "wasm32"), feature = "fixed-native-guest-build"))]
+pub use component_build::{
+    FixedNativeGuestCore, build_fixed_native_guest_core, build_fixed_native_guest_core_cached,
+};
+
 mod emit;
 mod exact_assignments;
+#[cfg(any(
+    test,
+    all(target_arch = "wasm32", target_os = "unknown"),
+    all(feature = "host-engine", not(target_arch = "wasm32")),
+    all(
+        feature = "fixed-native-guest-receiver",
+        target_arch = "wasm32",
+        target_os = "wasi",
+        target_env = "p2"
+    )
+))]
+mod math_abi;
+mod native_capacity;
 mod native_program;
-#[cfg(any(target_arch = "wasm32", test))]
+mod outline;
+pub use native_capacity::{
+    CheckedNativeWasmCapacityPolicy, NativeWasmCapacityRequest, decode_native_source_envelope,
+    encode_native_source_envelope,
+};
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod private_arena;
 mod private_program;
+mod retained_native_program;
+#[cfg(all(
+    feature = "fixed-native-guest-receiver",
+    target_arch = "wasm32",
+    target_os = "wasi",
+    target_env = "p2"
+))]
+#[doc(hidden)]
+pub use retained_native_program::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod host_runtime;
 mod scratch_report;
 mod typed_call;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_runtime;
 pub use exact_assignments::{CompiledExactAssignmentWasm, compile_exact_assignment_schedule_wasm};
 pub use native_program::{
     CompiledNativeCallProgramWasm, NativeGatherFault,
     compile_native_assignment_schedule_with_calls_wasm,
+    compile_native_assignment_schedule_with_calls_wasm_and_policy,
 };
 pub use private_program::{CompiledPrivateProgramWasm, compile_private_program_wasm};
+pub use retained_native_program::{
+    CompiledRetainedNativeProgramWasm, NativeInvocationLease, NativeInvocationOutcome,
+    NativeTransport, NativeTransportError, NativeTransportSnapshot, NativeTypedInput,
+    NativeTypedInputBatch, PreparedNativeStorage, PreparedNativeWasmCode, RetainedNativeWasmHost,
+    compile_retained_native_preparation_wasm, compile_retained_native_preparation_wasm_carrying,
+    compile_retained_native_preparation_wasm_with_policy, compile_retained_native_program_wasm,
+};
 pub use scratch_report::{ScratchCall, ScratchFrame, ScratchOwner, ScratchRegion, ScratchReport};
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_runtime::WasmKernelRuntime;
 
 pub use typed_call::{
-    CompiledTypedCallWasm, TypedCallCompileError, TypedCallFault, TypedCallFaultKind,
-    TypedCallLayout, compile_pure_call_wasm,
+    CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledTypedCallWasm,
+    NativeAssertionCells, NativeAssertionFrame, NativeAssertionFrameDescriptor,
+    NativeAssertionObservation, NativeAssertionSourceDescriptor, TypedCallCompileError,
+    TypedCallFault, TypedCallFaultKind, TypedCallLayout, compile_checked_assertion_wasm,
+    compile_pure_call_wasm,
 };
 
 use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
@@ -31,6 +91,9 @@ use rumoca_ir_solve::{ScalarProgramBlock, VarLayout};
 pub enum WasmCompileError {
     Backend(String),
     Input(String),
+    TypedSource(TypedCallFault),
+    TypedAdmission(TypedCallCompileError),
+    GatherSource(NativeGatherFault),
 }
 
 impl std::fmt::Display for WasmCompileError {
@@ -38,6 +101,9 @@ impl std::fmt::Display for WasmCompileError {
         match self {
             Self::Backend(msg) => write!(f, "wasm backend error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
+            Self::TypedSource(fault) => write!(f, "WASM source operation fault: {fault:?}"),
+            Self::TypedAdmission(error) => write!(f, "WASM typed admission refusal: {error}"),
+            Self::GatherSource(fault) => write!(f, "WASM source gather fault: {fault:?}"),
         }
     }
 }
@@ -49,7 +115,7 @@ struct CompiledKernelWasm {
     rows: usize,
     required_y_len: usize,
     required_p_len: usize,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     runtime: WasmKernelRuntime,
 }
 
@@ -70,14 +136,14 @@ impl CompiledKernelWasm {
         required_y_len: usize,
         required_p_len: usize,
     ) -> Result<Self, WasmCompileError> {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let runtime = WasmKernelRuntime::new(&module_bytes)?;
         Ok(Self {
             module_bytes,
             rows: row_count,
             required_y_len,
             required_p_len,
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             runtime,
         })
     }
@@ -145,21 +211,21 @@ impl CompiledKernelWasm {
                 out
             };
 
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
                 self.runtime
                     .call(y_slice, p_slice, t, seed_slice, out_slice)?;
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             {
                 let _ = (y_slice, p_slice, t, seed_slice, out_slice);
                 Err(WasmCompileError::Input(
-                    "compiled WASM kernels can only be executed on wasm32 targets".to_string(),
+                    "compiled WASM kernels have no admitted engine on this target".to_string(),
                 ))?;
             }
         }
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if out_short {
             out.copy_from_slice(&out_scratch[..out_len]);
         }

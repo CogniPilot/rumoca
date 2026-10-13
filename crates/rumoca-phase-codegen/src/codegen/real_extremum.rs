@@ -115,8 +115,21 @@ const WGSL: Syntax = Syntax {
 /// first use: `c`, `cuda`, `rust`, `jax`, `casadi`, `wgsl` or `mlir`. WebGPU lets
 /// a WGSL implementation assume no NaN occurs, so only the NaN-free cases of
 /// the rule are guaranteed there.
+#[cfg(test)]
 pub(crate) fn prelude(language: &str) -> Option<String> {
-    let helpers = |each: &dyn Fn(bool) -> String| format!("{}\n{}\n", each(true), each(false));
+    prelude_for(language, ExtremumDemand::BOTH)
+}
+
+/// The helper definitions of `language` for exactly the demanded operators, so
+/// a translation unit never defines an unused helper.
+pub(crate) fn prelude_for(language: &str, demand: ExtremumDemand) -> Option<String> {
+    let helpers = |each: &dyn Fn(bool) -> String| {
+        [(true, demand.minimum), (false, demand.maximum)]
+            .into_iter()
+            .filter(|(_, wanted)| *wanted)
+            .map(|(minimum, _)| format!("{}\n", each(minimum)))
+            .collect::<String>()
+    };
     Some(match language {
         "c" | "cuda" => {
             let qualifier = if language == "cuda" {
@@ -188,23 +201,99 @@ pub(crate) fn mlir_call(minimum: bool, dst: &str, lhs: &str, rhs: &str) -> Strin
     )
 }
 
-/// The render-context key that says whether the rendered Solve problem or its
-/// artifacts apply a Real `min` or `max` at all.
+/// Which Real extremum operators a rendered product applies, so each helper is
+/// defined only when its own operator is used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ExtremumDemand {
+    pub(crate) minimum: bool,
+    pub(crate) maximum: bool,
+}
+
+impl ExtremumDemand {
+    pub(crate) const BOTH: Self = Self {
+        minimum: true,
+        maximum: true,
+    };
+
+    pub(crate) const fn of(minimum: bool) -> Self {
+        Self {
+            minimum,
+            maximum: !minimum,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn any(self) -> bool {
+        self.minimum || self.maximum
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.minimum |= other.minimum;
+        self.maximum |= other.maximum;
+    }
+}
+
+/// The render-context key that carries the [`ExtremumDemand`] of the rendered
+/// Solve problem and its artifacts.
 pub(super) const USES_CONTEXT_KEY: &str = "uses_real_extremum";
 
-/// Whether `problem` or `artifacts` apply a Real `min` or `max` anywhere,
-/// including nested fold, conditional and tensor programs.
+/// Which Real extrema the rendered problem, artifacts or canonical pure-call
+/// owners apply, including typed nested regions and directional bodies.
+///
+/// `typed_calls` are the owners rendered as typed bodies (an FMI component);
+/// `inlined_calls` are the owners a scalar target inlines.
 pub(super) fn used_by(
     problem: &rumoca_ir_solve::SolveProblem,
     artifacts: &rumoca_ir_solve::SolveArtifacts,
+    typed_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
     inlined_calls: Option<&rumoca_ir_solve::SolvePureCallTable>,
-) -> bool {
+) -> ExtremumDemand {
     use rumoca_ir_solve::{BinaryOp, LinearOp, LinearOpSliceKind, SolveVisitor};
 
-    struct Uses(bool);
+    struct Uses(ExtremumDemand);
 
     impl SolveVisitor for Uses {
         type Error = std::convert::Infallible;
+
+        fn visit_typed_operation(
+            &mut self,
+            program: &rumoca_ir_solve::TypedProgram,
+            _index: usize,
+            op: &rumoca_ir_solve::SolveSpannedOperation,
+        ) -> Result<(), Self::Error> {
+            use rumoca_ir_solve::{
+                SolveBinaryOperator, SolveOperation, SolveReductionOperator, SolveScalarType,
+            };
+            let (destination, minimum) = match op.operation() {
+                SolveOperation::Binary {
+                    destination,
+                    operator: operator @ (SolveBinaryOperator::Min | SolveBinaryOperator::Max),
+                    ..
+                }
+                | SolveOperation::BroadcastBinary {
+                    destination,
+                    operator: operator @ (SolveBinaryOperator::Min | SolveBinaryOperator::Max),
+                    ..
+                } => (destination, matches!(operator, SolveBinaryOperator::Min)),
+                SolveOperation::Reduce {
+                    destination,
+                    operator:
+                        operator @ (SolveReductionOperator::Minimum | SolveReductionOperator::Maximum),
+                    ..
+                } => (
+                    destination,
+                    matches!(operator, SolveReductionOperator::Minimum),
+                ),
+                _ => return Ok(()),
+            };
+            if matches!(
+                program.register_types()[destination.index()].element_type(),
+                SolveScalarType::Real { .. }
+            ) {
+                self.0.merge(ExtremumDemand::of(minimum));
+            }
+            Ok(())
+        }
 
         fn visit_linear_op(
             &mut self,
@@ -213,126 +302,85 @@ pub(super) fn used_by(
             op: &LinearOp,
         ) -> Result<(), Self::Error> {
             if let LinearOp::Binary {
-                op: BinaryOp::Min | BinaryOp::Max,
+                op: op @ (BinaryOp::Min | BinaryOp::Max),
                 ..
             }
             | LinearOp::TensorBinary {
-                op: BinaryOp::Min | BinaryOp::Max,
+                op: op @ (BinaryOp::Min | BinaryOp::Max),
                 ..
             } = op
             {
-                self.0 = true;
+                self.0
+                    .merge(ExtremumDemand::of(matches!(op, BinaryOp::Min)));
             }
             Ok(())
         }
     }
 
-    let mut uses = Uses(false);
+    let mut uses = Uses(ExtremumDemand::default());
     let Ok(()) = uses.visit_solve_problem(problem);
     let Ok(()) = uses.visit_solve_artifacts(artifacts);
+    if let Some(table) = typed_calls {
+        let Ok(()) = uses.visit_pure_call_table(table);
+    }
     // A scalar target that inlines pure calls emits their bodies' min/max as
-    // scalar ops the Solve scan above cannot see. Unlike `used_by_calls`
+    // scalar ops the Solve scan above cannot see. Unlike `typed_calls`
     // (typed C bodies), every element type and every min/max reduction counts:
     // inlining lowers all of them to the scalar `Min`/`Max` the helper renders.
+    if let Some(table) = inlined_calls {
+        for owner in table.owners() {
+            uses.0.merge(program_extremum_demand(owner.body()));
+        }
+    }
     uses.0
-        || inlined_calls.is_some_and(|table| {
-            table
-                .owners()
-                .iter()
-                .any(|owner| program_uses_extremum(owner.body()))
-        })
 }
 
-/// Whether a typed program, or any region nested in it, applies `min`/`max`.
-fn program_uses_extremum(program: &rumoca_ir_solve::TypedProgram) -> bool {
+/// Which of `min`/`max` a typed program, or any region nested in it, applies.
+fn program_extremum_demand(program: &rumoca_ir_solve::TypedProgram) -> ExtremumDemand {
     use rumoca_ir_solve::{SolveBinaryOperator, SolveOperation, SolveReductionOperator};
-    program
-        .operations()
-        .iter()
-        .any(|operation| match operation.operation() {
+    let mut demand = ExtremumDemand::default();
+    for operation in program.operations() {
+        match operation.operation() {
             SolveOperation::Binary { operator, .. }
-            | SolveOperation::BroadcastBinary { operator, .. } => {
-                matches!(
-                    operator,
-                    SolveBinaryOperator::Min | SolveBinaryOperator::Max
-                )
+            | SolveOperation::BroadcastBinary { operator, .. } => match operator {
+                SolveBinaryOperator::Min => demand.merge(ExtremumDemand::of(true)),
+                SolveBinaryOperator::Max => demand.merge(ExtremumDemand::of(false)),
+                _ => {}
+            },
+            SolveOperation::Reduce { operator, .. } => match operator {
+                SolveReductionOperator::Minimum => demand.merge(ExtremumDemand::of(true)),
+                SolveReductionOperator::Maximum => demand.merge(ExtremumDemand::of(false)),
+                _ => {}
+            },
+            SolveOperation::Map { body, .. } => {
+                demand.merge(program_extremum_demand(body.body()));
             }
-            SolveOperation::Reduce { operator, .. } => matches!(
-                operator,
-                SolveReductionOperator::Minimum | SolveReductionOperator::Maximum
-            ),
-            SolveOperation::Map { body, .. } => program_uses_extremum(body.body()),
             SolveOperation::Fold {
                 transition,
                 continuation,
                 ..
             } => {
-                program_uses_extremum(transition.body())
-                    || continuation
-                        .as_deref()
-                        .is_some_and(|region| program_uses_extremum(region.body()))
+                demand.merge(program_extremum_demand(transition.body()));
+                if let Some(region) = continuation.as_deref() {
+                    demand.merge(program_extremum_demand(region.body()));
+                }
             }
             SolveOperation::Conditional {
                 if_true, if_false, ..
-            } => program_uses_extremum(if_true.body()) || program_uses_extremum(if_false.body()),
-            _ => false,
-        })
-}
-
-/// Typed pure-call owners are retained outside the scalar problem. Every
-/// issued owner is inspected, including its directional body and nested
-/// regions; nested calls name owners in this same table.
-pub(super) fn used_by_calls(table: &rumoca_ir_solve::SolvePureCallTable) -> bool {
-    table.owners().iter().any(|owner| {
-        typed_program_uses(owner.body())
-            || owner
-                .directional()
-                .is_some_and(|body| typed_program_uses(body.body()))
-    })
-}
-
-fn typed_program_uses(program: &rumoca_ir_solve::TypedProgram) -> bool {
-    use rumoca_ir_solve::{SolveBinaryOperator as Binary, SolveOperation as Op, SolveScalarType};
-
-    program
-        .operations()
-        .iter()
-        .any(|operation| match operation.operation() {
-            Op::Binary {
-                destination,
-                operator: Binary::Min | Binary::Max,
-                ..
-            }
-            | Op::BroadcastBinary {
-                destination,
-                operator: Binary::Min | Binary::Max,
-                ..
-            } => matches!(
-                program.register_types()[destination.index()].element_type(),
-                SolveScalarType::Real { .. }
-            ),
-            Op::Conditional {
-                if_true, if_false, ..
-            } => typed_program_uses(if_true.body()) || typed_program_uses(if_false.body()),
-            Op::Map { body, .. } => typed_program_uses(body.body()),
-            Op::Fold {
-                transition,
-                continuation,
-                ..
             } => {
-                typed_program_uses(transition.body())
-                    || continuation
-                        .as_ref()
-                        .is_some_and(|body| typed_program_uses(body.body()))
+                demand.merge(program_extremum_demand(if_true.body()));
+                demand.merge(program_extremum_demand(if_false.body()));
             }
-            _ => false,
-        })
+            _ => {}
+        }
+    }
+    demand
 }
 
 /// The template function `real_extremum_prelude(language)`: the helper
-/// definitions, or nothing when the Solve render context proves the product
-/// applies no Real `min` or `max`, so a translation unit never defines an
-/// unused helper. Contexts without a Solve problem always declare them.
+/// definitions the Solve render context proves the product applies, each only
+/// when its own operator is used, so a translation unit never defines an
+/// unused helper. Contexts without a Solve problem always declare both.
 pub(super) fn real_extremum_prelude_function(
     state: &minijinja::State,
     language: String,
@@ -340,14 +388,17 @@ pub(super) fn real_extremum_prelude_function(
 ) -> Result<String, minijinja::Error> {
     // `always`: the caller also renders code the solve-IR scan cannot see
     // (typed pure-function bodies), so emit the inline helpers regardless.
-    if always != Some(true)
-        && state
-            .lookup(USES_CONTEXT_KEY)
-            .is_some_and(|uses| !uses.is_true())
-    {
-        return Ok(String::new());
-    }
-    prelude(&language).ok_or_else(|| {
+    let demand = match state.lookup(USES_CONTEXT_KEY) {
+        Some(uses) if always != Some(true) => {
+            let wanted = |name| uses.get_attr(name).is_ok_and(|flag| flag.is_true());
+            ExtremumDemand {
+                minimum: wanted("minimum"),
+                maximum: wanted("maximum"),
+            }
+        }
+        _ => ExtremumDemand::BOTH,
+    };
+    prelude_for(&language, demand).ok_or_else(|| {
         minijinja::Error::new(
             minijinja::ErrorKind::InvalidOperation,
             format!("no real min/max helper for language `{language}`"),

@@ -7,7 +7,8 @@ fn a_reduced_system_past_the_small_dense_size_takes_the_reduction() {
     let expected = DVector::from_element(DIMENSION, 2.0);
     let original = CyclicAffine::new(&[], &expected);
     let mut plan = original.plan;
-    plan.blocks[0].tearing = Some(solve::BlockTearing {
+    let mut blocks = plan.blocks.scalar_blocks().to_vec();
+    blocks[0].tearing = Some(solve::BlockTearing {
         tear_y_indices: (0..17).collect(),
         residual_rows: (0..17).collect(),
         causal_steps: (17..DIMENSION)
@@ -19,6 +20,7 @@ fn a_reduced_system_past_the_small_dense_size_takes_the_reduction() {
             })
             .collect(),
     });
+    plan.blocks = blocks.into();
     let dependencies = (0..DIMENSION)
         .map(|row| vec![row, (row + 1) % DIMENSION])
         .collect();
@@ -195,7 +197,7 @@ fn reduced_affine_refinement_preserves_tiny_switching_voltage() {
         })
         .collect();
     let plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: (0..DIMENSION).collect(),
             y_indices: (0..DIMENSION).collect(),
             tearing: Some(solve::BlockTearing {
@@ -204,7 +206,8 @@ fn reduced_affine_refinement_preserves_tiny_switching_voltage() {
                 causal_steps,
             }),
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     let mut model = CyclicAffine::from_system(matrix, rhs, plan, dependencies);
     model.residual_override = Some(super::super::affine_coordinates::offset_port_residual);

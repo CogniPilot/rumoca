@@ -7,23 +7,49 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = []
+component-build = ["dep:blake3", "dep:tempfile", "dep:serde_json", "dep:wit-component", "dep:wit-parser", "dep:wasmparser"]
+fixed-native-guest-build = ["component-build"]
+fixed-native-guest-receiver = ["dep:rumoca-eval-solve", "dep:serde_json"]
+# Runs retained native entries on the host through an embedded wasmi engine.
+host-engine = ["dep:wasmi"]
+
 [dependencies]
+blake3 = { workspace = true, optional = true }
+libm = { version = "0.2", default-features = false }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+tempfile = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 wasm-encoder = "0.241"
+wasmi = { version = "0.46", default-features = false, features = ["std"], optional = true }
+wasmparser = { version = "0.241", optional = true }
+wit-component = { version = "0.241", optional = true }
+wit-parser = { version = "0.241", optional = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2"))'.dependencies]
+rumoca-eval-solve = { workspace = true, optional = true, features = ["wire-replay"] }
+serde_json = { workspace = true, optional = true, features = ["unbounded_depth"] }
+
 [dev-dependencies]
+# Enables the host engine for this crate's own test builds, and for every crate
+# built beside it under one workspace feature resolution.
+rumoca-exec-wasm = { path = ".", features = ["host-engine", "component-build"] }
 rumoca-compile = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-exec-cranelift = { workspace = true }
+indexmap = { workspace = true }
 serde_json = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
 wasmparser = "0.241"
+wit-component = { version = "0.241", features = ["dummy-module"] }
 
 [lints]
 workspace = true

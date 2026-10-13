@@ -844,7 +844,10 @@ fn multi_axis_vectorization_broadcasts_non_vectorized_inputs() {
         .unwrap();
     assert_eq!(call.prefix, vec![2, 3]);
     assert_eq!(call.vectorized_inputs, vec![true, false]);
-    assert_eq!(analysis.certificates()[0].parameters, vec![vec![], vec![]]);
+    assert_eq!(
+        analysis.certificates()[0].parameters,
+        vec![Vec::<u32>::new(), Vec::new()]
+    );
     assert_eq!(
         analysis
             .expression_shape(&model.equations[0].residual, analysis.model_values())

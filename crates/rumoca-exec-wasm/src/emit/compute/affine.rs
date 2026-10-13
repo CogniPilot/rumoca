@@ -198,12 +198,14 @@ impl BodyEmitter<'_> {
         plan: &AffinePlan<'_>,
         counter: u32,
     ) -> Result<(), String> {
+        let issued = self.bind_root_program()?;
+        let ops = issued.as_deref().unwrap_or(plan.ops);
         if plan.count == 0 {
             return Ok(());
         }
         self.loop_start(counter, plan.count)?;
         self.emit_coordinates(&plan.extents, counter)?;
-        for (position, op) in plan.ops.iter().enumerate() {
+        for (position, op) in ops.iter().enumerate() {
             match *op {
                 LinearOp::LoadY { dst, index }
                 | LinearOp::LoadP { dst, index }

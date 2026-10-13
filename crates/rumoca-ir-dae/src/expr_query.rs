@@ -5,8 +5,8 @@
 //! every operand was checked when its node entered the arena.
 
 use crate::{
-    CoordinateView, DaeView, ExprId, ExpressionOperation, ExpressionView, StateId, SubscriptView,
-    VariableId,
+    CoordinateView, DaeView, DomainId, ExprId, ExpressionOperation, ExpressionView,
+    FunctionConditionalId, FunctionValueId, StateId, SubscriptView, VariableId,
 };
 
 /// Visit one expression DAG, including index and slice expressions.
@@ -48,9 +48,13 @@ fn walk_root<'dae>(
     visit: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
 ) {
     with_shared_stamps(dae, &mut |stamps| {
-        walk_pruned(dae, stamps, &mut vec![root], &mut |id, node| {
-            Some(visit(id, node))
-        });
+        walk_pruned(
+            dae,
+            stamps,
+            &mut vec![root],
+            &mut |_, _| false,
+            &mut |id, node| Some(visit(id, node)),
+        );
     });
 }
 
@@ -61,15 +65,17 @@ fn walk_pruned<'dae>(
     dae: DaeView<'dae>,
     stamps: &mut StampTable,
     pending: &mut Vec<ExprId<'dae>>,
+    prune_state: &mut dyn FnMut(FunctionConditionalId<'dae>, FunctionValueId<'dae>) -> bool,
     visit: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<bool>,
 ) -> bool {
-    walk_projected(dae, stamps, pending, visit, &mut |_, _| None)
+    walk_projected(dae, stamps, pending, prune_state, visit, &mut |_, _| None)
 }
 
 fn walk_projected<'dae>(
     dae: DaeView<'dae>,
     stamps: &mut StampTable,
     pending: &mut Vec<ExprId<'dae>>,
+    prune_state: &mut dyn FnMut(FunctionConditionalId<'dae>, FunctionValueId<'dae>) -> bool,
     visit: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<bool>,
     project: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<ExprId<'dae>>,
 ) -> bool {
@@ -81,7 +87,9 @@ fn walk_projected<'dae>(
             .expression(expression)
             .expect("a branded expression identity resolves in its owning DAE");
         match visit(expression, node) {
-            Some(true) => push_projected_children(dae, expression, node, pending, project),
+            Some(true) => {
+                push_projected_children(dae, expression, node, pending, prune_state, project)
+            }
             Some(false) => {}
             None => return true,
         }
@@ -94,11 +102,12 @@ fn push_projected_children<'dae>(
     expression: ExprId<'dae>,
     node: ExpressionView<'dae>,
     pending: &mut Vec<ExprId<'dae>>,
+    prune_state: &mut dyn FnMut(FunctionConditionalId<'dae>, FunctionValueId<'dae>) -> bool,
     project: &mut dyn FnMut(ExprId<'dae>, ExpressionView<'dae>) -> Option<ExprId<'dae>>,
 ) {
     match project(expression, node) {
         Some(selected) => pending.push(selected),
-        None => push_children(dae, node.operation(), pending),
+        None => push_children(dae, node.operation(), pending, prune_state),
     }
 }
 
@@ -198,6 +207,18 @@ impl<'dae> ExpressionTraversal<'dae> {
         &mut self,
         dae: DaeView<'dae>,
         roots: impl IntoIterator<Item = ExprId<'dae>>,
+        visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
+    ) {
+        self.visit_pruned_with_conditional_states(dae, roots, |_, _| false, visit);
+    }
+
+    /// Visit expressions while treating selected exact conditional states as leaves.
+    /// The predicate selects state interfaces; it issues no assignedness or payload.
+    pub fn visit_pruned_with_conditional_states(
+        &mut self,
+        dae: DaeView<'dae>,
+        roots: impl IntoIterator<Item = ExprId<'dae>>,
+        mut prune_state: impl FnMut(FunctionConditionalId<'dae>, FunctionValueId<'dae>) -> bool,
         mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
     ) {
         self.pending.clear();
@@ -205,7 +226,9 @@ impl<'dae> ExpressionTraversal<'dae> {
         self.pending.reverse();
         let pending = &mut self.pending;
         with_shared_stamps(dae, &mut |stamps| {
-            walk_pruned(dae, stamps, pending, &mut |id, node| Some(visit(id, node)));
+            walk_pruned(dae, stamps, pending, &mut prune_state, &mut |id, node| {
+                Some(visit(id, node))
+            });
         });
     }
 
@@ -230,6 +253,7 @@ impl<'dae> ExpressionTraversal<'dae> {
                 dae,
                 stamps,
                 &mut self.pending,
+                &mut |_, _| false,
                 &mut |id, node| {
                     visit(id, node);
                     Some(true)
@@ -275,6 +299,21 @@ pub fn expr_refers_to_var<'dae>(
     }
 }
 
+/// True when `root` reads a binder of `domain`.
+pub fn expr_reads_binder_of<'dae>(
+    dae: DaeView<'dae>,
+    root: ExprId<'dae>,
+    domain: DomainId<'dae>,
+) -> bool {
+    expression_any(dae, root, |node| {
+        matches!(
+            node.operation(),
+            ExpressionOperation::Coordinate(CoordinateView::Binder(binder))
+                if binder.domain() == domain
+        )
+    })
+}
+
 /// True when `root` contains the derivative coordinate of `state`.
 pub fn expr_contains_der_of<'dae>(
     dae: DaeView<'dae>,
@@ -309,9 +348,13 @@ fn expression_any<'dae>(
 ) -> bool {
     let mut found = false;
     with_shared_stamps(dae, &mut |stamps| {
-        found = walk_pruned(dae, stamps, &mut vec![root], &mut |_, node| {
-            (!predicate(node)).then_some(true)
-        });
+        found = walk_pruned(
+            dae,
+            stamps,
+            &mut vec![root],
+            &mut |_, _| false,
+            &mut |_, node| (!predicate(node)).then_some(true),
+        );
     });
     found
 }
@@ -320,6 +363,7 @@ fn push_children<'dae>(
     dae: DaeView<'dae>,
     operation: ExpressionOperation<'dae>,
     pending: &mut Vec<ExprId<'dae>>,
+    prune_state: &mut dyn FnMut(FunctionConditionalId<'dae>, FunctionValueId<'dae>) -> bool,
 ) {
     match operation {
         ExpressionOperation::Literal(_)
@@ -374,6 +418,17 @@ fn push_children<'dae>(
             pending.extend(fold.initial_values().rhs_iter());
             pending.extend(fold.update_values().rhs_iter());
             pending.extend(fold.continuation());
+        }
+        ExpressionOperation::FunctionConditionalOutput {
+            conditional, value, ..
+        } => {
+            let conditional = dae
+                .function_conditional(conditional)
+                .expect("checked function conditional identity resolves");
+            assert!(
+                conditional
+                    .visit_value_inputs_pruned(value, prune_state, |input| pending.push(input))
+            );
         }
         ExpressionOperation::Index { base, subscripts } => {
             push_subscripts(subscripts, pending);

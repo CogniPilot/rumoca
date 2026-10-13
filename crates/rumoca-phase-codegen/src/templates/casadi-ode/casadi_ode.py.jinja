@@ -143,7 +143,7 @@ N_P = {{ solve.solve_layout.parameter_count }}
 N_P_COMPILED = {{ solve.solve_layout.compiled_parameter_len }}
 _PAD = N_P_COMPILED - N_P - N_U
 
-STATE_NAMES = [{% for name in solve.solve_layout.solver_maps.names %}{% if loop.index0 < n_y %}'{{ name }}'{% if loop.index0 + 1 < n_y %}, {% endif %}{% endif %}{% endfor %}]
+STATE_NAMES = [{% for name in solve.state_names() %}{% if loop.index0 < n_y %}'{{ name }}'{% if loop.index0 + 1 < n_y %}, {% endif %}{% endif %}{% endfor %}]
 INPUT_NAMES = [{% for name in solve.solve_layout.input_scalar_names %}'{{ name }}'{{ ", " if not loop.last else "" }}{% endfor %}]
 # Static storage is grouped by role by the checked Solve layout.
 PARAM_NAMES = [{% for name in solve_parameter_names[:solve.solve_layout.parameter_count] %}'{{ name if name is not none else "" }}', {% endfor %}]

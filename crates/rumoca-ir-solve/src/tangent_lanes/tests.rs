@@ -221,3 +221,51 @@ fn a_nested_program_runs_once_verbatim_only_over_seed_independent_scalars() {
     let per_lane = TangentLaneProgram::replicate(&seeded, 3).expect("the conditional widens");
     assert_eq!(count(&per_lane, "FunctionConditional"), 3, "one per lane");
 }
+
+/// Transposing an interleaved block of primal and seed values into planes
+/// keeps the primal plane seed-independent, so it can fill the primal slots
+/// of a dual aggregate while the tangent plane fills its tangent lanes.
+#[test]
+fn a_transposed_interleaved_block_keeps_its_primal_plane_seed_independent() {
+    let program = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadSeed { dst: 1, index: 0 },
+        LinearOp::LoadY { dst: 2, index: 1 },
+        LinearOp::LoadSeed { dst: 3, index: 1 },
+        LinearOp::TensorTranspose {
+            dst_start: 4,
+            src_start: 0,
+            rows: 2,
+            columns: 2,
+            element_width: 1,
+            lanes: 1,
+        },
+        LinearOp::Move { dst: 8, src: 4 },
+        LinearOp::Move { dst: 9, src: 6 },
+        LinearOp::Move { dst: 10, src: 5 },
+        LinearOp::Move { dst: 11, src: 7 },
+        LinearOp::TensorBinary {
+            dst_start: 12,
+            op: BinaryOp::Mul,
+            lhs_start: 8,
+            rhs_start: 8,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 2,
+        },
+        LinearOp::StoreOutputRange {
+            start: 13,
+            count: 2,
+            stride: 2,
+        },
+    ];
+    let lanes = 3;
+    let widened = TangentLaneProgram::replicate(&program, lanes).expect("the program widens");
+    assert_eq!(count(&widened, "LoadY"), 2, "the primal loads run once");
+    assert_eq!(count(&widened, "TensorBinary"), 1);
+    assert_eq!(
+        ScalarProgramBlock::program_output_count(widened.ops()),
+        lanes * 2
+    );
+}

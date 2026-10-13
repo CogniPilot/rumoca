@@ -6,7 +6,11 @@ test "$#" -ge 1 && test "$#" -le 2
 evidence="$1"
 mode="${2:-all}"
 case "$mode" in all|prepare|run) ;; *) exit 2 ;; esac
-if test "$mode" != all; then git diff --quiet HEAD; fi
+if test "$mode" != all && ! git diff --quiet HEAD; then
+  echo "tracked files modified before $mode:" >&2
+  git status --short >&2
+  exit 1
+fi
 if test "$mode" != run; then
   mkdir "$evidence"
   rustc -vV > "$evidence/rustc-version.txt"

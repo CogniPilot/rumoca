@@ -39,21 +39,19 @@ impl ImplicitProjectionModel for LinearSensitivity {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-    fn target_name_for_row(&self, _: usize) -> Option<&str> {
-        None
-    }
 }
 
 fn model() -> LinearSensitivity {
     LinearSensitivity {
         corrupt_combined_direction: false,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![1, 2],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     }
 }

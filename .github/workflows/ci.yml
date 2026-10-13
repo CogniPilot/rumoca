@@ -365,7 +365,7 @@ jobs:
         id: msl-cache
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
-          key: msl-v4.1.0-release-zip-layout-v2
+          key: msl-v4.1.0-release-zip-layout-v3
 
       - name: Cache CMM
         uses: actions/cache@v5
@@ -382,7 +382,10 @@ jobs:
           mkdir -p target/msl
           touch target/msl/formatter-stability-required
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
-          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+          # Accept only the release-zip layout: a stale or foreign top-level entry
+          # (for example an unversioned Modelica/ tree) would load a second provider.
+          unexpected_entries=$(ls -A "$msl_dir" 2>/dev/null | grep -vxF -e Complex.mo -e LICENSE -e "Modelica 4.1.0" -e "ModelicaReference 4.1.0" -e "ModelicaServices 4.1.0" -e ObsoleteModelica4.mo -e README.md || true)
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" && -z "$unexpected_entries" ]]; then
             echo "MSL cache is valid at $msl_dir"
             exit 0
           fi
@@ -641,7 +644,7 @@ jobs:
         continue-on-error: true
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
-          key: msl-v4.1.0-release-zip-layout-v2
+          key: msl-v4.1.0-release-zip-layout-v3
 
       - name: Ensure MSL (fmi-ls-wasm Fourbar1 check)
         if: matrix.backend == 'wasm'
@@ -649,7 +652,10 @@ jobs:
         run: |
           set -euo pipefail
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
-          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+          # Accept only the release-zip layout: a stale or foreign top-level entry
+          # (for example an unversioned Modelica/ tree) would load a second provider.
+          unexpected_entries=$(ls -A "$msl_dir" 2>/dev/null | grep -vxF -e Complex.mo -e LICENSE -e "Modelica 4.1.0" -e "ModelicaReference 4.1.0" -e "ModelicaServices 4.1.0" -e ObsoleteModelica4.mo -e README.md || true)
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" && -z "$unexpected_entries" ]]; then
             echo "MSL cache is valid at $msl_dir"
             exit 0
           fi
@@ -835,14 +841,17 @@ jobs:
         id: msl-cache-editor
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
-          key: msl-v4.1.0-release-zip-layout-v2
+          key: msl-v4.1.0-release-zip-layout-v3
 
       - name: Ensure MSL
         shell: bash
         run: |
           set -euo pipefail
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
-          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+          # Accept only the release-zip layout: a stale or foreign top-level entry
+          # (for example an unversioned Modelica/ tree) would load a second provider.
+          unexpected_entries=$(ls -A "$msl_dir" 2>/dev/null | grep -vxF -e Complex.mo -e LICENSE -e "Modelica 4.1.0" -e "ModelicaReference 4.1.0" -e "ModelicaServices 4.1.0" -e ObsoleteModelica4.mo -e README.md || true)
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" && -z "$unexpected_entries" ]]; then
             echo "MSL cache is valid at $msl_dir"
             exit 0
           fi
@@ -1190,14 +1199,17 @@ jobs:
         continue-on-error: true
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
-          key: msl-v4.1.0-release-zip-layout-v2
+          key: msl-v4.1.0-release-zip-layout-v3
 
       - name: Ensure MSL
         shell: bash
         run: |
           set -euo pipefail
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
-          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+          # Accept only the release-zip layout: a stale or foreign top-level entry
+          # (for example an unversioned Modelica/ tree) would load a second provider.
+          unexpected_entries=$(ls -A "$msl_dir" 2>/dev/null | grep -vxF -e Complex.mo -e LICENSE -e "Modelica 4.1.0" -e "ModelicaReference 4.1.0" -e "ModelicaServices 4.1.0" -e ObsoleteModelica4.mo -e README.md || true)
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" && -z "$unexpected_entries" ]]; then
             echo "MSL cache is valid at $msl_dir"
             exit 0
           fi
@@ -1650,14 +1662,17 @@ jobs:
         continue-on-error: true
         with:
           path: target/msl/ModelicaStandardLibrary-4.1.0
-          key: msl-v4.1.0-release-zip-layout-v2
+          key: msl-v4.1.0-release-zip-layout-v3
 
       - name: Ensure MSL
         shell: bash
         run: |
           set -euo pipefail
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
-          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+          # Accept only the release-zip layout: a stale or foreign top-level entry
+          # (for example an unversioned Modelica/ tree) would load a second provider.
+          unexpected_entries=$(ls -A "$msl_dir" 2>/dev/null | grep -vxF -e Complex.mo -e LICENSE -e "Modelica 4.1.0" -e "ModelicaReference 4.1.0" -e "ModelicaServices 4.1.0" -e ObsoleteModelica4.mo -e README.md || true)
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" && -z "$unexpected_entries" ]]; then
             echo "MSL cache is valid at $msl_dir"
             exit 0
           fi

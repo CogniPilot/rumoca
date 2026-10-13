@@ -49,7 +49,7 @@ fn additive_moment_equation_issues_independent_offsets_and_rejects_forged_wire()
             .algebraic()
             .causal_rows()
             .iter()
-            .find(|row| model.problem.solve_layout.solver_maps.names[row.target_index()] == name)
+            .find(|row| model.problem.solver_name(row.target_index()).unwrap() == name)
             .unwrap_or_else(|| panic!("{name} requires a causal seed"));
         assert!(matches!(
             row.assignment_shape(),

@@ -36,38 +36,8 @@ use std::path::PathBuf;
 
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
+pub mod artifact_build;
 mod clock_lattice;
-include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
-
-/// The identity of the source state this crate was built from.
-///
-/// `None` when the build could not determine it. Callers comparing two
-/// artifacts MUST treat `None` as "cannot verify" and skip the comparison; two
-/// `None`s are not evidence that the builds agree.
-///
-/// Pairs with the package version: the version says which release, this says
-/// which build of it. Two artifacts reporting the same version and different
-/// identities were built from different source states.
-#[must_use]
-pub fn build_identity() -> Option<&'static str> {
-    BUILD_IDENTITY
-}
-
-/// The short parents of the built commit when it is a merge, first parent
-/// first; empty for an ordinary commit and `None` when git cannot say.
-///
-/// A pull-request build compiles a synthetic merge of the request head into
-/// its base. [`build_identity`] is that merge commit, which exists only on the
-/// hosting service; the parents name the head and base it combines, so a
-/// report can state both what was built and which head it came from.
-#[must_use]
-pub fn build_merge_parents() -> Option<&'static [&'static str]> {
-    BUILD_MERGE_PARENTS
-}
-
-#[cfg(test)]
-mod build_identity_tests;
-
 pub mod dependency_graph;
 mod effective_type;
 mod enumeration_declaration;
@@ -104,7 +74,8 @@ pub use structured_domain::{
     AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, IndexAxis, IndexBox,
     IndexUnion, IntegerInterval, Progression, RealInterval, RegularForFamily, SetAnswer,
     StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, checked_product,
-    flatten_coordinates, image, row_major_coordinates, row_major_strides, solve_point,
+    flatten_coordinates, image, row_major_coordinates, row_major_strides,
+    scalar_component_display_name, scalar_component_name, solve_point,
 };
 pub use subscript::Subscript;
 
@@ -185,7 +156,10 @@ pub use eval_lookup::EvalLookup;
 pub mod enum_compare;
 pub use enum_compare::enum_values_equal;
 pub mod integer_binary;
-pub use integer_binary::{IntegerBinaryOperator, eval_ast_integer_binary, eval_integer_binary};
+pub use integer_binary::{
+    IntegerBinaryOperator, eval_ast_integer_binary, eval_integer_binary,
+    integer_within_binary64_exact_range,
+};
 pub mod integer_division;
 pub use integer_division::{
     eval_integer_div_builtin, eval_integer_mod_builtin, eval_integer_rem_builtin,

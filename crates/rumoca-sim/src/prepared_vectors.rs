@@ -71,7 +71,7 @@ pub fn refresh_prepared_vectors(
     t_start: f64,
     overrides: &[(String, f64)],
 ) -> Result<(Vec<f64>, Vec<f64>), PreparedVectorError> {
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters.to_vec();
     let read = if overrides.is_empty() {
         Default::default()
     } else {
@@ -106,7 +106,7 @@ pub(crate) fn settle_prepared_vectors(
     mut params: Vec<f64>,
 ) -> Result<(Vec<f64>, Vec<f64>), PreparedVectorError> {
     let model = &runtime.model;
-    let mut y = model.initial_y.clone();
+    let mut y = model.initial_y.to_vec();
     let settle = |message: String| PreparedVectorError::Settle { message };
     runtime
         .settle_initialization_system(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)

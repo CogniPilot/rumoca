@@ -29,6 +29,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         )>,
         LowerError,
     > {
+        // A call body expanded in place reads function-scoped values; its
+        // Integer operations stay on the nested-call path, like nested calls.
+        if !self.function_arguments.is_empty() {
+            return Ok(None);
+        }
         let node = self.node(expression);
         let span = node.provenance().span();
         let Some(form) =

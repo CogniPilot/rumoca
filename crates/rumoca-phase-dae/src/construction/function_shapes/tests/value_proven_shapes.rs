@@ -1168,3 +1168,69 @@ fn a_real_bearing_record_input_still_requires_decomposition() {
         "unexpected error: {error:?}"
     );
 }
+
+/// `function g input Real A[:, size(A, 1)]; output Real y[2]; end g;`
+fn self_extent_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("g", span);
+    function.add_input(
+        param("A", "Real", real_type(), vec![0, 0], span).with_shape_expr(vec![
+            Subscript::colon(span),
+            Subscript::expr(
+                Box::new(Expression::BuiltinCall {
+                    function: rumoca_core::BuiltinFunction::Size,
+                    args: vec![var_ref("A", span), integer_literal(1, span)],
+                    span,
+                }),
+                span,
+            ),
+        ]),
+    );
+    function.add_output(param("y", "Real", real_type(), vec![2], span));
+    function
+}
+
+fn matrix_argument(rows: usize, columns: usize, span: Span) -> Expression {
+    Expression::Array {
+        elements: (0..rows).map(|_| array_argument(columns, span)).collect(),
+        kind: rumoca_core::ArrayConstructor::Array,
+        span,
+    }
+}
+
+fn analysis_of_self_extent_call(rows: usize, columns: usize) -> Result<usize, String> {
+    let mut sources = SourceMap::new();
+    let source = sources.add("self_extent.mo", "g({{1.0}});");
+    let span = Span::from_offsets(source, 0, 10);
+    let mut model = model_with_predefined_types();
+    model.add_function(self_extent_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("g"),
+            args: vec![matrix_argument(rows, columns, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    let analysis = analyze(&model).map_err(|error| error.to_string())?;
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization");
+    };
+    Ok(certificate.values[&VarName::new("A")].iter().sum::<u32>() as usize)
+}
+
+/// MLS §12.2: a later dimension of a formal may read an earlier axis of the
+/// same formal, which the call site's shape settles.
+#[test]
+fn a_formal_extent_may_read_an_earlier_axis_of_the_same_formal() {
+    assert_eq!(analysis_of_self_extent_call(2, 2), Ok(4));
+}
+
+/// REJECTED: an actual whose second axis disagrees with its own first axis.
+#[test]
+fn an_actual_disagreeing_with_the_self_referring_extent_is_rejected() {
+    assert!(analysis_of_self_extent_call(2, 3).is_err());
+}

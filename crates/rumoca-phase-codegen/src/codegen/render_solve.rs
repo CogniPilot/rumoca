@@ -8,6 +8,8 @@ mod dense_solve_render;
 mod mlir_family;
 #[cfg(test)]
 mod render_solve_tests;
+#[cfg(test)]
+mod rows_storage_tests;
 mod template_partition;
 
 use std::sync::Arc;
@@ -45,20 +47,37 @@ pub(super) use template_partition::{
     wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
+enum SolveRowsStorage {
+    Owned(Arc<Vec<Vec<solve::LinearOp>>>),
+    Checked(solve::ScalarProgramBlock),
+}
 
+impl SolveRowsStorage {
+    fn programs(&self) -> &[Vec<solve::LinearOp>] {
+        match self {
+            Self::Owned(rows) => rows,
+            Self::Checked(block) => block.programs(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct SolveRowValue {
-    rows: Arc<Vec<Vec<solve::LinearOp>>>,
+    rows: SolveRowsStorage,
     index: usize,
 }
 
 impl SolveRowValue {
     pub(in crate::codegen) fn new(rows: Arc<Vec<Vec<solve::LinearOp>>>, index: usize) -> Self {
-        Self { rows, index }
+        Self {
+            rows: SolveRowsStorage::Owned(rows),
+            index,
+        }
     }
 
     pub(in crate::codegen) fn ops(&self) -> &[solve::LinearOp] {
-        &self.rows[self.index]
+        &self.rows.programs()[self.index]
     }
 }
 

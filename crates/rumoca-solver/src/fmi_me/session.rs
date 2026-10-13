@@ -15,7 +15,10 @@
 mod error;
 mod host_state;
 mod inputs;
+#[cfg(feature = "native-wasm")]
+mod native_inputs;
 mod options;
+mod recovery;
 
 use std::{
     cell::{Cell, RefCell},
@@ -25,6 +28,7 @@ use std::{
 
 use indexmap::IndexMap;
 
+use super::instance::MeKernelCell;
 use host_state::{InitializationOutcome, MeHostState, run_fmi_initialization};
 
 pub use error::{MePluginArity, MeSessionError, MeSessionLoss};
@@ -55,21 +59,24 @@ use crate::{
 /// One instantiated FMI 3 ME component retained across runs.
 ///
 /// Instantiation performs the eager compiles a component's runtime owns, so a
-/// prepared simulation keeps exactly one instance and rewinds it
-/// (`fmi3Reset` + `fmi3SetFMUState`) per run instead of re-instantiating.
+/// prepared simulation keeps exactly one instance and restores its original
+/// defaults per run. Native reset returns the same storage to preparation;
+/// continuation snapshots are a separate operation.
 ///
 /// It exposes no derivative handle and no host of its own: the only way to use
 /// the instance is [`Self::lease`], which takes `&mut self`.
 pub struct MeRetainedComponent {
-    kernel: Rc<RefCell<SolveMeKernel>>,
-    pristine: super::MeFmuState,
+    kernel: Rc<MeKernelCell>,
     state_count: usize,
     leases: u64,
 }
 
 impl MeRetainedComponent {
-    /// `fmi3InstantiateModelExchange` plus the pristine snapshot every run
-    /// rewinds to.
+    /// Copy only newly committed diagnostics at an explicitly requested reporting boundary.
+    pub fn diagnostics_since(&self, first: usize) -> (Vec<crate::SimDiagnostic>, usize) {
+        self.kernel.diagnostics_since(first)
+    }
+    /// `fmi3InstantiateModelExchange` plus the original-default reset owner.
     pub fn instantiate(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
@@ -77,20 +84,92 @@ impl MeRetainedComponent {
     ) -> Result<Self, MeSessionError> {
         let kernel =
             SolveMeKernel::instantiate_with_execution_backend(source, config, execution_backend)?;
-        let kernel = Rc::new(RefCell::new(kernel));
-        let pristine = kernel.borrow().fmu_state();
-        let state_count = kernel.borrow().model_description().continuous_state_count;
+        Ok(Self::from_kernel(kernel))
+    }
+
+    /// Prepare the same native resource without inventing initialization time.
+    #[cfg(feature = "native-wasm")]
+    pub fn prepare_retained_native_wasm(
+        source: MeModelSource<'_>,
+        code: &rumoca_exec_wasm::PreparedNativeWasmCode,
+    ) -> Result<Self, super::MeError> {
+        let pending = super::MePendingNativeComponent::instantiate(source, code)?;
+        let state_count = pending.continuous_state_count();
         Ok(Self {
-            kernel,
-            pristine,
+            kernel: Rc::new(MeKernelCell::prepared(pending)),
             state_count,
             leases: 0,
         })
     }
 
+    /// Actual FMI EnterInitializationMode activates the same resource once.
+    #[cfg(feature = "native-wasm")]
+    pub fn enter_initialization_mode(
+        &mut self,
+        config: &MeInstanceConfig,
+    ) -> Result<(), super::MeError> {
+        self.kernel.enter_initialization_mode(config)
+    }
+
+    fn from_kernel(kernel: SolveMeKernel) -> Self {
+        let state_count = kernel.continuous_state_count();
+        Self {
+            kernel: Rc::new(MeKernelCell::new(kernel)),
+            state_count,
+            leases: 0,
+        }
+    }
+
+    /// Consume the actual native Initialization Mode kernel into the common host owner.
+    /// This admits no new engine and preserves its source reset receipt.
+    #[cfg(feature = "native-wasm")]
+    pub fn from_initializing_native_kernel(
+        kernel: SolveMeKernel,
+    ) -> Result<Self, (Box<SolveMeKernel>, super::MeError)> {
+        if !kernel.has_native_resource()
+            || kernel.initialization_state() != super::lifecycle::MeState::InitializationMode
+        {
+            return Err((
+                Box::new(kernel),
+                super::MeError::Contract {
+                    reason: "native host handoff requires its actual Initialization Mode kernel"
+                        .to_owned(),
+                },
+            ));
+        }
+        Ok(Self::from_kernel(kernel))
+    }
+
+    /// FMI Reset restores the original instance source without inventing startTime.
+    pub fn reset(&mut self) -> Result<(), MeSessionError> {
+        self.kernel.reset()?;
+        Ok(())
+    }
+
     #[must_use]
     pub fn state_count(&self) -> usize {
         self.state_count
+    }
+
+    /// Read options from the actual Initialization Mode request, without a guest copy.
+    pub fn initialization_options(&self) -> Result<MeSessionOptions, MeSessionError> {
+        let config = self.kernel.initialization_configuration()?;
+        let kernel = self.kernel.borrow()?;
+        super::driver::fmi_session_options(kernel.root_location(), &config)
+    }
+
+    pub fn terminate(&mut self) -> Result<(), MeSessionError> {
+        self.kernel.terminate()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "native-wasm")]
+    pub fn native_value_count(
+        &self,
+        references: &[u32],
+        kind: rumoca_ir_solve::SolveVariableValueKind,
+    ) -> Result<usize, super::MeError> {
+        self.kernel.native_value_count(references, kind)
     }
 
     /// Runs this component has been leased for, each one an initialization.
@@ -99,8 +178,8 @@ impl MeRetainedComponent {
         self.leases
     }
 
-    /// Lease the sole FMI instance for one run: rewind to the pristine
-    /// snapshot and run FMI initialization.
+    /// Lease the sole FMI instance: complete an actual initialization handoff
+    /// or restore source defaults and initialize the next run.
     ///
     /// The exclusive `&mut self` borrow travels into the returned host and into
     /// every session built from it, so no second host can exist and the
@@ -112,8 +191,7 @@ impl MeRetainedComponent {
     ) -> Result<MeComponentHost<'_>, MeSessionError> {
         self.leases += 1;
         self.kernel
-            .borrow_mut()
-            .reset_to_fmu_state(&self.pristine)?;
+            .prepare_lease(options.start_time(), options.stop_time())?;
         self.host_over_component(options)
     }
 
@@ -126,9 +204,12 @@ impl MeRetainedComponent {
         self,
         options: MeSessionOptions,
     ) -> Result<MeComponentHost<'static>, MeSessionError> {
-        let host = build_host_state(self.kernel, self.pristine, options)?;
+        self.kernel
+            .prepare_host(options.start_time(), options.stop_time())?;
+        let host = build_host_state(Rc::clone(&self.kernel), options)?;
         Ok(MeComponentHost {
             host,
+            owned_component: Some(self),
             lease: PhantomData,
         })
     }
@@ -137,9 +218,10 @@ impl MeRetainedComponent {
         &self,
         options: MeSessionOptions,
     ) -> Result<MeComponentHost<'_>, MeSessionError> {
-        let host = build_host_state(Rc::clone(&self.kernel), self.pristine.clone(), options)?;
+        let host = build_host_state(Rc::clone(&self.kernel), options)?;
         Ok(MeComponentHost {
             host,
+            owned_component: None,
             lease: PhantomData,
         })
     }
@@ -151,27 +233,36 @@ impl MeRetainedComponent {
 /// instance: `MeRetainedComponent::lease(&mut self)` is what proves only one
 /// lease — and therefore only one controller — exists at a time.
 fn build_host_state(
-    kernel: Rc<RefCell<SolveMeKernel>>,
-    pristine: super::MeFmuState,
+    kernel: Rc<MeKernelCell>,
     options: MeSessionOptions,
 ) -> Result<MeHostState, MeSessionError> {
-    let (state_count, indicator_count, names, meta, input_names, max_step_duration_reference) = {
-        let borrowed = kernel.borrow();
-        let description = borrowed.model_description();
+    let (state_count, indicator_count, names, meta, max_step_duration_reference) = {
+        let borrowed = kernel.borrow()?;
+        let (names, meta) = if options.records_trace() {
+            let description = borrowed.model_description();
+            (
+                description.output_names.to_vec(),
+                description.output_meta.to_vec(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         (
-            description.continuous_state_count,
-            description.event_indicator_count,
-            description.output_names.to_vec(),
-            description.output_meta.to_vec(),
-            description.input_names.to_vec(),
+            borrowed.continuous_state_count(),
+            borrowed.event_indicator_count(),
+            names,
+            meta,
             borrowed.max_step_duration_value_reference(),
         )
     };
     let capacity = trace_capacity(&options);
     let mut trace = MeTraceRecorder::new(names, meta, state_count, capacity)?;
-    let outcome =
-        run_fmi_initialization(&mut kernel.borrow_mut(), &options, options.records_trace())?;
-    let root_location = *kernel.borrow().root_location();
+    let outcome = run_fmi_initialization(
+        &mut *kernel.borrow_mut()?,
+        &options,
+        options.records_trace(),
+    )?;
+    let root_location = *kernel.borrow()?.root_location();
     let policy = build_policy(&options, &outcome, state_count, &root_location)?;
     if let Some(values) = &outcome.initial_values {
         trace.record_slice(
@@ -183,7 +274,7 @@ fn build_host_state(
     let terminated = outcome.termination.is_some();
     let mut states = outcome.states;
     states.resize(state_count, 0.0);
-    let derivatives = MeDerivativeController::over_kernel(Rc::clone(&kernel));
+    let derivatives = MeDerivativeController::over_kernel(Rc::clone(&kernel))?;
     Ok(MeHostState {
         kernel,
         max_step_duration_reference,
@@ -200,9 +291,7 @@ fn build_host_state(
         terminated,
         state_count,
         indicator_count,
-        input_names,
         inputs: IndexMap::new(),
-        pristine,
         event_streak_time: None,
         event_streak_count: 0,
         usability: Cell::new(None),
@@ -236,6 +325,7 @@ fn build_policy(
 /// An instantiated, initialized FMI 3 ME component awaiting its plugin.
 pub struct MeComponentHost<'lease> {
     host: MeHostState,
+    owned_component: Option<MeRetainedComponent>,
     lease: PhantomData<&'lease ()>,
 }
 
@@ -273,11 +363,11 @@ impl MeComponentHost<'_> {
         self.host.termination.as_ref()
     }
 
-    pub fn output_names(&self) -> Vec<String> {
+    pub fn output_names(&self) -> Result<Vec<String>, MeSessionError> {
         self.host.output_names()
     }
 
-    pub fn output_meta(&self) -> Vec<SimVariableMeta> {
+    pub fn output_meta(&self) -> Result<Vec<SimVariableMeta>, MeSessionError> {
         self.host.output_meta()
     }
 
@@ -320,6 +410,7 @@ impl MeComponentHost<'_> {
         };
         let mut session = MeSimulationSession {
             host: self.host,
+            owned_component: self.owned_component,
             backend,
             scan_workspace: RefCell::new(RootScanWorkspace::default()),
             lease: PhantomData,
@@ -332,17 +423,43 @@ impl MeComponentHost<'_> {
 /// The one FMI 3 ME master algorithm.
 pub struct MeSimulationSession<'lease, 'plugin> {
     host: MeHostState,
+    owned_component: Option<MeRetainedComponent>,
     backend: Box<dyn MeIntegratorBackend + 'plugin>,
     scan_workspace: RefCell<RootScanWorkspace>,
     lease: PhantomData<&'lease ()>,
 }
 
 impl MeSimulationSession<'_, '_> {
+    /// This observes the existing log; it evaluates no source effect or warning site.
+    pub fn diagnostics_since(&self, first: usize) -> (Vec<crate::SimDiagnostic>, usize) {
+        self.host.kernel.diagnostics_since(first)
+    }
     // -- public incremental surface ----------------------------------------
 
     #[must_use]
     pub fn time(&self) -> f64 {
         self.host.time
+    }
+
+    /// The horizon held by this actual driver, rather than a caller's copy.
+    #[must_use]
+    pub fn stop_time(&self) -> Option<f64> {
+        self.host.options.stop_time()
+    }
+
+    pub fn terminate(&mut self) -> Result<(), MeSessionError> {
+        self.require_live()?;
+        self.host.terminate_component(None)
+    }
+
+    #[cfg(feature = "native-wasm")]
+    pub fn native_value_count(
+        &self,
+        references: &[u32],
+        kind: rumoca_ir_solve::SolveVariableValueKind,
+    ) -> Result<usize, MeSessionError> {
+        self.require_live()?;
+        Ok(self.host.kernel.native_value_count(references, kind)?)
     }
 
     #[must_use]
@@ -360,15 +477,25 @@ impl MeSimulationSession<'_, '_> {
         self.host.terminated
     }
 
-    pub fn output_names(&self) -> Vec<String> {
+    pub fn output_names(&self) -> Result<Vec<String>, MeSessionError> {
         self.host.output_names()
     }
 
     pub fn input_names(&self) -> Vec<String> {
-        self.host.input_names.clone()
+        self.host
+            .kernel
+            .with_model(|model| {
+                model
+                    .problem
+                    .solve_layout
+                    .input_scalar_names()
+                    .iter()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    pub fn output_meta(&self) -> Vec<SimVariableMeta> {
+    pub fn output_meta(&self) -> Result<Vec<SimVariableMeta>, MeSessionError> {
         self.host.output_meta()
     }
 
@@ -380,7 +507,7 @@ impl MeSimulationSession<'_, '_> {
 
     /// Current visible values keyed by name, including host-applied inputs.
     pub fn visible_values(&self) -> Result<IndexMap<String, f64>, MeSessionError> {
-        let names = self.output_names();
+        let names = self.output_names()?;
         let values = self.output_values()?;
         if names.len() != values.len() {
             return Err(MeSessionError::Contract {
@@ -404,7 +531,16 @@ impl MeSimulationSession<'_, '_> {
     /// inventory, not from the mere existence of a value reference.
     #[must_use]
     pub fn has_input(&self, name: &str) -> bool {
-        self.host.input_names.iter().any(|input| input == name)
+        self.host
+            .kernel
+            .with_model(|model| {
+                model
+                    .problem
+                    .solve_layout
+                    .input_parameter_index(name)
+                    .is_some()
+            })
+            .unwrap_or(false)
     }
 
     /// Restart the session at `start_time` from the pristine component state.
@@ -424,11 +560,9 @@ impl MeSimulationSession<'_, '_> {
 
     /// Discard every cache and rebuild the whole lifecycle.
     fn restart_session(&mut self, options: MeSessionOptions) -> Result<(), MeSessionError> {
-        let pristine = self.host.pristine.clone();
         self.host
             .kernel
-            .borrow_mut()
-            .restart_from_fmu_state(&pristine, options.start_time())?;
+            .restart(options.start_time(), options.stop_time())?;
         self.host.trace.clear();
         self.host.inputs.clear();
         self.host.termination = None;
@@ -442,11 +576,11 @@ impl MeSimulationSession<'_, '_> {
         self.host.options = options;
 
         let outcome = run_fmi_initialization(
-            &mut self.host.kernel.borrow_mut(),
+            &mut *self.host.kernel.borrow_mut()?,
             &self.host.options,
             self.host.options.records_trace(),
         )?;
-        let root_location = *self.host.kernel.borrow().root_location();
+        let root_location = *self.host.kernel.borrow()?.root_location();
         self.host.policy = build_policy(
             &self.host.options,
             &outcome,
@@ -818,7 +952,7 @@ impl MeSimulationSession<'_, '_> {
         let located = self.scan_with_retained(&step, &retained);
         self.host.retained_indicators = retained;
         match located? {
-            Some(application) if !self.coincides_with_time_event(&step, &application) => {
+            Some(application) if !self.coincides_with_time_event(&step, &application)? => {
                 crate::runtime::hotpath_stats::inc_root_hit();
                 self.apply_located_root(&step, &application, cursor)
             }
@@ -833,24 +967,24 @@ impl MeSimulationSession<'_, '_> {
         &self,
         step: &MeAcceptedStep,
         application: &MeRootApplication,
-    ) -> bool {
+    ) -> Result<bool, MeSessionError> {
         let Some(event_time) = self.host.reached_cached_event_time(step.accepted().time()) else {
-            return false;
+            return Ok(false);
         };
         let start = step.previous().time();
-        self.host
+        Ok(self
+            .host
             .kernel
-            .borrow()
+            .borrow()?
             .root_location()
             .coincides_with_time_event(
                 application.application().time(),
                 event_time,
                 start,
                 step.accepted().time() - start,
-            )
+            ))
     }
 
-    /// The scan's view of the component and the plugin's continuous extension.
     fn scan_target(&self) -> SessionScanTarget<'_> {
         SessionScanTarget {
             kernel: &self.host.kernel,
@@ -999,7 +1133,7 @@ impl MeSimulationSession<'_, '_> {
         }
         let mut states = try_filled(self.host.state_count, 0.0, "event-left sample")?;
         self.sample_states(coordinate, &mut states)?;
-        let component = self.host.kernel.borrow().fmu_state();
+        let component = self.host.kernel.borrow()?.fmu_state()?;
         Ok(Some(PendingEventLeft {
             coordinate,
             states,
@@ -1146,7 +1280,10 @@ impl MeSimulationSession<'_, '_> {
             self.host.terminate_component(Some(termination))?;
             return Ok(());
         }
-        self.host.kernel.borrow_mut().enter_continuous_time_mode()?;
+        self.host
+            .kernel
+            .borrow_mut()?
+            .enter_continuous_time_mode()?;
         self.refresh_after_event(
             discrete.values_of_continuous_states_changed,
             discrete.nominals_of_continuous_states_changed,
@@ -1205,7 +1342,7 @@ impl MeSimulationSession<'_, '_> {
             let mut states = try_filled(self.host.state_count, 0.0, "refreshed continuous states")?;
             self.host
                 .kernel
-                .borrow()
+                .borrow()?
                 .get_continuous_states(&mut states)?;
             Some(states)
         } else {
@@ -1276,7 +1413,12 @@ impl MeSimulationSession<'_, '_> {
     /// ME-BUF-001 makes this and [`Self::verification_session_point`] one fact;
     /// an ablation asserts they agree after every failure
     pub(super) fn verification_component_point(&self) -> (u64, Vec<u64>) {
-        let (_, time, states, _) = self.host.kernel.borrow().verification_observable_state();
+        let (_, time, states, _) = self
+            .host
+            .kernel
+            .borrow()
+            .expect("verification requires an active session")
+            .verification_observable_state();
         (time, states)
     }
 
@@ -1284,7 +1426,12 @@ impl MeSimulationSession<'_, '_> {
     /// Terminated.  This is deliberately a boolean: the private lifecycle type
     /// does not become part of the session API merely to support an ablation.
     pub(super) fn verification_component_is_terminated(&self) -> bool {
-        self.host.kernel.borrow().verification_observable_state().0
+        self.host
+            .kernel
+            .borrow()
+            .expect("verification requires an active session")
+            .verification_observable_state()
+            .0
             == super::lifecycle::MeState::Terminated
     }
 
@@ -1304,6 +1451,7 @@ impl MeSimulationSession<'_, '_> {
         self.host
             .kernel
             .borrow_mut()
+            .expect("verification requires an active session")
             .terminate()
             .expect("fmi3Terminate is legal once");
     }
@@ -1393,7 +1541,7 @@ enum LoopStep {
 /// loss it implies are the caller's single obligation on every exit (returned
 /// or unwound) rather than a per-coordinate one.
 struct SessionScanTarget<'a> {
-    kernel: &'a Rc<RefCell<SolveMeKernel>>,
+    kernel: &'a Rc<MeKernelCell>,
     derivatives: &'a MeDerivativeController,
     backend: &'a dyn MeIntegratorBackend,
     budget: &'a TimeoutBudget,
@@ -1423,7 +1571,7 @@ impl RootScanTarget for SessionScanTarget<'_> {
         states: &[f64],
         indicators: &mut Vec<f64>,
     ) -> Result<(), MeSessionError> {
-        let mut kernel = self.kernel.borrow_mut();
+        let mut kernel = self.kernel.borrow_mut()?;
         kernel.set_time(MeTime::new(time, self.event_boundary))?;
         kernel.set_continuous_states(states)?;
         indicators.clear();
@@ -1569,3 +1717,31 @@ mod tests {
         ));
     }
 }
+
+#[cfg(feature = "native-wasm")]
+macro_rules! retained_native_accessors {
+    ($set:ident, $get:ident, $value:ty) => {
+        impl MeRetainedComponent {
+            pub fn $set(
+                &mut self,
+                references: &[u32],
+                values: &[$value],
+            ) -> Result<(), super::MeError> {
+                self.kernel.$set(references, values)
+            }
+            pub fn $get(
+                &self,
+                references: &[u32],
+                values: &mut [$value],
+            ) -> Result<(), super::MeError> {
+                self.kernel.$get(references, values)
+            }
+        }
+    };
+}
+#[cfg(feature = "native-wasm")]
+retained_native_accessors!(set_native_integer, get_native_integer, i64);
+#[cfg(feature = "native-wasm")]
+retained_native_accessors!(set_boolean, get_boolean, bool);
+#[cfg(feature = "native-wasm")]
+retained_native_accessors!(set_native_float64, get_native_float64, f64);

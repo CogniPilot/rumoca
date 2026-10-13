@@ -39,9 +39,14 @@ fn prepare(source: &str, name: &str) -> serde_json::Value {
 }
 
 fn slot(artifact: &serde_json::Value, name: &str, storage: &str) -> usize {
-    artifact["var_layout"]["bindings"][name][storage]["index"]
-        .as_u64()
-        .unwrap() as usize
+    let layout: rumoca_ir_solve::VarLayout =
+        serde_json::from_value(artifact["var_layout"].clone()).unwrap();
+    layout.validate_shape_contract().unwrap();
+    match (storage, layout.binding(name).unwrap()) {
+        ("Y", rumoca_ir_solve::ScalarSlot::Y { index, .. })
+        | ("P", rumoca_ir_solve::ScalarSlot::P { index, .. }) => index,
+        _ => panic!("requested scalar storage differs"),
+    }
 }
 
 fn verify_frames(artifact: &serde_json::Value, addition: f64) {

@@ -232,7 +232,7 @@ fn normalize_source_root_path(relative: &Path) -> PathBuf {
     normalized
 }
 
-fn strip_trailing_version_suffix(name: &str) -> String {
+pub(crate) fn strip_trailing_version_suffix(name: &str) -> String {
     let Some(separator) = name.rfind([' ', '-']) else {
         return name.to_owned();
     };
@@ -244,6 +244,28 @@ fn strip_trailing_version_suffix(name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// Parse the numeric components of a `Name X.Y.Z` directory suffix.
+///
+/// Every component is a run of ASCII digits and components are separated by
+/// single dots; anything else (an empty component, a letter, a trailing dot)
+/// is not a version and yields `None`.
+pub(crate) fn parse_version_components(suffix: &str) -> Option<Vec<u64>> {
+    let mut components = Vec::new();
+    let mut current: Option<u64> = None;
+    for ch in suffix.chars() {
+        match ch.to_digit(10) {
+            Some(digit) => {
+                let value = current.unwrap_or(0);
+                current = Some(value.checked_mul(10)?.checked_add(u64::from(digit))?);
+            }
+            None if ch == '.' => components.push(current.take()?),
+            None => return None,
+        }
+    }
+    components.push(current?);
+    Some(components)
 }
 
 fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
@@ -258,6 +280,19 @@ fn sorted_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
+
+    #[test]
+    fn version_components_parse_dotted_numbers_only() {
+        assert_eq!(
+            super::parse_version_components("4.1.0"),
+            Some(vec![4, 1, 0])
+        );
+        assert_eq!(super::parse_version_components("10"), Some(vec![10]));
+        assert_eq!(super::parse_version_components(""), None);
+        assert_eq!(super::parse_version_components("4..1"), None);
+        assert_eq!(super::parse_version_components("4.1."), None);
+        assert_eq!(super::parse_version_components("4.1a"), None);
+    }
 
     use flate2::read::GzDecoder;
 

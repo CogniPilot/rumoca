@@ -13,10 +13,17 @@ fn nonlinear_projection_keeps_its_initial_guess_schedule() {
             ],
             "nonlinear_stage_seed.mo",
         ));
-    model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    let mut targets = model
+        .problem
+        .continuous
+        .implicit_row_targets
+        .scalar_targets()
+        .to_vec();
+    targets[0] = Some(solve::scalar_slot_y(0));
+    model.problem.continuous.implicit_row_targets = targets.into();
     derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
-    assert!(runtime.algebraic_refresh.value_stages.iter().any(|stage| {
+    assert!(runtime.scalar_execution().unwrap().scalar.algebraic_refresh.value_stages.iter().any(|stage| {
         matches!(stage, solve::RefreshStage::ProjectionBlock { seed_rows, .. } if !seed_rows.is_empty())
     }));
 }
@@ -26,11 +33,28 @@ fn affine_stage_seeds_do_not_divide_by_a_vanishing_scalar_pivot() {
     // y - k*x = 1, x + y = 3. Isolating x divides by k, but the
     // coupled determinant is -(k+1), including at the valid point k=0.
     let mut model = mode_dependent_repivot_model();
-    model.problem.continuous.implicit_row_targets[0] = Some(solve::scalar_slot_y(0));
+    let mut targets = model
+        .problem
+        .continuous
+        .implicit_row_targets
+        .scalar_targets()
+        .to_vec();
+    targets[0] = Some(solve::scalar_slot_y(0));
+    model.problem.continuous.implicit_row_targets = targets.into();
     derive_test_structural_artifacts(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).unwrap();
-    assert!(runtime.value_stage_schedule_is_certified(&runtime.algebraic_refresh));
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .value_stage_schedule_is_certified(
+                &runtime.scalar_execution().unwrap().scalar.algebraic_refresh
+            )
+    );
     let stage = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .algebraic_refresh
         .value_stages
         .iter()
@@ -42,13 +66,13 @@ fn affine_stage_seeds_do_not_divide_by_a_vanishing_scalar_pivot() {
     else {
         unreachable!()
     };
-    assert_eq!(plan.blocks[0].y_indices.len(), 2);
+    assert_eq!(plan.blocks.scalar_blocks()[0].y_indices.len(), 2);
     assert!(
         seed_rows.is_empty(),
         "the affine solve is independent of a seed that can divide by zero"
     );
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     for k in [0.0, 1.0, 3.0, 0.0] {
         runtime
             .refresh_algebraic_and_output_slots_certified(1.0, &mut solver_y, &[k], 1e-10, 4)

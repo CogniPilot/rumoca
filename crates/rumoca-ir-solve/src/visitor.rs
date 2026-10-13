@@ -3,11 +3,15 @@
 //! These visitors centralize Solve-IR traversal without encoding evaluation,
 //! validation, or backend policy in the data crate.
 
+mod typed;
+pub use typed::{walk_pure_call_table, walk_typed_program};
+
 use crate::{
     ComputeBlock, ComputeNode, ContinuousSolveArtifacts, ContinuousSolveSystem,
     DiscreteSolveArtifacts, DiscreteSolveSystem, EventTransactionProgram,
     InitializationSolveArtifacts, InitializationSolveSystem, LinearOp, ScalarProgramBlock,
     SolveArtifacts, SolveClockPartition, SolveEventPartition, SolveModel, SolveProblem,
+    SolvePureCallTable, SolveSpannedOperation, TypedProgram,
 };
 use rumoca_core::Span;
 
@@ -157,6 +161,36 @@ pub trait SolveVisitor {
         walk_linear_op_slice(self, kind, ops)
     }
 
+    /// Receive the exact slice at every entry of the canonical recursive walk.
+    fn enter_linear_op_slice(
+        &mut self,
+        _kind: LinearOpSliceKind,
+        _ops: &[LinearOp],
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Explicit opt-in traversal of canonical primal and directional bodies.
+    /// The ordinary problem/model walk retains its existing scope.
+    fn visit_pure_call_table(&mut self, table: &SolvePureCallTable) -> Result<(), Self::Error> {
+        walk_pure_call_table(self, table)
+    }
+
+    fn visit_typed_program(&mut self, program: &TypedProgram) -> Result<(), Self::Error> {
+        walk_typed_program(self, program)
+    }
+
+    /// The checked register namespace belongs to this exact program, including
+    /// when the operation occurs in a nested region or assertion message.
+    fn visit_typed_operation(
+        &mut self,
+        _program: &TypedProgram,
+        _op_index: usize,
+        _op: &SolveSpannedOperation,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn visit_linear_op(
         &mut self,
         _kind: LinearOpSliceKind,
@@ -173,7 +207,12 @@ pub fn walk_solve_model<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     visitor.visit_solve_problem(&model.problem)?;
     visitor.visit_solve_artifacts(&model.artifacts)?;
-    visitor.visit_scalar_program_block(&model.visible_value_rows)
+    for member in model.visible_projection.inputs() {
+        if let crate::VisibleProjectionInput::Expression { rows, .. } = member {
+            visitor.visit_scalar_program_block(rows)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn walk_solve_problem<V: SolveVisitor + ?Sized>(
@@ -378,6 +417,7 @@ pub fn walk_linear_op_slice<V: SolveVisitor + ?Sized>(
     kind: LinearOpSliceKind,
     ops: &[LinearOp],
 ) -> Result<(), V::Error> {
+    visitor.enter_linear_op_slice(kind, ops)?;
     for (op_index, op) in ops.iter().enumerate() {
         visitor.visit_linear_op(kind, op_index, op)?;
         match op {

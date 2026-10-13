@@ -260,7 +260,8 @@ fn reads_replayed_storage<'dae>(
         | dae::ExpressionOperation::Coordinate(_)
         | dae::ExpressionOperation::FunctionValue { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
-        | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
+        | dae::ExpressionOperation::FunctionFoldOutput { .. }
+        | dae::ExpressionOperation::FunctionConditionalOutput { .. } => {}
         dae::ExpressionOperation::Unary { operand, .. } => children.push(operand),
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => children.extend([lhs, rhs]),
         dae::ExpressionOperation::Conditional(operands)
@@ -460,6 +461,7 @@ pub(super) fn preserves_function_target<'dae>(
         dae::ExpressionOperation::FunctionValue { definition, .. } => {
             definition.target() == target.id()
         }
+        dae::ExpressionOperation::FunctionConditionalOutput { value, .. } => value == target.id(),
         dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
         | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
             view.function_fold(fold)

@@ -28,14 +28,15 @@ fn projection_blocks_derive_shared_source_invariance_once() {
         PatternProvenance::derived(PatternDerivation::DependencyPropagation, span()).unwrap();
     let pattern = StructuralPattern::from_row_dependencies(1, 1, &[vec![0]], provenance).unwrap();
     let plan = AlgebraicProjectionPlan {
-        blocks: (0..BLOCKS)
+        blocks: ((0..BLOCKS)
             .map(|index| AlgebraicProjectionBlock {
                 rows: vec![index],
                 y_indices: vec![index],
                 tearing: None,
                 alternate_charts: Vec::new(),
             })
-            .collect(),
+            .collect::<Vec<_>>())
+        .into(),
     };
     projection_application::INVARIANCE_PROOF_OPERATIONS.with(|count| count.set(0));
     let artifacts = ContinuousStructuralArtifacts::derived(
@@ -141,12 +142,13 @@ fn outputs_with_primal(
         StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
             .unwrap();
     let plan = AlgebraicProjectionPlan {
-        blocks: vec![AlgebraicProjectionBlock {
+        blocks: (vec![AlgebraicProjectionBlock {
             rows: vec![3, 7],
             y_indices: vec![1, 0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     ContinuousStructuralArtifacts::derived(None, vec![pattern], vec![false], None, vec![], None)
         .with_algebraic_output_evaluations(&plan, primal, y, full)
@@ -159,12 +161,13 @@ fn manifold_outputs(source: &ScalarProgramBlock) -> ContinuousStructuralArtifact
         StructuralPattern::from_row_dependencies(2, 2, &[vec![0, 1], vec![0, 1]], provenance)
             .unwrap();
     let plan = AlgebraicProjectionPlan {
-        blocks: vec![AlgebraicProjectionBlock {
+        blocks: (vec![AlgebraicProjectionBlock {
             rows: vec![3, 7],
             y_indices: vec![1, 0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     ContinuousStructuralArtifacts::derived(None, vec![], vec![], None, vec![pattern], None)
         .with_manifold_output_evaluations(&plan, source)
@@ -355,4 +358,37 @@ fn repeatability_checks_discarded_effects_inside_conditional_regions() {
     assert!(!super::program_effects::program_is_repeatable(&[
         conditional(impure)
     ]));
+}
+
+#[test]
+fn the_row_catalog_binds_only_rows_with_one_repeatable_owner() {
+    let catalog = ProgramOutputCatalog::new(&source(vec![3, 3, 11], true));
+    assert!(catalog.output(3).is_none(), "a row bound twice is unusable");
+    assert_eq!(catalog.output(11), Some((1, 0, 1)));
+    assert!(catalog.output(0).is_none(), "an unbound row has no owner");
+    assert!(catalog.output(1_000).is_none(), "a row past the catalog");
+
+    let base = source(vec![3, 7, 11], true);
+    let mut programs = base.programs().to_vec();
+    programs[0].extend([
+        LinearOp::Const {
+            dst: 8,
+            value: 42.0,
+        },
+        LinearOp::ImpureRandomInit { dst: 9, seed: 8 },
+    ]);
+    let impure = ScalarProgramBlock::with_output_indices(
+        programs,
+        base.program_spans().to_vec(),
+        base.output_indices().to_vec(),
+    )
+    .unwrap();
+    let catalog = ProgramOutputCatalog::new(&impure);
+    assert!(catalog.output(3).is_none() && catalog.output(7).is_none());
+    assert_eq!(catalog.output(11), Some((1, 0, 1)));
+    assert!(
+        ProgramOutputCatalog::new(&ScalarProgramBlock::default())
+            .output(0)
+            .is_none()
+    );
 }

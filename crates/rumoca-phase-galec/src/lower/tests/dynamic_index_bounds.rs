@@ -91,16 +91,16 @@ fn conditional_pivot_fixture(guarded: &GuardedPivot) -> dae::Dae {
                 }),
                 None => dae.expressions(|expressions| expressions.at(at).function_parameter(hint)),
             }?;
-            let kept = dae.functions(|functions| functions.read(&body, pivot_row, at))?;
+            let (mut branch, finish) =
+                dae.functions(|functions| functions.begin_branch(body, at))?;
+            dae.functions(|functions| functions.assign(&mut branch, pivot_row, guarded, at))?;
+            let (body, branch) =
+                dae.functions(|functions| functions.finish_branch(finish, branch))?;
+            let (fallback, finish) = dae.functions(|functions| functions.begin_branch(body, at))?;
+            let (mut body, fallback) =
+                dae.functions(|functions| functions.finish_branch(finish, fallback))?;
             dae.functions(|functions| {
-                functions.assign_conditional_all(
-                    &mut body,
-                    &[pivot_row],
-                    &[condition],
-                    &[vec![guarded]],
-                    &[kept],
-                    at,
-                )
+                functions.finish_conditional(&mut body, vec![(condition, branch)], fallback, at)
             })?;
 
             let index = dae.functions(|functions| functions.read(&body, pivot_row, at))?;

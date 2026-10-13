@@ -34,7 +34,7 @@ pub(super) fn lower_explicit_tensor_derivative_family<'dae>(
     let Some(UnknownId::Derivative {
         state,
         scalar: first_state_scalar,
-    }) = context.matching.get(&first_row).copied()
+    }) = context.matching.get(&first_row)
     else {
         return Ok(None);
     };
@@ -104,7 +104,7 @@ fn family_points_explicit_state_scalars<'dae>(
         let Some(UnknownId::Derivative {
             state: found_state,
             scalar: found_scalar,
-        }) = context.matching.get(&row).copied()
+        }) = context.matching.get(&row)
         else {
             return Ok(None);
         };

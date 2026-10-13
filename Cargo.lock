@@ -2273,6 +2273,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-arena"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+
+[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3645,6 +3651,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "private-gemm-x86"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4245,6 +4261,7 @@ dependencies = [
  "rumoca-eval-galec",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",
+ "rumoca-exec-wasm",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -4263,11 +4280,13 @@ dependencies = [
  "rumoca-phase-typecheck",
  "rumoca-sim",
  "rumoca-solver",
+ "rumoca-tool-build-info",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "sigpipe",
  "syn 2.0.118",
  "tempfile",
@@ -4278,6 +4297,8 @@ dependencies = [
  "tungstenite 0.26.2",
  "uuid",
  "walkdir",
+ "wasmi",
+ "wasmparser 0.241.2",
  "zip",
 ]
 
@@ -4301,6 +4322,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-ir-dae",
  "rumoca-sim",
+ "rumoca-tool-build-info",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde_json",
@@ -4325,6 +4347,7 @@ dependencies = [
  "rumoca-ir-solve",
  "rumoca-phase-galec",
  "rumoca-sim",
+ "rumoca-tool-build-info",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
  "serde",
@@ -4334,7 +4357,11 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-rayon",
+ "wasm-encoder 0.241.2",
  "wasmi",
+ "wasmparser 0.241.2",
+ "wit-component 0.241.2",
+ "wit-parser 0.241.2",
 ]
 
 [[package]]
@@ -4343,8 +4370,8 @@ version = "0.10.3"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "rumoca-eval-solve",
  "rumoca-ir-solve",
- "rumoca-phase-solve",
  "rumoca-sim",
  "rumoca-solver",
  "serde",
@@ -4495,6 +4522,7 @@ dependencies = [
  "nalgebra",
  "rumoca-core",
  "rumoca-ir-solve",
+ "serde",
  "serde_json",
  "tracing",
 ]
@@ -4531,18 +4559,26 @@ dependencies = [
 name = "rumoca-exec-wasm"
 version = "0.10.3"
 dependencies = [
+ "blake3",
+ "indexmap 2.14.0",
  "js-sys",
+ "libm",
+ "miniz_oxide",
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-exec-cranelift",
+ "rumoca-exec-wasm",
  "rumoca-ir-solve",
  "rumoca-phase-solve",
  "serde_json",
+ "tempfile",
  "wasm-bindgen",
- "wasm-encoder",
+ "wasm-encoder 0.241.2",
  "wasmi",
  "wasmparser 0.241.2",
+ "wit-component 0.241.2",
+ "wit-parser 0.241.2",
 ]
 
 [[package]]
@@ -4697,6 +4733,7 @@ dependencies = [
  "rumoca-eval-ast",
  "rumoca-eval-flat",
  "rumoca-ir-ast",
+ "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-phase-dae",
  "rumoca-phase-instantiate",
@@ -4764,6 +4801,7 @@ dependencies = [
  "rumoca-ir-galec",
  "rumoca-phase-codegen",
  "scnr2",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -4793,6 +4831,7 @@ dependencies = [
  "rumoca-phase-structural",
  "rustc-hash 2.1.3",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4835,6 +4874,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-runtime-fmi-ls"
+version = "0.10.3"
+dependencies = [
+ "rumoca-compile",
+ "rumoca-exec-wasm",
+ "rumoca-ir-solve",
+ "rumoca-sim",
+ "rumoca-solver",
+ "rumoca-solver-rk45",
+ "thiserror 2.0.18",
+ "wit-bindgen 0.43.0",
+]
+
+[[package]]
 name = "rumoca-signal-frame"
 version = "0.10.3"
 dependencies = [
@@ -4849,6 +4902,7 @@ dependencies = [
  "indexmap 2.14.0",
  "libc",
  "proptest",
+ "quick-xml",
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
@@ -4875,6 +4929,9 @@ dependencies = [
  "tiny_http",
  "toml",
  "tracing",
+ "wasm-encoder 0.241.2",
+ "wasmi",
+ "wit-component 0.241.2",
 ]
 
 [[package]]
@@ -4888,12 +4945,14 @@ dependencies = [
  "proptest",
  "rumoca-core",
  "rumoca-eval-solve",
+ "rumoca-exec-wasm",
  "rumoca-ir-solve",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+ "wasmi",
 ]
 
 [[package]]
@@ -4948,6 +5007,10 @@ dependencies = [
  "zip",
  "zmq",
 ]
+
+[[package]]
+name = "rumoca-tool-build-info"
+version = "0.10.3"
 
 [[package]]
 name = "rumoca-tool-fmt"
@@ -5048,9 +5111,11 @@ dependencies = [
  "rumoca-allocator",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-phase-solve",
  "rumoca-phase-structural",
  "rumoca-sim",
+ "rumoca-solver",
  "serde",
  "serde_json",
 ]
@@ -6695,7 +6760,7 @@ version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.57.1",
 ]
 
 [[package]]
@@ -6767,11 +6832,55 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
+version = "0.235.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3bc393c395cb621367ff02d854179882b9a351b4e0c93d1397e6090b53a5c2a"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.235.0",
+]
+
+[[package]]
+name = "wasm-encoder"
 version = "0.241.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e01164c9dda68301e34fdae536c23ed6fe90ce6d97213ccc171eebbd3d02d6b8"
 dependencies = [
  "leb128fmt",
+ "wasmparser 0.241.2",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.261.0",
+]
+
+[[package]]
+name = "wasm-metadata"
+version = "0.235.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b055604ba04189d54b8c0ab2c2fc98848f208e103882d5c0b984f045d5ea4d20"
+dependencies = [
+ "anyhow",
+ "indexmap 2.14.0",
+ "wasm-encoder 0.235.0",
+ "wasmparser 0.235.0",
+]
+
+[[package]]
+name = "wasm-metadata"
+version = "0.241.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876fe286f2fa416386deedebe8407e6f19e0b5aeaef3d03161e77a15fa80f167"
+dependencies = [
+ "anyhow",
+ "indexmap 2.14.0",
+ "wasm-encoder 0.241.2",
  "wasmparser 0.241.2",
 ]
 
@@ -6842,6 +6951,18 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
+version = "0.235.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "161296c618fa2d63f6ed5fffd1112937e803cb9ec71b32b01a76321555660917"
+dependencies = [
+ "bitflags 2.13.0",
+ "hashbrown 0.15.5",
+ "indexmap 2.14.0",
+ "semver",
+]
+
+[[package]]
+name = "wasmparser"
 version = "0.241.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46d90019b1afd4b808c263e428de644f3003691f243387d30d673211ee0cb8e8"
@@ -6851,6 +6972,16 @@ dependencies = [
  "indexmap 2.14.0",
  "semver",
  "serde",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
+dependencies = [
+ "bitflags 2.13.0",
+ "indexmap 2.14.0",
 ]
 
 [[package]]
@@ -6872,6 +7003,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c1f0674f38cd7d014eb1a49ea1d1766cca1a64459e8856ee118a10005302e16"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "wast"
+version = "261.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "776443145731a4062e5b0d392892a2005909b6ab72d9fdc3cad53dd1a714e44a"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width 0.2.2",
+ "wasm-encoder 0.261.0",
+]
+
+[[package]]
+name = "wat"
+version = "1.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7b4d1a49ea73a8f3326e74e3a05db667001b16bd1035ed3356fc1a0ed05ca7f"
+dependencies = [
+ "wast",
 ]
 
 [[package]]
@@ -7314,9 +7467,145 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a18712ff1ec5bd09da500fe1e91dec11256b310da0ff33f8b4ec92b927cf0c6"
+dependencies = [
+ "wit-bindgen-rt",
+ "wit-bindgen-rust-macro",
+]
+
+[[package]]
+name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wit-bindgen-core"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c53468e077362201de11999c85c07c36e12048a990a3e0d69da2bd61da355d0"
+dependencies = [
+ "anyhow",
+ "heck",
+ "wit-parser 0.235.0",
+]
+
+[[package]]
+name = "wit-bindgen-rt"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fd734226eac1fd7c450956964e3a9094c9cee65e9dafdf126feef8c0096db65"
+dependencies = [
+ "bitflags 2.13.0",
+]
+
+[[package]]
+name = "wit-bindgen-rust"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "531ebfcec48e56473805285febdb450e270fa75b2dacb92816861d0473b4c15f"
+dependencies = [
+ "anyhow",
+ "heck",
+ "indexmap 2.14.0",
+ "prettyplease",
+ "syn 2.0.118",
+ "wasm-metadata 0.235.0",
+ "wit-bindgen-core",
+ "wit-component 0.235.0",
+]
+
+[[package]]
+name = "wit-bindgen-rust-macro"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7852bf8a9d1ea80884d26b864ddebd7b0c7636697c6ca10f4c6c93945e023966"
+dependencies = [
+ "anyhow",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+ "wit-bindgen-core",
+ "wit-bindgen-rust",
+]
+
+[[package]]
+name = "wit-component"
+version = "0.235.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64a57a11109cc553396f89f3a38a158a97d0b1adaec113bd73e0f64d30fb601f"
+dependencies = [
+ "anyhow",
+ "bitflags 2.13.0",
+ "indexmap 2.14.0",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "wasm-encoder 0.235.0",
+ "wasm-metadata 0.235.0",
+ "wasmparser 0.235.0",
+ "wit-parser 0.235.0",
+]
+
+[[package]]
+name = "wit-component"
+version = "0.241.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0c57df25e7ee612d946d3b7646c1ddb2310f8280aa2c17e543b66e0812241"
+dependencies = [
+ "anyhow",
+ "bitflags 2.13.0",
+ "indexmap 2.14.0",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "wasm-encoder 0.241.2",
+ "wasm-metadata 0.241.2",
+ "wasmparser 0.241.2",
+ "wat",
+ "wit-parser 0.241.2",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.235.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a1f95a87d03a33e259af286b857a95911eb46236a0f726cbaec1227b3dfc67a"
+dependencies = [
+ "anyhow",
+ "id-arena",
+ "indexmap 2.14.0",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-xid",
+ "wasmparser 0.235.0",
+]
+
+[[package]]
+name = "wit-parser"
+version = "0.241.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ef1c6ad67f35c831abd4039c02894de97034100899614d1c44e2268ad01c91"
+dependencies = [
+ "anyhow",
+ "id-arena",
+ "indexmap 2.14.0",
+ "log",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "unicode-xid",
+ "wasmparser 0.241.2",
+]
 
 [[package]]
 name = "writeable"

@@ -65,6 +65,10 @@ pub struct CoSimulationStepPlan {
 }
 
 impl CoSimulationStepPlan {
+    #[must_use]
+    pub const fn default_tolerance(&self) -> f64 {
+        self.controller.default_tolerance
+    }
     /// The plan every component is constructed with. The accuracy of a
     /// communication step follows the component tolerance, not the importer's
     /// communication step size, so a stiff block the importer steps coarsely

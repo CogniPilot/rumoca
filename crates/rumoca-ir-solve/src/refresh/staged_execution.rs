@@ -101,6 +101,9 @@ impl ContinuousRefreshOwners {
         plan: &'a RefreshPlan,
         schedule: RefreshStageSchedule,
     ) -> Result<Vec<StagedRefreshStep<'a>>, StagedRefreshRefusal> {
+        if self.has_compact_source_recipe() {
+            return Err(StagedRefreshRefusal::NonExactStage);
+        }
         if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
             return Ok(Vec::new());
         }

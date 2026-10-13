@@ -447,7 +447,16 @@ fn collect_assigned_local_names<'dae>(
             dae::FunctionStatementView::For {
                 statements: body, ..
             } => collect_assigned_local_names(view, body, assigned),
-            dae::FunctionStatementView::Assertion { .. } => {}
+            dae::FunctionStatementView::Conditional { conditional } => {
+                for branch in conditional
+                    .branches()
+                    .chain(std::iter::once(conditional.fallback()))
+                {
+                    collect_assigned_local_names(view, branch.statements(), assigned);
+                }
+            }
+            dae::FunctionStatementView::RequireAssigned { .. }
+            | dae::FunctionStatementView::Assertion { .. } => {}
         }
     }
 }
@@ -478,34 +487,32 @@ fn lower_function_statement<'a, 'dae>(
             lower_function_assignment(view, definition, lowerer, statements)?;
             lowerer.finish_statement_group();
         }
-        dae::FunctionStatementView::AssignmentGroup {
-            definitions,
-            conditional,
-        } => {
-            if let Some(conditional) = conditional {
-                lower_function_conditional_group(
-                    view,
-                    definitions,
-                    conditional,
-                    lowerer,
-                    statements,
-                )?;
-            } else {
-                let group = definitions.iter().collect::<Vec<_>>();
-                let group =
-                    order_by_value_dependency(view, &group, |definition| GroupDefinition {
-                        target: definition.target(),
-                        value: definition.rhs(),
-                        span: definition.provenance().span(),
-                    })?;
-                let outer = lowerer.carry_assigned_primitives(group.carried);
-                let lowered = group.ordered.into_iter().try_for_each(|definition| {
-                    lower_function_assignment(view, definition, lowerer, statements)
-                });
-                lowerer.carry_assigned_primitives(outer);
-                lowered?;
-            }
+        dae::FunctionStatementView::AssignmentGroup { definitions } => {
+            let group = definitions.iter().collect::<Vec<_>>();
+            let group = order_by_value_dependency(view, &group, |definition| GroupDefinition {
+                target: definition.target(),
+                value: definition.rhs(),
+                span: definition.provenance().span(),
+            })?;
+            let outer = lowerer.carry_assigned_primitives(group.carried);
+            let lowered = group.ordered.into_iter().try_for_each(|definition| {
+                lower_function_assignment(view, definition, lowerer, statements)
+            });
+            lowerer.carry_assigned_primitives(outer);
+            lowered?;
             lowerer.finish_statement_group();
+        }
+        dae::FunctionStatementView::Conditional { conditional } => {
+            lower_owned_function_conditional(view, conditional, lowerer, statements)?;
+            lowerer.finish_statement_group();
+        }
+        dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
+            return Err(unsupported(
+                "function-assigned-state",
+                "GALEC function projection does not represent an optional executed-path value"
+                    .to_owned(),
+                provenance.span(),
+            ));
         }
         dae::FunctionStatementView::Assertion {
             level: dae::AssertionLevel::Warning,
@@ -562,134 +569,36 @@ struct LoweredFunctionConditionalBranch {
     span: Span,
 }
 
-/// Lower the fallback branch of a function conditional.
-///
-/// The fallback is its own statement sequence, so it is ordered against its own
-/// values by [`order_by_value_dependency`], exactly as each guarded branch is.
-fn lower_function_conditional_fallback<'a, 'dae>(
+fn lower_owned_function_conditional<'a, 'dae>(
     view: dae::DaeView<'dae>,
-    definitions: &[(usize, dae::FunctionDefinitionView<'dae>)],
-    conditional: dae::FunctionConditionalView<'dae>,
-    lowerer: &mut ExpressionLowerer<'a, 'dae>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let mut fallback = Vec::new();
-    let fallback_values = conditional.fallback().collect::<Vec<_>>();
-    let arm = order_by_value_dependency(view, definitions, |(definition_ordinal, definition)| {
-        GroupDefinition {
-            target: definition.target(),
-            value: fallback_values[definition_ordinal],
-            span: definition.provenance().span(),
-        }
-    })?;
-    let outer = lowerer.carry_assigned_primitives(arm.carried);
-    let lowered =
-        lower_arm_definitions(view, &arm.ordered, &fallback_values, lowerer, &mut fallback);
-    lowerer.carry_assigned_primitives(outer);
-    lowered?;
-    Ok(fallback)
-}
-
-/// Lower one arm of a function conditional in the order that arm was given.
-fn lower_arm_definitions<'a, 'dae>(
-    view: dae::DaeView<'dae>,
-    arm: &[(usize, dae::FunctionDefinitionView<'dae>)],
-    values: &[dae::ExprId<'dae>],
+    conditional: dae::FunctionConditionalBodyView<'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
-    for (definition_ordinal, definition) in arm.iter().copied() {
-        let target = view
-            .function(definition.id().function())
-            .expect("checked function identity resolves")
-            .values()
-            .find(|candidate| candidate.id() == definition.target())
-            .expect("checked function conditional target resolves");
-        lower_function_value_assignment(
-            view,
-            target,
-            values[definition_ordinal],
-            definition.provenance().span(),
-            lowerer,
-            statements,
-        )?;
-    }
-    Ok(())
-}
-
-fn lower_function_conditional_group<'a, 'dae>(
-    view: dae::DaeView<'dae>,
-    definitions: dae::FunctionDefinitionValues<'dae>,
-    conditional: dae::FunctionConditionalView<'dae>,
-    lowerer: &mut ExpressionLowerer<'a, 'dae>,
-    statements: &mut Vec<gast::Spanned<gast::Statement>>,
-) -> Result<(), GalecTargetError> {
-    // This is the group's preference order, not its final order: each arm is
-    // ordered against its own values by `order_by_value_dependency`, which moves
-    // a producer ahead of the siblings that read it and leaves every independent
-    // pair where this key puts it. Aggregate destinations come first among
-    // independent definitions: they preserve the widest value identity and
-    // materialize any shared branch-local call before scalar consumers. The
-    // original ordinal is the deterministic tie-breaker.
-    let mut definitions = definitions.iter().enumerate().collect::<Vec<_>>();
-    definitions.sort_by_key(|(ordinal, definition)| {
-        let target = view
-            .function(definition.id().function())
-            .expect("checked function identity resolves")
-            .values()
-            .find(|candidate| candidate.id() == definition.target())
-            .expect("checked conditional target resolves");
-        let ty = view
-            .value_type(target.value_type())
-            .expect("checked conditional target type resolves");
-        (!ty.is_record(), ty.dimensions().is_empty(), *ordinal)
-    });
-    let conditions = conditional.conditions().collect::<Vec<_>>();
-    let activation_operands = conditions
-        .iter()
-        .map(|condition| condition.index())
-        .collect::<Vec<_>>();
+    let identity = vec![
+        conditional.id().function().index(),
+        conditional.id().ordinal(),
+    ];
     let entry_materialization = lowerer.conditional_materialization_snapshot();
     let mut reaching_bounds = ConditionalIntegerBounds::enter(lowerer);
-    let mut branches = Vec::with_capacity(conditions.len());
-    for (ordinal, condition_id) in conditions.into_iter().enumerate() {
+    let mut branches = Vec::new();
+    for (ordinal, (condition_id, branch)) in conditional
+        .conditions()
+        .zip(conditional.branches())
+        .enumerate()
+    {
         reaching_bounds.start_arm(lowerer);
         let prefix_start = lowerer.pending_prefix_statements.len();
         let condition = lowerer.lower(condition_id)?;
         let span = view
             .expression(condition_id)
-            .expect("checked function conditional condition resolves")
+            .expect("checked condition resolves")
             .provenance()
             .span();
         require_boolean(&condition, span)?;
         let prefix = lowerer.pending_prefix_statements.split_off(prefix_start);
         let condition_materialization = lowerer.conditional_materialization_snapshot();
-        lowerer
-            .conditional_activation_path
-            .push(ConditionalActivationKey {
-                kind: ConditionalActivationKind::FunctionConditional,
-                operands: activation_operands.clone(),
-                branch: u32::try_from(ordinal).map_err(|_| GalecTargetError::LoweringInternal {
-                    detail: "function conditional branch ordinal exceeds capacity".to_owned(),
-                })?,
-            });
-        let mut body = Vec::new();
-        let values = conditional
-            .branch(ordinal)
-            .expect("checked function conditional branch resolves")
-            .collect::<Vec<_>>();
-        let arm =
-            order_by_value_dependency(view, &definitions, |(definition_ordinal, definition)| {
-                GroupDefinition {
-                    target: definition.target(),
-                    value: values[definition_ordinal],
-                    span: definition.provenance().span(),
-                }
-            })?;
-        let outer = lowerer.carry_assigned_primitives(arm.carried);
-        let lowered = lower_arm_definitions(view, &arm.ordered, &values, lowerer, &mut body);
-        lowerer.carry_assigned_primitives(outer);
-        lowered?;
-        lowerer.conditional_activation_path.pop();
+        let body = lower_owned_function_branch(view, branch, ordinal, &identity, lowerer)?;
         lowerer.restore_conditional_materialization(&condition_materialization);
         reaching_bounds.finish_arm(lowerer);
         branches.push(LoweredFunctionConditionalBranch {
@@ -699,26 +608,45 @@ fn lower_function_conditional_group<'a, 'dae>(
             span,
         });
     }
-
-    lowerer
-        .conditional_activation_path
-        .push(ConditionalActivationKey {
-            kind: ConditionalActivationKind::FunctionConditional,
-            operands: activation_operands,
-            branch: u32::try_from(conditional.branch_count()).map_err(|_| {
-                GalecTargetError::LoweringInternal {
-                    detail: "function conditional fallback ordinal exceeds capacity".to_owned(),
-                }
-            })?,
-        });
     reaching_bounds.start_arm(lowerer);
-    let fallback = lower_function_conditional_fallback(view, &definitions, conditional, lowerer)?;
-    lowerer.conditional_activation_path.pop();
+    let fallback = lower_owned_function_branch(
+        view,
+        conditional.fallback(),
+        branches.len(),
+        &identity,
+        lowerer,
+    )?;
     lowerer.restore_conditional_materialization(&entry_materialization);
     reaching_bounds.finish_arm(lowerer);
     reaching_bounds.commit(lowerer);
     statements.extend(nest_function_conditional_branches(branches, fallback));
     Ok(())
+}
+
+fn lower_owned_function_branch<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    branch: dae::FunctionBranchView<'dae>,
+    ordinal: usize,
+    identity: &[u32],
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    let ordinal = u32::try_from(ordinal).map_err(|_| GalecTargetError::LoweringInternal {
+        detail: "function branch ordinal exceeds capacity".to_owned(),
+    })?;
+    lowerer
+        .conditional_activation_path
+        .push(ConditionalActivationKey {
+            kind: ConditionalActivationKind::OwnedFunctionConditional,
+            operands: identity.to_vec(),
+            branch: ordinal,
+        });
+    let mut body = Vec::new();
+    let result = branch
+        .statements()
+        .try_for_each(|statement| lower_function_statement(view, statement, lowerer, &mut body));
+    lowerer.conditional_activation_path.pop();
+    result?;
+    Ok(body)
 }
 
 fn nest_function_conditional_branches(

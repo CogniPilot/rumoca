@@ -18,7 +18,7 @@ impl CompiledSolveJacobianExpression for SelectedJacobian {
         _seed: &[f64],
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("a selected projection must not evaluate unrelated JVP programs");
     }
 
@@ -30,7 +30,7 @@ impl CompiledSolveJacobianExpression for SelectedJacobian {
         _t: f64,
         seed: &[f64],
         _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(coordinate, self.coordinate);
         self.calls.set(self.calls.get() + 1);
         if self.fail {
@@ -40,22 +40,46 @@ impl CompiledSolveJacobianExpression for SelectedJacobian {
     }
 }
 
-pub(super) fn selected_projection(
+pub(in super::super) fn selected_projection(
     runtime: &SolveRuntime,
     full_seed: bool,
 ) -> RefreshProjectionModel<'_> {
     RefreshProjectionModel {
-        runtime,
+        runtime: runtime.scalar_execution().unwrap(),
         seed_linearizations: None,
-        plan: &runtime.algebraic_refresh.simultaneous_plan,
-        block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,
+        plan: &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .simultaneous_plan,
+        block_indices: &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .simultaneous_block_indices,
         plan_validated: true,
         jacobian_v: if full_seed {
-            ProjectionJacobian::SolverYAndParameters(&runtime.implicit_jacobian_v)
+            ProjectionJacobian::SolverYAndParameters(
+                &runtime
+                    .scalar_execution()
+                    .unwrap()
+                    .scalar
+                    .implicit_jacobian_v,
+            )
         } else {
             ProjectionJacobian::SolverY {
-                block: &runtime.implicit_projection_jacobian_v,
-                scalar: &runtime.implicit_projection_scalar_jacobian_v,
+                block: &runtime
+                    .scalar_execution()
+                    .unwrap()
+                    .scalar
+                    .implicit_projection_jacobian_v,
+                scalar: &runtime
+                    .scalar_execution()
+                    .unwrap()
+                    .scalar
+                    .implicit_projection_scalar_jacobian_v,
             }
         },
     }
@@ -71,12 +95,20 @@ fn selected_projection_jvp_uses_the_compiled_program_in_both_seed_spaces() {
         coordinate: (1, 0),
     });
     for full_seed in [false, true] {
-        runtime.compiled_implicit_projection_jacobian_v = None;
-        runtime.compiled_implicit_full_jacobian_v = None;
+        runtime
+            .scalar_fixture_mut()
+            .compiled_implicit_projection_jacobian_v = None;
+        runtime
+            .scalar_fixture_mut()
+            .compiled_implicit_full_jacobian_v = None;
         if full_seed {
-            runtime.compiled_implicit_full_jacobian_v = Some(native.clone());
+            runtime
+                .scalar_fixture_mut()
+                .compiled_implicit_full_jacobian_v = Some(native.clone());
         } else {
-            runtime.compiled_implicit_projection_jacobian_v = Some(native.clone());
+            runtime
+                .scalar_fixture_mut()
+                .compiled_implicit_projection_jacobian_v = Some(native.clone());
         }
         let projection = selected_projection(&runtime, full_seed);
         for seed in [[1.0, 2.0], [-3.0, 5.0]] {
@@ -104,7 +136,9 @@ fn selected_native_jvp_failure_is_not_retried_in_the_interpreter() {
         fail: true,
         coordinate: (1, 0),
     });
-    runtime.compiled_implicit_projection_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_projection_jacobian_v = Some(native.clone());
     let error = selected_projection(&runtime, false)
         .eval_implicit_jacobian_v_row(1, &[1.0, 2.0], &[], 0.0, &[1.0, 2.0])
         .expect_err("native execution failure must propagate");
@@ -149,7 +183,9 @@ fn selected_projection_uses_the_jvp_program_mapping_and_aggregate_output_offset(
             fail: false,
             coordinate,
         });
-        runtime.compiled_implicit_projection_jacobian_v = Some(native.clone());
+        runtime
+            .scalar_fixture_mut()
+            .compiled_implicit_projection_jacobian_v = Some(native.clone());
         let actual = selected_projection(&runtime, false)
             .eval_implicit_jacobian_v_row(1, &[1.0, 2.0], &[], 0.0, &[1.0, 7.0])
             .unwrap();
@@ -159,7 +195,7 @@ fn selected_projection_uses_the_jvp_program_mapping_and_aggregate_output_offset(
 }
 
 #[test]
-fn default_outputs_at_coordinates_call_each_program_output_in_order() {
+fn default_bulk_outputs_decline_before_any_selected_execution() {
     let jacobian = SelectedJacobian {
         calls: Cell::new(0),
         fail: false,
@@ -172,23 +208,17 @@ fn default_outputs_at_coordinates_call_each_program_output_in_order() {
         t: 0.0,
         seed: &seed,
     };
-    let mut out = [0.0; 2];
-    assert!(
-        jacobian
-            .call_program_outputs_at(&[(3, 0), (3, 0)], inputs, &[], &mut out)
-            .unwrap()
-    );
-    assert_eq!((out, jacobian.calls.get()), ([5.0, 5.0], 2));
-    let failing = SelectedJacobian {
-        calls: Cell::new(0),
-        fail: true,
-        coordinate: (3, 0),
-    };
-    assert!(
-        failing
-            .call_program_outputs_at(&[(3, 0)], inputs, &[], &mut out)
-            .is_err()
-    );
+    let mut out = [-0.0_f64, f64::from_bits(0x7ff8_0000_0000_0199)];
+    let before = out.map(f64::to_bits);
+    for coordinates in [&[(3, 0), (3, 0)][..], &[(3, 0), (4, 0)][..]] {
+        assert!(
+            !jacobian
+                .call_program_outputs_at(coordinates, inputs, &[], &mut out)
+                .unwrap()
+        );
+        assert_eq!(jacobian.calls.get(), 0);
+        assert_eq!(out.map(f64::to_bits), before);
+    }
 
     struct Declining;
     impl CompiledSolveExpression for Declining {
@@ -199,7 +229,7 @@ fn default_outputs_at_coordinates_call_each_program_output_in_order() {
             _t: f64,
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::RuntimeSolveError> {
             Ok(())
         }
     }
@@ -212,7 +242,7 @@ fn default_outputs_at_coordinates_call_each_program_output_in_order() {
             _seed: &[f64],
             _external_tables: &[rumoca_core::ExternalTableData],
             _out: &mut [f64],
-        ) -> Result<(), String> {
+        ) -> Result<(), crate::RuntimeSolveError> {
             Ok(())
         }
     }

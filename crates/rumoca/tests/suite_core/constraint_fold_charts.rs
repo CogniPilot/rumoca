@@ -45,8 +45,8 @@ fn lowered_msl(root: &std::path::Path, model: &str) -> SolveModel {
         .clone()
 }
 
-fn name(model: &SolveModel, y: usize) -> &str {
-    &model.problem.solve_layout.solver_maps.names[y]
+fn name(model: &SolveModel, y: usize) -> String {
+    model.problem.solver_name(y).unwrap()
 }
 
 fn coordinate(variable: &str, scalar: u32) -> ChartCoordinate {
@@ -79,8 +79,14 @@ fn a_split_circle_exchanges_its_reconstructed_coordinate_for_the_integrated_one(
             .map(|&y| name(&model, y))
             .collect::<Vec<_>>()
     };
-    assert_eq!((dependent(0), independent(0)), (vec!["x"], vec!["y"]));
-    assert_eq!((dependent(1), independent(1)), (vec!["y"], vec!["x"]));
+    assert_eq!(
+        (dependent(0), independent(0)),
+        (vec!["x".to_owned()], vec!["y".to_owned()])
+    );
+    assert_eq!(
+        (dependent(1), independent(1)),
+        (vec!["y".to_owned()], vec!["x".to_owned()])
+    );
     assert!(
         set.charts[0].plan.is_none(),
         "the primary runs as the model"
@@ -110,15 +116,12 @@ fn an_exchange_shares_the_primary_solver_layout() {
     // solver-Y slots the primary uses.
     let y = model
         .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .iter()
-        .position(|candidate| candidate == "y")
+        .solver_index("y")
         .expect("y has a solver slot");
     assert!(
         plan.algebraic_projection_plan
             .blocks
+            .scalar_blocks()
             .iter()
             .any(|block| block.y_indices.contains(&y)),
         "the exchange plan reconstructs y"
@@ -419,10 +422,11 @@ fn msl_universal_constraint_keeps_the_constrained_body_on_the_joint() {
 fn assert_chart_deltas_are_faithful(model: &SolveModel) {
     let continuous = &model.problem.continuous;
     let wire = serde_json::to_vec(
-        &serde_json::to_value(rumoca_phase_solve::solve_model_wire(model).unwrap()).unwrap(),
+        &serde_json::to_value(rumoca_eval_solve::model_wire::solve_model_wire(model).unwrap())
+            .unwrap(),
     )
     .unwrap();
-    let replayed = rumoca_phase_solve::deserialize_solve_model(
+    let replayed = rumoca_eval_solve::model_wire::deserialize_solve_model(
         &mut serde_json::Deserializer::from_slice(&wire),
     )
     .expect("the chart-carrying model replays from its wire");

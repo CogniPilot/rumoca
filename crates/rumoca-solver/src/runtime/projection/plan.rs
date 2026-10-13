@@ -11,7 +11,7 @@ pub(super) fn validate_algebraic_projection_plan(
         algebraic_tail_len(solver_count, state_count, "algebraic projection plan")?;
     let mut row_seen = vec![false; solver_count];
     let mut y_seen = vec![false; algebraic_count];
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
         mark_projection_indices(
             &block.rows,
@@ -40,7 +40,7 @@ pub(super) fn validate_initial_projection_plan(
 ) -> Result<(), RuntimeSolveError> {
     let mut row_seen = vec![false; residual_count];
     let mut y_seen = vec![false; solver_count];
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         require_square_projection_block(block.rows.len(), block.y_indices.len(), "initial")?;
         mark_projection_indices(
             &block.rows,

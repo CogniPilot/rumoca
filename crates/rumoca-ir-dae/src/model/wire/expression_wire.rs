@@ -266,6 +266,7 @@ const RECORD_VARIANT: u32 = 6;
 const CALL_VARIANT: u32 = 13;
 const FUNCTION_FOLD_PARAMETER_VARIANT: u32 = 16;
 const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
+const FUNCTION_CONDITIONAL_OUTPUT_VARIANT: u32 = 20;
 const RUNTIME_QUOTIENT_OWNER_VARIANT: u32 = 19;
 
 /// One arena node projected onto the operation that built it.
@@ -338,6 +339,16 @@ impl Serialize for ExpressionNodeOutput<'_> {
                     "ExprNode",
                     FUNCTION_FOLD_OUTPUT_VARIANT,
                     "function_fold_output",
+                    1,
+                )?;
+                state.serialize_field("function", function)?;
+                state.end()
+            }
+            ExprNode::FunctionConditionalOutput { function, .. } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "ExprNode",
+                    FUNCTION_CONDITIONAL_OUTPUT_VARIANT,
+                    "function_conditional_output",
                     1,
                 )?;
                 state.serialize_field("function", function)?;
@@ -451,6 +462,9 @@ pub(super) enum ExprNodeWire {
         builtin: PureBuiltin,
         lhs: u32,
         rhs: u32,
+    },
+    FunctionConditionalOutput {
+        function: u32,
     },
 }
 

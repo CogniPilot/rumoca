@@ -180,7 +180,7 @@ impl PatternSegmentWire {
 
 impl PatternSegment {
     fn height(&self) -> usize {
-        self.pattern.rows as usize
+        self.pattern.owner.rows as usize
     }
 
     /// Check that the segment is flat, covers `columns`, and places its rows one
@@ -191,14 +191,14 @@ impl PatternSegment {
         owned: &mut [bool],
         span: Option<Span>,
     ) -> Result<(), StructuralPatternError> {
-        if self.pattern.columns != columns {
+        if self.pattern.owner.columns != columns {
             return Err(dependency_error(
                 "a stacked segment does not cover the pattern's columns",
                 span,
             ));
         }
         if matches!(
-            self.pattern.representation,
+            self.pattern.owner.representation,
             PatternRepresentation::Stacked { .. }
         ) {
             return Err(dependency_error(
@@ -282,14 +282,14 @@ impl StructuralPattern {
         for segment in &segments {
             segment.validate(checked_columns, &mut owned, span)?;
         }
-        Ok(Self {
-            rows: checked_rows,
-            columns: checked_columns,
-            representation: PatternRepresentation::Stacked {
+        Ok(Self::from_checked_parts(
+            checked_rows,
+            checked_columns,
+            PatternRepresentation::Stacked {
                 segments: segments.into_boxed_slice(),
             },
             provenance,
-        })
+        ))
     }
 
     /// Derive the exact structural relation of a checked compute-block JVP

@@ -64,7 +64,6 @@ pub(in crate::typed_program) fn construct_region(
     provenance: Span,
 ) -> Result<SolveProgramRegion, SolveProgramConstructionError> {
     if provenance.is_dummy()
-        || outputs.is_empty()
         || inputs
             .iter()
             .chain(&outputs)

@@ -18,11 +18,15 @@ rumoca-ir-solve = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-eval-solve = { workspace = true }
-serde = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

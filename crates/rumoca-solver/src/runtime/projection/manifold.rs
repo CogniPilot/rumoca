@@ -67,7 +67,7 @@ pub(crate) trait ManifoldProjectionModel {
     fn manifold_projection_block_structure(
         &self,
         _block_index: usize,
-    ) -> Option<&solve::JacobianStructure> {
+    ) -> Option<&solve::ColoredJacobianStructure> {
         None
     }
 
@@ -260,7 +260,7 @@ fn validate_manifold_projection_plan(
     }
     let mut rows_seen = vec![false; residual_len];
     let mut states_seen = vec![false; state_count];
-    for block in &plan.blocks {
+    for block in plan.blocks.scalar_blocks() {
         if block.rows.is_empty()
             || block.y_indices.is_empty()
             || block.rows.len() > block.y_indices.len()
@@ -316,7 +316,7 @@ fn project_state_manifold_inner<M: ManifoldProjectionModel>(
     for _ in 0..max_iters {
         let mut settled = true;
         let mut changed = false;
-        for (block_index, block) in plan.blocks.iter().enumerate() {
+        for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
             let update = project_manifold_block(model, y, p, t, block, block_index, tol)?;
             settled &= update.settled;
             changed |= update.changed;
@@ -370,7 +370,7 @@ fn evaluate_manifold_block<M: ManifoldProjectionModel>(
     let jacobian = manifold_block_jacobian(model, y, p, t, block, block_index)?;
     let structure = model
         .manifold_projection_block_structure(block_index)
-        .map(solve::JacobianStructure::pattern);
+        .map(solve::ColoredJacobianStructure::pattern);
     let (row_scales, variable_scales) = manifold_block_scales(model, block, &jacobian, structure);
     Ok(ManifoldBlockEvaluation {
         full_residual,
@@ -415,7 +415,7 @@ fn selected_manifold_jacobian<M: ManifoldProjectionModel>(
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
-    structure: &solve::JacobianStructure,
+    structure: &solve::ColoredJacobianStructure,
 ) -> Result<Option<DMatrix<f64>>, RuntimeSolveError> {
     let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
     let column_rows = structure.column_rows();
@@ -461,7 +461,13 @@ pub(crate) fn certify_state_manifold<M: ManifoldProjectionModel>(
     t: f64,
     tol: f64,
 ) -> Result<(), RuntimeSolveError> {
-    for (index, block) in model.manifold_projection_plan().blocks.iter().enumerate() {
+    for (index, block) in model
+        .manifold_projection_plan()
+        .blocks
+        .scalar_blocks()
+        .iter()
+        .enumerate()
+    {
         let evaluated = evaluate_manifold_block(model, y, p, t, block, index)?;
         if !scaled_residual_converged(&evaluated.residual, &evaluated.row_scales, tol) {
             return Err(RuntimeSolveError::solve_ir(format!(
@@ -490,7 +496,7 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
     } = evaluate_manifold_block(model, y, p, t, block, block_index)?;
     let structure = model
         .manifold_projection_block_structure(block_index)
-        .map(solve::JacobianStructure::pattern);
+        .map(solve::ColoredJacobianStructure::pattern);
     if scaled_residual_converged(&residual, &row_scales, tol) {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -657,7 +663,7 @@ mod conditioning_tests {
     fn model() -> CircleChartManifold {
         CircleChartManifold {
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![circle_block()],
+                blocks: (vec![circle_block()]).into(),
             },
         }
     }

@@ -19,6 +19,8 @@
 
 #[cfg(test)]
 mod budget_tests;
+#[cfg(test)]
+mod fold_tests;
 mod pure_calls;
 #[cfg(test)]
 mod snapshot_tests;
@@ -102,9 +104,63 @@ fn expansion_cost(op: &LinearOp) -> Option<usize> {
             }
         }
         LinearOp::TensorCross { lanes: 1, .. } => Some(9),
+        LinearOp::TensorConcatenate {
+            lanes: 1,
+            dimensions,
+            ..
+        } => dimensions
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize)),
+        LinearOp::FunctionFold { program, .. } | LinearOp::GuardedFunctionFold { program, .. } => {
+            fold_cost(program)
+        }
         // Typed bodies reserve their scalar storage and domain work separately.
         LinearOp::PureCall { .. } => Some(0),
         _ => None,
+    }
+}
+
+/// The straight-line cost of unrolling one fold: its update body once per pass,
+/// the pass inputs, and the commit of the carried tuple.
+fn fold_cost(program: &rumoca_ir_solve::FunctionFoldProgram) -> Option<usize> {
+    if program.continuation.is_some() {
+        return None;
+    }
+    let passes = program.domain.scalar_count().ok()?;
+    passes
+        .checked_mul(program.update.len().checked_add(program.register_count)?)?
+        .checked_add(program.carried_count.checked_mul(2)?)
+}
+
+/// The register one scalar op defines, for the ops a fold body unrolls into.
+fn scalar_destination(op: &LinearOp) -> Option<Reg> {
+    match op {
+        LinearOp::Const { dst, .. }
+        | LinearOp::LoadTime { dst }
+        | LinearOp::LoadY { dst, .. }
+        | LinearOp::LoadP { dst, .. }
+        | LinearOp::Move { dst, .. }
+        | LinearOp::Unary { dst, .. }
+        | LinearOp::Binary { dst, .. }
+        | LinearOp::Compare { dst, .. }
+        | LinearOp::Select { dst, .. } => Some(*dst),
+        _ => None,
+    }
+}
+
+/// The registers one scalar op reads.
+fn scalar_reads(op: &LinearOp) -> Vec<Reg> {
+    match op {
+        LinearOp::Move { src, .. } => vec![*src],
+        LinearOp::Unary { arg, .. } => vec![*arg],
+        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => vec![*lhs, *rhs],
+        LinearOp::Select {
+            cond,
+            if_true,
+            if_false,
+            ..
+        } => vec![*cond, *if_true, *if_false],
+        _ => Vec::new(),
     }
 }
 
@@ -255,6 +311,193 @@ impl Lowering<'_> {
         Some(())
     }
 
+    /// Unroll one counted fold over scalar registers. A guarded fold keeps the
+    /// initial carried tuple when its activation is false.
+    fn fold(
+        &mut self,
+        dst: Reg,
+        (initial, capture): (Reg, Reg),
+        activation: Option<Reg>,
+        program: &rumoca_ir_solve::FunctionFoldProgram,
+    ) -> Option<()> {
+        if program.continuation.is_some() {
+            return None;
+        }
+        let first = self.out.len();
+        let mut current = (0..program.carried_count)
+            .map(|index| Self::reg(initial, index))
+            .collect::<Option<Vec<_>>>()?;
+        for tuple in program.domain.index_tuple_iter().ok()? {
+            let pass = FoldPass {
+                base: self.next,
+                tuple,
+                capture,
+            };
+            self.next = Self::reg(pass.base, program.register_count)?;
+            current = self.fold_pass(program, &pass, &current)?;
+        }
+        let body_end = self.out.len();
+        for (index, value) in current.into_iter().enumerate() {
+            let destination = Self::reg(dst, index)?;
+            self.out.push(match activation {
+                None => LinearOp::Move {
+                    dst: destination,
+                    src: value,
+                },
+                Some(cond) => LinearOp::Select {
+                    dst: destination,
+                    cond,
+                    if_true: value,
+                    if_false: Self::reg(initial, index)?,
+                },
+            });
+        }
+        self.drop_unread(first, body_end);
+        Some(())
+    }
+
+    /// One pass of an unrolled fold: the update body over fresh registers, the
+    /// stored next carried tuple returned.
+    fn fold_pass(
+        &mut self,
+        program: &rumoca_ir_solve::FunctionFoldProgram,
+        pass: &FoldPass,
+        current: &[Reg],
+    ) -> Option<Vec<Reg>> {
+        let mut stored = Vec::with_capacity(program.carried_count);
+        // Registers whose value this pass fixes: binder values and literals,
+        // which resolve the runtime subscripts of local aggregates.
+        let mut known = std::collections::HashMap::<Reg, f64>::new();
+        for op in &program.update {
+            if let LinearOp::StoreOutput { src } = op {
+                stored.push(pass.local(*src)?);
+                continue;
+            }
+            self.fold_pass_op(op, pass, current, &mut known)?;
+        }
+        (stored.len() == program.carried_count).then_some(stored)
+    }
+
+    fn fold_pass_op(
+        &mut self,
+        op: &LinearOp,
+        pass: &FoldPass,
+        current: &[Reg],
+        known: &mut std::collections::HashMap<Reg, f64>,
+    ) -> Option<()> {
+        match op {
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources,
+                dimensions,
+                axis,
+                lanes: 1,
+            } => return self.fold_concatenate(*dst_start, (sources, dimensions, *axis), pass),
+            LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let offset = crate::tensor_index::tensor_register_offset(
+                    dimensions,
+                    indices,
+                    None,
+                    |register| {
+                        pass.local(register)
+                            .and_then(|register| known.get(&register).copied())
+                            .ok_or_else(|| crate::invalid_row("fold subscript is not fixed"))
+                    },
+                )
+                .ok()?;
+                self.out.push(LinearOp::Move {
+                    dst: pass.local(*dst)?,
+                    src: pass.local(Self::reg(*base, offset.checked_mul(*stride)?)?)?,
+                });
+                return Some(());
+            }
+            _ => {}
+        }
+        let lowered = pass.scalar_op(op, current)?;
+        if let Some((register, value)) = pass.fixed_value(op, known)? {
+            known.insert(register, value);
+        }
+        self.out.push(lowered);
+        Some(())
+    }
+
+    fn fold_concatenate(
+        &mut self,
+        dst_start: Reg,
+        (sources, dimensions, axis): (&[rumoca_ir_solve::TensorConcatenateSource], &[u32], usize),
+        pass: &FoldPass,
+    ) -> Option<()> {
+        let mut moves = Vec::new();
+        crate::visit_tensor_concatenate(sources, dimensions, axis, 1, |source, offset| {
+            moves.push((source, offset));
+            Ok::<_, ()>(())
+        })
+        .ok()?;
+        for (source, offset) in moves {
+            self.out.push(LinearOp::Move {
+                dst: pass.local(Self::reg(dst_start, offset)?)?,
+                src: pass.local(source)?,
+            });
+        }
+        Some(())
+    }
+
+    /// Drop the unrolled body ops whose result no later body op or commit reads.
+    fn drop_unread(&mut self, first: usize, body_end: usize) {
+        let mut live = std::collections::HashSet::new();
+        for op in &self.out[body_end..] {
+            live.extend(scalar_reads(op));
+        }
+        let mut keep = vec![true; body_end - first];
+        for index in (first..body_end).rev() {
+            let op = &self.out[index];
+            match scalar_destination(op) {
+                Some(destination) if live.contains(&destination) => {
+                    live.extend(scalar_reads(op));
+                }
+                _ => keep[index - first] = false,
+            }
+        }
+        let mut kept = Vec::with_capacity(self.out.len());
+        for (index, op) in std::mem::take(&mut self.out).into_iter().enumerate() {
+            let in_body = index >= first && index < body_end;
+            if !in_body || keep[index - first] {
+                kept.push(op);
+            }
+        }
+        self.out = kept;
+    }
+
+    /// Row-major copy of each source block into its slice of the result; the
+    /// caller stages the commit so overlapping operands stay readable.
+    fn concatenate(
+        &mut self,
+        dst: Reg,
+        sources: &[rumoca_ir_solve::TensorConcatenateSource],
+        dimensions: &[u32],
+        axis: usize,
+    ) -> Option<()> {
+        let mut moves = Vec::new();
+        crate::visit_tensor_concatenate(sources, dimensions, axis, 1, |source, offset| {
+            moves.push((source, offset));
+            Ok::<_, ()>(())
+        })
+        .ok()?;
+        for (source, offset) in moves {
+            self.out.push(LinearOp::Move {
+                dst: Self::reg(dst, offset)?,
+                src: source,
+            });
+        }
+        Some(())
+    }
+
     /// `c = a x b`: `c_i = a_j b_k - a_k b_j` for cyclic `(i, j, k)`.
     fn cross(&mut self, dst: Reg, lhs: Reg, rhs: Reg) -> Option<()> {
         for (i, j, k) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
@@ -391,6 +634,31 @@ impl Lowering<'_> {
                 rhs_start,
                 lanes: 1,
             } => self.cross(*dst_start, *lhs_start, *rhs_start)?,
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources,
+                dimensions,
+                axis,
+                lanes: 1,
+            } => self.concatenate(*dst_start, sources, dimensions, *axis)?,
+            LinearOp::FunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                program,
+            } => self.fold(*dst_start, (*initial_start, *capture_start), None, program)?,
+            LinearOp::GuardedFunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                activation,
+                program,
+            } => self.fold(
+                *dst_start,
+                (*initial_start, *capture_start),
+                Some(*activation),
+                program,
+            )?,
             LinearOp::PureCall {
                 dst_start,
                 input_starts,
@@ -453,6 +721,104 @@ pub fn lower_scalar_ops(
         lowering.lower_with_snapshot(op)?;
     }
     Some(rumoca_ir_solve::prune_dead_constants(lowering.out))
+}
+
+/// The register frame and binder point of one unrolled fold pass.
+struct FoldPass {
+    base: Reg,
+    tuple: Vec<i64>,
+    capture: Reg,
+}
+
+impl FoldPass {
+    fn local(&self, register: Reg) -> Option<Reg> {
+        self.base.checked_add(register)
+    }
+
+    /// The register and value a pass-constant op fixes, if it is one.
+    fn fixed_value(
+        &self,
+        op: &LinearOp,
+        known: &std::collections::HashMap<Reg, f64>,
+    ) -> Option<Option<(Reg, f64)>> {
+        Some(match op {
+            LinearOp::LoadFoldIndex { dst, dimension } => {
+                Some((self.local(*dst)?, *self.tuple.get(*dimension)? as f64))
+            }
+            LinearOp::Const { dst, value } => Some((self.local(*dst)?, *value)),
+            LinearOp::Move { dst, src } => match known.get(&self.local(*src)?) {
+                Some(value) => Some((self.local(*dst)?, *value)),
+                None => None,
+            },
+            _ => None,
+        })
+    }
+
+    /// The scalar op for one update op over this pass's registers.
+    fn scalar_op(&self, op: &LinearOp, current: &[Reg]) -> Option<LinearOp> {
+        Some(match op {
+            LinearOp::LoadFoldIndex { dst, dimension } => LinearOp::Const {
+                dst: self.local(*dst)?,
+                value: *self.tuple.get(*dimension)? as f64,
+            },
+            LinearOp::LoadFoldCapture { dst, index } => LinearOp::Move {
+                dst: self.local(*dst)?,
+                src: self.capture.checked_add(Reg::try_from(*index).ok()?)?,
+            },
+            LinearOp::LoadFoldCarried { dst, index } => LinearOp::Move {
+                dst: self.local(*dst)?,
+                src: *current.get(*index)?,
+            },
+            LinearOp::Const { dst, value } => LinearOp::Const {
+                dst: self.local(*dst)?,
+                value: *value,
+            },
+            LinearOp::LoadTime { dst } => LinearOp::LoadTime {
+                dst: self.local(*dst)?,
+            },
+            LinearOp::LoadY { dst, index } => LinearOp::LoadY {
+                dst: self.local(*dst)?,
+                index: *index,
+            },
+            LinearOp::LoadP { dst, index } => LinearOp::LoadP {
+                dst: self.local(*dst)?,
+                index: *index,
+            },
+            LinearOp::Move { dst, src } => LinearOp::Move {
+                dst: self.local(*dst)?,
+                src: self.local(*src)?,
+            },
+            LinearOp::Unary { dst, op, arg } => LinearOp::Unary {
+                dst: self.local(*dst)?,
+                op: *op,
+                arg: self.local(*arg)?,
+            },
+            LinearOp::Binary { dst, op, lhs, rhs } => LinearOp::Binary {
+                dst: self.local(*dst)?,
+                op: *op,
+                lhs: self.local(*lhs)?,
+                rhs: self.local(*rhs)?,
+            },
+            LinearOp::Compare { dst, op, lhs, rhs } => LinearOp::Compare {
+                dst: self.local(*dst)?,
+                op: *op,
+                lhs: self.local(*lhs)?,
+                rhs: self.local(*rhs)?,
+            },
+            LinearOp::Select {
+                dst,
+                cond,
+                if_true,
+                if_false,
+            } => LinearOp::Select {
+                dst: self.local(*dst)?,
+                cond: self.local(*cond)?,
+                if_true: self.local(*if_true)?,
+                if_false: self.local(*if_false)?,
+            },
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]

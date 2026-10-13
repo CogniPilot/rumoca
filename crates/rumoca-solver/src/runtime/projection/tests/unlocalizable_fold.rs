@@ -6,7 +6,7 @@ use super::*;
 
 fn plan() -> solve::AlgebraicProjectionPlan {
     solve::AlgebraicProjectionPlan {
-        blocks: vec![
+        blocks: (vec![
             solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![2],
@@ -17,7 +17,8 @@ fn plan() -> solve::AlgebraicProjectionPlan {
                 y_indices: vec![3, 4],
                 ..Default::default()
             },
-        ],
+        ])
+        .into(),
     }
 }
 

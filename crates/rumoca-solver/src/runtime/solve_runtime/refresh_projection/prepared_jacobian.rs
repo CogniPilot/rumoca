@@ -128,7 +128,7 @@ pub(crate) fn prepare_projection_jacobians(
 impl RefreshProjectionModel<'_> {
     pub(super) fn eval_prepared_jacobian(
         &self,
-        structure: &solve::JacobianStructure,
+        structure: &solve::ColoredJacobianStructure,
         (rows, y_indices): (&[usize], &[usize]),
         y: &[f64],
         p: &[f64],
@@ -141,6 +141,7 @@ impl RefreshProjectionModel<'_> {
         let compiled = structure.jacobian_application().and_then(|application| {
             let compiled = self
                 .runtime
+                .scalar
                 .compiled_algebraic_jacobians
                 .get(application.block_index())?
                 .as_ref()?;
@@ -152,6 +153,7 @@ impl RefreshProjectionModel<'_> {
         let index = application.block_index();
         let owns_structure = self
             .runtime
+            .scalar
             .continuous_structural
             .algebraic_projection()
             .get(index)
@@ -161,9 +163,7 @@ impl RefreshProjectionModel<'_> {
                 "prepared Jacobian source coordinates differ",
             ));
         }
-        compiled
-            .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-            .map_err(RuntimeSolveError::solve_ir)?;
+        compiled.call(y, p, t, self.runtime.model.external_tables.as_slice(), out)?;
         Ok(true)
     }
 }
@@ -174,7 +174,7 @@ impl RefreshProjectionModel<'_> {
     /// when no backend compiled the projection JVP.
     pub(super) fn eval_colored_tangent_entries(
         &self,
-        structure: &solve::JacobianStructure,
+        structure: &solve::ColoredJacobianStructure,
         (rows, y_indices): (&[usize], &[usize]),
         (y, p, t): (&[f64], &[f64], f64),
     ) -> Result<Option<crate::runtime::projection::JacobianEntries>, RuntimeSolveError> {
@@ -185,12 +185,17 @@ impl RefreshProjectionModel<'_> {
         // the interpreted runtime.
         if self
             .runtime
+            .scalar
             .compiled_implicit_projection_jacobian_v
             .is_some()
         {
             return Ok(None);
         }
-        let owned = self.runtime.continuous_structural.algebraic_projection();
+        let owned = self
+            .runtime
+            .scalar
+            .continuous_structural
+            .algebraic_projection();
         let Some(index) = owned
             .iter()
             .position(|owned| std::ptr::eq(owned, structure))
@@ -198,13 +203,14 @@ impl RefreshProjectionModel<'_> {
             return Ok(None);
         };
         let (Some(Some(evaluator)), Some(block)) = (
-            self.runtime.colored_tangents.get(index),
+            self.runtime.scalar.colored_tangents.get(index),
             self.runtime
                 .model
                 .problem
                 .continuous
                 .algebraic_projection_plan
                 .blocks
+                .scalar_blocks()
                 .get(index),
         ) else {
             return Ok(None);
@@ -240,7 +246,7 @@ pub(crate) fn validate_projection_primal_source(
     for application in structures
         .algebraic_projection()
         .iter()
-        .filter_map(solve::JacobianStructure::jacobian_application)
+        .filter_map(solve::ColoredJacobianStructure::jacobian_application)
     {
         if application
             .primal_source()

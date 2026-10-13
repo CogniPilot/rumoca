@@ -3,12 +3,21 @@ use super::{Emitter, I, solve};
 use wasm_encoder::BlockType;
 
 impl Emitter<'_> {
-    pub(super) fn integer_quotient(&mut self, operator: solve::SolveBinaryOperator, status: u32) {
+    /// `proven` means the divisor interval excludes zero and minus one, so
+    /// neither fault can occur.
+    pub(super) fn integer_quotient(
+        &mut self,
+        operator: solve::SolveBinaryOperator,
+        proven: bool,
+        status: u32,
+    ) {
         use solve::SolveBinaryOperator as B;
-        self.push(I::LocalGet(6));
-        self.push(I::I64Eqz);
-        self.fail_if(status);
-        if operator == B::IntegerQuotient {
+        if !proven {
+            self.push(I::LocalGet(6));
+            self.push(I::I64Eqz);
+            self.fail_if(status);
+        }
+        if operator == B::IntegerQuotient && !proven {
             self.push(I::LocalGet(5));
             self.push(I::I64Const(i64::MIN));
             self.push(I::I64Eq);

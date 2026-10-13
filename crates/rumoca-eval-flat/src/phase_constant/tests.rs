@@ -295,6 +295,52 @@ fn infer_scalar_user_function_broadcasts_array_argument_dims() {
 }
 
 #[test]
+fn infer_scalar_user_function_does_not_broadcast_dimensions_its_formal_consumes() {
+    let mut functions = FxHashMap::default();
+    let mut function = rumoca_core::Function::new("Tables.lookup", test_span());
+    function.add_input(
+        function_param("table", TestScalar::Real, vec![1, 2]).with_shape_expr(vec![
+            rumoca_core::Subscript::index(1, test_span()),
+            rumoca_core::Subscript::index(2, test_span()),
+        ]),
+    );
+    function.add_input(function_param("u", TestScalar::Real, Vec::new()));
+    function.add_output(function_param("y", TestScalar::Real, Vec::new()));
+    functions.insert("Tables.lookup".to_string(), function);
+
+    let known_ints = FxHashMap::default();
+    let known_reals = FxHashMap::default();
+    let known_bools = FxHashMap::default();
+    let known_enums = FxHashMap::default();
+    let mut array_dims = FxHashMap::default();
+    array_dims.insert("clutch.mu_pos".to_string(), vec![1, 2]);
+    array_dims.insert("clutch.samples".to_string(), vec![4]);
+    let infer = |expr: &rumoca_core::Expression| {
+        infer_array_dimensions_full_with_functions(
+            expr,
+            &ParamEvalContext::new(
+                &known_ints,
+                &known_reals,
+                &known_bools,
+                &known_enums,
+                &array_dims,
+                &functions,
+                Some("clutch.mu0"),
+            ),
+        )
+    };
+
+    let scalar_use = function_call("Tables.lookup", vec![var("mu_pos"), real(0.0)]);
+    assert_eq!(
+        infer(&scalar_use),
+        None,
+        "the matrix formal consumes the table dimensions"
+    );
+    let sampled = function_call("Tables.lookup", vec![var("mu_pos"), var("samples")]);
+    assert_eq!(infer(&sampled), Some(vec![4]));
+}
+
+#[test]
 fn user_function_integer_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(

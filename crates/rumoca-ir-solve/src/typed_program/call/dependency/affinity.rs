@@ -92,6 +92,7 @@ pub(in crate::typed_program) fn derive(
     let mut registers = vec![InputInteractions::default(); body.register_types().len()];
     for spanned in body.operations() {
         match spanned.operation() {
+            SolveOperation::CheckAssertion { .. } => return None,
             SolveOperation::Load { destination, slot } => {
                 registers[destination.index()] = slots[slot.index()].clone()
             }
@@ -102,6 +103,7 @@ pub(in crate::typed_program) fn derive(
                 owner,
                 arguments,
                 destinations,
+                ..
             } => {
                 let callee = available.get(owner.index() as usize)?.affinity?;
                 let arguments = arguments

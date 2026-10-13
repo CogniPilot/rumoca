@@ -84,14 +84,16 @@ fn reference_pack<'dae>(
     for _ in 0..14400 {
         compiler.register(span).unwrap();
     }
-    compiler.ops.push(solve::LinearOp::TensorLoad {
-        dst_start,
-        input,
-        input_start,
-        count: 14400,
-        seed_start: None,
-        lanes: 1,
-    });
+    compiler
+        .emit(solve::LinearOp::TensorLoad {
+            dst_start,
+            input,
+            input_start,
+            count: 14400,
+            seed_start: None,
+            lanes: 1,
+        })
+        .unwrap();
     compiler
         .tensor_load_cache
         .insert((compiler.context_id, expression), (dst_start, 14400));

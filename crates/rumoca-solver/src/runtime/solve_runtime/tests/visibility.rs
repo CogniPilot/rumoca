@@ -2,14 +2,17 @@ use super::*;
 
 #[test]
 fn visible_values_for_names_preserves_requested_order() {
-    let model = solve::SolveModel {
-        visible_names: vec!["b".to_string(), "a".to_string()],
-        visible_value_rows: spanned_block(
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            ..Default::default()
+        },
+        vec!["b".to_string(), "a".to_string()],
+        spanned_block(
             vec![const_visible_value_row(2.0), const_visible_value_row(1.0)],
             "visible_values.mo",
         ),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let names = vec!["a".to_string(), "missing".to_string(), "b".to_string()];
 
@@ -27,9 +30,12 @@ fn visible_values_for_names_preserves_requested_order() {
 
 #[test]
 fn visible_values_fast_path_reads_direct_sources() {
-    let model = solve::SolveModel {
-        visible_names: vec!["y2".to_string(), "p1".to_string(), "time".to_string()],
-        visible_value_rows: spanned_block(
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            ..Default::default()
+        },
+        vec!["y2".to_string(), "p1".to_string(), "time".to_string()],
+        spanned_block(
             vec![
                 direct_y_visible_value_row(1),
                 direct_param_visible_value_row(0),
@@ -37,8 +43,8 @@ fn visible_values_fast_path_reads_direct_sources() {
             ],
             "visible_fast_path.mo",
         ),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let values = runtime
@@ -50,14 +56,17 @@ fn visible_values_fast_path_reads_direct_sources() {
 
 #[test]
 fn visible_values_mixed_plan_keeps_expression_rows() {
-    let model = solve::SolveModel {
-        visible_names: vec!["y2".to_string(), "computed".to_string()],
-        visible_value_rows: spanned_block(
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            ..Default::default()
+        },
+        vec!["y2".to_string(), "computed".to_string()],
+        spanned_block(
             vec![direct_y_visible_value_row(1), positive_sum_residual_row()],
             "visible_mixed_plan.mo",
         ),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let values = runtime
@@ -74,14 +83,17 @@ fn visible_value_plan_deduplicates_equal_expression_rows() {
         unreachable!("sum fixture begins with a state load")
     };
     *index = 2;
-    let model = solve::SolveModel {
-        visible_names: vec![
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            ..Default::default()
+        },
+        vec![
             "y2".to_string(),
             "computed_a".to_string(),
             "computed_different".to_string(),
             "computed_b".to_string(),
         ],
-        visible_value_rows: spanned_block(
+        spanned_block(
             vec![
                 direct_y_visible_value_row(1),
                 positive_sum_residual_row(),
@@ -90,10 +102,13 @@ fn visible_value_plan_deduplicates_equal_expression_rows() {
             ],
             "visible_duplicate_expressions.mo",
         ),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .visible_value_plan
         .as_ref()
         .expect("visible value plan should build");
@@ -138,11 +153,14 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
             },
             ..Default::default()
         },
-        parameters: vec![2.5, 9.0],
+        parameters: vec![2.5, 9.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .root_condition_plan
         .as_ref()
         .expect("root condition plan should build");
@@ -190,12 +208,13 @@ fn root_condition_plan_preserves_grouped_output_ownership() {
     ];
     let model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 1),
+                vec!["state".to_owned()],
+            ),
             solve_layout: solve::SolveLayout {
                 state_scalar_count: 1,
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_owned()],
-                    ..Default::default()
-                },
+
                 parameter_count: 1,
                 compiled_parameter_len: 1,
                 ..Default::default()
@@ -211,12 +230,15 @@ fn root_condition_plan_preserves_grouped_output_ownership() {
             },
             ..Default::default()
         },
-        parameters: vec![3.0],
-        initial_y: vec![4.0],
+        parameters: vec![3.0].into(),
+        initial_y: vec![4.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .root_condition_plan
         .as_ref()
         .expect("grouped root condition plan should build");
@@ -271,11 +293,11 @@ fn initial_event_commits_delay_left_limit_before_the_synthetic_right_limit() {
             },
             ..Default::default()
         },
-        parameters: vec![1.0, 0.0],
+        parameters: vec![1.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("delay runtime should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     runtime
         .initialize_delay_history(0.0, &[], &mut p)
         .expect("delay history should initialize");
@@ -335,11 +357,11 @@ fn initial_event_advances_pre_memory_before_the_synthetic_right_limit() {
         },
         // p[0] is the converged current value, p[1] is its lowered pre slot,
         // and p[2] records what the post-event projection observed.
-        parameters: vec![2.0, 1.0, 0.0],
+        parameters: vec![2.0, 1.0, 0.0].into(),
         ..Default::default()
     };
     let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     let outcome = runtime
@@ -385,60 +407,64 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
     let owner = clocks
         .periodic_clock_id(0)
         .expect("inserted clock has a typed identity");
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                parameter_count: 3,
-                compiled_parameter_len: 3,
-                pre_param_bindings: vec![solve::PreParamBinding {
-                    dest_p_index: 1,
-                    source: solve::PreParamSource::P { index: 0 },
-                    clock_schedule: Some(schedule),
-                }],
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                solve_layout: solve::SolveLayout {
+                    parameter_count: 3,
+                    compiled_parameter_len: 3,
+                    pre_param_bindings: vec![solve::PreParamBinding {
+                        dest_p_index: 1,
+                        source: solve::PreParamSource::P { index: 0 },
+                        clock_schedule: Some(schedule),
+                    }],
+                    ..Default::default()
+                },
+                clocks,
+                discrete: solve::DiscreteSolveSystem {
+                    rhs: spanned_block(
+                        vec![vec![
+                            solve::LinearOp::LoadP { dst: 0, index: 1 },
+                            solve::LinearOp::Const { dst: 1, value: 1.0 },
+                            solve::LinearOp::Binary {
+                                dst: 2,
+                                op: solve::BinaryOp::Add,
+                                lhs: 0,
+                                rhs: 1,
+                            },
+                            solve::LinearOp::StoreOutput { src: 2 },
+                        ]],
+                        "phase_zero_clock_tick.mo",
+                    ),
+                    update_targets: vec![solve::scalar_slot_p(0)],
+                    row_roles: vec![solve::DiscreteRowRole::Equation],
+                    pre_modes: vec![solve::DiscreteEventPreMode::EventEntry],
+                    observation_refresh: vec![false],
+                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+                    clock_owners: vec![Some(owner)],
+                    // SOLVE-C57: every clock-owned producer carries its issued
+                    // same-tick step; construction validates exact coverage.
+                    clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
+                        start_row: 0,
+                        count: 1,
+                    }],
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            clocks,
-            discrete: solve::DiscreteSolveSystem {
-                rhs: spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadP { dst: 0, index: 1 },
-                        solve::LinearOp::Const { dst: 1, value: 1.0 },
-                        solve::LinearOp::Binary {
-                            dst: 2,
-                            op: solve::BinaryOp::Add,
-                            lhs: 0,
-                            rhs: 1,
-                        },
-                        solve::LinearOp::StoreOutput { src: 2 },
-                    ]],
-                    "phase_zero_clock_tick.mo",
-                ),
-                update_targets: vec![solve::scalar_slot_p(0)],
-                row_roles: vec![solve::DiscreteRowRole::Equation],
-                pre_modes: vec![solve::DiscreteEventPreMode::EventEntry],
-                observation_refresh: vec![false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![Some(owner)],
-                // SOLVE-C57: every clock-owned producer carries its issued
-                // same-tick step; construction validates exact coverage.
-                clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
-                    start_row: 0,
-                    count: 1,
-                }],
-                ..Default::default()
-            },
+            parameters: vec![0.0, 0.0, 0.0].into(),
+
             ..Default::default()
         },
-        parameters: vec![0.0, 0.0, 0.0],
-        visible_names: vec!["counter".to_string()],
-        visible_value_rows: spanned_block(
+        vec!["counter".to_string()],
+        spanned_block(
             vec![direct_param_visible_value_row(0)],
             "phase_zero_clock_tick_visible.mo",
         ),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("clock fixture should prepare");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
 
     let outcome = runtime
@@ -505,6 +531,9 @@ fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
     let model = algebraic_output_root_model(assignment_residual_row());
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .root_condition_plan
         .as_ref()
         .expect("root condition plan should build");
@@ -529,6 +558,9 @@ fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
     let model = algebraic_output_root_model(add_assignment_residual_row(1, 0, 1.0));
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .root_condition_plan
         .as_ref()
         .expect("root condition plan should build");
@@ -547,11 +579,11 @@ fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
 fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 1),
+                vec!["state".to_string(), "static_output".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string(), "static_output".to_string()],
-                    ..Default::default()
-                },
                 state_scalar_count: 1,
                 algebraic_scalar_count: 1,
                 parameter_count: 1,
@@ -566,26 +598,38 @@ fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
                     ],
                     "parameter_static_refresh.mo",
                 )),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                implicit_row_targets: (vec![None, Some(solve::scalar_slot_y(1))]).into(),
                 ..Default::default()
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![2.0],
+        initial_y: vec![0.0, 0.0].into(),
+        parameters: vec![2.0].into(),
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    assert_eq!(runtime.algebraic_refresh.static_causal_seed_rows.len(), 1);
+    assert_eq!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .static_causal_seed_rows
+            .len(),
+        1
+    );
     assert!(
         runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
             .algebraic_refresh
             .dynamic_causal_seed_rows
             .is_empty()
     );
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y.to_vec();
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[2.0], 1.0e-12, 4)
         .expect("first static refresh should populate the cache");
@@ -606,11 +650,11 @@ fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
 fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                vec!["state".to_string(), "output".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string(), "output".to_string()],
-                    ..Default::default()
-                },
                 state_scalar_count: 1,
                 algebraic_scalar_count: 1,
                 ..Default::default()
@@ -620,7 +664,7 @@ fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::Sol
                     vec![derivative_placeholder_row(0), implicit_row],
                     "algebraic_output_root.mo",
                 )),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+                implicit_row_targets: (vec![None, Some(solve::scalar_slot_y(1))]).into(),
                 ..Default::default()
             },
             events: solve::SolveEventPartition {
@@ -634,7 +678,7 @@ fn algebraic_output_root_model(implicit_row: Vec<solve::LinearOp>) -> solve::Sol
             },
             ..Default::default()
         },
-        initial_y: vec![0.0, 2.0],
+        initial_y: vec![0.0, 2.0].into(),
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);
@@ -648,16 +692,19 @@ fn visible_value_runtime_errors_keep_row_span() {
         4,
         9,
     );
-    let model = solve::SolveModel {
-        visible_names: vec!["x".to_string()],
-        visible_value_rows: solve::ScalarProgramBlock::with_source_span(
+    let model = crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            ..Default::default()
+        },
+        vec!["x".to_string()],
+        solve::ScalarProgramBlock::with_source_span(
             vec![derivative_placeholder_row(0)],
             span.require_provenance("visible-value runtime fixture")
                 .expect("fixture span is source-backed"),
         )
         .expect("fixture program is computable"),
-        ..Default::default()
-    };
+        Vec::new(),
+    );
     let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let names = vec!["x".to_string()];
@@ -714,7 +761,7 @@ fn unowned_zero_phase_sample_model() -> solve::SolveModel {
         rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap(),
     )
     .unwrap();
-    solve::SolveModel {
+    let model = solve::SolveModel {
         problem: solve::SolveProblem {
             layout: solve::VarLayout::from_parts(Default::default(), 0, 4),
             solve_layout: solve::SolveLayout {
@@ -781,14 +828,18 @@ fn unowned_zero_phase_sample_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        parameters: vec![0.0; 4],
-        visible_names: vec!["counter".to_owned()],
-        visible_value_rows: spanned_block(
+        parameters: vec![0.0; 4].into(),
+        ..Default::default()
+    };
+    crate::fixture_layout::with_visible_expressions(
+        model,
+        vec!["counter".to_owned()],
+        spanned_block(
             vec![direct_param_visible_value_row(0)],
             "unowned_zero_phase_visible.mo",
         ),
-        ..Default::default()
-    }
+        Vec::new(),
+    )
 }
 
 #[test]
@@ -799,7 +850,7 @@ fn phase_zero_unowned_sample_waits_for_its_single_post_initial_tick() {
         None
     );
     let runtime = SolveRuntime::new_fixture(&model).expect("unowned sample fixture prepares");
-    let mut p = model.parameters.clone();
+    let mut p = model.parameters.to_vec();
     let event_pre_p = p.clone();
     let outcome = runtime
         .apply_projected_initial_event_boundary(

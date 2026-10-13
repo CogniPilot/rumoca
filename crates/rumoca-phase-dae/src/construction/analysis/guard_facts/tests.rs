@@ -94,6 +94,22 @@ fn a_write_forgets_every_fact_that_mentions_it() {
 }
 
 #[test]
+fn a_write_forgets_only_the_facts_about_its_own_name() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    for (target, literal) in [("n", 3), ("r", 4), ("w", 5)] {
+        facts.after(&assign(target, integer(literal)), names.scope());
+    }
+    let shared = facts.clone();
+    facts.after(&assign("r", var("count")), names.scope());
+    assert!(bound(&facts, "r").is_unbounded());
+    assert_eq!(bound(&facts, "n"), IntegerInterval::finite(3, 3));
+    assert_eq!(bound(&facts, "w"), IntegerInterval::finite(5, 5));
+    // The fork that did not see the write keeps its fact.
+    assert_eq!(bound(&shared, "r"), IntegerInterval::finite(4, 4));
+}
+
+#[test]
 fn a_join_keeps_only_what_every_path_proves() {
     let names = Names::new();
     let facts = GuardFacts::entry();
@@ -603,4 +619,447 @@ fn a_mutable_generated_store_invalidates_a_loop_entry_selection() {
     let head = entry.loop_entry_on_path(&body, &[], scope);
     assert!(!head.assuming(&var("g"), true, scope).is_unreachable());
     assert!(!head.assuming(&var("g"), false, scope).is_unreachable());
+}
+
+fn boolean(value: bool) -> Expression {
+    Expression::Literal {
+        value: Literal::Boolean(value),
+        span: span(),
+    }
+}
+
+fn activation(condition: Expression, selected: Expression) -> Expression {
+    Expression::If {
+        branches: vec![(condition, selected)],
+        else_branch: Box::new(boolean(false)),
+        span: span(),
+    }
+}
+
+#[test]
+fn complementary_guarded_definitions_remove_only_the_active_undefined_paths() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut original = PathSet::single(GuardFacts::entry());
+    original.assign(
+        &VarName::new("selected"),
+        &activation(var("active"), var("choice")),
+        scope,
+    );
+    for else_prefix in [
+        activation(var("active"), not(var("selected"))),
+        binary(OpBinary::And, var("active"), not(var("selected"))),
+    ] {
+        // The else prefix writes the value where it runs. The tuple writes
+        // it where the captured selection holds. Keep only their skips.
+        let after_else = original.entering(&[&else_prefix], 1, scope);
+        let after_tuple = after_else.entering(&[&var("selected")], 1, scope);
+        assert!(
+            after_tuple
+                .entering(&[&var("active")], 0, scope)
+                .is_unreachable()
+        );
+        assert!(
+            !after_tuple
+                .entering(&[&var("active")], 1, scope)
+                .is_unreachable()
+        );
+        // Without the tuple arm, a reached active path is still undefined.
+        assert!(
+            !after_else
+                .entering(&[&var("active")], 0, scope)
+                .is_unreachable()
+        );
+    }
+}
+
+#[test]
+fn boolean_junction_alternatives_preserve_each_possible_path() {
+    let names = Names::new();
+    let scope = names.scope();
+    let original = PathSet::single(GuardFacts::entry());
+    let conjunction = binary(OpBinary::And, var("a"), var("b"));
+    let failed = original.entering(&[&conjunction], 1, scope);
+    assert!(
+        failed
+            .entering(&[&var("a")], 0, scope)
+            .entering(&[&var("b")], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        !failed
+            .entering(&[&var("a")], 1, scope)
+            .entering(&[&var("b")], 0, scope)
+            .is_unreachable()
+    );
+    let disjunction = binary(OpBinary::Or, var("a"), var("b"));
+    let held = original.entering(&[&disjunction], 0, scope);
+    assert!(
+        held.entering(&[&var("a")], 1, scope)
+            .entering(&[&var("b")], 1, scope)
+            .is_unreachable()
+    );
+    assert!(
+        !held
+            .entering(&[&var("a")], 1, scope)
+            .entering(&[&var("b")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn boolean_conditional_alternatives_keep_first_true_selection() {
+    let names = Names::new();
+    let scope = names.scope();
+    let condition = Expression::If {
+        branches: vec![(var("a"), boolean(false)), (var("b"), boolean(true))],
+        else_branch: Box::new(boolean(false)),
+        span: span(),
+    };
+    let held = PathSet::single(GuardFacts::entry()).entering(&[&condition], 0, scope);
+    assert!(!held.is_unreachable());
+    assert!(held.entering(&[&var("a")], 0, scope).is_unreachable());
+    assert!(held.entering(&[&var("b")], 1, scope).is_unreachable());
+}
+
+#[test]
+fn a_mutable_write_does_not_reuse_the_previous_capture_path() {
+    let names = Names::new();
+    let scope = names.scope();
+    let mut paths = PathSet::single(GuardFacts::entry());
+    paths.assign(&VarName::new("selected"), &var("choice"), scope);
+    let mut undefined = paths.entering(&[&var("selected")], 1, scope);
+    undefined.assign(&VarName::new("choice"), &boolean(true), scope);
+    assert!(
+        !undefined
+            .entering(&[&var("choice")], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        undefined
+            .entering(&[&var("selected")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn bounded_boolean_alternatives_collapse_only_to_a_conservative_hull() {
+    let names = Names::new();
+    let scope = names.scope();
+    let condition = (0..32).fold(boolean(true), |earlier, index| {
+        binary(OpBinary::And, earlier, var(&format!("choice_{index}")))
+    });
+    let original = PathSet::single(GuardFacts::entry());
+    let failed = original.entering(&[&condition], 1, scope);
+    // More alternatives than the owner retains lose proof, never gain it.
+    assert!(!failed.entering(&[&condition], 0, scope).is_unreachable());
+}
+
+#[test]
+fn a_false_captured_conjunction_retains_each_skipped_producer_path() {
+    let names = Names::new();
+    let capture = function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new("selected"),
+        value: activation(var("active"), var("choice")),
+        span: span(),
+    };
+    let captures = [capture];
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut paths = PathSet::single(GuardFacts::entry());
+    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let mut undefined = paths.entering(&[&var("selected")], 1, scope);
+    undefined.after(
+        &branch(
+            vec![(var("selected"), vec![assign("choice", var("next"))])],
+            None,
+        ),
+        scope,
+    );
+    // A replacement only in the producer's selected branch cannot re-enable
+    // an undefined path, even though the mutable choice is no longer its old value.
+    assert!(
+        undefined
+            .entering(&[&activation(var("active"), var("choice"))], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        !undefined
+            .entering(&[&var("active")], 1, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn a_true_captured_disjunction_retains_each_skipped_producer_path() {
+    let names = Names::new();
+    let captures = [function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new("selected"),
+        value: binary(OpBinary::Or, var("active"), var("choice")),
+        span: span(),
+    }];
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut paths = PathSet::single(GuardFacts::entry());
+    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let mut undefined = paths.entering(&[&var("selected")], 0, scope);
+    undefined.after(
+        &branch(
+            vec![(not(var("selected")), vec![assign("choice", var("next"))])],
+            None,
+        ),
+        scope,
+    );
+    assert!(
+        undefined
+            .entering(&[&not(var("active"))], 0, scope)
+            .entering(&[&not(var("choice"))], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        !undefined
+            .entering(&[&var("active")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn an_unconditional_reenable_does_not_inherit_a_capture_producer() {
+    let names = Names::new();
+    let captures = [function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new("selected"),
+        value: activation(var("active"), var("choice")),
+        span: span(),
+    }];
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut paths = PathSet::single(GuardFacts::entry());
+    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let mut undefined = paths.entering(&[&var("selected")], 1, scope);
+    undefined.after(&assign("choice", boolean(true)), scope);
+    assert!(
+        !undefined
+            .entering(&[&activation(var("active"), var("choice"))], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        undefined
+            .entering(&[&var("selected")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+fn sixteen_independent_boolean_paths(scope: FactScope<'_>) -> PathSet {
+    let mut paths = PathSet::empty();
+    for bits in 0..16 {
+        let mut facts = GuardFacts::entry();
+        for bit in 0..4 {
+            facts.assign(
+                VarName::new(format!("varying_{bit}")),
+                &boolean(bits & (1 << bit) != 0),
+                scope,
+            );
+        }
+        paths.join_path(&PathSet::single(facts));
+    }
+    paths
+}
+
+#[test]
+fn a_capture_exclusion_survives_more_than_sixteen_boolean_alternatives() {
+    let names = Names::new();
+    for conjunction in [true, false] {
+        let value = if conjunction {
+            activation(var("active"), var("choice"))
+        } else {
+            binary(OpBinary::Or, var("active"), var("choice"))
+        };
+        let captures = [function_returns::GeneratedBooleanDefinition {
+            mutable: false,
+            target: VarName::new("selected"),
+            value,
+            span: span(),
+        }];
+        let scope = FactScope {
+            generated: &captures,
+            ..names.scope()
+        };
+        let mut paths = sixteen_independent_boolean_paths(scope);
+        // Sixteen existing paths each have three Boolean RHS alternatives,
+        // so capture issuance necessarily uses the bounded owner's hull.
+        paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+        let skipped = paths.entering(&[&var("selected")], usize::from(conjunction), scope);
+        let impossible = skipped
+            .entering(&[&var("active")], usize::from(!conjunction), scope)
+            .entering(&[&var("choice")], usize::from(!conjunction), scope);
+        assert!(impossible.is_unreachable());
+        // A path where an operand decides the skipped truth remains possible.
+        assert!(
+            !skipped
+                .entering(&[&var("active")], usize::from(conjunction), scope)
+                .is_unreachable()
+        );
+    }
+}
+
+#[test]
+fn a_reenabled_operand_invalidates_the_capture_exclusion_after_a_hull() {
+    let names = Names::new();
+    let captures = [function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new("selected"),
+        value: activation(var("active"), var("choice")),
+        span: span(),
+    }];
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut paths = sixteen_independent_boolean_paths(scope);
+    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let mut skipped = paths.entering(&[&var("selected")], 1, scope);
+    skipped.assign(&VarName::new("choice"), &boolean(true), scope);
+    assert!(
+        !skipped
+            .entering(&[&var("active")], 0, scope)
+            .entering(&[&var("choice")], 0, scope)
+            .is_unreachable()
+    );
+    assert!(
+        skipped
+            .entering(&[&var("selected")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn a_boolean_call_is_not_an_exact_capture_exclusion_cube() {
+    let names = Names::new();
+    let call = Expression::FunctionCall {
+        name: rumoca_core::Reference::new("unknown"),
+        args: Vec::new(),
+        is_constructor: false,
+        span: span(),
+    };
+    let captures = [function_returns::GeneratedBooleanDefinition {
+        mutable: false,
+        target: VarName::new("selected"),
+        value: activation(var("active"), activation(var("choice"), call)),
+        span: span(),
+    }];
+    let scope = FactScope {
+        generated: &captures,
+        ..names.scope()
+    };
+    let mut paths = sixteen_independent_boolean_paths(scope);
+    paths.after(&rumoca_core::Statement::Empty { span: span() }, scope);
+    let failed = paths.entering(&[&var("selected")], 1, scope);
+    // Both operands may hold while the unsupported call returns false.
+    assert!(
+        !failed
+            .entering(&[&var("active")], 0, scope)
+            .entering(&[&var("choice")], 0, scope)
+            .is_unreachable()
+    );
+}
+
+#[test]
+fn path_sets_holding_equal_facts_advance_to_equal_path_sets() {
+    let names = Names::new();
+    let mut origin = GuardFacts::entry();
+    origin.after(&assign("n", integer(3)), names.scope());
+    let fork = origin.clone();
+    let rebuilt = {
+        let mut facts = GuardFacts::entry();
+        facts.after(&assign("n", integer(3)), names.scope());
+        facts
+    };
+    // A fork shares its map; a rebuilt path holds an equal map apart.
+    assert_eq!(origin, fork);
+    assert_eq!(origin, rebuilt);
+    let mut other = origin.clone();
+    other.after(&assign("n", integer(4)), names.scope());
+    assert_ne!(origin, other);
+
+    let statement = assign("w", var("n"));
+    let mut shared = PathSet::single(origin);
+    let mut apart = PathSet::single(rebuilt);
+    assert_eq!(shared, apart);
+    shared.after(&statement, names.scope());
+    apart.after(&statement, names.scope());
+    assert_eq!(shared, apart);
+}
+
+#[test]
+fn a_write_to_an_operand_forgets_what_a_selection_proved_only_on_its_own_path() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("b", binary(OpBinary::Le, var("r"), integer(4))),
+        names.scope(),
+    );
+    let fork = facts.clone();
+    facts.after(&assign("r", var("n")), names.scope());
+    let written = facts.branch_entries(&[&var("b")], names.scope());
+    assert!(bound(&written[0], "r").is_unbounded());
+    // The fork that did not see the write still knows what `b` proved of `r`.
+    let kept = fork.branch_entries(&[&var("b")], names.scope());
+    assert_eq!(bound(&kept[0], "r").upper, Some(4));
+}
+
+#[test]
+fn a_write_to_an_unrelated_name_leaves_the_shared_selections_uncopied() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(
+        &assign("b", binary(OpBinary::Le, var("r"), integer(4))),
+        names.scope(),
+    );
+    let fork = facts.clone();
+    facts.after(&assign("w", integer(7)), names.scope());
+    assert!(std::sync::Arc::ptr_eq(
+        &facts.selections.0,
+        &fork.selections.0
+    ));
+    assert_eq!(facts.selections, fork.selections);
+}
+
+#[test]
+fn clearing_a_shared_map_leaves_the_fork_it_was_shared_with_intact() {
+    let mut origin: SharedMap<i32, i32> = SharedMap::new();
+    origin.insert(1, 10);
+    let fork = origin.clone();
+    origin.clear();
+    assert!(origin.is_empty());
+    assert_eq!(fork.get(&1), Some(&10));
+    origin.insert(2, 20);
+    assert_eq!(fork.len(), 1);
+}
+
+#[test]
+fn joining_a_path_with_its_unchanged_fork_keeps_every_fact_and_selection() {
+    let names = Names::new();
+    let mut facts = GuardFacts::entry();
+    facts.after(&assign("n", integer(3)), names.scope());
+    facts.after(
+        &assign("b", binary(OpBinary::Le, var("r"), integer(4))),
+        names.scope(),
+    );
+    let fork = facts.clone();
+    let mut joined = facts.clone();
+    joined.join_path(&fork);
+    assert_eq!(joined, facts);
+    assert_eq!(bound(&joined, "n"), IntegerInterval::finite(3, 3));
+    let entries = joined.branch_entries(&[&var("b")], names.scope());
+    assert_eq!(bound(&entries[0], "r").upper, Some(4));
+    assert_eq!(bound(&entries[1], "r").lower, Some(5));
 }

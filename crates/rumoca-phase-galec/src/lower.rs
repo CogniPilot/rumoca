@@ -1912,6 +1912,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.lower_function_fold_output_at(fold, carried, indices, node.provenance().span())
             }
+            dae::ExpressionOperation::FunctionConditionalOutput { definition, .. } => {
+                if self.function_scope != Some(definition.id().function()) {
+                    return Err(unsupported(
+                        "function-conditional-owner",
+                        "a conditional output requires its ordered function statement owner"
+                            .to_owned(),
+                        node.provenance().span(),
+                    ));
+                }
+                self.lower_function_value(definition, indices, scalar_type)
+            }
             dae::ExpressionOperation::Record(_)
             | dae::ExpressionOperation::StringConversion { .. } => Err(unsupported(
                 "expression-form",
@@ -1954,6 +1965,18 @@ fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<S
                 if let Some(span) = first_function_assertion(statements) {
                     return Some(span);
                 }
+            }
+            dae::FunctionStatementView::Conditional { conditional } => {
+                let found = conditional
+                    .branches()
+                    .chain(std::iter::once(conditional.fallback()))
+                    .find_map(|branch| first_function_assertion(branch.statements()));
+                if let Some(span) = found {
+                    return Some(span);
+                }
+            }
+            dae::FunctionStatementView::RequireAssigned { provenance, .. } => {
+                return Some(provenance.span());
             }
             dae::FunctionStatementView::Assignment { .. }
             | dae::FunctionStatementView::AssignmentGroup { .. } => {}

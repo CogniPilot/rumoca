@@ -1,10 +1,13 @@
 //! Whole-program tuple ordering, checked table linkage and atomic publication.
 mod affine;
+mod carried;
 mod conditionals;
+mod demand;
 mod maps;
 mod math;
 mod packed_tuples;
 mod reported_bug_sources;
+mod stage_glue;
 use super::*;
 use rumoca_exec_wasm::compile_native_assignment_schedule_with_calls_wasm;
 
@@ -202,6 +205,42 @@ impl ProgramRunner {
         }
     }
 
+    /// One call of a program that publishes carried state: the status, the host Y
+    /// bytes (starting as 0xa5) and P after the call.
+    fn run_carried(&mut self, parameters: &[f64]) -> (i32, Vec<u8>, Vec<f64>) {
+        self.memory
+            .write(&mut self.store, 0, &vec![0xa5; self.p])
+            .unwrap();
+        let bytes = parameters
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
+        self.memory.write(&mut self.store, self.p, &bytes).unwrap();
+        self.memory
+            .write(
+                &mut self.store,
+                self.scratch,
+                &vec![0x7f; self.total - self.scratch],
+            )
+            .unwrap();
+        let status = self
+            .call
+            .call(
+                &mut self.store,
+                (0, self.p as i32, 0., self.scratch as i32, 0),
+            )
+            .unwrap();
+        let mut y = vec![0; self.y_count * 8];
+        self.memory.read(&self.store, 0, &mut y).unwrap();
+        let mut p = vec![0; bytes.len()];
+        self.memory.read(&self.store, self.p, &mut p).unwrap();
+        let p = p
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (status, y, p)
+    }
+
     fn run(&mut self, parameters: &[f64]) -> (i32, Vec<f64>) {
         let (status, output, _) = self.run_with_lanes(parameters, &[]);
         (status, output)
@@ -375,7 +414,7 @@ fn complete_call_tuple_runs_once_per_immutable_coordinate_and_preserves_full_dom
                 .zip(inputs)
                 .map(|(ty, values)| TypedValue::construct(ty.clone(), values).unwrap())
                 .collect::<Vec<_>>();
-            let expected = eval_pure_call(&table, site.owner(), &typed).unwrap();
+            let expected = eval_pure_call_checked(&table, site.owner(), &typed).unwrap();
             let (status, actual) = runner.run(&parameters);
             assert_eq!(status, 0);
             assert_eq!(actual[0].to_bits(), value.to_bits());

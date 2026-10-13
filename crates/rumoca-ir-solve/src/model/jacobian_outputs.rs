@@ -83,6 +83,7 @@ impl ContinuousStructuralArtifacts {
             .get_mut(application.block_index())
             .ok_or("projection specialization block is outside the issued plan")?;
         let original = structure
+            .structure
             .jacobian_application
             .as_ref()
             .ok_or("projection specialization has no canonical application")?;
@@ -94,7 +95,7 @@ impl ContinuousStructuralArtifacts {
         {
             return Err("projection specialization belongs to a different source or block");
         }
-        structure.jacobian_application = Some(application);
+        structure.structure.jacobian_application = Some(Box::new(application));
         Ok(())
     }
 
@@ -105,8 +106,12 @@ impl ContinuousStructuralArtifacts {
         directional: &ScalarProgramBlock,
     ) -> Self {
         let outputs = ProgramOutputCatalog::new(directional);
-        for (structure, block) in self.manifold_projection.iter_mut().zip(&plan.blocks) {
-            structure.output_evaluations = color_rows(structure, block)
+        for (structure, block) in self
+            .manifold_projection
+            .iter_mut()
+            .zip(plan.blocks.scalar_blocks())
+        {
+            structure.structure.output_evaluations = color_rows(structure, block)
                 .into_iter()
                 .map(|rows| ProjectionJacobianOutputs {
                     solver_y: outputs.selection(&rows, block.rows.len()),
@@ -137,12 +142,12 @@ impl ContinuousStructuralArtifacts {
         for (index, (structure, block)) in self
             .algebraic_projection
             .iter_mut()
-            .zip(&plan.blocks)
+            .zip(plan.blocks.scalar_blocks())
             .enumerate()
         {
-            structure.linearization_repeatable = structure.pattern.rows() as usize
+            structure.structure.linearization_repeatable = structure.pattern().rows() as usize
                 == block.rows.len()
-                && structure.pattern.columns() as usize == block.y_indices.len()
+                && structure.pattern().columns() as usize == block.y_indices.len()
                 && [&primal_outputs, &y_outputs, &full_outputs]
                     .iter()
                     .all(|catalog| catalog.covers_repeatable_rows(&block.rows));
@@ -153,22 +158,27 @@ impl ContinuousStructuralArtifacts {
                 .enumerate()
                 .map(|(local, source)| (source, local))
                 .collect::<Vec<_>>();
-            structure.residual_output_evaluation =
+            structure.structure.residual_output_evaluation =
                 primal_outputs.shared_selection(&residual_rows, block.rows.len());
-            structure.output_evaluations =
+            structure.structure.output_evaluations =
                 color_output_evaluations(structure, block, &y_outputs, &full_outputs);
-            structure.jacobian_application = application_source.as_ref().and_then(|source| {
-                ProjectionJacobianApplication::derive(index, structure, block, source, &y_outputs)
-            });
-            structure.affine_elimination =
-                AffineEliminationLayout::derive(block, &structure.pattern);
+            structure.structure.jacobian_application = application_source
+                .as_ref()
+                .and_then(|source| {
+                    ProjectionJacobianApplication::derive(
+                        index, structure, block, source, &y_outputs,
+                    )
+                })
+                .map(Box::new);
+            structure.structure.affine_elimination =
+                AffineEliminationLayout::derive(block, structure.pattern()).map(Box::new);
         }
         self
     }
 }
 
 fn color_output_evaluations(
-    structure: &JacobianStructure,
+    structure: &ColoredJacobianStructure,
     block: &AlgebraicProjectionBlock,
     y_outputs: &ProgramOutputCatalog,
     full_outputs: &ProgramOutputCatalog,
@@ -183,17 +193,17 @@ fn color_output_evaluations(
 }
 
 fn color_rows(
-    structure: &JacobianStructure,
+    structure: &ColoredJacobianStructure,
     block: &AlgebraicProjectionBlock,
 ) -> Vec<Vec<(usize, usize)>> {
-    if structure.pattern.rows() as usize != block.rows.len()
-        || structure.pattern.columns() as usize != block.y_indices.len()
+    if structure.pattern().rows() as usize != block.rows.len()
+        || structure.pattern().columns() as usize != block.y_indices.len()
     {
         return Vec::new();
     }
     let column_rows = structure.column_rows();
     structure
-        .coloring
+        .coloring()
         .groups()
         .iter()
         .map(|group| {
@@ -208,32 +218,55 @@ fn color_rows(
 
 type ProgramOutput = (usize, usize, usize);
 
-struct ProgramOutputCatalog(BTreeMap<usize, Option<ProgramOutput>>);
+/// Who produces one logical output row.
+#[derive(Clone, Copy)]
+enum RowOwner {
+    /// No program output is bound to the row.
+    Unbound,
+    /// The row is bound twice, or by a program whose repetition has an
+    /// effect, so no selection may reuse it.
+    Unusable,
+    /// Exactly one repeatable program output is bound to the row.
+    Output(ProgramOutput),
+}
+
+/// The repeatable output of each logical row, indexed by the row.
+struct ProgramOutputCatalog(Vec<RowOwner>);
 
 impl ProgramOutputCatalog {
+    fn output(&self, row: usize) -> Option<ProgramOutput> {
+        match self.0.get(row) {
+            Some(RowOwner::Output(output)) => Some(*output),
+            Some(RowOwner::Unbound | RowOwner::Unusable) | None => None,
+        }
+    }
+
     fn covers_repeatable_rows(&self, rows: &[usize]) -> bool {
-        rows.iter()
-            .all(|row| self.0.get(row).is_some_and(Option::is_some))
+        rows.iter().all(|&row| self.output(row).is_some())
     }
 
     fn new(block: &ScalarProgramBlock) -> Self {
-        let mut outputs = BTreeMap::new();
         let repeatable = block
             .programs()
             .iter()
             .map(|ops| program_effects::program_is_repeatable(ops))
             .collect::<Vec<_>>();
+        let rows = block
+            .output_bindings()
+            .map(|binding| binding.logical_index + 1)
+            .max()
+            .unwrap_or(0);
+        let mut owners = vec![RowOwner::Unbound; rows];
         for binding in block.output_bindings() {
-            outputs
-                .entry(binding.logical_index)
-                .and_modify(|owner| *owner = None)
-                .or_insert(repeatable[binding.program].then_some((
-                    binding.program,
-                    binding.offset,
-                    binding.output_count,
-                )));
+            let owner = &mut owners[binding.logical_index];
+            *owner = match owner {
+                RowOwner::Unbound if repeatable[binding.program] => {
+                    RowOwner::Output((binding.program, binding.offset, binding.output_count))
+                }
+                RowOwner::Unbound | RowOwner::Unusable | RowOwner::Output(_) => RowOwner::Unusable,
+            };
         }
-        Self(outputs)
+        Self(owners)
     }
 
     fn selection(
@@ -243,16 +276,23 @@ impl ProgramOutputCatalog {
     ) -> Option<ProjectionOutputSelection> {
         let mut positions = BTreeMap::new();
         let mut programs = Vec::<ProjectionProgramOutputs>::new();
+        // Rows of one program arrive together, so the previous program's
+        // position answers most lookups.
+        let mut last: Option<(usize, usize)> = None;
         for &(source, target) in rows {
-            let &(program, offset, output_count) = self.0.get(&source)?.as_ref()?;
-            let position = *positions.entry(program).or_insert_with(|| {
-                programs.push(ProjectionProgramOutputs {
-                    program,
-                    output_count,
-                    placements: Vec::new(),
-                });
-                programs.len() - 1
-            });
+            let (program, offset, output_count) = self.output(source)?;
+            let position = match last {
+                Some((previous, position)) if previous == program => position,
+                _ => *positions.entry(program).or_insert_with(|| {
+                    programs.push(ProjectionProgramOutputs {
+                        program,
+                        output_count,
+                        placements: Vec::new(),
+                    });
+                    programs.len() - 1
+                }),
+            };
+            last = Some((program, position));
             programs[position].placements.push((offset, target));
         }
         Some(ProjectionOutputSelection {

@@ -139,6 +139,7 @@ impl PendingOwner {
             dependencies: &self.dependencies,
             projections: None,
             affinity: None,
+            assertion_flow: None,
         }
     }
 }
@@ -228,6 +229,7 @@ pub(super) fn construct_group(
     {
         owners.push(SolvePureCallOwner {
             input_coordinate,
+            assertion_flow: None,
             dependencies: Arc::from(pending.dependencies),
             projections: None,
             affinity: None,
@@ -314,7 +316,15 @@ fn least_dependencies(
 pub(super) fn visit_calls(program: &TypedProgram, visit: &mut impl FnMut(SolvePureCallOwnerId)) {
     for operation in program.operations() {
         match operation.operation() {
+            SolveOperation::CheckAssertion {
+                message: crate::SolveAssertionMessage::Captures { program },
+                ..
+            } => visit_calls(program.body(), visit),
             SolveOperation::Call { owner, .. } => visit(*owner),
+            SolveOperation::AssignedConditional { program } => {
+                visit_calls(program.if_true().body(), visit);
+                visit_calls(program.if_false().body(), visit);
+            }
             SolveOperation::Conditional {
                 if_true, if_false, ..
             } => {
@@ -350,11 +360,24 @@ fn program_cells(program: &TypedProgram) -> u64 {
                 .iter()
                 .map(|value_type| u64::from(value_type.scalar_count())),
         )
+        .chain(
+            program
+                .assigned_state_types()
+                .iter()
+                .map(|value_type| 1 + u64::from(value_type.scalar_count())),
+        )
         .sum::<u64>();
     let nested = program
         .operations()
         .iter()
         .map(|operation| match operation.operation() {
+            SolveOperation::CheckAssertion {
+                message: crate::SolveAssertionMessage::Captures { program },
+                ..
+            } => program_cells(program.body()),
+            SolveOperation::AssignedConditional { program } => {
+                program_cells(program.if_true().body()) + program_cells(program.if_false().body())
+            }
             SolveOperation::Conditional {
                 if_true, if_false, ..
             } => program_cells(if_true.body()) + program_cells(if_false.body()),

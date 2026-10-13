@@ -45,7 +45,7 @@ fn prepared_artifact_reports_frame_region_and_call_high_water_marks() {
         "call_scratch_bytes",
         "memo_bytes",
         "typed_lane_bytes",
-        "p_copy_bytes",
+        "p_save_bytes",
         "unshared_call_scratch_bytes",
         "widest_owner",
     ] {
@@ -82,10 +82,32 @@ fn prepared_artifact_reports_frame_region_and_call_high_water_marks() {
     );
 }
 
+/// Every frame, its nested regions included: the storage a body addresses is
+/// at most what it would need with nothing shared, and it holds the widest
+/// callee frame it places. Returns whether the frame places two or more calls.
+fn assert_frame_shares_storage(frame: &serde_json::Value) -> usize {
+    let own = |frame: &serde_json::Value, key: &str| frame[key].as_u64().unwrap();
+    let shared = own(frame, "high_water_bytes") - own(frame, "base_bytes");
+    assert!(shared <= own(frame, "unshared_bytes"), "{frame}");
+    let calls = frame["calls"].as_array().unwrap();
+    for call in calls {
+        assert!(own(call, "scratch_bytes") <= shared, "{call} in {frame}");
+    }
+    calls.len()
+        + frame["regions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|region| assert_frame_shares_storage(&region["frame"]))
+            .sum::<usize>()
+}
+
 /// The 128 node, 256 edge pose-graph optimizer calls its Cholesky, PCG and
-/// line-search functions from nested loops and branches. Laying every call
-/// frame out disjointly needs 96.5 MB for its root owner; sequential frames
-/// share storage, so the whole program fits well under the 64 MiB cap.
+/// line-search functions from nested loops and branches; each authored call
+/// is one site (SOLVE-C73). Sequential call frames share scratch, so the
+/// program's call storage is the widest root owner's frame, which never
+/// exceeds the same owner laid out with every frame disjoint, and the whole
+/// program fits well under the 64 MiB cap.
 #[test]
 fn pose_graph_optimizer_prepares_with_shared_call_frames() {
     let _lock = session_test_guard();
@@ -99,6 +121,27 @@ fn pose_graph_optimizer_prepares_with_shared_call_frames() {
     assert_eq!(report["total_bytes"].as_u64().unwrap(), scratch);
     assert!(scratch < 4 * 1024 * 1024, "scratch {scratch}");
     let unshared = report["unshared_call_scratch_bytes"].as_u64().unwrap();
-    assert!(unshared > 48 * 1024 * 1024, "unshared {unshared}");
-    assert!(report["call_scratch_bytes"].as_u64().unwrap() < unshared / 16);
+    let shared = report["call_scratch_bytes"].as_u64().unwrap();
+    let widest = report["widest_owner"].as_u64().unwrap();
+    let owners = report["owners"].as_array().unwrap();
+    let widest = owners
+        .iter()
+        .find(|owner| owner["owner"].as_u64() == Some(widest))
+        .expect("the widest owner is reported");
+    let frame = &widest["frame"];
+    // Both totals are the widest owner's own frame, shared and disjoint.
+    assert_eq!(
+        shared,
+        frame["high_water_bytes"].as_u64().unwrap() - frame["base_bytes"].as_u64().unwrap()
+    );
+    assert_eq!(unshared, frame["unshared_bytes"].as_u64().unwrap());
+    let call_sites: usize = owners
+        .iter()
+        .map(|owner| assert_frame_shares_storage(&owner["frame"]))
+        .sum();
+    assert!(call_sites > 1, "the optimizer places several call sites");
+    // The widest owner places a call from inside nested regions, so sharing
+    // is strict there: a by-reference result is counted once on each side,
+    // and sequential frames reuse one another's storage.
+    assert!(shared < unshared, "shared {shared} unshared {unshared}");
 }

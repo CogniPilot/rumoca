@@ -1,34 +1,47 @@
 //! Construction-issued compact assignment kernels for native refresh families.
 
+mod assigned_reads;
+mod carried;
 mod coverage;
 mod dependencies;
 mod derived_discrete;
+mod projection_run;
 mod range;
 mod rebinding;
 mod scalar;
 mod span_index;
+mod target_inventory;
 mod targets;
 mod typed_inputs;
 mod varying_constants;
 
 use std::ops::Range;
+use target_inventory::TargetInventory;
 
 use super::{derive_target_assignment_shape_for_output, materialize_target_assignment};
 use crate::{
     ComputeBlock, ComputeNode, LinearOp, Reg, SolveProblem, TargetAssignmentShape, TensorOutputMap,
     VarLayout,
 };
+pub use carried::{
+    NativeCarriedHost, NativeCarriedLane, NativeCarriedRefusal, NativeCarriedRun,
+    NativeCarriedState,
+};
 pub use derived_discrete::{
     NativeDerivedOutput, NativeEvaluationRefusal, NativeIntegerSource, NativeOutputLane,
 };
-pub use typed_inputs::NativeInputLane;
+pub(crate) use projection_run::{derive_projection_run, projection_run_source};
+pub use typed_inputs::{
+    NativeInputCheck, NativeInputLane, NativeInputRun, NativeInputSelection,
+    NativeIntegerArgumentRun,
+};
 
 /// The canonical Solve owner a native stage evaluates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeStageSource {
     /// A node of the continuous implicit residual block.
     Continuous { node: usize },
-    /// A stateless derived-discrete row (see [`NativeDerivedOutput`]).
+    /// A canonical discrete program, identified by its first derived-output row.
     Discrete { row: usize },
 }
 
@@ -78,23 +91,49 @@ impl NativeRefreshAssignmentStage {
 pub struct NativeRefreshAssignmentSchedule {
     stages: Vec<NativeRefreshAssignmentStage>,
     derived_outputs: Vec<NativeDerivedOutput>,
-    input_lanes: Vec<NativeInputLane>,
+    inputs: typed_inputs::TypedInputs,
     input_lane_bytes: usize,
     work_layout: VarLayout,
     lane_bytes: usize,
+    call_table_lineage: Option<std::sync::Arc<()>>,
+    carried: NativeCarriedState,
 }
 
 impl NativeRefreshAssignmentSchedule {
+    pub(crate) fn matches_call_table(&self, table: &crate::SolvePureCallTable) -> bool {
+        self.call_table_lineage
+            .as_ref()
+            .is_none_or(|lineage| std::sync::Arc::ptr_eq(lineage, table.native_source_lineage()))
+    }
+
     pub fn stages(&self) -> &[NativeRefreshAssignmentStage] {
         &self.stages
     }
-    /// Derived-discrete outputs in P-slot order, each with its typed lane.
+    /// Derived-discrete outputs in canonical work-slot order, each with its typed lane.
     pub fn derived_outputs(&self) -> &[NativeDerivedOutput] {
         &self.derived_outputs
     }
+    /// Borrow the publication outputs owned by a private work-slot range.
+    /// Lane offsets, rather than inventory order, define host publication.
+    pub fn derived_outputs_in(&self, targets: Range<usize>) -> &[NativeDerivedOutput] {
+        derived_discrete::work_range(&self.derived_outputs, targets)
+    }
     /// Typed Integer and Boolean input lanes in P-slot order (SOLVE-C69).
-    pub fn input_lanes(&self) -> &[NativeInputLane] {
-        &self.input_lanes
+    pub fn input_runs(&self) -> &[NativeInputRun] {
+        &self.inputs.runs
+    }
+    pub fn input_checks(&self) -> &[NativeInputCheck] {
+        &self.inputs.checks
+    }
+    pub fn input_lane(&self, p_index: usize) -> Option<NativeInputLane> {
+        self.inputs.lane_at(p_index)
+    }
+    /// Explicit scalar execution/export boundary; point descriptors are derived.
+    pub fn scalar_input_lanes(&self) -> impl Iterator<Item = NativeInputLane> + '_ {
+        self.inputs
+            .runs
+            .iter()
+            .flat_map(|run| run.p_range().filter_map(|p| self.inputs.lane_at(p)))
     }
     /// Size of the typed input lanes at the start of the typed lane buffer;
     /// the output lanes follow them.
@@ -169,8 +208,34 @@ struct Family {
 pub(super) fn derive_for_problem(
     problem: &SolveProblem,
 ) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
+    derive_in_context(problem, None)
+}
+
+pub(super) fn derive_for_model(
+    model: &crate::SolveModel,
+) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
+    derive_for_sources(&model.problem, &model.pure_calls)
+}
+
+pub(super) fn derive_for_sources(
+    problem: &SolveProblem,
+    calls: &crate::SolvePureCallTable,
+) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
+    crate::validate_problem_call_references(problem, calls).map_err(|_| {
+        NativeRefreshAssignmentRefusal("native source calls do not belong to the actual table")
+    })?;
+    let guards = assigned_reads::AssignedReadActions::classify(problem, calls);
+    let mut schedule = derive_in_context(problem, guards.as_ref())?;
+    schedule.call_table_lineage = Some(calls.native_source_lineage().clone());
+    Ok(schedule)
+}
+
+fn derive_in_context(
+    problem: &SolveProblem,
+    guards: Option<&assigned_reads::AssignedReadActions<'_>>,
+) -> Result<NativeRefreshAssignmentSchedule, NativeScheduleRefusal> {
     let mut inputs = typed_inputs::TypedInputs::classify(problem)?;
-    let derived = derived_discrete::classify(problem, &inputs)?;
+    let derived = derived_discrete::classify(problem, &inputs, guards)?;
     let work_layout = problem.layout.with_private_y(derived.outputs.len()).ok_or(
         NativeRefreshAssignmentRefusal("native work layout overflows"),
     )?;
@@ -179,18 +244,29 @@ pub(super) fn derive_for_problem(
         &derived.rebinding,
         problem.layout.p_scalars(),
     )?;
-    let mut discrete = Vec::with_capacity(derived.outputs.len());
+    let mut by_program = std::collections::BTreeMap::<usize, Vec<&NativeDerivedOutput>>::new();
     for output in &derived.outputs {
-        discrete.push(scalar::derive_discrete(
-            output,
-            &problem.discrete.rhs,
-            &derived.rebinding,
-            &work_layout,
-        )?);
+        let (program, _) = problem
+            .discrete
+            .rhs
+            .output_position(output.row)
+            .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+        by_program.entry(program).or_default().push(output);
     }
+    let discrete = by_program
+        .values()
+        .map(|outputs| {
+            scalar::derive_discrete(
+                outputs,
+                &problem.discrete.rhs,
+                &derived.rebinding,
+                &work_layout,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let families = derive_with(
         &source,
-        &problem.continuous.implicit_row_targets,
+        TargetInventory::Projection(&problem.continuous.implicit_row_targets),
         &work_layout,
         discrete,
     )?;
@@ -212,13 +288,18 @@ pub(super) fn derive_for_problem(
         .map(|family| family.stage)
         .collect::<Vec<_>>();
     typed_inputs::bind_stages(&mut stages, &mut inputs, &derived.outputs)?;
+    if let Some(guards) = guards {
+        guards.check_stage_coverage(&stages)?;
+    }
     Ok(NativeRefreshAssignmentSchedule {
         stages,
         derived_outputs: derived.outputs,
-        input_lanes: inputs.lanes,
         input_lane_bytes: inputs.lane_bytes,
+        inputs,
         work_layout,
         lane_bytes: derived.lane_bytes,
+        call_table_lineage: None,
+        carried: NativeCarriedState::default(),
     })
 }
 
@@ -243,15 +324,17 @@ fn derive(
     layout: &VarLayout,
 ) -> Checked<NativeRefreshAssignmentSchedule> {
     Ok(NativeRefreshAssignmentSchedule {
-        stages: derive_with(source, targets, layout, Vec::new())?
+        stages: derive_with(source, TargetInventory::Scalar(targets), layout, Vec::new())?
             .into_iter()
             .map(|family| family.stage)
             .collect(),
         derived_outputs: Vec::new(),
-        input_lanes: Vec::new(),
+        inputs: typed_inputs::TypedInputs::default(),
         input_lane_bytes: 0,
         work_layout: layout.clone(),
         lane_bytes: 0,
+        call_table_lineage: None,
+        carried: NativeCarriedState::default(),
     })
 }
 
@@ -262,7 +345,7 @@ fn derive(
 /// dependency order.
 fn derive_with(
     source: &ComputeBlock,
-    targets: &[Option<crate::ScalarSlot>],
+    targets: TargetInventory<'_>,
     layout: &VarLayout,
     discrete: Vec<Family>,
 ) -> Checked<Vec<Family>> {
@@ -337,7 +420,7 @@ fn covers(mut ranges: Vec<Range<usize>>, count: usize) -> bool {
 fn derive_family(
     source_node: usize,
     node: &ComputeNode,
-    targets: &[Option<crate::ScalarSlot>],
+    targets: TargetInventory<'_>,
     layout: &VarLayout,
 ) -> Checked<Family> {
     let (domain, output_map, operations, load_strides, const_strides) = match node {
@@ -380,16 +463,18 @@ fn derive_family(
         .ok_or(NativeRefreshAssignmentRefusal(
             "native output range overflows",
         ))?;
-    let selected =
-        targets
-            .get(output_map.start..output_end)
-            .ok_or(NativeRefreshAssignmentRefusal(
-                "native output range exceeds target inventory",
-            ))?;
+    if output_end > targets.len() {
+        return refused("native output range exceeds target inventory");
+    }
+    // This node has no admitted paired scalar-program run; its original
+    // explicit target relation retains the existing scalar checker boundary.
+    let selected = (output_map.start..output_end)
+        .map(|row| targets.get(row))
+        .collect::<Vec<_>>();
     let extents = domain
         .extents()
         .map_err(|_| NativeRefreshAssignmentRefusal("invalid native domain extents"))?;
-    let target_map = targets::derive(selected, &extents, layout.y_scalars())?;
+    let target_map = targets::derive(&selected, &extents, layout.y_scalars())?;
     let target_coverage = target_map.coverage.clone();
     let shape = derive_target_assignment_shape_for_output(operations, 0, target_map.first).ok_or(
         NativeRefreshAssignmentRefusal("native family has no exact target isolator"),
@@ -545,6 +630,41 @@ fn operations_match(a: &[LinearOp], b: &[LinearOp]) -> bool {
             }
             _ => a == b,
         })
+}
+
+/// The rule a stage's value program follows against its source program: the
+/// kept operations are an ordered subsequence of the source (the isolator
+/// supplies the trailing replacements), and every source operation left out
+/// is a pure computation that cannot fault (SOLVE-C102) or a store the
+/// isolator rewrites. A call, gather, conditional, fold or any operation that
+/// can fail is never among the dropped ones. Returns the dropped operations.
+#[cfg(test)]
+fn assert_only_fault_free_operations_dropped<'a>(
+    source: &'a [LinearOp],
+    stage: &[LinearOp],
+) -> Vec<&'a LinearOp> {
+    let mut kept = stage.iter().peekable();
+    let mut dropped = Vec::new();
+    for op in source {
+        if kept.peek().is_some_and(|next| {
+            operations_match(std::slice::from_ref(op), std::slice::from_ref(next))
+        }) {
+            kept.next();
+        } else {
+            dropped.push(op);
+        }
+    }
+    for op in &dropped {
+        assert!(
+            op.fault_class().is_prunable()
+                || matches!(
+                    op,
+                    LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
+                ),
+            "a stage dropped {op:?}, which can fault or has an effect"
+        );
+    }
+    dropped
 }
 
 #[cfg(test)]

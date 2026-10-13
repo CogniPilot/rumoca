@@ -81,8 +81,9 @@ pub use runtime::solve_runtime::{
     CompiledSolveAssignmentSchedule, CompiledSolveEventTransaction, CompiledSolveExpression,
     CompiledSolveJacobianExpression, CompiledSolveProjectionJacobian, CompiledSolveTargetValues,
     EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    ProjectedPostInitialEventInput, SolveExecutionBackend, SolveRuntime,
+    PrecompiledSolveBackend, PrecompiledSolveBackendBuilder, ProjectedEventUpdateInput,
+    ProjectedInitialEventInput, ProjectedInitialEventOutcome, ProjectedPostInitialEventInput,
+    ScalarExecutionView, SolveExecutionBackend, SolveRuntime, SolveRuntimeModel,
     block_residual_split_counts, reset_block_residual_split_counts,
 };
 #[cfg(not(kani))]
@@ -112,3 +113,6 @@ pub use solver::{
     SimNativeRefusal, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimTermination,
     SimVariableMeta, WARNING_ASSERTION_CODE,
 };
+
+#[cfg(test)]
+mod fixture_layout;

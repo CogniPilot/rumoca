@@ -70,7 +70,7 @@
 //!     `discrete.rhs` (`when c then z = homotopy(...); end when;`),
 //!     `events.root_conditions`, `continuous.residual`,
 //!     `continuous.manifold_residual`, `initialization.update_rhs()`,
-//!     `visible_value_rows`, and `initialization.residual()` rows that no
+//!     authored visible expression rows, and `initialization.residual()` rows that no
 //!     projection block solves (steady-state `initial equation der(x) = 0`
 //!     against a `der(x) = homotopy(...)` equation). Nothing solves these rows
 //!     for an unknown during the continuation, so they are evaluated at λ = 1,
@@ -418,11 +418,16 @@ fn flow_nodes(
                 plan, seed_rows, ..
             } => {
                 nodes.extend(row_nodes(seed_rows, false));
-                nodes.extend(plan.blocks.iter().map(|block| FlowNode::Iterative {
-                    rows: block.rows.clone(),
-                    unknowns: block.y_indices.clone(),
-                    reads: block.rows.iter().map(|&row| reads(row)).collect(),
-                }));
+                nodes.extend(
+                    plan.blocks
+                        .scalar_blocks()
+                        .iter()
+                        .map(|block| FlowNode::Iterative {
+                            rows: block.rows.clone(),
+                            unknowns: block.y_indices.clone(),
+                            reads: block.rows.iter().map(|&row| reads(row)).collect(),
+                        }),
+                );
             }
         }
     }
@@ -608,7 +613,26 @@ fn model_reads_parameter(model: &solve::SolveModel, index: usize) -> bool {
     if scan.found {
         return true;
     }
-    let _ = scan.visit_scalar_program_block(&model.visible_value_rows);
+    for member in model.visible_projection.inputs() {
+        match member {
+            solve::VisibleProjectionInput::Expression { rows, .. } => {
+                let _ = scan.visit_scalar_program_block(rows);
+            }
+            solve::VisibleProjectionInput::Declaration(source) => {
+                if let Some(run) = model
+                    .problem
+                    .solve_layout
+                    .variable_storage_runs
+                    .get(source.declaration)
+                    && let solve::ScalarSlot::P { index: base, .. } = run.base
+                    && index >= base
+                    && index - base < run.scalar_count
+                {
+                    return true;
+                }
+            }
+        }
+    }
     scan.found
 }
 
@@ -640,8 +664,9 @@ fn algebraic_refresh_equations(plan: &solve::RefreshPlan) -> BTreeSet<usize> {
         .chain(
             plan.simultaneous_plan
                 .blocks
+                .scalar_blocks()
                 .iter()
-                .chain(plan.value_projection_plan.blocks.iter())
+                .chain(plan.value_projection_plan.blocks.scalar_blocks().iter())
                 .flat_map(|block| block.rows.iter().copied()),
         )
         .collect()
@@ -662,9 +687,7 @@ fn implicit_equation_is_initialization_solved(model: &solve::SolveModel, equatio
             .problem
             .continuous
             .implicit_row_targets
-            .get(equation)
-            .copied()
-            .flatten(),
+            .target_at(equation),
         Some(solve::ScalarSlot::Y { index, .. }) if index >= state_count
     )
 }
@@ -843,7 +866,7 @@ mod tests {
     #[test]
     fn refresh_covered_implicit_row_drives_the_algebraic_refresh() {
         let mut model = model_with_lambda(Some(1));
-        model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
+        model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))].into();
         let refresh = solve::RefreshPlan {
             rows: vec![refresh_row(0, 0)],
             ..Default::default()
@@ -874,15 +897,17 @@ mod tests {
             None,
             Some(solve::scalar_slot_y(1)),
             Some(solve::scalar_slot_y(2)),
-        ];
+        ]
+        .into();
         let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![1, 2],
                     y_indices: vec![1, 2],
                     tearing: None,
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
             ..Default::default()
         };
@@ -917,15 +942,21 @@ mod tests {
             Some(solve::scalar_slot_y(2)),
             Some(solve::scalar_slot_y(3)),
             Some(solve::scalar_slot_y(4)),
-        ];
+        ]
+        .into();
         assert!(
-            model.problem.continuous.implicit_row_targets[0].is_none(),
+            model
+                .problem
+                .continuous
+                .implicit_row_targets
+                .target_at(0)
+                .is_none(),
             "the program-index reading of the lambda row must resolve to None, \
              so this fixture proves the translation and not an accident"
         );
         let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![
+                blocks: (vec![
                     solve::AlgebraicProjectionBlock {
                         rows: vec![4],
                         y_indices: vec![4],
@@ -950,7 +981,8 @@ mod tests {
                         tearing: None,
                         alternate_charts: Vec::new(),
                     },
-                ],
+                ])
+                .into(),
             },
             ..Default::default()
         };
@@ -992,15 +1024,17 @@ mod tests {
             Some(solve::scalar_slot_y(3)),
             Some(solve::scalar_slot_y(4)),
             Some(solve::scalar_slot_y(5)),
-        ];
+        ]
+        .into();
         let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![4, 5],
                     y_indices: vec![4, 5],
                     tearing: None,
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
             ..Default::default()
         };
@@ -1152,7 +1186,8 @@ mod tests {
             None,
             Some(solve::scalar_slot_y(1)),
             Some(solve::scalar_slot_y(2)),
-        ];
+        ]
+        .into();
         let error = InitialContinuationCoverage::certify(
             &model,
             &permuted_block(vec![plain_program(), reads_lambda_program(1)], vec![2, 1]),
@@ -1209,7 +1244,7 @@ mod tests {
     fn exact_chain_model() -> (solve::SolveModel, solve::ScalarProgramBlock) {
         let mut model = model_with_lambda(Some(1));
         model.problem.continuous.implicit_row_targets =
-            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))].into();
         let implicit = scalar_block(vec![reads_lambda_program(1), reads_first_program()]);
         (model, implicit)
     }
@@ -1262,12 +1297,13 @@ mod tests {
                     seed_sequence: Default::default(),
                     block_index: 0,
                     plan: solve::AlgebraicProjectionPlan {
-                        blocks: vec![solve::AlgebraicProjectionBlock {
+                        blocks: (vec![solve::AlgebraicProjectionBlock {
                             rows: vec![1],
                             y_indices: vec![1],
                             tearing: None,
                             alternate_charts: Vec::new(),
-                        }],
+                        }])
+                        .into(),
                     },
                     seed_rows: solve::RefreshRowSelection::checked(2, []).unwrap(),
                 },

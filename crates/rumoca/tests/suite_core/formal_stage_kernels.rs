@@ -199,7 +199,11 @@ fn call_assertions_survive_stage_evaluation_and_ad() {
             assert_eq!(assertions, [x > 0.]);
         }
         let assertion = &kernels.stages()[1].equations()[0].assertions()[0];
-        assert!(formal.view.expression(assertion.message()).is_some());
+        assert_eq!(
+            assertion.message().literal(formal.view).as_deref(),
+            Some("positive"),
+            "the source assertion retains its authored message text"
+        );
         assert_ne!(assertion.provenance().span(), rumoca_core::Span::DUMMY);
     });
 }

@@ -105,6 +105,7 @@ fn call_interfaces_borrow_the_checked_owner_storage() {
 #[test]
 fn shared_call_facts_retain_value_equality_after_wire_replay() {
     let table = two_owners();
+    let _scope = table.enter_wire_scope();
     let owner = &table.owners[0];
     let site = owner.call_site();
     assert!(Arc::ptr_eq(&owner.inputs, &site.inputs));
@@ -120,23 +121,16 @@ fn shared_call_facts_retain_value_equality_after_wire_replay() {
     ));
     let encoded = serde_json::to_value(&site).unwrap();
     let replayed: SolvePureCallSite = serde_json::from_value(encoded.clone()).unwrap();
-    assert!(!std::ptr::eq(site.inputs(), replayed.inputs()));
+    assert!(std::ptr::eq(site.inputs(), replayed.inputs()));
     assert_eq!(site, replayed);
     assert_eq!(encoded, serde_json::to_value(&replayed).unwrap());
     assert!(table.matches_site(&replayed));
     assert!(table.matches_directional_site(replayed.directional().unwrap()));
 
     for field in ["inputs", "outputs", "dependencies"] {
-        let mut forged = encoded.clone();
-        forged[field] = serde_json::json!([]);
-        let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
-        assert!(!table.matches_site(&forged), "primal {field}");
-
-        let mut forged = encoded.clone();
-        forged["directional"][field] = serde_json::json!([]);
-        let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
-        assert!(!table.matches_site(&forged), "directional {field}");
-        assert!(!table.matches_directional_site(forged.directional().unwrap()));
+        let mut claim = encoded.clone();
+        claim[field] = serde_json::json!([]);
+        assert!(serde_json::from_value::<SolvePureCallSite>(claim).is_err());
     }
     assert!(table.matches_site(&site));
 }
@@ -172,4 +166,32 @@ fn borrowed_view_cannot_rebind_a_suffix_owner_to_another_id() {
     let suffix = &table.owners[1..];
     assert!(SolvePureCallTableView::primal(suffix).get(0).is_none());
     assert!(SolvePureCallTableView::directional(suffix).get(0).is_none());
+}
+
+#[test]
+fn shared_call_site_equality_preserves_owner_and_directional_interfaces() {
+    let table = two_owners();
+    let _scope = table.enter_wire_scope();
+    let site = table.owners[0].call_site();
+    let shared = site.clone();
+    assert!(Arc::ptr_eq(&site.dependencies, &shared.dependencies));
+    assert_eq!(site, shared);
+    assert_ne!(site, table.owners[1].call_site());
+
+    let mut missing_directional = site.clone();
+    missing_directional.directional = None;
+    assert_ne!(site, missing_directional);
+
+    let directional = site.directional().unwrap();
+    assert_eq!(directional, &directional.clone());
+    let mut foreign = directional.clone();
+    foreign.owner = table.owners[1].id;
+    assert_ne!(directional, &foreign);
+    let wire = serde_json::to_value(directional).unwrap();
+    let replayed: SolvePureCallDirectionalSite = serde_json::from_value(wire).unwrap();
+    assert!(Arc::ptr_eq(
+        &directional.dependencies,
+        &replayed.dependencies
+    ));
+    assert_eq!(directional, &replayed);
 }

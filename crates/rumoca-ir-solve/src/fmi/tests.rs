@@ -2,6 +2,8 @@ use super::*;
 use crate::SolveVariableValueKind;
 
 mod c_profile_refusals;
+mod component_plans;
+mod native_carry;
 mod parameter_profile;
 
 #[test]
@@ -39,12 +41,13 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
                 base: 3,
                 scalar_count: 2,
             },
-            scalar_names: vec!["x[1]".to_string(), "x[2]".to_string()],
         },
-        start: Some(vec![1.0, 2.0]),
-        minimum: Some(vec![0.0, 0.0]),
-        maximum: Some(vec![3.0, 4.0]),
-        nominal: Some(vec![1.0, 1.0]),
+        start_allowed: true,
+        declaration_start: vec![1.0, 2.0].into(),
+        effective_input_default: None,
+        minimum: Some(vec![0.0, 0.0].into()),
+        maximum: Some(vec![3.0, 4.0].into()),
+        nominal: Some(vec![1.0, 1.0].into()),
         text_start: None,
         enumeration: None,
         unit: Some("m".to_string()),
@@ -60,7 +63,10 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
     };
 
     assert_eq!(variable.name(), "x");
-    assert_eq!(variable.scalar_names(), ["x[1]", "x[2]"]);
+    assert_eq!(
+        variable.scalar_names().collect::<Vec<_>>(),
+        ["x[1]", "x[2]"]
+    );
     assert_eq!(variable.role(), Some(SolveVariableStorageRole::State));
     assert_eq!(variable.value_kind(), SolveVariableValueKind::Real);
     assert_eq!(variable.dimensions(), [2]);
@@ -70,10 +76,22 @@ fn variable_metadata_is_available_only_through_borrowed_views() {
     assert_eq!(storage.column(), FmiStorageColumn::Y);
     assert_eq!(storage.base(), 3);
     assert_eq!(storage.scalar_count(), 2);
-    assert_eq!(variable.start(), Some([1.0, 2.0].as_slice()));
-    assert_eq!(variable.minimum(), Some([0.0, 0.0].as_slice()));
-    assert_eq!(variable.maximum(), Some([3.0, 4.0].as_slice()));
-    assert_eq!(variable.nominal(), Some([1.0, 1.0].as_slice()));
+    assert_eq!(
+        variable.start().map(|values| values.to_vec()),
+        Some(vec![1.0, 2.0])
+    );
+    assert_eq!(
+        variable.minimum().map(|values| values.to_vec()),
+        Some(vec![0.0, 0.0])
+    );
+    assert_eq!(
+        variable.maximum().map(|values| values.to_vec()),
+        Some(vec![3.0, 4.0])
+    );
+    assert_eq!(
+        variable.nominal().map(|values| values.to_vec()),
+        Some(vec![1.0, 1.0])
+    );
     assert_eq!(variable.unit(), Some("m"));
     assert_eq!(variable.description(), Some("state"));
     assert_eq!(variable.causality(), FmiCausality::Local);
@@ -134,30 +152,48 @@ mod scalar_count_agreement {
     }
 
     #[test]
-    fn a_scalar_name_list_that_disagrees_with_the_shape_is_rejected() {
-        assert_two_against_one(&rejection_for(|input| {
-            input.scalar_names = vec!["p[1]".to_string(), "p[2]".to_string()];
-        }));
+    fn superseded_scalar_name_storage_is_rejected_by_current_input_wire() {
+        let (_, input) = one_scalar_run();
+        let mut wire = serde_json::to_value(input).unwrap();
+        wire["scalar_names"] = serde_json::json!(["p[1]", "p[2]"]);
+        assert!(serde_json::from_value::<FmiVariableInput>(wire).is_err());
+    }
+
+    #[test]
+    fn a_shape_with_matching_values_cannot_transfer_to_a_different_storage_extent() {
+        let (model, mut input) = one_scalar_run();
+        input.dimensions = vec![2];
+        input.start = crate::SolveInitialValues::repeat(0.0, 2).unwrap().into();
+        assert!(matches!(
+            FmiComponent::construct(model, vec![input]),
+            Err(FmiComponentError::StorageTypeMismatch { .. })
+        ));
     }
 
     #[test]
     fn a_start_vector_that_disagrees_with_the_shape_is_rejected() {
-        assert_two_against_one(&rejection_for(|input| input.start = vec![0.0, 0.0]));
+        assert_two_against_one(&rejection_for(|input| input.start = vec![0.0, 0.0].into()));
     }
 
     #[test]
     fn a_minimum_vector_that_disagrees_with_the_shape_is_rejected() {
-        assert_two_against_one(&rejection_for(|input| input.minimum = Some(vec![0.0, 0.0])));
+        assert_two_against_one(&rejection_for(|input| {
+            input.minimum = Some(vec![0.0, 0.0].into())
+        }));
     }
 
     #[test]
     fn a_maximum_vector_that_disagrees_with_the_shape_is_rejected() {
-        assert_two_against_one(&rejection_for(|input| input.maximum = Some(vec![1.0, 1.0])));
+        assert_two_against_one(&rejection_for(|input| {
+            input.maximum = Some(vec![1.0, 1.0].into())
+        }));
     }
 
     #[test]
     fn a_nominal_vector_that_disagrees_with_the_shape_is_rejected() {
-        assert_two_against_one(&rejection_for(|input| input.nominal = Some(vec![1.0, 1.0])));
+        assert_two_against_one(&rejection_for(|input| {
+            input.nominal = Some(vec![1.0, 1.0].into())
+        }));
     }
 
     /// The control: the same fixture with every vector at the declared length
@@ -165,9 +201,9 @@ mod scalar_count_agreement {
     #[test]
     fn one_scalar_per_vector_matches_a_one_scalar_declaration() {
         let (model, mut input) = one_scalar_run();
-        input.minimum = Some(vec![0.0]);
-        input.maximum = Some(vec![1.0]);
-        input.nominal = Some(vec![1.0]);
+        input.minimum = Some(vec![0.0].into());
+        input.maximum = Some(vec![1.0].into());
+        input.nominal = Some(vec![1.0].into());
 
         let component = FmiComponent::construct(model, vec![input])
             .expect("agreeing vectors are a complete inventory");
@@ -176,7 +212,28 @@ mod scalar_count_agreement {
     }
 }
 
+mod exact_starts;
+
 mod max_step_duration_local {
+    #[test]
+    fn native_publication_refuses_the_original_derived_max_step_getter() {
+        let (model, input) = delay_bearing_model_with_one_run();
+        let component = super::FmiComponent::construct(model, vec![input]).unwrap();
+        let ordinary = &component.variables()[0];
+        super::super::native_deployment::check_getter_storage(ordinary).unwrap();
+        let derived = component.metadata().max_step_duration().unwrap();
+        assert!(matches!(
+            derived.backing(),
+            super::FmiValueBacking::MaxStepDuration
+        ));
+        let error = super::super::native_deployment::check_getter_storage(derived).unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::native_deployment::NativeDeploymentError::Profile(
+                "published variable has no native getter storage"
+            )
+        ));
+    }
     use super::super::*;
     use crate::{
         LinearOp, ScalarProgramBlock, ScalarSlot, SolveDelayPartition, SolveVariableDeclaration,
@@ -234,6 +291,7 @@ mod max_step_duration_local {
     pub(super) fn delay_bearing_model_with_one_run() -> (SolveModel, FmiVariableInput) {
         let mut model = delay_bearing_model(1);
         model.problem.layout = VarLayout::from_parts(IndexMap::new(), 0, 2);
+        model.parameters = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
         model.problem.solve_layout.variable_storage_runs = vec![SolveVariableStorageRun {
             base: ScalarSlot::P {
                 index: 1,
@@ -256,6 +314,8 @@ mod max_step_duration_local {
     pub(super) fn delay_bearing_model_with_one_state() -> (SolveModel, FmiVariableInput) {
         let mut model = delay_bearing_model(1);
         model.problem.layout = VarLayout::from_parts(IndexMap::new(), 2, 1);
+        model.initial_y = crate::SolveInitialValues::repeat(0.0, 2).unwrap();
+        model.parameters = crate::SolveInitialValues::repeat(0.0, 1).unwrap();
         model.problem.solve_layout.variable_storage_runs = vec![SolveVariableStorageRun {
             base: ScalarSlot::Y {
                 index: 0,
@@ -276,11 +336,12 @@ mod max_step_duration_local {
     fn parameter_input(name: &str) -> FmiVariableInput {
         FmiVariableInput {
             name: name.to_string(),
-            scalar_names: vec![name.to_string()],
+
             role: SolveVariableStorageRole::Parameter,
             value_kind: SolveVariableValueKind::Real,
             dimensions: Vec::new(),
-            start: vec![0.0],
+            start: vec![0.0].into(),
+            effective_input_default: None,
             minimum: None,
             maximum: None,
             nominal: None,
@@ -300,11 +361,11 @@ mod max_step_duration_local {
     fn state_input(name: &str) -> FmiVariableInput {
         FmiVariableInput {
             name: name.to_string(),
-            scalar_names: vec![format!("{name}[1]"), format!("{name}[2]")],
+
             role: SolveVariableStorageRole::State,
             value_kind: SolveVariableValueKind::Real,
             dimensions: vec![2],
-            start: vec![0.0, 0.0],
+            start: vec![0.0, 0.0].into(),
             causality: FmiCausality::Local,
             variability: FmiVariability::Continuous,
             ..parameter_input(name)
@@ -446,13 +507,11 @@ mod max_step_duration_local {
             .max_step_duration()
             .expect("the delay partition decides the local exists");
         assert_eq!(declared.scalar_names().len(), 1);
-        assert_eq!(declared.scalar_names()[0], MAX_STEP_DURATION_NAME);
-        // The scalar identity is lent from the entry's own name, not a second
-        // owned copy of the constant.
-        assert!(std::ptr::eq(
-            declared.scalar_names()[0].as_ptr(),
-            declared.name().as_ptr()
-        ));
+        assert_eq!(
+            declared.scalar_name(0).as_deref(),
+            Some(MAX_STEP_DURATION_NAME)
+        );
+        assert_eq!(declared.scalar_name(1), None);
     }
 
     #[test]
@@ -468,7 +527,6 @@ mod max_step_duration_local {
             &FmiValueBacking::SolveStorage {
                 role: SolveVariableStorageRole::Parameter,
                 storage: backed.storage().expect("a run backs the source variable"),
-                scalar_names: vec!["p".to_string()],
             }
         );
         let derived = component
@@ -569,10 +627,10 @@ mod max_step_duration_local {
 
         // FMI 2 walks the same entries per scalar, with no name special case:
         // the derived local yields exactly its own one scalar identity.
-        let fmi2: Vec<&str> = component
+        let fmi2: Vec<String> = component
             .variables()
             .iter()
-            .flat_map(|variable| variable.scalar_names().iter().map(String::as_str))
+            .flat_map(|variable| variable.scalar_names())
             .collect();
         assert_eq!(fmi2, vec!["x[1]", "x[2]", MAX_STEP_DURATION_NAME]);
     }
@@ -600,7 +658,6 @@ mod max_step_duration_local {
     fn a_source_variable_may_not_take_the_reserved_name_of_the_published_local() {
         let (model, mut run) = delay_bearing_model_with_one_run();
         run.name = MAX_STEP_DURATION_NAME.to_string();
-        run.scalar_names = vec![MAX_STEP_DURATION_NAME.to_string()];
 
         let rejected = FmiComponent::construct(model, vec![run]);
 
@@ -618,7 +675,6 @@ mod max_step_duration_local {
         let (mut model, mut run) = delay_bearing_model_with_one_run();
         model.problem.events.delays = SolveDelayPartition::default();
         run.name = MAX_STEP_DURATION_NAME.to_string();
-        run.scalar_names = vec![MAX_STEP_DURATION_NAME.to_string()];
 
         let component = FmiComponent::construct(model, vec![run])
             .expect("a delay-free kernel publishes no local to collide with");
@@ -928,5 +984,70 @@ mod declared_causality {
             "{rejected:?}"
         );
         assert!(nested_state(FmiCausality::Output, None).is_ok());
+    }
+}
+
+mod native_typed_inventory_gap {
+    use super::super::native_deployment::{NativeDeploymentError, NativeTypedInventoryGap};
+    use super::*;
+    use crate::{
+        ComputeBlock, LinearOp, NativeOutputLane, NativeRefreshAssignmentSchedule,
+        ScalarProgramBlock, VarLayout, scalar_slot_y,
+    };
+    use rumoca_core::{SourceId, Span};
+
+    fn fixture_span() -> Span {
+        Span::from_offsets(
+            SourceId::from_source_name("native_inventory_fixture.mo"),
+            0,
+            1,
+        )
+    }
+    use indexmap::IndexMap;
+
+    #[test]
+    fn an_uncovered_integer_names_its_variable_causality_and_expected_lane() {
+        let (model, mut input) = super::exact_starts::fixture(0);
+        input.causality = FmiCausality::CalculatedParameter;
+        let component = FmiComponent::construct(model, vec![input]).unwrap();
+        let variable = &component.variables()[0];
+        let block = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span()
+                .require_provenance("native inventory fixture")
+                .unwrap(),
+        )
+        .unwrap();
+        let schedule = NativeRefreshAssignmentSchedule::from_continuous_block(
+            &ComputeBlock::from_scalar_program_block(block),
+            &[Some(scalar_slot_y(0))],
+            &VarLayout::from_parts(IndexMap::new(), 1, 2),
+        )
+        .unwrap();
+
+        let error = check_native_typed_membership(&schedule, variable).unwrap_err();
+
+        let NativeDeploymentError::TypedInventory(gap) = error else {
+            panic!("an uncovered variable is a typed inventory gap: {error:?}");
+        };
+        assert_eq!(
+            *gap,
+            NativeTypedInventoryGap {
+                value_reference: variable.value_reference_fmi3(),
+                name: "p".into(),
+                kind: SolveVariableValueKind::Integer,
+                causality: FmiCausality::CalculatedParameter,
+                expected: NativeOutputLane::Integer,
+                required: 1,
+                covered: 0,
+            }
+        );
+        assert!(
+            gap.to_string()
+                .contains("(p, Integer, CalculatedParameter)")
+        );
     }
 }

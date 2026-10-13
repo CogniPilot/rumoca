@@ -133,7 +133,7 @@ impl ReducedChartRuntimes {
                 .map(|state| runtime.model.solver_variable_scale(state))
                 .collect()
         } else {
-            alternate_state_nominals(self.built(0)?, &runtime, &binding_rows)
+            alternate_state_nominals(self.built(0)?, &runtime, &binding_rows)?
         };
         Ok(chart.built.get_or_init(|| BuiltChart {
             runtime,
@@ -367,22 +367,24 @@ fn alternate_state_nominals(
     primary: &BuiltChart,
     runtime: &SolveRuntime,
     binding_rows: &[usize],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, RuntimeSolveError> {
     binding_rows
         .iter()
         .enumerate()
         .map(|(state, &row)| {
-            let source = runtime.binding_row_source(row, state);
+            let source = runtime.binding_row_source(row, state)?;
             let primary_source = primary
                 .binding_rows
                 .get(state)
-                .and_then(|&row| primary.runtime.binding_row_source(row, state));
-            match source {
+                .map(|&row| primary.runtime.binding_row_source(row, state))
+                .transpose()?
+                .flatten();
+            Ok(match source {
                 Some(source) if Some(source) != primary_source => {
                     runtime.model.solver_variable_scale(source)
                 }
                 _ => primary.state_nominals[state],
-            }
+            })
         })
         .collect()
 }
@@ -397,6 +399,7 @@ fn slope_geometry(
 ) -> Option<(Vec<usize>, Vec<usize>, Vec<usize>)> {
     let blocks = plan
         .blocks
+        .scalar_blocks()
         .iter()
         .filter(|block| block.y_indices.iter().any(|y| dependent.contains(y)))
         .collect::<Vec<_>>();
@@ -633,11 +636,12 @@ mod tests {
             alternate_charts: Vec::new(),
         };
         let plan = AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 block(vec![0], vec![5]),
                 block(vec![1, 2], vec![7, 8]),
                 block(vec![3], vec![9]),
-            ],
+            ])
+            .into(),
         };
         // Folding coordinate 7 lives in the coupled block; the group adds 5 and 6.
         let (rows, cols, positions) = slope_geometry(&plan, &[7], &[5, 6, 7]).unwrap();

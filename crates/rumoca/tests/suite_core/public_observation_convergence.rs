@@ -35,6 +35,7 @@ fn check_observations(solver_mode: SimSolverMode, execution_policy: SimExecution
             .continuous
             .algebraic_projection_plan
             .blocks
+            .scalar_blocks()
             .iter()
             .any(|block| block.y_indices.len() == 2),
         "the regression must exercise a coupled algebraic solve"

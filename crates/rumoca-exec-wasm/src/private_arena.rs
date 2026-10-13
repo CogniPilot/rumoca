@@ -3,6 +3,7 @@
 mod tests;
 
 const PAGE_BYTES: u64 = 65536;
+#[cfg(test)]
 const MAX_KERNEL_BYTES: u32 = 64 * 1024 * 1024;
 const MAX_POOL_BYTES: u64 = 1u64 << 32;
 
@@ -19,7 +20,10 @@ pub(crate) struct ArenaPoolPlan {
 
 impl ArenaPoolPlan {
     pub(crate) fn prepare(&self, bytes: u32) -> Result<ArenaRegion, String> {
-        if bytes == 0 || bytes > MAX_KERNEL_BYTES || u64::from(bytes) % PAGE_BYTES != 0 {
+        if bytes == 0
+            || bytes > crate::CheckedNativeWasmCapacityPolicy::default().private_arena_bytes()
+            || u64::from(bytes) % PAGE_BYTES != 0
+        {
             return Err(
                 "private arena requires a nonempty page-aligned region at most 64 MiB".into(),
             );

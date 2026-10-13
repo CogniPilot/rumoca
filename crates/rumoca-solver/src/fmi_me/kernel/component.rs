@@ -1,8 +1,65 @@
+mod indicators;
+#[cfg(test)]
+mod tests;
+
 use rumoca_ir_solve::ScalarSlot;
 
 use super::event_boundary::event_boundary_horizon;
 use super::*;
-use rumoca_ir_solve::fmi::{FmiIndicatorPlan, IndicatorReading, IndicatorZeroSide};
+use rumoca_ir_solve::fmi::{FmiIndicatorPlan, IndicatorZeroSide};
+
+#[cfg(test)]
+pub(crate) use indicators::IndicatorStorageIdentity;
+use indicators::{indicator_reading_value, reserve_indicator_scratch};
+
+#[cfg(all(test, feature = "native-wasm"))]
+thread_local! {
+    static FAIL_INITIALIZATION_ENTRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The next kernel Initialization Mode entry on this thread fails.
+#[cfg(all(test, feature = "native-wasm"))]
+pub(in crate::fmi_me) fn fail_initialization_entry() {
+    FAIL_INITIALIZATION_ENTRY.with(|fault| fault.set(true));
+}
+
+pub(super) struct ResolvedInstanceFacts {
+    root_location: rumoca_ir_solve::fmi::RootLocationPlan,
+    indicator_plan: FmiIndicatorPlan,
+    max_step_duration_value_reference: Option<u32>,
+    lifecycle: MeLifecycle,
+}
+
+#[cfg(feature = "native-wasm")]
+impl ResolvedInstanceFacts {
+    pub(super) fn lifecycle(&self) -> MeLifecycle {
+        self.lifecycle
+    }
+    pub(super) fn restore_lifecycle(&mut self, state: MeState) {
+        self.lifecycle.restore(state);
+    }
+
+    #[cfg(feature = "native-wasm")]
+    pub(super) fn recover_native(
+        mut kernel: SolveMeKernel,
+    ) -> (Self, rumoca_exec_wasm::NativeTransport) {
+        let resource = kernel
+            .native_transport
+            .take()
+            .expect("adopted kernel owns its native resource")
+            .into_inner();
+        (Self::recover_facts(kernel), resource)
+    }
+
+    pub(super) fn recover_facts(kernel: SolveMeKernel) -> Self {
+        Self {
+            root_location: kernel.root_location,
+            indicator_plan: kernel.indicator_plan,
+            max_step_duration_value_reference: kernel.max_step_duration_value_reference,
+            lifecycle: kernel.lifecycle,
+        }
+    }
+}
 
 impl SolveMeKernel {
     pub(crate) fn continuous_state_derivatives_into(
@@ -150,7 +207,7 @@ impl SolveMeKernel {
             Some(guess)
                 if self
                     .runtime
-                    .derivative_settled_coordinate_can_refresh_roots() =>
+                    .derivative_settled_coordinate_can_refresh_roots()? =>
             {
                 self.runtime
                     .eval_root_search_conditions_after_derivative_settle_into(
@@ -479,12 +536,7 @@ impl SolveMeKernel {
     }
 
     pub(super) fn require_active_lifecycle(&self, operation: &'static str) -> Result<(), MeError> {
-        if self.lifecycle.is_terminated() {
-            return Err(contract(format!(
-                "{operation} called after the component was terminated"
-            )));
-        }
-        Ok(())
+        self.lifecycle.require_active(operation)
     }
 
     pub(super) fn require_observation_brand(
@@ -529,6 +581,29 @@ impl SolveMeKernel {
         config: &MeInstanceConfig,
         execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
+        let (model, facts) = Self::resolve_instance_source(source, config)?;
+        let runtime = SolveRuntime::new_with_model_owner(model, execution_backend)?;
+        Self::finish_instantiation(runtime, facts, config)
+    }
+
+    pub(super) fn resolve_instance_source(
+        source: MeModelSource<'_>,
+        config: &MeInstanceConfig,
+    ) -> Result<(crate::SolveRuntimeModel, ResolvedInstanceFacts), MeError> {
+        let (model, facts) = Self::instance_source_facts(source)?;
+        let model = model
+            .resolve_start_time(config.start_time)
+            .map_err(|error| {
+                contract(format!(
+                    "periodic schedule cannot be anchored at FMI startTime: {error}"
+                ))
+            })?;
+        Ok((model, facts))
+    }
+
+    pub(super) fn instance_source_facts(
+        source: MeModelSource<'_>,
+    ) -> Result<(crate::SolveRuntimeModel, ResolvedInstanceFacts), MeError> {
         let root_location = source.root_location();
         let (model, indicator_plan, max_step_duration_value_reference, configuration) = source
             .into_parts()
@@ -542,24 +617,67 @@ impl SolveMeKernel {
             }));
         }
         rumoca_eval_solve::reset_solve_row_eval_trace();
-        validate_explicit_solve_model(model)?;
-        let model = model
-            .resolved_periodic_schedules_at(config.start_time)
-            .map_err(|error| {
-                contract(format!(
-                    "periodic schedule cannot be anchored at FMI startTime: {error}"
-                ))
-            })?;
-        let runtime = Rc::new(SolveRuntime::new_with_execution_backend(
-            &model,
-            execution_backend,
-        )?);
+        validate_explicit_solve_model(&model)?;
+        Ok((
+            model,
+            ResolvedInstanceFacts {
+                root_location,
+                indicator_plan,
+                max_step_duration_value_reference,
+                lifecycle: MeLifecycle::instantiated(configuration),
+            },
+        ))
+    }
+
+    pub(super) fn finish_instantiation(
+        runtime: SolveRuntime,
+        facts: ResolvedInstanceFacts,
+        config: &MeInstanceConfig,
+    ) -> Result<Self, MeError> {
+        Self::finish_instantiation_adopting(
+            runtime,
+            facts,
+            config,
+            #[cfg(feature = "native-wasm")]
+            &mut None,
+        )
+    }
+
+    pub(super) fn finish_instantiation_adopting(
+        runtime: SolveRuntime,
+        facts: ResolvedInstanceFacts,
+        config: &MeInstanceConfig,
+        #[cfg(feature = "native-wasm")] adoption: &mut Option<rumoca_exec_wasm::NativeTransport>,
+    ) -> Result<Self, MeError> {
+        Self::finish_instantiation_owned(
+            runtime,
+            &mut Some(facts),
+            config,
+            #[cfg(feature = "native-wasm")]
+            adoption,
+        )
+    }
+
+    pub(super) fn finish_instantiation_owned(
+        runtime: SolveRuntime,
+        source: &mut Option<ResolvedInstanceFacts>,
+        config: &MeInstanceConfig,
+        #[cfg(feature = "native-wasm")] adoption: &mut Option<rumoca_exec_wasm::NativeTransport>,
+    ) -> Result<Self, MeError> {
+        let runtime = Rc::new(runtime);
+        let facts = source
+            .as_ref()
+            .expect("constructor owns its checked source facts");
+        let indicator_plan = &facts.indicator_plan;
         let state_count = runtime.state_count;
-        let states = runtime.model.initial_y[..state_count].to_vec();
-        let params = runtime.model.parameters.clone();
+        let (initial_y, params) = Self::instantiation_coordinates(
+            &runtime,
+            #[cfg(feature = "native-wasm")]
+            adoption.as_ref(),
+        )?;
+        let states = initial_y[..state_count].to_vec();
         let stop_schedule =
             SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
-        let output_meta = convert_variable_meta(&runtime.model.variable_meta);
         // The Solve IR resolved the indicator table against the model's root
         // and delay rows; this runtime's root vector must be that vector.
         if runtime.root_condition_count() != indicator_plan.root_value_count() {
@@ -567,28 +685,41 @@ impl SolveMeKernel {
                 "the runtime root-condition vector differs from the resolved indicator table",
             ));
         }
-        let scratch = reserve_indicator_scratch(&indicator_plan)?;
+        let scratch = reserve_indicator_scratch(indicator_plan)?;
         let reduced_charts = dynamic_chart::build_reduced_charts(&runtime, state_count)
             .map_err(|error| contract(error.to_string()))?;
+        #[cfg(feature = "native-wasm")]
+        let native_transport =
+            Self::finalize_native_transport(&runtime, &initial_y, &params, adoption)?;
+        let ResolvedInstanceFacts {
+            root_location,
+            indicator_plan,
+            max_step_duration_value_reference,
+            lifecycle,
+        } = source
+            .take()
+            .expect("all fallible checks precede source transfer");
         Ok(Self {
+            #[cfg(feature = "native-wasm")]
+            native_transport,
             reduced_charts,
             active_chart: 0,
             active_reference: None,
             pending_basis_change: None,
-            solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
+            solver_y_guess: RefCell::new(initial_y.clone()),
             committed_seed: RefCell::default(),
             indicator_root_scratch: RefCell::new(scratch.indicator_root_scratch),
             indicator_deadline_scratch: RefCell::new(scratch.indicator_deadline_scratch),
             indicator_value_scratch: scratch.indicator_value_scratch,
             indicator_domain_scratch: scratch.indicator_domain_scratch,
             delay_params_scratch: RefCell::new(params.clone()),
-            delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.clone()),
+            delay_solver_y_scratch: RefCell::new(initial_y.clone()),
             runtime,
             indicator_plan,
             root_location,
             instance_brand: Rc::new(()),
-            instance_name: config.instance_name,
-            lifecycle: MeLifecycle::instantiated(configuration),
+            instance_name: config.instance_name.clone(),
+            lifecycle,
             tolerance: config.tolerance,
             stop_time: config.stop_time,
             refresh_executor: config.executor,
@@ -620,9 +751,52 @@ impl SolveMeKernel {
             max_step_duration_value_reference,
             last_projection_changed: false,
             termination: None,
-            output_meta,
+            visible_report: OnceCell::new(),
             settled_initialization_y: None,
         })
+    }
+
+    #[cfg(feature = "native-wasm")]
+    fn finalize_native_transport(
+        runtime: &SolveRuntime,
+        initial_y: &[f64],
+        params: &[f64],
+        adoption: &mut Option<rumoca_exec_wasm::NativeTransport>,
+    ) -> Result<Option<RefCell<rumoca_exec_wasm::NativeTransport>>, MeError> {
+        match adoption.take() {
+            Some(transport) => Ok(Some(RefCell::new(transport))),
+            None => runtime
+                .native_host()
+                .map(|host| {
+                    host.transport_from_source(initial_y, params)
+                        .map(RefCell::new)
+                        .map_err(native_typed::transport_error)
+                })
+                .transpose(),
+        }
+    }
+
+    fn instantiation_coordinates(
+        runtime: &SolveRuntime,
+        #[cfg(feature = "native-wasm")] adoption: Option<&rumoca_exec_wasm::NativeTransport>,
+    ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
+        #[cfg(feature = "native-wasm")]
+        if let Some(transport) = adoption {
+            let host = runtime.native_host().ok_or_else(|| {
+                contract("native adoption requires the actual native runtime owner")
+            })?;
+            if !std::ptr::eq(host.product(), transport.product()) {
+                return Err(contract(
+                    "native adoption transport belongs to another prepared product",
+                ));
+            }
+            let (y, p) = transport.coordinates();
+            return Ok((y.to_vec(), p.to_vec()));
+        }
+        Ok((
+            runtime.model.initial_y.to_vec(),
+            runtime.model.parameters.to_vec(),
+        ))
     }
 
     // -- internal time model ---------------------------------------------
@@ -820,6 +994,11 @@ impl SolveMeKernel {
         mut parameters: Vec<f64>,
         time: f64,
     ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            let y = self.native_coordinate(time, &solver_y, &parameters)?;
+            return Ok((y, parameters));
+        }
         let settle = self.numerics_settle();
         if solver_y.len() != self.runtime.solver_count {
             return Err(contract(format!(
@@ -924,6 +1103,10 @@ impl SolveMeKernel {
     }
 
     fn solver_y_at_parameters(&self, time: f64, params: &[f64]) -> Result<Vec<f64>, MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            return self.native_coordinate(time, &self.solver_y_guess.borrow(), params);
+        }
         let settle = self.numerics_settle();
         self.with_callback_solver_y(time, |guess, _| {
             self.runtime
@@ -1172,6 +1355,10 @@ impl SolveMeKernel {
     /// `fmi3EnterInitializationMode`, unannotated; the trait method attaches
     /// [`MeStage::Initialization`].
     pub(super) fn enter_initialization_mode_inner(&mut self) -> Result<(), MeError> {
+        #[cfg(all(test, feature = "native-wasm"))]
+        if FAIL_INITIALIZATION_ENTRY.with(|fault| fault.replace(false)) {
+            return Err(contract("injected Initialization Mode entry failure"));
+        }
         self.runtime.reset_diagnostics();
         self.runtime.initialize_delay_history(
             self.time,
@@ -1186,6 +1373,12 @@ impl SolveMeKernel {
     /// [`MeStage::Initialization`].
     pub(super) fn exit_initialization_mode_inner(&mut self) -> Result<(), MeError> {
         let mut solver_y = self.initialization_solver_y()?;
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            solver_y = self.native_coordinate(self.time, &solver_y, &self.params)?;
+            self.retain_settled_initialization(solver_y);
+            return Ok(());
+        }
         let policy = self.algebraic_projection_policy();
         let settle = policy.settle;
         self.runtime.settle_initialization_system(
@@ -1210,6 +1403,11 @@ impl SolveMeKernel {
             self.tolerance,
             settle.max_iters,
         )?;
+        self.retain_settled_initialization(solver_y);
+        Ok(())
+    }
+
+    fn retain_settled_initialization(&mut self, solver_y: Vec<f64>) {
         self.copy_states_from_solver_y(&solver_y);
         self.invalidate_continuous_linearization();
         *self.solver_y_guess.borrow_mut() = solver_y.clone();
@@ -1220,7 +1418,6 @@ impl SolveMeKernel {
         self.pending_event_pre_p = Some(self.params.clone());
         self.settled_initialization_y = Some(solver_y);
         self.initial_event_pending = true;
-        Ok(())
     }
 
     // -- continuous time mode ----------------------------------------------
@@ -1566,6 +1763,18 @@ impl SolveMeKernel {
     }
 
     pub(super) fn run_initial_event_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            let solver_y = self.settled_initialization_y.take().ok_or_else(|| {
+                contract("native initial event requires the checked initialization result")
+            })?;
+            let solver_y = self.native_coordinate(self.time, &solver_y, &self.params)?;
+            *self.solver_y_guess.borrow_mut() = solver_y;
+            self.pending_event_pre_y = None;
+            self.pending_event_pre_p = None;
+            self.initial_event_pending = false;
+            return self.discrete_states_after_update(false);
+        }
         let continuous_states_before = self.states.clone();
         let event_time = self.time;
         let mut solver_y = self
@@ -1626,6 +1835,18 @@ impl SolveMeKernel {
         &mut self,
         entry: MeEventEntry,
     ) -> Result<MeDiscreteStates, MeError> {
+        #[cfg(feature = "native-wasm")]
+        if self.native_transport.is_some() {
+            if entry.cause != MeEventCause::InputEvent {
+                return Err(contract(
+                    "native stateless entry does not own this event cause",
+                ));
+            }
+            let y =
+                self.native_coordinate(self.time, &self.solver_y_guess.borrow(), &self.params)?;
+            *self.solver_y_guess.borrow_mut() = y;
+            return self.discrete_states_after_update(false);
+        }
         let continuous_states_before = self.states.clone();
         if entry.cause == MeEventCause::InputEvent {
             // Reconcile the changed input's domains without replacing the
@@ -1735,95 +1956,6 @@ struct IndicatorScratch {
     frozen_indicator_positive: Vec<bool>,
 }
 
-/// Reserve every indicator working buffer, each sized to the plan so a read
-/// reserves nothing proportional to the model.
-fn reserve_indicator_scratch(
-    indicator_plan: &FmiIndicatorPlan,
-) -> Result<IndicatorScratch, MeError> {
-    Ok(IndicatorScratch {
-        indicator_value_scratch: reserved_indicator_values(
-            indicator_plan.len(),
-            "event-indicator values",
-        )?,
-        indicator_root_scratch: reserved_indicator_values(
-            indicator_plan.root_value_len(),
-            "event-indicator roots",
-        )?,
-        indicator_deadline_scratch: reserved_indicator_values(
-            indicator_plan.deadline_len(),
-            "event-indicator dynamic-time deadlines",
-        )?,
-        indicator_domain_scratch: reserved_indicator_domains(indicator_plan.len())?,
-        frozen_indicator_positive: reserved_indicator_domains(indicator_plan.len())?,
-    })
-}
-
-/// The scalar value one resolved indicator position reports.
-fn indicator_reading_value(
-    reading: IndicatorReading,
-    time: f64,
-    root_values: &[f64],
-    deadlines: &[f64],
-) -> Result<f64, MeError> {
-    match reading {
-        IndicatorReading::RootValue { index } => root_values
-            .get(index)
-            .copied()
-            .ok_or_else(|| contract("FMI root indicator source is out of range")),
-        IndicatorReading::DeadlineDistance { index } => deadlines
-            .get(index)
-            .copied()
-            .map(|deadline| deadline - time)
-            .ok_or_else(|| contract("FMI dynamic-time indicator source is out of range")),
-    }
-}
-
-/// The resolved indicator table together with the addresses of the buffers
-/// every indicator read uses.
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IndicatorStorageIdentity {
-    entries: Vec<(IndicatorReading, IndicatorZeroSide, Option<usize>)>,
-    root_value_len: usize,
-    deadline_len: usize,
-    root_buffer: usize,
-    deadline_buffer: usize,
-    value_buffer: usize,
-    /// The frozen-domain buffer and its working buffer, which the completed-step
-    /// callback swaps, so the pair is compared as a set.
-    domain_buffers: [usize; 2],
-}
-
-/// Reserve one indicator working buffer at instantiation.
-///
-/// Every FMI event-indicator buffer this component reads is sized here, so a
-/// reservation failure is an instantiation refusal rather than a per-step
-/// abort, and the step path never grows a buffer.
-fn reserved_indicator_values(entries: usize, context: &'static str) -> Result<Vec<f64>, MeError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(entries)
-        .map_err(|_| MeError::Allocation { context, entries })?;
-    values.resize(entries, 0.0);
-    Ok(values)
-}
-
-/// Reserve one indicator-domain buffer at instantiation.
-///
-/// The completed-step callback swaps the frozen domains with their working
-/// buffer, so both start with the whole inventory reserved and neither grows
-/// afterward.
-fn reserved_indicator_domains(entries: usize) -> Result<Vec<bool>, MeError> {
-    let mut domains = Vec::new();
-    domains
-        .try_reserve_exact(entries)
-        .map_err(|_| MeError::Allocation {
-            context: "event-indicator domains",
-            entries,
-        })?;
-    Ok(domains)
-}
-
 fn merge_coincident_event_stops(
     scheduled: Option<(f64, RuntimeEventStop)>,
     pending: Option<(f64, RuntimeEventStop)>,
@@ -1837,6 +1969,3 @@ fn merge_coincident_event_stops(
         (None, None) => None,
     }
 }
-
-#[cfg(test)]
-mod tests;

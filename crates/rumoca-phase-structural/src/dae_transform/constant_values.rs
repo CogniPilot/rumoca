@@ -1,7 +1,9 @@
 //! Constant pure-call folding and literal propagation (SPEC_0043 §4).
 //!
-//! A model-level expression of constant variability that contains a call of a
-//! pure Modelica function, so every argument is a compile-time constant
+//! A model-level expression, or one a function body evaluates on every
+//! invocation without reading its inputs or locals, of constant variability
+//! that contains a call of a pure Modelica function, so every argument is a
+//! compile-time constant
 //! (including a call with no arguments), is evaluated once at construction by
 //! the checked DAE evaluator that settles STRUCT-T10(a) values and replaced by
 //! its literal value. A call the evaluator cannot settle (a foreign body, an
@@ -68,9 +70,10 @@ pub(super) fn constant_call_plan(view: dae::DaeView<'_>) -> Result<LiteralPlan, 
     let mut plan = vec![None; view.expression_count()];
     let mut evaluator = NumericEvaluator::new(view);
     let mut pending = continuous_roots(view);
+    pending.extend(function_roots(view));
     while let Some(expression) = pending.pop() {
         let node = view.expression(expression).expect("checked expression");
-        if foldable_call_expression(view, node)
+        if foldable_call_expression(view, expression, node)
             && let Some(value) = settle(view, &mut evaluator, expression)?
         {
             plan[expression.index() as usize] = Some(value);
@@ -78,7 +81,35 @@ pub(super) fn constant_call_plan(view: dae::DaeView<'_>) -> Result<LiteralPlan, 
         }
         push_unconditional_operands(node, &mut pending);
     }
+    keep_owners_of_unfolded_projections(view, &mut plan);
     Ok(plan)
+}
+
+/// A projection that stays a call is rebuilt from its call owner, so an owner
+/// that another output's literal replaced stays the call. A projection inside
+/// a folded expression is replaced with it and needs no owner.
+fn keep_owners_of_unfolded_projections(view: dae::DaeView<'_>, plan: &mut LiteralPlan) {
+    let mut replaced = vec![false; plan.len()];
+    for (index, folded) in plan.iter().enumerate() {
+        if folded.is_some()
+            && let Some(root) = view.expression_id(index)
+        {
+            dae::for_each_expression(view, root, |expression, _| {
+                replaced[expression.index() as usize] = true;
+            });
+        }
+    }
+    for (index, replaced) in replaced.into_iter().enumerate() {
+        let Some(node) = view.expression_id(index).and_then(|id| view.expression(id)) else {
+            continue;
+        };
+        if let dae::ExpressionOperation::Call { owner, .. } = node.operation()
+            && owner.index() as usize != index
+            && !replaced
+        {
+            plan[owner.index() as usize] = None;
+        }
+    }
 }
 
 /// Every continuous residual root, structured family body, and parameter
@@ -109,13 +140,58 @@ fn continuous_roots<'dae>(view: dae::DaeView<'dae>) -> Vec<dae::ExprId<'dae>> {
 /// binder and contains a call.
 fn foldable_call_expression<'dae>(
     view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
     node: dae::ExpressionView<'dae>,
 ) -> bool {
     node.variability() == dae::ExpressionVariability::Constant
-        && node.function_scope().is_none()
         && node.binder_domain().is_none()
         && numeric_type(node.value_type())
         && first_call(view, node).is_some()
+        && (node.function_scope().is_none() || reads_no_function_state(view, expression))
+}
+
+/// Whether an expression owned by a function body reads nothing its
+/// invocation supplies: no input, local, output, loop parameter or conditional
+/// output. Such an expression has the same value in every invocation, so it is
+/// a compile-time value exactly like a model-level one.
+fn reads_no_function_state<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'dae>) -> bool {
+    let mut closed = true;
+    dae::for_each_expression(view, root, |_, node| {
+        closed &= !matches!(
+            node.operation(),
+            dae::ExpressionOperation::FunctionValue { .. }
+                | dae::ExpressionOperation::FunctionFoldParameter { .. }
+                | dae::ExpressionOperation::FunctionFoldOutput { .. }
+                | dae::ExpressionOperation::FunctionConditionalOutput { .. }
+        );
+    });
+    closed
+}
+
+/// The right-hand side of every assignment a function body runs on every
+/// invocation: the statements outside any conditional or loop.
+fn function_roots<'dae>(view: dae::DaeView<'dae>) -> Vec<dae::ExprId<'dae>> {
+    let mut roots = Vec::new();
+    for index in 0..view.function_count() {
+        let Some(function) = view
+            .function_id(index)
+            .and_then(|function| view.function(function))
+        else {
+            continue;
+        };
+        for statement in function.statements() {
+            match statement {
+                dae::FunctionStatementView::Assignment { definition } => {
+                    roots.push(definition.rhs());
+                }
+                dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
+                    roots.extend(definitions.iter().map(|definition| definition.rhs()));
+                }
+                _ => {}
+            }
+        }
+    }
+    roots
 }
 
 fn numeric_type(value_type: &dae::ValueType) -> bool {
@@ -179,25 +255,34 @@ fn settle<'dae>(
     expression: dae::ExprId<'dae>,
 ) -> Result<Option<Arc<FoldedValue>>, StructuralError> {
     let node = view.expression(expression).expect("checked expression");
-    let values = match evaluator.expression(expression) {
+    let values = match evaluator.exact_expression_values(expression) {
         Ok(values) => values,
-        Err(error) if failing_evaluation(error.kind()) => {
+        // A function body may never run, so a call there that cannot succeed
+        // stays a call and fails only if an invocation reaches it.
+        Err(error) if failing_evaluation(error.kind()) && node.function_scope().is_none() => {
             return Err(StructuralError::ConstantCallEvaluation {
                 call: first_call_name(view, node),
-                reason: error.to_string(),
+                reason: match error.kind() {
+                    NumericEvaluationErrorKind::AssertionFailed => {
+                        format!("function assertion failed: {error}")
+                    }
+                    _ => error.to_string(),
+                },
                 span: node.provenance().span(),
             });
         }
         Err(_) => return Ok(None),
     };
     let value_type = node.value_type();
-    if Some(values.len()) != value_type.scalar_count() {
+    if Some(values.len()) != value_type.scalar_count()
+        || !super::evaluable_parameters::representable_runs(value_type.scalar_type(), &values)
+    {
         return Ok(None);
     }
     Ok(Some(Arc::new(FoldedValue {
         scalar: value_type.scalar_type(),
         dimensions: value_type.dimensions().into(),
-        values: values.into(),
+        values,
     })))
 }
 
@@ -260,12 +345,14 @@ fn binding_value<'dae>(
 ) -> Option<Arc<FoldedValue>> {
     let access = view.expression(binding.access)?;
     let value_type = access.value_type();
-    let values = evaluator.expression(binding.value).ok()?;
-    (Some(values.len()) == value_type.scalar_count()).then(|| {
+    let values = evaluator.exact_expression_values(binding.value).ok()?;
+    (Some(values.len()) == value_type.scalar_count()
+        && super::evaluable_parameters::representable_runs(value_type.scalar_type(), &values))
+    .then(|| {
         Arc::new(FoldedValue {
             scalar: value_type.scalar_type(),
             dimensions: value_type.dimensions().into(),
-            values: values.into(),
+            values,
         })
     })
 }

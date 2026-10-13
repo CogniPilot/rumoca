@@ -40,17 +40,14 @@ impl ImplicitProjectionModel for IllConditionedCoupledProjectionModel {
         static PLAN: std::sync::OnceLock<solve::AlgebraicProjectionPlan> =
             std::sync::OnceLock::new();
         PLAN.get_or_init(|| solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         })
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
     }
 }
 
@@ -130,10 +127,6 @@ impl ImplicitProjectionModel for AmplifiedCausalProjection {
         &self.plan
     }
 
-    fn target_name_for_row(&self, row: usize) -> Option<&str> {
-        ["v", "i"].get(row).copied()
-    }
-
     fn implicit_target_assignment_is_exact(&self, row: usize, target: usize) -> bool {
         (row, target) == (0, 1)
     }
@@ -163,12 +156,13 @@ fn certified_torn_projection_checks_recovered_coordinates() {
     };
     let model = AmplifiedCausalProjection {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: Some(tearing.clone()),
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = [0.0, 0.0];

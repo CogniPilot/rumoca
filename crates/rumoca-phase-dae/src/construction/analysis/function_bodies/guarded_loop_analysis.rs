@@ -150,7 +150,7 @@ fn whole_definition_targets(plan: &FunctionStatementPlan) -> Vec<VarName> {
         FunctionStatementPlan::Assignment(assignment) if assignment.is_whole() => {
             vec![assignment.target().clone()]
         }
-        FunctionStatementPlan::MultiOutputCall { outputs } => outputs
+        FunctionStatementPlan::MultiOutputCall { outputs, .. } => outputs
             .iter()
             .flatten()
             .filter(|output| output.is_whole())
@@ -171,7 +171,7 @@ fn attach_whole_definition_seed(
         FunctionStatementPlan::Assignment(assignment) if assignment.target() == target => {
             assignment.seed = Some(seed);
         }
-        FunctionStatementPlan::MultiOutputCall { outputs } => {
+        FunctionStatementPlan::MultiOutputCall { outputs, .. } => {
             let output = outputs
                 .iter_mut()
                 .flatten()

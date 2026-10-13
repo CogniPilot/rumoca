@@ -54,6 +54,7 @@
     </ScalarVariable>
 {%- set index = namespace(model=2, vr=1) %}
 {%- for variable in fmi.variables %}
+{%- if not variable.fmi2_integer_admitted %}{{ fail("unsupported-feature:fmi2.integer-width exact source start or bound exceeds Int32") }}{% endif %}
 {%- for scalar in range(variable.storage.scalar_count) %}
     <ScalarVariable name="{{ variable.scalar_names[scalar] | xml_escape }}" valueReference="{{ index.vr }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
 {%- set kind = variable.value_kind %}
@@ -64,7 +65,7 @@
 {%- elif kind == "Integer" %}
       <Integer{% if variable.start is defined %} start="{{ variable.start[scalar] | int }}"{% endif %}{% if variable.minimum %} min="{{ variable.minimum[scalar] | int }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] | int }}"{% endif %}/>
 {%- elif kind == "Boolean" %}
-      <Boolean{% if variable.start is defined %} start="{{ "true" if variable.start[scalar] != 0 else "false" }}"{% endif %}/>
+      <Boolean{% if variable.start is defined %} start="{{ "true" if variable.start[scalar] else "false" }}"{% endif %}/>
 {%- else %}
       <String{% if variable.start is defined %} start="{{ variable.text_start[scalar] | xml_escape }}"{% endif %}/>
 {%- endif %}

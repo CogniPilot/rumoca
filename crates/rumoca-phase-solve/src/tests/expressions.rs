@@ -4,9 +4,14 @@
 //! the static quotient builtins, and a checked function call inlined into the
 //! row that uses it.
 
+mod binder_integer_power;
 mod conditional_dag;
+mod continuous_tuples;
 mod derivative_tensor_sharing;
+mod discrete_tuples;
 mod function_calls;
+mod inline_scalar_calls;
+mod real_signum_selection;
 mod unary_reuse;
 
 use super::*;
@@ -99,7 +104,7 @@ fn pure_call_ad_invokes_one_checked_directional_owner() {
         LinearOp::StoreOutput { src: 1 },
     ]];
 
-    let derived = crate::lower_scalar_program_block_ad(&primal)
+    let derived = rumoca_eval_solve::ad::lower_scalar_program_block_ad(&primal)
         .expect("differentiate through the checked typed owner");
     assert_eq!(
         derived[0]
@@ -174,7 +179,8 @@ fn function_conditional_ad_keeps_primal_predicate_and_dual_result_tuple() {
         LinearOp::StoreOutput { src: 1 },
     ]];
 
-    let derived = crate::lower_scalar_program_block_ad(&primal).expect("differentiate conditional");
+    let derived = rumoca_eval_solve::ad::lower_scalar_program_block_ad(&primal)
+        .expect("differentiate conditional");
     let program = derived[0]
         .iter()
         .find_map(|operation| match operation {
@@ -256,7 +262,8 @@ fn function_conditional_ad_preserves_one_interleaved_capture_range() {
         },
     ]];
 
-    let derived = crate::lower_scalar_program_block_ad(&primal).expect("differentiate range ABI");
+    let derived = rumoca_eval_solve::ad::lower_scalar_program_block_ad(&primal)
+        .expect("differentiate range ABI");
     let program = derived[0]
         .iter()
         .find_map(|operation| match operation {
@@ -346,7 +353,7 @@ fn function_conditional_ad_retains_tensor_division_as_one_dual_range() {
         },
     ]];
 
-    let derived = crate::lower_scalar_program_block_ad(&primal)
+    let derived = rumoca_eval_solve::ad::lower_scalar_program_block_ad(&primal)
         .expect("differentiate compact tensor division");
     let program = derived[0]
         .iter()
@@ -399,7 +406,7 @@ fn tensor_cross_ad_retains_one_interleaved_owner() {
         stride: 1,
     });
 
-    let derived = crate::lower_scalar_program_block_ad(&[row])
+    let derived = rumoca_eval_solve::ad::lower_scalar_program_block_ad(&[row])
         .expect("differentiate compact tensor cross product");
     assert!(
         derived[0]

@@ -22,6 +22,7 @@ wasm-opt = ['-Oz', '-g', '--enable-threads', '--enable-bulk-memory']
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-tool-build-info = { workspace = true }
 rumoca-exec-wasm = { workspace = true, optional = true }
 rumoca-ir-solve = { workspace = true }
 sha2 = { version = "0.10", optional = true }
@@ -49,6 +50,12 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 sha2 = "0.10"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rumoca-exec-wasm = { workspace = true, features = ["component-build"] }
+wasm-encoder = "0.241"
+wasmparser = "0.241"
+wit-component = "0.241"
+wit-parser = "0.241"
+rumoca-sim = { workspace = true, default-features = false, features = ["fmi"] }
 rumoca-eval-solve = { workspace = true }
 flate2 = { workspace = true }
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
@@ -62,7 +69,10 @@ default = ["console_error_panic_hook"]
 full-web = ["sim-rk45", "native-assignments"]
 # Stateless CPU kernels use checked lowering through the optional runtime facade.
 # Enabling this surface does not enable an ODE solver.
-native-assignments = ["dep:rumoca-sim", "dep:rumoca-exec-wasm", "dep:sha2"]
+native-assignments = ["dep:rumoca-sim", "rumoca-sim/native-fmi-ls", "dep:rumoca-exec-wasm", "dep:sha2"]
+# Native qualification tool only; the source-built guest remains a separate
+# once-built product and the existing browser graph does not enable this.
+native-fmi-ls-build = ["native-assignments", "rumoca-sim/native-fmi-ls-build"]
 sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
 sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
 sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]

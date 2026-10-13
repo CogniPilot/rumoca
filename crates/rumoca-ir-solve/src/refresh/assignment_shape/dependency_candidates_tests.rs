@@ -19,6 +19,27 @@ fn exhaustive_shapes(program: &[LinearOp]) -> Vec<(usize, TargetAssignmentShape)
             }
         }
     }
+    let mut queries = crate::CanonicalAssignmentQueries::new(program);
+    for (offset, (_, position)) in store_output_registers(program).enumerate() {
+        assert_eq!(
+            queries.has_any(offset),
+            shapes.iter().any(|(output, _)| *output == offset)
+        );
+        for target in y_load_indices(&program[..position])
+            .into_iter()
+            .chain([9999])
+        {
+            let expected = shapes
+                .iter()
+                .find(|(output, shape)| *output == offset && shape.target_y_index() == target)
+                .map(|(_, shape)| shape.clone());
+            assert_eq!(
+                queries.derive(offset, target),
+                expected,
+                "output{offset}/target{target}"
+            );
+        }
+    }
     shapes
 }
 

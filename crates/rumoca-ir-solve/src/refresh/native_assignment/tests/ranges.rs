@@ -70,6 +70,97 @@ fn fixture(count: usize) -> (ComputeBlock, Vec<Option<ScalarSlot>>, VarLayout) {
 }
 
 #[test]
+fn compact_target_receipt_reuses_original_range_isolator_without_scalar_targets() {
+    let source = crate::RefreshScalarProgramSource::checked(0, 0).unwrap();
+    for count in [9, 131_072] {
+        let operations = program(count, 0, TensorInputKind::P, 0);
+        let layout = VarLayout::from_parts(Default::default(), count + 1, count);
+        let calls = std::cell::Cell::new(0);
+        let compact = super::super::range::derive_with_target(
+            source,
+            0..count,
+            &operations,
+            span(),
+            &layout,
+            || {
+                calls.set(calls.get() + 1);
+                Ok(0..count)
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(compact.stage.target_range(), Some(0..count));
+        let ComputeNode::ScalarPrograms(value) = &compact.stage.value_kernel().nodes[0] else {
+            panic!("value")
+        };
+        // The target load and the difference nothing reads are dropped.
+        assert_eq!(value.programs()[0].len(), operations.len() - 2);
+        assert_only_fault_free_operations_dropped(&operations, &value.programs()[0]);
+        if count == 9 {
+            let targets = (0..count)
+                .map(|index| Some(scalar_slot_y(index)))
+                .collect::<Vec<_>>();
+            let explicit = super::super::range::derive(
+                source,
+                0..count,
+                &operations,
+                span(),
+                super::super::target_inventory::TargetInventory::Scalar(&targets),
+                &layout,
+            )
+            .unwrap();
+            assert_eq!(compact.reads, explicit.reads);
+            let ComputeNode::ScalarPrograms(original) = &explicit.stage.value_kernel().nodes[0]
+            else {
+                panic!("value")
+            };
+            assert!(operations_match(
+                &value.programs()[0],
+                &original.programs()[0]
+            ));
+        }
+        // Equal cardinalities cannot transfer the actual source's target load.
+        assert!(
+            super::super::range::derive_with_target(
+                source,
+                0..count,
+                &operations,
+                span(),
+                &layout,
+                || Ok(1..count + 1),
+            )
+            .is_err()
+        );
+        assert!(
+            super::super::range::derive_with_target(
+                source,
+                0..count,
+                &operations,
+                span(),
+                &layout,
+                || Ok(0..count - 1),
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn malformed_source_refuses_before_consuming_compact_target_receipt() {
+    let source = crate::RefreshScalarProgramSource::checked(0, 0).unwrap();
+    let layout = VarLayout::from_parts(Default::default(), 1, 1);
+    let calls = std::cell::Cell::new(0);
+    assert!(
+        super::super::range::derive_with_target(source, 0..1, &[], span(), &layout, || {
+            calls.set(calls.get() + 1);
+            Ok(0..1)
+        },)
+        .is_err()
+    );
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
 fn complete_array_programs_keep_two_compact_stages_and_exact_dependency_order() {
     for count in [1, 9, 225, 14_400, 57_600] {
         let (block, targets, layout) = fixture(count);
@@ -85,13 +176,17 @@ fn complete_array_programs_keep_two_compact_stages_and_exact_dependency_order() 
                 panic!("value")
             };
             assert_eq!(value.programs().len(), 1);
-            assert_eq!(value.programs()[0].len(), 4);
+            assert_eq!(value.programs()[0].len(), 2);
+            assert_only_fault_free_operations_dropped(
+                &original.programs()[original_program],
+                &value.programs()[0],
+            );
             assert!(operations_match(
-                &value.programs()[0][..3],
-                &original.programs()[original_program][..3]
+                &value.programs()[0][..1],
+                &original.programs()[original_program][1..2]
             ));
             assert_eq!(
-                value.programs()[0][3],
+                value.programs()[0][1],
                 LinearOp::StoreOutputRange {
                     start: count as u32,
                     count,
@@ -140,7 +235,7 @@ fn reversed_residual_and_broadcast_rhs_use_the_independent_original_range() {
             })
         );
         assert_eq!(
-            value.programs()[0][3],
+            value.programs()[0][1],
             LinearOp::TensorFill {
                 dst_start: 27,
                 value_start: 9,
@@ -152,7 +247,7 @@ fn reversed_residual_and_broadcast_rhs_use_the_independent_original_range() {
 }
 
 #[test]
-fn compact_matrix_value_and_unused_target_dependent_prefix_remain_intact() {
+fn compact_matrix_value_keeps_its_operands_and_drops_the_unread_target_dependent_prefix() {
     let count = 9;
     let mut ops = program(count, 0, TensorInputKind::P, 0);
     ops.insert(
@@ -200,10 +295,9 @@ fn compact_matrix_value_and_unused_target_dependent_prefix_remain_intact() {
     let ComputeNode::ScalarPrograms(value) = &schedule.stages[0].value_kernel().nodes[0] else {
         panic!("value")
     };
-    assert!(operations_match(
-        &value.programs()[0][..ops.len() - 1],
-        &ops[..ops.len() - 1]
-    ));
+    assert_eq!(value.programs()[0].len(), 4);
+    assert_only_fault_free_operations_dropped(&ops, &value.programs()[0]);
+    assert!(operations_match(&value.programs()[0][..3], &ops[1..4]));
     assert_eq!(
         value.programs()[0].last(),
         Some(&LinearOp::StoreOutputRange {

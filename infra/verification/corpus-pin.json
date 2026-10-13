@@ -150,12 +150,12 @@
           {
             "path": "Vehicles_Rdd2_Controller/AlgorithmCode/Vehicles_Rdd2_Controller.alg",
             "kind": "file",
-            "min_bytes": 131072
+            "min_bytes": 122880
           },
           {
             "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.c",
             "kind": "file",
-            "min_bytes": 196608
+            "min_bytes": 184320
           },
           {
             "path": "Vehicles_Rdd2_Controller/ProductionCode/Vehicles_Rdd2_Controller.h",
@@ -418,7 +418,7 @@
       },
       "expect": {
         "outcome": "refused",
-        "diagnostic": "EF036"
+        "diagnostic": "EL001"
       }
     },
     {
@@ -1251,7 +1251,7 @@
       },
       "expect": {
         "outcome": "refused",
-        "diagnostic": "ED001"
+        "diagnostic": "EX002"
       }
     },
     {

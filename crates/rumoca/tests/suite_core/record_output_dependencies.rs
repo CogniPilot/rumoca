@@ -67,7 +67,10 @@ fn copied_record_vector_has_componentwise_inverse_dependencies() {
         .compile_str(COPY_SOURCE, "copied_coordinates.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let pattern = model
         .artifacts
         .continuous
@@ -78,7 +81,13 @@ fn copied_record_vector_has_componentwise_inverse_dependencies() {
     let coordinates =
         ["R.w[1]", "R.w[2]"].map(|name| names.iter().position(|value| value == name).unwrap());
     let mut checked = 0;
-    for block in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for block in model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks()
+    {
         for (&row, &target) in block.rows.iter().zip(&block.y_indices) {
             if !coordinates.contains(&target) {
                 continue;
@@ -102,7 +111,10 @@ fn copied_record_vector_has_exact_refresh_assignments() {
         .compile_str(COPY_SOURCE, "copied_coordinates.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let plan = model.problem.continuous.refresh_owners.algebraic();
     for name in ["R.w[1]", "R.w[2]"] {
         let target = names.iter().position(|value| value == name).unwrap();
@@ -169,7 +181,10 @@ fn record_rotation_matrix_does_not_depend_on_angular_velocity() {
         .compile_str(SOURCE, "record_dependencies.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let velocity = names.iter().position(|name| name == "velocity[1]").unwrap();
     let q = names.iter().position(|name| name == "q").unwrap();
     let pattern = model
@@ -180,7 +195,13 @@ fn record_rotation_matrix_does_not_depend_on_angular_velocity() {
         .unwrap()
         .pattern();
     let mut checked = 0;
-    for block in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for block in model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks()
+    {
         for (&row, &target) in block.rows.iter().zip(&block.y_indices) {
             if names[target].starts_with("R.T[") {
                 assert!(pattern.contains(row as u32, q as u32));
@@ -244,58 +265,62 @@ fn record_output_dependency_summary_preserves_all_observables() {
 }
 
 #[test]
-fn copied_record_wire_rejects_a_forged_value_projection() {
+fn copied_record_wire_carries_no_projection_claim_and_replay_rederives_it() {
     let compiled = Compiler::new()
         .model("CopiedCoordinates.Probe")
         .compile_str(COPY_SOURCE, "copied_coordinates.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let mut wire = serde_json::to_value(solve_model_wire(&model).unwrap()).unwrap();
+    let wire = serde_json::to_value(solve_model_wire(&model).unwrap()).unwrap();
     let original = serde_json::to_vec(&wire).unwrap();
-    deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&original)).unwrap();
-    let programs =
-        wire["problem"]["continuous"]["implicit_rhs"]["nodes"][0]["ScalarPrograms"]["programs"]
-            .as_array_mut()
-            .unwrap();
-    let site = programs
-        .iter_mut()
-        .flat_map(|program| program.as_array_mut().unwrap())
-        .find_map(|op| op.get_mut("PureCall"))
-        .unwrap();
-    let coefficient =
-        &mut site["site"]["projections"][0]["coordinates"]["subscripts"][0]["coeffs"][0];
-    assert_eq!(*coefficient, serde_json::json!(1));
-    *coefficient = serde_json::json!(0);
-    let forged = serde_json::to_vec(&wire).unwrap();
-    assert!(deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&forged)).is_err());
+    let restored =
+        deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&original)).unwrap();
+    assert_owner_claims_are_derived(&wire, &model, &restored);
 }
 
 #[test]
-fn model_wire_rejects_an_omitted_function_output_dependency() {
+fn model_wire_carries_no_dependency_claim_and_replay_rederives_it() {
     let compiled = Compiler::new()
         .model("RecordDependency.Probe")
         .compile_str(SOURCE, "record_dependencies.mo")
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
-    let mut wire = serde_json::to_value(solve_model_wire(&model).unwrap()).unwrap();
+    let wire = serde_json::to_value(solve_model_wire(&model).unwrap()).unwrap();
     let original = serde_json::to_vec(&wire).unwrap();
-    deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&original)).unwrap();
-    let programs =
-        wire["problem"]["continuous"]["implicit_rhs"]["nodes"][0]["ScalarPrograms"]["programs"]
-            .as_array_mut()
-            .unwrap();
-    let site = programs
-        .iter_mut()
-        .flat_map(|program| program.as_array_mut().unwrap())
-        .find_map(|op| op.get_mut("PureCall"))
-        .unwrap();
-    assert!(
-        !site["site"]["dependencies"][0]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    let restored =
+        deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&original)).unwrap();
+    assert_owner_claims_are_derived(&wire, &model, &restored);
+}
+
+/// Dependencies, projections and affinity are derived from the owner body at replay and are
+/// never read from the wire: the owner entry carries no such claim, and the replayed table
+/// equals the constructed one field for field.
+pub(crate) fn assert_owner_claims_are_derived(
+    wire: &serde_json::Value,
+    model: &rumoca_ir_solve::SolveModel,
+    restored: &rumoca_ir_solve::SolveModel,
+) {
+    let owner = pure_call_owner_index(wire);
+    let entry = &wire["pure_calls"]["owners"][owner];
+    for claim in ["dependencies", "projections", "affinity"] {
+        assert!(entry.get(claim).is_none(), "{claim} is not a wire claim");
+    }
+    assert_eq!(
+        format!("{:?}", restored.pure_calls),
+        format!("{:?}", model.pure_calls)
     );
-    site["site"]["dependencies"][0] = serde_json::json!([]);
-    let forged = serde_json::to_vec(&wire).unwrap();
-    assert!(deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&forged)).is_err());
+}
+
+/// The owner-table index referenced by the first retained call of the implicit RHS; sites
+/// carry only that id on the wire.
+fn pure_call_owner_index(wire: &serde_json::Value) -> usize {
+    wire["problem"]["continuous"]["implicit_rhs"]["nodes"][0]["ScalarPrograms"]["programs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|program| program.as_array().unwrap())
+        .find_map(|op| op.get("PureCall"))
+        .unwrap()["site"]["owner"]
+        .as_u64()
+        .unwrap() as usize
 }

@@ -2,7 +2,7 @@
 
 use super::{
     ComputeBlock, ComputeNode, ContinuousRefreshConstructionError, RefreshScalarProgramSource,
-    ScalarProgramBlock, advance_output_cursor, refresh_source_overflow,
+    ScalarProgramBlock, advance_output_cursor,
 };
 use std::ops::Range;
 
@@ -11,12 +11,28 @@ pub(super) struct SourceOutputs<'source> {
 }
 
 struct ScalarOutputs<'source> {
-    programs: Vec<Range<usize>>,
-    indices: &'source [usize],
+    block: &'source ScalarProgramBlock,
     local_offset: Option<usize>,
 }
 
 impl<'source> SourceOutputs<'source> {
+    pub(super) fn store_contiguous_range(
+        &self,
+        source: RefreshScalarProgramSource,
+        operation: usize,
+    ) -> Option<Range<usize>> {
+        let outputs = self.nodes.get(source.node as usize)?.as_ref()?;
+        let span = outputs
+            .block
+            .program_output_span(source.program as usize, operation)?;
+        if span.descending() || (span.count() > 1 && span.stride() != 1) {
+            return None;
+        }
+        let start = outputs.local_offset.map_or(Some(span.start()), |cursor| {
+            cursor.checked_add(span.start())
+        })?;
+        Some(start..start.checked_add(span.count())?)
+    }
     pub(super) fn new(
         block: &'source ComputeBlock,
     ) -> Result<Self, ContinuousRefreshConstructionError> {
@@ -24,9 +40,7 @@ impl<'source> SourceOutputs<'source> {
         let mut cursor = 0;
         for (index, node) in block.nodes.iter().enumerate() {
             let outputs = match node {
-                ComputeNode::ScalarPrograms(programs) => {
-                    Some(ScalarOutputs::new(programs, cursor)?)
-                }
+                ComputeNode::ScalarPrograms(programs) => Some(ScalarOutputs::new(programs, cursor)),
                 _ => None,
             };
             cursor = advance_output_cursor(node, index, cursor)?;
@@ -37,14 +51,16 @@ impl<'source> SourceOutputs<'source> {
 
     pub(super) fn get(&self, source: RefreshScalarProgramSource, offset: usize) -> Option<usize> {
         let outputs = self.nodes.get(source.node as usize)?.as_ref()?;
-        let range = outputs.programs.get(source.program as usize)?;
+        let range = outputs
+            .block
+            .program_output_ordinals(source.program as usize)?;
         if offset >= range.len() {
             return None;
         }
         let ordinal = range.start.checked_add(offset)?;
         match outputs.local_offset {
             Some(cursor) => cursor.checked_add(ordinal),
-            None => outputs.indices.get(ordinal).copied(),
+            None => outputs.block.output_index_at(ordinal),
         }
     }
 
@@ -55,44 +71,24 @@ impl<'source> SourceOutputs<'source> {
         source: RefreshScalarProgramSource,
     ) -> Option<Range<usize>> {
         let outputs = self.nodes.get(source.node as usize)?.as_ref()?;
-        let ordinals = outputs.programs.get(source.program as usize)?;
-        let start = self.get(source, 0)?;
-        let end = start.checked_add(ordinals.len())?;
-        if outputs.local_offset.is_none()
-            && outputs
-                .indices
-                .get(ordinals.clone())?
-                .iter()
-                .enumerate()
-                .any(|(offset, &index)| start.checked_add(offset) != Some(index))
-        {
-            return None;
+        let range = outputs
+            .block
+            .program_contiguous_output_range(source.program as usize)?;
+        match outputs.local_offset {
+            Some(cursor) => Some(cursor.checked_add(range.start)?..cursor.checked_add(range.end)?),
+            None => Some(range),
         }
-        Some(start..end)
     }
 }
 
 impl<'source> ScalarOutputs<'source> {
-    fn new(
-        block: &'source ScalarProgramBlock,
-        cursor: usize,
-    ) -> Result<Self, ContinuousRefreshConstructionError> {
-        let mut programs = Vec::with_capacity(block.row_count());
-        let mut ordinal = 0usize;
-        for program in block.programs() {
-            let end = ordinal
-                .checked_add(ScalarProgramBlock::program_output_count(program))
-                .ok_or_else(|| refresh_source_overflow("output ordinal"))?;
-            programs.push(ordinal..end);
-            ordinal = end;
-        }
-        Ok(Self {
-            programs,
-            indices: block.output_indices(),
+    fn new(block: &'source ScalarProgramBlock, cursor: usize) -> Self {
+        Self {
+            block,
             local_offset: block
                 .uses_local_contiguous_output_indices()
                 .then_some(cursor),
-        })
+        }
     }
 }
 
@@ -185,10 +181,58 @@ mod tests {
     }
 
     #[test]
-    fn source_outputs_reject_overflowing_sparse_output_range() {
+    fn source_outputs_keep_compact_program_ranges_unmaterialized() {
+        let count = 131_072;
+        let source = ScalarProgramBlock::with_program_output_placements(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::TensorFill {
+                    dst_start: 1,
+                    value_start: 0,
+                    count,
+                    lanes: 1,
+                },
+                LinearOp::StoreOutputRange {
+                    start: 1,
+                    count,
+                    stride: 1,
+                },
+            ]],
+            vec![span()],
+            vec![crate::ScalarProgramOutputPlacement::Range(7..7 + count)],
+        )
+        .unwrap();
         let block = ComputeBlock {
-            nodes: vec![scalar_node(vec![0, usize::MAX, 2])],
+            nodes: vec![
+                ComputeNode::ScalarPrograms(source.clone()),
+                scalar_node(vec![0, 1, 2]),
+            ],
         };
-        assert!(SourceOutputs::new(&block).is_err());
+        let outputs = SourceOutputs::new(&block).unwrap();
+        let range_source = RefreshScalarProgramSource::checked(0, 0).unwrap();
+        assert_eq!(outputs.get(range_source, 0), Some(7));
+        assert_eq!(outputs.get(range_source, count - 1), Some(7 + count - 1));
+        assert_eq!(outputs.get(range_source, count), None);
+        assert_eq!(outputs.contiguous_range(range_source), Some(7..7 + count));
+        assert_eq!(
+            outputs.get(RefreshScalarProgramSource::checked(1, 0).unwrap(), 0),
+            Some(7 + count)
+        );
+        assert!(source.data.materialized_output_indices.get().is_none());
+    }
+
+    #[test]
+    fn source_outputs_reject_overflowing_sparse_output_range() {
+        assert!(
+            ScalarProgramBlock::with_output_indices(
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::StoreOutput { src: 0 }
+                ]],
+                vec![span()],
+                vec![usize::MAX],
+            )
+            .is_err()
+        );
     }
 }

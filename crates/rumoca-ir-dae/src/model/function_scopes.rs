@@ -1,4 +1,4 @@
-//! Construction-issued ownership of function SSA definitions by loop regions.
+//! Construction-issued region ownership of function SSA definitions.
 //!
 //! A consumer that lowers one fold body has to separate two kinds of definition
 //! it can reach from the loop's update expressions: the ones the loop itself
@@ -26,13 +26,15 @@ impl<'dae> DaeView<'dae> {
         region: Option<FunctionFoldId<'dae>>,
     ) -> Option<FunctionScopeView<'dae>> {
         self.dae.storage.functions.get(function.index() as usize)?;
-        if let Some(region) = region {
+        let scope = if let Some(region) = region {
             if region.function() != function {
                 return None;
             }
-            self.function_fold(region)?;
-        }
-        Some(FunctionScopeView::new(self.dae, function, region))
+            Some(self.function_fold(region)?.entry.scope)
+        } else {
+            None
+        };
+        Some(FunctionScopeView::new(self.dae, function, region, scope))
     }
 }
 
@@ -46,25 +48,28 @@ impl<'dae> FunctionFoldView<'dae> {
 
     /// Definition ownership this loop's body was issued.
     pub fn body_scope(self) -> FunctionScopeView<'dae> {
-        FunctionScopeView::new(self.dae, self.id.function(), Some(self.id))
+        FunctionScopeView::new(
+            self.dae,
+            self.id.function(),
+            Some(self.id),
+            Some(self.entry.scope),
+        )
     }
 }
 
-/// Where one SSA definition sits relative to a loop region's body.
+/// Where one SSA definition sits relative to a region's body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionScopeRelation {
-    /// Issued while this region - or a loop nested inside it - was open.
-    ///
-    /// The region computes the definition itself, once per iteration.
+    /// Issued while this region or a nested region was open.
     Region,
     /// Issued by a scope that strictly encloses this region.
     ///
-    /// The value is complete before the region runs, so the region reads it as
-    /// a loop-invariant capture rather than recomputing it.
+    /// This proves ancestry. The constructor's current-definition admission
+    /// separately proves which enclosing values are available as captures.
     Enclosing,
     /// Issued by a region that neither contains nor is contained by this one.
     ///
-    /// A sibling region's per-iteration definition is not reachable from a
+    /// A sibling region's definition is not reachable from a
     /// well-formed body: its binders are out of scope here. Consumers reject
     /// this rather than guessing which side of the boundary it belongs to.
     Disjoint,
@@ -80,6 +85,7 @@ pub struct FunctionScopeView<'dae> {
     dae: &'dae Dae,
     function: FunctionId<'dae>,
     region: Option<FunctionFoldId<'dae>>,
+    scope: Option<u32>,
 }
 
 impl<'dae> FunctionScopeView<'dae> {
@@ -87,11 +93,13 @@ impl<'dae> FunctionScopeView<'dae> {
         dae: &'dae Dae,
         function: FunctionId<'dae>,
         region: Option<FunctionFoldId<'dae>>,
+        scope: Option<u32>,
     ) -> Self {
         Self {
             dae,
             function,
             region,
+            scope,
         }
     }
 
@@ -100,7 +108,9 @@ impl<'dae> FunctionScopeView<'dae> {
         self.function
     }
 
-    /// Loop whose body this scope is, or `None` for the top-level body.
+    /// Loop directly associated with this scope view, if any.
+    ///
+    /// Absence of a loop identity does not itself certify a top-level scope.
     pub const fn region(self) -> Option<FunctionFoldId<'dae>> {
         self.region
     }
@@ -128,37 +138,37 @@ impl<'dae> FunctionScopeView<'dae> {
         Some(FunctionScopeRelation::Disjoint)
     }
 
-    /// True when `scope` is this region or a loop nested inside it.
+    /// True when `scope` is this region or a region nested inside it.
     fn contains_scope(self, entry: &'dae FunctionEntry, scope: Option<u32>) -> bool {
-        let Some(region) = self.region else {
+        let Some(region) = self.scope else {
             // The top-level body encloses every region, so it owns every
             // definition the function issues.
             return true;
         };
         self.scope_chain(entry, scope)
-            .any(|ancestor| ancestor == region.ordinal())
+            .any(|ancestor| ancestor == region)
     }
 
     /// True when `scope` strictly encloses this region.
     fn enclosed_by_scope(self, entry: &'dae FunctionEntry, scope: Option<u32>) -> bool {
-        let Some(region) = self.region else {
+        let Some(region) = self.scope else {
             return false;
         };
         let Some(scope) = scope else {
-            // The top-level body strictly encloses every loop region.
+            // The top-level body strictly encloses every region.
             return true;
         };
-        self.scope_chain(entry, self.parent_fold_ordinal(entry, region.ordinal()))
-            .any(|ancestor| ancestor == scope)
+        self.scope_chain(
+            entry,
+            entry
+                .scopes
+                .get(region as usize)
+                .and_then(|scope| scope.parent),
+        )
+        .any(|ancestor| ancestor == scope)
     }
 
-    /// The fold ordinal that structurally encloses `fold`, from the issued
-    /// nesting forest. This walks IR fold identities, not rendered names.
-    fn parent_fold_ordinal(self, entry: &'dae FunctionEntry, fold: u32) -> Option<u32> {
-        self.fold_entry(entry, fold).and_then(|entry| entry.parent)
-    }
-
-    /// The loop ordinals enclosing `scope`, innermost first, `scope` included.
+    /// The region ordinals enclosing `scope`, innermost first, `scope` included.
     ///
     /// Nesting is a forest whose parent ordinal is always strictly smaller than
     /// its child's, so the walk terminates at the top-level body.
@@ -169,16 +179,9 @@ impl<'dae> FunctionScopeView<'dae> {
     ) -> impl Iterator<Item = u32> {
         let mut next = scope;
         std::iter::from_fn(move || {
-            let fold = next?;
-            next = self
-                .parent_fold_ordinal(entry, fold)
-                .filter(|parent| *parent < fold);
-            Some(fold)
+            let scope = next?;
+            next = entry.scopes.get(scope as usize)?.parent;
+            Some(scope)
         })
-    }
-
-    fn fold_entry(self, entry: &'dae FunctionEntry, fold: u32) -> Option<&'dae FunctionFoldEntry> {
-        let raw = *entry.folds.get(fold as usize)?;
-        self.dae.storage.function_folds.get(raw as usize)
     }
 }

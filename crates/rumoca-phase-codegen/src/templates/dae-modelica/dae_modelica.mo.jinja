@@ -196,6 +196,10 @@
   {%- for nested in statement.statements %}
 {{ function_statement(function, nested, depth) }}
   {%- endfor %}
+  {%- elif statement.kind == "conditional" -%}
+{{ fail_at("unsupported-feature:dae-modelica-function-ordered-conditional", statement.provenance) }}
+  {%- elif statement.kind == "require_assigned" -%}
+{{ fail_at("unsupported-feature:dae-modelica-function-assigned-state", statement.provenance) }}
   {%- elif statement.kind == "for" -%}
   {%- set fold = function.folds[statement.fold] -%}
 {{ "  " * depth }}for {% for binder in dae.domains[fold.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop

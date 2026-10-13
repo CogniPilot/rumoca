@@ -1,5 +1,6 @@
 mod blocks;
 mod calls;
+mod compact_projection;
 mod conditionals;
 mod gathers;
 mod mixed;

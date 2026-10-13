@@ -1,7 +1,7 @@
 //! Tensor-native expression lowering.
 
 use super::*;
-use crate::lower::product_power_factors;
+use crate::lower::{LiteralPower, literal_power_plan};
 
 enum BinaryTensorBuiltin {
     Cross,
@@ -9,46 +9,38 @@ enum BinaryTensorBuiltin {
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
-    /// The factor count of `x ^ n` for a Real scalar `x` and a literal Integer
-    /// `n` that lowers as a product (`product_power_factors`).
-    fn product_power(
-        &self,
-        operator: dae::BinaryOperator,
-        base: dae::ExprId<'dae>,
-        exponent: dae::ExprId<'dae>,
-    ) -> Option<u8> {
-        if !matches!(
-            operator,
-            dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
-        ) {
-            return None;
-        }
-        let base = self.view.expression(base)?.value_type();
-        if !base.is_scalar() || base.scalar_type() != dae::ScalarType::Real {
-            return None;
-        }
-        match self.view.expression(exponent)?.operation() {
-            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(exponent)) => {
-                product_power_factors(*exponent)
-            }
-            _ => None,
-        }
-    }
-
-    /// `base` multiplied by itself `factors` times in left-to-right order.
+    /// `base` raised to a literal Integer exponent as the shared plan of the
+    /// canonical integer-power rule.
     fn repeated_product(
         &mut self,
         base: solve::ProgramRegister<'program>,
-        factors: u8,
+        plan: LiteralPower,
         at: rumoca_core::Span,
     ) -> Result<solve::ProgramRegister<'program>, solve::SolveProgramConstructionError> {
-        let mut product = base;
-        for _ in 1..factors {
-            product =
-                self.builder
-                    .binary(solve::SolveBinaryOperator::Multiply, product, base, at)?;
+        let one = self
+            .builder
+            .constant(solve::SolveValue::real(arithmetic_profile(), 1.0), at)?;
+        if plan.magnitude == 0 {
+            return Ok(one);
         }
-        Ok(product)
+        let base = if plan.reciprocal {
+            self.builder
+                .binary(solve::SolveBinaryOperator::Divide, one, base, at)?
+        } else {
+            base
+        };
+        let mut values = vec![base];
+        let mut latest = base;
+        for (first, second) in plan.steps() {
+            latest = self.builder.binary(
+                solve::SolveBinaryOperator::Multiply,
+                values[first],
+                values[second],
+                at,
+            )?;
+            values.push(latest);
+        }
+        Ok(latest)
     }
 
     // SPEC_0021: Exception - exhaustive binary-operator lowering dispatch.
@@ -61,6 +53,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         rhs: dae::ExprId<'dae>,
         at: rumoca_core::Span,
     ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        if operator == dae::BinaryOperator::Power
+            && self
+                .view
+                .expression(lhs)
+                .is_some_and(|node| !node.value_type().is_scalar())
+        {
+            return Err(solve::SolveProgramConstructionError::InvalidTensorAlgebra {
+                provenance: at,
+            });
+        }
         let lhs_lowered = self.expression(lhs)?;
         let rhs_lowered = self.expression(rhs)?;
         // MLS 3.7 §10.6: an element-wise result over a zero-size operand is
@@ -81,8 +83,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .expression(rhs)
             .expect("checked rhs resolves")
             .value_type();
-        if let Some(factors) = self.product_power(operator, lhs, rhs) {
-            let register = self.repeated_product(lhs_value, factors, at)?;
+        if let Some(plan) = literal_power_plan(self.view, operator, lhs, rhs) {
+            let register = self.repeated_product(lhs_value, plan, at)?;
             return Ok(LoweredValue::scalar(value_type, register));
         }
         let division = matches!(
@@ -106,6 +108,17 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         // is converted.
         let lhs_integer = self.integer_register(lhs_value, at)?;
         let rhs_integer = self.integer_register(rhs_value, at)?;
+        if power && real_result && rhs_integer {
+            if lhs_integer {
+                lhs_value = self.builder.convert(
+                    solve::SolveConversionOperator::IntegerToReal,
+                    lhs_value,
+                    at,
+                )?;
+            }
+            let register = self.integer_exponent_power(lhs_value, rhs_value, at)?;
+            return Ok(LoweredValue::scalar(value_type, register));
+        }
         let in_real = division
             || power
             || real_result

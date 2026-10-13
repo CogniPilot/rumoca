@@ -20,7 +20,7 @@ enum Affinity {
 
 pub(super) fn derivative_blocks<'dae>(
     blocks: &[BltBlock<'dae>],
-    rows: &HashMap<usize, UnknownId<'dae>>,
+    rows: &MatchingRows<'dae>,
 ) -> Vec<Vec<(usize, UnknownId<'dae>)>> {
     blocks
         .iter()
@@ -30,11 +30,7 @@ pub(super) fn derivative_blocks<'dae>(
             };
             let block = equations
                 .iter()
-                .filter_map(|equation| {
-                    rows.get(&equation.0)
-                        .copied()
-                        .map(|unknown| (equation.0, unknown))
-                })
+                .filter_map(|equation| rows.get(&equation.0).map(|unknown| (equation.0, unknown)))
                 .collect::<Vec<_>>();
             (block.len() > 1
                 && block
@@ -325,6 +321,21 @@ impl<'dae> AffineProof<'_, 'dae> {
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.expression(definition.rhs())?
             }
+            dae::ExpressionOperation::FunctionConditionalOutput {
+                conditional, value, ..
+            } => {
+                let conditional = self.view.function_conditional(conditional).ok_or_else(|| {
+                    LowerError::contract("conditional source owner does not resolve", self.span)
+                })?;
+                let mut inputs = Vec::new();
+                if !conditional.visit_value_inputs(value, |input| inputs.push(input)) {
+                    return Err(LowerError::contract(
+                        "conditional source value does not resolve",
+                        self.span,
+                    ));
+                }
+                self.expression_affinities(inputs)?
+            }
             _ if !self.depends_on_derivative(expression) => Affinity::Constant,
             _ => {
                 return Err(LowerError::non_computable(
@@ -371,11 +382,18 @@ impl<'dae> AffineProof<'_, 'dae> {
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
     ) -> Result<Affinity, LowerError> {
-        operands
-            .iter()
-            .try_fold(Affinity::Constant, |found, operand| {
-                self.expression(operand)
-                    .map(|operand| merge(found, operand))
+        self.expression_affinities(operands.iter())
+    }
+
+    fn expression_affinities(
+        &mut self,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+    ) -> Result<Affinity, LowerError> {
+        expressions
+            .into_iter()
+            .try_fold(Affinity::Constant, |found, expression| {
+                self.expression(expression)
+                    .map(|affinity| merge(found, affinity))
             })
     }
 
@@ -459,10 +477,53 @@ impl<'dae> AffineProof<'_, 'dae> {
                         "derivative-dependent assertion in an affine function call",
                     );
                 }
+                dae::FunctionStatementView::Conditional { conditional } => {
+                    self.prove_conditional_assertions_constant(conditional)?;
+                }
+                dae::FunctionStatementView::RequireAssigned {
+                    conditional, value, ..
+                } => {
+                    let mut inputs = Vec::new();
+                    conditional.visit_value_inputs(value, |input| inputs.push(input));
+                    self.prove_inputs_constant(
+                        inputs,
+                        "derivative-dependent assigned-state check in an affine function call",
+                    )?;
+                }
                 dae::FunctionStatementView::For { statements, .. } => {
                     self.prove_assertions_constant(statements)?;
                 }
                 _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn prove_conditional_assertions_constant(
+        &mut self,
+        conditional: dae::FunctionConditionalBodyView<'dae>,
+    ) -> Result<(), LowerError> {
+        self.prove_inputs_constant(
+            conditional.conditions(),
+            "derivative-dependent conditional guard in an affine function call",
+        )?;
+        for branch in conditional
+            .branches()
+            .chain(std::iter::once(conditional.fallback()))
+        {
+            self.prove_assertions_constant(branch.statements())?;
+        }
+        Ok(())
+    }
+
+    fn prove_inputs_constant(
+        &mut self,
+        inputs: impl IntoIterator<Item = dae::ExprId<'dae>>,
+        failure: &'static str,
+    ) -> Result<(), LowerError> {
+        for input in inputs {
+            if self.expression(input)? == Affinity::Affine {
+                return nonlinear(self.span, failure);
             }
         }
         Ok(())

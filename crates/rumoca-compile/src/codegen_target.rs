@@ -41,6 +41,7 @@ pub struct TargetManifest {
     pub readiness_level: Option<u8>,
     pub package: Option<TargetPackage>,
     pub integer: Option<TargetIntegerDomain>,
+    pub fmi_deployment: Option<rumoca_ir_solve::fmi::FmiDeploymentCapabilities>,
     pub completion_message: Option<String>,
     #[serde(alias = "requirements", alias = "requires")]
     pub capabilities: Option<TargetCapabilities>,
@@ -96,6 +97,20 @@ pub struct TargetPackage {
     #[serde(default)]
     pub required_files: Vec<String>,
     pub archive: Option<TargetArchive>,
+    #[serde(default)]
+    pub build_only: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<TargetCompiledInput>,
+}
+
+/// A target-declared named input supplied by a separate build adapter.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetCompiledInput {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub build: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

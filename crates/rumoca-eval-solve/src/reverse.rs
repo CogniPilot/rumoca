@@ -31,7 +31,7 @@
 //! # Kink rules
 //!
 //! Four sites differentiate the same operations: these reverse rows, the
-//! forward dual lowering (`rumoca_phase_solve::ad`, including the fused
+//! forward dual lowering (`crate::ad`, including the fused
 //! dual-lane tensor division the evaluator, the native backend, and the C
 //! kernel execute), the typed directional owner of a pure call
 //! (`rumoca_ir_solve` `typed_program::program::directional`), and the

@@ -5,9 +5,11 @@ mod compute;
 mod conditional;
 mod gather;
 mod tensor;
-pub(super) use compute::emit_native_call_assignment_module;
 pub(super) use compute::{emit_compute_module, emit_native_assignment_module};
 pub(super) use compute::{emit_exact_assignment_module, emit_private_program_module};
+pub(super) use compute::{
+    emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
+};
 
 use rumoca_ir_solve::{BinaryOp, CompareOp, LinearOp, Reg, UnaryOp};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +55,38 @@ pub(crate) enum MathImport {
 }
 
 impl MathImport {
+    /// The complete math ABI of every emitted module, in declaration order.
+    #[cfg(any(
+        test,
+        feature = "component-build",
+        feature = "host-engine",
+        all(target_arch = "wasm32", target_os = "unknown")
+    ))]
+    pub(crate) const ALL: [Self; 15] = [
+        Self::Abs,
+        Self::Sin,
+        Self::Cos,
+        Self::Tan,
+        Self::Asin,
+        Self::Acos,
+        Self::Atan,
+        Self::Sinh,
+        Self::Cosh,
+        Self::Tanh,
+        Self::Exp,
+        Self::Log,
+        Self::Log10,
+        Self::Pow,
+        Self::Atan2,
+    ];
+
+    #[cfg(feature = "component-build")]
+    pub(crate) fn from_symbol(symbol: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|import| import.symbol() == symbol)
+    }
+
     pub(crate) fn symbol(self) -> &'static str {
         match self {
             Self::Abs => "abs",
@@ -340,6 +374,8 @@ struct BodyEmitter<'a> {
     arena: Option<arena::ArenaPlan>,
     calls: Option<&'a compute::call_program::layout::CallProgramPlan>,
     register_base: Reg,
+    root_program_cursor: usize,
+    root_register_layout: Option<std::rc::Rc<arena::register_layout::RegisterLayout>>,
     region_frame_end: Option<Reg>,
     conditional_region: Option<conditional::Region>,
     gather_faults: Vec<crate::NativeGatherFault>,
@@ -349,9 +385,9 @@ struct BodyEmitter<'a> {
     program_span: Option<rumoca_core::Span>,
     operation_ordinal: usize,
     region_path: Vec<(usize, usize)>,
-    /// Copy one Integer call cell into its typed output lane after the call
+    /// Copy Integer call cells into their typed output lanes after the call
     /// at this operation of the stage program.
-    integer_capture: Option<IntegerCapture>,
+    integer_capture: Vec<IntegerCapture>,
     /// The native stage being emitted, whose issued exact Integer bindings
     /// (SOLVE-C69) its top-level pure calls follow.
     native_stage: Option<&'a rumoca_ir_solve::NativeRefreshAssignmentStage>,
@@ -362,6 +398,7 @@ pub(in crate::emit) struct IntegerCapture {
     pub(in crate::emit) operation: usize,
     pub(in crate::emit) cell: u32,
     pub(in crate::emit) lane: u32,
+    pub(in crate::emit) count: u32,
 }
 
 impl<'a> BodyEmitter<'a> {
@@ -373,6 +410,8 @@ impl<'a> BodyEmitter<'a> {
             arena: None,
             calls: None,
             register_base: 0,
+            root_program_cursor: 0,
+            root_register_layout: None,
             region_frame_end: None,
             conditional_region: None,
             gather_faults: Vec::new(),
@@ -382,13 +421,15 @@ impl<'a> BodyEmitter<'a> {
             program_span: None,
             operation_ordinal: 0,
             region_path: Vec::new(),
-            integer_capture: None,
+            integer_capture: Vec::new(),
             native_stage: None,
         }
     }
 
     fn emit_rows(&mut self, rows: &[Vec<LinearOp>]) -> Result<(), String> {
         for row in rows {
+            let issued = self.bind_root_program()?;
+            let row = issued.as_deref().unwrap_or(row);
             for op in row {
                 self.emit_op(op.clone())?;
             }
@@ -403,12 +444,8 @@ impl<'a> BodyEmitter<'a> {
         match op {
             LinearOp::Const { dst, value } => self.emit_const(dst, value)?,
             LinearOp::LoadTime { dst } => self.emit_time(dst)?,
-            LinearOp::LoadY { dst, index } => {
-                self.emit_array_load(dst, index, Y_PTR_PARAM)?;
-            }
-            LinearOp::LoadP { dst, index } => {
-                self.emit_array_load(dst, index, P_PTR_PARAM)?;
-            }
+            LinearOp::LoadY { dst, index } => self.emit_array_load(dst, index, Y_PTR_PARAM)?,
+            LinearOp::LoadP { dst, index } => self.emit_array_load(dst, index, P_PTR_PARAM)?,
             LinearOp::LoadSeed { dst, index } => {
                 self.emit_array_load(dst, index, SEED_PTR_PARAM)?;
             }
@@ -476,7 +513,9 @@ impl<'a> BodyEmitter<'a> {
                     "WASM backend does not yet support discrete random solve-IR ops".to_string(),
                 );
             }
-            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
+            LinearOp::PureCall { .. }
+            | LinearOp::PureCallDirectional { .. }
+            | LinearOp::PureCallObservation { .. } => {
                 return Err("WASM backend does not yet support typed pure-call ops".to_string());
             }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
@@ -499,6 +538,11 @@ impl<'a> BodyEmitter<'a> {
     }
 
     fn emit_compact(&mut self, op: &LinearOp) -> Option<Result<(), String>> {
+        if matches!(op, LinearOp::PureCallObservation { .. }) {
+            return Some(Err(
+                "WASM backend requires a checked event-action assertion adapter".to_string(),
+            ));
+        }
         if let LinearOp::LoadIndexedRegister {
             dst,
             base,
@@ -510,7 +554,7 @@ impl<'a> BodyEmitter<'a> {
             return Some(self.emit_checked_gather(*dst, *base, *stride, dimensions, indices));
         }
         if self.calls.is_some() && matches!(op, LinearOp::PureCall { .. }) {
-            return Some(self.emit_native_pure_call(op.clone(), None));
+            return Some(self.emit_native_pure_call(op.clone(), None, None));
         }
         if let Some(result) = self.emit_conditional_operation(op) {
             return Some(result);

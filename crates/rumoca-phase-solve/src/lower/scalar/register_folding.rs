@@ -84,8 +84,12 @@ impl<'dae> ScalarCompiler<'_, 'dae> {
         Ok(self.ledger.negated(operand))
     }
 
-    pub(super) fn record_negation(&mut self, negated: solve::Reg, operand: solve::Reg) {
-        self.ledger.set_negated(negated, operand);
+    pub(super) fn record_negation(
+        &mut self,
+        negated: solve::Reg,
+        operand: solve::Reg,
+    ) -> Result<(), LowerError> {
+        self.ledger.set_negated(negated, operand)
     }
 }
 

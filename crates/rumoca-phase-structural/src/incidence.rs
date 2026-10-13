@@ -2,16 +2,17 @@
 
 pub(crate) mod projection;
 pub mod rows;
+mod unknown_index;
 
-use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
 
 use rumoca_eval_dae::{
-    ScalarCoordinateProjectionCache, for_each_scalar_coordinate_filtered_cached,
+    CoordinateQuery, ScalarCoordinateProjectionCache, for_each_scalar_coordinate_queried_cached,
 };
 use rumoca_ir_dae as dae;
 
 use crate::incidence::rows::{IncidenceRows, IncidenceRowsBuilder};
+use crate::incidence::unknown_index::UnknownIndex;
 use crate::types::{EquationRef, StructuralError, UnknownId};
 
 /// Incidence data branded to the inspected DAE.
@@ -97,6 +98,7 @@ impl<'a> IncidenceReuse<'a> {
 /// Exact affine matching candidates for one checked structured family.
 #[derive(Debug, Clone)]
 pub(crate) struct StructuredMatchingFamily {
+    pub(crate) source_owner_index: usize,
     pub(crate) first_equation_index: usize,
     pub(crate) equations_per_point: usize,
     pub(crate) point_count: usize,
@@ -147,12 +149,6 @@ impl StructuredMatchingFamily {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum UnknownKey {
-    Derivative { variable: u32, scalar: u32 },
-    Algebraic { variable: u32, scalar: u32 },
-}
-
 pub(crate) fn build_incidence<'dae>(
     view: dae::DaeView<'dae>,
 ) -> Result<Incidence<'dae>, StructuralError> {
@@ -182,12 +178,13 @@ fn build_incidence_inner<'dae>(
     let unknowns = build_unknowns(view)?;
     let mut builder = IncidenceBuilder {
         view,
-        unknown_map: &unknowns.map,
+        unknown_index: &unknowns.index,
         rows: IncidenceRowsBuilder::default(),
         equation_refs: Vec::new(),
         equation_spans: Vec::new(),
         structured_matching: Vec::new(),
         projection_cache: ScalarCoordinateProjectionCache::default(),
+        occurrences: Vec::new(),
     };
     let mut owner_first_row = Vec::new();
     for (owner_index, owner) in view.continuous_owners().enumerate() {
@@ -218,7 +215,7 @@ fn build_incidence_inner<'dae>(
             })?;
         }
         if let dae::ContinuousOwnerView::Structured { family, .. } = owner {
-            builder.record_family(family, first_row);
+            builder.record_family(owner_index, family, first_row);
         }
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -265,54 +262,47 @@ fn assert_reuse_matches_fresh(view: dae::DaeView<'_>, reused: &Incidence<'_>) {
 }
 
 struct UnknownCatalog<'dae> {
-    map: HashMap<UnknownKey, usize>,
+    index: UnknownIndex,
     ids: Vec<UnknownId<'dae>>,
     spans: Vec<rumoca_core::Span>,
 }
 
 fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>, StructuralError> {
-    let mut map = HashMap::default();
+    let mut index = UnknownIndex::default();
     let mut unknowns = Vec::new();
     let mut spans = Vec::new();
     for (_, variable) in view.variables() {
         let declaration = variable.declaration().span();
+        let first = unknowns.len();
         match variable.identity() {
             dae::VariableIdentity::State(state) => {
                 let count = structural_scalar_count(variable)?;
                 for scalar in 0..count {
                     let scalar = checked_scalar_ordinal(scalar, declaration)?;
-                    insert_unknown(
-                        &mut map,
-                        &mut unknowns,
-                        &mut spans,
-                        UnknownKey::Derivative {
-                            variable: state.index(),
-                            scalar,
-                        },
-                        UnknownId::Derivative { state, scalar },
-                        declaration,
-                    );
+                    unknowns.push(UnknownId::Derivative { state, scalar });
+                    spans.push(declaration);
                 }
+                index.insert_derivative(
+                    state.index(),
+                    first,
+                    checked_scalar_ordinal(count, declaration)?,
+                );
             }
             dae::VariableIdentity::Algebraic(algebraic) => {
                 let count = structural_scalar_count(variable)?;
                 for scalar in 0..count {
                     let scalar = checked_scalar_ordinal(scalar, declaration)?;
-                    insert_unknown(
-                        &mut map,
-                        &mut unknowns,
-                        &mut spans,
-                        UnknownKey::Algebraic {
-                            variable: algebraic.index(),
-                            scalar,
-                        },
-                        UnknownId::Algebraic {
-                            variable: algebraic,
-                            scalar,
-                        },
-                        declaration,
-                    );
+                    unknowns.push(UnknownId::Algebraic {
+                        variable: algebraic,
+                        scalar,
+                    });
+                    spans.push(declaration);
                 }
+                index.insert_algebraic(
+                    algebraic.index(),
+                    first,
+                    checked_scalar_ordinal(count, declaration)?,
+                );
             }
             dae::VariableIdentity::Parameter(_)
             | dae::VariableIdentity::Input(_)
@@ -321,7 +311,7 @@ fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>
         }
     }
     Ok(UnknownCatalog {
-        map,
+        index,
         ids: unknowns,
         spans,
     })
@@ -340,32 +330,16 @@ fn structural_scalar_count(variable: dae::VariableView<'_>) -> Result<usize, Str
         })
 }
 
-fn insert_unknown<'dae>(
-    map: &mut HashMap<UnknownKey, usize>,
-    unknowns: &mut Vec<UnknownId<'dae>>,
-    spans: &mut Vec<rumoca_core::Span>,
-    key: UnknownKey,
-    unknown: UnknownId<'dae>,
-    span: rumoca_core::Span,
-) {
-    let index = unknowns.len();
-    let replaced = map.insert(key, index);
-    debug_assert!(
-        replaced.is_none(),
-        "checked variable scalar identity is unique"
-    );
-    unknowns.push(unknown);
-    spans.push(span);
-}
-
 struct IncidenceBuilder<'map, 'dae> {
     view: dae::DaeView<'dae>,
-    unknown_map: &'map HashMap<UnknownKey, usize>,
+    unknown_index: &'map UnknownIndex,
     rows: IncidenceRowsBuilder,
     equation_refs: Vec<EquationRef>,
     equation_spans: Vec<rumoca_core::Span>,
     structured_matching: Vec<StructuredMatchingFamily>,
     projection_cache: ScalarCoordinateProjectionCache<'dae>,
+    /// The unknown occurrences of the row being projected, reused across rows.
+    occurrences: Vec<usize>,
 }
 
 impl<'dae> IncidenceBuilder<'_, 'dae> {
@@ -376,28 +350,25 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
         owner: dae::DaeProvenance,
     ) -> Result<(), StructuralError> {
-        let mut occurrences = Vec::new();
-        let unknown_map = self.unknown_map;
-        for_each_scalar_coordinate_filtered_cached(
+        let mut occurrences = std::mem::take(&mut self.occurrences);
+        occurrences.clear();
+        let unknown_index = self.unknown_index;
+        for_each_scalar_coordinate_queried_cached(
             self.view,
             expression,
             scalar,
             domain_point,
             &mut self.projection_cache,
-            |coordinate| {
-                matches!(
-                    coordinate,
-                    dae::CoordinateView::Algebraic(_) | dae::CoordinateView::Derivative(_)
-                )
-            },
+            CoordinateQuery::Unknowns,
             |coordinate, scalar| {
-                if let Some(unknown) = resolve_coordinate(unknown_map, coordinate, scalar) {
+                if let Some(unknown) = unknown_index.resolve(coordinate, scalar) {
                     occurrences.push(unknown);
                 }
             },
         )
         .map_err(projection::projection_error)?;
         self.rows.push_occurrences(&occurrences);
+        self.occurrences = occurrences;
         self.equation_refs
             .push(EquationRef(self.equation_refs.len()));
         self.equation_spans.push(owner.span());
@@ -422,13 +393,19 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         Some(())
     }
 
-    fn record_family(&mut self, family: dae::StructuredFamilyView<'dae>, first_row: usize) {
+    fn record_family(
+        &mut self,
+        owner_index: usize,
+        family: dae::StructuredFamilyView<'dae>,
+        first_row: usize,
+    ) {
         let domain = self
             .view
             .domain(family.domain())
             .expect("checked structured family domain resolves");
         let equations_per_point = family.bodies().len();
         if let Some(descriptor) = derive_structured_matching(
+            owner_index,
             &self.rows,
             first_row,
             equations_per_point,
@@ -440,47 +417,8 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
     }
 }
 
-fn resolve_coordinate(
-    unknown_map: &HashMap<UnknownKey, usize>,
-    coordinate: dae::CoordinateView<'_>,
-    scalar: usize,
-) -> Option<usize> {
-    let scalar = u32::try_from(scalar).ok()?;
-    let key = match coordinate {
-        dae::CoordinateView::Derivative(state) => UnknownKey::Derivative {
-            variable: state.index(),
-            scalar,
-        },
-        dae::CoordinateView::Algebraic(variable) => UnknownKey::Algebraic {
-            variable: variable.index(),
-            scalar,
-        },
-        dae::CoordinateView::Parameter(_)
-        | dae::CoordinateView::Input(_)
-        | dae::CoordinateView::State(_)
-        | dae::CoordinateView::DiscreteReal(_)
-        | dae::CoordinateView::DiscreteValue(_)
-        | dae::CoordinateView::PreDiscreteReal(_)
-        | dae::CoordinateView::PreDiscreteValue(_)
-        // A `pre()` read is the coordinate's settled left limit at event
-        // entry, not the unknown itself, so it carries no incidence — the
-        // Mean shape's `y_last = f*pre(x)` must not read as an equation
-        // that solves for `x`.
-        | dae::CoordinateView::PreState(_)
-        | dae::CoordinateView::PreAlgebraic(_)
-        | dae::CoordinateView::Time
-        | dae::CoordinateView::ClockInterval(_)
-        | dae::CoordinateView::Condition(_)
-        | dae::CoordinateView::Delay(_)
-        | dae::CoordinateView::Previous(_)
-        | dae::CoordinateView::Terminal(_)
-        | dae::CoordinateView::Binder(_)
-        | dae::CoordinateView::FunctionParameter(_) => return None,
-    };
-    unknown_map.get(&key).copied()
-}
-
 fn derive_structured_matching(
+    owner_index: usize,
     rows: &IncidenceRowsBuilder,
     first: usize,
     per_point: usize,
@@ -513,6 +451,7 @@ fn derive_structured_matching(
         }
     }
     let descriptor = StructuredMatchingFamily {
+        source_owner_index: owner_index,
         first_equation_index: first,
         equations_per_point: per_point,
         point_count,
@@ -735,6 +674,38 @@ mod reuse_tests {
                     "spans diverged for touched pattern {pattern:b}"
                 );
                 assert_eq!(reused.owner_first_row, fresh.owner_first_row);
+            }
+        });
+    }
+
+    /// Every catalogued unknown resolves from its own coordinate to its own
+    /// index, one scalar past its variable resolves to nothing, and a settled
+    /// (non-unknown) read of the same variable carries no incidence.
+    #[test]
+    fn dense_unknown_index_resolves_each_catalogued_unknown_exactly() {
+        let model = coupled_model();
+        model.inspect(|view| {
+            let catalog = build_unknowns(view).expect("coupled model catalogues its unknowns");
+            assert_eq!(catalog.ids.len(), 3);
+            for (index, id) in catalog.ids.iter().enumerate() {
+                let (own, past, settled) = match *id {
+                    UnknownId::Derivative { state, scalar } => (
+                        (dae::CoordinateView::Derivative(state), scalar),
+                        (dae::CoordinateView::Derivative(state), scalar + 1),
+                        (dae::CoordinateView::State(state), scalar),
+                    ),
+                    UnknownId::Algebraic { variable, scalar } => (
+                        (dae::CoordinateView::Algebraic(variable), scalar),
+                        (dae::CoordinateView::Algebraic(variable), scalar + 1),
+                        (dae::CoordinateView::PreAlgebraic(variable), scalar),
+                    ),
+                    other => panic!(
+                        "the catalog holds derivative and algebraic unknowns, found {other:?}"
+                    ),
+                };
+                assert_eq!(catalog.index.resolve(own.0, own.1 as usize), Some(index));
+                assert_eq!(catalog.index.resolve(past.0, past.1 as usize), None);
+                assert_eq!(catalog.index.resolve(settled.0, settled.1 as usize), None);
             }
         });
     }

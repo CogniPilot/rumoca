@@ -5,7 +5,7 @@ REFERENCE
 
 ## Summary
 Lookup catalog for the trace-production, rejection, typed-exception, and
-simulation-soundness rules governed by SPEC_0033 §6a.
+simulation-soundness rules governed by SPEC_0033 §6a, and the phase error pattern example for SPEC_0008.
 
 ## Specification
 
@@ -31,6 +31,49 @@ requirements.
 | The PR report MUST split completed simulations into verified (strict-high), excepted (by exception kind), and unclassified, state compiled models that did not simulate, and define every table column in a legend under its table | PR report | A completion count alone reads as a correctness count |
 | Certification timing margin: a strict-high completion enters the baseline's `certified_strict_high_models` and its ratcheted counts (successful simulations, initial-condition successes, models compared including trace-accounted exclusions, strict-high, high+near, no-severe) only when its evidence run used at most half of every phase budget it ran under (the model-attempt budget per worker phase, the solver timeout for the simulation run). Above it, the model stays simulated and reported, uncertified with the typed reason `timing_margin` in `timing_margin_models` (worst phase, budget share); a run compares its own counts against the baseline's counts less those models. The shards and the merge read one budget definition | harness gate, baseline ratchet, CI workflow | Two CI runs of one tree differed by up to 1.73x in per-model phase time, so a certification within that spread of its budget would fail a later run with no regression |
 | A model class known to simulate incorrectly MUST be refused at construction (SPEC_0036) | compiler owners | A wrong trace is false success |
+
+### 1. Phase Error Pattern Example (SPEC_0008)
+
+Moved from SPEC_0008 section "Phase Error Pattern"; rows and rules below are normative by reference from that section.
+
+Each phase defines errors in a local `errors.rs`, derives `thiserror::Error` and
+`miette::Diagnostic` for the message/code/label, and implements `PhaseError` by
+handing the retained spans to `miette_phase_error_to_diagnostic`:
+
+```rust
+//! rumoca-phase-resolve/src/errors.rs
+
+#[derive(Debug, Clone, Error, MietteDiagnostic)]
+pub enum ResolveError {
+    #[error("undefined reference: `{name}` not found")]
+    #[diagnostic(
+        code(rumoca::resolve::ER002),
+        help("check that the name is declared before use")
+    )]
+    UndefinedReference {
+        name: String,
+        #[label("not found in scope")]
+        span: Span,
+    },
+    // ER001, ER003, ER004 follow the same shape.
+}
+
+impl PhaseError for ResolveError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let span = match self {
+            Self::UndefinedReference { span, .. } => span,
+            // ... one arm per variant
+        };
+        miette_phase_error_to_diagnostic(self, std::slice::from_ref(span))
+    }
+}
+```
+
+Miette labels carry byte offsets but not source identity, so the phase error
+retains the original `Span` values and passes them in `#[label]` order. Callers
+emit with `ctx.diags.emit(err.to_diagnostic())` or bubble the `Result`, per the
+propagation table above. Typecheck defines `TypeCheckError` in
+`crates/rumoca-phase-typecheck/src/lib.rs` rather than in an `errors.rs`.
 
 ## References
 

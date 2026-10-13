@@ -678,7 +678,8 @@ fn the_linked_fixed_step_drive_switches_the_split_circle() {
         .model("SplitCircleChart")
         .compile_str(SPLIT_CIRCLE_CHART, "SplitCircleChart.mo")
         .expect("compile SplitCircleChart");
-    let component = rumoca_sim::lower_fmi_component(&compiled.dae).expect("lower SplitCircleChart");
+    let component =
+        rumoca_sim::lower_fmi_export_component(&compiled.dae).expect("lower SplitCircleChart");
     let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
     let step = 1.0e-2;
     let stop = 679.0 * step;

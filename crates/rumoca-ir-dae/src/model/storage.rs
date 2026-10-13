@@ -40,7 +40,11 @@ impl Storage {
         self,
         model_conditionals: Box<[model_conditionals::ClosedModelConditional]>,
     ) -> FrozenStorage {
+        let packed_value_counts = packed_value_counts(&self.value_types);
+        let record_field_prefixes = record_field_prefixes(&self.value_types, &packed_value_counts);
         FrozenStorage {
+            packed_value_counts,
+            record_field_prefixes,
             model_conditionals,
             model_arms: self.model_arms.into_boxed_slice(),
             predefined_string_declaration: self.predefined_string_declaration,
@@ -855,4 +859,69 @@ impl Storage {
             .get(raw as usize)
             .ok_or_else(|| unknown("value type", raw, at))
     }
+}
+
+/// Packed scalar width of every value type: `scalar_count` for non-records,
+/// the outer extent product times the summed field widths for records.
+fn packed_value_counts(value_types: &[ValueType]) -> Box<[Option<usize>]> {
+    #[derive(Clone, Copy)]
+    enum Slot {
+        Unvisited,
+        InProgress,
+        Done(Option<usize>),
+    }
+    fn width(types: &[ValueType], slots: &mut [Slot], index: usize) -> Option<usize> {
+        match slots.get(index).copied()? {
+            Slot::Done(count) => return count,
+            Slot::InProgress => return None,
+            Slot::Unvisited => {}
+        }
+        slots[index] = Slot::InProgress;
+        let value_type = &types[index];
+        let count = if value_type.is_record() {
+            let outer = value_type
+                .dimensions()
+                .iter()
+                .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
+            let record = (0..value_type.record_field_count()).try_fold(0usize, |sum, ordinal| {
+                let field = value_type.record_field_type(ordinal)? as usize;
+                sum.checked_add(width(types, slots, field)?)
+            });
+            outer
+                .zip(record)
+                .and_then(|(outer, record)| outer.checked_mul(record))
+        } else {
+            value_type.scalar_count()
+        };
+        slots[index] = Slot::Done(count);
+        count
+    }
+    let mut slots = vec![Slot::Unvisited; value_types.len()];
+    (0..value_types.len())
+        .map(|index| width(value_types, &mut slots, index))
+        .collect()
+}
+
+/// The running sum of packed field widths of every record type, one entry
+/// past the last field. A type that is not a record, or whose field widths do
+/// not all exist and sum without overflow, has no table.
+fn record_field_prefixes(
+    value_types: &[ValueType],
+    packed_counts: &[Option<usize>],
+) -> Box<[Option<Box<[usize]>>]> {
+    value_types
+        .iter()
+        .map(|value_type| {
+            if !value_type.is_record() {
+                return None;
+            }
+            let mut prefixes = vec![0usize];
+            for ordinal in 0..value_type.record_field_count() {
+                let field = value_type.record_field_type(ordinal)? as usize;
+                let width = (*packed_counts.get(field)?)?;
+                prefixes.push(prefixes.last()?.checked_add(width)?);
+            }
+            Some(prefixes.into_boxed_slice())
+        })
+        .collect()
 }

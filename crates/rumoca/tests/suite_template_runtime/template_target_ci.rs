@@ -658,6 +658,7 @@ fn shared_template_names_are_globally_unique_and_target_owned() {
             "fmi-typed-tensors.jinja <- fmi3/typed_tensors.jinja".to_string(),
             "fmi3-model.c.jinja <- fmi3/model.c.jinja".to_string(),
             "fmi3-model.h.jinja <- fmi3/model.h.jinja".to_string(),
+            "fmi3-modelDescription.xml.jinja <- fmi3/modelDescription.xml.jinja".to_string(),
             "fmi3-rmc_assign.c.jinja <- fmi3/rmc_assign.c.jinja".to_string(),
             "fmi3-rmc_functions.c.jinja <- fmi3/rmc_functions.c.jinja".to_string(),
             "fmi3-rmc_isolators.c.jinja <- fmi3/rmc_isolators.c.jinja".to_string(),

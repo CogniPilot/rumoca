@@ -9,7 +9,9 @@ mod cell_loop_tests;
 mod exact_assignments;
 mod matrix;
 pub(crate) use assignments::emit_native_assignment_module;
-pub(crate) use call_program::emit_native_call_assignment_module;
+pub(crate) use call_program::{
+    emit_native_call_assignment_module, emit_native_call_assignment_module_with_policy,
+};
 pub(crate) use exact_assignments::{emit_exact_assignment_module, emit_private_program_module};
 
 use super::*;
@@ -250,8 +252,15 @@ impl BodyEmitter<'_> {
         program: &[LinearOp],
         targets: &mut std::slice::Iter<'_, usize>,
     ) -> Result<(), String> {
+        let issued = self.bind_root_program()?;
+        let program = issued.as_deref().unwrap_or(program);
+        let glue = self.derive_stage_glue(program, targets)?;
         for (index, op) in program.iter().enumerate() {
             self.operation_ordinal = index;
+            if glue.skips(index) {
+                skip_replaced(op, targets)?;
+                continue;
+            }
             match *op {
                 LinearOp::StoreOutput { src } => self.emit_mapped_store(src, targets)?,
                 LinearOp::StoreOutputRange {
@@ -260,7 +269,7 @@ impl BodyEmitter<'_> {
                     stride,
                 } => self.emit_mapped_range(start, count, stride, targets)?,
                 LinearOp::PureCall { .. } if self.calls.is_some() => {
-                    self.emit_program_call(op.clone(), &program[..index], index)?;
+                    self.emit_program_call(op.clone(), &program[..index], index, glue.call(index))?;
                 }
                 _ => self.emit_op(op.clone())?,
             }
@@ -269,18 +278,48 @@ impl BodyEmitter<'_> {
     }
 
     /// One issued pure call of a stage program, followed by its Integer lane
-    /// capture when this call produces the stage's published Integer.
+    /// captures when this call produces the stage's published Integers.
     fn emit_program_call(
         &mut self,
         op: LinearOp,
         prefix: &[LinearOp],
         index: usize,
+        glue: Option<&call_program::glue::CallGlue>,
     ) -> Result<(), String> {
-        self.emit_native_pure_call(op, Some(prefix))?;
-        match self.integer_capture {
-            Some(capture) if capture.operation == index => self.capture_integer_cell(capture),
-            _ => Ok(()),
+        let LinearOp::PureCall { site, .. } = &op else {
+            return Err("expected a primal issued call".into());
+        };
+        let site = site.clone();
+        let results = self.call_results_base(&site, (prefix, &op))?;
+        self.emit_native_pure_call(op, Some(prefix), glue)?;
+        for ordinal in 0..self.integer_capture.len() {
+            let capture = self.integer_capture[ordinal];
+            if capture.operation == index {
+                let cell = self.result_cell_offset(&site, (capture.cell, results))?;
+                self.capture_integer_cell(capture, cell)?;
+            }
         }
+        Ok(())
+    }
+
+    /// How the stage program reads and leaves the large values of its root
+    /// calls (see `glue`); a program outside a native stage keeps all of it in
+    /// registers.
+    fn derive_stage_glue(
+        &self,
+        program: &[LinearOp],
+        targets: &std::slice::Iter<'_, usize>,
+    ) -> Result<call_program::glue::StageGlue, String> {
+        let (Some(plan), Some(stage), Some(_)) = (self.calls, self.native_stage, &self.arena)
+        else {
+            return Ok(call_program::glue::StageGlue::default());
+        };
+        call_program::glue::StageGlue::derive(
+            program,
+            plan,
+            (stage.target_span().start, Some(stage)),
+            targets.as_slice(),
+        )
     }
 
     fn emit_mapped_range(
@@ -309,6 +348,15 @@ impl BodyEmitter<'_> {
         self.next_output_slot = *targets.next().ok_or("WASM missing scalar output target")? as u64;
         self.emit_store_output(source)
     }
+}
+
+/// An operation the stage glue replaces emits nothing, but a store still
+/// consumes the targets it would have written.
+fn skip_replaced(op: &LinearOp, targets: &mut std::slice::Iter<'_, usize>) -> Result<(), String> {
+    if let LinearOp::StoreOutputRange { count, .. } = op {
+        take_contiguous_range(targets, *count)?;
+    }
+    Ok(())
 }
 
 fn take_contiguous_range(

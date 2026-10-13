@@ -23,6 +23,11 @@
 #[cfg(all(test, feature = "fmu-packaging"))]
 mod tests;
 
+#[cfg(feature = "fmu-packaging")]
+mod compiled;
+#[cfg(feature = "fmu-packaging")]
+pub use compiled::PreparedTargetPackage;
+
 use std::collections::{BTreeMap, HashMap};
 #[cfg(feature = "fmu-packaging")]
 use std::fs;
@@ -202,11 +207,6 @@ pub fn render_and_package(
     out_dir: &Path,
 ) -> Result<()> {
     let out_dir = resolve_product_root(out_dir)?;
-    let archive_path = package
-        .zip
-        .as_ref()
-        .map(|zip| resolve_archive_path(&zip.archive_path, &out_dir))
-        .transpose()?;
     let required_files = resolve_required_files(&package.required_files)?;
     let rendered = render_web(files, render)?;
     let resolved_assets = assets
@@ -220,9 +220,35 @@ pub fn render_and_package(
         })
         .collect::<Result<Vec<_>>>()?;
     let prepared = prepare_product(rendered, resolved_assets, required_files)?;
-    validate_existing_root(&out_dir, &prepared.required_files)?;
+    install_prepared_product(&prepared, package, &out_dir)
+}
+
+#[cfg(feature = "fmu-packaging")]
+fn install_prepared_product(
+    prepared: &PreparedProduct,
+    package: &PackageSpec,
+    out_dir: &Path,
+) -> Result<()> {
+    install_prepared_files(&prepared.files, &prepared.required_files, package, out_dir)
+}
+
+#[cfg(feature = "fmu-packaging")]
+fn install_prepared_files(
+    files: &BTreeMap<PathBuf, Vec<u8>>,
+    required_files: &[PathBuf],
+    package: &PackageSpec,
+    out_dir: &Path,
+) -> Result<()> {
+    let out_dir = resolve_product_root(out_dir)?;
+    let archive_path = package
+        .zip
+        .as_ref()
+        .map(|zip| resolve_archive_path(&zip.archive_path, &out_dir))
+        .transpose()?;
+    let markers = resolve_required_files(&package.required_files)?;
+    validate_existing_root(&out_dir, &markers)?;
     if let Some(archive_path) = &archive_path {
-        validate_existing_archive(archive_path, &prepared.required_files)?;
+        validate_existing_archive(archive_path, &markers)?;
     }
 
     let parent = out_dir
@@ -234,8 +260,8 @@ pub fn render_and_package(
         .prefix(".rumoca-package-")
         .tempdir_in(parent)
         .with_context(|| format!("Create package staging directory in '{}'", parent.display()))?;
-    write_prepared_product(staged_root.path(), &prepared)?;
-    validate_staged_product(staged_root.path(), &prepared.required_files)?;
+    write_prepared_files(staged_root.path(), files)?;
+    validate_staged_product(staged_root.path(), required_files)?;
     let staged_archive = archive_path
         .as_ref()
         .map(|archive_path| stage_archive(staged_root.path(), archive_path))
@@ -304,8 +330,16 @@ pub fn render_web(
     files: &[TargetFile],
     render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
 ) -> Result<Vec<(String, Vec<u8>)>> {
-    let order = topo_sort(files)?;
     let session = ArtifactSession::new(files)?;
+    render_web_with_session(files, render, &session)
+}
+
+pub(crate) fn render_web_with_session(
+    files: &[TargetFile],
+    render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
+    session: &ArtifactSession,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let order = topo_sort(files)?;
 
     let mut digests: HashMap<(String, ChecksumAlgorithm), String> = HashMap::new();
     // Render into `order` positions but return in declaration order, so the
@@ -328,7 +362,7 @@ pub fn render_web(
             checksums.insert(need.as_key.clone(), digest.clone());
         }
         let context = ArtifactRenderContext {
-            session: &session,
+            session,
             checksums: &checksums,
         };
         let path = render(&file.path, &context)
@@ -530,19 +564,8 @@ fn insert_prepared_file(
 
 #[cfg(feature = "fmu-packaging")]
 fn validate_file_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
-    for path in files.keys() {
-        let mut ancestor = path.parent();
-        while let Some(parent) = ancestor.filter(|parent| !parent.as_os_str().is_empty()) {
-            if files.contains_key(parent) {
-                bail!(
-                    "Package path '{}' is both a file and a parent directory",
-                    parent.display()
-                );
-            }
-            ancestor = parent.parent();
-        }
-    }
-    Ok(())
+    rumoca_core::artifact_build::validate_artifact_file_paths(&files.keys().cloned().collect())
+        .map_err(anyhow::Error::msg)
 }
 
 /// Make way for this run's product directory. A directory holding all declared
@@ -631,8 +654,8 @@ fn zip_entry_name(path: &Path) -> Result<String> {
 }
 
 #[cfg(feature = "fmu-packaging")]
-fn write_prepared_product(root: &Path, prepared: &PreparedProduct) -> Result<()> {
-    for (path, bytes) in &prepared.files {
+fn write_prepared_files(root: &Path, files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
+    for (path, bytes) in files {
         let output_path = root.join(path);
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)

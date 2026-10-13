@@ -5,42 +5,35 @@
 //! DAE. A continuous system that cannot be proved computable is rejected at
 //! this boundary with the responsible source span.
 
-mod artifacts;
 mod error;
 mod layout;
 mod lower;
 mod model_values;
-mod model_wire;
+mod numeric_values;
 mod phasor_sources;
 mod proven_tearing;
 mod sensitivity_parameters;
 mod state_selection;
 
-pub mod ad;
 pub mod diagnostic_codes;
 pub mod fmi;
 
-pub use ad::{
-    lower_compute_block_full_jvp, lower_compute_block_jvp, lower_scalar_program_block_ad,
-    lower_scalar_program_block_full_ad_with_spans,
-};
 pub use error::LowerError;
 pub use layout::build_var_layout;
+pub use lower::typed_functions::FunctionAssertionMessage;
 pub use lower::typed_functions::formal_stages::{
     FormalDerivativePrograms, FormalResidualAssertion, FormalResidualProgram, FormalStageProgram,
     lower_formal_derivative_stages,
 };
 pub use model_values::{
     LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
-};
-pub use model_wire::{
-    SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,
-    solve_model_wire,
+    lower_solve_model_for_profile, lower_solve_model_with_input_policy,
 };
 pub use sensitivity_parameters::{independent_tunable_parameters, select_sensitivity_parameters};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
+use rumoca_ir_solve::RefreshProfile;
 
 #[cfg(test)]
 mod tests;
@@ -65,7 +58,11 @@ pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerE
                 span: error.source_span(),
             }
         })?;
-    lower_selection(&selection, &std::collections::HashMap::new())
+    lower_selection(
+        &selection,
+        &std::collections::HashMap::new(),
+        RefreshProfile::default(),
+    )
 }
 
 /// The scalars Solve lowering integrates for `dae`, as source scalar names in
@@ -111,10 +108,16 @@ pub fn executes_reduced_state_selection(
 pub(crate) fn lower_selection(
     selection: &state_selection::PreparedSelection<'_>,
     overrides: &std::collections::HashMap<String, f64>,
+    profile: RefreshProfile,
 ) -> Result<LoweredSolvePackage, LowerError> {
-    let mut package = lower_prepared_solve_package(&selection.primary, overrides, None)?;
+    let mut package = lower_prepared_solve_package(&selection.primary, overrides, None, profile)?;
     package.problem.continuous.reduced_chart_set.exchanges = selection.exchanges.clone();
-    attach_alternate_chart_plans(&mut package.problem, &selection.alternates, overrides)?;
+    attach_alternate_chart_plans(
+        &mut package.problem,
+        &selection.alternates,
+        overrides,
+        profile,
+    )?;
     Ok(package)
 }
 
@@ -134,6 +137,7 @@ fn attach_alternate_chart_plans(
     problem: &mut solve::SolveProblem,
     alternates: &[Option<rumoca_phase_structural::PreparedDae<'_>>],
     overrides: &std::collections::HashMap<String, f64>,
+    profile: RefreshProfile,
 ) -> Result<(), LowerError> {
     if alternates.is_empty() {
         return Ok(());
@@ -161,7 +165,8 @@ fn attach_alternate_chart_plans(
             ));
             continue;
         };
-        let lowered = match lower_prepared_solve_package(alternate, overrides, Some(&base)) {
+        let lowered = match lower_prepared_solve_package(alternate, overrides, Some(&base), profile)
+        {
             Ok(lowered) => lowered.problem,
             Err(_) if exchange => {
                 withheld.push((
@@ -172,7 +177,7 @@ fn attach_alternate_chart_plans(
             }
             Err(error) => return Err(error),
         };
-        if exchange && !same_solver_layout(&lowered.solve_layout, &base.solve_layout) {
+        if exchange && !same_solver_layout(&lowered, &base) {
             withheld.push((offset + 1, solve::ChartExchangeStatus::WithheldByLayout));
             continue;
         }
@@ -197,19 +202,34 @@ fn attach_alternate_chart_plans(
                 )));
             }
         };
-        plan.artifacts = reduced_chart_continuous_artifacts(&base, &plan)?;
+        plan.artifacts =
+            rumoca_eval_solve::artifacts::reduced_chart_continuous_artifacts(&base, &plan)
+                .map_err(LowerError::from)?;
         problem.continuous.reduced_chart_set.charts[offset + 1].plan = Some(plan);
     }
     withhold_charts(&mut problem.continuous.reduced_chart_set, &withheld);
     Ok(())
 }
 
-/// Two lowered bases share one solver-Y space: the same scalar names in the
-/// same slots, with the same state/algebraic split.
-fn same_solver_layout(a: &solve::SolveLayout, b: &solve::SolveLayout) -> bool {
-    a.solver_maps.names == b.solver_maps.names
-        && a.state_scalar_count == b.state_scalar_count
-        && a.algebraic_scalar_count == b.algebraic_scalar_count
+/// The layout facts every chart of one exchange must share: the addressing of
+/// every scalar (names, slots, shapes, indexed views), every variable's
+/// storage run and declaration, and the state/algebraic/output split. The
+/// source span a synthetic shape is declared at is provenance and differs
+/// between the DAEs of two charts, so it is not part of the identity.
+pub(crate) fn same_exchange_layout(
+    (layout, solve_layout): (&solve::VarLayout, &solve::SolveLayout),
+    (other_layout, other_solve): (&solve::VarLayout, &solve::SolveLayout),
+) -> bool {
+    layout.same_addressing(other_layout)
+        && solve_layout.variable_storage_runs == other_solve.variable_storage_runs
+        && solve_layout.variable_declarations == other_solve.variable_declarations
+        && solve_layout.state_scalar_count == other_solve.state_scalar_count
+        && solve_layout.algebraic_scalar_count == other_solve.algebraic_scalar_count
+        && solve_layout.output_scalar_count == other_solve.output_scalar_count
+}
+
+fn same_solver_layout(a: &solve::SolveProblem, b: &solve::SolveProblem) -> bool {
+    same_exchange_layout((&a.layout, &a.solve_layout), (&b.layout, &b.solve_layout))
 }
 
 /// Drop the withheld alternate charts, renumber the survivors, and record why
@@ -242,77 +262,19 @@ fn withhold_charts(
     });
 }
 
-/// Materialize the runtime-executable continuous artifacts of one alternate
-/// reduced chart. The chart's continuous kernel is spliced into a clone of the
-/// primary problem skeleton and lowered through the same artifact path the primary
-/// basis uses, so the alternate is a fully executable image in the shared solver-Y
-/// space. A reduced first-integral chart retains no manifold, so the assembled
-/// system carries an empty manifold and no nested chart set.
-pub(crate) fn reduced_chart_continuous_artifacts(
-    base: &solve::SolveProblem,
-    plan: &solve::ReducedChartPlan,
-) -> Result<solve::ContinuousSolveArtifacts, LowerError> {
-    let mut assembled = base.clone();
-    assembled.continuous = solve::ContinuousSolveSystem {
-        implicit_rhs: plan.implicit_rhs.clone(),
-        implicit_row_targets: plan.implicit_row_targets.clone(),
-        algebraic_projection_plan: plan.algebraic_projection_plan.clone(),
-        residual: plan.residual.clone(),
-        manifold_residual: solve::ComputeBlock::default(),
-        manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
-        derivative_rhs: plan.derivative_rhs.clone(),
-        refresh_owners: plan.refresh_owners.clone(),
-        reduced_chart_set: solve::ReducedChartSet::default(),
-        unlocalizable_guards: base.continuous.unlocalizable_guards.clone(),
-    };
-    Ok(lower_solve_artifacts(&assembled)?.continuous)
-}
-
-/// Rebuild the runtime-executable artifacts of every alternate reduced chart after
-/// a model is decoded from the wire. Chart artifacts are derived data and are not
-/// serialized; this replays the exact assembly used at construction so a decoded
-/// model exposes the same executable chart image a freshly lowered one does.
-pub(crate) fn replay_reduced_chart_artifacts(
-    problem: &mut solve::SolveProblem,
-) -> Result<(), LowerError> {
-    if problem
-        .continuous
-        .reduced_chart_set
-        .charts
-        .iter()
-        .all(|chart| chart.plan.is_none())
-    {
-        return Ok(());
-    }
-    let base = problem.clone();
-    for chart in &mut problem.continuous.reduced_chart_set.charts {
-        if let Some(plan) = chart.plan.as_mut() {
-            let artifacts = reduced_chart_continuous_artifacts(&base, plan)?;
-            plan.artifacts = artifacts;
-        }
-    }
-    Ok(())
-}
-
 /// Lower the exact prepared DAE retained by complete-model construction.
 fn lower_prepared_solve_package(
     prepared: &rumoca_phase_structural::PreparedDae<'_>,
     overrides: &std::collections::HashMap<String, f64>,
     primary: Option<&solve::SolveProblem>,
+    profile: RefreshProfile,
 ) -> Result<LoweredSolvePackage, LowerError> {
     prepared
-        .inspect(|system| lower::lower_solve_problem(system, overrides, primary))
+        .inspect(|system| lower::lower_solve_problem(system, overrides, primary, profile))
         .map(|(problem, pure_calls)| LoweredSolvePackage {
             problem,
             pure_calls,
         })
-}
-
-/// Materialize optional solver artifacts from an already-lowered problem.
-pub fn lower_solve_artifacts(
-    problem: &solve::SolveProblem,
-) -> Result<solve::SolveArtifacts, LowerError> {
-    artifacts::lower_solve_artifacts(problem, solve::MassMatrix::Identity)
 }
 
 /// The continuous refresh owners of `problem`: from scratch for a primary
@@ -323,20 +285,22 @@ pub fn lower_solve_artifacts(
 pub(crate) fn continuous_refresh_owners(
     problem: &mut solve::SolveProblem,
     primary: Option<&solve::SolveProblem>,
+    calls: &solve::SolvePureCallTable,
+    profile: RefreshProfile,
 ) -> Result<solve::ContinuousRefreshOwners, rumoca_eval_solve::EvalSolveError> {
     use rumoca_eval_solve::refresh_plan::{
-        build_continuous_refresh_owners, build_continuous_refresh_owners_from,
+        build_continuous_refresh_owners_from_with_calls, build_continuous_refresh_owners_with_calls,
     };
     proven_tearing::retear_unproven_blocks(problem)?;
     let Some(primary) = primary else {
-        return build_continuous_refresh_owners(problem);
+        return build_continuous_refresh_owners_with_calls(problem, calls, profile);
     };
     #[cfg(debug_assertions)]
     let mut checked = problem.clone();
-    let owners = build_continuous_refresh_owners_from(problem, primary)?;
+    let owners = build_continuous_refresh_owners_from_with_calls(problem, primary, calls, profile)?;
     #[cfg(debug_assertions)]
     {
-        let scratch = build_continuous_refresh_owners(&mut checked);
+        let scratch = build_continuous_refresh_owners_with_calls(&mut checked, calls, profile);
         debug_assert!(
             scratch.is_ok_and(|scratch| owners.issues_same_plans(&scratch))
                 && checked.continuous.algebraic_projection_plan

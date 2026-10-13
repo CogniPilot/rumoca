@@ -106,7 +106,7 @@ impl DifferentiableModel {
             rumoca_sim::lower_for_differentiation_with_overrides(dae_model, sim_options)?;
         validate_sensitivity_artifacts(&solve_model)?;
         let state = solve_model.initial_y[..solve_model.state_scalar_count()].to_vec();
-        let params = solve_model.parameters.clone();
+        let params = solve_model.parameters.to_vec();
         let parameters = collect_model_parameter_slots(dae_model, &solve_model);
         let runtime = rumoca_solver::SolveRuntime::new(&solve_model)?;
         Ok(Self {
@@ -127,8 +127,12 @@ impl DifferentiableModel {
     }
 
     /// State names in solver state order.
-    pub fn state_names(&self) -> &[String] {
-        &self.runtime.model.problem.solve_layout.solver_maps.names[..self.runtime.state_count]
+    pub fn state_names(&self) -> Result<Vec<String>, OptError> {
+        self.runtime
+            .model
+            .problem
+            .solver_named_report(0..self.runtime.state_count)
+            .map_err(|error| OptError::Runtime(error.to_string()))
     }
 
     /// Current state vector used for objective evaluation.

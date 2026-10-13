@@ -105,6 +105,7 @@ fn seed_reads_fit(program: &[crate::LinearOp], active: &[usize]) -> bool {
 fn seed_operation_fits(operation: &crate::LinearOp, active: &[usize]) -> bool {
     use crate::LinearOp as L;
     match operation {
+        L::PureCallObservation { .. } => false,
         L::LoadSeed { index, .. } => active.binary_search(index).is_ok(),
         L::LoadIndexedSeed { base, count, .. } => seed_range_fits(active, *base, *count),
         L::TensorLoad {

@@ -94,13 +94,16 @@ impl ImplicitProjectionModel for ParameterScaledCycle {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.cycle.plan
     }
-    fn target_name_for_row(&self, _: usize) -> Option<&str> {
+    fn target_name_for_row(&self, _: usize) -> Option<String> {
         None
     }
     fn algebraic_projection_block_is_affine(&self, _: usize) -> bool {
         true
     }
-    fn algebraic_projection_block_structure(&self, _: usize) -> Option<&solve::JacobianStructure> {
+    fn algebraic_projection_block_structure(
+        &self,
+        _: usize,
+    ) -> Option<&solve::ColoredJacobianStructure> {
         self.cycle.algebraic_projection_block_structure(0)
     }
 }

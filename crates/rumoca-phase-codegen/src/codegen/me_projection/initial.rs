@@ -116,7 +116,7 @@ pub(super) fn initialization_value(
         record.unknowns = push(&mut pool, unknowns);
         if let Some(pattern) = structures
             .get(index)
-            .map(solve::JacobianStructure::pattern)
+            .map(solve::ColoredJacobianStructure::pattern)
             .filter(|pattern| pattern.rows() as usize == n && pattern.columns() as usize == n)
         {
             let (mut row_ptr, mut col_idx) = (vec![0], Vec::new());
@@ -318,6 +318,7 @@ fn tangent_value(
                 .continuous
                 .algebraic_projection_plan
                 .blocks
+                .scalar_blocks()
                 .get(canonical)
         })
         .map(|block| block.rows.len())
@@ -359,6 +360,7 @@ fn plan_block(
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .get(canonical)
     {
         Some(block) => Ok(block),

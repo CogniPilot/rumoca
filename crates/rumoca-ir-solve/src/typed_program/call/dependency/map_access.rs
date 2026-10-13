@@ -122,11 +122,11 @@ pub(super) fn derive(
                 return Some(Symbol::Aggregate(dependencies.clone()));
             }
             let access = coordinates::Coordinates::access(space.rank, &space.free, Vec::new());
-            let mut scalar = Vec::new();
+            let mut scalar = Dependencies::default();
             for dependency in dependencies {
-                insert(&mut scalar, dependency.remap(&access, provenance).ok()?);
+                scalar.insert(dependency.remap(&access, provenance).ok()?);
             }
-            Some(Symbol::Scalar(scalar))
+            Some(Symbol::Scalar(scalar.finish()))
         })
         .collect::<Option<Vec<_>>>()?;
     match region(domain, &captures, body, &space, 0, provenance)? {
@@ -279,11 +279,11 @@ fn project(
         })
         .collect::<Option<Vec<_>>>()?;
     let access = coordinates::Coordinates::access(space.rank, &space.free, subscripts);
-    let mut result = Vec::new();
+    let mut result = Dependencies::default();
     for dependency in dependencies {
-        insert(&mut result, dependency.remap(&access, provenance).ok()?);
+        result.insert(dependency.remap(&access, provenance).ok()?);
     }
-    Some(Symbol::Scalar(result))
+    Some(Symbol::Scalar(result.finish()))
 }
 
 /// A map nested in a region: its binders become free axes after the
@@ -346,19 +346,19 @@ fn binary(operator: SolveBinaryOperator, lhs: &Symbol, rhs: &Symbol) -> Option<S
 /// The union of pointwise operands' dependencies; an unread aggregate or a
 /// nested map's result used pointwise is outside the rule.
 fn scalar(operands: &[&Symbol]) -> Option<Symbol> {
-    let mut result = Vec::new();
+    let mut result = Dependencies::default();
     for operand in operands {
         match operand {
             Symbol::Independent | Symbol::Integer(_) => {}
             Symbol::Scalar(dependencies) => {
                 for dependency in dependencies {
-                    insert(&mut result, dependency.clone());
+                    result.insert(dependency.clone());
                 }
             }
             Symbol::Aggregate(_) | Symbol::Mapped(_) => return None,
         }
     }
-    Some(Symbol::Scalar(result))
+    Some(Symbol::Scalar(result.finish()))
 }
 
 /// A symbol of the enclosing space re-expressed in a nested map's space,

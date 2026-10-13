@@ -1,56 +1,87 @@
 //! Selected-arm evaluation of a model conditional (SPEC_0040 DAE-C22).
 //!
 //! An eager selection computes every arm and discards all but one, which is
-//! sound only when every arm is total: builtin arithmetic, relations, and pure
-//! builtins over coordinates and literals with literal subscripts, or with
-//! integer subscripts of family binders proven inside the indexed dimension,
-//! evaluate to a possibly non-finite IEEE 754 value and never fail or act, and
-//! the selection discards the unselected value and its tangent. A conditional
-//! with any other arm (a call, which can assert, fail, or act, or a subscript
-//! not proven in bounds) is lowered as a checked function-conditional program
-//! that runs only the selected arm.
+//! sound only when every arm cannot fault (the shared DAE fault classification
+//! of `lower::dae_faults`, SOLVE-C102): IEEE 754 arithmetic, relations, pure
+//! builtins, reads, Integer arithmetic proven inside the Integer domain, and
+//! subscripts proven inside the indexed dimension evaluate to a value, possibly
+//! non-finite, and the selection discards the unselected value and its tangent.
+//! A conditional with any other arm (a call, which can assert, fail, or act, or
+//! an operation that may fault) is lowered as a checked function-conditional
+//! program that runs only the selected arm.
 
 use super::*;
+use crate::lower::dae_faults::{CoordinateRead, CoordinateReads, DaeFaults, FaultMemo};
+
+/// A coordinate with a same-tick current definition reads that definition.
+impl<'dae> CoordinateReads<'dae> for ScalarCompiler<'_, 'dae> {
+    fn read(&self, coordinate: dae::CoordinateView<'dae>) -> CoordinateRead<'dae> {
+        match self.current_definition(coordinate) {
+            Ok(Some((variable, definition))) => {
+                if self.current_definition_is_acyclic(variable, definition) {
+                    CoordinateRead::Defined(definition)
+                } else {
+                    CoordinateRead::Unproven
+                }
+            }
+            Ok(None) => CoordinateRead::Free,
+            Err(_) => CoordinateRead::Unproven,
+        }
+    }
+}
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    fn faults(&self) -> DaeFaults<'_, 'dae> {
+        DaeFaults::new(self.view, &self.domain_points)
+            .with_coordinates(self)
+            .differentiable()
+            .scalar_signum()
+    }
+
+    pub(super) fn call_arguments_are_total(&self, arguments: &[dae::ExprId<'dae>]) -> bool {
+        let mut memo = FaultMemo::new();
+        arguments
+            .iter()
+            .all(|&argument| self.faults().is_total(&mut memo, argument))
+    }
+
     /// Whether a conditional can be lowered to an eager selection: every
     /// operand after the first condition is total, where a node the first
     /// condition already computes counts as evaluated, since that condition
     /// runs whichever arm is selected.
     pub(super) fn conditional_is_total(&self, operands: dae::ExpressionOperands<'dae>) -> bool {
-        let mut visited = HashSet::new();
+        let mut memo = FaultMemo::new();
         if let Some(first) = operands.get(0) {
-            self.mark_evaluated(first, &mut visited);
+            self.mark_evaluated(first, &mut memo);
         }
         (1..operands.len()).all(|index| {
             operands
                 .get(index)
-                .is_some_and(|operand| self.is_total(operand, &mut visited))
+                .is_some_and(|operand| self.faults().is_total(&mut memo, operand))
         })
     }
 
-    fn mark_evaluated(
-        &self,
-        expression: dae::ExprId<'dae>,
-        visited: &mut HashSet<dae::ExprId<'dae>>,
-    ) {
-        if !visited.insert(expression) {
+    fn mark_evaluated(&self, expression: dae::ExprId<'dae>, memo: &mut FaultMemo<'dae>) {
+        if memo
+            .insert(expression, solve::FaultClass::CannotFault)
+            .is_some()
+        {
             return;
         }
         match self.node(expression).operation() {
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 if let Ok(Some((_, definition))) = self.current_definition(coordinate) {
-                    self.mark_evaluated(definition, visited);
+                    self.mark_evaluated(definition, memo);
                 }
             }
             dae::ExpressionOperation::Unary { operand, .. } => {
-                self.mark_evaluated(operand, visited);
+                self.mark_evaluated(operand, memo);
             }
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-                self.mark_evaluated(lhs, visited);
-                self.mark_evaluated(rhs, visited);
+                self.mark_evaluated(lhs, memo);
+                self.mark_evaluated(rhs, memo);
             }
-            dae::ExpressionOperation::Field { base, .. } => self.mark_evaluated(base, visited),
+            dae::ExpressionOperation::Field { base, .. } => self.mark_evaluated(base, memo),
             dae::ExpressionOperation::Array(elements)
             | dae::ExpressionOperation::Record(elements)
             | dae::ExpressionOperation::Builtin {
@@ -62,152 +93,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ..
             } => {
                 for element in (0..elements.len()).filter_map(|index| elements.get(index)) {
-                    self.mark_evaluated(element, visited);
+                    self.mark_evaluated(element, memo);
                 }
             }
             _ => {}
-        }
-    }
-
-    fn is_total(
-        &self,
-        expression: dae::ExprId<'dae>,
-        visited: &mut HashSet<dae::ExprId<'dae>>,
-    ) -> bool {
-        if !visited.insert(expression) {
-            return true;
-        }
-        match self.node(expression).operation() {
-            dae::ExpressionOperation::Literal(_) => true,
-            dae::ExpressionOperation::Coordinate(coordinate) => {
-                self.coordinate_is_total(coordinate, visited)
-            }
-            dae::ExpressionOperation::Unary { operand, .. } => self.is_total(operand, visited),
-            dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-                self.is_total(lhs, visited) && self.is_total(rhs, visited)
-            }
-            dae::ExpressionOperation::Field { base, .. } => self.is_total(base, visited),
-            dae::ExpressionOperation::Conditional(operands)
-            | dae::ExpressionOperation::Array(operands)
-            | dae::ExpressionOperation::Record(operands)
-            | dae::ExpressionOperation::Builtin {
-                arguments: operands,
-                ..
-            } => (0..operands.len()).all(|index| {
-                operands
-                    .get(index)
-                    .is_some_and(|operand| self.is_total(operand, visited))
-            }),
-            dae::ExpressionOperation::Index { base, subscripts } => {
-                let extents = self.node(base).value_type().dimensions();
-                self.is_total(base, visited)
-                    && subscripts.iter().enumerate().all(|(axis, subscript)| {
-                        self.subscript_is_total(subscript, extents.get(axis).copied())
-                    })
-            }
-            _ => false,
-        }
-    }
-
-    fn coordinate_is_total(
-        &self,
-        coordinate: dae::CoordinateView<'dae>,
-        visited: &mut HashSet<dae::ExprId<'dae>>,
-    ) -> bool {
-        match self.current_definition(coordinate) {
-            Ok(Some((variable, definition))) => {
-                self.current_definition_is_acyclic(variable, definition)
-                    && self.is_total(definition, visited)
-            }
-            Ok(None) => true,
-            Err(_) => false,
-        }
-    }
-
-    /// Whether one subscript of an indexed read cannot fail: a whole axis, a
-    /// literal, or an index proven inside the axis of extent `extent`.
-    fn subscript_is_total(&self, subscript: dae::SubscriptView<'dae>, extent: Option<u32>) -> bool {
-        let literal = |expression| {
-            matches!(
-                self.node(expression).operation(),
-                dae::ExpressionOperation::Literal(_)
-            )
-        };
-        match subscript {
-            dae::SubscriptView::Whole { .. } => true,
-            dae::SubscriptView::Slice { expression, .. } => literal(expression),
-            dae::SubscriptView::Index { expression, .. } => {
-                literal(expression)
-                    || extent.is_some_and(|extent| self.subscript_in_bounds(expression, extent))
-            }
-        }
-    }
-
-    /// Whether an integer subscript over family binders lies in `1..=extent`
-    /// at every point of its domains, so reading it cannot fail.
-    fn subscript_in_bounds(&self, expression: dae::ExprId<'dae>, extent: u32) -> bool {
-        self.binder_subscript_interval(expression)
-            .is_some_and(|(low, high)| low >= 1 && high <= i64::from(extent))
-    }
-
-    /// The closed integer interval an affine subscript of binders and integer
-    /// literals takes over its domains. A binder of the scalar row being
-    /// lowered contributes its exact value; any other binder spans its
-    /// declared `for` range. Any other operand has no proven interval.
-    fn binder_subscript_interval(&self, expression: dae::ExprId<'dae>) -> Option<(i64, i64)> {
-        match self.node(expression).operation() {
-            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => {
-                Some((*value, *value))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                if let Some((_, point)) = self
-                    .domain_points
-                    .iter()
-                    .rev()
-                    .find(|(domain, _)| *domain == binder.domain())
-                {
-                    let value = *point.get(binder.ordinal() as usize)?;
-                    return Some((value, value));
-                }
-                let range = self
-                    .view
-                    .domain(binder.domain())?
-                    .structured()
-                    .binders
-                    .get(binder.ordinal() as usize)?;
-                Some((range.lower.min(range.upper), range.lower.max(range.upper)))
-            }
-            dae::ExpressionOperation::Unary { operator, operand } => {
-                let (low, high) = self.binder_subscript_interval(operand)?;
-                match operator {
-                    dae::UnaryOperator::Plus => Some((low, high)),
-                    dae::UnaryOperator::Negate => Some((high.checked_neg()?, low.checked_neg()?)),
-                    _ => None,
-                }
-            }
-            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                let (a_low, a_high) = self.binder_subscript_interval(lhs)?;
-                let (b_low, b_high) = self.binder_subscript_interval(rhs)?;
-                match operator {
-                    dae::BinaryOperator::Add => {
-                        Some((a_low.checked_add(b_low)?, a_high.checked_add(b_high)?))
-                    }
-                    dae::BinaryOperator::Subtract => {
-                        Some((a_low.checked_sub(b_high)?, a_high.checked_sub(b_low)?))
-                    }
-                    dae::BinaryOperator::Multiply => {
-                        let products = [
-                            a_low.checked_mul(b_low)?,
-                            a_low.checked_mul(b_high)?,
-                            a_high.checked_mul(b_low)?,
-                            a_high.checked_mul(b_high)?,
-                        ];
-                        Some((*products.iter().min()?, *products.iter().max()?))
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
         }
     }
 
@@ -317,17 +206,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let capture_start = self.next_register;
         for source in captures {
             let destination = self.register(span)?;
-            self.ops.push(solve::LinearOp::Move {
+            self.emit(solve::LinearOp::Move {
                 dst: destination,
                 src: source,
-            });
+            })?;
         }
         let result = self.register(span)?;
-        self.ops.push(solve::LinearOp::FunctionConditional {
+        self.emit(solve::LinearOp::FunctionConditional {
             dst_start: result,
             capture_start,
             program: Arc::new(program),
-        });
+        })?;
         Ok(result)
     }
 
@@ -337,8 +226,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
-        self.ops.push(solve::LinearOp::StoreOutput { src: output });
-        Ok(self.ops)
+        self.emit(solve::LinearOp::StoreOutput { src: output })?;
+        self.finish_operations()
     }
 
     /// A compiler for one region of a selected-arm program: the enclosing
@@ -357,12 +246,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let mut local = Vec::with_capacity(registers.len());
             for _ in registers {
                 let destination = compiler.register(span)?;
-                compiler
-                    .ops
-                    .push(solve::LinearOp::LoadFunctionConditionalCapture {
-                        dst: destination,
-                        index,
-                    });
+                compiler.emit(solve::LinearOp::LoadFunctionConditionalCapture {
+                    dst: destination,
+                    index,
+                })?;
                 local.push(destination);
                 index += 1;
             }
@@ -397,6 +284,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         compiler.active_parameters = self.active_parameters.clone();
         compiler.active_call_assertions = self.active_call_assertions.clone();
         compiler.call_action_compilation = self.call_action_compilation;
+        compiler.call_use = self.call_use;
         compiler.suppress_function_assertions = self.suppress_function_assertions;
         compiler.contexts = Rc::clone(&self.contexts);
         compiler.context_stack = self.context_stack.clone();

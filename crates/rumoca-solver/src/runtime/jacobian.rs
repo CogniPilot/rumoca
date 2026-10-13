@@ -163,9 +163,8 @@ impl SolveRuntime {
     /// names. The fully-qualified name uniquely identifies the state; raw source
     /// byte spans are omitted as they aren't human-actionable in this dump.
     fn state_label(&self, index: usize) -> String {
-        let names = &self.model.problem.solve_layout.solver_maps.names;
-        match names.get(index) {
-            Some(name) => name.clone(),
+        match self.model.problem.solver_name(index) {
+            Some(name) => name,
             None => format!("y[{index}]"),
         }
     }
@@ -248,13 +247,13 @@ impl SolveRuntime {
     fn model_parameter_slots(&self) -> Vec<(usize, String)> {
         let n = self.model.problem.layout.p_scalars();
         let mut by_slot: Vec<Option<String>> = vec![None; n];
-        for (name, slot) in self.model.problem.layout.bindings() {
+        for (name, slot) in self.model.problem.layout.scalar_bindings() {
             if let ScalarSlot::P { index, .. } = slot
-                && *index < n
+                && index < n
                 && !name.as_str().starts_with("__")
-                && by_slot[*index].is_none()
+                && by_slot[index].is_none()
             {
-                by_slot[*index] = Some(name.to_string());
+                by_slot[index] = Some(name);
             }
         }
         by_slot
@@ -377,7 +376,7 @@ impl SolveRuntime {
             ) {
                 return make_error(error.to_string());
             }
-            // `objective_index` is a position in `solver_maps.names` (length
+            // `objective_index` is a position in the checked solver Y extent (length
             // `solver_count`), and `solver_column` is sized `solver_count`, so the
             // index is in bounds by construction.
             gradient[col] = solver_column[objective_index];

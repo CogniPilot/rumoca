@@ -38,9 +38,6 @@ impl ImplicitProjectionModel for OffsetPortVoltages {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
@@ -70,12 +67,13 @@ fn affine_projection_preserves_a_small_junction_voltage_beside_offset_ports() {
     let model = OffsetPortVoltages {
         conditioning: Default::default(),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1, 2, 3],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = [0.0; 4];
@@ -144,10 +142,6 @@ impl ImplicitProjectionModel for AffineCoordinates {
         &self.plan
     }
 
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
-
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
@@ -159,12 +153,13 @@ fn affine_projection_computes_coordinates_below_residual_tolerance() {
         let model = AffineCoordinates {
             drive,
             plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
+                blocks: (vec![solve::AlgebraicProjectionBlock {
                     rows: vec![0, 1],
                     y_indices: vec![0, 1],
                     tearing: None,
                     alternate_charts: Vec::new(),
-                }],
+                }])
+                .into(),
             },
         };
         let mut y = [-drive, -drive];
@@ -236,9 +231,6 @@ impl ImplicitProjectionModel for LeakageCurrent {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
@@ -248,12 +240,13 @@ impl ImplicitProjectionModel for LeakageCurrent {
 fn affine_projection_refines_small_coordinates_in_a_mixed_scale_loop() {
     let model = LeakageCurrent {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1, 2, 3],
                 y_indices: vec![0, 1, 2, 3],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = [0.0; 4];
@@ -313,10 +306,6 @@ impl ImplicitProjectionModel for OpposingCurrents {
         &self.plan
     }
 
-    fn target_name_for_row(&self, _row: usize) -> Option<&str> {
-        None
-    }
-
     fn algebraic_projection_block_is_affine(&self, _block: usize) -> bool {
         true
     }
@@ -326,12 +315,13 @@ impl ImplicitProjectionModel for OpposingCurrents {
 fn affine_projection_certifies_residual_at_the_solution_scale() {
     let model = OpposingCurrents {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1, 2],
                 y_indices: vec![0, 1, 2],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = [0.0; 3];

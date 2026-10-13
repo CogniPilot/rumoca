@@ -66,18 +66,17 @@ use analysis::{
     FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan, FunctionRecordFieldSource,
     FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
-    MultiOutputEquationPlan, NativeLapackPlan, PartialJoinPlan, PlannedRole, RecordArrayFieldPlan,
+    MultiOutputEquationPlan, NativeLapackPlan, PlannedRole, RecordArrayFieldPlan,
     RecordArrayFieldPlans, RecordEquationFieldPlan, RecordEquationFieldValue, RecordEquationPlan,
     RecordProjectionStep, RuntimeVariableRole, SemiLinearRules, StructuredSource, WhenBranchKey,
-    WhenFunctionCallKey, analyze, assigned_function_targets, branch_never_completes,
-    collect_algorithm_writes, discrete_value_assignment, effective_function_scalar_type,
-    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
-    flattened_function_loop_source, function_assertion, function_record_field_name,
-    inferred_clock_transfer, is_event_condition, is_inferred_clock_condition,
-    is_whole_clock_coordinate, materialized_discrete_real_family, materialized_discrete_value_rows,
-    model_algorithm_targets, names_overlap, record_field_projections,
-    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
-    when_conditional_selects_clock_structure, when_function_call_key,
+    WhenFunctionCallKey, analyze, assigned_function_targets, collect_algorithm_writes,
+    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
+    function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
+    materialized_discrete_value_rows, model_algorithm_targets, names_overlap,
+    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
+    structured_assignment_names, when_conditional_selects_clock_structure, when_function_call_key,
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
@@ -102,10 +101,10 @@ use expression::{
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
-    DefinednessPredicates, FunctionConditional, FunctionFold, PartialTarget, TotalArrayDefinition,
-    function_value_coordinate, lower_function_conditional, lower_function_fold,
+    FunctionFold, TotalArrayDefinition, function_value_coordinate, lower_function_fold,
     lower_function_value_seed, lower_generated_boolean_assignment, lower_guarded_function_return,
-    lower_integer_reduction, lower_total_function_array_definition,
+    lower_integer_reduction, lower_ordered_function_conditional,
+    lower_total_function_array_definition,
 };
 use function_construction::{
     FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
@@ -113,10 +112,11 @@ use function_construction::{
 use function_external::define_external_function;
 use function_record_assembly::{
     lower_function_loop_record_assembly, lower_function_record_assembly,
-    lower_function_record_field_assembly, lower_function_record_value,
+    lower_function_record_field_assembly,
 };
 use function_seeds::{
-    collect_function_sequence_seeds, lower_function_sequence_seeds, lower_named_function_seeds,
+    collect_function_sequence_seeds, lower_function_iteration_local_seeds,
+    lower_function_sequence_seeds, lower_named_function_seeds,
 };
 use function_shapes::{
     FunctionShapeAnalysis, FunctionShapeCertificate, FunctionSpecializationKey, ProvenValue,
@@ -254,6 +254,13 @@ struct ReservedVariable<'flat, 'dae> {
 }
 
 pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
+    construct_with_evidence(flat, source_map).map(|result| result.dae)
+}
+
+pub(crate) fn construct_with_evidence(
+    flat: &flat::Model,
+    source_map: SourceMap,
+) -> Result<crate::DaeConstructionResult, ToDaeError> {
     let prepared = analysis::prepared_flat(flat)?;
     let flat = prepared.as_ref();
     let analysis = analyze(flat)?.with_semi_linear_rules(flat);
@@ -267,7 +274,11 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
         build_checked(flat, &analysis, &variable_plan, construction)
     })
     .map_err(ToDaeError::from)?;
-    Ok(dae.with_external_tables(external_tables))
+    Ok(crate::DaeConstructionResult {
+        dae: dae.with_external_tables(external_tables),
+        balance_detail: analysis.balance,
+        structural_selections: analysis.structural_selections,
+    })
 }
 
 /// The balance evidence and the structural guard selections of one analysis.

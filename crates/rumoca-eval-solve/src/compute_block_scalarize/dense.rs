@@ -625,6 +625,23 @@ fn max_reg_in_op(
             }
             last
         }
+        LinearOp::PureCallObservation {
+            dst_start,
+            input_starts,
+            site,
+        } => {
+            let mut last =
+                checked_reg_range_last(dst_start, site.output_scalar_count(), kind, span)?;
+            for (start, value_type) in input_starts.iter().zip(site.value_site().inputs()) {
+                last = last.max(checked_reg_range_last(
+                    *start,
+                    value_type.scalar_count() as usize,
+                    kind,
+                    span,
+                )?);
+            }
+            last
+        }
         LinearOp::PureCallDirectional {
             dst_start,
             input_starts,

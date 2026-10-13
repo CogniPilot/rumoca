@@ -77,7 +77,7 @@ fn input_leaves(outputs: &[Box<[crate::SolveCallDependency]>]) -> Vec<Box<[usize
         .map(|dependencies| {
             dependencies
                 .iter()
-                .map(crate::SolveCallDependency::input_index)
+                .flat_map(crate::SolveCallDependency::inputs)
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect()
@@ -398,29 +398,13 @@ fn typed_leaf_dependency_metadata_does_not_scale_with_tensor_extent() {
 }
 
 #[test]
-fn owner_replay_rejects_changed_primal_and_directional_site_summaries() {
+fn replayed_owner_tables_derive_the_same_dependency_summaries_as_issued_ones() {
     let table = separated_outputs(3);
+    let restored: SolvePureCallTable =
+        serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
     let site = table.owners()[1].call_site();
-    let original = serde_json::to_value(&site).unwrap();
-    for path in ["/dependencies/0", "/directional/dependencies/0"] {
-        let mut missing = original.clone();
-        *missing.pointer_mut(path).unwrap() = serde_json::json!([]);
-        let mut wrong_input = original.clone();
-        wrong_input.pointer_mut(path).unwrap()[0]["input"] = serde_json::json!(99);
-        let mut wrong_coordinate = original.clone();
-        wrong_coordinate.pointer_mut(path).unwrap()[0]["coordinates"]["subscripts"][0]["coeffs"]
-            [0] = serde_json::json!(0);
-        for forged in [missing, wrong_input, wrong_coordinate] {
-            let forged: SolvePureCallSite = serde_json::from_value(forged).unwrap();
-            assert!(!table.matches_site(&forged));
-            if path.starts_with("/directional") {
-                assert!(!table.matches_directional_site(forged.directional().unwrap()));
-            }
-        }
-    }
-    let mut missing = original;
-    missing.as_object_mut().unwrap().remove("dependencies");
-    assert!(serde_json::from_value::<SolvePureCallSite>(missing).is_err());
+    assert!(restored.matches_site(&site));
+    assert!(restored.matches_directional_site(site.directional().unwrap()));
 }
 
 #[test]
@@ -578,4 +562,53 @@ fn a_stencil_map_depends_on_exactly_its_points() {
     for (i, tangent) in directional[4..].iter().enumerate() {
         assert_eq!(tangent, &BTreeSet::from([i, i + 2, i + 6, i + 8]));
     }
+}
+
+const WIDE_LEAVES: usize = 64;
+
+/// One owner over `WIDE_LEAVES` scalar inputs: the first result sums every
+/// input, the second copies the last.
+fn wide_sum_table() -> SolvePureCallTable {
+    let scalar = SolveValueType::scalar(SolveScalarType::real(profile()));
+    SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(1),
+            vec![scalar.clone(); WIDE_LEAVES],
+            vec![
+                SolvePureCallOutput::result(scalar.clone()),
+                SolvePureCallOutput::result(scalar.clone()),
+            ],
+            span(0),
+            |builder, inputs, outputs| {
+                let mut sum = builder.load(inputs[0], span(1))?;
+                for &input in &inputs[1..] {
+                    let next = builder.load(input, span(2))?;
+                    sum = builder.binary(SolveBinaryOperator::Add, sum, next, span(3))?;
+                }
+                let last = builder.load(inputs[WIDE_LEAVES - 1], span(4))?;
+                builder.store(outputs[0], sum, span(5))?;
+                builder.store(outputs[1], last, span(6))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn an_output_reading_every_leaf_of_a_wide_interface_summarizes_one_run() {
+    let table = wide_sum_table();
+    let site = table.owners()[0].call_site();
+    let summaries = site.output_dependencies();
+    assert_eq!(summaries[0].len(), 1);
+    assert_eq!(summaries[0][0].inputs(), 0..WIDE_LEAVES);
+    assert_eq!(summaries[1].len(), 1);
+    assert_eq!(summaries[1][0].inputs(), WIDE_LEAVES - 1..WIDE_LEAVES);
+}
+
+#[test]
+fn structural_dependencies_of_a_run_summary_cover_every_leaf_of_the_run() {
+    let actual = output_coordinates(wide_sum_table().owners()[0].call_site(), false);
+    assert_eq!(actual[0], (0..WIDE_LEAVES).collect::<BTreeSet<_>>());
+    assert_eq!(actual[1], BTreeSet::from([WIDE_LEAVES - 1]));
 }

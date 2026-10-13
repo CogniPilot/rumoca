@@ -127,7 +127,9 @@ fn staged_reading_refuses_incomplete_and_non_exact_stages() {
     let mut widened = owners.algebraic().clone();
     for stage in &mut widened.value_stages {
         if let RefreshStage::ProjectionBlock { plan, .. } = stage {
-            plan.blocks.push(plan.blocks[0].clone());
+            let mut blocks = plan.blocks.scalar_blocks().to_vec();
+            blocks.push(blocks[0].clone());
+            plan.blocks = blocks.into();
         }
     }
     assert_eq!(

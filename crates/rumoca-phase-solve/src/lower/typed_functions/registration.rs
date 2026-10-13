@@ -84,7 +84,7 @@ fn register_call_body<'dae>(
         );
     }
     let facts = FunctionFacts::of(view, function_id, arithmetic, identities)?;
-    let (assertions, nested_call_ids) = (&facts.assertions, &facts.nested_calls);
+    let (assertions, nested_call_ids) = (&facts.assertions.assertions, &facts.nested_calls);
     let mut callees = HashMap::new();
     for nested_call in nested_call_ids.iter().copied() {
         let registered = register_call(
@@ -99,19 +99,27 @@ fn register_call_body<'dae>(
         callees.insert(nested_call, registered.callee);
     }
     let interface = &facts.interface;
+    let refused = assertions::refused_message_values(view, assertions, &callees);
+    let kept_calls = if refused.is_empty() {
+        nested_call_ids.clone()
+    } else {
+        assertions::nested_calls_outside(view, function, assertions, &refused)
+    };
     let layout = assertion_layout(
         view,
-        assertions,
-        nested_call_ids,
+        (assertions, &refused),
+        &kept_calls,
         &callees,
         interface.result_leaf_count(),
         arithmetic,
     )?;
+    let scalar_storable =
+        facts.body_scalar_storable && callees.values().all(|callee| callee.scalar_storable);
     let body = OwnerBody {
         function,
         interface,
-        callees,
-        assertion_count: assertions.len(),
+        callees: callees.into(),
+        inventory: &facts.assertions,
         layout,
     };
     let owner = table.add_owner(
@@ -125,7 +133,7 @@ fn register_call_body<'dae>(
         .call_site(owner)
         .ok_or(solve::SolveProgramConstructionError::UnknownCallOwner { provenance })?;
     Ok(RegisteredCall {
-        callee: body.callee(owner),
+        callee: body.callee(owner, scalar_storable),
         site,
     })
 }
@@ -134,13 +142,17 @@ fn register_call_body<'dae>(
 /// assertions, the owners its body calls, and its typed interface. A function
 /// called from many sites is read once, not once per owner.
 pub(super) struct FunctionFacts<'dae> {
-    pub(super) assertions: Vec<assertions::FunctionAssertion<'dae>>,
+    pub(super) assertions: assertions::FunctionAssertionInventory<'dae>,
     pub(super) nested_calls: Vec<dae::ExprId<'dae>>,
+    /// The function each nested call names, in the order of `nested_calls`.
+    pub(super) callees: std::rc::Rc<[dae::FunctionId<'dae>]>,
     pub(super) interface: FunctionInterface<'dae>,
+    /// Whether this body alone is scalar storable, without its callees.
+    pub(super) body_scalar_storable: bool,
 }
 
 impl<'dae> FunctionFacts<'dae> {
-    fn of(
+    pub(super) fn of(
         view: dae::DaeView<'dae>,
         key: dae::FunctionId<'dae>,
         arithmetic: solve::SolveArithmeticProfile,
@@ -152,13 +164,19 @@ impl<'dae> FunctionFacts<'dae> {
         let function = view
             .function(key)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        let assertions = assertion_conditions(view, function)?;
-        let nested_calls = nested_calls(view, function, &assertions);
+        let assertions = assertions::FunctionAssertionInventory::discover(view, function)?;
+        let nested_calls = nested_calls(view, function, &assertions.assertions);
+        let callees = nested_calls
+            .iter()
+            .map(|&call| super::recursive_groups::callee(view, call))
+            .collect::<Result<std::rc::Rc<[_]>, _>>()?;
         let interface = FunctionInterface::lower(view, function, arithmetic)?;
         let facts = std::rc::Rc::new(Self {
             assertions,
             nested_calls,
+            callees,
             interface,
+            body_scalar_storable: scalar_expansion::body_is_scalar_storable(view, function),
         });
         identities.function_facts.insert(key, facts.clone());
         Ok(facts)
@@ -167,12 +185,10 @@ impl<'dae> FunctionFacts<'dae> {
 
 /// The typed leaf interface of one Modelica function.
 pub(super) struct FunctionInterface<'dae> {
+    pub(super) result_layout: std::sync::Arc<FunctionResultsLayout<'dae>>,
     parameter_types: Vec<dae::ValueTypeId<'dae>>,
     pub(super) inputs: Vec<solve::SolveValueType>,
     parameter_ranges: Vec<Range<usize>>,
-    result_types: Vec<dae::ValueTypeId<'dae>>,
-    pub(super) results: Vec<solve::SolveValueType>,
-    pub(super) result_ranges: Vec<Range<usize>>,
 }
 
 impl<'dae> FunctionInterface<'dae> {
@@ -183,20 +199,18 @@ impl<'dae> FunctionInterface<'dae> {
     ) -> Result<Self, solve::SolveProgramConstructionError> {
         let parameter_types = function.parameter_types().iter().collect::<Vec<_>>();
         let (inputs, parameter_ranges) = native::leaf_layout(view, &parameter_types, arithmetic)?;
-        let result_types = function.result_types().iter().collect::<Vec<_>>();
-        let (results, result_ranges) = native::leaf_layout(view, &result_types, arithmetic)?;
+        let result_layout =
+            std::sync::Arc::new(FunctionResultsLayout::lower(view, function, arithmetic)?);
         Ok(Self {
+            result_layout,
             parameter_types,
             inputs,
             parameter_ranges,
-            result_types,
-            results,
-            result_ranges,
         })
     }
 
     pub(super) fn result_leaf_count(&self) -> usize {
-        self.results.len()
+        self.result_layout.leaves.len()
     }
 }
 
@@ -205,8 +219,10 @@ impl<'dae> FunctionInterface<'dae> {
 pub(super) struct OwnerBody<'a, 'dae> {
     pub(super) function: dae::FunctionView<'dae>,
     pub(super) interface: &'a FunctionInterface<'dae>,
-    pub(super) callees: HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
-    pub(super) assertion_count: usize,
+    pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
+    /// The statement inventory of the function body: its assertions and the
+    /// loop and conditional statement maps every region lowers from.
+    pub(super) inventory: &'a assertions::FunctionAssertionInventory<'dae>,
     pub(super) layout: AssertionLayout<'dae>,
 }
 
@@ -214,7 +230,8 @@ impl<'dae> OwnerBody<'_, 'dae> {
     /// Result leaves, then every assertion slot, in owner output order.
     pub(super) fn outputs(&self) -> Vec<solve::SolvePureCallOutput> {
         self.interface
-            .results
+            .result_layout
+            .leaves
             .iter()
             .cloned()
             .map(solve::SolvePureCallOutput::result)
@@ -222,14 +239,19 @@ impl<'dae> OwnerBody<'_, 'dae> {
             .collect()
     }
 
-    pub(super) fn callee(&self, owner: solve::SolvePureCallOwnerId) -> CalleeInterface<'dae> {
+    pub(super) fn callee(
+        &self,
+        owner: solve::SolvePureCallOwnerId,
+        scalar_storable: bool,
+    ) -> CalleeInterface<'dae> {
         CalleeInterface {
             owner,
-            result_ranges: self.interface.result_ranges.clone().into_boxed_slice(),
+            result_layout: self.interface.result_layout.clone(),
             result_leaf_count: self.interface.result_leaf_count(),
             assertion_slots: std::sync::Arc::from(self.layout.slots.clone()),
-            assertions: self.layout.registered.clone().into_boxed_slice(),
+            assertions: self.layout.registered.clone().into(),
             recursive: self.callees.values().any(|callee| callee.recursive),
+            scalar_storable,
         }
     }
 
@@ -262,7 +284,6 @@ impl<'dae> OwnerBody<'_, 'dae> {
             model_coordinates: HashMap::new(),
             parameters,
             function_values: HashMap::new(),
-            conditional_groups: conditional_definition_groups(function.statements())?,
             fold_parameters: HashMap::new(),
             fold_values: HashMap::new(),
             binders: HashMap::new(),
@@ -273,15 +294,24 @@ impl<'dae> OwnerBody<'_, 'dae> {
             predicate_values: vec![None; assertion_slots.len()],
             assertion_slots,
             next_direct_assertion: 0,
-            direct_assertion_count: self.assertion_count,
+            direct_assertion_count: self.inventory.assertions.len(),
+            direct_assertions: std::sync::Arc::from(
+                self.layout.registered[..self.inventory.assertions.len()].to_vec(),
+            ),
+            assertion_output_base: interface.result_leaf_count(),
+            loop_statements: self.inventory.loops.clone(),
+            conditional_statements: self.inventory.conditionals.clone(),
+            assigned_values: HashMap::new(),
             totality: HashMap::new(),
+            implied_guards: Vec::new(),
+            eager: EagerScope::default(),
         };
         lowerer.statements(function.statements())?;
         for ((definition, value_type), range) in function
             .result_values()
             .iter()
-            .zip(interface.result_types.iter().copied())
-            .zip(&interface.result_ranges)
+            .zip(interface.result_layout.signature.iter().copied())
+            .zip(&interface.result_layout.ranges)
         {
             let value = lowerer
                 .function_values
@@ -301,21 +331,8 @@ impl<'dae> OwnerBody<'_, 'dae> {
                     .store(*output, source, definition.provenance().span())?;
             }
         }
-        for &(value, slot) in &self.layout.direct_message_values {
-            let at = view
-                .expression(value)
-                .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-                .provenance()
-                .span();
-            let register = lowerer.expression(value)?.only_register(at)?;
-            if lowerer.predicate_values[slot].replace(register).is_some() {
-                return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
-                    provenance: at,
-                });
-            }
-        }
-        if lowerer.predicate_values.iter().any(Option::is_none) {
-            return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });
+        for slot in 0..lowerer.predicate_values.len() {
+            lowerer.predicate_values[slot] = Some(lowerer.published_slot(slot, provenance)?);
         }
         let result_leaf_count = interface.result_leaf_count();
         for (predicate, output) in lowerer
@@ -333,10 +350,7 @@ impl<'dae> OwnerBody<'_, 'dae> {
 /// Assertion outputs of one owner after its result leaves.
 pub(super) struct AssertionLayout<'dae> {
     slots: Vec<AssertionSlot>,
-    predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
-    /// Each message value of an assertion this function declares, with the
-    /// slot its frame publishes it in.
-    direct_message_values: Vec<(dae::ExprId<'dae>, usize)>,
+    predicate_ranges: std::sync::Arc<HashMap<dae::ExprId<'dae>, Range<usize>>>,
     registered: Vec<RegisteredAssertion<'dae>>,
 }
 
@@ -345,22 +359,31 @@ pub(super) struct AssertionLayout<'dae> {
 /// predicate and message values its callee's frame produced.
 pub(super) fn assertion_layout<'dae>(
     view: dae::DaeView<'dae>,
-    assertions: &[assertions::FunctionAssertion<'dae>],
+    (assertions, refused): (
+        &[assertions::FunctionAssertion<'dae>],
+        &std::collections::HashSet<dae::ExprId<'dae>>,
+    ),
     nested_call_ids: &[dae::ExprId<'dae>],
     callees: &HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
     result_leaf_count: usize,
     arithmetic: solve::SolveArithmeticProfile,
 ) -> Result<AssertionLayout<'dae>, solve::SolveProgramConstructionError> {
-    let mut slots = vec![AssertionSlot::Predicate; assertions.len()];
-    let mut direct_message_values = Vec::new();
+    let mut slots = assertions
+        .iter()
+        .map(|assertion| AssertionSlot::Predicate {
+            level: assertion.level,
+        })
+        .collect::<Vec<_>>();
     let mut registered = Vec::with_capacity(assertions.len());
     for (index, assertion) in assertions.iter().enumerate() {
         let mut message_values = Vec::new();
-        for value in assertions::message_values(view, assertion) {
+        for value in assertions::message_values(view, assertion)
+            .into_iter()
+            .filter(|value| !refused.contains(value))
+        {
             let Some(value_type) = message_value_type(view, value, arithmetic)? else {
                 continue;
             };
-            direct_message_values.push((value, slots.len()));
             message_values.push((value, result_leaf_count + slots.len()));
             let predicate = slots.len() - index;
             slots.push(AssertionSlot::MessageValue {
@@ -371,7 +394,7 @@ pub(super) fn assertion_layout<'dae>(
         registered.push(RegisteredAssertion {
             predicate_output: result_leaf_count + index,
             message: assertion.message,
-            message_values: message_values.into_boxed_slice(),
+            message_values: message_values.into(),
             level: assertion.level,
             provenance: assertion.provenance,
         });
@@ -387,14 +410,13 @@ pub(super) fn assertion_layout<'dae>(
         let target_start = result_leaf_count
             .checked_add(start)
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        for assertion in &nested.assertions {
+        for assertion in nested.assertions.iter() {
             registered.push(assertion.project_outputs(nested.result_leaf_count, target_start)?);
         }
     }
     Ok(AssertionLayout {
         slots,
-        predicate_ranges,
-        direct_message_values,
+        predicate_ranges: predicate_ranges.into(),
         registered,
     })
 }

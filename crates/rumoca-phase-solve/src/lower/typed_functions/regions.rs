@@ -6,8 +6,7 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{
-    AssertionSlot, CalleeInterface, ConditionalDefinitionGroup, ExpressionLowerer, LoweredValue,
-    ModelCoordinateKey,
+    AssertionSlot, CalleeInterface, EagerScope, ExpressionLowerer, LoweredValue, ModelCoordinateKey,
 };
 
 #[derive(Clone)]
@@ -27,6 +26,9 @@ pub(super) struct EnvironmentLayout<'dae> {
         dae::ValueTypeId<'dae>,
         Range<usize>,
     )>,
+    /// Expression values an enclosing scope already issued: a region reads
+    /// them as captures instead of lowering the expression again.
+    pub(super) expressions: Vec<(dae::ExprId<'dae>, dae::ValueTypeId<'dae>, Range<usize>)>,
     pub(super) fold_parameters: Vec<(
         dae::FunctionFoldId<'dae>,
         u32,
@@ -39,12 +41,17 @@ pub(super) struct EnvironmentLayout<'dae> {
 #[derive(Clone)]
 pub(super) struct RegionContext<'dae> {
     pub(super) view: dae::DaeView<'dae>,
-    pub(super) callees: HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>,
-    pub(super) predicate_ranges: HashMap<dae::ExprId<'dae>, Range<usize>>,
-    pub(super) conditional_groups:
-        HashMap<dae::FunctionDefinitionId<'dae>, ConditionalDefinitionGroup<'dae>>,
+    pub(super) callees: std::sync::Arc<HashMap<dae::ExprId<'dae>, CalleeInterface<'dae>>>,
+    pub(super) predicate_ranges: std::sync::Arc<HashMap<dae::ExprId<'dae>, Range<usize>>>,
     pub(super) assertion_slots: std::sync::Arc<[AssertionSlot]>,
     pub(super) direct_assertion_count: usize,
+    pub(super) direct_assertions: std::sync::Arc<[super::RegisteredAssertion<'dae>]>,
+    pub(super) assertion_output_base: usize,
+    pub(super) loop_statements:
+        std::sync::Arc<HashMap<dae::FunctionFoldId<'dae>, super::assertions::LoopStatements<'dae>>>,
+    pub(super) conditional_statements: std::sync::Arc<
+        HashMap<dae::FunctionConditionalId<'dae>, super::assertions::ConditionalStatements<'dae>>,
+    >,
 }
 
 /// One value a region publishes, paired with the type the target it lands on
@@ -59,6 +66,9 @@ pub(super) type RegionOutput<'dae> = (dae::ValueTypeId<'dae>, dae::ExprId<'dae>)
 pub(super) struct RegionValues<'borrow, 'dae> {
     pub(super) results: &'borrow [RegionOutput<'dae>],
     pub(super) pending_predicates: &'borrow [usize],
+    /// Publish the predicates the region computed instead of the inactive cells:
+    /// an event transaction commits on its own assertion predicates.
+    pub(super) publish_predicates: bool,
     pub(super) provenance: rumoca_core::Span,
 }
 
@@ -112,9 +122,11 @@ pub(super) fn lower_region_values<'program, 'dae>(
     let RegionValues {
         results,
         pending_predicates,
+        publish_predicates,
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.plan_eager_demand(results.iter().map(|(_, expression)| *expression));
     let mut values = Vec::new();
     for (value_type, expression) in results {
         // Publishing at the target's declared type is the same rule the
@@ -128,7 +140,11 @@ pub(super) fn lower_region_values<'program, 'dae>(
         values.extend(value.leaves);
     }
     for slot in pending_predicates {
-        let predicate = lowerer.published_slot(*slot, provenance)?;
+        let predicate = if publish_predicates {
+            lowerer.published_slot(*slot, provenance)?
+        } else {
+            lowerer.inactive_slot(*slot, provenance)?
+        };
         values.push(predicate);
     }
     if values.len() != outputs.len() {
@@ -154,41 +170,22 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
     let parameters = environment
         .parameters
         .iter()
-        .map(|(id, value_type, range)| {
-            (
-                *id,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let model_coordinates = environment
         .model_coordinates
         .iter()
-        .map(|(key, value_type, range)| {
-            (
-                *key,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(key, value_type, range)| (*key, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let function_values = environment
         .values
         .iter()
-        .map(|(id, value_type, range)| {
-            (
-                *id,
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
-            )
-        })
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
+        .collect();
+    let cache = environment
+        .expressions
+        .iter()
+        .map(|(id, value_type, range)| (*id, loaded_value(&loaded, *value_type, range.clone())))
         .collect();
     let fold_parameters = environment
         .fold_parameters
@@ -196,10 +193,7 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         .map(|(fold, carried, value_type, range)| {
             (
                 (*fold, *carried),
-                LoweredValue {
-                    value_type: *value_type,
-                    leaves: loaded[range.clone()].to_vec(),
-                },
+                loaded_value(&loaded, *value_type, range.clone()),
             )
         })
         .collect();
@@ -219,20 +213,37 @@ pub(super) fn load_region_lowerer<'builder, 'program, 'dae>(
         model_coordinates,
         parameters,
         function_values,
-        conditional_groups: context.conditional_groups.clone(),
         fold_parameters,
         fold_values: HashMap::new(),
         binders,
         callees: context.callees.clone(),
         predicate_ranges: context.predicate_ranges.clone(),
-        cache: HashMap::new(),
+        cache,
         call_values: HashMap::new(),
         predicate_values: vec![None; context.assertion_slots.len()],
         assertion_slots: context.assertion_slots.clone(),
         next_direct_assertion: 0,
         direct_assertion_count: context.direct_assertion_count,
+        direct_assertions: context.direct_assertions.clone(),
+        assertion_output_base: context.assertion_output_base,
+        loop_statements: context.loop_statements.clone(),
+        conditional_statements: context.conditional_statements.clone(),
+        assigned_values: HashMap::new(),
         totality: HashMap::new(),
+        implied_guards: Vec::new(),
+        eager: EagerScope::default(),
     })
+}
+
+fn loaded_value<'program, 'dae>(
+    loaded: &[solve::ProgramRegister<'program>],
+    value_type: dae::ValueTypeId<'dae>,
+    range: std::ops::Range<usize>,
+) -> LoweredValue<'program, 'dae> {
+    LoweredValue {
+        value_type,
+        leaves: loaded[range].to_vec(),
+    }
 }
 
 pub(super) fn lower_region_conditional<'program, 'dae>(
@@ -250,6 +261,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
         provenance,
     } = region;
     let mut lowerer = load_region_lowerer(builder, inputs, environment, context, provenance)?;
+    lowerer.plan_eager_demand(operands.first().copied());
     let value = if let [fallback] = operands.as_slice() {
         lowerer.expression(*fallback)?
     } else {
@@ -258,7 +270,7 @@ pub(super) fn lower_region_conditional<'program, 'dae>(
     let value = lowerer.coerce_value(value, value_type, provenance)?;
     let mut values = value.leaves;
     for slot in pending {
-        let predicate = lowerer.published_slot(slot, provenance)?;
+        let predicate = lowerer.inactive_slot(slot, provenance)?;
         values.push(predicate);
     }
     if values.len() != outputs.len() {
@@ -303,6 +315,7 @@ pub(super) fn lower_region_assignment_chain<'program, 'dae>(
             RegionValues {
                 results: &results,
                 pending_predicates: &pending,
+                publish_predicates: false,
                 provenance,
             },
         );
@@ -323,4 +336,21 @@ pub(super) fn lower_region_assignment_chain<'program, 'dae>(
         lowerer.builder.store(*output, value, provenance)?;
     }
     Ok(())
+}
+
+impl<'dae> ExpressionLowerer<'_, '_, 'dae> {
+    /// A region shares the immutable metadata issued for its enclosing owner.
+    pub(super) fn region_context(&self) -> RegionContext<'dae> {
+        RegionContext {
+            view: self.view,
+            callees: self.callees.clone(),
+            predicate_ranges: self.predicate_ranges.clone(),
+            assertion_slots: self.assertion_slots.clone(),
+            direct_assertion_count: self.direct_assertion_count,
+            direct_assertions: self.direct_assertions.clone(),
+            assertion_output_base: self.assertion_output_base,
+            loop_statements: self.loop_statements.clone(),
+            conditional_statements: self.conditional_statements.clone(),
+        }
+    }
 }

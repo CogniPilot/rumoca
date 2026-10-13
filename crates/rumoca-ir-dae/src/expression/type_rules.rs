@@ -360,14 +360,14 @@ fn power_result(
         return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
     }
     Ok(ValueType::array(
-        promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), false),
+        promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), lhs.is_scalar()),
         lhs.dimensions().to_vec(),
     ))
 }
 
 /// The value type of an MLS 3.6 §10.6 element-wise operator (`.+`, `.-`, `.*`,
 /// `./`, `.^`). Each admits `size(a) = size(b)` or a scalar operand that is
-/// expanded to the other's shape; only `./` forces a Real result.
+/// expanded to the other's shape; `./` and `.^` force a Real result.
 fn elementwise_result(
     operator: BinaryOperator,
     lhs: &ValueType,
@@ -387,7 +387,10 @@ fn elementwise_result(
         promoted_numeric_scalar(
             lhs.scalar_type(),
             rhs.scalar_type(),
-            matches!(operator, BinaryOperator::ElementwiseDivide),
+            matches!(
+                operator,
+                BinaryOperator::ElementwiseDivide | BinaryOperator::ElementwisePower
+            ),
         ),
         dimensions.to_vec(),
     ))

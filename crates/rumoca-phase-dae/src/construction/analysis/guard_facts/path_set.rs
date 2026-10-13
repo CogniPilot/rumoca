@@ -82,6 +82,13 @@ impl PathSet {
                 scope.generated,
             ),
         );
+        if let rumoca_core::Statement::Empty { span } = statement
+            && let Some(capture) = scope.generated.iter().find(|capture| capture.span == *span)
+        {
+            let mut alternatives = self.assuming(&capture.value, true, scope);
+            alternatives.join_path(&self.assuming(&capture.value, false, scope));
+            *self = alternatives;
+        }
         self.map_paths(|facts| facts.after(statement, scope));
     }
 
@@ -122,11 +129,86 @@ impl PathSet {
         ordinal: usize,
         scope: FactScope<'_>,
     ) -> Self {
-        let mut entered = Self(Vec::new());
-        for facts in &self.0 {
-            entered.push(facts.branch_entries(conditions, scope).swap_remove(ordinal));
+        assert!(ordinal <= conditions.len());
+        let mut remaining = self.clone();
+        for (index, condition) in conditions.iter().enumerate() {
+            if index == ordinal {
+                return remaining.assuming(condition, true, scope);
+            }
+            remaining = remaining.assuming(condition, false, scope);
         }
-        entered.collapse_beyond_capacity();
+        remaining
+    }
+
+    fn assuming(&self, condition: &Expression, value: bool, scope: FactScope<'_>) -> Self {
+        match condition {
+            Expression::Unary {
+                op: OpUnary::Not,
+                rhs,
+                ..
+            } => self.assuming(rhs, !value, scope),
+            Expression::Binary {
+                op: op @ (OpBinary::And | OpBinary::Or),
+                lhs,
+                rhs,
+                ..
+            } => self.assuming_junction((lhs, rhs), (matches!(op, OpBinary::And), value), scope),
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => self.assuming_conditional(branches, else_branch, value, scope),
+            _ => {
+                let mut entered = Self::empty();
+                for facts in &self.0 {
+                    entered.push(
+                        facts
+                            .branch_entries(&[condition], scope)
+                            .swap_remove(usize::from(!value)),
+                    );
+                }
+                entered.collapse_beyond_capacity();
+                entered
+            }
+        }
+    }
+
+    fn assuming_junction(
+        &self,
+        (lhs, rhs): (&Expression, &Expression),
+        (conjunction, value): (bool, bool),
+        scope: FactScope<'_>,
+    ) -> Self {
+        if conjunction == value {
+            return self.assuming(lhs, value, scope).assuming(rhs, value, scope);
+        }
+        // Disjoint alternatives: the left operand decides the result, or
+        // it does not and the right operand decides it.
+        let mut decided = self.assuming(lhs, value, scope);
+        let right = self
+            .assuming(lhs, !value, scope)
+            .assuming(rhs, value, scope);
+        decided.join_path(&right);
+        decided
+    }
+
+    fn assuming_conditional(
+        &self,
+        branches: &[(Expression, Expression)],
+        fallback: &Expression,
+        value: bool,
+        scope: FactScope<'_>,
+    ) -> Self {
+        let mut remaining = self.clone();
+        let mut entered = Self::empty();
+        for (condition, selected) in branches {
+            let branch = remaining
+                .assuming(condition, true, scope)
+                .assuming(selected, value, scope);
+            entered.join_path(&branch);
+            remaining = remaining.assuming(condition, false, scope);
+        }
+        entered.join_path(&remaining.assuming(fallback, value, scope));
         entered
     }
 

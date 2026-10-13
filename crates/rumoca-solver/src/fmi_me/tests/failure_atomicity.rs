@@ -50,8 +50,8 @@ fn algebraic_branch_component(with_indicator: bool) -> solve::SolveModel {
 fn branch_component_with_input() -> solve::SolveModel {
     let mut model = nonlinear_right_limit_seed_model();
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()].into();
+    model.parameters = vec![1.0].into();
     refresh_owned(model)
 }
 
@@ -948,7 +948,7 @@ fn assert_split_session_is_refused(
         assert_eq!(loss, expected);
     }
     // Metadata and the already durable trace stay readable.
-    assert_eq!(session.output_names().len(), 2);
+    assert_eq!(session.output_names().unwrap().len(), 2);
 }
 
 /// Ablation: a restart loses the plugin's history after the component and every

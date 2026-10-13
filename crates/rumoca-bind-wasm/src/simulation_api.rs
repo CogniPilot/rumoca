@@ -7,8 +7,8 @@ use rumoca_compile::{Session, compile::CompilationResult};
 use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, build_tunable_parameter_meta,
-    fmi_component_wire, lower_correlated_for_simulation_with_overrides, lower_dae_for_simulation,
-    simulate_dae_with_diagnostics,
+    finish_fmi_component, lower_correlated_for_native_execution_with_overrides,
+    lower_dae_for_simulation, retained_fmi_component_wire, simulate_dae_with_diagnostics,
 };
 
 pub(crate) fn simulate_model_impl(
@@ -55,9 +55,13 @@ pub(crate) fn lower_model_to_solve_json_impl(
         let parameter_overrides = parse_parameter_overrides(parameter_overrides_json)?;
         let mut override_opts = opts.clone();
         override_opts.param_overrides = parameter_overrides;
-        let lowered = lower_correlated_for_simulation_with_overrides(&result.dae, &override_opts)
-            .map_err(|error| WasmError::new(format!("solve lowering error: {error}")))?;
-        let component_wire = fmi_component_wire(&lowered)
+        let lowered =
+            lower_correlated_for_native_execution_with_overrides(&result.dae, &override_opts)
+                .map_err(|error| WasmError::new(format!("solve lowering error: {error}")))?;
+        let component = finish_fmi_component(lowered)
+            .map_err(|error| WasmError::new(format!("FMI component error: {error}")))?;
+        let root = component.runtime_view().retain_assertion_root();
+        let component_wire = retained_fmi_component_wire(&root)
             .map_err(|error| WasmError::new(format!("FMI component wire error: {error}")))?;
         let payload = serde_json::json!({
             "fmi_component": component_wire,

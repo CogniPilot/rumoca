@@ -59,6 +59,13 @@ fn linear_model_with_options(options: &SimOptions) -> DifferentiableModel {
 }
 
 #[test]
+fn state_names_report_the_solver_states_in_state_order() {
+    let model = linear_model();
+    assert_eq!(model.state_names().expect("state names"), ["x"]);
+    assert_eq!(model.state_names().unwrap().len(), model.state().len());
+}
+
+#[test]
 fn reverse_rhs_mse_gradient_matches_analytic_linear_model() {
     let model = linear_model();
     let trainables = TrainableSet::by_names(&model, &["a", "b"]).expect("known trainables");

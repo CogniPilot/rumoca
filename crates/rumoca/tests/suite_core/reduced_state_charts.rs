@@ -64,6 +64,7 @@ fn lowered_msl(root: &std::path::Path, model: &str) -> SolveModel {
 /// reconstruction, as opposed to a fictional single multi-chart manifold block.
 fn has_scalar_block(plan: &AlgebraicProjectionPlan, y_index: usize) -> bool {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .any(|block| block.rows.len() == 1 && block.y_indices == [y_index])
 }
@@ -72,6 +73,7 @@ fn has_scalar_block(plan: &AlgebraicProjectionPlan, y_index: usize) -> bool {
 /// reconstruct solver-Y index `y`, if one does.
 fn scalar_block_row_for(plan: &AlgebraicProjectionPlan, y: usize) -> Option<usize> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .find(|block| block.rows.len() == 1 && block.y_indices == [y])
         .map(|block| block.rows[0])
@@ -81,6 +83,7 @@ fn scalar_block_row_for(plan: &AlgebraicProjectionPlan, y: usize) -> Option<usiz
 /// from residual row `row`, if one does.
 fn scalar_block_reconstructed_from(plan: &AlgebraicProjectionPlan, row: usize) -> Option<usize> {
     plan.blocks
+        .scalar_blocks()
         .iter()
         .find(|block| block.rows == [row] && block.y_indices.len() == 1)
         .map(|block| block.y_indices[0])
@@ -103,7 +106,10 @@ const CIRCLE_CHART: &str = include_str!("../fixtures/index_reduction/CircleChart
 #[test]
 fn circle_chart_yields_two_reduced_charts_over_the_real_lowered_shape() {
     let model = lowered(CIRCLE_CHART, "CircleChart");
-    let names = &model.problem.solve_layout.solver_maps().names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let continuous = &model.problem.continuous;
     let charts = &continuous.reduced_chart_set.charts;
 
@@ -170,8 +176,10 @@ fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
     // advance its own integrated coordinate q[1] by q[1]'s formal derivative, not
     // q[2]'s. Both artifacts live in the same solver-Y space as the primary basis.
     let model = lowered(CIRCLE_CHART, "CircleChart");
-    let maps = model.problem.solve_layout.solver_maps();
-    let names = &maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let continuous = &model.problem.continuous;
     let charts = &continuous.reduced_chart_set.charts;
     assert_eq!(charts.len(), 2);
@@ -224,9 +232,9 @@ fn circle_chart_alternate_chart_re_lowers_to_a_regular_mirror_plan() {
     let integrated = &names[alternate.independent_y_indices[0]];
     let primary_integrated = &names[primary.independent_y_indices[0]];
     let velocity_slot = |integrated: &str| {
-        maps.name_to_idx
-            .get(&integrated.replacen('q', "v", 1))
-            .copied()
+        model
+            .problem
+            .solver_index(&integrated.replacen('q', "v", 1))
             .expect("each integrated q[i] has a velocity v[i]")
     };
     assert_eq!(
@@ -384,10 +392,11 @@ fn circle_chart_alternate_chart_artifacts_survive_the_model_wire() {
     // chart is byte-identical to the constructed one and remains runtime-executable.
     let model = lowered(CIRCLE_CHART, "CircleChart");
     let wire = serde_json::to_vec(
-        &serde_json::to_value(rumoca_phase_solve::solve_model_wire(&model).unwrap()).unwrap(),
+        &serde_json::to_value(rumoca_eval_solve::model_wire::solve_model_wire(&model).unwrap())
+            .unwrap(),
     )
     .unwrap();
-    let replayed = rumoca_phase_solve::deserialize_solve_model(
+    let replayed = rumoca_eval_solve::model_wire::deserialize_solve_model(
         &mut serde_json::Deserializer::from_slice(&wire),
     )
     .expect("the chart-carrying model replays from its wire");
@@ -620,8 +629,8 @@ fn a_formal_derivative_state_coordinate_names_its_source_and_order() {
     };
     let model = "Modelica.Mechanics.Translational.Examples.Damper";
     let lowered = lowered_msl(&root, model);
-    let mut sources = lowered
-        .variable_meta
+    let metadata = lowered.visible_metadata();
+    let mut sources = metadata
         .iter()
         .filter(|meta| meta.is_state)
         .map(|meta| {

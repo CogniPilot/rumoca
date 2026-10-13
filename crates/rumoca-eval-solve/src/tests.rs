@@ -1,4 +1,5 @@
 mod demanded_gathers;
+mod ordered_tensor_forwarding;
 mod prepared_tensor_snapshots;
 mod scalar_integer_payload;
 
@@ -270,6 +271,7 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             span: fixture_span(),
             origin: "assert".to_string(),
             clock_owner: None,
+            assertion_projection: None,
         }],
         ..Default::default()
     };
@@ -361,6 +363,7 @@ fn event_message_fixture(
             span: fixture_span(),
             origin: "assert".to_string(),
             clock_owner: None,
+            assertion_projection: None,
         }],
         ..Default::default()
     }
@@ -454,7 +457,7 @@ fn eval_row_supports_solve_ir_table_bounds_and_next_event_ops() {
 fn eval_row_hydrates_serialized_external_table_data() {
     let table_id = 424_242.0;
     let model = rumoca_ir_solve::SolveModel {
-        parameters: vec![table_id],
+        parameters: vec![table_id].into(),
         external_tables: rumoca_ir_solve::ExternalTables::new(vec![
             rumoca_core::ExternalTableData {
                 id: table_id as u64,
@@ -1088,6 +1091,129 @@ fn function_conditional_evaluates_only_the_selected_correlated_region() {
     assert_eq!(output, [11.0]);
 }
 
+/// A row that runs one outer conditional twice, selecting its nested inner
+/// conditional on the first run and its fallback on the second.
+fn nested_conditional_row() -> ScalarProgramBlock {
+    let inner = std::sync::Arc::new(
+        rumoca_ir_solve::FunctionConditionalProgram::checked(
+            1,
+            [1],
+            [(
+                vec![
+                    LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    LinearOp::LoadP { dst: 0, index: 0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ],
+            )],
+            vec![
+                LinearOp::Const { dst: 0, value: 5.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )
+        .expect("checked inner conditional"),
+    );
+    let outer = std::sync::Arc::new(
+        rumoca_ir_solve::FunctionConditionalProgram::checked(
+            1,
+            [1],
+            [(
+                vec![
+                    LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    LinearOp::LoadP { dst: 0, index: 1 },
+                    LinearOp::FunctionConditional {
+                        dst_start: 1,
+                        capture_start: 0,
+                        program: inner,
+                    },
+                    LinearOp::Const {
+                        dst: 2,
+                        value: 100.0,
+                    },
+                    LinearOp::Binary {
+                        dst: 3,
+                        op: BinaryOp::Add,
+                        lhs: 1,
+                        rhs: 2,
+                    },
+                    LinearOp::StoreOutput { src: 3 },
+                ],
+            )],
+            vec![
+                LinearOp::Const { dst: 0, value: 9.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )
+        .expect("checked outer conditional"),
+    );
+    ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::FunctionConditional {
+                dst_start: 1,
+                capture_start: 0,
+                program: outer.clone(),
+            },
+            LinearOp::Const { dst: 2, value: 0.0 },
+            LinearOp::FunctionConditional {
+                dst_start: 3,
+                capture_start: 2,
+                program: outer,
+            },
+            LinearOp::Binary {
+                dst: 5,
+                op: BinaryOp::Add,
+                lhs: 1,
+                rhs: 3,
+            },
+            LinearOp::StoreOutput { src: 5 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("nested conditional row")
+}
+
+#[test]
+fn nested_function_conditionals_evaluate_independently_across_repeated_runs() {
+    let block = nested_conditional_row();
+    let mut output = [0.0];
+    // The inner selector p[1] is 0, so the inner fallback 5 is chosen; the
+    // second outer run takes its own fallback 9.
+    eval_scalar_program_block(&block, &[], &[11.0, 0.0], 0.0, None, &mut output)
+        .expect("inner fallback row evaluates");
+    assert_eq!(output, [5.0 + 100.0 + 9.0]);
+    // The inner selector p[1] is nonzero, so the inner result reads p[0].
+    eval_scalar_program_block(&block, &[], &[11.0, 2.0], 0.0, None, &mut output)
+        .expect("inner result row evaluates");
+    assert_eq!(output, [11.0 + 100.0 + 9.0]);
+
+    // The register-safe path reuses one frame pool across both outer runs and
+    // across rows, and selects the same values.
+    let row = &block.programs()[0];
+    let mut scratch = RowEvalScratch::default();
+    for (p, expected) in [
+        ([11.0, 0.0], 114.0),
+        ([11.0, 2.0], 120.0),
+        ([11.0, 0.0], 114.0),
+    ] {
+        let input = PreparedRowEval::new(
+            row,
+            required_registers(row).expect("row registers"),
+            &[],
+            &p,
+            0.0,
+            RowEvalContext::default(),
+        );
+        let value = eval_program_single(input, true, &mut scratch).expect("fast row evaluates");
+        assert_eq!(value, expected);
+    }
+}
+
 #[test]
 fn aggregate_conditional_trace_cannot_construct_a_scalar_native_replacement() {
     let condition = vec![
@@ -1691,9 +1817,9 @@ fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
 }
 
 #[test]
-fn prepared_scalar_block_rejects_logical_output_count_overflow() {
+fn scalar_block_logical_output_count_overflow_is_refused_at_construction() {
     let span = fixture_span();
-    let block = ScalarProgramBlock::with_output_indices(
+    let error = ScalarProgramBlock::with_output_indices(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
@@ -1701,13 +1827,11 @@ fn prepared_scalar_block_rejects_logical_output_count_overflow() {
         vec![span],
         vec![usize::MAX],
     )
-    .expect("sparse output fixture satisfies scalar-program contracts");
-
-    let error = match PreparedScalarProgramBlock::new(block) {
-        Ok(_) => panic!("logical output count overflow should fail preparation"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("logical output count"));
+    .expect_err("an output index with no representable logical count has no block");
+    assert!(matches!(
+        error,
+        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow { .. }
+    ));
     assert_eq!(error.source_span(), Some(span));
 }
 

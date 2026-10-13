@@ -260,3 +260,25 @@ fn reads_of_a_partial_value_below_the_top_level_are_refused() {
         );
     }
 }
+
+/// The product decides who raises an unassigned-value check: the stateless
+/// native schedule has no solver or event iteration, so the check owns an
+/// event action and no relation root; a simulation localizes it with a root.
+#[test]
+fn an_unassigned_value_check_owns_a_root_only_where_a_solver_localizes_it() {
+    let source = SCALARS.replace("CALL", "f(2 - time)");
+    let compiled = Compiler::new()
+        .model("Scalars")
+        .compile_str(&source, "Scalars.mo")
+        .expect("Scalars compiles");
+    let native = rumoca_phase_solve::lower_solve_package(&compiled.dae).expect("native lowers");
+    assert!(!native.problem.events.actions.is_empty());
+    assert!(
+        native.problem.events.root_conditions.is_empty(),
+        "the native product carries no relation root"
+    );
+    let simulated =
+        rumoca_sim::lower_for_simulation_with_overrides(&compiled.dae, &SimOptions::default())
+            .expect("simulation lowers");
+    assert!(!simulated.problem.events.root_conditions.is_empty());
+}

@@ -30,7 +30,7 @@ impl CyclicAffine {
         matrix[(DIMENSION - 1, DIMENSION - 1)] = 1.0;
         let rhs = &matrix * expected;
         let plan = solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: (0..DIMENSION).collect(),
                 y_indices: (0..DIMENSION).collect(),
                 tearing: Some(solve::BlockTearing {
@@ -46,7 +46,8 @@ impl CyclicAffine {
                         .collect(),
                 }),
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         };
         let dependencies = (0..DIMENSION)
             .map(|row| vec![row, (row + 1) % DIMENSION])
@@ -183,13 +184,13 @@ impl ImplicitProjectionModel for CyclicAffine {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-    fn target_name_for_row(&self, _: usize) -> Option<&str> {
-        None
-    }
     fn algebraic_projection_block_is_affine(&self, _: usize) -> bool {
         true
     }
-    fn algebraic_projection_block_structure(&self, _: usize) -> Option<&solve::JacobianStructure> {
+    fn algebraic_projection_block_structure(
+        &self,
+        _: usize,
+    ) -> Option<&solve::ColoredJacobianStructure> {
         self.structures.algebraic_projection().first()
     }
     fn solve_algebraic_newton_delta(

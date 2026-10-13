@@ -1,4 +1,5 @@
 use super::*;
+use crate::TargetClosure;
 use crate::source_spans::required_location_span;
 use std::sync::Arc;
 
@@ -57,15 +58,49 @@ impl<'a> OverlayScopeIndex<'a> {
     }
 }
 
-pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {
+pub(crate) fn initialize_flat_metadata(
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    closure: &TargetClosure,
+) {
     // MLS §4.7: Propagate partial status and class type from overlay
     flat.effective_types = overlay.effective_types.clone();
     flat.enumeration_types = overlay.enumeration_types.clone();
     flat.type_ids_by_def_id = overlay.type_ids_by_def_id.clone();
     flat.enumeration_type_roots = overlay.enumeration_type_roots.clone();
+    restrict_type_identities_to_closure(flat, overlay, closure);
     flat.is_partial = overlay.is_partial;
     flat.class_type = overlay.class_type.clone();
     flat.model_description = overlay.root_description.clone();
+}
+
+/// Drop the nominal type identities of classes outside the target closure, and
+/// the enumeration roots only those classes own.
+fn restrict_type_identities_to_closure(
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    closure: &TargetClosure,
+) {
+    if closure.is_whole_tree() {
+        return;
+    }
+    let root_of = |type_id: &rumoca_core::TypeId| {
+        overlay.type_roots.get(type_id).copied().unwrap_or(*type_id)
+    };
+    let mut retained_roots = rustc_hash::FxHashSet::default();
+    let mut outside_roots = rustc_hash::FxHashSet::default();
+    flat.type_ids_by_def_id.retain(|def_id, type_id| {
+        let inside = closure.contains(*def_id);
+        let roots = if inside {
+            &mut retained_roots
+        } else {
+            &mut outside_roots
+        };
+        roots.insert(root_of(type_id));
+        inside
+    });
+    flat.enumeration_type_roots
+        .retain(|root| retained_roots.contains(root) || !outside_roots.contains(root));
 }
 
 pub(crate) fn variable_import_context_for_instance<'tree>(
@@ -858,8 +893,14 @@ fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast
     if instance_data.is_connector_type {
         flat.top_level_connectors.insert(name.clone());
     }
-    if matches!(&instance_data.causality, rumoca_core::Causality::Input(_)) {
-        flat.top_level_input_components.insert(name.clone());
+    match &instance_data.causality {
+        rumoca_core::Causality::Input(_) => {
+            flat.top_level_input_components.insert(name.clone());
+        }
+        rumoca_core::Causality::Output(_) => {
+            flat.top_level_output_components.insert(name.clone());
+        }
+        rumoca_core::Causality::Empty => {}
     }
 }
 
@@ -976,6 +1017,7 @@ pub(crate) struct FinalizeFlatModelInput<'a, 'tree> {
     pub(crate) tree: &'a ast::ClassTree,
     pub(crate) class_index: &'a ast::ClassDefIndex<'tree>,
     pub(crate) model_name: &'a str,
+    pub(crate) closure: &'a TargetClosure,
     pub(crate) options: FlattenOptions,
     pub(crate) flatten_graph: &'a FlattenGraphData,
     pub(crate) component_override_map: &'a ComponentOverrideMap,
@@ -991,6 +1033,7 @@ pub(crate) fn finalize_flat_model(
         tree,
         class_index,
         model_name,
+        closure,
         options,
         flatten_graph,
         component_override_map,
@@ -1085,7 +1128,7 @@ pub(crate) fn finalize_flat_model(
     functions::validate_flat_function_bindings(flat)?;
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
-    flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
+    flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree, closure);
     flat.enumeration_declarations = enum_literals::collect_enumeration_declarations(tree, flat);
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;

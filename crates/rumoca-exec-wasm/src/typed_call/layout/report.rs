@@ -8,14 +8,10 @@ impl FramePlan {
         let mut regions = Vec::new();
         let mut calls = Vec::new();
         for (index, operation) in program.operations().iter().enumerate() {
-            let roles: &[&str] = match operation.operation() {
-                solve::SolveOperation::Conditional { .. } => &["then", "else"],
-                solve::SolveOperation::Map { .. } => &["body"],
-                solve::SolveOperation::Fold { .. } => &["transition", "predicate"],
-                _ => &[],
-            };
-            let bodies = region_bodies(operation.operation());
-            for ((role, body), plan) in roles.iter().zip(bodies).zip(&self.regions[index]) {
+            for ((role, body), plan) in region_bodies(operation.operation())
+                .into_iter()
+                .zip(&self.regions[index])
+            {
                 regions.push(ScratchRegion {
                     operation: index,
                     role,
@@ -51,18 +47,26 @@ impl FramePlan {
     }
 }
 
-fn region_bodies(operation: &solve::SolveOperation) -> Vec<&solve::TypedProgram> {
+fn region_bodies(operation: &solve::SolveOperation) -> Vec<(&'static str, &solve::TypedProgram)> {
     match operation {
+        solve::SolveOperation::CheckAssertion {
+            message: solve::SolveAssertionMessage::Captures { program },
+            ..
+        } => vec![("message", program.body())],
+        solve::SolveOperation::AssignedConditional { program } => vec![
+            ("then", program.if_true().body()),
+            ("else", program.if_false().body()),
+        ],
         solve::SolveOperation::Conditional {
             if_true, if_false, ..
-        } => vec![if_true.body(), if_false.body()],
-        solve::SolveOperation::Map { body, .. } => vec![body.body()],
+        } => vec![("then", if_true.body()), ("else", if_false.body())],
+        solve::SolveOperation::Map { body, .. } => vec![("body", body.body())],
         solve::SolveOperation::Fold {
             transition,
             continuation,
             ..
-        } => std::iter::once(transition.body())
-            .chain(continuation.as_deref().map(|c| c.body()))
+        } => std::iter::once(("transition", transition.body()))
+            .chain(continuation.as_deref().map(|c| ("predicate", c.body())))
             .collect(),
         _ => Vec::new(),
     }

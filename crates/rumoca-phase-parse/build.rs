@@ -2,7 +2,7 @@
 
 mod build_support;
 
-use build_support::install_generated_if_changed;
+use build_support::{generation_is_current, generation_stamp, install_generated_if_changed};
 use parol::ParolErrorReporter;
 use parol::build::Builder;
 use parol::parol_runtime::Report;
@@ -15,12 +15,30 @@ fn main() {
     // Re-run if grammar changes
     println!("cargo:rerun-if-changed=src/modelica.par");
     println!("cargo:rerun-if-changed=build_support.rs");
+    println!("cargo:rerun-if-changed=src/generated/grammar.stamp");
 
     let par_file = "src/modelica.par";
 
     // Only build if grammar file exists
     if !Path::new(par_file).exists() {
         eprintln!("Warning: Grammar file not found, skipping parser generation");
+        return;
+    }
+
+    // The checked-in parser is regenerated only when its content inputs change.
+    // Generation shells out to the machine's `rustfmt`, whose absence or version
+    // would otherwise rewrite tracked files from an unchanged grammar.
+    let stamp = generation_stamp(
+        &fs::read(par_file).expect("read the Modelica grammar"),
+        include_bytes!("build.rs"),
+    );
+    let stamp_file = Path::new("src/generated/grammar.stamp");
+    let outputs = GENERATED_FILES.map(|name| Path::new("src/generated").join(name));
+    if generation_is_current(
+        stamp_file,
+        &stamp,
+        &outputs.each_ref().map(PathBuf::as_path),
+    ) {
         return;
     }
 
@@ -51,11 +69,17 @@ fn main() {
     }
 
     install_generated_files(&staging_dir);
+    if let Err(err) = fs::write(stamp_file, stamp) {
+        eprintln!("failed to record the grammar stamp: {err}");
+        process::exit(1);
+    }
 }
+
+const GENERATED_FILES: [&str; 2] = ["modelica_parser.rs", "modelica_grammar_trait.rs"];
 
 fn install_generated_files(staging_dir: &Path) {
     let checked_in_dir = Path::new("src/generated");
-    for file_name in ["modelica_parser.rs", "modelica_grammar_trait.rs"] {
+    for file_name in GENERATED_FILES {
         let staged = staging_dir.join(file_name);
         let checked_in = checked_in_dir.join(file_name);
         if let Err(err) = install_generated_if_changed(&staged, &checked_in) {

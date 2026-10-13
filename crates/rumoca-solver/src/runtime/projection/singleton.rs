@@ -55,7 +55,7 @@ pub(super) fn singleton_assignment_improves(step: SingletonAssignmentStep) -> bo
 pub(super) fn initial_row_target_name<M: AlgebraicProjectionModel>(
     model: &M,
     row: usize,
-) -> Option<&str> {
+) -> Option<String> {
     model
         .initial_target(row)
         .and_then(y_index_for_slot)

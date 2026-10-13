@@ -15,7 +15,7 @@ wasm-bindgen = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-phase-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 rumoca-solver = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["solver-diffsol"] }
 # Enable the wasm_js getrandom backend (diffsol/rand pull getrandom); mirrors

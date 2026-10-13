@@ -36,8 +36,8 @@ impl StructuralPattern {
         state_count: usize,
         solver_count: usize,
     ) -> Result<Self, StructuralPatternError> {
-        let span = Some(derivative.provenance.span());
-        if derivative.rows as usize != state_count || solver_count < state_count {
+        let span = Some(derivative.owner.provenance.span());
+        if derivative.owner.rows as usize != state_count || solver_count < state_count {
             return Err(dependency_error(
                 "the derivative relation does not have one row per state",
                 span,
@@ -47,19 +47,24 @@ impl StructuralPattern {
         let rows = (0..state_count)
             .map(|row| closure.row_states(derivative, row, None))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::from_checked_row_dependencies(state_count, state_count, &rows, derivative.provenance)
+        Self::from_checked_row_dependencies(
+            state_count,
+            state_count,
+            &rows,
+            derivative.owner.provenance,
+        )
     }
 
     /// The union of two certified relations over one shape: a superset of
     /// each, as a Jacobian colored for either of two systems needs.
     pub fn union(&self, other: &Self) -> Result<Self, StructuralPatternError> {
-        if (self.rows, self.columns) != (other.rows, other.columns) {
+        if (self.owner.rows, self.owner.columns) != (other.owner.rows, other.owner.columns) {
             return Err(dependency_error(
                 "a structural union needs two relations of one shape",
-                Some(self.provenance.span()),
+                Some(self.owner.provenance.span()),
             ));
         }
-        let rows = (0..self.rows as usize)
+        let rows = (0..self.owner.rows as usize)
             .map(|row| {
                 let mut columns = Vec::new();
                 self.visit_row_columns(row, &mut |column| columns.push(column));
@@ -68,10 +73,10 @@ impl StructuralPattern {
             })
             .collect::<Vec<_>>();
         Self::from_checked_row_dependencies(
-            self.rows as usize,
-            self.columns as usize,
+            self.owner.rows as usize,
+            self.owner.columns as usize,
             &rows,
-            self.provenance,
+            self.owner.provenance,
         )
     }
 }
@@ -96,7 +101,7 @@ impl AlgebraicClosure {
         span: Option<Span>,
     ) -> Result<Self, StructuralPatternError> {
         let mut owner = vec![None; solver_count - state_count];
-        for (block, projection) in plan.blocks.iter().enumerate() {
+        for (block, projection) in plan.blocks.scalar_blocks().iter().enumerate() {
             for &y in &projection.y_indices {
                 *owner_slot(&mut owner, y, state_count, span)? = Some(block);
             }
@@ -131,7 +136,7 @@ impl AlgebraicClosure {
         let mut changed = true;
         while changed {
             changed = false;
-            for (block, projection) in plan.blocks.iter().enumerate() {
+            for (block, projection) in plan.blocks.scalar_blocks().iter().enumerate() {
                 let read = projection
                     .rows
                     .iter()
@@ -153,7 +158,7 @@ impl AlgebraicClosure {
         row: usize,
         reader: Option<usize>,
     ) -> Result<Vec<usize>, StructuralPatternError> {
-        if row >= relation.rows as usize {
+        if row >= relation.rows() as usize {
             return Err(dependency_error(
                 format!("relation row {row} is outside the relation"),
                 self.span,

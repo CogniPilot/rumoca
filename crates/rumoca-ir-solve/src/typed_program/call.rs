@@ -1,5 +1,12 @@
+mod assertion_flow;
 pub(super) mod dependency;
 mod recursion;
+mod sites;
+mod wire_scope;
+pub use assertion_flow::{
+    AssertionRegionKind, AssertionRegionStep, AssertionSource, CheckedAssertionFlow,
+};
+pub use wire_scope::{ScopedSolvePureCallTable, SolvePureCallWireError, SolvePureCallWireScope};
 mod view;
 
 use rumoca_core::Span;
@@ -11,7 +18,20 @@ use dependency::SolveCallDependency;
 use dependency::affinity::{self, Affinity};
 use dependency::value_projection::{self, ValueProjections};
 pub use recursion::{SolveRecursionProfile, SolveRecursiveGroup, SolveRecursiveMember};
+pub use sites::SolveCallSiteCount;
 pub(super) use view::SolvePureCallTableView;
+
+pub(in crate::typed_program) fn assertion_message_outputs(
+    outputs: &[SolvePureCallOutput],
+    predicate: usize,
+) -> Vec<usize> {
+    outputs
+        .iter()
+        .enumerate()
+        .filter(|(index, output)| output.message_predicate_output(*index) == Some(predicate))
+        .map(|(index, _)| index)
+        .collect()
+}
 
 /// Complete runtime input coordinate of its issuing pure-call owner.
 ///
@@ -63,7 +83,7 @@ impl SolvePureCallInputCoordinate {
     }
 }
 
-use super::program::wire::{TypedProgramWire, replay_program};
+use super::program::wire::{TypedProgramWire, replay_owner_program};
 use super::program::{
     ProgramSlot, SolveOperation, SolveProgramConstructionError, SolveSlotAccess, SolveStorageClass,
     TypedProgram, TypedProgramBuilder,
@@ -115,7 +135,23 @@ pub enum SolvePureCallOutputKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolvePureCallOutput {
     value_type: SolveValueType,
-    kind: SolvePureCallOutputKind,
+    role: SolvePureCallOutputRole,
+}
+
+/// Source assertion severity, owned by its issued predicate output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveAssertionLevel {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SolvePureCallOutputRole {
+    Result,
+    AssertionPredicate { level: SolveAssertionLevel },
+    AssertionMessageValue { predicate_distance: usize },
 }
 
 impl SolvePureCallOutput {
@@ -123,24 +159,29 @@ impl SolvePureCallOutput {
     pub fn result(value_type: SolveValueType) -> Self {
         Self {
             value_type,
-            kind: SolvePureCallOutputKind::Result,
+            role: SolvePureCallOutputRole::Result,
         }
     }
 
     #[must_use]
     pub fn assertion_predicate() -> Self {
+        Self::assertion_predicate_at_level(SolveAssertionLevel::Error)
+    }
+
+    #[must_use]
+    pub fn assertion_predicate_at_level(level: SolveAssertionLevel) -> Self {
         Self {
             value_type: SolveValueType::scalar(SolveScalarType::Boolean),
-            kind: SolvePureCallOutputKind::AssertionPredicate,
+            role: SolvePureCallOutputRole::AssertionPredicate { level },
         }
     }
 
     /// A converted assertion-message scalar of `value_type`.
     #[must_use]
-    pub fn assertion_message_value(value_type: SolveValueType) -> Self {
+    pub fn assertion_message_value(value_type: SolveValueType, predicate_distance: usize) -> Self {
         Self {
             value_type,
-            kind: SolvePureCallOutputKind::AssertionMessageValue,
+            role: SolvePureCallOutputRole::AssertionMessageValue { predicate_distance },
         }
     }
 
@@ -149,7 +190,7 @@ impl SolvePureCallOutput {
     /// Boolean predicate never does.
     #[must_use]
     pub fn carries_tangent(&self) -> bool {
-        self.kind != SolvePureCallOutputKind::AssertionPredicate
+        self.kind() != SolvePureCallOutputKind::AssertionPredicate
             && matches!(self.value_type.element_type(), SolveScalarType::Real { .. })
     }
 
@@ -160,8 +201,47 @@ impl SolvePureCallOutput {
 
     #[must_use]
     pub const fn kind(&self) -> SolvePureCallOutputKind {
-        self.kind
+        match self.role {
+            SolvePureCallOutputRole::Result => SolvePureCallOutputKind::Result,
+            SolvePureCallOutputRole::AssertionPredicate { .. } => {
+                SolvePureCallOutputKind::AssertionPredicate
+            }
+            SolvePureCallOutputRole::AssertionMessageValue { .. } => {
+                SolvePureCallOutputKind::AssertionMessageValue
+            }
+        }
     }
+
+    #[must_use]
+    pub const fn assertion_level(&self) -> Option<SolveAssertionLevel> {
+        match self.role {
+            SolvePureCallOutputRole::AssertionPredicate { level } => Some(level),
+            _ => None,
+        }
+    }
+
+    /// Earlier predicate output whose violated message consumes this scalar.
+    #[must_use]
+    pub fn message_predicate_output(&self, output: usize) -> Option<usize> {
+        match self.role {
+            SolvePureCallOutputRole::AssertionMessageValue { predicate_distance } => {
+                (predicate_distance != 0)
+                    .then(|| output.checked_sub(predicate_distance))
+                    .flatten()
+            }
+            _ => None,
+        }
+    }
+}
+
+pub(in crate::typed_program) fn directional_output_locations(
+    outputs: &[SolvePureCallOutput],
+) -> impl Iterator<Item = usize> + '_ {
+    outputs.iter().scan(0, |next, output| {
+        let location = *next;
+        *next += 1 + usize::from(output.carries_tangent());
+        Some(location)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +252,7 @@ pub(super) struct SolvePureCallInterface<'owner> {
     pub(super) dependencies: &'owner [Box<[SolveCallDependency]>],
     pub(super) projections: Option<&'owner ValueProjections>,
     pub(super) affinity: Option<&'owner Affinity>,
+    pub(super) assertion_flow: Option<&'owner CheckedAssertionFlow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +270,8 @@ pub struct SolvePureCallDirectionalOwner {
 pub struct SolvePureCallOwner {
     #[serde(skip)]
     input_coordinate: SolvePureCallInputCoordinate,
+    #[serde(skip)]
+    assertion_flow: Option<CheckedAssertionFlow>,
     #[serde(skip)]
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     #[serde(skip)]
@@ -209,7 +292,7 @@ pub struct SolvePureCallOwner {
 ///
 /// Real aggregate inputs/results are represented by adjacent primal and
 /// tangent typed values. Integer and Boolean values remain primal-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallDirectionalSite {
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     projections: Option<Arc<ValueProjections>>,
@@ -228,7 +311,10 @@ pub struct SolvePureCallDirectionalSite {
 /// this interface exactly matches `owner` in its sole pure-call table.
 /// Issued sites share immutable interface storage with that owner. Equality
 /// remains value-based for independently reconstructed sites.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// On the wire a site is only its owner id; the interface lives once in the
+/// owner table and is resolved against it when the site is read.
+#[derive(Debug, Clone, Eq)]
 pub struct SolvePureCallSite {
     dependencies: Arc<[Box<[SolveCallDependency]>]>,
     projections: Option<Arc<ValueProjections>>,
@@ -237,6 +323,29 @@ pub struct SolvePureCallSite {
     inputs: Arc<[SolveValueType]>,
     outputs: Arc<[SolvePureCallOutput]>,
     directional: Option<Box<SolvePureCallDirectionalSite>>,
+}
+
+impl PartialEq for SolvePureCallDirectionalSite {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner
+            && shared_slice_eq(&self.dependencies, &other.dependencies)
+            && self.projections == other.projections
+            && self.affinity == other.affinity
+            && shared_slice_eq(&self.inputs, &other.inputs)
+            && shared_slice_eq(&self.outputs, &other.outputs)
+    }
+}
+
+impl PartialEq for SolvePureCallSite {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner
+            && shared_slice_eq(&self.dependencies, &other.dependencies)
+            && self.projections == other.projections
+            && self.affinity == other.affinity
+            && shared_slice_eq(&self.inputs, &other.inputs)
+            && shared_slice_eq(&self.outputs, &other.outputs)
+            && self.directional == other.directional
+    }
 }
 
 impl SolvePureCallSite {
@@ -381,6 +490,7 @@ impl SolvePureCallDirectionalOwner {
             dependencies: &self.dependencies,
             projections: self.projections.as_deref(),
             affinity: self.affinity.as_deref(),
+            assertion_flow: None,
             id,
             inputs: &self.inputs,
             outputs: &self.outputs,
@@ -413,6 +523,19 @@ impl SolvePureCallDirectionalOwner {
 }
 
 impl SolvePureCallOwner {
+    /// The source output corresponding to a primal lane of this owner's
+    /// checked directional ABI. Tangent lanes have no source output.
+    #[must_use]
+    pub fn directional_primal_output_index(&self, output: usize) -> Option<usize> {
+        self.directional.as_ref()?;
+        directional_output_locations(&self.outputs).position(|location| location == output)
+    }
+
+    #[must_use]
+    pub fn assertion_flow(&self) -> Option<&CheckedAssertionFlow> {
+        self.assertion_flow.as_ref()
+    }
+
     #[must_use]
     pub const fn input_coordinate(&self) -> SolvePureCallInputCoordinate {
         self.input_coordinate
@@ -454,6 +577,7 @@ impl SolvePureCallOwner {
 
     pub(super) fn interface(&self) -> SolvePureCallInterface<'_> {
         SolvePureCallInterface {
+            assertion_flow: self.assertion_flow.as_ref(),
             id: self.id,
             inputs: &self.inputs,
             outputs: &self.outputs,
@@ -499,6 +623,40 @@ impl PartialEq for SolvePureCallTable {
                 || (self.recursion == other.recursion
                     && self.groups == other.groups
                     && self.owners == other.owners))
+    }
+}
+
+impl SolvePureCallTable {
+    pub(crate) fn program_output_dependencies(
+        &self,
+        program: &TypedProgram,
+    ) -> Result<Box<[Box<[SolveCallDependency]>]>, SolveProgramConstructionError> {
+        let input_count = program
+            .slots()
+            .iter()
+            .filter(|slot| slot.storage() == crate::SolveStorageClass::Input)
+            .count();
+        let output_count = program
+            .slots()
+            .iter()
+            .filter(|slot| slot.storage() == crate::SolveStorageClass::Output)
+            .count();
+        dependency::derive(
+            program,
+            input_count,
+            output_count,
+            SolvePureCallTableView::primal(&self.owners),
+        )
+    }
+
+    /// Whether both handles retain the same complete immutable call-table
+    /// context. Independent construction or wire replay starts a new owner.
+    pub fn shares_table_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.immutable_lineage, &other.immutable_lineage)
+    }
+
+    pub(crate) fn native_source_lineage(&self) -> &Arc<()> {
+        &self.immutable_lineage
     }
 }
 
@@ -641,7 +799,7 @@ impl SolvePureCallTableBuilder {
             members,
             |ordinal, ids, view| {
                 let (inputs, outputs, provenance) = &interfaces[ordinal];
-                TypedProgram::construct_with_calls(arithmetic, view, |builder| {
+                TypedProgram::construct_with_owner(arithmetic, view, outputs, |builder| {
                     let (input_slots, output_slots) =
                         declare_owner_slots(builder, inputs, outputs, *provenance)?;
                     build(ordinal, ids, builder, &input_slots, &output_slots)
@@ -671,11 +829,12 @@ impl SolvePureCallTableBuilder {
         }
         let id = next_owner_id(self.owners.len(), provenance)?;
         let interfaces = SolvePureCallTableView::primal(&self.owners);
-        let body = TypedProgram::construct_with_calls(self.arithmetic, interfaces, |builder| {
-            let (input_slots, output_slots) =
-                declare_owner_slots(builder, &inputs, &outputs, provenance)?;
-            build(builder, &input_slots, &output_slots)
-        })?;
+        let body =
+            TypedProgram::construct_with_owner(self.arithmetic, interfaces, &outputs, |builder| {
+                let (input_slots, output_slots) =
+                    declare_owner_slots(builder, &inputs, &outputs, provenance)?;
+                build(builder, &input_slots, &output_slots)
+            })?;
         let input_coordinate = validate_owner_body(&body, &inputs, &outputs, provenance)?;
         let directional_interfaces = SolvePureCallTableView::directional(&self.owners);
         let directional =
@@ -683,8 +842,10 @@ impl SolvePureCallTableBuilder {
         let dependencies = dependency::derive(&body, inputs.len(), outputs.len(), interfaces)?;
         let projections = derive_value_projections(&body, inputs.len(), &outputs, &self.owners);
         let affinity = derive_affinity(&body, inputs.len(), outputs.len(), &self.owners);
+        let assertion_flow = assertion_flow::derive(&body, inputs.len(), &outputs, interfaces);
         self.owners.push(SolvePureCallOwner {
             input_coordinate,
+            assertion_flow,
             dependencies: dependencies.into(),
             projections: projections.map(Arc::new),
             affinity: affinity.map(Arc::new),
@@ -809,16 +970,25 @@ fn require_owner_interface(
     {
         return Err(SolveProgramConstructionError::ProfileMismatch { provenance });
     }
-    if outputs.iter().any(|output| match output.kind {
-        SolvePureCallOutputKind::Result => false,
-        SolvePureCallOutputKind::AssertionPredicate => {
-            output.value_type.element_type() != SolveScalarType::Boolean
-                || !output.value_type.dimensions().is_empty()
-        }
-        SolvePureCallOutputKind::AssertionMessageValue => {
-            !output.value_type.dimensions().is_empty()
-        }
-    }) {
+    if outputs
+        .iter()
+        .enumerate()
+        .any(|(index, output)| match output.kind() {
+            SolvePureCallOutputKind::Result => false,
+            SolvePureCallOutputKind::AssertionPredicate => {
+                output.value_type.element_type() != SolveScalarType::Boolean
+                    || !output.value_type.dimensions().is_empty()
+            }
+            SolvePureCallOutputKind::AssertionMessageValue => {
+                !output.value_type.dimensions().is_empty()
+                    || output
+                        .message_predicate_output(index)
+                        .is_none_or(|predicate| {
+                            outputs[predicate].kind() != SolvePureCallOutputKind::AssertionPredicate
+                        })
+            }
+        })
+    {
         return Err(SolveProgramConstructionError::InvalidCallOutput { provenance });
     }
     Ok(())
@@ -835,7 +1005,9 @@ fn validate_owner_body(
     let interface_count = input_count
         .checked_add(output_count)
         .ok_or(SolveProgramConstructionError::IdentityOverflow { provenance })?;
-    if body.slots().len() < interface_count
+    if !body.assigned_state_inputs().is_empty()
+        || !body.assigned_state_outputs().is_empty()
+        || body.slots().len() < interface_count
         || body.slots()[..input_count]
             .iter()
             .zip(inputs)
@@ -926,7 +1098,9 @@ fn replay_group(
         arithmetic,
         recursion,
         interfaces,
-        |ordinal, _, view| replay_program(&members[ordinal].body, view),
+        |ordinal, _, view| {
+            replay_owner_program(&members[ordinal].body, view, &members[ordinal].outputs)
+        },
     )
     .and_then(|replayed| {
         (replayed == *serialized)
@@ -987,7 +1161,8 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             )
             .map_err(serde::de::Error::custom)?;
             let interfaces = SolvePureCallTableView::primal(&owners);
-            let body = replay_program(&owner.body, interfaces).map_err(serde::de::Error::custom)?;
+            let body = replay_owner_program(&owner.body, interfaces, &owner.outputs)
+                .map_err(serde::de::Error::custom)?;
             let input_coordinate =
                 validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
                     .map_err(serde::de::Error::custom)?;
@@ -1006,8 +1181,11 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
             let projections =
                 derive_value_projections(&body, owner.inputs.len(), &owner.outputs, &owners);
             let affinity = derive_affinity(&body, owner.inputs.len(), owner.outputs.len(), &owners);
+            let assertion_flow =
+                assertion_flow::derive(&body, owner.inputs.len(), &owner.outputs, interfaces);
             owners.push(SolvePureCallOwner {
                 input_coordinate,
+                assertion_flow,
                 dependencies: dependencies.into(),
                 projections: projections.map(Arc::new),
                 affinity: affinity.map(Arc::new),
@@ -1039,8 +1217,14 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
 mod tests {
     mod affinity;
     mod aggregate_logarithms;
+    mod assertion_flow;
+    mod assertion_forwarding;
+    mod assertion_roles;
+    mod assigned_read_flow;
     mod block_split;
     mod broadcast_division;
+    mod call_sites;
+    mod demand;
     mod dependencies;
     mod discrete_broadcast;
     mod integer_tensors;
@@ -1050,6 +1234,7 @@ mod tests {
     mod table_sharing;
     mod value_projections;
     mod views;
+    mod wire_sites;
 
     use super::*;
     use crate::{SolveIntegerDomain, SolveRealFormat, SolveValue};
@@ -1185,6 +1370,7 @@ mod tests {
             owner,
             arguments,
             destinations,
+            ..
         } = outer.body().operations()[1].operation()
         else {
             panic!("outer owner must call its issued inner owner");

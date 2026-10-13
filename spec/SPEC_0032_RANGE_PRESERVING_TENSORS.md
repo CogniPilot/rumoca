@@ -14,6 +14,7 @@ scalar rows are derived views, not recovered structure.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
+| Scalar refresh replay demands one logical block receipt from its canonical stage owner: explicit blocks are borrowed, singleton runs derive only the requested source-ordered row/target pair without tearing or alternate charts. Full source/output/paired-target checks remain required | Solve scalar execution boundary | Ranged owners need neither authored explicit blocks nor an eager scalar catalog to establish replay |
 | Structured equation families stay authoritative | Flat/DAE IR | Prevents parallel scalar owners |
 | Structured event-relation families stay authoritative | DAE event system | Preserve every per-point zero crossing without making scalar roots a second owner |
 | Compacted component arrays leave no descriptor | Instance IR | Compaction is not an ownership change |
@@ -23,59 +24,7 @@ scalar rows are derived views, not recovered structure.
 | Empty domains produce zero scalar rows | Scalar views | Valid zero-iteration ranges |
 | Each body of a loop nest owns one family over the whole nest | Flatten | An unrolled outer binder scalarizes every grid row |
 
-Structured families include source `for` equations, whole-array equations,
-slices, comprehensions, boundary ranges, and connection-generated array
-equations that are naturally ranged. Domain payloads must not serialize one
-entry per scalar iteration except inside an explicitly materialized scalar view.
-Stage-specific structured-equation ids remain stage-owned and must be mapped
-explicitly when identity crosses phase boundaries.
-
-An event-generating relation inside a structured family is itself a compact
-family over the same checked domain. DAE owns continuously monitored state
-relations as compact root families, and Solve derives one root program for each
-domain point in canonical order. A structured event kind without its own
-compact owner MUST be rejected at the exact relation; lowering MUST NOT retain
-the conditional value while silently omitting its event boundary.
-
-Instantiation may compact an array of structured components: it resolves one
-template domain point and derives the others by reindexing instance paths
-(`rumoca-phase-instantiate/src/array_expansion/`). This is an instantiation
-optimization, not an ownership change — Instance IR's authoritative
-representation of the array is still the per-element `components`/`classes`
-entries, and every later phase reads those.
-
-**REQUIRED:** a compacted array must produce byte-identical per-element
-entries — including `InstanceId` allocation order, on which flat variable
-identity depends (SPEC_0001) — to element-by-element expansion. The declared
-extents of every expanded array, compacted or not, are recorded once in
-`InstanceOverlay::array_parent_dims`; that is the only array-level record
-Instance IR keeps, and the per-element entries remain the array's
-representation.
-
-**PROHIBITED:** recording *in Instance IR* that an array was compacted.
-Instantiation kept a `component_families` descriptor for a possible future
-reader and acquired none; while it existed a diagnostic read it and reported
-whether the compiler had compacted the array rather than what the model
-declared. A compaction record in the IR is by construction a second owner for
-state the per-element entries already own, and it makes the two paths
-distinguishable to consumers, which this section forbids. A future phase that
-wants the compact domain re-derives it from the declared extents.
-
-This prohibition is on IR content, not on observability as such: a counter or
-other out-of-band signal that no consumer can read is still permitted, and one
-is needed. Compaction currently has no liveness witness — the differential
-tests prove only that the compact and scalar overlays agree, which stays
-trivially true if the homogeneity gate silently stops compacting anything, so
-the optimization could regress to element-by-element expansion undetected. The
-follow-up is a non-IR compaction counter that the instantiate tests can assert
-on.
-
-Compaction is refused whenever any per-element rewrite in
-`prepare_element_declaration` would fire: a non-`each` `start`, an array-level
-binding, or any non-`each` modification that indexes per element — which
-includes every nested class modification, even an index-independent one. The
-gate is one-sided by design: refusing costs only instantiation time, while
-compacting a genuinely per-element array would produce a wrong model.
+Structured equation and event-relation families stay authoritative, domains are compact and use `rumoca-core::StructuredIndexDomain`, and a compacted array is indistinguishable from its unrolled form per element. [SPEC_0043 catalog §17](SPEC_0043_CONSTRUCTION_CATALOG.md#17-range-preserving-ownership-and-domains-catalog) is normative by reference.
 
 ### 2. Scalar Views
 
@@ -139,68 +88,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 
 ### 4. Solve Tensor Nodes
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| `ComputeNode::Map` is elementwise | Solve IR | Pointwise tensor semantics |
-| `ComputeNode::AffineStencil` is neighborhood access | Solve IR | Affine offset semantics |
-| Runtime tensor access/update stays aggregate-native | Solve IR typed programs | Compact affine indexing instead of extent-sized scalar selection |
-| Solve grouping is semantic | `rumoca-phase-solve` | Backends do not redefine IR |
-| Scalar fallback uses shared scalarization | `rumoca-eval-solve` | One ordering implementation |
-| Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
-| A derivative family's output map is the affine image of its matched slots | `rumoca-phase-solve` | A strided grid interior stays one node |
-| A native backend executes a `Map`/`AffineStencil` node as one loop kernel over its compact domain, driven by the same point plan that generates the node's scalar view | `rumoca-eval-solve::AffineKernelPlan`, native backends | Compile cost independent of domain size; the kernel and the view cannot disagree |
-| A single-body structured initialization family whose points share one affine program lowers to one `Map` node over its consecutive residual rows; its Jacobian is that node's tensor JVP | `rumoca-phase-solve` initialization lowering | The initialization system stays compact through Solve and the runtime |
-| A scalar Jacobian artifact of a block is the scalar view of the block's tensor JVP: forward AD runs once per tensor node's base program | `rumoca-phase-solve` artifacts | Under the solver-y and parameter seed every AD rule is independent of load indices and constant values, so the view equals per-row AD while its cost follows the node, not its domain |
-
-`Map` represents canonical DAE residual families that are elementwise over a
-compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
-comes from structured DAE domains plus affine operand proofs; Solve lowering
-must not rediscover stencils by scanning anonymous scalar rows. Backends may
-fuse or split generated kernels as target-local codegen, but the reported
-kernel inventory must match the generated work.
-
-A derivative family's output slots are read from the structural matching and
-need not be contiguous: the interior of a grid writes a strided sub-range of
-its state array, interleaved with edge rows. Lowering fits one affine output
-map from the base point and one step per binder and checks it at every point;
-a family with no such map keeps its scalar rows. The derivative block proves
-that every state slot is written exactly once, not that pieces are adjacent.
-
-An affine tensor node's point plan is constructed once from its domain, output
-map, base program, and stride metadata. Construction combines each operation's
-strides per binder and proves over the whole domain that every load and output
-index lies in `[0, max]` and every strided constant is finite (each bound is
-affine or monotone in every binder ordinal, so its extremes lie on the domain
-box's corners). The scalar view is the plan evaluated at each point in canonical
-order; a native kernel evaluates the same plan in a loop nest with the view's
-integer index arithmetic and IEEE constant operations in the same order, so its
-results are bitwise identical to the view. The kernel takes its proven maxima as
-its length requirements and checks no bound per point. A node whose base program
-the kernel path does not support keeps the per-row path, chosen when the block
-is compiled.
-
-An initialization family is certified like a structured B.1c family: it
-becomes a `Map` node only when one base program with affine load and constant
-strides reproduces every point's compiled program exactly. The node writes the
-family's rows at the residual positions the per-point rows held, so projection,
-incidence, and scalar consumers see the same rows. Any other family keeps its
-scalar rows.
-
-Structured B.1c lowering uses `ComputeNode::Map` (or a stronger proven tensor
-node) together with a compact affine target map. Discrete row role, pre mode,
-observation policy, and clock owner derive from the structured owner. A runtime
-that needs scalar programs requests the shared scalar view from
-`rumoca-eval-solve`; `rumoca-phase-solve` does not scalarize the owner.
-
-A runtime tensor index, slice, or update is a first-class shape-checked
-aggregate operation. Its dimensions, index operands, one-based Modelica index
-conversion, row-major affine address, result shape, and out-of-range behavior
-are constructed once. Phase lowering and canonical Solve construction do not
-enumerate coordinates into scalar registers, repeated operations, or select
-chains. A scalar consumer receives a projection of this aggregate owner; it
-does not become the owner. Evaluators and native backends execute the compact
-operation directly. Text backends may materialize target-language coordinate
-operations only while rendering the final checked template view. Native checked-assignment WASM gather and fault rows live in [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md).
+Solve keeps compact Map and AffineStencil tensor nodes; scalar rows are derived views, never the authority. [SPEC_0043 catalog §18](SPEC_0043_CONSTRUCTION_CATALOG.md#18-solve-tensor-nodes-catalog) is normative by reference.
 
 ### 5. Ownership Boundaries
 
@@ -223,3 +111,16 @@ from these owners; it must not materialize scalar rows and then rediscover a
 pattern. Pattern soundness, coloring, storage-policy separation, and complex
 block expansion are specified by
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| A checked structural pattern retains one private immutable owner for its shape, relation, provenance and construction-issued coloring. Clone shares that owner; an independent checked derivation, projection or replay issues a fresh owner. Explicit colored construction derives through the existing exhaustive algorithm at most once per owner, including upstream pattern clones and concurrent construction. Coloring storage is excluded from structural equality and wire data. | `rumoca-ir-solve::StructuralPattern` | Exact owner sharing prevents repeated derivation without substituting equal geometry for source ownership. |
+| Artifact construction determines coloring obligations before computation: global implicit, manifold, derivative and initialization-residual structures retain patterns only; algebraic, manifold and initialization projection blocks require a constructor-issued colored structure. Consumers borrow that required product and cannot trigger coloring analysis; an unplanned execution request receives the existing typed missing-artifact refusal. No caller flag or empty coloring substitutes for the required product. | Solve structural artifact construction and projection adapters | Required block coloring remains exact; unused global patterns never materialize coloring coordinates. |
+| Register-range version issuance has one canonical interval inventory, shared by structural dependency families and prepared execution. An overwrite splits only intersecting range pieces; captured operand views retain their exact earlier owners and offsets. Structural tensor loads, broadcasts, and elementwise unions do not allocate one dependency cell per tensor lane or absent register. Scalar and range queries derive from this inventory through the existing exhaustive dependency rules. Execution operand receipts reuse the canonical exhaustive source-register rules and preserve native range operations. | `rumoca-ir-solve` register-range inventory, consumed by `structural_pattern`, `refresh::dependency`, and prepared evaluation | Metadata cost follows operation and range structure; overwrites preserve earlier reads, and a missing source is still refused even if no requested result depends on it. |
+| A projection block's selected-output degree queries share one ordered walk for each canonical node/program and its complete exact target set. Queries read degrees at the original stores, retain conservative refusal of each required prefix, and construct no dense inventory of unselected outputs or register snapshots. Different target sets remain independent proofs. | `rumoca-ir-solve::affinity` | A tensor owner's residual rows must not each replay its whole degree-analysis prefix; this construction-time query sharing authorizes no runtime invocation reuse. |
+
+
+### 7. Compact Visible Projections
+
+SolveModel owns a compact `VisibleProjection` in place of scalar visible inventories. [SPEC_0043 catalog §19](SPEC_0043_CONSTRUCTION_CATALOG.md#19-compact-visible-projections-catalog) is normative by reference.
+

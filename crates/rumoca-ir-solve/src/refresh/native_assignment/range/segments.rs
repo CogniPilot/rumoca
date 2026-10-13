@@ -58,8 +58,31 @@ pub(super) fn derive_segments(
     operations: &[LinearOp],
     segments: &[Segment],
     span: rumoca_core::Span,
-    targets: &[Option<ScalarSlot>],
     layout: &VarLayout,
+    target: impl FnOnce() -> Checked<Range<usize>>,
+) -> Checked<Family> {
+    derive_paired_segments(source, outputs, operations, segments, span, layout, || {
+        let owned = target()?;
+        let mut first = owned.start;
+        Ok(segments
+            .iter()
+            .map(|segment| {
+                let run = first..first + segment.count;
+                first = run.end;
+                run
+            })
+            .collect())
+    })
+}
+
+pub(super) fn derive_paired_segments(
+    source: RefreshScalarProgramSource,
+    outputs: Range<usize>,
+    operations: &[LinearOp],
+    segments: &[Segment],
+    span: rumoca_core::Span,
+    layout: &VarLayout,
+    targets: impl FnOnce() -> Checked<Vec<Range<usize>>>,
 ) -> Checked<Family> {
     let total = segments
         .iter()
@@ -85,7 +108,8 @@ pub(super) fn derive_segments(
     crate::ScalarProgramRegisterFlow::derive(&prefix).map_err(|_| {
         NativeRefreshAssignmentRefusal("native segmented prefix has invalid register flow")
     })?;
-    let owned = target_range(targets, outputs.clone(), layout)?;
+    let targets = targets()?;
+    let owned = checked_segment_targets(&targets, segments, layout)?;
     let producers = UniqueProgram::new(&prefix).ok_or(NativeRefreshAssignmentRefusal(
         "native segmented program has overlapping destination versions",
     ))?;
@@ -93,17 +117,15 @@ pub(super) fn derive_segments(
     independent_call_inputs(producers.view(), &dependencies)?;
     let mut values = prefix.clone();
     let mut stores = Vec::with_capacity(segments.len());
-    let mut first = owned.start;
-    for segment in segments {
+    for (segment, target) in segments.iter().zip(&targets) {
         if segment.stride != 1 {
             return refused("native tensor residual requires a contiguous terminal range");
         }
-        let target = first..first + segment.count;
         let (value, stride) = isolated_value(
             producers.view(),
             segment.start,
             segment.count,
-            &target,
+            target,
             &dependencies,
         )?;
         let value = if stride == 0 {
@@ -123,13 +145,24 @@ pub(super) fn derive_segments(
             count: segment.count,
             stride: stride.max(1),
         });
-        first = target.end;
     }
     values.extend(stores);
-    let value_kernel =
-        ScalarProgramBlock::with_program_spans(vec![values], vec![span]).map_err(|_| {
-            NativeRefreshAssignmentRefusal("malformed native segmented value projection")
-        })?;
+    let values = crate::prune_unread_pure_operations(values);
+    let value_kernel = ScalarProgramBlock::with_program_output_placements(
+        vec![values],
+        vec![span],
+        vec![crate::ScalarProgramOutputPlacement::Segments(
+            targets
+                .iter()
+                .map(|target| {
+                    crate::ScalarOutputSegment::Range(
+                        target.start - owned.start..target.end - owned.start,
+                    )
+                })
+                .collect(),
+        )],
+    )
+    .map_err(|_| NativeRefreshAssignmentRefusal("malformed native segmented value projection"))?;
     Ok(Family {
         stage: NativeRefreshAssignmentStage {
             integer_bindings: Default::default(),
@@ -148,4 +181,34 @@ pub(super) fn derive_segments(
             .collect(),
         outputs,
     })
+}
+
+fn checked_segment_targets(
+    targets: &[Range<usize>],
+    segments: &[Segment],
+    layout: &VarLayout,
+) -> Checked<Range<usize>> {
+    if targets.len() != segments.len()
+        || targets.iter().zip(segments).any(|(target, segment)| {
+            target.start > target.end
+                || target.len() != segment.count
+                || target.end > layout.y_scalars()
+        })
+    {
+        return refused("native tensor targets are not one bounded dense injective range");
+    }
+    let mut ordered = targets.to_vec();
+    ordered.sort_by_key(|target| target.start);
+    let Some(first) = ordered.first() else {
+        return refused("native segmented target inventory is empty");
+    };
+    let start = first.start;
+    let mut end = start;
+    for target in ordered {
+        if target.start != end {
+            return refused("native tensor targets are not one bounded dense injective range");
+        }
+        end = target.end;
+    }
+    Ok(start..end)
 }

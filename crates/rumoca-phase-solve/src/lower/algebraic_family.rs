@@ -25,13 +25,15 @@ pub(super) fn lower_algebraic_family_call<'dae>(
             "continuous row ordinal overflow",
             span,
         )?;
-    let matched = rows.clone().enumerate().all(|(scalar, row)| {
-        matches!(
-            context.matching.get(&row),
-            Some(UnknownId::Algebraic { variable, scalar: matched })
-                if *variable == form.target && *matched as usize == scalar
-        )
-    });
+    let compact = has_paired_row_run(context, id, form.target, &rows)?;
+    let matched = compact
+        || rows.clone().enumerate().all(|(scalar, row)| {
+            matches!(
+                context.matching.get(&row),
+                Some(UnknownId::Algebraic { variable, scalar: matched })
+                    if variable == form.target && matched as usize == scalar
+            )
+        });
     if !matched {
         return Ok(false);
     }
@@ -42,6 +44,31 @@ pub(super) fn lower_algebraic_family_call<'dae>(
     else {
         return Ok(false);
     };
-    output.residual.push_outputs(program, span, rows);
+    output.residual.push_output_range(program, span, rows);
     Ok(true)
+}
+
+fn has_paired_row_run<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    source: dae::ContinuousFamilyId<'dae>,
+    target: dae::AlgebraicId<'dae>,
+    rows: &std::ops::Range<usize>,
+) -> Result<bool, LowerError> {
+    for stage in context.projection_stages {
+        let MatchedProjection::Family(family) = stage else {
+            continue;
+        };
+        if let Some(run) =
+            family.declaration_row_run(context.view, context.layout, source, target, rows)?
+        {
+            if run.rows() != *rows || run.y_range().len() != rows.len() {
+                return Err(LowerError::contract(
+                    "paired source run disagrees with emitted declaration",
+                    first_model_span(context.view),
+                ));
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

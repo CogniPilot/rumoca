@@ -10,6 +10,7 @@ fn domain(lower: i64, upper: i64, step: i64) -> rumoca_core::StructuredIndexDoma
             lower,
             upper,
             step,
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
         }],
     }
 }
@@ -284,10 +285,8 @@ fn fixture(
     minijinja::context! {name=>name,expected=>output,external_tables=>tables,plan=>Value::from_object(plan)}
 }
 
-#[test]
-// SPEC_0021: Exception - one regression renders the complete checked scalar fixture table.
-#[allow(clippy::too_many_lines)]
-fn checked_solve_fixture_export_matches_native_evaluation() {
+/// Fold, nested fold and tensor-lane rows with their native results.
+fn fold_fixtures() -> Vec<Value> {
     let mut fixtures = vec![
         fixture(
             "continued_sum",
@@ -355,6 +354,12 @@ fn checked_solve_fixture_export_matches_native_evaluation() {
         Some(&[1.0, 1.0, 10.0, 10.0, 3.0, 33.0, 4.0, 44.0]),
         &[],
     ));
+    fixtures
+}
+
+/// One row per random generator: initial state, result and next state.
+fn random_generator_fixtures() -> Vec<Value> {
+    let mut fixtures = Vec::new();
     for generator in [
         solve::RandomGenerator::Xorshift64Star,
         solve::RandomGenerator::Xorshift128Plus,
@@ -411,7 +416,12 @@ fn checked_solve_fixture_export_matches_native_evaluation() {
         });
         fixtures.push(fixture(&format!("random_{generator:?}"), row, None, &[]));
     }
-    fixtures.push(fixture(
+    fixtures
+}
+
+/// Impure random calls keyed by call site.
+fn impure_event_fixture() -> Value {
+    fixture(
         "impure_event_calls",
         vec![
             Op::Const {
@@ -454,7 +464,12 @@ fn checked_solve_fixture_export_matches_native_evaluation() {
         ],
         None,
         &[],
-    ));
+    )
+}
+
+/// Every smoothness, extrapolation and input combination over one table.
+fn table_fixtures() -> Vec<Value> {
+    let mut fixtures = Vec::new();
     let mut table_id = 100;
     for smoothness in [1, 2, 3] {
         for extrapolation in [1, 2, 3, 4] {
@@ -524,6 +539,15 @@ fn checked_solve_fixture_export_matches_native_evaluation() {
             }
         }
     }
+    fixtures
+}
+
+#[test]
+fn checked_solve_fixture_export_matches_native_evaluation() {
+    let mut fixtures = fold_fixtures();
+    fixtures.extend(random_generator_fixtures());
+    fixtures.push(impure_event_fixture());
+    fixtures.extend(table_fixtures());
     let mut env = minijinja::Environment::new();
     env.add_template("fixture", "{{ fixtures|tojson }}")
         .unwrap();

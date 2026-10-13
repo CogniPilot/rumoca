@@ -30,7 +30,7 @@ Composition of the shipped binaries:
 
 | License | Crates |
 |---|---|
-| Apache License 2.0 | 470 |
+| Apache License 2.0 | 476 |
 | MIT License | 111 |
 | Unicode License v3 | 19 |
 | ISC License | 8 |
@@ -79,7 +79,7 @@ code is expressly permitted by MPL-2.0 section 3.3.
 
 ### Vendored specification schemas
 
-Three upstream trees are copied into this repository verbatim. Each retains its
+Four upstream trees are copied into this repository verbatim. Each retains its
 own upstream license file in place; this entry only surfaces them here.
 
 - `crates/rumoca-phase-codegen/src/templates/galec/schemas/`: eFMI Standard
@@ -98,6 +98,11 @@ own upstream license file in place; this entry only surfaces them here.
   Modelica Association Project "FMI". License retained at upstream/LICENSE.txt.
   Byte identity with the pinned upstream is enforced by the test
   `fmi_ls_wasm_vendored_contract_matches_pinned_upstream_bytes`.
+- `crates/rumoca/tests/fixtures/fmi-ls-wasm-schema/`: unchanged FMI 3.0.2 XML
+  schemas from modelica/fmi-standard tag v3.0.2. BSD-2-Clause, Copyright (C)
+  2008-2011 MODELISAR consortium, 2012-2024 Modelica Association Project "FMI".
+  The upstream LICENSE.txt is retained in that directory; per-file SHA-256
+  pins are in UPSTREAM.md. The specification text is not vendored.
 
 ### Vendored browser runtime
 
@@ -5620,6 +5625,7 @@ Used by:
 - [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown)
 - [heck 0.5.0](https://github.com/withoutboats/heck)
 - [httparse 1.10.1](https://github.com/seanmonstar/httparse)
+- [id-arena 2.3.0](https://github.com/fitzgen/id-arena)
 - [idna 1.1.0](https://github.com/servo/rust-url/)
 - [idna_adapter 1.2.2](https://github.com/hsivonen/idna_adapter)
 - [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap)
@@ -8890,6 +8896,7 @@ Used by:
 - [scnr2 0.3.3](https://github.com/jsinger67/scnr2)
 - [scnr2_generate 0.3.3](https://github.com/jsinger67/scnr2)
 - [scnr2_macro 0.3.3](https://github.com/jsinger67/scnr2)
+- [semver 1.0.28](https://github.com/dtolnay/semver)
 - [seq-macro 0.3.6](https://github.com/dtolnay/seq-macro)
 - [serde 1.0.228](https://github.com/serde-rs/serde)
 - [serde_core 1.0.228](https://github.com/serde-rs/serde)
@@ -8924,9 +8931,13 @@ Used by:
 - [validated_struct 2.2.0](https://github.com/p-avital/validated-struct-rs)
 - [validated_struct_macros 2.2.0](https://github.com/p-avital/validated-struct-macros-rs)
 - [wasm-encoder 0.241.2](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-encoder)
+- [wasm-metadata 0.241.2](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-metadata)
+- [wasmparser 0.241.2](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser)
 - [wasmtime-internal-jit-icache-coherence 38.0.4](https://github.com/bytecodealliance/wasmtime)
 - [wasmtime-internal-math 38.0.4](https://github.com/bytecodealliance/wasmtime)
 - [wide 0.7.33](https://github.com/Lokathor/wide)
+- [wit-component 0.241.2](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wit-component)
+- [wit-parser 0.241.2](https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wit-parser)
 - [xml_writer 0.4.0](https://github.com/pzol/xml_writer.git)
 - [zenoh-buffers 1.9.0](https://github.com/eclipse-zenoh/zenoh)
 - [zenoh-codec 1.9.0](https://github.com/eclipse-zenoh/zenoh)

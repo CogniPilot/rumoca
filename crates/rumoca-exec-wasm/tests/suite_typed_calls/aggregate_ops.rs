@@ -247,3 +247,83 @@ fn element_selection_returns_the_fallback_outside_every_axis() {
     }
     agrees(&call, &cases);
 }
+
+#[test]
+fn typed_tensor_scale_reuses_checked_multiplication_without_integer_rounding() {
+    let vector = tensor(integer_scalar(), &[3]);
+    let call = owner(
+        vec![
+            vector.clone(),
+            solve::SolveValueType::scalar(integer_scalar()),
+        ],
+        vector,
+        |b, v| b.scale(v[0], v[1], span(9380)),
+    );
+    agrees(
+        &call,
+        &[
+            vec![integers(&[(1 << 53) + 1, -2, 7]), integers(&[1])],
+            vec![integers(&[3, -2, 7]), integers(&[-2])],
+            vec![integers(&[i64::MAX, i64::MIN, 0]), integers(&[0])],
+            vec![integers(&[1, i64::MAX, 2]), integers(&[2])],
+            vec![integers(&[i64::MIN, 0, 1]), integers(&[-1])],
+        ],
+    );
+    let compiled = compile_pure_call_wasm(&call.0, &call.1).unwrap();
+    let mut runner = Runner::new(&compiled);
+    let inputs = vec![integers(&[1, i64::MAX, 2]), integers(&[2])];
+    assert!(oracle(&call.0, &call.1, &inputs).is_err());
+    let (status, actual) = runner.run(&cells(inputs.iter().flatten().copied()));
+    let fault = compiled
+        .faults()
+        .iter()
+        .find(|fault| fault.status == status as u32)
+        .unwrap();
+    assert_eq!(fault.opcode, "scale");
+    assert_eq!(fault.provenance, span(9380));
+    assert_eq!(fault.kind, TypedCallFaultKind::IntegerArithmetic);
+    assert_eq!(actual, vec![0xa5; actual.len()]);
+    let vector = tensor(real_scalar(), &[3]);
+    let call = owner(
+        vec![vector.clone(), solve::SolveValueType::scalar(real_scalar())],
+        vector,
+        |b, v| b.scale(v[0], v[1], span(9381)),
+    );
+    agrees(
+        &call,
+        &[
+            vec![reals(&[-0.0, 1.5, -2.25]), reals(&[-2.0])],
+            vec![reals(&[f64::INFINITY, f64::MAX, f64::NAN]), reals(&[0.0])],
+        ],
+    );
+}
+
+#[test]
+fn tensor_scale_keeps_boolean_and_mixed_element_types_unconstructible() {
+    for (aggregate, scalar) in [
+        (
+            solve::SolveScalarType::Boolean,
+            solve::SolveScalarType::Boolean,
+        ),
+        (integer_scalar(), real_scalar()),
+        (real_scalar(), integer_scalar()),
+    ] {
+        let vector = tensor(aggregate, &[3]);
+        let mut table = solve::SolvePureCallTable::builder(profile());
+        let result = table.add_owner(
+            identity(9400),
+            vec![vector.clone(), solve::SolveValueType::scalar(scalar)],
+            vec![solve::SolvePureCallOutput::result(vector)],
+            span(9400),
+            |b, inputs, outputs| {
+                let aggregate = b.load(inputs[0], span(9401))?;
+                let scalar = b.load(inputs[1], span(9402))?;
+                let result = b.scale(aggregate, scalar, span(9403))?;
+                b.store(outputs[0], result, span(9404))
+            },
+        );
+        assert!(
+            matches!(result, Err(solve::SolveProgramConstructionError::InvalidTensorAlgebra { provenance }) if provenance == span(9403))
+        );
+    }
+}

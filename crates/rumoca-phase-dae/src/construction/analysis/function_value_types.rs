@@ -98,6 +98,24 @@ pub(in crate::construction) fn record_field_projections<'flat>(
     projections
 }
 
+/// The result or local value that owns each record field path of `function`,
+/// so a read of `r.x` finds `r` without re-deriving every value's projections.
+/// A path two values would both project belongs to the first, in output then
+/// local order.
+pub(in crate::construction) fn record_field_roots(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+) -> HashMap<VarName, VarName> {
+    let mut roots = HashMap::new();
+    for value in function.outputs.iter().chain(&function.locals) {
+        let root = VarName::new(&value.name);
+        for (path, _, _) in record_field_projections(value, flat) {
+            roots.entry(path).or_insert_with(|| root.clone());
+        }
+    }
+    roots
+}
+
 fn collect_record_field_projections<'flat>(
     value: &rumoca_core::FunctionParam,
     path: &str,
@@ -121,5 +139,51 @@ fn collect_record_field_projections<'flat>(
         let field_path = format!("{path}.{}", field.name);
         projections.push((VarName::new(&field_path), VarName::new(path), field));
         collect_record_field_projections(field, &field_path, flat, projections);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{ClassType, DefId, EffectiveType, FunctionParam, Span, TypeId};
+
+    const RECORD_DEF: u32 = 7;
+
+    fn real(name: &str) -> FunctionParam {
+        let real = EffectiveType::new(TypeId(1), TypeId(1), Vec::new()).unwrap();
+        FunctionParam::new(name, "Real", real, Span::DUMMY)
+    }
+
+    fn record_value(name: &str) -> FunctionParam {
+        let record = EffectiveType::new(TypeId(2), TypeId(2), Vec::new()).unwrap();
+        let mut value = FunctionParam::new(name, "Pkg.R", record, Span::DUMMY);
+        value.type_class = Some(ClassType::Record);
+        value.type_def_id = Some(DefId::new(RECORD_DEF));
+        value
+    }
+
+    #[test]
+    fn record_field_roots_name_the_owning_result_or_local_of_each_field_path() {
+        let mut constructor = rumoca_core::Function::new("Pkg.R", Span::DUMMY);
+        constructor.def_id = Some(DefId::new(RECORD_DEF));
+        constructor.is_constructor = true;
+        constructor.add_input(real("a"));
+        constructor.add_input(real("b"));
+        let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+        function.add_input(record_value("u"));
+        function.add_output(record_value("r"));
+        function.add_local(record_value("s"));
+        let mut flat = flat::Model::default();
+        flat.add_function(constructor);
+
+        let roots = record_field_roots(&function, &flat);
+
+        let expected = [("r.a", "r"), ("r.b", "r"), ("s.a", "s"), ("s.b", "s")];
+        assert_eq!(roots.len(), expected.len());
+        for (path, root) in expected {
+            assert_eq!(roots[&VarName::new(path)], VarName::new(root), "{path}");
+        }
+        // Inputs are never written, so they own no mutable root.
+        assert!(!roots.contains_key(&VarName::new("u.a")));
     }
 }

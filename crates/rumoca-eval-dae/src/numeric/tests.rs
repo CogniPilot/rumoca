@@ -1,3 +1,6 @@
+mod host_initialization;
+mod native_initialization;
+
 use rumoca_core::{
     ClockLattice, ClockRational, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
     VarName,
@@ -8,6 +11,181 @@ use rumoca_ir_dae::{
 };
 
 use super::NumericEvaluator;
+
+#[test]
+fn sign_of_real_preserves_the_exact_integer_source_payload() {
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("sign.mo", "sign(-2.5)");
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, 10)).unwrap();
+    let dae = Dae::construct(source_map, |dae| {
+        dae.expressions(|expressions| {
+            let argument = expressions.at(at).literal(DaeLiteral::Real(-2.5))?;
+            expressions.at(at).builtin(PureBuiltin::Sign, [argument])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let sign = view.expression_id(1).unwrap();
+        assert_eq!(
+            view.expression(sign).unwrap().value_type().scalar_type(),
+            ScalarType::Integer
+        );
+        let values = crate::exact_initial_values(view, sign, 1)
+            .expect("sign of a Real has the constructor-issued Integer source type");
+        let crate::ExactDeclarationValues::Integer(values) = values else {
+            panic!("the original sign value is Integer");
+        };
+        let payload = values
+            .runs()
+            .flat_map(|run| match run {
+                crate::ExactInitialRun::Repeat { value, count } => vec![*value; *count],
+                crate::ExactInitialRun::Literal(values) => values.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(payload, [-1]);
+    });
+}
+
+#[test]
+fn integer_operands_of_scalar_power_keep_the_checked_real_result() {
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("power.mo", "2^(-1); 2^63");
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, 12)).unwrap();
+    let dae = Dae::construct(source_map, |dae| {
+        dae.expressions(|expressions| {
+            let base = expressions.at(at).literal(DaeLiteral::Integer(2))?;
+            let operators = [BinaryOperator::Power, BinaryOperator::ElementwisePower];
+            let cases = operators
+                .into_iter()
+                .flat_map(|operator| [-1, 63].map(|exponent| (operator, exponent)));
+            for (operator, exponent) in cases {
+                let exponent = expressions.at(at).literal(DaeLiteral::Integer(exponent))?;
+                expressions.at(at).binary(operator, base, exponent)?;
+            }
+            Ok(())
+        })
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let powers = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    ExpressionOperation::Binary {
+                        operator: BinaryOperator::Power | BinaryOperator::ElementwisePower,
+                        ..
+                    }
+                )
+            });
+        for (power, expected) in powers.zip([
+            0.5,
+            9_223_372_036_854_775_808.0,
+            0.5,
+            9_223_372_036_854_775_808.0,
+        ]) {
+            assert_eq!(
+                view.expression(power).unwrap().value_type().scalar_type(),
+                ScalarType::Real
+            );
+            assert_eq!(
+                NumericEvaluator::new(view).expression(power).unwrap(),
+                [expected]
+            );
+        }
+    });
+}
+
+#[test]
+fn matrix_power_preserves_the_original_integer_base_type() {
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("matrix_power.mo", "[1,2;1,2]^2");
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, 11)).unwrap();
+    let dae = Dae::construct(source_map, |dae| {
+        dae.expressions(|expressions| {
+            let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            let two = expressions.at(at).literal(DaeLiteral::Integer(2))?;
+            let row = expressions.at(at).array([one, two])?;
+            let matrix = expressions.at(at).array([row, row])?;
+            expressions
+                .at(at)
+                .binary(BinaryOperator::Power, matrix, two)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let power = view.expression_id(view.expression_count() - 1).unwrap();
+        let value_type = view.expression(power).unwrap().value_type();
+        assert_eq!(value_type.scalar_type(), ScalarType::Integer);
+        assert_eq!(value_type.dimensions(), [2, 2]);
+    });
+}
+
+#[test]
+fn real_power_preserves_the_parity_of_a_wide_integer_exponent() {
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("wide_power.mo", "(-1)^9007199254740993");
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, 21)).unwrap();
+    let dae = Dae::construct(source_map, |dae| {
+        dae.expressions(|expressions| {
+            let base = expressions.at(at).literal(DaeLiteral::Integer(-1))?;
+            let exponent = expressions
+                .at(at)
+                .literal(DaeLiteral::Integer(9_007_199_254_740_993))?;
+            expressions
+                .at(at)
+                .binary(BinaryOperator::Power, base, exponent)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+    dae.inspect(|view| {
+        let power = view.expression_id(2).unwrap();
+        assert_eq!(
+            view.expression(power).unwrap().value_type().scalar_type(),
+            ScalarType::Real
+        );
+        assert_eq!(
+            NumericEvaluator::new(view).expression(power).unwrap(),
+            [-1.0]
+        );
+    });
+}
+
+#[test]
+fn integer_exponent_real_power_preserves_zero_and_large_base_controls() {
+    for (base, exponent, expected) in [
+        (0.0_f64, 0_i64, 1.0_f64),
+        (0.0, 2, 0.0),
+        (1e200, 1, 1e200),
+        (2.0, -1, 0.5),
+        (-2.0, -3, -0.125),
+        (-0.0, 3, -0.0),
+    ] {
+        let mut sources = SourceMap::new();
+        let text = format!("({base})^({exponent})");
+        let source = sources.add("power_controls.mo", &text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(sources, |model| {
+            model.expressions(|expressions| {
+                let base = expressions.at(at).literal(DaeLiteral::Real(base))?;
+                let exponent = expressions.at(at).literal(DaeLiteral::Integer(exponent))?;
+                expressions
+                    .at(at)
+                    .binary(BinaryOperator::Power, base, exponent)?;
+                Ok(())
+            })
+        })
+        .unwrap();
+        let actual = dae.inspect(|view| {
+            let power = view.expression_id(view.expression_count() - 1).unwrap();
+            NumericEvaluator::new(view).expression(power).unwrap()[0]
+        });
+        assert_eq!(actual.to_bits(), expected.to_bits(), "exponent {exponent}");
+    }
+}
 
 #[test]
 fn integer_builtin_floors_negative_fractional_dae_values() {

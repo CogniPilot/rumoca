@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
+use rumoca_ir_solve::RefreshProfile;
 use rumoca_solver::SimOptions;
 
 use super::diagnostics::SimulationDiagnosticError;
@@ -31,14 +32,31 @@ pub fn lower_correlated_for_simulation_with_overrides<'source>(
     model: &'source dae::Dae,
     opts: &SimOptions,
 ) -> Result<rumoca_phase_solve::LoweredSolveModel<'source>, SimulationDiagnosticError> {
+    lower_correlated_for_profile(model, opts, RefreshProfile::Scalar)
+}
+
+/// Lower one model for the retained native owner, whose refresh owners may be
+/// compact (see [`RefreshProfile`]). The scalar runtime refuses such a model.
+pub fn lower_correlated_for_native_execution_with_overrides<'source>(
+    model: &'source dae::Dae,
+    opts: &SimOptions,
+) -> Result<rumoca_phase_solve::LoweredSolveModel<'source>, SimulationDiagnosticError> {
+    lower_correlated_for_profile(model, opts, RefreshProfile::NativeCompact)
+}
+
+fn lower_correlated_for_profile<'source>(
+    model: &'source dae::Dae,
+    opts: &SimOptions,
+    profile: RefreshProfile,
+) -> Result<rumoca_phase_solve::LoweredSolveModel<'source>, SimulationDiagnosticError> {
     let overrides = tunable_param_overrides(model, opts)?;
-    let (mut lowered, _) =
-        super::entry::lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
-            model,
-            opts,
-            &overrides,
-            |_| {},
-        )?;
+    let (mut lowered, _) = super::entry::lower_correlated_for_simulation_with_profile(
+        model,
+        opts,
+        &overrides,
+        profile,
+        |_| {},
+    )?;
     apply_correlated_simulation_overrides(&mut lowered, model, opts)?;
     Ok(lowered)
 }
@@ -54,6 +72,9 @@ pub(crate) fn tunable_param_overrides(
     model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<HashMap<String, f64>, SimulationDiagnosticError> {
+    if opts.param_overrides.is_empty() {
+        return Ok(HashMap::new());
+    }
     model.inspect(|view| {
         let mut tunable_names = HashSet::new();
         let mut structural_names = HashSet::new();
@@ -168,12 +189,12 @@ fn verify_parameter_overrides(
                 "`{name}` has no runtime parameter slot and cannot be overridden"
             )));
         };
-        let Some(actual) = solve_model.parameters.get(index) else {
+        let Some(actual) = solve_model.parameters.value(index) else {
             return Err(invalid(format!(
                 "runtime parameter slot for `{name}` is outside the parameter vector"
             )));
         };
-        if *actual != value {
+        if actual != value {
             return Err(invalid(format!(
                 "override for `{name}` was not applied while evaluating dependent bindings"
             )));
@@ -203,29 +224,22 @@ fn apply_state_overrides(
     opts: &SimOptions,
 ) -> Result<(), SimulationDiagnosticError> {
     let state_count = solve_model.state_scalar_count();
-    let state_names = solve_model
-        .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .get(..state_count)
-        .ok_or_else(|| invalid("state count exceeds the checked Solve name layout"))?;
     for (name, value) in &opts.start_overrides {
         if !value.is_finite() {
             return Err(invalid(format!(
                 "start override for `{name}` must be finite"
             )));
         }
-        let index = state_names
-            .iter()
-            .position(|candidate| candidate == name)
+        let index = solve_model
+            .problem
+            .solver_index(name)
+            .filter(|index| *index < state_count)
             .ok_or_else(|| invalid(format!("`{name}` is not a state of this model")))?;
-        let target = solve_model.initial_y.get_mut(index).ok_or_else(|| {
+        solve_model.initial_y.set(index, *value).map_err(|_| {
             invalid(format!(
                 "state `{name}` has no initial-value slot in the checked Solve model"
             ))
         })?;
-        *target = *value;
     }
     Ok(())
 }

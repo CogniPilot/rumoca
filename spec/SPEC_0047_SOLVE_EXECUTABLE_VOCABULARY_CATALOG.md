@@ -549,3 +549,14 @@ earlier circular condition: both key off `RootKind`, never off each other.
 Receipt SELECTORS are manifest INPUTS naming what may be chosen; issued RECEIPTS
 are preparation OUTPUTS recording what was chosen and proven — the two are
 distinct fields and neither substitutes for the other.
+
+### 11. Reversal Gates (SPEC_0045 §9)
+
+Moved from SPEC_0045 section "9. Reversal Gates"; rows and rules below are normative by reference from that section.
+
+| ID | Reopening | Requires |
+|----|-----------|----------|
+| SEV-110 | A second canonical graph | ALL of: a genuinely different stage contract; an operation not representable in the grammar plus a checked target view; an INDEPENDENT semantic oracle for the second graph; a checked relation preserving type, profile, effect, and provenance identity across the boundary; and NAMED wire, AD, and capability proof-cost budgets it must stay within. Unrepresentability plus speed is not sufficient |
+| SEV-111 | A new core type family | A product inexpressible as a semantics-preserving ABI mapping, an independent oracle, AND two consumers or one safety-critical consumer with parity evidence |
+| SEV-113 | A profile-neutral construction recipe | Three-profile parity plus preregistered compile and RSS benefit; it stays non-executable |
+| SEV-114 | Abandoning the §2 factoring | Cross-factor escapes exceed 20%, or boilerplate exceeds 15% without reducing proof surface; keeping it needs ≥30% fewer unrelated touch sites with ≤3% evaluator and ≤5% wire regressions |

@@ -21,6 +21,21 @@ use std::{cell::RefCell, rc::Rc};
 pub enum CompileError {
     Backend(String),
     Input(String),
+    SourceOperation {
+        kind: NativeSourceFault,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeSourceFault {
+    TensorIndex,
+    LinearSolve,
+    IntegerQuotient,
+    ForeignBody,
+    RecursionDepth,
+    ScalarPayload,
+    IntegerArithmetic,
 }
 
 impl std::fmt::Display for CompileError {
@@ -28,6 +43,7 @@ impl std::fmt::Display for CompileError {
         match self {
             Self::Backend(msg) => write!(f, "cranelift execution error: {msg}"),
             Self::Input(msg) => write!(f, "invalid input: {msg}"),
+            Self::SourceOperation { message, .. } => write!(f, "invalid input: {message}"),
         }
     }
 }
@@ -35,6 +51,20 @@ impl std::fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 impl CompiledPureCallTable {
+    /// The admission of `owner`, decided once when the table was built.
+    pub fn owner_support(
+        &self,
+        owner: rumoca_ir_solve::SolvePureCallOwnerId,
+    ) -> Option<&NativeOwnerSupport> {
+        self.jit.owner_support(owner)
+    }
+
+    /// Whether the native helpers run the form `site` invokes; a form without
+    /// one runs in the typed interpreter.
+    pub fn executes(&self, site: rumoca_eval_solve::PureCallInvocation<'_>) -> bool {
+        self.jit.executes(site)
+    }
+
     /// Invoke one exact checked owner from flattened runtime storage values.
     ///
     /// `input_cells` and `output_cells` are caller-owned reusable final-ABI
@@ -174,6 +204,7 @@ pub struct CompiledJacobianV {
 }
 
 pub use emit::projection_jacobian::CompiledProjectionJacobian;
+pub use emit::typed_program::{NativeFormDecline, NativeFormSupport, NativeOwnerSupport};
 
 impl CompiledJacobianV {
     /// Retain one exact colored application of this compiled source owner.
@@ -567,6 +598,9 @@ mod tangent_lane_refusal_tests;
 
 #[cfg(test)]
 mod tests {
+    mod assertions;
+    mod observation;
+    mod owner_admission;
     mod projection_jacobian;
     mod recursive_groups;
     mod register_constants;

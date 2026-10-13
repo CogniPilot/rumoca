@@ -10,7 +10,7 @@ pub(in crate::emit) enum ArenaStorage {
 
 impl ArenaStorage {
     pub(in crate::emit) const fn runtime() -> Self {
-        if cfg!(target_arch = "wasm32") {
+        if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
             Self::Pooled
         } else {
             Self::Defined
@@ -24,16 +24,16 @@ impl ArenaPlan {
         self
     }
 
-    pub(in crate::emit) fn pooled_bytes(self) -> Option<u32> {
+    pub(in crate::emit) fn pooled_bytes(&self) -> Option<u32> {
         (self.storage == ArenaStorage::Pooled).then(|| self.region_bytes())
     }
 
-    pub(in crate::emit) fn region_bytes(self) -> u32 {
+    pub(in crate::emit) fn region_bytes(&self) -> u32 {
         // required() already proves the register byte count is at most 64 MiB.
         ((self.registers * 8).div_ceil(65536).max(1) * 65536) as u32
     }
 
-    pub(in crate::emit) fn add_imports(self, imports: &mut ImportSection) {
+    pub(in crate::emit) fn add_imports(&self, imports: &mut ImportSection) {
         if self.storage != ArenaStorage::Pooled {
             return;
         }

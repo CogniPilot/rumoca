@@ -1,4 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- set numeric_types = [["float64", "Float64", "f64"], ["int32", "Int32", "i32"], ["int64", "Int64", "i64"], ["boolean", "Boolean", "bool"]] %}
 //! FMI-LS-Wasm Co-Simulation component generated from Rumoca's checked FMI IR.
 //!
 //! The component is a thin adapter: every WIT call is forwarded through the C
@@ -16,7 +17,7 @@ wit_bindgen::generate!({
 });
 
 use core::ffi::{c_char, c_int, c_void};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use exports::fmi::fmi3::co_simulation::{
     DiscreteStatesInfo, DoStepResult, Guest as CoSimulationGuest, GuestCoSimulationInstance,
@@ -29,11 +30,12 @@ use exports::fmi::fmi3::common::Guest as CommonGuest;
 //
 // The kernel is compiled with `FMI3_FUNCTION_PREFIX {{ model_identifier }}_`,
 // so each entry point carries that prefix. Only the Co-Simulation lifecycle and
-// the Float64 accessors are bound; the remaining ABI stays in the object for
+// the numeric accessors are bound; the remaining ABI stays in the object for
 // the kernel's own use.
 // ---------------------------------------------------------------------------
 
 type FmiInstance = *mut c_void;
+type FmiLogMessage = extern "C" fn(*mut c_void, c_int, *const c_char, *const c_char);
 
 const FMI3_OK: c_int = 0;
 const FMI3_WARNING: c_int = 1;
@@ -57,7 +59,7 @@ unsafe extern "C" {
         required_intermediate_variables: *const u32,
         n_required_intermediate_variables: usize,
         instance_environment: *mut c_void,
-        log_message: Option<extern "C" fn()>,
+        log_message: Option<FmiLogMessage>,
         intermediate_update: Option<extern "C" fn()>,
     ) -> FmiInstance;
 
@@ -91,23 +93,25 @@ unsafe extern "C" {
     #[link_name = "{{ model_identifier }}_fmi3Reset"]
     fn kernel_reset(instance: FmiInstance) -> c_int;
 
-    #[link_name = "{{ model_identifier }}_fmi3GetFloat64"]
-    fn kernel_get_float64(
+{% for method, suffix, ty in numeric_types %}
+    #[link_name = "{{ model_identifier }}_fmi3Get{{ suffix }}"]
+    fn kernel_get_{{ method }}(
         instance: FmiInstance,
         value_references: *const u32,
         n_value_references: usize,
-        values: *mut f64,
+        values: *mut {{ ty }},
         n_values: usize,
     ) -> c_int;
 
-    #[link_name = "{{ model_identifier }}_fmi3SetFloat64"]
-    fn kernel_set_float64(
+    #[link_name = "{{ model_identifier }}_fmi3Set{{ suffix }}"]
+    fn kernel_set_{{ method }}(
         instance: FmiInstance,
         value_references: *const u32,
         n_value_references: usize,
-        values: *const f64,
+        values: *const {{ ty }},
         n_values: usize,
     ) -> c_int;
+{% endfor %}
 
     #[link_name = "{{ model_identifier }}_fmi3DoStep"]
     #[allow(clippy::too_many_arguments)]
@@ -133,9 +137,9 @@ fn status_from(code: c_int) -> Status {
     }
 }
 
-/// The number of scalar Float64 slots one value reference addresses in the
-/// kernel's flat storage, or `None` when the reference names no readable
-/// Float64 quantity. Derived from the same checked variable inventory the
+/// The scalar count addressed by one value reference. The shared C accessor
+/// validates the requested value type and lifecycle before accessing storage.
+/// Derived from the same checked variable inventory the
 /// kernel numbers its references from: time, then the variables in inventory
 /// order, then one derivative per state, then the event indicators.
 fn value_scalar_count(value_reference: u32) -> Option<usize> {
@@ -161,6 +165,76 @@ fn value_scalar_count(value_reference: u32) -> Option<usize> {
 
 pub struct RumocaCoSimulationInstance {
     instance: FmiInstance,
+    // The C instance borrows this stable allocation until kernel_free_instance.
+    _log_context: Box<LogContext>,
+}
+
+struct LogContext {
+    instance_name: String,
+}
+
+extern "C" fn forward_log_message(
+    environment: *mut c_void,
+    status: c_int,
+    category: *const c_char,
+    message: *const c_char,
+) {
+    // All three pointers come from the shared FMI kernel and its live context.
+    let context = unsafe { &*environment.cast::<LogContext>() };
+    let category = unsafe { CStr::from_ptr(category) }.to_string_lossy();
+    let message = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    fmi::fmi3::callbacks::log_message(
+        &context.instance_name,
+        status_from(status),
+        &category,
+        &message,
+    );
+}
+
+impl RumocaCoSimulationInstance {
+    fn get_numeric<T: Default + Clone>(
+        &self,
+        value_references: &[u32],
+        getter: unsafe extern "C" fn(FmiInstance, *const u32, usize, *mut T, usize) -> c_int,
+    ) -> Result<Vec<T>, Status> {
+        let total = value_references.iter()
+            .try_fold(0usize, |total, reference| {
+                total.checked_add(value_scalar_count(*reference)?)
+            })
+            .ok_or(Status::Error)?;
+        let mut values = vec![T::default(); total];
+        let status = unsafe {
+            getter(
+                self.instance,
+                value_references.as_ptr(),
+                value_references.len(),
+                values.as_mut_ptr(),
+                total,
+            )
+        };
+        if status == FMI3_OK {
+            Ok(values)
+        } else {
+            Err(status_from(status))
+        }
+    }
+
+    fn set_numeric<T>(
+        &self,
+        value_references: &[u32],
+        values: &[T],
+        setter: unsafe extern "C" fn(FmiInstance, *const u32, usize, *const T, usize) -> c_int,
+    ) -> Status {
+        status_from(unsafe {
+            setter(
+                self.instance,
+                value_references.as_ptr(),
+                value_references.len(),
+                values.as_ptr(),
+                values.len(),
+            )
+        })
+    }
 }
 
 impl Drop for RumocaCoSimulationInstance {
@@ -180,9 +254,10 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
         early_return_allowed: bool,
         required_intermediate_variables: Vec<u32>,
     ) -> Option<exports::fmi::fmi3::co_simulation::CoSimulationInstance> {
-        let name = CString::new(instance_name).ok()?;
+        let name = CString::new(instance_name.as_str()).ok()?;
         let token = CString::new(instantiation_token).ok()?;
         let resources = CString::new(resource_path).ok()?;
+        let mut log_context = Box::new(LogContext { instance_name });
         let instance = unsafe {
             kernel_instantiate_cs(
                 name.as_ptr(),
@@ -194,8 +269,8 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
                 early_return_allowed,
                 required_intermediate_variables.as_ptr(),
                 required_intermediate_variables.len(),
-                core::ptr::null_mut(),
-                None,
+                (&mut *log_context as *mut LogContext).cast(),
+                Some(forward_log_message),
                 None,
             )
         };
@@ -203,7 +278,7 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
             return None;
         }
         Some(exports::fmi::fmi3::co_simulation::CoSimulationInstance::new(
-            RumocaCoSimulationInstance { instance },
+            RumocaCoSimulationInstance { instance, _log_context: log_context },
         ))
     }
 
@@ -259,52 +334,25 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
         Status::Error
     }
 
-    fn get_float64(&self, value_references: Vec<u32>) -> Result<Vec<f64>, Status> {
-        let mut total = 0usize;
-        for reference in &value_references {
-            total += value_scalar_count(*reference).ok_or(Status::Error)?;
-        }
-        let mut values = vec![0.0f64; total];
-        let status = unsafe {
-            kernel_get_float64(
-                self.instance,
-                value_references.as_ptr(),
-                value_references.len(),
-                values.as_mut_ptr(),
-                total,
-            )
-        };
-        if status == FMI3_OK {
-            Ok(values)
-        } else {
-            Err(status_from(status))
-        }
+{% for method, suffix, ty in numeric_types %}
+    fn get_{{ method }}(&self, value_references: Vec<u32>) -> Result<Vec<{{ ty }}>, Status> {
+        self.get_numeric(&value_references, kernel_get_{{ method }})
     }
 
-    fn set_float64(&self, value_references: Vec<u32>, values: Vec<f64>) -> Status {
-        status_from(unsafe {
-            kernel_set_float64(
-                self.instance,
-                value_references.as_ptr(),
-                value_references.len(),
-                values.as_ptr(),
-                values.len(),
-            )
-        })
+    fn set_{{ method }}(&self, value_references: Vec<u32>, values: Vec<{{ ty }}>) -> Status {
+        self.set_numeric(&value_references, &values, kernel_set_{{ method }})
     }
+{% endfor %}
 
     // ── All other typed getters – outside this draft's mapped profile ────────
 
     fn get_float32(&self, _: Vec<u32>) -> Result<Vec<f32>,      Status> { Err(Status::Error) }
     fn get_int8   (&self, _: Vec<u32>) -> Result<Vec<i8>,       Status> { Err(Status::Error) }
     fn get_int16  (&self, _: Vec<u32>) -> Result<Vec<i16>,      Status> { Err(Status::Error) }
-    fn get_int32  (&self, _: Vec<u32>) -> Result<Vec<i32>,      Status> { Err(Status::Error) }
-    fn get_int64  (&self, _: Vec<u32>) -> Result<Vec<i64>,      Status> { Err(Status::Error) }
     fn get_uint8  (&self, _: Vec<u32>) -> Result<Vec<u8>,       Status> { Err(Status::Error) }
     fn get_uint16 (&self, _: Vec<u32>) -> Result<Vec<u16>,      Status> { Err(Status::Error) }
     fn get_uint32 (&self, _: Vec<u32>) -> Result<Vec<u32>,      Status> { Err(Status::Error) }
     fn get_uint64 (&self, _: Vec<u32>) -> Result<Vec<u64>,      Status> { Err(Status::Error) }
-    fn get_boolean(&self, _: Vec<u32>) -> Result<Vec<bool>,     Status> { Err(Status::Error) }
     fn get_string (&self, _: Vec<u32>) -> Result<Vec<String>,   Status> { Err(Status::Error) }
     fn get_binary (&self, _: Vec<u32>) -> Result<Vec<Vec<u8>>,  Status> { Err(Status::Error) }
     fn get_clock  (&self, _: Vec<u32>) -> Result<Vec<bool>,     Status> { Err(Status::Error) }
@@ -314,13 +362,10 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
     fn set_float32(&self, _: Vec<u32>, _: Vec<f32>)     -> Status { Status::Error }
     fn set_int8   (&self, _: Vec<u32>, _: Vec<i8>)      -> Status { Status::Error }
     fn set_int16  (&self, _: Vec<u32>, _: Vec<i16>)     -> Status { Status::Error }
-    fn set_int32  (&self, _: Vec<u32>, _: Vec<i32>)     -> Status { Status::Error }
-    fn set_int64  (&self, _: Vec<u32>, _: Vec<i64>)     -> Status { Status::Error }
     fn set_uint8  (&self, _: Vec<u32>, _: Vec<u8>)      -> Status { Status::Error }
     fn set_uint16 (&self, _: Vec<u32>, _: Vec<u16>)     -> Status { Status::Error }
     fn set_uint32 (&self, _: Vec<u32>, _: Vec<u32>)     -> Status { Status::Error }
     fn set_uint64 (&self, _: Vec<u32>, _: Vec<u64>)     -> Status { Status::Error }
-    fn set_boolean(&self, _: Vec<u32>, _: Vec<bool>)    -> Status { Status::Error }
     fn set_string (&self, _: Vec<u32>, _: Vec<String>)  -> Status { Status::Error }
     fn set_binary (&self, _: Vec<u32>, _: Vec<Vec<u8>>) -> Status { Status::Error }
     fn set_clock  (&self, _: Vec<u32>, _: Vec<bool>)    -> Status { Status::Error }

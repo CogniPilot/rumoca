@@ -13,7 +13,7 @@ pub struct ScratchFrame {
     pub input_bytes: u32,
     pub output_bytes: u32,
     pub high_water_bytes: u32,
-    pub unshared_bytes: u32,
+    pub unshared_bytes: u64,
     /// Freshly allocated slots; borrowed inputs and outputs are not counted.
     pub slot_bytes: u32,
     /// Freshly allocated registers; aliased registers are not counted.
@@ -24,7 +24,7 @@ pub struct ScratchFrame {
     pub calls: Vec<ScratchCall>,
 }
 
-/// A region of one operation: `then`/`else`, `body`, or `transition`/`predicate`.
+/// A region of one operation: `then`/`else`, `body`, `transition`/`predicate`, or `message`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScratchRegion {
     pub operation: usize,
@@ -61,10 +61,10 @@ pub struct ScratchReport {
     pub call_scratch_bytes: u32,
     pub memo_bytes: u32,
     pub typed_lane_bytes: u32,
-    pub p_copy_bytes: u32,
+    pub p_save_bytes: u32,
     /// Unshared scratch of the widest root call owner, the figure the layout
     /// charged before sequential operations shared one frame.
-    pub unshared_call_scratch_bytes: u32,
+    pub unshared_call_scratch_bytes: u64,
     /// The root owner whose frame sets the shared call input/output/scratch.
     pub widest_owner: Option<usize>,
     pub owners: Vec<ScratchOwner>,

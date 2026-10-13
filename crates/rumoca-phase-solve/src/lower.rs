@@ -11,11 +11,16 @@ use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod algebraic_family;
+mod matched_projection;
+mod matching_rows;
+use matched_projection::{MatchedBlockView, MatchedProjection};
+use matching_rows::MatchingRows;
 pub(crate) mod call_scoped_actions;
 pub(crate) mod clock_ownership;
 mod clocks;
 mod continuous_rows;
 mod continuous_tensor;
+mod dae_faults;
 use continuous_rows::{ContinuousRowIndex, index_continuous_rows};
 mod events;
 mod implicit_derivative;
@@ -25,18 +30,21 @@ mod initial_parameters;
 mod initial_pins;
 mod initial_projection;
 mod initialization;
+#[cfg(test)]
+mod program_compaction_tests;
 mod scalar;
 pub(crate) mod typed_functions;
 use scalar::{
     AffineDerivativeRow, AffineDerivativeSystem, AffineDerivativeSystems, AffineDerivativeUnknown,
     AffineScalarDerivative, FunctionConditionalOwnerRegistry, ScalarCompiler, ScalarSelector,
-    ScaledDerivativeProgram,
+    ScaledDerivativeProgram, integer_is_exact_binary64,
 };
 
 pub(crate) fn lower_solve_problem(
     prepared: structural::PreparedSystem<'_, '_>,
     overrides: &HashMap<String, f64>,
     primary: Option<&solve::SolveProblem>,
+    profile: crate::RefreshProfile,
 ) -> Result<(solve::SolveProblem, solve::SolvePureCallTable), LowerError> {
     let structural::PreparedSystem {
         view,
@@ -55,12 +63,22 @@ pub(crate) fn lower_solve_problem(
             "the model has no variables or equations to simulate",
         ));
     }
-    let lowered = lower_layout(view)?;
+    let mut lowered = lower_layout(view)?;
+    lowered.refresh_profile = profile;
+    lowered.assertion_roots = crate::layout::AssertionRoots::of_product(
+        profile,
+        lowered.solve_layout.state_scalar_count(),
+    );
     let clocks = clocks::lower_clocks(view, &lowered)?;
-    let structural = structural_matching(view, structural.as_ref())?;
+    let structural = structural_matching(view, &lowered, structural.as_ref())?;
     clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     clocks::reject_cross_clock_coincident_cycle(view, &clocks, &structural)?;
-    let derivatives = index_continuous_rows(view, &structural.rows)?;
+    let derivatives = index_continuous_rows(
+        view,
+        &structural.rows,
+        &structural.algebraic_blocks,
+        &lowered,
+    )?;
     let mut continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     continuous.reduced_chart_set = lower_reduced_chart_set(charts, &lowered.solve_layout)?;
     let initialization = initialization::lower_initialization(
@@ -92,25 +110,28 @@ pub(crate) fn lower_solve_problem(
         events,
         clocks: clocks.partition,
     };
-    problem.continuous.refresh_owners = crate::continuous_refresh_owners(&mut problem, primary)
-        .map_err(|error| match error.source_span() {
-            Some(span) => LowerError::contract(error.to_string(), span),
-            None => LowerError::unspanned_non_computable(error.to_string()),
-        })?;
-    solve::issue_native_assignment_schedule(&mut problem);
+    solve::validate_problem_call_references(&problem, &pure_calls)?;
+    problem.continuous.refresh_owners =
+        crate::continuous_refresh_owners(&mut problem, primary, &pure_calls, profile).map_err(
+            |error| match error.source_span() {
+                Some(span) => LowerError::contract(error.to_string(), span),
+                None => LowerError::unspanned_non_computable(error.to_string()),
+            },
+        )?;
+    solve::issue_native_assignment_schedule_with_calls(&mut problem, &pure_calls);
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }
 
 struct StructuralMatching<'dae> {
-    rows: HashMap<usize, UnknownId<'dae>>,
-    algebraic_blocks: Vec<AlgebraicBlockMatch<'dae>>,
+    rows: MatchingRows<'dae>,
+    algebraic_blocks: Vec<MatchedProjection<'dae>>,
     derivative_blocks: Vec<Vec<(usize, UnknownId<'dae>)>>,
     /// ES016 facts: blocks whose own unknowns a `noEvent` relation switches.
     unlocalizable_guards: Vec<structural::UnlocalizableGuard<'dae>>,
 }
 
-/// One algebraic projection block's matched `(equation row, unknown)` pairs,
+/// One explicitly materialized algebraic block's matched `(equation row, unknown)` pairs,
 /// together with the greedy tearing of the coupled loop it came from. The
 /// tearing's local indices address `matches` by position; a singleton or
 /// partially matched block carries no tearing.
@@ -121,6 +142,7 @@ struct AlgebraicBlockMatch<'dae> {
 
 fn structural_matching<'dae>(
     view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
     sorted: Option<&structural::SortedDae<'dae>>,
 ) -> Result<StructuralMatching<'dae>, LowerError> {
     let scalar_rows = continuous_scalar_row_count(view)?;
@@ -136,20 +158,15 @@ fn structural_matching<'dae>(
         .sum::<usize>();
     if scalar_rows == 0 && unknowns == 0 {
         return Ok(StructuralMatching {
-            rows: HashMap::new(),
+            rows: MatchingRows::default(),
             algebraic_blocks: Vec::new(),
             derivative_blocks: Vec::new(),
             unlocalizable_guards: Vec::new(),
         });
     }
     let sorted = sorted.expect("non-empty prepared DAE carries its structural analysis");
-    let rows = sorted
-        .matching
-        .iter()
-        .copied()
-        .map(|(EquationRef(equation), unknown)| (equation, unknown))
-        .collect::<HashMap<_, _>>();
-    let algebraic_blocks = algebraic_projection_blocks(&sorted.blocks, &rows)?;
+    let rows = MatchingRows::construct(view, layout, sorted)?;
+    let algebraic_blocks = algebraic_projection_blocks(view, layout, &sorted.blocks, &rows)?;
     let derivative_blocks = implicit_derivative::derivative_blocks(&sorted.blocks, &rows);
     Ok(StructuralMatching {
         rows,
@@ -160,19 +177,21 @@ fn structural_matching<'dae>(
 }
 
 fn algebraic_projection_blocks<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
     blocks: &[BltBlock<'dae>],
-    rows: &HashMap<usize, UnknownId<'dae>>,
-) -> Result<Vec<AlgebraicBlockMatch<'dae>>, LowerError> {
+    rows: &MatchingRows<'dae>,
+) -> Result<Vec<MatchedProjection<'dae>>, LowerError> {
     let mut algebraic_blocks = Vec::new();
     for block in blocks {
         match block {
             BltBlock::Scalar { equation, unknown }
                 if matches!(unknown, UnknownId::Algebraic { .. }) =>
             {
-                algebraic_blocks.push(AlgebraicBlockMatch {
+                algebraic_blocks.push(MatchedProjection::Explicit(AlgebraicBlockMatch {
                     matches: vec![(equation.0, *unknown)],
                     tearing: None,
-                });
+                }));
             }
             BltBlock::AlgebraicLoop {
                 equations, tearing, ..
@@ -181,7 +200,6 @@ fn algebraic_projection_blocks<'dae>(
                     .iter()
                     .filter_map(|equation| {
                         rows.get(&equation.0)
-                            .copied()
                             .filter(|unknown| matches!(unknown, UnknownId::Algebraic { .. }))
                             .map(|unknown| (equation.0, unknown))
                     })
@@ -194,14 +212,20 @@ fn algebraic_projection_blocks<'dae>(
                     let tearing = tearing
                         .clone()
                         .filter(|_| algebraic.len() == equations.len());
-                    algebraic_blocks.push(AlgebraicBlockMatch {
+                    algebraic_blocks.push(MatchedProjection::Explicit(AlgebraicBlockMatch {
                         matches: algebraic,
                         tearing,
-                    });
+                    }));
                 }
             }
             BltBlock::StructuredScalar(family) => {
-                append_structured_algebraic_blocks(family, rows, &mut algebraic_blocks)?;
+                append_structured_algebraic_blocks(
+                    view,
+                    layout,
+                    family,
+                    rows,
+                    &mut algebraic_blocks,
+                )?;
             }
             BltBlock::Scalar { .. } => {}
         }
@@ -242,10 +266,16 @@ pub(crate) fn solve_block_tearing(
 }
 
 fn append_structured_algebraic_blocks<'dae>(
-    family: &rumoca_phase_structural::StructuredScalarBlock,
-    rows: &HashMap<usize, UnknownId<'dae>>,
-    blocks: &mut Vec<AlgebraicBlockMatch<'dae>>,
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    family: &rumoca_phase_structural::StructuredScalarBlock<'dae>,
+    rows: &MatchingRows<'dae>,
+    blocks: &mut Vec<MatchedProjection<'dae>>,
 ) -> Result<(), LowerError> {
+    if let Some(family) = matched_projection::MatchedFamily::admit(view, layout, family)? {
+        blocks.push(MatchedProjection::Family(family));
+        return Ok(());
+    }
     for row in family.scalar_rows() {
         let (EquationRef(equation), _) = row.map_err(|error| LowerError::Structural {
             reason: error.to_string(),
@@ -254,10 +284,10 @@ fn append_structured_algebraic_blocks<'dae>(
         let Some(unknown @ UnknownId::Algebraic { .. }) = rows.get(&equation) else {
             continue;
         };
-        blocks.push(AlgebraicBlockMatch {
-            matches: vec![(equation, *unknown)],
+        blocks.push(MatchedProjection::Explicit(AlgebraicBlockMatch {
+            matches: vec![(equation, unknown)],
             tearing: None,
-        });
+        }));
     }
     Ok(())
 }
@@ -298,7 +328,8 @@ pub(super) struct ScalarRowSource<'dae> {
 struct ContinuousContext<'borrow, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'borrow LoweredLayout<'dae>,
-    matching: &'borrow HashMap<usize, UnknownId<'dae>>,
+    matching: &'borrow MatchingRows<'dae>,
+    projection_stages: &'borrow [MatchedProjection<'dae>],
     derivatives: &'borrow ContinuousRowIndex<'dae>,
     affine_derivatives: Option<&'borrow AffineDerivativeSystems<'dae>>,
     function_conditional_owners: &'borrow RefCell<FunctionConditionalOwnerRegistry<'dae>>,
@@ -422,6 +453,7 @@ fn lower_continuous<'dae>(
         view,
         layout,
         matching: &structural.rows,
+        projection_stages: &structural.algebraic_blocks,
         derivatives,
         affine_derivatives: None,
         function_conditional_owners: &function_conditional_owners,
@@ -575,7 +607,7 @@ fn lower_continuous<'dae>(
     } = output;
     let residual = residual.into_compute_block()?;
     let (implicit_row_targets, algebraic_projection_plan) =
-        lower_algebraic_projection(view, layout, structural)?;
+        lower_algebraic_projection(view, layout, structural, &residual)?;
     let (manifold_residual, manifold_projection_plan) = lower_manifold(view, layout, manifold)?;
     Ok(solve::ContinuousSolveSystem {
         implicit_rhs: residual.clone(),
@@ -838,12 +870,7 @@ fn continuous_aggregate_call_candidate<'dae>(
                 .span(),
         )
     })?;
-    if !(first_row..end).all(|row| {
-        matches!(
-            context.matching.get(&row),
-            Some(UnknownId::Algebraic { .. })
-        )
-    }) {
+    if !context.matching.all_algebraic(first_row..end) {
         return Ok(None);
     }
     Ok(Some(ContinuousAggregateCallCandidate {
@@ -872,29 +899,27 @@ fn pure_aggregate_call_projection<'dae>(
     pure_call_projection_root(view, rhs)
 }
 
-/// The call occurrence `expression` projects through fields and indices, when
-/// it is a projection of a pure call.
+/// The issued pure call occurrence behind a direct result or a field/index
+/// projection. Tuple result nodes retain their common construction-issued owner.
 pub(super) fn pure_call_projection_root<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
 ) -> Option<dae::ExprId<'dae>> {
     let mut projection = expression;
-    let mut projected = false;
     loop {
         match view.expression(projection)?.operation() {
             dae::ExpressionOperation::Field { base, .. }
             | dae::ExpressionOperation::Index { base, .. } => {
-                projected = true;
                 projection = base;
             }
-            dae::ExpressionOperation::Call { function, .. }
-                if projected
-                    && view
-                        .function(function)?
-                        .external()
-                        .is_none_or(|external| external.purity().is_pure()) =>
+            dae::ExpressionOperation::Call {
+                function, owner, ..
+            } if view
+                .function(function)?
+                .external()
+                .is_none_or(|external| external.purity().is_pure()) =>
             {
-                return Some(projection);
+                return Some(owner);
             }
             _ => return None,
         }
@@ -960,103 +985,116 @@ fn lower_algebraic_projection<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     structural: &StructuralMatching<'dae>,
-) -> Result<
-    (
-        Vec<Option<solve::ScalarSlot>>,
-        solve::AlgebraicProjectionPlan,
-    ),
-    LowerError,
-> {
-    let solver_count = layout.solve_layout.solver_scalar_count();
-    let state_count = layout.solve_layout.state_scalar_count();
-    let implicit_output_count = structural
-        .rows
-        .iter()
-        .filter_map(|(row, unknown)| matches!(unknown, UnknownId::Algebraic { .. }).then_some(*row))
-        .max()
-        .map_or(0, |row| row + 1);
-    let mut targets = vec![None; implicit_output_count];
-    let mut targeted = vec![false; solver_count];
-    for (row, unknown) in structural
-        .rows
-        .iter()
-        .map(|(row, unknown)| (*row, *unknown))
-    {
+    source: &solve::ComputeBlock,
+) -> Result<(solve::ImplicitRowTargets, solve::AlgebraicProjectionPlan), LowerError> {
+    let mut covered = solve::IndexIntervals::default();
+    let mut stages = Vec::new();
+    for matched in &structural.algebraic_blocks {
+        if let MatchedProjection::Family(family) = matched
+            && let Some(run) = family.full_declaration_row_run(view, layout)?
+            && let Some(selector) = solve::ProjectionStage::source_for_row_run(source, run.rows())
+                .map_err(|error| {
+                LowerError::contract(error.to_string(), first_model_span(view))
+            })?
+        {
+            let (declaration, storage) = run.declaration_storage();
+            let stage = solve::ProjectionStage::SingletonDeclarationRun {
+                source: selector,
+                first_row: run.rows().start,
+                declaration,
+                storage,
+            };
+            // Source shape, placement, and layout are already producer-checked.
+            // An unsupported ranged isolator retains the original scalar boundary.
+            if stage
+                .checked_native_run(source, &layout.solve_layout, &layout.layout)
+                .is_ok()
+            {
+                let targets = solve::IndexIntervals::range(run.y_range().start, run.y_range().end);
+                extend_projection_coverage(view, &mut covered, &targets)?;
+                stages.push(stage);
+                continue;
+            }
+        }
+        matched.visit_scalar_blocks(|block| {
+            stages.push(solve::ProjectionStage::Explicit(
+                materialize_projection_block(view, layout, block, &mut covered)?,
+            ));
+            Ok(())
+        })?;
+    }
+    let required = solve::IndexIntervals::range(
+        layout.solve_layout.state_scalar_count(),
+        layout.solve_layout.solver_scalar_count(),
+    );
+    if covered != required {
+        return Err(LowerError::non_computable(
+            "BLT proof omitted or exceeded algebraic Solve storage",
+            first_model_span(view),
+        ));
+    }
+    let blocks = solve::ProjectionBlocks::from_stages(stages)
+        .map_err(|error| LowerError::contract(error.to_string(), first_model_span(view)))?;
+    let targets = solve::ImplicitRowTargets::from_projection(&blocks);
+    Ok((targets, solve::AlgebraicProjectionPlan { blocks }))
+}
+
+fn extend_projection_coverage(
+    view: dae::DaeView<'_>,
+    covered: &mut solve::IndexIntervals,
+    targets: &solve::IndexIntervals,
+) -> Result<(), LowerError> {
+    if !covered.intersection(targets).is_empty() {
+        return Err(LowerError::contract(
+            "two projection stages matched the same algebraic target",
+            first_model_span(view),
+        ));
+    }
+    *covered = covered.union(targets);
+    Ok(())
+}
+
+fn materialize_projection_block<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    block: MatchedBlockView<'_, 'dae>,
+    covered: &mut solve::IndexIntervals,
+) -> Result<solve::AlgebraicProjectionBlock, LowerError> {
+    let mut rows = Vec::with_capacity(block.match_count());
+    let mut indices = Vec::with_capacity(block.match_count());
+    block.visit_matches(|row, unknown| {
         let UnknownId::Algebraic { variable, scalar } = unknown else {
-            continue;
+            unreachable!("structural algebraic block contains only algebraics")
         };
-        let span = first_model_span(view);
-        let target = variable_scalar_slot(layout, variable.index(), scalar as usize, span)?;
-        let solve::ScalarSlot::Y { index, .. } = target else {
+        let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(
+            layout,
+            variable.index(),
+            scalar as usize,
+            first_model_span(view),
+        )?
+        else {
             unreachable!("algebraic declarations are Y slots")
         };
-        if targeted[index] {
+        if covered.contains(index) {
             return Err(LowerError::contract(
-                "two continuous rows matched the same algebraic target",
-                span,
+                "two projection rows matched the same algebraic target",
+                first_model_span(view),
             ));
         }
-        let entry = targets.get_mut(row).ok_or_else(|| {
-            LowerError::contract(
-                "matched algebraic row is outside the continuous residual",
-                span,
-            )
-        })?;
-        *entry = Some(target);
-        targeted[index] = true;
-    }
-    let algebraic_indices = state_count..solver_count;
-    let missing = algebraic_indices.clone().find(|index| !targeted[*index]);
-    if let Some(index) = missing {
-        return Err(LowerError::non_computable(
-            format!("structural proof omitted algebraic Solve slot {index}"),
-            first_model_span(view),
-        ));
-    }
-    let mut covered = vec![false; solver_count];
-    let blocks = structural
-        .algebraic_blocks
-        .iter()
-        .map(|block| {
-            let matches = &block.matches;
-            let mut rows = Vec::with_capacity(matches.len());
-            let mut indices = Vec::with_capacity(matches.len());
-            for (row, unknown) in matches {
-                let UnknownId::Algebraic { variable, scalar } = *unknown else {
-                    unreachable!("structural algebraic block contains only algebraics")
-                };
-                let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(
-                    layout,
-                    variable.index(),
-                    scalar as usize,
-                    first_model_span(view),
-                )?
-                else {
-                    unreachable!("algebraic declarations are Y slots")
-                };
-                covered[index] = true;
-                rows.push(*row);
-                indices.push(index);
-            }
-            let tearing = block
-                .tearing
-                .as_ref()
-                .map(|tearing| solve_block_tearing(tearing, &rows, &indices));
-            Ok(solve::AlgebraicProjectionBlock {
-                rows,
-                y_indices: indices,
-                tearing,
-                alternate_charts: Vec::new(),
-            })
-        })
-        .collect::<Result<Vec<_>, LowerError>>()?;
-    if let Some(index) = algebraic_indices.clone().find(|index| !covered[*index]) {
-        return Err(LowerError::non_computable(
-            format!("BLT proof omitted algebraic Solve slot {index}"),
-            first_model_span(view),
-        ));
-    }
-    Ok((targets, solve::AlgebraicProjectionPlan { blocks }))
+        covered.insert(index);
+        rows.push(row);
+        indices.push(index);
+        Ok(())
+    })?;
+    let tearing = block
+        .tearing()
+        .map(|tearing| solve_block_tearing(tearing, &rows, &indices));
+    Ok(solve::AlgebraicProjectionBlock {
+        rows,
+        y_indices: indices,
+        tearing,
+        alternate_charts: Vec::new(),
+    })
 }
 
 fn lower_manifold<'dae>(
@@ -1211,7 +1249,9 @@ fn manifold_projection_plan(
             alternate_charts: Vec::new(),
         });
     }
-    Ok(solve::AlgebraicProjectionPlan { blocks })
+    Ok(solve::AlgebraicProjectionPlan {
+        blocks: blocks.into(),
+    })
 }
 
 fn lower_continuous_family<'dae>(
@@ -1332,7 +1372,7 @@ fn lower_derivative_scalar_outputs<'dae>(
         let Some(UnknownId::Derivative {
             state,
             scalar: target,
-        }) = context.matching.get(&row).copied()
+        }) = context.matching.get(&row)
         else {
             return Ok(false);
         };
@@ -1399,7 +1439,7 @@ fn lower_algebraic_scalar_outputs<'dae>(
         let row = first_row
             .checked_add(offset)
             .ok_or_else(|| LowerError::contract("continuous row ordinal overflow", span))?;
-        let Some(UnknownId::Algebraic { .. }) = context.matching.get(&row).copied() else {
+        let Some(UnknownId::Algebraic { .. }) = context.matching.get(&row) else {
             return Ok(false);
         };
         rows.push(row);
@@ -1472,8 +1512,9 @@ fn lower_continuous_row<'dae>(
         derivatives,
         affine_derivatives,
         function_conditional_owners,
+        ..
     } = context;
-    let unknown = matching.get(&row).copied().ok_or_else(|| {
+    let unknown = matching.get(&row).ok_or_else(|| {
         LowerError::non_computable("structural proof omitted a continuous row", span)
     })?;
     match unknown {
@@ -1595,7 +1636,7 @@ struct ImplicitTensorForm<'dae> {
 fn lower_implicit_tensor_derivative<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    matching: &MatchingRows<'dae>,
     first_row: usize,
     residual: dae::ExprId<'dae>,
     span: Span,
@@ -1711,7 +1752,7 @@ fn recognize_implicit_tensor<'dae>(
 }
 
 fn validate_implicit_tensor_matching<'dae>(
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    matching: &MatchingRows<'dae>,
     first_row: usize,
     state: dae::StateId<'dae>,
     rows: usize,
@@ -1725,7 +1766,7 @@ fn validate_implicit_tensor_matching<'dae>(
         let Some(UnknownId::Derivative {
             state: found,
             scalar,
-        }) = matching.get(&row).copied()
+        }) = matching.get(&row)
         else {
             return Err(LowerError::non_computable(
                 "implicit linear state system has a row not matched to a derivative",
@@ -1793,98 +1834,7 @@ fn expression_contains_derivative_where<'dae>(
     expression: dae::ExprId<'dae>,
     matches: impl Fn(dae::StateId<'dae>) -> bool,
 ) -> bool {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
-        let node = view
-            .expression(expression)
-            .expect("branded expression resolves");
-        match node.operation() {
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state)) => {
-                if matches(state) {
-                    return true;
-                }
-            }
-            dae::ExpressionOperation::Literal(_)
-            | dae::ExpressionOperation::Coordinate(_)
-            | dae::ExpressionOperation::FunctionFoldParameter { .. } => {}
-            dae::ExpressionOperation::Range(range) => {
-                pending.push(range.stop().expression());
-                if let Some(step) = range.explicit_step() {
-                    pending.push(step.expression());
-                }
-                pending.push(range.start().expression());
-            }
-            dae::ExpressionOperation::Unary { operand, .. } => pending.push(operand),
-            dae::ExpressionOperation::ClockTransfer { source, .. } => pending.push(source),
-            dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-                pending.push(lhs);
-                pending.push(rhs);
-            }
-            dae::ExpressionOperation::Conditional(operands)
-            | dae::ExpressionOperation::Array(operands)
-            | dae::ExpressionOperation::Record(operands) => pending.extend(operands.iter()),
-            dae::ExpressionOperation::Field { base, .. } => pending.push(base),
-            dae::ExpressionOperation::Comprehension { body, .. } => pending.push(body),
-            dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                pending.push(definition.rhs());
-            }
-            dae::ExpressionOperation::FunctionFoldOutput { fold, .. } => {
-                let fold = view
-                    .function_fold(fold)
-                    .expect("checked function fold identity resolves");
-                pending.extend(fold.initial_values().rhs_iter());
-                pending.extend(fold.update_values().rhs_iter());
-                pending.extend(fold.continuation());
-            }
-            dae::ExpressionOperation::Index { base, subscripts } => {
-                pending.push(base);
-                for subscript in subscripts.iter() {
-                    push_subscript_expression(&mut pending, subscript);
-                }
-            }
-            dae::ExpressionOperation::ArrayUpdate {
-                base,
-                value,
-                subscripts,
-            } => {
-                pending.extend([base, value]);
-                for subscript in subscripts.iter() {
-                    push_subscript_expression(&mut pending, subscript);
-                }
-            }
-            dae::ExpressionOperation::Builtin { arguments, .. }
-            | dae::ExpressionOperation::Call { arguments, .. } => {
-                pending.extend(arguments.iter());
-            }
-            dae::ExpressionOperation::StringConversion { value, format, .. } => {
-                pending.push(value);
-                match format {
-                    dae::StringConversionFormatView::Options {
-                        minimum_length,
-                        left_justified,
-                        significant_digits,
-                    } => {
-                        pending.extend(minimum_length);
-                        pending.extend(left_justified);
-                        pending.extend(significant_digits);
-                    }
-                    dae::StringConversionFormatView::Format { value } => pending.push(value),
-                }
-            }
-        }
-    }
-    false
-}
-
-fn push_subscript_expression<'dae>(
-    pending: &mut Vec<dae::ExprId<'dae>>,
-    subscript: dae::SubscriptView<'dae>,
-) {
-    if let dae::SubscriptView::Index { expression, .. }
-    | dae::SubscriptView::Slice { expression, .. } = subscript
-    {
-        pending.push(expression);
-    }
+    dae::expr_contains_der_of_any(view, expression, matches)
 }
 
 enum DerivativeRhs<'dae> {
@@ -2067,7 +2017,7 @@ fn scaled_derivative_factor<'dae>(
 pub(super) struct ScalarRows {
     programs: Vec<Vec<solve::LinearOp>>,
     spans: Vec<Span>,
-    output_indices: Vec<usize>,
+    output_placements: Vec<solve::ScalarProgramOutputPlacement>,
 }
 
 impl ScalarRows {
@@ -2075,10 +2025,22 @@ impl ScalarRows {
         self.programs.len()
     }
 
+    pub(super) fn stored_output_count(&self, span: Span) -> Result<usize, LowerError> {
+        self.programs.iter().try_fold(0usize, |count, program| {
+            solve::ScalarProgramBlock::checked_program_output_count(program)
+                .and_then(|outputs| count.checked_add(outputs))
+                .ok_or_else(|| LowerError::contract("root output ordinal overflow", span))
+        })
+    }
+
     pub(super) fn push(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
         self.programs.push(program);
         self.spans.push(span);
-        self.output_indices.push(output);
+        self.output_placements
+            .push(output.checked_add(1).map_or_else(
+                || solve::ScalarProgramOutputPlacement::Explicit(vec![output]),
+                |end| solve::ScalarProgramOutputPlacement::Range(output..end),
+            ));
     }
 
     pub(super) fn push_outputs(
@@ -2089,7 +2051,22 @@ impl ScalarRows {
     ) {
         self.programs.push(program);
         self.spans.push(span);
-        self.output_indices.extend(outputs);
+        self.output_placements
+            .push(solve::ScalarProgramOutputPlacement::Explicit(
+                outputs.into_iter().collect(),
+            ));
+    }
+
+    pub(super) fn push_output_range(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        outputs: std::ops::Range<usize>,
+    ) {
+        self.programs.push(program);
+        self.spans.push(span);
+        self.output_placements
+            .push(solve::ScalarProgramOutputPlacement::Range(outputs));
     }
 
     /// Append `other`, re-basing its output ordinals onto this block.
@@ -2109,16 +2086,21 @@ impl ScalarRows {
     }
 
     pub(super) fn into_scalar_block(self) -> Result<solve::ScalarProgramBlock, LowerError> {
-        solve::ScalarProgramBlock::with_output_indices(
+        solve::ScalarProgramBlock::with_program_output_placements(
             self.programs,
             self.spans,
-            self.output_indices,
+            self.output_placements,
         )
         .map_err(Into::into)
     }
 
     pub(super) fn into_compute_block(mut self) -> Result<solve::ComputeBlock, LowerError> {
-        compact_identical_program_prefixes(&mut self.programs, &mut self.spans);
+        compact_identical_program_prefixes(
+            &mut self.programs,
+            &mut self.spans,
+            &mut self.output_placements,
+            scalar::MetadataBudget::default(),
+        );
         Ok(solve::ComputeBlock::from_scalar_program_block(
             self.into_scalar_block()?,
         ))
@@ -2132,16 +2114,21 @@ impl ScalarRows {
 fn compact_identical_program_prefixes(
     programs: &mut Vec<Vec<solve::LinearOp>>,
     spans: &mut Vec<Span>,
+    placements: &mut Vec<solve::ScalarProgramOutputPlacement>,
+    budget: scalar::MetadataBudget,
 ) {
     let mut compact_programs: Vec<Vec<solve::LinearOp>> = Vec::with_capacity(programs.len());
     let mut compact_spans = Vec::with_capacity(spans.len());
-    for (program, span) in std::mem::take(programs)
+    let mut compact_placements = Vec::with_capacity(placements.len());
+    for ((program, span), placement) in std::mem::take(programs)
         .into_iter()
         .zip(std::mem::take(spans))
+        .zip(std::mem::take(placements))
     {
         let Some(body_len) = trailing_output_start(&program) else {
             compact_programs.push(program);
             compact_spans.push(span);
+            compact_placements.push(placement);
             continue;
         };
         let can_fuse = compact_programs
@@ -2149,7 +2136,12 @@ fn compact_identical_program_prefixes(
             .zip(compact_spans.last())
             .and_then(|(previous, previous_span)| {
                 trailing_output_start(previous).map(|previous_body_len| {
-                    *previous_span == span && previous[..previous_body_len] == program[..body_len]
+                    *previous_span == span
+                        && previous[..previous_body_len] == program[..body_len]
+                        && previous
+                            .len()
+                            .checked_add(program.len() - body_len)
+                            .is_some_and(|count| budget.permits_operations(count))
                 })
             })
             .unwrap_or(false);
@@ -2158,13 +2150,19 @@ fn compact_identical_program_prefixes(
                 .last_mut()
                 .expect("checked previous program exists")
                 .extend_from_slice(&program[body_len..]);
+            let previous = compact_placements
+                .pop()
+                .expect("checked previous placement exists");
+            compact_placements.push(previous.concatenate(placement));
         } else {
             compact_programs.push(program);
             compact_spans.push(span);
+            compact_placements.push(placement);
         }
     }
     *programs = compact_programs;
     *spans = compact_spans;
+    *placements = compact_placements;
 }
 
 fn trailing_output_start(program: &[solve::LinearOp]) -> Option<usize> {
@@ -2606,13 +2604,93 @@ fn first_model_span(view: dae::DaeView<'_>) -> Span {
         .expect("nonempty checked DAE has responsible provenance")
 }
 
-/// The number of factors of a literal Integer exponent that every lowering of
-/// `x ^ n` evaluates as a product of `x` (`x*x`, `x*x*x`), so a scalar row, a
-/// typed call body, and a synthesized family owner round alike.
-const fn product_power_factors(exponent: i64) -> Option<u8> {
-    match exponent {
-        2 => Some(2),
-        3 => Some(3),
+/// A literal Integer exponent `n` of a Real power, lowered for every `n` as the
+/// operation sequence of `rumoca_core::modelica_integer_power`: the base is
+/// inverted first when `n` is negative, then multiplied in square-and-multiply
+/// order over the magnitude of `n`. The sequence is `O(log |n|)` long, so no
+/// exponent needs a different algorithm, and every lowering of `x ^ n` (scalar
+/// rows, typed bodies, synthesized family owners) rounds alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiteralPower {
+    pub(crate) reciprocal: bool,
+    pub(crate) magnitude: u64,
+}
+
+impl LiteralPower {
+    pub(crate) fn new(exponent: i64) -> Self {
+        Self {
+            reciprocal: exponent < 0,
+            magnitude: exponent.unsigned_abs(),
+        }
+    }
+
+    /// Fold the value `base` into the running `result`, returning its value index.
+    fn multiply_into(steps: &mut Vec<(usize, usize)>, result: Option<usize>, base: usize) -> usize {
+        match result {
+            None => base,
+            Some(product) => {
+                steps.push((product, base));
+                steps.len()
+            }
+        }
+    }
+
+    /// The multiplications of the product, in the order of the canonical rule.
+    /// Value 0 is the (possibly inverted) base and step `k` defines value
+    /// `k + 1` as the product of the two named earlier values; the last step
+    /// is the result, or the base itself when there is no step. A zero
+    /// magnitude has no steps and its result is the constant 1.
+    pub(crate) fn steps(self) -> Vec<(usize, usize)> {
+        let mut steps = Vec::new();
+        let mut base = 0;
+        let mut result: Option<usize> = None;
+        let mut remaining = self.magnitude;
+        while remaining != 0 {
+            if !remaining.is_multiple_of(2) {
+                result = Some(Self::multiply_into(&mut steps, result, base));
+            }
+            remaining /= 2;
+            if remaining != 0 {
+                steps.push((base, base));
+                base = steps.len();
+            }
+        }
+        steps
+    }
+}
+
+/// The constructor-backed source proof shared by scalar owner routing and
+/// typed expression lowering for the literal-exponent product plan.
+fn literal_power_plan<'dae>(
+    view: dae::DaeView<'dae>,
+    operator: dae::BinaryOperator,
+    base: dae::ExprId<'dae>,
+    exponent: dae::ExprId<'dae>,
+) -> Option<LiteralPower> {
+    if !matches!(
+        operator,
+        dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+    ) {
+        return None;
+    }
+    let base = view.expression(base)?.value_type();
+    if !base.is_scalar() || base.scalar_type() != dae::ScalarType::Real {
+        return None;
+    }
+    match view.expression(exponent)?.operation() {
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(exponent)) => {
+            Some(LiteralPower::new(*exponent))
+        }
+        // A negated Integer literal is the same source constant.
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Negate,
+            operand,
+        } => match view.expression(operand)?.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(exponent)) => {
+                Some(LiteralPower::new(exponent.checked_neg()?))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }

@@ -41,6 +41,29 @@ impl CallTypeOverrides {
             .copied()
     }
 
+    pub(crate) fn call_substitutions(
+        &self,
+        call: &rumoca_ir_ast::ComponentReference,
+    ) -> Vec<(DefId, DefId)> {
+        let mut substitutions = self.unqualified.clone();
+        if let Some(alias) = call.parts.first()
+            && let Some(overrides) = self.by_alias.get(alias.ident.text.as_ref())
+        {
+            substitutions.extend(
+                overrides
+                    .iter()
+                    .map(|(&source, &effective)| (source, effective)),
+            );
+        }
+        let mut substitutions = substitutions.into_iter().collect::<Vec<_>>();
+        substitutions.sort_unstable_by_key(|(source, _)| source.index());
+        substitutions
+    }
+
+    pub(crate) fn apply_substitutions(&mut self, substitutions: &[(DefId, DefId)]) {
+        self.unqualified.extend(substitutions.iter().copied());
+    }
+
     pub(super) fn specialized_declared_type_by_alias_def_id(
         &self,
         alias: DefId,
@@ -221,7 +244,7 @@ fn nested_type_specializations(
     overrides
 }
 
-fn class_hierarchy(tree: &ClassTree, root_def_id: DefId) -> Vec<DefId> {
+pub(crate) fn class_hierarchy(tree: &ClassTree, root_def_id: DefId) -> Vec<DefId> {
     const MAX_DEPTH: usize = 64;
     let mut hierarchy = Vec::new();
     let mut pending = vec![(root_def_id, 0usize)];

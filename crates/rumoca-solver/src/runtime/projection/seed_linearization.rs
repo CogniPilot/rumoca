@@ -41,7 +41,7 @@ enum StructuredSolve {
 
 impl StructuredSolve {
     /// The structured solve of a sparse-candidate block of `n` rows.
-    fn select(structure: Option<&solve::JacobianStructure>, n: usize) -> Option<Self> {
+    fn select(structure: Option<&solve::ColoredJacobianStructure>, n: usize) -> Option<Self> {
         let structure = structure?;
         let pattern = structure.pattern();
         if pattern.rows() as usize != n
@@ -110,7 +110,7 @@ impl SeedBlockLinearization {
             seed,
             block,
             &self.jacobian,
-            structure.map(solve::JacobianStructure::pattern),
+            structure.map(solve::ColoredJacobianStructure::pattern),
         )
         .0
     }
@@ -213,7 +213,7 @@ pub(super) fn certify_with_refinement<M: ImplicitProjectionModel>(
             ));
         }
         row_scales.clear();
-        for (index, block) in plan.blocks.iter().enumerate() {
+        for (index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
             let linearization = model.algebraic_seed_linearization(index, block, y, args)?;
             refine_direction(model, block, &linearization, y, args, seed)?;
             row_scales.extend(linearization.row_scales(model, index, block, seed));

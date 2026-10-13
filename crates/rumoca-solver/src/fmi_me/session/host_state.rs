@@ -7,18 +7,16 @@
 
 mod saved_observation;
 
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::{cell::Cell, rc::Rc};
 
+use crate::fmi_me::instance::MeKernelCell;
 use indexmap::IndexMap;
 
 use super::{MeSessionError, MeSessionLoss, MeSessionOptions, try_copied, try_filled};
 use crate::{
     fmi_me::{
-        MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry,
-        MeFmuState, MeTime, SolveMeKernel,
+        MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeTime,
+        SolveMeKernel,
         integrator::{
             MeContinuousPoint, MeDerivativeController, accepted_step_roundoff, canonical_coordinate,
         },
@@ -61,7 +59,24 @@ pub(super) fn run_fmi_initialization(
     options: &MeSessionOptions,
     records_outputs: bool,
 ) -> Result<InitializationOutcome, MeSessionError> {
-    kernel.enter_initialization_mode()?;
+    match kernel.initialization_state() {
+        crate::fmi_me::lifecycle::MeState::Instantiated => kernel.enter_initialization_mode()?,
+        crate::fmi_me::lifecycle::MeState::InitializationMode => {}
+        _ => {
+            return Err(MeSessionError::Contract {
+                reason: "the initialization driver requires Instantiated or Initialization Mode"
+                    .to_owned(),
+            });
+        }
+    }
+    complete_fmi_initialization(kernel, options, records_outputs)
+}
+
+fn complete_fmi_initialization(
+    kernel: &mut SolveMeKernel,
+    options: &MeSessionOptions,
+    records_outputs: bool,
+) -> Result<InitializationOutcome, MeSessionError> {
     kernel.exit_initialization_mode()?;
     let discrete = update_discrete_states_to_completion(kernel, options.start_time())?;
 
@@ -90,7 +105,7 @@ pub(super) fn run_fmi_initialization(
     }
 
     kernel.enter_continuous_time_mode()?;
-    let state_count = kernel.model_description().continuous_state_count;
+    let state_count = kernel.continuous_state_count();
     let mut states = try_filled(state_count, 0.0, "initial continuous states")?;
     kernel.get_continuous_states(&mut states)?;
     let mut nominals = try_filled(state_count, 0.0, "initial state nominals")?;
@@ -145,7 +160,7 @@ fn read_outputs(kernel: &SolveMeKernel) -> Result<Vec<f64>, MeError> {
 
 /// Everything the master algorithm owns except the numerical plugin.
 pub(super) struct MeHostState {
-    pub(super) kernel: Rc<RefCell<SolveMeKernel>>,
+    pub(super) kernel: Rc<MeKernelCell>,
     /// The checked FMI Float64 annotation resolved once while the host is
     /// prepared. `None` is valid only for a delay-free component.
     pub(super) max_step_duration_reference: Option<crate::fmi_me::MeValueRef>,
@@ -173,9 +188,7 @@ pub(super) struct MeHostState {
     pub(super) terminated: bool,
     pub(super) state_count: usize,
     pub(super) indicator_count: usize,
-    pub(super) input_names: Vec<String>,
     pub(super) inputs: IndexMap<String, f64>,
-    pub(super) pristine: MeFmuState,
     pub(super) event_streak_time: Option<f64>,
     pub(super) event_streak_count: usize,
     /// Why the session stopped being usable, once that has happened.
@@ -192,20 +205,24 @@ pub(super) struct MeHostState {
 impl MeHostState {
     // -- metadata ----------------------------------------------------------
 
-    pub(super) fn output_names(&self) -> Vec<String> {
-        self.kernel
-            .borrow()
+    /// The visible output names, read from the kernel's lazily built report so a
+    /// session that records no trace materializes it only when asked.
+    pub(super) fn output_names(&self) -> Result<Vec<String>, MeSessionError> {
+        Ok(self
+            .kernel
+            .borrow()?
             .model_description()
             .output_names
-            .to_vec()
+            .to_vec())
     }
 
-    pub(super) fn output_meta(&self) -> Vec<SimVariableMeta> {
-        self.kernel
-            .borrow()
+    pub(super) fn output_meta(&self) -> Result<Vec<SimVariableMeta>, MeSessionError> {
+        Ok(self
+            .kernel
+            .borrow()?
             .model_description()
             .output_meta
-            .to_vec()
+            .to_vec())
     }
 
     /// The checked scan/location policy, or the typed failure that a
@@ -232,7 +249,7 @@ impl MeHostState {
         event_time: f64,
     ) -> Result<MeDiscreteStates, MeSessionError> {
         let entry = self.event_entry(cause, event_time);
-        let mut kernel = self.kernel.borrow_mut();
+        let mut kernel = self.kernel.borrow_mut()?;
         kernel.enter_event_mode(entry)?;
         update_discrete_states_to_completion(&mut kernel, event_time)
     }
@@ -281,7 +298,7 @@ impl MeHostState {
         &mut self,
         termination: Option<SimTermination>,
     ) -> Result<(), MeSessionError> {
-        self.kernel.borrow_mut().terminate()?;
+        self.kernel.borrow_mut()?.terminate()?;
         self.terminated = true;
         self.termination = termination;
         Ok(())
@@ -454,7 +471,7 @@ impl MeHostState {
 
     pub(super) fn finish_trace(self) -> SimResult {
         let termination = self.termination.clone();
-        let diagnostics = self.kernel.borrow().diagnostics();
+        let diagnostics = self.kernel.diagnostics();
         self.trace.finish(termination, diagnostics)
     }
 
@@ -487,7 +504,7 @@ impl MeHostState {
         let time = canonical_coordinate(time);
         let mut projected = try_copied(states, "projected accepted point states")?;
         let moved = {
-            let mut kernel = self.kernel.borrow_mut();
+            let mut kernel = self.kernel.borrow_mut()?;
             kernel
                 .set_time(MeTime::at(time))
                 .and_then(|()| kernel.set_continuous_states(&projected))
@@ -523,7 +540,7 @@ impl MeHostState {
         let time = canonical_coordinate(time);
         let moved = {
             let target = states.as_deref().unwrap_or(&self.states);
-            let mut kernel = self.kernel.borrow_mut();
+            let mut kernel = self.kernel.borrow_mut()?;
             kernel
                 .set_time(MeTime::at(time))
                 .and_then(|()| kernel.set_continuous_states(target))
@@ -649,14 +666,14 @@ impl MeHostState {
     pub(super) fn read_nominals(&self) -> Result<Vec<f64>, MeSessionError> {
         let mut nominals = try_filled(self.state_count, 0.0, "state nominals")?;
         self.kernel
-            .borrow()
+            .borrow()?
             .get_nominals_of_continuous_states(&mut nominals)?;
         Ok(nominals)
     }
 
     pub(super) fn completed_integrator_step(&self) -> Result<MeCompletedIntegratorStep, MeError> {
-        let mut kernel = self.kernel.borrow_mut();
-        if !kernel.model_description().needs_completed_integrator_step {
+        let mut kernel = self.kernel.borrow_mut()?;
+        if !kernel.needs_completed_integrator_step() {
             return Ok(MeCompletedIntegratorStep::default());
         }
         kernel.completed_integrator_step(true)
@@ -673,7 +690,7 @@ impl MeHostState {
         };
         let mut values = [0.0];
         self.kernel
-            .borrow()
+            .borrow()?
             .get_float64(std::slice::from_ref(reference), &mut values)?;
         let limit = values[0];
         if limit == f64::MAX {
@@ -784,8 +801,8 @@ fn admissible_event_left_coordinate(
     }
 }
 
-fn observe_current(kernel: &Rc<RefCell<SolveMeKernel>>) -> Result<Vec<f64>, MeError> {
-    let kernel = kernel.borrow();
+fn observe_current(kernel: &Rc<MeKernelCell>) -> Result<Vec<f64>, MeError> {
+    let kernel = kernel.borrow()?;
     read_outputs(&kernel)
 }
 
@@ -798,7 +815,7 @@ fn observe_current(kernel: &Rc<RefCell<SolveMeKernel>>) -> Result<Vec<f64>, MeEr
 /// evaluates derivatives at trial points — runs inside one of these and is
 /// closed by [`Self::settle`] on **every** exit, success or failure
 pub(super) struct AcceptedAnchor<'host> {
-    kernel: &'host Rc<RefCell<SolveMeKernel>>,
+    kernel: &'host Rc<MeKernelCell>,
     usability: &'host Cell<Option<MeSessionLoss>>,
     time: f64,
     states: &'host [f64],
@@ -807,7 +824,7 @@ pub(super) struct AcceptedAnchor<'host> {
 impl AcceptedAnchor<'_> {
     /// `fmi3SetTime` + `fmi3SetContinuousStates` back onto the accepted point.
     fn restore(&self) -> Result<(), MeError> {
-        let mut kernel = self.kernel.borrow_mut();
+        let mut kernel = self.kernel.borrow_mut()?;
         kernel.set_time(MeTime::at(self.time))?;
         kernel.set_continuous_states(self.states)
     }
@@ -839,7 +856,7 @@ impl AcceptedAnchor<'_> {
     ) -> Result<Vec<f64>, MeSessionError> {
         let attempted = self.read_at(time, states, |kernel| {
             let mut indicators = Vec::new();
-            kernel.borrow().get_event_indicators(&mut indicators)?;
+            kernel.borrow()?.get_event_indicators(&mut indicators)?;
             Ok(indicators)
         });
         self.settle(attempted)
@@ -853,11 +870,11 @@ impl AcceptedAnchor<'_> {
         &self,
         time: f64,
         states: &[f64],
-        read: impl FnOnce(&Rc<RefCell<SolveMeKernel>>) -> Result<Vec<f64>, MeError>,
+        read: impl FnOnce(&Rc<MeKernelCell>) -> Result<Vec<f64>, MeError>,
     ) -> Result<Vec<f64>, MeSessionError> {
         let mut projected = try_copied(states, "projected observation states")?;
         {
-            let mut kernel = self.kernel.borrow_mut();
+            let mut kernel = self.kernel.borrow_mut()?;
             kernel.set_time(MeTime::at(time))?;
             kernel.set_continuous_states(&projected)?;
             kernel.project_continuous_states_for_observation(&mut projected)?;

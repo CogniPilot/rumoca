@@ -133,7 +133,7 @@ fn version() -> String {
 /// `None`s are not evidence that the two artifacts agree.
 #[pyfunction]
 fn build_identity() -> Option<String> {
-    rumoca_core::build_identity().map(str::to_owned)
+    rumoca_tool_build_info::build_identity().map(str::to_owned)
 }
 
 /// Format Modelica source code.

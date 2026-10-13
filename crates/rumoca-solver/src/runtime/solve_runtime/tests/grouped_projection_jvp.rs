@@ -19,7 +19,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         _seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("a selected projection must not execute unrelated programs")
     }
 
@@ -31,7 +31,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         _t: f64,
         seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.single_calls.set(self.single_calls.get() + 1);
         Ok(Some(
@@ -45,7 +45,7 @@ impl CompiledSolveJacobianExpression for GroupedJacobian {
         inputs: solve_eval::JacobianEvalInputs<'_>,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.grouped_calls.set(self.grouped_calls.get() + 1);
         if self.fail {
@@ -134,8 +134,16 @@ pub(super) fn coupled_model() -> solve::SolveModel {
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(coupled_program(false));
     model.problem.continuous.implicit_row_targets =
-        vec![Some(solve::scalar_slot_y(1)), Some(solve::scalar_slot_y(0))];
-    model.problem.continuous.algebraic_projection_plan.blocks[0].rows = vec![1, 0];
+        vec![Some(solve::scalar_slot_y(1)), Some(solve::scalar_slot_y(0))].into();
+    let mut blocks = model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks()
+        .to_vec();
+    blocks[0].rows = vec![1, 0];
+    model.problem.continuous.algebraic_projection_plan.blocks = blocks.into();
     model.artifacts.continuous.implicit_jacobian_v_scalar = coupled_program(true);
     mirror_scalar_implicit_jvp(&mut model);
     derive_test_structural_artifacts(&mut model);
@@ -157,7 +165,7 @@ impl CompiledSolveExpression for GroupedResidual {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("selected residuals must not execute unrelated programs")
     }
 
@@ -168,7 +176,7 @@ impl CompiledSolveExpression for GroupedResidual {
         p: &[f64],
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.single_calls.set(self.single_calls.get() + 1);
         Ok(Some(
@@ -184,7 +192,7 @@ impl CompiledSolveExpression for GroupedResidual {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut Vec<f64>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, crate::RuntimeSolveError> {
         assert_eq!(program, 0);
         self.grouped_calls.set(self.grouped_calls.get() + 1);
         if self.fail {
@@ -200,9 +208,14 @@ impl CompiledSolveExpression for GroupedResidual {
 fn grouped_projection_residual_evaluates_shared_outputs_once_at_each_point() {
     let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
     let native = Rc::new(GroupedResidual::default());
-    runtime.compiled_implicit_rhs = Some(native.clone());
+    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
     let projection = super::native_projection_jvp::selected_projection(&runtime, false);
-    let selection = runtime.continuous_structural.algebraic_projection()[0]
+    let selection = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .continuous_structural
+        .algebraic_projection()[0]
         .residual_output_evaluation()
         .unwrap();
     let mut selected = [0.0; 2];
@@ -239,7 +252,7 @@ fn grouped_projection_residual_failure_propagates_without_replay_or_partial_comm
         fail: true,
         ..Default::default()
     });
-    runtime.compiled_implicit_rhs = Some(native.clone());
+    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
     let mut y = vec![8.0, -5.0];
     let error = runtime
         .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
@@ -255,7 +268,9 @@ fn grouped_projection_jvp_executes_once_per_color_at_changing_coefficients() {
     let model = coupled_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let native = Rc::new(GroupedJacobian::default());
-    runtime.compiled_implicit_projection_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_projection_jacobian_v = Some(native.clone());
     for (iteration, k) in [2.0, -3.0, 0.0, 2.0].into_iter().enumerate() {
         let mut y = vec![8.0, -5.0];
         runtime
@@ -280,7 +295,9 @@ fn grouped_projection_jvp_error_propagates_without_single_row_retry() {
         fail: true,
         ..Default::default()
     });
-    runtime.compiled_implicit_projection_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_projection_jacobian_v = Some(native.clone());
     let mut y = vec![8.0, -5.0];
     let error = runtime
         .refresh_algebraic_and_output_slots_certified(1.0, &mut y, &[2.0], 1e-10, 4)
@@ -306,9 +323,16 @@ fn grouped_projection_jvp_interpreter_uses_the_same_output_projection() {
 fn grouped_projection_jvp_preserves_reverse_completed_rows_and_full_seed_space() {
     let mut runtime = SolveRuntime::new_fixture(&coupled_model()).unwrap();
     let native = Rc::new(GroupedJacobian::default());
-    runtime.compiled_implicit_full_jacobian_v = Some(native.clone());
+    runtime
+        .scalar_fixture_mut()
+        .compiled_implicit_full_jacobian_v = Some(native.clone());
     let projection = super::native_projection_jvp::selected_projection(&runtime, true);
-    let selection = runtime.continuous_structural.algebraic_projection()[0]
+    let selection = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .continuous_structural
+        .algebraic_projection()[0]
         .output_evaluation(0)
         .unwrap();
     let mut out = [-99.0, -99.0];

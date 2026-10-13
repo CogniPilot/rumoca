@@ -31,6 +31,7 @@ pub(super) enum ConditionalActivationKind {
     ConditionalScalar,
     ConditionalRecord,
     FunctionConditional,
+    OwnedFunctionConditional,
     ArraySelection,
     ArrayUpdate,
     Concatenation,

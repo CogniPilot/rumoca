@@ -48,7 +48,13 @@ pub(crate) fn assert_every_step_is_proven(model: &solve::SolveModel) -> usize {
     )
     .expect("the residual programs prepare");
     let mut steps = 0;
-    for block in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for block in model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks()
+    {
         for step in block
             .tearing
             .iter()
@@ -73,7 +79,10 @@ pub(crate) fn assert_every_step_is_proven(model: &solve::SolveModel) -> usize {
 #[test]
 fn a_causal_step_isolates_only_through_a_proven_coefficient() {
     let model = lowered("ProductLoop", PRODUCT_LOOP);
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = model
+        .problem
+        .solver_named_report(0..model.solver_scalar_count())
+        .unwrap();
     let x = names
         .iter()
         .position(|name| name == "x")
@@ -83,6 +92,7 @@ fn a_causal_step_isolates_only_through_a_proven_coefficient() {
         .continuous
         .algebraic_projection_plan
         .blocks
+        .scalar_blocks()
         .iter()
         .find(|block| block.y_indices.contains(&x))
         .expect("x is projected");

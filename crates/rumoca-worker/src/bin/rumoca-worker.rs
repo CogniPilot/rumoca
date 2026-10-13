@@ -901,9 +901,10 @@ fn classify_sim_error(
     sim_build_seconds: f64,
     phase: WorkerErrorPhase,
 ) {
+    let failure_bucket = ModelFailureBucket::from_sim_error(&err, phase.fallback_stage());
     row.sim_status = Some(
-        match err.kind() {
-            SimError::Timeout { .. } => "sim_timeout",
+        match failure_bucket {
+            ModelFailureBucket::Timeout => "sim_timeout",
             _ => "sim_solver_fail",
         }
         .to_string(),
@@ -916,10 +917,7 @@ fn classify_sim_error(
     // failing path in the solver backend attached, falling back to the worker's
     // own position in the pipeline when the path recorded nothing.
     row.set_failure_classification(
-        ModelFailureClassification::new(
-            phase.progress_phase(),
-            ModelFailureBucket::from_sim_error(&err, phase.fallback_stage()),
-        ),
+        ModelFailureClassification::new(phase.progress_phase(), failure_bucket),
         row.sim_error_code.clone(),
     );
     row.sim_seconds = Some(elapsed);
@@ -1062,7 +1060,9 @@ fn build_worker_prepared_simulation(
         |lowered| {
             solve_error = write_structural_dae_artifacts(lowered.prepared_dae(), request);
             let solve_model = lowered.model();
-            let solve_model_wire = match rumoca_phase_solve::solve_model_wire(solve_model) {
+            let solve_model_wire = match rumoca_eval_solve::model_wire::solve_model_wire(
+                solve_model,
+            ) {
                 Ok(wire) => wire,
                 Err(error) => {
                     solve_error = Some(format!(
@@ -1680,7 +1680,79 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_solver::fmi_me::MeSessionError;
     use std::io::Cursor;
+
+    fn classified_simulation_error(error: SimError) -> WorkerModelResult {
+        let mut row = WorkerModelResult::phase_failure(
+            "Modelica.Test.Examples.Timeout".to_string(),
+            "Success",
+            "",
+            None,
+        );
+        classify_sim_error(
+            &mut row,
+            error,
+            51.99,
+            BuildSimulationTimings {
+                ir_solve_seconds: 1.66,
+                backend_build_seconds: 2.55,
+                ..BuildSimulationTimings::default()
+            },
+            4.23,
+            WorkerErrorPhase::Simulation {
+                sim_run_seconds: 46.31,
+            },
+        );
+        row
+    }
+
+    #[test]
+    fn simulation_timeout_status_agrees_with_typed_failure_bucket() {
+        let cases = [
+            SimError::Timeout { seconds: 45.0 },
+            SimError::from(MeSessionError::Timeout { seconds: 45.0 }),
+            SimError::from(MeSessionError::Timeout { seconds: 45.0 })
+                .at_stage(SimFailureStage::Integration),
+        ];
+        for error in cases {
+            let row = classified_simulation_error(error);
+            assert_eq!(row.sim_status.as_deref(), Some("sim_timeout"));
+            assert_eq!(row.failure_bucket, Some(ModelFailureBucket::Timeout));
+            assert_eq!(row.failure_phase, Some(WorkerProgressPhase::Sim));
+            assert_eq!(
+                row.owner_category,
+                Some(ModelFailureBucket::Timeout.owner_category())
+            );
+            assert_eq!(row.sim_error.as_deref(), Some("timeout after 45.000s"));
+            assert_eq!(row.sim_error_code, None);
+            assert_eq!(row.ic_status.as_deref(), Some("ic_ok"));
+            assert_eq!(row.sim_seconds, Some(51.99));
+            assert_eq!(row.sim_build_seconds, Some(4.23));
+            assert_eq!(row.ir_solve_seconds, Some(1.66));
+            assert_eq!(row.sim_backend_build_seconds, Some(2.55));
+            assert_eq!(row.sim_run_seconds, Some(46.31));
+            assert_eq!(row.sim_wall_seconds, Some(51.99));
+        }
+    }
+
+    #[test]
+    fn timeout_message_does_not_reclassify_a_typed_contract_failure() {
+        let row = classified_simulation_error(
+            MeSessionError::Contract {
+                reason: "timeout after 45.000s".to_string(),
+            }
+            .into(),
+        );
+        assert_eq!(row.sim_error.as_deref(), Some("timeout after 45.000s"));
+        assert_eq!(row.sim_status.as_deref(), Some("sim_solver_fail"));
+        assert_eq!(
+            row.failure_bucket,
+            Some(ModelFailureBucket::RuntimeContract)
+        );
+        assert_eq!(row.failure_phase, Some(WorkerProgressPhase::Sim));
+        assert_eq!(row.sim_error_code, Some("EX002".to_string()));
+    }
 
     /// Compile and simulate `source` as the MSL worker does, returning the
     /// recorded settings and the number of output points.

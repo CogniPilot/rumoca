@@ -45,8 +45,12 @@ impl AffineTensorProjection {
         })
     }
 
+    pub fn value_register_ranges(&self) -> impl Iterator<Item = (Reg, usize)> + '_ {
+        self.independent_ranges.iter().copied()
+    }
+
     pub fn value_registers(&self) -> impl Iterator<Item = Reg> + '_ {
-        self.independent_ranges.iter().flat_map(|&(start, count)| {
+        self.value_register_ranges().flat_map(|(start, count)| {
             (0..count).filter_map(move |offset| start.checked_add(u32::try_from(offset).ok()?))
         })
     }

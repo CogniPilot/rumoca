@@ -31,7 +31,7 @@ const STATE_TOLERANCE: f64 = 1.0e-9;
 fn linked_fixed_step(
     compiled: &rumoca::CompilationResult,
 ) -> rumoca_solver::fmi_me::fixed_step::FixedStepRun {
-    let component = rumoca_sim::lower_fmi_component(&compiled.dae)
+    let component = rumoca_sim::lower_fmi_export_component(&compiled.dae)
         .unwrap_or_else(|error| panic!("lower {MODEL}: {error:?}"));
     let artifact = rumoca_solver::fmi_me::MeModelArtifact::new(component);
     let steps = ((2.0 * std::f64::consts::PI + 0.5) / STEP).round();

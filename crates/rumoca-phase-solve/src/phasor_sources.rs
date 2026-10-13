@@ -17,6 +17,16 @@
 //! equation is matched to, so it is independent of causalization. A scalar
 //! two equations would record differently is left unrecorded.
 
+mod literal;
+mod proof;
+mod scoped;
+#[cfg(test)]
+mod tests;
+
+use literal::literal;
+use proof::ProofQuery;
+use rumoca_eval_dae::NumericSourceScalar;
+
 use std::collections::HashMap;
 
 use rumoca_ir_dae as dae;
@@ -26,7 +36,7 @@ use rumoca_ir_solve as solve;
 type ScalarCoordinate = (u32, usize);
 
 /// The two coordinates an angle is `atan2` of, each up to sign.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AngleOperands {
     im: ScalarCoordinate,
     re: ScalarCoordinate,
@@ -38,6 +48,23 @@ pub(crate) struct PhasorSources {
 }
 
 impl PhasorSources {
+    pub(crate) fn declaration_sources(
+        &self,
+        id: dae::VariableId<'_>,
+    ) -> Vec<(usize, solve::SolvePhasor)> {
+        let mut facts = self
+            .sources
+            .iter()
+            .filter_map(|(&(declaration, ordinal), fact)| {
+                (declaration == id.index())
+                    .then(|| fact.clone().map(|fact| (ordinal, fact)))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        facts.sort_by_key(|fact| fact.0);
+        facts
+    }
+
     pub(crate) fn of(view: dae::DaeView<'_>) -> Self {
         let mut sources = HashMap::new();
         for (target, phasor) in view
@@ -50,7 +77,7 @@ impl PhasorSources {
             })
             .flat_map(|(lhs, rhs)| [(lhs, rhs), (rhs, lhs)])
             .filter_map(|(target, value)| {
-                let target = scalar_coordinate(view, target, None)?;
+                let target = scalar_coordinate(view, target, None, &ProofQuery::default())?;
                 Some((target, phasor_of(view, value, target)?))
             })
         {
@@ -63,14 +90,6 @@ impl PhasorSources {
         }
         Self { sources }
     }
-
-    pub(crate) fn source(
-        &self,
-        id: dae::VariableId<'_>,
-        scalar: usize,
-    ) -> Option<solve::SolvePhasor> {
-        self.sources.get(&(id.index(), scalar)).cloned().flatten()
-    }
 }
 
 /// The phasor `value` is a function of, when it reduces to an angle of two
@@ -80,17 +99,18 @@ fn phasor_of<'dae>(
     value: dae::ExprId<'dae>,
     target: ScalarCoordinate,
 ) -> Option<solve::SolvePhasor> {
+    let query = ProofQuery::default();
     let (function, operands) = match view.expression(value)?.operation() {
         dae::ExpressionOperation::Builtin {
             builtin: dae::PureBuiltin::Cos,
             arguments,
         } if arguments.len() == 1 => (
             solve::SolvePhasorFunction::CosineOfAngle,
-            angle_operands(view, arguments.get(0)?, None)?,
+            angle_operands(view, arguments.get(0)?, None, &query)?,
         ),
         _ => (
             solve::SolvePhasorFunction::Angle,
-            angle_operands(view, value, None)?,
+            angle_operands(view, value, None, &query)?,
         ),
     };
     if operands.im == target || operands.re == target || operands.im == operands.re {
@@ -112,6 +132,7 @@ fn scalar_name(view: dae::DaeView<'_>, (variable, scalar): ScalarCoordinate) -> 
 /// bound to that function's parameters; `parent` is the caller's frame, in
 /// which the arguments are read.
 struct CallFrame<'frame, 'dae> {
+    call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: dae::ExpressionOperands<'dae>,
     parent: Option<&'frame CallFrame<'frame, 'dae>>,
@@ -163,22 +184,36 @@ fn angle_operands<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     frame: Option<&CallFrame<'_, 'dae>>,
+    query: &ProofQuery<'dae>,
+) -> Option<AngleOperands> {
+    query
+        .angle_operands
+        .get_or_compute(proof::expression_key(expression, frame), || {
+            angle_operands_uncached(view, expression, frame, query)
+        })
+}
+
+fn angle_operands_uncached<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    frame: Option<&CallFrame<'_, 'dae>>,
+    query: &ProofQuery<'dae>,
 ) -> Option<AngleOperands> {
     if let Forward::Expression(forwarded, frame) = forward(view, expression, frame) {
-        return angle_operands(view, forwarded, frame);
+        return angle_operands(view, forwarded, frame, query);
     }
     match view.expression(expression)?.operation() {
         dae::ExpressionOperation::Builtin {
             builtin: dae::PureBuiltin::Atan2,
             arguments,
         } if arguments.len() == 2 => Some(AngleOperands {
-            im: scalar_coordinate(view, arguments.get(0)?, frame)?,
-            re: scalar_coordinate(view, arguments.get(1)?, frame)?,
+            im: scalar_coordinate(view, arguments.get(0)?, frame, query)?,
+            re: scalar_coordinate(view, arguments.get(1)?, frame, query)?,
         }),
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
             operand,
-        } => angle_operands(view, operand, frame),
+        } => angle_operands(view, operand, frame, query),
         dae::ExpressionOperation::Call {
             function,
             output,
@@ -194,16 +229,28 @@ fn angle_operands<'dae>(
             }
             let result = callee.result_values().rhs(output as usize)?;
             let call = CallFrame {
+                call: expression,
                 function,
                 arguments,
                 parent: frame,
             };
-            angle_operands(view, result, Some(&call))
+            angle_operands(view, result, Some(&call), query)
         }
+        dae::ExpressionOperation::FunctionConditionalOutput {
+            conditional, value, ..
+        } => scoped::reduce(
+            view,
+            conditional,
+            value,
+            frame,
+            query,
+            &query.angle_states,
+            angle_operands,
+        ),
         dae::ExpressionOperation::Conditional(operands) => {
-            let mut angles = selected_branches(view, operands, frame)?
+            let mut angles = selected_branches(view, operands, frame, query)?
                 .into_iter()
-                .map(|branch| angle_operands(view, branch, frame));
+                .map(|branch| angle_operands(view, branch, frame, query));
             let first = angles.next()??;
             angles.all(|angle| angle == Some(first)).then_some(first)
         }
@@ -219,6 +266,7 @@ fn selected_branches<'dae>(
     view: dae::DaeView<'dae>,
     operands: dae::ExpressionOperands<'dae>,
     frame: Option<&CallFrame<'_, 'dae>>,
+    query: &ProofQuery<'dae>,
 ) -> Option<Vec<dae::ExprId<'dae>>> {
     let count = operands.len();
     if count.is_multiple_of(2) {
@@ -227,12 +275,13 @@ fn selected_branches<'dae>(
     let mut branches = Vec::new();
     for ordinal in (0..count - 1).step_by(2) {
         let branch = operands.get(ordinal + 1)?;
-        match literal(view, operands.get(ordinal)?, frame) {
-            Some(guard) if guard != 0.0 => {
+        match literal(view, operands.get(ordinal)?, frame, query) {
+            Some(NumericSourceScalar::Boolean(true)) => {
                 branches.push(branch);
                 return Some(branches);
             }
-            Some(_) => {}
+            Some(NumericSourceScalar::Boolean(false)) => {}
+            Some(_) => return None,
             None => branches.push(branch),
         }
     }
@@ -245,15 +294,40 @@ fn scalar_coordinate<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     frame: Option<&CallFrame<'_, 'dae>>,
+    query: &ProofQuery<'dae>,
+) -> Option<ScalarCoordinate> {
+    query
+        .scalar_coordinate
+        .get_or_compute(proof::expression_key(expression, frame), || {
+            scalar_coordinate_uncached(view, expression, frame, query)
+        })
+}
+
+fn scalar_coordinate_uncached<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    frame: Option<&CallFrame<'_, 'dae>>,
+    query: &ProofQuery<'dae>,
 ) -> Option<ScalarCoordinate> {
     if let Forward::Expression(forwarded, frame) = forward(view, expression, frame) {
-        return scalar_coordinate(view, forwarded, frame);
+        return scalar_coordinate(view, forwarded, frame, query);
     }
     match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::FunctionConditionalOutput {
+            conditional, value, ..
+        } => scoped::reduce(
+            view,
+            conditional,
+            value,
+            frame,
+            query,
+            &query.coordinate_states,
+            scalar_coordinate,
+        ),
         dae::ExpressionOperation::Unary {
             operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
             operand,
-        } => scalar_coordinate(view, operand, frame),
+        } => scalar_coordinate(view, operand, frame, query),
         dae::ExpressionOperation::Coordinate(coordinate) => {
             let variable = visible_value_variable(view, expression, coordinate)?;
             (view.variable(variable)?.scalar_count() == 1).then_some((variable.index(), 0))
@@ -291,51 +365,6 @@ fn visible_value_variable<'dae>(
             let variable = view.expression(expression)?.variable_coordinate()?;
             (view.variable(variable)?.value_type().scalar_type() == dae::ScalarType::Real)
                 .then_some(variable)
-        }
-        _ => None,
-    }
-}
-
-/// The literal value `expression` reduces to by substitution, Booleans as 0
-/// and 1; `None` for anything that reads a coordinate, a parameter included.
-fn literal<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    frame: Option<&CallFrame<'_, 'dae>>,
-) -> Option<f64> {
-    if let Forward::Expression(forwarded, frame) = forward(view, expression, frame) {
-        return literal(view, forwarded, frame);
-    }
-    let truth = |value: bool| Some(if value { 1.0 } else { 0.0 });
-    match view.expression(expression)?.operation() {
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => Some(*value),
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => Some(*value as f64),
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(value)) => truth(*value),
-        dae::ExpressionOperation::Unary { operator, operand } => {
-            let value = literal(view, operand, frame)?;
-            match operator {
-                dae::UnaryOperator::Plus => Some(value),
-                dae::UnaryOperator::Negate => Some(-value),
-                dae::UnaryOperator::Not => truth(value == 0.0),
-            }
-        }
-        dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-            let (lhs, rhs) = (literal(view, lhs, frame)?, literal(view, rhs, frame)?);
-            match operator {
-                dae::BinaryOperator::Add => Some(lhs + rhs),
-                dae::BinaryOperator::Subtract => Some(lhs - rhs),
-                dae::BinaryOperator::Multiply => Some(lhs * rhs),
-                dae::BinaryOperator::Divide => Some(lhs / rhs),
-                dae::BinaryOperator::Equal => truth(lhs == rhs),
-                dae::BinaryOperator::NotEqual => truth(lhs != rhs),
-                dae::BinaryOperator::Less => truth(lhs < rhs),
-                dae::BinaryOperator::LessEqual => truth(lhs <= rhs),
-                dae::BinaryOperator::Greater => truth(lhs > rhs),
-                dae::BinaryOperator::GreaterEqual => truth(lhs >= rhs),
-                dae::BinaryOperator::And => truth(lhs != 0.0 && rhs != 0.0),
-                dae::BinaryOperator::Or => truth(lhs != 0.0 || rhs != 0.0),
-                _ => None,
-            }
         }
         _ => None,
     }

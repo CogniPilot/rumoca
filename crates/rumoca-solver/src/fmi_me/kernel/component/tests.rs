@@ -90,57 +90,64 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
         vec![vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }]],
         "fmi_me_event_entry_derivative_jvp.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                        alternate_charts: Vec::new(),
-                    }],
-                },
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                scheduled_time_events: vec![1.0],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string()],
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                layout: crate::fixture_layout::named_y_layout(
+                    rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+                    vec!["x".to_string(), "a".to_string()],
+                ),
+                continuous: solve::ContinuousSolveSystem {
+                    implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+                    implicit_row_targets: (vec![
+                        Some(solve::scalar_slot_y(0)),
+                        Some(solve::scalar_slot_y(1)),
+                    ])
+                    .into(),
+                    derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                    algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                        blocks: (vec![solve::AlgebraicProjectionBlock {
+                            rows: vec![1],
+                            y_indices: vec![1],
+                            tearing: None,
+                            alternate_charts: Vec::new(),
+                        }])
+                        .into(),
+                    },
                     ..Default::default()
                 },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
+                events: solve::SolveEventPartition {
+                    scheduled_time_events: vec![1.0],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    state_scalar_count: 1,
+                    algebraic_scalar_count: 1,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        },
-        artifacts: solve::SolveArtifacts {
-            discrete: Default::default(),
-            continuous: solve::ContinuousSolveArtifacts {
-                implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
-                    implicit_jvp.clone(),
-                ),
-                implicit_jacobian_v_scalar: implicit_jvp,
-                full_jacobian_v: derivative_jvp,
+            artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
+                continuous: solve::ContinuousSolveArtifacts {
+                    implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
+                        implicit_jvp.clone(),
+                    ),
+                    implicit_jacobian_v_scalar: implicit_jvp,
+                    full_jacobian_v: derivative_jvp,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
+            initial_y: vec![0.0, 0.0].into(),
+            solver_nominals: vec![1.0, 1.0],
+
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
-        solver_nominals: vec![1.0, 1.0],
-        visible_names: vec!["x".to_string(), "a".to_string()],
-        ..Default::default()
-    }
+        vec!["x".to_string(), "a".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
@@ -358,7 +365,7 @@ fn observation_clock_alias_model() -> solve::SolveModel {
             },
             ..Default::default()
         },
-        parameters: vec![1.0, 1.0],
+        parameters: vec![1.0, 1.0].into(),
         ..Default::default()
     }
 }
@@ -388,9 +395,8 @@ fn public_observation_refreshes_clock_alias_without_mutating_event_state() {
     }
 }
 
-/// Instantiating a model with no periodic schedule borrows it for anchoring
-/// and the runtime then copies it once (ME-LIFE-006): the anchored model is
-/// the source itself, and the runtime owns one separate copy of its storage.
+/// Standalone test construction copies its bare model once without granting
+/// correlated assertion authority (ME-LIFE-006).
 #[test]
 fn instantiation_copies_a_scheduleless_model_exactly_once() {
     let mut model = steep_algebraic_time_event_model();
@@ -413,10 +419,83 @@ fn instantiation_copies_a_scheduleless_model_exactly_once() {
     .expect("fixture instantiates");
     let owned = &kernel.runtime.model;
     assert_eq!(owned.initial_y, model.initial_y);
-    assert_eq!(owned.visible_names, model.visible_names);
+    assert_eq!(owned.visible_names(), model.visible_names());
     assert!(
         !std::ptr::eq(owned.initial_y.as_ptr(), model.initial_y.as_ptr())
-            && !std::ptr::eq(owned.visible_names.as_ptr(), model.visible_names.as_ptr()),
+            && !std::ptr::eq(
+                owned.visible_projection.inputs().as_ptr(),
+                model.visible_projection.inputs().as_ptr()
+            ),
         "the runtime owns its own copy of the model"
+    );
+}
+
+#[test]
+fn correlated_instantiation_retains_the_exact_scheduleless_root() {
+    let mut model = solve::SolveModel::default();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("empty model refresh owners construct");
+    let component = solve::fmi::FmiComponent::construct(model, vec![]).unwrap();
+    let original = component.runtime_view().retain_assertion_root();
+    let kernel = SolveMeKernel::instantiate(
+        MeModelSource::new(&component),
+        &MeInstanceConfig::new("retained-source", 1.0e-8, 2.0, 3.0).unwrap(),
+    )
+    .unwrap();
+    let root = kernel.runtime.model.retained_assertion_root().unwrap();
+    assert!(root.shares_root_owner(&original));
+    assert!(std::ptr::eq(root.model(), &*kernel.runtime.model));
+    assert_eq!(
+        root.resolved_periodic_schedules_at(5.0).unwrap_err(),
+        solve::RetainedAssertionResolutionError::AlreadyResolved
+    );
+    let standalone = crate::SolveRuntime::new(original.model()).unwrap();
+    assert!(standalone.model.retained_assertion_root().is_none());
+    let alternate = kernel.runtime.new_alternate(root.model()).unwrap();
+    assert!(alternate.model.retained_assertion_root().is_none());
+    drop(component);
+    assert!(root.shares_root_owner(&original));
+}
+
+#[test]
+fn correlated_clocked_instances_resolve_from_the_original_component() {
+    let mut model = solve::SolveModel::default();
+    let lattice = rumoca_core::ClockLattice::from_seconds(0.25, 0.25).unwrap();
+    let schedule = rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice).unwrap();
+    model.problem.clocks.periodic_event_schedules =
+        vec![solve::PeriodicEventSchedule::from_schedule(schedule).unwrap()];
+    model.problem.clocks.activation_parameter_indices = vec![0];
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 0, 1);
+    model.parameters = solve::SolveInitialValues::repeat(0.0, 1).unwrap();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("clocked model refresh owners construct");
+    let component = solve::fmi::FmiComponent::construct(model, vec![]).unwrap();
+    let original = component.runtime_view().retain_assertion_root();
+    let instantiate = |start| {
+        SolveMeKernel::instantiate(
+            MeModelSource::new(&component),
+            &MeInstanceConfig::new("clocked-source", 1.0e-8, start, start + 1.0).unwrap(),
+        )
+        .unwrap()
+    };
+    let first = instantiate(2.0);
+    let second = instantiate(5.0);
+    let first_root = first.runtime.model.retained_assertion_root().unwrap();
+    let second_root = second.runtime.model.retained_assertion_root().unwrap();
+    assert!(!first_root.shares_root_owner(&original));
+    assert!(!second_root.shares_root_owner(&original));
+    assert!(!first_root.shares_root_owner(second_root));
+    for (kernel, root, phase) in [(&first, first_root, 2.25), (&second, second_root, 5.25)] {
+        assert!(std::ptr::eq(root.model(), &*kernel.runtime.model));
+        assert_eq!(
+            root.model().problem.clocks.periodic_event_schedules[0].phase_seconds(),
+            phase
+        );
+    }
+    assert_eq!(
+        original.model().problem.clocks.periodic_event_schedules[0].anchor(),
+        rumoca_core::ClockPhaseAnchor::SimulationStart
     );
 }

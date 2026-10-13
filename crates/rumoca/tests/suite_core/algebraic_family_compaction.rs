@@ -217,16 +217,18 @@ fn algebraic_family_owners_round_trip_through_the_solve_wire() {
     };
     let lowered = rumoca_sim::lower_correlated_for_simulation_with_overrides(&compiled.dae, &opts)
         .expect("lower correlated kernel");
-    let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered).expect("component wire");
+    let original = rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("finish");
+    let root = original.runtime_view().retain_assertion_root();
+    let wire =
+        rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root).expect("component wire");
     let json = serde_json::to_string(&wire).expect("serialize component");
     let mut deserializer = serde_json::Deserializer::from_str(&json);
-    let replayed = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+    let replayed = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut deserializer)
         .expect("replay component");
     assert!(
-        replayed.runtime_view().model().pure_calls == lowered.model().pure_calls,
+        replayed.runtime_view().model().pure_calls == root.model().pure_calls,
         "the replayed call table is the constructed one"
     );
-    let original = rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("finish");
     let before = rumoca_sim::simulate_fmi_component(original, &opts).expect("simulate original");
     let after = rumoca_sim::simulate_fmi_component(replayed, &opts).expect("simulate replay");
     assert_eq!(before.names, after.names);

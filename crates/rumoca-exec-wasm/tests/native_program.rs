@@ -381,7 +381,7 @@ fn fused_buffers_reject_alias_alignment_and_bounds_before_any_write() {
 }
 
 #[test]
-fn fused_native_execution_keeps_the_entire_issued_source_prefix() {
+fn fused_native_execution_drops_the_pure_source_prefix_nothing_reads() {
     let operations = vec![
         solve::LinearOp::LoadY { dst: 0, index: 0 },
         solve::LinearOp::LoadP { dst: 1, index: 0 },
@@ -456,5 +456,6 @@ fn fused_native_execution_keeps_the_entire_issued_source_prefix() {
         memory.read(&store, 0, &mut output).unwrap();
         assert_eq!(f64::from_le_bytes(output).to_bits(), expected.to_bits());
     }
-    assert_eq!(store.data(), &[f64::NAN.to_bits(), 6.0_f64.to_bits()]);
+    // `sin` of the target is read by nothing: the stage never calls it.
+    assert!(store.data().is_empty());
 }

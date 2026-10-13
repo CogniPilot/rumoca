@@ -489,6 +489,53 @@ fn eval_integer_with_scope_evaluates_while_based_function_with_real_inputs() {
     assert_eq!(eval_integer_with_scope(&nfi_expr(), &ctx, ""), Some(21));
 }
 
+fn scalar_output_function(name: &str, inputs: &[(&str, usize)]) -> ClassDef {
+    let mut function = ClassDef {
+        name: token(name),
+        class_type: ClassType::Function,
+        pure: true,
+        ..ClassDef::default()
+    };
+    for (input, rank) in inputs {
+        let mut component = input_parameter(input, None);
+        component.shape_expr = (0..*rank)
+            .map(|_| rumoca_ir_ast::Subscript::Range { token: token(":") })
+            .collect();
+        function.components.insert((*input).to_string(), component);
+    }
+    function
+        .components
+        .insert("y".to_string(), output_parameter("y"));
+    function
+}
+
+#[test]
+fn scalar_function_result_broadcasts_only_dimensions_a_formal_does_not_consume() {
+    let mut functions = FxHashMap::default();
+    functions.insert(
+        "lookup".to_string(),
+        scalar_output_function("lookup", &[("table", 2), ("u", 0)]),
+    );
+    let mut ctx = TypeCheckEvalContext::new();
+    ctx.functions = Arc::new(functions);
+    ctx.add_dimensions("table", vec![1, 2]);
+    ctx.add_dimensions("scalar", vec![]);
+    ctx.add_dimensions("samples", vec![4]);
+
+    let table_only = call("lookup", vec![cref_expr("table"), cref_expr("scalar")]);
+    assert_eq!(
+        infer_dimensions_from_binding(&table_only, &ctx),
+        Some(vec![]),
+        "an actual matching its matrix formal adds no dimensions"
+    );
+    let sampled = call("lookup", vec![cref_expr("table"), cref_expr("samples")]);
+    assert_eq!(
+        infer_dimensions_from_binding(&sampled, &ctx),
+        Some(vec![4]),
+        "an array actual for a scalar formal broadcasts"
+    );
+}
+
 #[test]
 fn eval_for_stmt_break_exits_only_inner_loop() {
     let mut ctx = TypeCheckEvalContext::new();

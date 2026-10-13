@@ -219,7 +219,14 @@ fn replay_iteration<'program>(
         builder,
         slots,
         registers: vec![None; region.body().register_types().len()],
+        assigned_states: vec![None; region.body().assigned_state_types().len()],
+        state_inputs: assigned_state::interface_offsets(region.body().assigned_state_inputs()),
+        state_outputs: assigned_state::interface_offsets(region.body().assigned_state_outputs()),
         available,
+        assertions: DirectionalAssertions {
+            outputs: &[],
+            locations: &[],
+        },
     };
     directional.derive_all()?;
     let primal = builder.load(result.primal, provenance)?;

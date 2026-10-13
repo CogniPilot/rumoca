@@ -11,6 +11,8 @@ homepage.workspace = true
 default = ["native-solvers"]
 native-solvers = ["solver-diffsol", "solver-rk45"]
 fmi = []
+native-fmi-ls = ["fmi", "dep:rumoca-exec-wasm"]
+native-fmi-ls-build = ["native-fmi-ls", "rumoca-exec-wasm/fixed-native-guest-build", "dep:wasm-encoder", "dep:wit-component", "dep:quick-xml"]
 tracing = ["rumoca-phase-solve/tracing"]
 wasm-solvers = ["solver-diffsol", "solver-rk45"]
 solver-diffsol = ["dep:rumoca-solver-diffsol"]
@@ -46,7 +48,11 @@ rumoca-ir-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-phase-solve = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-exec-wasm = { workspace = true, optional = true }
+wasm-encoder = { version = "0.241", optional = true }
+wit-component = { version = "0.241", optional = true }
+quick-xml = { workspace = true, optional = true }
+rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 rumoca-solver = { workspace = true }
 rumoca-solver-diffsol = { workspace = true, optional = true }
 rumoca-solver-rk45 = { workspace = true, optional = true }
@@ -59,9 +65,11 @@ tracing = { workspace = true }
 proptest = { workspace = true }
 rumoca-compile = { workspace = true }
 rumoca-exec-wasm = { workspace = true }
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 rumoca-exec-wasm = { workspace = true }
+rumoca-solver = { workspace = true, features = ["native-wasm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rumoca-exec-cranelift = { workspace = true }

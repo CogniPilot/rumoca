@@ -12,6 +12,7 @@
 //! symbol.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use minijinja::Value;
 use rumoca_ir_solve as solve;
@@ -19,13 +20,17 @@ use serde_json::Value as Json;
 
 use crate::errors::CodegenError;
 
-/// Target-neutral view of a checked typed function owner.
+mod json_view;
+
+/// Target-neutral view of a checked typed function owner (primal or
+/// directional), exactly the fields the typed-function templates read.
 #[derive(serde::Serialize)]
 struct OwnerView<'a> {
     id: solve::SolvePureCallOwnerId,
     inputs: &'a [solve::SolveValueType],
     outputs: &'a [solve::SolvePureCallOutput],
     body: &'a solve::TypedProgram,
+    source_predicate_outputs: BTreeMap<usize, usize>,
 }
 
 /// Serialized primal and directional views of one owner.
@@ -40,9 +45,12 @@ pub(super) struct PureCallFamilies {
     /// Per owner id, the owner id of its family representative.
     symbols: Vec<u32>,
     /// Representative primal owners, in owner order.
-    owners: Vec<Json>,
+    owners: Arc<[Json]>,
     /// Representative directional owners, in owner order.
-    directional: Vec<Json>,
+    directional: Arc<[Json]>,
+    /// Whether any emitted body hands a callee's assertions to its own
+    /// observer, the only user of `rmc_forward_assertion`.
+    forwards_assertions: bool,
 }
 
 impl PureCallFamilies {
@@ -65,16 +73,21 @@ impl PureCallFamilies {
                 directional.push(route_calls(view, &symbols)?);
             }
         }
+        let forwards_assertions = owners.iter().chain(&directional).any(forwards_assertion);
         Ok(Self {
             symbols,
-            owners,
-            directional,
+            forwards_assertions,
+            owners: owners.into(),
+            directional: directional.into(),
         })
     }
 
     /// `{ owners: [...] }`, the table shape `functions(table, ...)` reads.
     pub(super) fn owners_value(&self) -> Value {
-        Value::from_serialize(serde_json::json!({ "owners": self.owners }))
+        minijinja::context! {
+            owners => json_view::array_value(Arc::clone(&self.owners)),
+            forwards_assertions => self.forwards_assertions,
+        }
     }
 
     /// Forward-mode owners of the emitted families that have one, in owner
@@ -83,7 +96,7 @@ impl PureCallFamilies {
     /// typed evaluator's directional mode does; nested calls inside them
     /// dispatch to directional owners as well.
     pub(super) fn directional_value(&self) -> Value {
-        Value::from_serialize(&self.directional)
+        json_view::array_value(Arc::clone(&self.directional))
     }
 
     /// Owner id -> emitted symbol id, indexed by `op.owner`.
@@ -102,25 +115,56 @@ impl PureCallFamilies {
     }
 }
 
-/// Derived directional bodies stay in the retained model, outside canonical wire JSON.
-pub(super) fn directional_owners_value(table: &solve::SolvePureCallTable) -> Value {
-    Value::from_serialize(
-        table
-            .owners()
-            .iter()
-            .filter_map(directional_owner_view)
-            .collect::<Vec<_>>(),
-    )
+/// Whether any call operation inside `json` forwards child assertions.
+fn forwards_assertion(json: &Json) -> bool {
+    match json {
+        Json::Object(fields) => fields.iter().any(|(key, value)| {
+            if key == "assertion_forwarding" {
+                value
+                    .as_array()
+                    .is_some_and(|bindings| !bindings.is_empty())
+            } else {
+                forwards_assertion(value)
+            }
+        }),
+        Json::Array(items) => items.iter().any(forwards_assertion),
+        _ => false,
+    }
 }
 
-fn directional_owner_view(owner: &solve::SolvePureCallOwner) -> Option<OwnerView<'_>> {
-    let directional = owner.directional()?;
-    Some(OwnerView {
-        id: owner.id(),
-        inputs: directional.inputs(),
-        outputs: directional.outputs(),
-        body: directional.body(),
-    })
+/// Derived directional bodies stay in the retained model, outside canonical wire JSON.
+pub(super) fn directional_owners_value(
+    table: &solve::SolvePureCallTable,
+) -> Result<Value, CodegenError> {
+    let views = table
+        .owners()
+        .iter()
+        .map(directional_owner_view)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::from_serialize(
+        views.into_iter().flatten().collect::<Vec<_>>(),
+    ))
+}
+
+fn directional_owner_view(
+    owner: &solve::SolvePureCallOwner,
+) -> Result<Option<OwnerView<'_>>, CodegenError> {
+    owner
+        .directional()
+        .map(|directional| {
+            Ok(OwnerView {
+                id: owner.id(),
+                inputs: directional.inputs(),
+                outputs: directional.outputs(),
+                body: directional.body(),
+                source_predicate_outputs: source_predicate_outputs(
+                    owner,
+                    directional.outputs(),
+                    true,
+                )?,
+            })
+        })
+        .transpose()
 }
 
 fn owner_json(
@@ -137,8 +181,9 @@ fn owner_json(
         inputs: owner.inputs(),
         outputs: owner.outputs(),
         body: owner.body(),
+        source_predicate_outputs: source_predicate_outputs(owner, owner.outputs(), false)?,
     })?;
-    let directional = directional_owner_view(owner)
+    let directional = directional_owner_view(owner)?
         .map(|view| to_json(&view))
         .transpose()?;
     Ok(OwnerJson {
@@ -147,8 +192,43 @@ fn owner_json(
     })
 }
 
+fn source_predicate_outputs(
+    owner: &solve::SolvePureCallOwner,
+    outputs: &[solve::SolvePureCallOutput],
+    directional: bool,
+) -> Result<BTreeMap<usize, usize>, CodegenError> {
+    outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| output.assertion_level().is_some())
+        .map(|(output, _)| {
+            let source = if directional {
+                owner
+                    .directional_primal_output_index(output)
+                    .ok_or_else(|| {
+                        CodegenError::template("directional assertion has no checked source output")
+                    })?
+            } else {
+                output
+            };
+            Ok((output, source))
+        })
+        .collect()
+}
+
 fn to_json(view: &OwnerView<'_>) -> Result<Json, CodegenError> {
     serde_json::to_value(view).map_err(|error| CodegenError::template(error.to_string()))
+}
+
+/// Template scalar literal from the canonical inactive diagnostic-cell owner.
+pub(super) fn inactive_assertion_message(scalar: Value) -> Result<Value, minijinja::Error> {
+    let invalid = |error| minijinja::Error::new(minijinja::ErrorKind::InvalidOperation, error);
+    let scalar = serde_json::to_value(scalar).map_err(|error| invalid(error.to_string()))?;
+    let scalar = serde_json::from_value::<solve::SolveScalarType>(scalar)
+        .map_err(|error| invalid(error.to_string()))?;
+    Ok(Value::from_serialize(
+        solve::SolveValue::inactive_assertion_message(scalar),
+    ))
 }
 
 /// Family representative of every owner. An owner calls only owners issued

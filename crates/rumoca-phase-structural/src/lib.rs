@@ -63,8 +63,8 @@ pub use same_tick::{
 };
 pub use tearing::{TearingResult, tear_algebraic_loop, tear_algebraic_loop_with_causal_candidates};
 pub use types::{
-    BltBlock, EquationRef, SingularBlockWitness, SortedDae, StructuralError, StructuredScalarBlock,
-    UnknownId,
+    BltBlock, EquationRef, SingularBlockWitness, SortedDae, StructuralError,
+    StructuredFamilyContext, StructuredScalarBlock, UnknownId,
 };
 
 /// Analyze and BLT-sort a checked DAE view.
@@ -103,7 +103,7 @@ pub(crate) fn sort_from_incidence<'dae>(
     let adjacency =
         incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
     let diagnostics = diagnostics::collect_warnings(view, incidence, &match_eq, &adjacency);
-    let blocks = blt::build_blt_blocks(incidence, &match_eq, &adjacency);
+    let blocks = blt::build_blt_blocks(Some(view), incidence, &match_eq, &adjacency);
     let matching = match_eq
         .iter()
         .enumerate()
@@ -281,9 +281,9 @@ fn block_report<'dae>(view: dae::DaeView<'dae>, block: &BltBlock<'dae>) -> Block
                 .map(|tearing| tearing_report(view, equations, unknowns, tearing)),
         },
         BltBlock::StructuredScalar(family) => BlockReport::StructuredScalar {
-            origin: equation_label(view, &EquationRef(family.first_equation_index)),
-            point_count: family.point_count,
-            equations_per_point: family.equations_per_point,
+            origin: equation_label(view, &EquationRef(family.first_equation_index())),
+            point_count: family.point_count(),
+            equations_per_point: family.equations_per_point(),
         },
     }
 }
@@ -331,7 +331,9 @@ pub fn build_blt_from_incidence<'dae>(
     }
     let adjacency =
         incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
-    Ok(blt::build_blt_blocks(incidence, &match_eq, &adjacency))
+    Ok(blt::build_blt_blocks(
+        None, incidence, &match_eq, &adjacency,
+    ))
 }
 
 fn maximum_matching(
@@ -721,6 +723,90 @@ mod checked_tests {
                 panic!("checked affine family should remain compact");
             };
             assert_eq!(block.scalar_block_count(), 3);
+            assert_eq!(block.row_range(), 0..3);
+            assert_eq!(block.extents(), &[3]);
+            assert_compact_family_context(view, block, sorted.matching[0].1);
+            assert!(block.shares_matching_owner(&block.clone()));
+            let rows = block.scalar_rows().collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(
+                rows,
+                vec![
+                    (EquationRef(0), 0),
+                    (EquationRef(1), 1),
+                    (EquationRef(2), 2)
+                ]
+            );
+            assert!(block.scalar_row(3, 0).is_none());
+            assert!(block.scalar_row(0, 1).is_none());
+            let reissued = sort(view).unwrap();
+            let BltBlock::StructuredScalar(foreign) = &reissued.blocks[0] else {
+                panic!("the same source remains structurally compact");
+            };
+            assert!(!block.shares_matching_owner(foreign));
+            assert_declaration_refusal_preserves_scalar_view(view, &rows);
+        });
+        assert_prepared_family_context(&model);
+    }
+
+    fn assert_compact_family_context<'dae>(
+        view: dae::DaeView<'dae>,
+        block: &StructuredScalarBlock<'dae>,
+        base: UnknownId<'dae>,
+    ) {
+        let context = block
+            .context()
+            .expect("source matching retains its DAE context");
+        let Some(dae::ContinuousOwnerView::Structured { id, family }) = view.continuous_owner(0)
+        else {
+            panic!("fixture has an actual structured source owner");
+        };
+        assert_eq!(context.source(), id);
+        assert_eq!(context.domain(), family.domain());
+        assert_eq!(context.declaration_bases(), Some(&[base][..]));
+    }
+
+    fn assert_declaration_refusal_preserves_scalar_view(
+        view: dae::DaeView<'_>,
+        rows: &[(EquationRef, usize)],
+    ) {
+        let mut displaced = incidence::build_incidence(view).unwrap();
+        displaced.unknowns[1] = displaced.unknowns[0];
+        let refused = sort_from_incidence(view, &displaced).unwrap();
+        let BltBlock::StructuredScalar(refused) = &refused.blocks[0] else {
+            panic!("declaration refusal must retain the original singleton matching family");
+        };
+        assert!(refused.context().unwrap().declaration_bases().is_none());
+        assert_eq!(
+            refused
+                .scalar_rows()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            rows
+        );
+        let mut foreign_source = incidence::build_incidence(view).unwrap();
+        foreign_source.structured_matching[0].source_owner_index = view.continuous_owner_count();
+        let foreign_source = sort_from_incidence(view, &foreign_source).unwrap();
+        let BltBlock::StructuredScalar(foreign_source) = &foreign_source.blocks[0] else {
+            panic!("source-context refusal preserves structural scalar semantics");
+        };
+        assert!(foreign_source.context().is_none());
+        assert_eq!(
+            foreign_source
+                .scalar_rows()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            rows
+        );
+    }
+
+    fn assert_prepared_family_context(model: &dae::Dae) {
+        let prepared = dae_transform::prepare_for_solve(model).unwrap();
+        prepared.inspect(|system| {
+            let sorted = system.structural.as_ref().unwrap();
+            let BltBlock::StructuredScalar(block) = &sorted.blocks[0] else {
+                panic!("prepared replay retains the checked family");
+            };
+            assert_compact_family_context(system.view, block, sorted.matching[0].1);
         });
     }
 

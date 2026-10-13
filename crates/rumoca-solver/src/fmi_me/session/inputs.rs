@@ -24,7 +24,7 @@ impl MeSimulationSession<'_, '_> {
         let mut current = vec![0.0; references.len()];
         self.host
             .kernel
-            .borrow()
+            .borrow()?
             .get_float64(&references, &mut current)?;
         if current
             .iter()
@@ -41,7 +41,7 @@ impl MeSimulationSession<'_, '_> {
     }
 
     fn input_references(&self, inputs: &[(&str, f64)]) -> Result<Vec<MeValueRef>, MeSessionError> {
-        let kernel = self.host.kernel.borrow();
+        let kernel = self.host.kernel.borrow()?;
         inputs
             .iter()
             .map(|(name, _)| {
@@ -64,25 +64,28 @@ impl MeSimulationSession<'_, '_> {
         references: &[MeValueRef],
         values: &[f64],
     ) -> Result<(), MeSessionError> {
+        self.write_input_transaction(|kernel| kernel.set_float64(references, values))
+    }
+
+    pub(super) fn write_input_transaction(
+        &mut self,
+        write: impl FnOnce(
+            &mut crate::fmi_me::kernel::AcceptedInputWrite<'_>,
+        ) -> Result<(), crate::fmi_me::MeError>,
+    ) -> Result<(), MeSessionError> {
         let entry = self
             .host
             .event_entry(MeEventCause::InputEvent, self.host.time);
         let result = {
-            let mut kernel = self.host.kernel.borrow_mut();
-            let checkpoint = kernel.fmu_state();
-            let written = (|| {
-                kernel.set_time(MeTime::at(self.host.time))?;
-                kernel.set_continuous_states(&self.host.states)?;
-                kernel.enter_event_mode(entry)?;
-                kernel.set_float64(references, values)
-            })();
-            match written {
+            let mut kernel = self.host.kernel.borrow_mut()?;
+            match kernel.with_input_rollback(|scope| {
+                scope.position(MeTime::at(self.host.time), &self.host.states, entry)?;
+                write(scope)
+            }) {
                 Ok(()) => Ok(()),
-                Err(error) => close_excursion(
-                    self.host.time,
-                    kernel.reset_to_fmu_state(&checkpoint),
-                    Err(error.into()),
-                ),
+                Err((error, restoration)) => {
+                    close_excursion(self.host.time, restoration, Err(error.into()))
+                }
             }
         };
         if matches!(result, Err(MeSessionError::AcceptedPointLost { .. })) {
@@ -103,8 +106,12 @@ impl MeSimulationSession<'_, '_> {
 
     fn correlate_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), MeSessionError> {
         self.record_inputs(inputs);
+        self.correlate_input_write()
+    }
+
+    pub(super) fn correlate_input_write(&mut self) -> Result<(), MeSessionError> {
         let discrete = update_discrete_states_to_completion(
-            &mut self.host.kernel.borrow_mut(),
+            &mut *self.host.kernel.borrow_mut()?,
             self.host.time,
         )?;
         // A setter does not request a trace row. The next explicit observation

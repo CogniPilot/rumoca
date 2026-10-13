@@ -39,14 +39,33 @@ struct FoldScope {
     /// Per region coordinate, the origin `L(p)` of a binder re-based on its
     /// offset within a dependent range: the binder's value is `L(p) + t`.
     origins: Vec<Option<AffineForm>>,
-    /// Whether every value in `region` reaches the current path: each guard
-    /// on the path selects exactly a binder range.
+    /// Certainty relative to this scope's issued entry path.
     exact: bool,
+    enclosing_entry: Option<EnclosingFoldEntry>,
     /// Element writes the current iteration certainly made so far.
     writes: Vec<SymbolicWrite>,
     /// What every iteration certainly defines by its end, from the learning
     /// round; absent while learning.
     previous: Option<Rc<IterationSummary>>,
+}
+
+#[derive(Clone)]
+struct EnclosingFoldEntry {
+    region: IndexBox,
+    certain: bool,
+}
+
+impl EnclosingFoldEntry {
+    fn issue(parent: &FoldScope) -> Self {
+        Self {
+            region: parent.region.clone(),
+            certain: parent.exact,
+        }
+    }
+
+    fn covers(&self, prefix: &IndexBox) -> bool {
+        !self.region.is_empty() && IndexUnion::of([prefix.clone()]).contains_box(&self.region)
+    }
 }
 
 #[derive(Clone)]
@@ -98,11 +117,12 @@ impl FoldScopes {
 
     /// Enter a loop over `binders` (`(name, values, descending)`).
     pub(super) fn enter(&mut self, binders: Vec<(VarName, Progression, bool)>) {
+        let enclosing_entry = self.scopes.last().map(EnclosingFoldEntry::issue);
         let outer = self
             .scopes
             .last()
-            .map(|scope| (scope.region.0.clone(), scope.origins.clone(), scope.exact));
-        let (mut region, mut origins, exact) = outer.unwrap_or((Vec::new(), Vec::new(), true));
+            .map(|scope| (scope.region.0.clone(), scope.origins.clone()));
+        let (mut region, mut origins) = outer.unwrap_or_default();
         origins.extend(binders.iter().map(|_| None));
         region.extend(binders.iter().map(|(_, values, _)| *values));
         self.scopes.push(FoldScope {
@@ -116,7 +136,8 @@ impl FoldScopes {
                 .collect(),
             region: IndexBox(region),
             origins,
-            exact,
+            exact: true,
+            enclosing_entry,
             writes: Vec::new(),
             previous: None,
         });
@@ -165,13 +186,15 @@ impl FoldScopes {
         let inner_start = scope.region.0.len() - scope.binders.len();
         let mut realized = Vec::new();
         let mut outer = Vec::new();
+        let enclosing_entry = scope.enclosing_entry.as_ref();
         let results = scope
             .writes
             .iter()
             .filter(|write| write.certain)
             .flat_map(|write| {
                 write.region.boxes().iter().filter_map(move |part| {
-                    realize_write(write, part, inner_start).map(|done| (write, done))
+                    realize_write(write, part, inner_start, enclosing_entry)
+                        .map(|done| (write, done))
                 })
             });
         for (write, done) in results {
@@ -218,7 +241,7 @@ impl FoldScopes {
                 .writes
                 .extend(writes.iter().filter(|write| write.certain).cloned());
         }
-        if !exhaustive || !scope.exact {
+        if !exhaustive {
             return;
         }
         let whole = IndexUnion::of([scope.region.clone()]);
@@ -228,7 +251,7 @@ impl FoldScopes {
         for write in first.iter().filter(|write| !write.certain) {
             if write.region == whole && rest.iter().all(|writes| write.is_made_by(writes, &whole)) {
                 scope.writes.push(SymbolicWrite {
-                    certain: true,
+                    certain: scope.exact,
                     ..write.clone()
                 });
             }
@@ -1049,9 +1072,16 @@ enum Realized {
     Outer(SymbolicWrite),
 }
 
-fn realize_write(write: &SymbolicWrite, part: &IndexBox, inner_start: usize) -> Option<Realized> {
+fn realize_write(
+    write: &SymbolicWrite,
+    part: &IndexBox,
+    inner_start: usize,
+    enclosing_entry: Option<&EnclosingFoldEntry>,
+) -> Option<Realized> {
     let axes = inner_images(&write.axes, part, inner_start)?;
-    if axes.iter().all(|axis| axis.form.is_binder_free()) {
+    let prefix = IndexBox(part.0[..inner_start].to_vec());
+    let covers_entry = enclosing_entry.is_none_or(|entry| entry.covers(&prefix));
+    if covers_entry && axes.iter().all(|axis| axis.form.is_binder_free()) {
         return image(&axes, part)
             .and_then(SetAnswer::exact)
             .map(Realized::Defined);
@@ -1059,8 +1089,8 @@ fn realize_write(write: &SymbolicWrite, part: &IndexBox, inner_start: usize) -> 
     Some(Realized::Outer(SymbolicWrite {
         target: write.target.clone(),
         axes,
-        region: IndexUnion::of([IndexBox(part.0[..inner_start].to_vec())]),
-        certain: true,
+        region: IndexUnion::of([prefix]),
+        certain: enclosing_entry.is_none_or(|entry| entry.certain),
     }))
 }
 

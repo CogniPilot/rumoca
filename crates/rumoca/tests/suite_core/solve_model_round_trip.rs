@@ -1,6 +1,6 @@
 //! Gating check for the lazy diffsol WASM addon: a correlated FMI component
 //! produced by the main module must survive canonical serialization and
-//! checked phase-Solve/FMI replay, then simulate identically. Derived JVP and
+//! checked evaluation-owned Solve/FMI replay, then simulate identically. Derived JVP and
 //! structural artifacts are absent from the wire and mechanically reconstructed
 //! before component construction. An array model exercises the compact tensor
 //! derivative path.
@@ -24,7 +24,7 @@ end ArrayDecay;
 fn replay_wire(wire: &serde_json::Value) -> Result<rumoca_ir_solve::SolveModel, serde_json::Error> {
     let encoded = serde_json::to_string(wire).expect("encode SolveModel wire fixture");
     let mut deserializer = serde_json::Deserializer::from_str(&encoded);
-    rumoca_phase_solve::deserialize_solve_model(&mut deserializer)
+    rumoca_eval_solve::model_wire::deserialize_solve_model(&mut deserializer)
 }
 
 #[test]
@@ -48,11 +48,14 @@ fn solve_model_round_trip_simulates_identically() {
         .expect("lowered SolveProblem must satisfy its construction contract");
 
     // The addon boundary: hand the correlated component construction across as JSON.
-    let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
+    let original_component =
+        rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("finish original component");
+    let root = original_component.runtime_view().retain_assertion_root();
+    let wire = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
         .expect("construct FMI component wire");
     let json = serde_json::to_string(&wire).expect("serialize FMI component");
     let mut deserializer = serde_json::Deserializer::from_str(&json);
-    let round_tripped = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+    let round_tripped = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut deserializer)
         .expect("replay FMI component");
     let round_tripped_model = round_tripped.runtime_view().model();
     assert!(
@@ -73,8 +76,6 @@ fn solve_model_round_trip_simulates_identically() {
         "checked replay must reconstruct derivative structure"
     );
 
-    let original_component =
-        rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("finish original component");
     let original = simulate_fmi_component(original_component, &opts).expect("simulate original");
     let after = simulate_fmi_component(round_tripped, &opts).expect("simulate round-tripped");
 
@@ -128,7 +129,7 @@ fn solve_model_wire_rejects_caller_supplied_jvp_artifacts() {
     );
 
     let model_wire =
-        rumoca_phase_solve::solve_model_wire(&model).expect("construct SolveModel wire");
+        rumoca_eval_solve::model_wire::solve_model_wire(&model).expect("construct SolveModel wire");
     let mut wire = serde_json::to_value(model_wire).expect("serialize SolveModel");
     assert!(
         wire.get("artifacts").is_none(),
@@ -161,7 +162,7 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
     let model =
         lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
     let model_wire =
-        rumoca_phase_solve::solve_model_wire(&model).expect("construct SolveModel wire");
+        rumoca_eval_solve::model_wire::solve_model_wire(&model).expect("construct SolveModel wire");
     let wire = serde_json::to_value(model_wire).expect("serialize SolveModel");
 
     let mut missing_calls = wire.clone();
@@ -173,20 +174,43 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
     assert!(error.to_string().contains("pure_calls"), "{error}");
 
     let mut wrong_vector = wire.clone();
-    wrong_vector["initial_y"] = serde_json::json!([1.0, 1.0]);
+    wrong_vector["initial_y"] =
+        serde_json::to_value(rumoca_ir_solve::SolveInitialValues::from(vec![1.0, 1.0])).unwrap();
     let error =
         replay_wire(&wrong_vector).expect_err("runtime vector extent is construction-owned");
     assert!(error.to_string().contains("initial_y"), "{error}");
 
     let mut wrong_metadata = wire.clone();
-    wrong_metadata["variable_meta"][0]["name"] = serde_json::json!("forged");
+    wrong_metadata["visible_projection"][0]["binding"] = serde_json::json!("forged");
     let error = replay_wire(&wrong_metadata)
         .expect_err("visible names and metadata are one correlated projection");
-    assert!(error.to_string().contains("metadata at index 0"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("shape differs from original storage extent"),
+        "{error}"
+    );
+
+    for removed in ["visible_names", "visible_value_rows", "variable_meta"] {
+        let mut legacy = wire.clone();
+        legacy[removed] = serde_json::json!([]);
+        let error = replay_wire(&legacy).expect_err("old visible owners have no reader");
+        assert!(error.to_string().contains(removed), "{error}");
+    }
+    let mut legacy_schema = wire.clone();
+    legacy_schema["schema_version"] = serde_json::json!(3);
+    let error = replay_wire(&legacy_schema).expect_err("old model schema has no reader");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported SolveModel schema_version"),
+        "{error}"
+    );
 
     let mut unsupported = wire;
-    unsupported["schema_version"] =
-        serde_json::json!(rumoca_phase_solve::SOLVE_MODEL_SCHEMA_VERSION.saturating_add(1));
+    unsupported["schema_version"] = serde_json::json!(
+        rumoca_eval_solve::model_wire::SOLVE_MODEL_SCHEMA_VERSION.saturating_add(1)
+    );
     let error = replay_wire(&unsupported).expect_err("unsupported wire schema must fail closed");
     assert!(
         error
@@ -206,8 +230,10 @@ fn solve_model_wire_view_fails_closed_before_serialization() {
         lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).expect("lower solve model");
 
     let mut wrong_vector = model.clone();
-    wrong_vector.initial_y.pop();
-    let error = rumoca_phase_solve::solve_model_wire(&wrong_vector)
+    let mut values = wrong_vector.initial_y.to_vec();
+    values.pop();
+    wrong_vector.initial_y = values.into();
+    let error = rumoca_eval_solve::model_wire::solve_model_wire(&wrong_vector)
         .expect_err("wire construction must reject an uncorrelated runtime vector");
     assert!(error.to_string().contains("initial_y"), "{error}");
 
@@ -215,7 +241,7 @@ fn solve_model_wire_view_fails_closed_before_serialization() {
     unsupported_artifact.artifacts.continuous.mass_matrix = rumoca_ir_solve::MassMatrix::Diagonal {
         values: vec![1.0, 1.0, 1.0],
     };
-    let error = rumoca_phase_solve::solve_model_wire(&unsupported_artifact)
+    let error = rumoca_eval_solve::model_wire::solve_model_wire(&unsupported_artifact)
         .expect_err("wire construction must not silently omit a semantic artifact");
     assert!(
         error.to_string().contains("non-identity mass matrix"),
@@ -252,11 +278,14 @@ fn fmi_component_wire_carries_declared_causality() {
     let lowered =
         lower_correlated_for_simulation_with_overrides(&compiled.dae, &SimOptions::default())
             .expect("lower correlated model");
-    let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
+    let original_component =
+        rumoca_phase_solve::fmi::finish_fmi_component(lowered).expect("finish original component");
+    let root = original_component.runtime_view().retain_assertion_root();
+    let wire = rumoca_eval_solve::fmi_wire::retained_fmi_component_wire(&root)
         .expect("construct FMI component wire");
     let json = serde_json::to_string(&wire).expect("serialize FMI component");
     let mut deserializer = serde_json::Deserializer::from_str(&json);
-    let component = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+    let component = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut deserializer)
         .expect("replay FMI component");
     let causality = |name: &str| {
         let variable = component
@@ -274,13 +303,13 @@ fn fmi_component_wire_carries_declared_causality() {
 
     let current = format!(
         "\"schema_version\":{}",
-        rumoca_phase_solve::fmi::FMI_COMPONENT_SCHEMA_VERSION
+        rumoca_eval_solve::fmi_wire::FMI_COMPONENT_SCHEMA_VERSION
     );
     assert!(json.starts_with(&format!("{{{current}")), "{json}");
-    let previous = rumoca_phase_solve::fmi::FMI_COMPONENT_SCHEMA_VERSION - 1;
+    let previous = rumoca_eval_solve::fmi_wire::FMI_COMPONENT_SCHEMA_VERSION - 1;
     let superseded = json.replacen(&current, &format!("\"schema_version\":{previous}"), 1);
     let mut deserializer = serde_json::Deserializer::from_str(&superseded);
-    let error = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
+    let error = rumoca_eval_solve::fmi_wire::deserialize_fmi_component(&mut deserializer)
         .map(|_| ())
         .expect_err("a superseded FMI component schema is refused");
     assert!(

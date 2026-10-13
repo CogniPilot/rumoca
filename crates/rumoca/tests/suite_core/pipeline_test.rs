@@ -52,11 +52,15 @@ fn codegen_context_is_the_checked_semantic_projection() {
     assert_eq!(json["schema"]["name"], "rumoca.checked-dae-template");
     // Pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`: every change to the
     // projected template shape bumps that constant, and this literal must be
-    // bumped with it so template consumers see the break loudly. Version 7
+    // bumped with it so template consumers see the break loudly. Version 8
+    // differs from the independently published version 7 shapes (ordered
+    // conditional statements; retained external-table descriptors) by carrying
+    // both. Version 7
     // adds retained external-table descriptors and native table-operator
     // metadata on top of version 6's checked initialization parameter
-    // definitions.
-    assert_eq!(json["schema"]["version"], 7);
+    // definitions, ordered conditional statements, assigned-state checks and their result
+    // projections on the checked function owners.
+    assert_eq!(json["schema"]["version"], 8);
     assert!(json["value_types"].is_array());
     assert!(json["variables"].is_array());
     assert!(json["expressions"].is_array());

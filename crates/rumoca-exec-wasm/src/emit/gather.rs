@@ -94,11 +94,30 @@ impl BodyEmitter<'_> {
             .and_then(|n| base.checked_add(n))
             .and_then(|n| n.checked_add(self.register_base))
             .ok_or("model gather range overflow")?;
-        let end = self.region_frame_end.unwrap_or(
-            u32::try_from(arena.root_registers).map_err(|_| "model gather root frame overflow")?,
-        );
+        let end = if let Some(end) = self.region_frame_end {
+            end
+        } else {
+            self.root_register_layout
+                .as_ref()
+                .and_then(|layout| u32::try_from(layout.virtual_extent()).ok())
+                .ok_or("model gather root frame overflow")?
+        };
         if last >= end {
             return Err("model gather exceeds its checked frame".into());
+        }
+        let relative_last = last
+            .checked_sub(self.register_base)
+            .ok_or("model gather range overflow")?;
+        let physical_first = self.physical_arena_register(base)?;
+        let physical_last = self.physical_arena_register(relative_last)?;
+        if physical_first.checked_add(relative_last - base) != Some(physical_last)
+            || physical_last
+                >= self.region_frame_end.unwrap_or(
+                    u32::try_from(arena.root_registers)
+                        .map_err(|_| "model gather root frame overflow")?,
+                )
+        {
+            return Err("model gather exceeds its checked physical frame".into());
         }
         Ok(())
     }

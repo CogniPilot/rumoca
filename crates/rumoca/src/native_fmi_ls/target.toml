@@ -1,0 +1,24 @@
+version = 1
+ir = "fmi"
+name = "fmi-ls-native-wasm"
+description = "Direct-native FMI-LS component with the fixed shared ME runtime"
+
+[capabilities]
+
+[package]
+root = "{{ model_name }}"
+required_files = ["modelDescription.xml", "extra/org.modelica.fmi-ls-wasm/manifest.xml", "binaries/wasm32-wasip2/Rumoca_{{ artifact.identities.fmu | replace('-', '_') }}.wasm"]
+[[package.inputs]]
+name = "component"
+path = "binaries/wasm32-wasip2/Rumoca_{{ artifact.identities.fmu | replace('-', '_') }}.wasm"
+[package.archive]
+path = "{{ model_name }}.fmu"
+format = "zip"
+root = "flat"
+[[files]]
+path = "modelDescription.xml"
+template = "metadata"
+id = "fmu"
+[[files]]
+path = "extra/org.modelica.fmi-ls-wasm/manifest.xml"
+template = "layered"

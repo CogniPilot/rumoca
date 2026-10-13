@@ -5,8 +5,10 @@
   modelName="{{ model_name | xml_escape }}"
   generationTool="Rumoca"
   instantiationToken="{{ artifact.identities.fmu }}">
-  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %} canGetAndSetFMUState="true"/>
-  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="true"/>
+{% if fmi.deployment.interfaces == "model-exchange-and-co-simulation" %}
+  <ModelExchange modelIdentifier="{{ model_identifier }}"{% if me_refresh.switching or fmi.scalar_events %} needsCompletedIntegratorStep="true"{% endif %}{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
+{% endif %}
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"{% if fmi.deployment.fmu_state %} canGetAndSetFMUState="true"{% endif %}/>
   <UnitDefinitions>
     <Unit name="s">
       <BaseUnit s="1"/>
@@ -25,26 +27,31 @@
 {%- endif %}
   <LogCategories>
     <Category name="error" description="Failures of the generated kernel"/>
+{% if fmi.native_logger | default(false) %}
+    <Category name="warning" description="Committed model warnings"/>
+    <Category name="message" description="Committed model messages"/>
+{% else %}
     <Category name="projection" description="Algebraic projection sites whose fallback rate exceeds the reporting threshold"/>
+{% endif %}
   </LogCategories>
   <ModelVariables>
     <Float64 name="time" valueReference="0" causality="independent" variability="continuous" unit="s"/>
 {%- set state_ordinal = namespace(value=0) %}
 {%- for variable in fmi.variables %}
 {%- set kind = variable.value_kind %}
-{%- set element = "Float64" if kind == "Real" else ("Int32" if kind == "Integer" else kind) %}
+{%- set element = variable.fmi3_type %}
     <{{ element }} name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}"{% if kind == "Enumeration" %} declaredType="{{ variable.enumeration.name | xml_escape }}"{% endif %} causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial %} initial="{{ variable.initial }}"{% endif %}
-{%- if variable.start is defined and kind != "String" %} start="{% for value in variable.start %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value != 0 else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
+{%- if variable.start_fmi3 is defined and kind != "String" %} start="{% for value in variable.start_fmi3 %}{% if kind == "Real" %}{{ value }}{% elif kind == "Boolean" %}{{ "true" if value else "false" }}{% else %}{{ value | int }}{% endif %}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}
 {%- if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}
 {#- FMI 3.0 min, max, and nominal are single values that apply to every
     element of an array variable. Per-element bounds are declared by their
     loosest element (the smallest min, the largest max), which every element
     satisfies; a nominal is declared only when every element shares it. -#}
 {%- if kind in ["Real", "Integer", "Enumeration"] %}
-{%- if variable.minimum %} min="{% set value = variable.minimum | min %}{{ value if kind == "Real" else value | int }}"{% endif %}
-{%- if variable.maximum %} max="{% set value = variable.maximum | max %}{{ value if kind == "Real" else value | int }}"{% endif %}
+{%- if variable.minimum_fmi3 is not none %} min="{% set value = variable.minimum_fmi3 %}{{ value if kind == "Real" else value | int }}"{% endif %}
+{%- if variable.maximum_fmi3 is not none %} max="{% set value = variable.maximum_fmi3 %}{{ value if kind == "Real" else value | int }}"{% endif %}
 {%- endif %}
-{%- if kind == "Real" and variable.nominal and (variable.nominal | unique | list | length) == 1 %} nominal="{{ variable.nominal[0] }}"{% endif %}>
+{%- if kind == "Real" and variable.nominal_fmi3 is not none %} nominal="{{ variable.nominal_fmi3 }}"{% endif %}>
 {%- if variable.declared_causality %}
       <Annotations>
         <Annotation type="rumoca.declaredCausality">{{ variable.declared_causality }}</Annotation>
@@ -103,4 +110,14 @@
     <EventIndicator valueReference="{{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value + loop.index0 }}"/>
 {%- endfor %}
   </ModelStructure>
+{%- set carried = fmi.carried | default([]) %}
+{%- if carried | length > 0 %}
+  <Annotations>
+    <Annotation type="rumoca.carriedState">
+{%- for pair in carried %}
+      <Carry output="{{ pair.output }}" input="{{ pair.input }}"/>
+{%- endfor %}
+    </Annotation>
+  </Annotations>
+{%- endif %}
 </fmiModelDescription>

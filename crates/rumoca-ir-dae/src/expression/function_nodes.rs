@@ -1,5 +1,36 @@
 use super::*;
 
+pub(crate) fn insert_function_conditional_output<'dae>(
+    source_map: &rumoca_core::SourceMap,
+    storage: &mut Storage,
+    owner: FunctionConditionalId<'dae>,
+    value: FunctionValueId<'dae>,
+    definition: FunctionDefinitionId<'dae>,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let (value_type, variability, domain) =
+        crate::model::scoped_conditionals::conditional_output_facts(
+            storage, owner, value, definition, provenance,
+        )?;
+    ExpressionAt {
+        source_map,
+        storage,
+        provenance,
+        marker: std::marker::PhantomData,
+    }
+    .insert(
+        ExprNode::FunctionConditionalOutput {
+            function: owner.function().index(),
+            conditional: owner.ordinal(),
+            value: value.ordinal(),
+            definition_ordinal: definition.ordinal(),
+        },
+        ValueTypeId::from_raw(value_type),
+        variability,
+        domain,
+    )
+}
+
 impl<'dae> ExpressionAt<'_, 'dae> {
     fn function_value_use(
         self,

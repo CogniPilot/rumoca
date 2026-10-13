@@ -12,6 +12,7 @@ pub(super) fn torn_tangent_evaluators(
     // One-direction plans all read the same JVP rows; prepare them once.
     let mut shared = None;
     plan.blocks
+        .scalar_blocks()
         .iter()
         .map(|block| {
             let tearing = block.tearing.as_ref()?;
@@ -38,6 +39,7 @@ pub(super) fn colored_tangent_evaluators(
     let mut widened = solve::TangentLaneCatalog::default();
     let mut prepared = rumoca_eval_solve::PreparedLaneCatalog::default();
     plan.blocks
+        .scalar_blocks()
         .iter()
         .zip(structures.algebraic_projection())
         .map(|(block, structure)| {

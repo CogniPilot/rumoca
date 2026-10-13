@@ -84,7 +84,7 @@ impl CompiledSolveJacobianExpression for Compiler {
         _seed: &[f64],
         _tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("prepared projection must not replay the whole Jacobian")
     }
 }
@@ -97,7 +97,7 @@ impl CompiledSolveProjectionJacobian for PreparedNative {
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("prepared projection failed".into());
@@ -108,18 +108,22 @@ impl CompiledSolveProjectionJacobian for PreparedNative {
 }
 
 fn prepare(runtime: &mut SolveRuntime, native: Rc<PreparedNative>) {
-    runtime.compiled_algebraic_jacobians = refresh_projection::prepare_projection_jacobians(
-        &runtime.continuous_structural,
-        &runtime.implicit_scalar_rhs,
-        runtime.implicit_projection_scalar_jacobian_v.block(),
-        Some(&Compiler(native)),
-        &refresh_projection::projection_jacobian_demand(
-            &runtime.model,
-            runtime.settled_read_cones.as_deref(),
+    let prepared = {
+        let view = runtime.scalar_execution().unwrap();
+        refresh_projection::prepare_projection_jacobians(
+            &view.scalar.continuous_structural,
+            &view.scalar.implicit_scalar_rhs,
+            view.scalar.implicit_projection_scalar_jacobian_v.block(),
+            Some(&Compiler(native)),
+            &refresh_projection::projection_jacobian_demand(
+                &view.model,
+                view.scalar.settled_read_cones.as_deref(),
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .unwrap();
+        .unwrap()
+    };
+    runtime.scalar_fixture_mut().compiled_algebraic_jacobians = prepared;
 }
 
 #[test]
@@ -163,7 +167,12 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
     let mut runtime = SolveRuntime::new_fixture(&grouped_projection_jvp::coupled_model()).unwrap();
     let native = Rc::new(PreparedNative::default());
     prepare(&mut runtime, native.clone());
-    let structure = &runtime.continuous_structural.algebraic_projection()[0];
+    let structure = &runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .continuous_structural
+        .algebraic_projection()[0];
     let application = structure.jacobian_application().unwrap();
     let projection = native_projection_jvp::selected_projection(&runtime, true);
     let mut out = [99.0; 4];
@@ -182,7 +191,14 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
     assert_eq!(out, [99.0; 4]);
     assert_eq!(native.calls.get(), 0);
 
-    let mut programs = runtime.implicit_scalar_rhs.block().programs().to_vec();
+    let mut programs = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .implicit_scalar_rhs
+        .block()
+        .programs()
+        .to_vec();
     programs.push(vec![
         solve::LinearOp::LoadY { dst: 0, index: 0 },
         solve::LinearOp::StoreOutput { src: 0 },
@@ -199,13 +215,27 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
     assert!(!mixed.reverse_row_y_gradient_supported(0));
     assert!(mixed.reverse_row_y_gradient_supported(1));
     let prepared = refresh_projection::prepare_projection_jacobians(
-        &runtime.continuous_structural,
+        &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .continuous_structural,
         &mixed,
-        runtime.implicit_projection_scalar_jacobian_v.block(),
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .implicit_projection_scalar_jacobian_v
+            .block(),
         Some(&Compiler(native.clone())),
         &refresh_projection::projection_jacobian_demand(
             &runtime.model,
-            runtime.settled_read_cones.as_deref(),
+            runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .settled_read_cones
+                .as_deref(),
         )
         .unwrap(),
     )
@@ -217,7 +247,12 @@ fn complete_projection_declines_mixed_reverse_rows_and_full_parameter_seed_space
 #[test]
 fn complete_projection_declines_a_separately_materialized_source_view() {
     let runtime = SolveRuntime::new_fixture(&grouped_projection_jvp::coupled_model()).unwrap();
-    let original = runtime.implicit_projection_scalar_jacobian_v.block();
+    let original = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .implicit_projection_scalar_jacobian_v
+        .block();
     let materialized = solve::ScalarProgramBlock::with_output_indices(
         original.programs().to_vec(),
         original.program_spans().to_vec(),
@@ -226,13 +261,26 @@ fn complete_projection_declines_a_separately_materialized_source_view() {
     .unwrap();
     let native = Rc::new(PreparedNative::default());
     let prepared = refresh_projection::prepare_projection_jacobians(
-        &runtime.continuous_structural,
-        &runtime.implicit_scalar_rhs,
+        &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .continuous_structural,
+        &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .implicit_scalar_rhs,
         &materialized,
         Some(&Compiler(native.clone())),
         &refresh_projection::projection_jacobian_demand(
             &runtime.model,
-            runtime.settled_read_cones.as_deref(),
+            runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .settled_read_cones
+                .as_deref(),
         )
         .unwrap(),
     )
@@ -312,8 +360,23 @@ fn declined_transaction_compilation_retains_atomic_interpreted_execution() {
     let native = Rc::new(PreparedNative::default());
     let runtime = runtime_with_preparation_backend(model, native.clone())
         .expect("optional transaction compilation may decline");
-    assert_eq!(runtime.compiled_event_transactions.len(), 1);
-    assert!(runtime.compiled_event_transactions[0].is_none());
+    assert_eq!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_event_transactions
+            .len(),
+        1
+    );
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_event_transactions[0]
+            .is_none()
+    );
     let mut y = [];
     let mut p = [4.5, 0.0, 9.0, 9.0];
     let before = p;
@@ -372,7 +435,7 @@ fn causal_grouped_model() -> solve::SolveModel {
             "causal_grouped.mo",
         ));
     model.problem.continuous.implicit_row_targets =
-        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))].into();
     set_test_implicit_jvp(
         &mut model,
         vec![vec![
@@ -408,8 +471,20 @@ fn projection_demand_causal_certificate_omits_native_applications() {
     });
     let runtime = runtime_with_preparation_backend(causal_grouped_model(), native.clone())
         .expect("a certified value schedule never invokes projection preparation");
-    assert!(runtime.algebraic_refresh.causal_solution_certified);
-    let structures = runtime.continuous_structural.algebraic_projection();
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .causal_solution_certified
+    );
+    let structures = runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
+        .continuous_structural
+        .algebraic_projection();
     assert_eq!(structures.len(), 2);
     assert!(
         structures
@@ -418,12 +493,18 @@ fn projection_demand_causal_certificate_omits_native_applications() {
     );
     assert!(
         !runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
             .implicit_scalar_rhs
             .reverse_row_y_gradient_supported(0)
     );
     assert_eq!(native.prepares.get(), 0);
     assert!(
         runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
             .compiled_algebraic_jacobians
             .iter()
             .all(Option::is_none)
@@ -477,14 +558,41 @@ fn projection_demand_preserves_initialization_settled_read_cones() {
     derive_test_structural_artifacts(&mut model);
     let native = Rc::new(PreparedNative::default());
     let runtime = runtime_with_preparation_backend(model, native.clone()).unwrap();
-    assert!(runtime.algebraic_refresh.causal_solution_certified);
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .causal_solution_certified
+    );
     assert_eq!(
-        runtime.settled_read_cones.as_deref().unwrap(),
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .settled_read_cones
+            .as_deref()
+            .unwrap(),
         [vec![0].into_boxed_slice()]
     );
     assert_eq!(native.prepares.get(), 1);
-    assert!(runtime.compiled_algebraic_jacobians[0].is_some());
-    assert!(runtime.compiled_algebraic_jacobians[1].is_none());
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_algebraic_jacobians[0]
+            .is_some()
+    );
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_algebraic_jacobians[1]
+            .is_none()
+    );
 }
 
 #[test]

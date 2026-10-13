@@ -27,7 +27,7 @@ fn lowered(source: &str, model: &str) -> SolveModel {
 /// Every Solve state scalar that carries a source, keyed by its own name.
 fn sources(model: &SolveModel) -> BTreeMap<String, SolveStateCoordinate> {
     model
-        .variable_meta
+        .visible_metadata()
         .iter()
         .filter_map(|meta| {
             let source = meta.state_coordinate.clone()?;
@@ -198,54 +198,60 @@ end Plain;";
 
 fn replay(wire: &serde_json::Value) -> Result<SolveModel, String> {
     let bytes = serde_json::to_vec(wire).unwrap();
-    rumoca_phase_solve::deserialize_solve_model(&mut serde_json::Deserializer::from_slice(&bytes))
-        .map_err(|error| error.to_string())
+    rumoca_eval_solve::model_wire::deserialize_solve_model(
+        &mut serde_json::Deserializer::from_slice(&bytes),
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[test]
 fn model_wire_replay_refuses_a_state_coordinate_without_a_distinct_visible_source() {
     let model = lowered(TANK, "PreferredTank");
-    let wire = serde_json::to_value(rumoca_phase_solve::solve_model_wire(&model).unwrap()).unwrap();
+    let wire =
+        serde_json::to_value(rumoca_eval_solve::model_wire::solve_model_wire(&model).unwrap())
+            .unwrap();
     let replayed = replay(&wire).expect("the constructed map replays");
     assert_eq!(source_names(&replayed), ["T", "level"]);
 
-    let state_index = |wire: &serde_json::Value| {
-        wire["variable_meta"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .position(|meta| meta.get("state_coordinate").is_some())
-            .unwrap()
-    };
-    let index = state_index(&wire);
-
-    let mut absent = wire.clone();
-    absent["variable_meta"][index]["state_coordinate"]["variable"] = "absent".into();
-    let error = replay(&absent).expect_err("an absent source is refused");
-    assert!(error.contains("state coordinate"), "{error}");
-
-    let mut repeated = wire.clone();
-    let other = wire["variable_meta"]
+    let points = wire["visible_projection"]
         .as_array()
         .unwrap()
         .iter()
         .enumerate()
-        .rposition(|(at, meta)| at != index && meta.get("state_coordinate").is_some())
-        .unwrap();
-    repeated["variable_meta"][other]["state_coordinate"] =
-        wire["variable_meta"][index]["state_coordinate"].clone();
+        .flat_map(|(member, source)| {
+            source["state_coordinates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(move |(fact, _)| (member, fact))
+        })
+        .collect::<Vec<_>>();
+    let (index, fact) = points[0];
+    let mut absent = wire.clone();
+    absent["visible_projection"][index]["state_coordinates"][fact][1]["variable"] = "absent".into();
+    let error = replay(&absent).expect_err("an absent source is refused");
+    assert!(error.contains("state coordinate"), "{error}");
+
+    let mut repeated = wire.clone();
+    let (other, other_fact) = points[1];
+    repeated["visible_projection"][other]["state_coordinates"][other_fact][1] =
+        wire["visible_projection"][index]["state_coordinates"][fact][1].clone();
     let error = replay(&repeated).expect_err("a repeated source is refused");
     assert!(error.contains("state coordinate"), "{error}");
 
     let mut not_state = wire.clone();
-    let algebraic = wire["variable_meta"]
+    let algebraic = wire["visible_projection"]
         .as_array()
         .unwrap()
         .iter()
-        .position(|meta| meta["is_state"] == false)
+        .position(|source| {
+            let declaration = source["declaration"].as_u64().unwrap() as usize;
+            wire["problem"]["solve_layout"]["variable_declarations"][declaration]["role"] != "State"
+        })
         .unwrap();
-    not_state["variable_meta"][algebraic]["state_coordinate"] =
-        serde_json::json!({ "variable": "U", "derivative_order": 0 });
+    not_state["visible_projection"][algebraic]["state_coordinates"] =
+        serde_json::json!([[0, { "variable": "U", "derivative_order": 0 }]]);
     let error = replay(&not_state).expect_err("a non-state scalar carries no source");
     assert!(error.contains("state coordinate"), "{error}");
 }

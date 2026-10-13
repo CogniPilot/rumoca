@@ -10,17 +10,17 @@
 
 use std::sync::Arc;
 
-use rumoca_eval_dae::NumericEvaluator;
+use rumoca_eval_dae::{NumericEvaluator, NumericInitialRun, NumericSourceScalar, SourceValues};
 use rumoca_ir_dae as dae;
 
 use crate::StructuralError;
 
 /// The settled value of one folded parameter, in row-major scalar order.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct FoldedValue {
     pub(super) scalar: dae::ScalarType,
     pub(super) dimensions: Box<[u32]>,
-    pub(super) values: Box<[f64]>,
+    pub(super) values: SourceValues,
 }
 
 /// Fold every read evaluable parameter of `model`.
@@ -54,14 +54,14 @@ pub(super) fn fold_plan(view: dae::DaeView<'_>) -> Vec<Option<Arc<FoldedValue>>>
             {
                 return None;
             }
-            let values = evaluator.initial_value(id).ok()?;
-            let representable = values.len() == variable.scalar_count()
-                && values.iter().all(|&value| representable(scalar, value));
+            let values = evaluator.source_initial_values(id).ok()?;
+            let representable =
+                values.len() == variable.scalar_count() && representable_runs(scalar, &values);
             representable.then(|| {
                 Arc::new(FoldedValue {
                     scalar,
                     dimensions: value_type.dimensions().into(),
-                    values: values.into(),
+                    values,
                 })
             })
         })
@@ -69,15 +69,27 @@ pub(super) fn fold_plan(view: dae::DaeView<'_>) -> Vec<Option<Arc<FoldedValue>>>
 }
 
 /// Whether one settled scalar has an exact literal of its declared type.
-fn representable(scalar: dae::ScalarType, value: f64) -> bool {
-    match scalar {
-        dae::ScalarType::Real => value.is_finite(),
-        dae::ScalarType::Integer => {
-            value.fract() == 0.0 && value >= i64::MIN as f64 && value < i64::MAX as f64
-        }
-        dae::ScalarType::Boolean => value == 0.0 || value == 1.0,
+fn representable(scalar: dae::ScalarType, value: NumericSourceScalar) -> bool {
+    match (scalar, value) {
+        (dae::ScalarType::Real, NumericSourceScalar::Real(value)) => value.is_finite(),
+        (dae::ScalarType::Real, NumericSourceScalar::Integer(_)) => true,
+        (dae::ScalarType::Integer, NumericSourceScalar::Integer(_))
+        | (dae::ScalarType::Boolean, NumericSourceScalar::Boolean(_)) => true,
         _ => false,
     }
+}
+
+pub(super) fn representable_runs(scalar: dae::ScalarType, values: &SourceValues) -> bool {
+    let mut runs = values.runs();
+    let supported = match runs.next() {
+        Some(NumericInitialRun::Repeat { value, .. }) => representable(scalar, value),
+        Some(NumericInitialRun::Literal(values)) => values
+            .iter()
+            .copied()
+            .all(|value| representable(scalar, value)),
+        None => false,
+    };
+    supported && runs.next().is_none()
 }
 
 /// Parameters read by at least one expression coordinate.
@@ -102,28 +114,60 @@ pub(super) fn folded_literal<'target>(
     value: &FoldedValue,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-    shaped_literal(
-        target,
-        value.scalar,
-        &value.dimensions,
-        &value.values,
-        provenance,
-    )
+    match value
+        .values
+        .runs()
+        .next()
+        .expect("fold admits one source run")
+    {
+        NumericInitialRun::Literal(values) => {
+            shaped_literal(target, value.scalar, &value.dimensions, values, provenance)
+        }
+        NumericInitialRun::Repeat { value: scalar, .. } => {
+            let literal = target
+                .at(provenance)
+                .literal(source_literal(value.scalar, scalar))?;
+            if value.dimensions.is_empty() {
+                return Ok(literal);
+            }
+            let mut arguments = vec![literal];
+            for &extent in &value.dimensions {
+                arguments.push(
+                    target
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Integer(i64::from(extent)))?,
+                );
+            }
+            target
+                .at(provenance)
+                .builtin(dae::PureBuiltin::Fill, arguments)
+        }
+    }
+}
+
+fn source_literal(scalar: dae::ScalarType, value: NumericSourceScalar) -> dae::DaeLiteral {
+    match (scalar, value) {
+        (dae::ScalarType::Real, NumericSourceScalar::Integer(value)) => {
+            dae::DaeLiteral::Real(value as f64)
+        }
+        (_, NumericSourceScalar::Real(value)) => dae::DaeLiteral::Real(value),
+        (_, NumericSourceScalar::Integer(value)) => dae::DaeLiteral::Integer(value),
+        (_, NumericSourceScalar::Boolean(value)) => dae::DaeLiteral::Boolean(value),
+        _ => unreachable!("fold admission checks exact source type"),
+    }
 }
 
 fn shaped_literal<'target>(
     target: &mut dae::Expressions<'_, 'target>,
     scalar: dae::ScalarType,
     dimensions: &[u32],
-    values: &[f64],
+    values: &[NumericSourceScalar],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
     let Some((&extent, inner)) = dimensions.split_first() else {
-        return target.at(provenance).literal(match scalar {
-            dae::ScalarType::Integer => dae::DaeLiteral::Integer(values[0] as i64),
-            dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(values[0] != 0.0),
-            _ => dae::DaeLiteral::Real(values[0]),
-        });
+        return target
+            .at(provenance)
+            .literal(source_literal(scalar, values[0]));
     };
     let stride = values.len() / extent as usize;
     let elements = values

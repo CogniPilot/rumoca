@@ -144,6 +144,20 @@ Ordinary `cargo test -p rumoca-solver` still runs the `proptest` fallbacks. A
 green fallback is validation evidence, never proof evidence; only a successful
 `cargo xtask verify kani` run under the pinned verifier is Kani proof evidence.
 
+### Native FMI qualification tests
+
+The fixed-guest and publication qualification tests in `rumoca` and
+`rumoca-bind-wasm` need fixture configs under `target/verification/` and an
+owned output namespace, so they run only on the qualification machine. They are
+gated by `cfg(rumoca_qualification)`, not by a cargo feature, so that
+`cargo test --all-features` in CI never selects them. Build the guest with the
+`native-fmi-ls-build` feature and enable the cfg through the compiler flags:
+
+```bash
+RUSTFLAGS="--cfg rumoca_qualification" \
+  cargo test -p rumoca-bind-wasm --features native-fmi-ls-build native_fmi_ls
+```
+
 ## Common Commands
 
 Typical local verification:
@@ -300,6 +314,14 @@ cargo test -p rumoca-phase-parse-galec --quiet
 git diff -- crates/rumoca-phase-parse/src/generated
 git diff -- crates/rumoca-phase-parse-galec/src/parse/generated
 ```
+
+Each generated directory records a `grammar.stamp`: a content hash of the
+grammar, the build script (generator settings) and the pinned `parol` release.
+The build scripts regenerate only when that stamp no longer matches, never from
+file modification times, so a machine whose `rustfmt` differs from the
+maintainer's leaves the checked-in parsers untouched. After a grammar or
+generator-setting change the build rewrites the parsers and the stamp; commit
+both.
 
 The workspace pins `parol` and `parol_runtime` to exact patch versions in
 `Cargo.toml`. Do not loosen those pins with a grammar change; update the pin

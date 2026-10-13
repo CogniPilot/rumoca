@@ -23,6 +23,7 @@ pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
     let target_counts = parameter_target_counts(&discrete.update_targets);
     let initial_targets = initial_parameter_owners(problem.initialization.update_targets());
     let reserved = reserved_parameters(problem);
+    let storage = ProducerStorage::new(&problem.solve_layout);
     let mut owned_roots = BTreeSet::new();
     for (row, role) in discrete.row_roles.iter().enumerate() {
         let DiscreteRowRole::QuotientMemory { step, root_index } = *role else {
@@ -36,7 +37,8 @@ pub(crate) fn validate(problem: &SolveProblem) -> Result<(), SolveProblemShapeCo
             ));
         };
         if !matches!(step, UnaryOp::Floor | UnaryOp::Trunc)
-            || storage_variable_for_slot(&problem.solve_layout, target)
+            || storage
+                .variable(target)
                 .map_err(|detail| event_iteration_contract(row, detail))?
                 .is_some()
             || reserved.contains(&index)

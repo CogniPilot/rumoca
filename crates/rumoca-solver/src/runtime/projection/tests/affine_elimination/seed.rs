@@ -13,7 +13,7 @@ fn seed_solve(zero_pivots: &[usize]) -> (DVector<f64>, DVector<f64>, u64, u64) {
     let linearization = SeedBlockLinearization::build(
         &model,
         (0, Some(SITE)),
-        &model.plan.blocks[0],
+        &model.plan.blocks.scalar_blocks()[0],
         expected.as_slice(),
         AlgebraicProjectionArgs {
             parameters: &[],

@@ -79,6 +79,7 @@ struct Arm {
     value: ArmValue,
     facts: PathFacts,
     implied: Vec<(VarName, bool)>,
+    excluded: Vec<Vec<(VarName, bool)>>,
 }
 
 /// The facts on the path of each literal a local may hold. A value with no
@@ -95,13 +96,20 @@ impl Selection {
             value: ArmValue::Boolean(value),
             facts: Some(Facts::new()),
             implied: Vec::new(),
+            excluded: Vec::new(),
         };
         Self {
             arms: std::sync::Arc::new(vec![arm(true), arm(false)]),
         }
     }
 
-    fn insert(&mut self, value: ArmValue, facts: PathFacts, implied: Vec<(VarName, bool)>) {
+    fn insert(
+        &mut self,
+        value: ArmValue,
+        facts: PathFacts,
+        implied: Vec<(VarName, bool)>,
+        excluded: Vec<Vec<(VarName, bool)>>,
+    ) {
         if facts.is_none() {
             return;
         }
@@ -113,11 +121,13 @@ impl Selection {
                 existing.facts = disjoin(existing.facts.take(), facts);
                 // Either path may have stored the value: only what both prove.
                 existing.implied.retain(|entry| implied.contains(entry));
+                existing.excluded.retain(|clause| excluded.contains(clause));
             }
             None => std::sync::Arc::make_mut(&mut self.arms).push(Arm {
                 value,
                 facts,
                 implied,
+                excluded,
             }),
         }
     }
@@ -153,8 +163,35 @@ impl Selection {
         common
     }
 
+    pub(super) fn exclusions(&self) -> Vec<Vec<(VarName, bool)>> {
+        let mut arms = self.arms.iter();
+        let Some(first) = arms.next() else {
+            return Vec::new();
+        };
+        let mut common = first.excluded.clone();
+        for arm in arms {
+            common.retain(|clause| arm.excluded.contains(clause));
+        }
+        common
+    }
+
     pub(super) fn retain(&mut self, admitted: impl Fn(ArmValue) -> bool) {
         std::sync::Arc::make_mut(&mut self.arms).retain(|arm| admitted(arm.value));
+    }
+
+    /// Whether any arm records something about the value `name`, which a write
+    /// would drop.
+    pub(super) fn mentions(&self, name: &VarName) -> bool {
+        self.arms.iter().any(|arm| {
+            arm.facts
+                .as_ref()
+                .is_some_and(|facts| facts_mention(facts, name))
+                || arm.implied.iter().any(|(implied, _)| implied == name)
+                || arm
+                    .excluded
+                    .iter()
+                    .any(|clause| clause.iter().any(|(operand, _)| operand == name))
+        })
     }
 
     /// Drop everything the arms record about the value `name`, which a write
@@ -163,6 +200,8 @@ impl Selection {
         for arm in std::sync::Arc::make_mut(&mut self.arms).iter_mut() {
             forget_in(&mut arm.facts, name);
             arm.implied.retain(|(implied, _)| implied != name);
+            arm.excluded
+                .retain(|clause| !clause.iter().any(|(operand, _)| operand == name));
         }
     }
 
@@ -173,7 +212,12 @@ impl Selection {
             return false;
         };
         for arm in other.arms.iter() {
-            self.insert(arm.value, arm.facts.clone(), arm.implied.clone());
+            self.insert(
+                arm.value,
+                arm.facts.clone(),
+                arm.implied.clone(),
+                arm.excluded.clone(),
+            );
         }
         true
     }
@@ -400,11 +444,13 @@ impl GuardFacts {
             ArmValue::Boolean(true),
             conjoin(self.path.clone(), when_true),
             implied_true,
+            boolean_cube(value, false, 0).into_iter().collect(),
         );
         selection.insert(
             ArmValue::Boolean(false),
             conjoin(self.path.clone(), when_false),
             implied_false,
+            boolean_cube(value, true, 0).into_iter().collect(),
         );
         Some(selection)
     }
@@ -425,7 +471,7 @@ impl GuardFacts {
                 .fold(self.clone(), |path, (condition, holds)| {
                     path.assuming(condition, holds, scope)
                 });
-            selection.insert(literal, path.path, Vec::new());
+            selection.insert(literal, path.path, Vec::new(), Vec::new());
         }
         Some(selection)
     }
@@ -467,7 +513,7 @@ impl Selection {
 impl GuardFacts {
     /// The value the Boolean `name` holds on every path reaching here, when
     /// one literal arm is left.
-    fn known_boolean(&self, name: &VarName) -> Option<bool> {
+    pub(super) fn known_boolean(&self, name: &VarName) -> Option<bool> {
         match self.selections.get(name)?.arms.as_slice() {
             [
                 Arm {
@@ -478,4 +524,51 @@ impl GuardFacts {
             _ => None,
         }
     }
+}
+
+fn boolean_cube(
+    expression: &Expression,
+    holds: bool,
+    depth: usize,
+) -> Option<Vec<(VarName, bool)>> {
+    if depth >= MAX_IMPLICATION_DEPTH {
+        return None;
+    }
+    match expression {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => Some(vec![(name.var_name().clone(), holds)]),
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } if *value == holds => Some(Vec::new()),
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => boolean_cube(rhs, !holds, depth + 1),
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!((op, holds), (OpBinary::And, true) | (OpBinary::Or, false)) =>
+        {
+            merge_boolean_cubes([lhs.as_ref(), rhs.as_ref()], holds, depth)
+        }
+        Expression::If { .. } if holds => {
+            merge_boolean_cubes(single_branch_and(expression)?, true, depth)
+        }
+        _ => None,
+    }
+}
+
+fn merge_boolean_cubes(
+    operands: [&Expression; 2],
+    holds: bool,
+    depth: usize,
+) -> Option<Vec<(VarName, bool)>> {
+    let mut cube = boolean_cube(operands[0], holds, depth + 1)?;
+    for term in boolean_cube(operands[1], holds, depth + 1)? {
+        if !cube.contains(&term) {
+            cube.push(term);
+        }
+    }
+    Some(cube)
 }

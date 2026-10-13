@@ -1,5 +1,25 @@
 use super::*;
 
+pub(super) fn check_function_assignment_target(
+    storage: &Storage,
+    body: &FunctionBody<'_>,
+    target: FunctionValueId<'_>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let build = function_build_state(storage, body);
+    if build.active_fold.is_some()
+        && !build.carried_targets.contains(&target.ordinal())
+        && !build.iteration_local_targets.contains(&target.ordinal())
+    {
+        return Err(incomplete(
+            "function loop target",
+            target.ordinal() as usize,
+            provenance,
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn expect_complete_function(
     storage: &Storage,
     function: FunctionId<'_>,
@@ -23,20 +43,30 @@ pub(super) fn function_build_state<'storage>(
     storage: &'storage Storage,
     body: &FunctionBody<'_>,
 ) -> &'storage FunctionBuildState {
-    storage.functions[body.function.index() as usize]
+    let build = storage.functions[body.function.index() as usize]
         .build
         .as_ref()
-        .expect("linear function body capability references aggregate build state")
+        .expect("linear function body capability references aggregate build state");
+    assert_eq!(
+        body.scope, build.active_scope,
+        "linear body owns the active region"
+    );
+    build
 }
 
 pub(super) fn function_build_state_mut<'storage>(
     storage: &'storage mut Storage,
     body: &FunctionBody<'_>,
 ) -> &'storage mut FunctionBuildState {
-    storage.functions[body.function.index() as usize]
+    let build = storage.functions[body.function.index() as usize]
         .build
         .as_mut()
-        .expect("linear function body capability references aggregate build state")
+        .expect("linear function body capability references aggregate build state");
+    assert_eq!(
+        body.scope, build.active_scope,
+        "linear body owns the active region"
+    );
+    build
 }
 
 pub(super) fn validate_function_dependencies(
@@ -165,7 +195,7 @@ fn push_function_expression_roots(
     function: &FunctionEntry,
     pending: &mut Vec<u32>,
 ) {
-    push_function_statement_expressions(function_statements(function), pending);
+    push_function_statement_expressions(function, function_statements(function), pending);
     pending.extend(
         function
             .folds
@@ -175,13 +205,15 @@ fn push_function_expression_roots(
 }
 
 fn push_function_statement_expressions(
+    function: &FunctionEntry,
     statements: &[FunctionStatementWire],
     pending: &mut Vec<u32>,
 ) {
     for statement in statements {
         match statement {
             FunctionStatementWire::Assignment { .. }
-            | FunctionStatementWire::AssignmentGroup { .. } => {}
+            | FunctionStatementWire::AssignmentGroup { .. }
+            | FunctionStatementWire::RequireAssigned { .. } => {}
             FunctionStatementWire::Assertion {
                 condition, message, ..
             } => {
@@ -189,7 +221,23 @@ fn push_function_statement_expressions(
                 pending.push(*message);
             }
             FunctionStatementWire::For { statements, .. } => {
-                push_function_statement_expressions(statements, pending);
+                push_function_statement_expressions(function, statements, pending);
+            }
+            FunctionStatementWire::ScopedConditional { owner } => {
+                let conditional = &function.conditionals[*owner as usize];
+                pending.extend(conditional.conditions.iter().copied());
+                for branch in conditional
+                    .branches
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(conditional.fallback))
+                {
+                    push_function_statement_expressions(
+                        function,
+                        &function.branches[branch as usize].statements,
+                        pending,
+                    );
+                }
             }
         }
     }
@@ -366,9 +414,11 @@ pub(super) fn reserve_function_fold<'dae>(
             span: provenance.span(),
         });
     }
+    let scope = reserve_function_scope(storage, function, provenance)?;
     storage.function_folds.push(FunctionFoldEntry {
         function: function.index(),
         ordinal,
+        scope,
         parent,
         domain,
         targets,
@@ -449,7 +499,7 @@ pub(super) fn insert_function_definition<'dae>(
         .build
         .as_ref()
         .ok_or_else(|| unknown("function body", target.function().index(), provenance))?
-        .active_fold;
+        .active_scope;
     function.definitions.push(FunctionDefinitionEntry {
         target: target.ordinal(),
         rhs: rhs.index(),
@@ -460,6 +510,25 @@ pub(super) fn insert_function_definition<'dae>(
         target.function().index(),
         ordinal,
     ))
+}
+
+pub(super) fn reserve_function_scope(
+    storage: &mut Storage,
+    function: FunctionId<'_>,
+    provenance: DaeProvenance,
+) -> Result<u32, DaeConstructionError> {
+    let entry = storage
+        .functions
+        .get_mut(function.index() as usize)
+        .ok_or_else(|| unknown("function", function.index(), provenance))?;
+    let parent = entry
+        .build
+        .as_ref()
+        .ok_or_else(|| unknown("function body", function.index(), provenance))?
+        .active_scope;
+    let scope = checked_u32(entry.scopes.len(), "function scope", provenance)?;
+    entry.scopes.push(FunctionScopeEntry { parent });
+    Ok(scope)
 }
 
 pub(super) fn next_function_definition_id<'dae>(
@@ -525,7 +594,10 @@ pub(super) fn validate_function_value_reads(
         .ok_or_else(|| unknown("expression", expression.index(), provenance))?;
     let current_values = &function_build_state(storage, body).current_values;
     storage.function_read_sets.try_for_each(reads, &mut |fact| {
-        let expected = current_values.get(fact.value as usize).copied().flatten();
+        let expected = current_values
+            .get(fact.value as usize)
+            .copied()
+            .and_then(FunctionValueState::definition);
         if expected == Some(fact.definition) {
             return Ok(());
         }
@@ -555,6 +627,7 @@ pub(super) fn reject_model_coordinate(
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. }
+        | ExprNode::FunctionConditionalOutput { .. }
         | ExprNode::Unary { .. }
         | ExprNode::Binary { .. }
         | ExprNode::Field { .. }

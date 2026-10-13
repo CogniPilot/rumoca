@@ -7,7 +7,10 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 0);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
-    model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "a".to_string()];
+    model.problem.layout = crate::fixture_layout::named_y_layout(
+        model.problem.layout.clone(),
+        vec!["x".to_string(), "a".to_string()],
+    );
     // der(x) = a  (reads the algebraic slot 1)
     model.problem.continuous.derivative_rhs =
         ComputeBlock::from_scalar_program_block(spanned_block(
@@ -42,14 +45,16 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
     // The BLT pairing is the owner for this singleton. The general
     // implicit-row target table intentionally has no entry for `a`, matching
     // connection/flow rows whose structural owner is the projection block.
-    model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0)), None];
+    model.problem.continuous.implicit_row_targets =
+        vec![Some(solve::scalar_slot_y(0)), None].into();
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     // full_jacobian_v: JVP of der(x)=a → d(der) = seed[a]
     model.artifacts.continuous.full_jacobian_v = spanned_block(
@@ -82,7 +87,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
         "projection_implicit_jvp.mo",
     );
     mirror_scalar_implicit_jvp(&mut model);
-    model.initial_y = vec![0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0].into();
     derive_test_structural_artifacts(&mut model);
     model
 }
@@ -121,9 +126,19 @@ fn exact_dependency_owner_keeps_primal_and_jvp_consistent_below_projection_toler
     let k = 2.0;
     let runtime = SolveRuntime::new_fixture(&projection_coupled_state_model(k))
         .expect("valid runtime should prepare");
-    assert!(runtime.derivative_refresh.causal_solution_certified);
     assert!(
         runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .derivative_refresh
+            .causal_solution_certified
+    );
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
             .derivative_refresh
             .value_projection_plan
             .blocks
@@ -252,22 +267,26 @@ fn parameter_projection_model() -> solve::SolveModel {
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
-    model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "z".to_string()];
+    model.problem.layout = crate::fixture_layout::named_y_layout(
+        model.problem.layout.clone(),
+        vec!["x".to_string(), "z".to_string()],
+    );
     model.problem.continuous.implicit_rhs = parameter_projection_residual();
     model.problem.continuous.implicit_row_targets =
-        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))].into();
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
             y_indices: vec![1],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     model.artifacts.continuous.implicit_jacobian_v_scalar = parameter_projection_jvp(true);
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(parameter_projection_jvp(false));
-    model.initial_y = vec![0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0].into();
     derive_test_structural_artifacts(&mut model);
     model
 }
@@ -318,8 +337,10 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 3, 0);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 2;
-    model.problem.solve_layout.solver_maps.names =
-        vec!["x".to_string(), "a".to_string(), "b".to_string()];
+    model.problem.layout = crate::fixture_layout::named_y_layout(
+        model.problem.layout.clone(),
+        vec!["x".to_string(), "a".to_string(), "b".to_string()],
+    );
     // der(x) = a + b
     model.problem.continuous.derivative_rhs =
         ComputeBlock::from_scalar_program_block(spanned_block(
@@ -343,15 +364,17 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         Some(solve::scalar_slot_y(0)),
         Some(solve::scalar_slot_y(1)),
         Some(solve::scalar_slot_y(2)),
-    ];
+    ]
+    .into();
     // Mutual dependence (row 1 -> a reads b, row 2 -> b reads a) => iterative refresh.
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![1, 2],
             y_indices: vec![1, 2],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     // full_jacobian_v: JVP of der = a + b.
     model.artifacts.continuous.full_jacobian_v = spanned_block(
@@ -371,7 +394,7 @@ fn linear_algebraic_loop_state_model() -> solve::SolveModel {
         "loop_implicit_jvp.mo",
     );
     mirror_scalar_implicit_jvp(&mut model);
-    model.initial_y = vec![0.0, 0.0, 0.0];
+    model.initial_y = vec![0.0, 0.0, 0.0].into();
     derive_test_structural_artifacts(&mut model);
     model
 }
@@ -464,7 +487,17 @@ fn affine3(
 fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
     let runtime = SolveRuntime::new_fixture(&linear_algebraic_loop_state_model())
         .expect("valid runtime should prepare");
-    assert_eq!(runtime.derivative_refresh.simultaneous_plan.blocks.len(), 1);
+    assert_eq!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .derivative_refresh
+            .simultaneous_plan
+            .blocks
+            .len(),
+        1
+    );
     let mut out = [0.0_f64];
     runtime
         .eval_state_jacobian_v_ad_into(
@@ -497,8 +530,14 @@ fn seed_refresh_directly_solves_coupled_algebraic_loop() {
     let mut seed = [1.0, 0.0, 0.0];
 
     runtime
+        .scalar_execution()
+        .unwrap()
         .seed_refresh_with_plan(
-            &runtime.derivative_refresh,
+            &runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .derivative_refresh,
             AlgebraicLinearization {
                 t: 0.0,
                 params: &[],
@@ -533,8 +572,14 @@ fn seed_refresh_reports_singular_coupled_algebraic_loop() {
     let original_seed = seed;
 
     let error = runtime
+        .scalar_execution()
+        .unwrap()
         .seed_refresh_with_plan(
-            &runtime.derivative_refresh,
+            &runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .derivative_refresh,
             AlgebraicLinearization {
                 t: 0.0,
                 params: &[],
@@ -592,8 +637,19 @@ fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
 
     // Forward J_g v (seed over solver-y; the implicit JVP is SolverYOnly).
     let v = [0.7_f64, -0.2, 0.4];
-    let mut jg_v = vec![0.0_f64; runtime.implicit_jacobian_v.len()];
+    let mut jg_v = vec![
+        0.0_f64;
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .implicit_jacobian_v
+            .len()
+    ];
     runtime
+        .scalar_execution()
+        .unwrap()
+        .scalar
         .implicit_jacobian_v
         .eval_with_context(
             &solver_y,

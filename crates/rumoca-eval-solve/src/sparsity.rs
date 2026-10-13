@@ -7,7 +7,7 @@
 //! 2008, doi:10.1137/1.9780898717761, chapter 7. The pattern this produces is
 //! structural, therefore conservative: an entry can be structurally present and
 //! numerically zero, never the reverse, which is exactly the guarantee the
-//! column coloring in `rumoca_ir_solve::StructuralPattern::column_coloring`
+//! column coloring in `rumoca_ir_solve::StructuralPattern::with_column_coloring`
 //! needs. The bit-vector propagation form is C. H. Bischof, A. Carle, P.
 //! Khademi and A. Mauer, "ADIFOR 2.0: automatic differentiation of Fortran 77
 //! programs", IEEE Computational Science and Engineering 3(3):18-32, 1996,
@@ -125,9 +125,11 @@ pub(crate) fn program_output_y_dependencies(
         .map_err(|error| from_pattern_error(error, span))
 }
 
-/// Derive a deterministic greedy coloring from a checked pattern.
-pub fn derive_column_coloring(pattern: &StructuralPattern) -> rumoca_ir_solve::ColumnColoring {
-    pattern.column_coloring()
+/// Issue the checked pattern owner's canonical coloring for colored construction.
+pub fn derive_column_coloring(
+    pattern: &StructuralPattern,
+) -> rumoca_ir_solve::ColoredStructuralPattern {
+    pattern.clone().with_column_coloring()
 }
 
 /// Reconstruct all derived structural artifacts from canonical Solve programs.
@@ -137,6 +139,42 @@ pub fn derive_column_coloring(pattern: &StructuralPattern) -> rumoca_ir_solve::C
 pub fn derive_solve_structural_artifacts(
     problem: &rumoca_ir_solve::SolveProblem,
     artifacts: &rumoca_ir_solve::SolveArtifacts,
+) -> Result<
+    (
+        rumoca_ir_solve::ContinuousStructuralArtifacts,
+        rumoca_ir_solve::InitializationStructuralArtifacts,
+    ),
+    EvalSolveError,
+> {
+    let assignment =
+        rumoca_ir_solve::ContinuousStructuralArtifacts::checked_assignment_for_problem(problem)
+            .map_err(|reason| sparsity_error(reason, None))?;
+    derive_structural_artifacts(problem, artifacts, assignment)
+}
+
+/// Derive from the actual finalized source table before model artifacts exist.
+pub fn derive_solve_structural_artifacts_with_calls(
+    problem: &rumoca_ir_solve::SolveProblem,
+    calls: &rumoca_ir_solve::SolvePureCallTable,
+    artifacts: &rumoca_ir_solve::SolveArtifacts,
+) -> Result<
+    (
+        rumoca_ir_solve::ContinuousStructuralArtifacts,
+        rumoca_ir_solve::InitializationStructuralArtifacts,
+    ),
+    EvalSolveError,
+> {
+    let assignment = rumoca_ir_solve::ContinuousStructuralArtifacts::checked_assignment_with_calls(
+        problem, calls,
+    )
+    .map_err(|reason| sparsity_error(reason, None))?;
+    derive_structural_artifacts(problem, artifacts, assignment)
+}
+
+fn derive_structural_artifacts(
+    problem: &rumoca_ir_solve::SolveProblem,
+    artifacts: &rumoca_ir_solve::SolveArtifacts,
+    assignment: Option<rumoca_ir_solve::ContinuousStructuralArtifacts>,
 ) -> Result<
     (
         rumoca_ir_solve::ContinuousStructuralArtifacts,
@@ -155,56 +193,60 @@ pub fn derive_solve_structural_artifacts(
                 None,
             )
         })?;
-    let implicit = derive_optional_compute_pattern(
-        &artifacts.continuous.implicit_jacobian_v,
-        problem.continuous.implicit_rhs.len()?,
-        solver_columns,
-    )?;
-    let manifold = derive_optional_compute_pattern(
-        &artifacts.continuous.manifold_jacobian_v,
-        problem.continuous.manifold_residual.len()?,
-        solver_columns,
-    )?;
-    let algebraic_projection = derive_y_projection_patterns(
-        implicit.as_ref(),
-        &problem.continuous.algebraic_projection_plan,
-    )?;
-    let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
-        implicit.as_ref(),
-        &problem.continuous.algebraic_projection_plan,
-    )?;
-    let manifold_projection = derive_y_projection_patterns(
-        manifold.as_ref(),
-        &problem.continuous.manifold_projection_plan,
-    )?;
-    let continuous = rumoca_ir_solve::ContinuousStructuralArtifacts::derived(
-        implicit,
-        algebraic_projection,
-        algebraic_invalidates_earlier,
-        manifold,
-        manifold_projection,
-        derive_optional_scalar_pattern(
-            &artifacts.continuous.full_jacobian_v,
-            problem.continuous.derivative_rhs.len()?,
-            full_columns,
-        )?,
-    )
-    .with_algebraic_output_evaluations(
-        &problem.continuous.algebraic_projection_plan,
-        &to_scalar_program_block(&problem.continuous.implicit_rhs)?,
-        &to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)?,
-        &artifacts.continuous.implicit_jacobian_v_scalar,
-    )
-    .with_manifold_output_evaluations(
-        &problem.continuous.manifold_projection_plan,
-        &to_scalar_program_block(&artifacts.continuous.manifold_jacobian_v)?,
-    )
-    .with_state_jacobian(
-        &problem.continuous.algebraic_projection_plan,
-        problem.solve_layout.state_scalar_count,
-        solver_columns,
-    )
-    .map_err(|error| from_pattern_error(error, None))?;
+    let continuous = if let Some(assignment) = assignment {
+        assignment
+    } else {
+        let implicit = derive_optional_compute_pattern(
+            &artifacts.continuous.implicit_jacobian_v,
+            problem.continuous.implicit_rhs.len()?,
+            solver_columns,
+        )?;
+        let manifold = derive_optional_compute_pattern(
+            &artifacts.continuous.manifold_jacobian_v,
+            problem.continuous.manifold_residual.len()?,
+            solver_columns,
+        )?;
+        let algebraic_projection = derive_y_projection_patterns(
+            implicit.as_ref(),
+            &problem.continuous.algebraic_projection_plan,
+        )?;
+        let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
+            implicit.as_ref(),
+            &problem.continuous.algebraic_projection_plan,
+        )?;
+        let manifold_projection = derive_y_projection_patterns(
+            manifold.as_ref(),
+            &problem.continuous.manifold_projection_plan,
+        )?;
+        rumoca_ir_solve::ContinuousStructuralArtifacts::derived(
+            implicit,
+            algebraic_projection,
+            algebraic_invalidates_earlier,
+            manifold,
+            manifold_projection,
+            derive_optional_scalar_pattern(
+                &artifacts.continuous.full_jacobian_v,
+                problem.continuous.derivative_rhs.len()?,
+                full_columns,
+            )?,
+        )
+        .with_algebraic_output_evaluations(
+            &problem.continuous.algebraic_projection_plan,
+            &to_scalar_program_block(&problem.continuous.implicit_rhs)?,
+            &to_scalar_program_block(&artifacts.continuous.implicit_jacobian_v)?,
+            &artifacts.continuous.implicit_jacobian_v_scalar,
+        )
+        .with_manifold_output_evaluations(
+            &problem.continuous.manifold_projection_plan,
+            &to_scalar_program_block(&artifacts.continuous.manifold_jacobian_v)?,
+        )
+        .with_state_jacobian(
+            &problem.continuous.algebraic_projection_plan,
+            problem.solve_layout.state_scalar_count,
+            solver_columns,
+        )
+        .map_err(|error| from_pattern_error(error, None))?
+    };
     let initialization_columns = solver_columns
         .checked_add(problem.layout.p_scalars())
         .ok_or_else(|| {
@@ -243,6 +285,7 @@ fn derive_y_projection_patterns(
     derive_projection_patterns(
         source,
         plan.blocks
+            .scalar_blocks()
             .iter()
             .map(|block| (block.rows.as_slice(), block.y_indices.clone())),
     )
@@ -443,8 +486,8 @@ mod tests {
         assert!(pattern.contains(0, 1));
         assert!(!pattern.contains(1, 1));
         let coloring = derive_column_coloring(&pattern);
-        assert_eq!(coloring.column_count(), 3);
-        assert_eq!(coloring.groups().len(), 1);
+        assert_eq!(coloring.coloring().column_count(), 3);
+        assert_eq!(coloring.coloring().groups().len(), 1);
     }
 
     #[test]
@@ -650,7 +693,10 @@ mod tests {
         }
         assert_eq!(pattern.nonzero_coordinates(), scalar.nonzero_coordinates());
         assert_eq!(pattern.column_rows(), scalar.column_rows());
-        assert_eq!(pattern.column_coloring(), scalar.column_coloring());
+        assert_eq!(
+            pattern.clone().with_column_coloring().coloring(),
+            scalar.clone().with_column_coloring().coloring()
+        );
         let replayed: StructuralPattern =
             serde_json::from_str(&serde_json::to_string(&pattern).unwrap()).unwrap();
         assert_eq!(replayed, pattern);

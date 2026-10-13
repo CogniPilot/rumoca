@@ -2181,7 +2181,16 @@ fn resolve_declared_shape(
     // dependent extent; otherwise `size(A, 1)` reads an unbound name while `A`'s
     // own shape is still being resolved. A non-square actual is still rejected by
     // the per-axis call-site equality below.
-    let self_scope = actual.map(|actual| {
+    // Only an axis declared by an expression reads the scope, so the copy is
+    // made only for such a formal.
+    let reads_scope = value
+        .dimensions()
+        .iter()
+        .enumerate()
+        .any(|(axis, declared)| {
+            *declared <= 0 && matches!(value.shape_expr.get(axis), Some(Subscript::Expr { .. }))
+        });
+    let self_scope = actual.filter(|_| reads_scope).map(|actual| {
         let mut scoped = values.clone();
         scoped.insert(VarName::new(&value.name), actual.clone());
         scoped

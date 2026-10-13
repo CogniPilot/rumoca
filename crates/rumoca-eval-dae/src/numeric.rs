@@ -1,9 +1,51 @@
+mod function_states;
+mod native_calls;
+mod scalar;
+mod tensor_values;
+pub use scalar::Scalar;
+/// Exact typed source runs; construction stays private to this evaluator.
+pub type SourceValues = NumericInitialValues<Scalar>;
+mod initial_values;
+mod input_initialization;
+pub use input_initialization::{
+    InputFallbackBounds, InputInitialization, InputOrigin, InputOriginRun,
+};
+
 #[cfg(test)]
 mod tests;
 
-use rumoca_core::{Span, flatten_coordinates, modelica_sign, row_major_coordinates};
+pub use initial_values::{NumericInitialRun, NumericInitialValues};
+
+use rumoca_core::{Span, flatten_coordinates, row_major_coordinates};
 use rumoca_ir_dae as dae;
 use rustc_hash::FxHashMap;
+
+use native_calls::native_function_call;
+use tensor_values::{
+    combine_extremum, diagonal_values, expand_flat_indices, expect_same_length,
+    function_loop_point, identity_values, multiply_values, outer_product_values, range_values,
+    skew_values, transpose_values,
+};
+
+pub(crate) use dae::InputInitializationPolicy;
+
+/// The source expression selected before any host override or numerical view.
+pub fn declaration_initial_expression<'dae>(
+    variable: dae::VariableView<'dae>,
+    input_policy: InputInitializationPolicy,
+) -> Option<dae::ExprId<'dae>> {
+    match variable.role() {
+        dae::VariableRole::Parameter | dae::VariableRole::Constant => {
+            variable.binding().or_else(|| variable.start())
+        }
+        dae::VariableRole::Input => variable.binding().or_else(|| {
+            (input_policy != InputInitializationPolicy::RequireRuntimeDriver)
+                .then(|| variable.start())
+                .flatten()
+        }),
+        _ => variable.start().or_else(|| variable.binding()),
+    }
+}
 
 /// Stable categories for failures while evaluating a checked DAE expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,21 +86,23 @@ impl NumericEvaluationError {
 /// Evaluates compile-time numeric values from one branded checked DAE.
 ///
 /// Parameter and constant coordinates are followed through their checked
-/// bindings. Runtime inputs require either a checked default binding or an
+/// bindings. By default, runtime inputs require a checked default binding or an
 /// override for every scalar. Every other coordinate is rejected: this
 /// evaluator never invents a runtime value. The optional override function is
 /// applied at the variable boundary, so dependents observe the same overridden
 /// values as the runtime layout.
 pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Option<f64>> {
     view: dae::DaeView<'dae>,
-    values: Vec<Option<Vec<f64>>>,
-    expression_values: Vec<Option<Vec<f64>>>,
-    scoped_expression_values: Vec<FxHashMap<u32, Vec<f64>>>,
+    values: Vec<Option<SourceValues>>,
+    expression_values: Vec<Option<SourceValues>>,
+    scoped_expression_values: Vec<function_states::NumericFunctionFrame<'dae>>,
     evaluating: Vec<bool>,
-    function_arguments: Vec<(dae::FunctionId<'dae>, Vec<Vec<f64>>)>,
-    function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<f64>>)>,
+    function_arguments: Vec<(dae::FunctionId<'dae>, Vec<SourceValues>)>,
+    function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<SourceValues>)>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     override_value: F,
+    input_policy: InputInitializationPolicy,
+    input_initializations: Vec<Option<InputInitialization>>,
 }
 
 impl<'dae> NumericEvaluator<'dae> {
@@ -71,25 +115,88 @@ impl<'dae, F> NumericEvaluator<'dae, F>
 where
     F: FnMut(dae::VariableView<'dae>, usize) -> Option<f64>,
 {
+    pub fn expression(
+        &mut self,
+        id: dae::ExprId<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        Ok(self.expression_values(id)?.materialize())
+    }
+    pub fn expression_values(
+        &mut self,
+        id: dae::ExprId<'dae>,
+    ) -> Result<NumericInitialValues, NumericEvaluationError> {
+        Ok(self.source_values(id)?.map(Scalar::real))
+    }
+    /// A numerical Integer attribute refuses source bits outside its checked
+    /// Binary64 projection profile instead of issuing a rounded bound.
+    pub fn integer_attribute_values(
+        &mut self,
+        id: dae::ExprId<'dae>,
+    ) -> Result<NumericInitialValues, NumericEvaluationError> {
+        let values = self.source_values(id)?;
+        values.numerical_attribute_values(dae::ScalarType::Integer, self.expression_span(id))
+    }
+    pub fn initial_value(
+        &mut self,
+        id: dae::VariableId<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        Ok(self.initial_values(id)?.materialize())
+    }
+    pub fn initial_values(
+        &mut self,
+        id: dae::VariableId<'dae>,
+    ) -> Result<NumericInitialValues, NumericEvaluationError> {
+        Ok(self.source_initial_values(id)?.map(Scalar::real))
+    }
+    /// Evaluate through the same source execution owner, retaining exact payloads
+    /// and source-issued Repeat/Literal structure after ordered fault checks.
+    pub fn exact_expression_values(
+        &mut self,
+        id: dae::ExprId<'dae>,
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        self.source_values(id)
+    }
     pub fn with_overrides(view: dae::DaeView<'dae>, override_value: F) -> Self {
+        Self::with_input_policy(
+            view,
+            override_value,
+            InputInitializationPolicy::RequireRuntimeDriver,
+        )
+    }
+
+    pub fn with_input_policy(
+        view: dae::DaeView<'dae>,
+        override_value: F,
+        input_policy: InputInitializationPolicy,
+    ) -> Self {
         Self {
             view,
             values: vec![None; view.variable_count()],
             expression_values: vec![None; view.expression_count()],
-            scoped_expression_values: Vec::new(),
+            scoped_expression_values: vec![function_states::NumericFunctionFrame::function_entry()],
             evaluating: vec![false; view.variable_count()],
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
             domain_points: Vec::new(),
             override_value,
+            input_policy,
+            input_initializations: vec![None; view.variable_count()],
         }
     }
 
     /// Evaluate an expression whose only coordinates are static parameters.
-    pub fn expression(
+    fn source_expression(
         &mut self,
         id: dae::ExprId<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
+        Ok(self.source_values(id)?.materialize())
+    }
+
+    /// Evaluate static-parameter coordinates while retaining source-issued runs.
+    fn source_values(
+        &mut self,
+        id: dae::ExprId<'dae>,
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let node = self
             .view
             .expression(id)
@@ -106,7 +213,11 @@ where
             return Ok(value.clone());
         }
         let span = node.provenance().span();
-        let value = self.evaluate_expression_operation(node, operation, span)?;
+        let mut value = self.evaluate_expression_operation(node, operation, span)?;
+        require_finite(&value, span)?;
+        if node.value_type().scalar_type() == dae::ScalarType::Real {
+            value = value.map(|value| Scalar::Real(value.real()));
+        }
         require_finite(&value, span)?;
         if cacheable {
             self.cache_expression(id, value.clone(), context_independent);
@@ -119,35 +230,40 @@ where
         node: dae::ExpressionView<'dae>,
         operation: dae::ExpressionOperation<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let value = match operation {
-            dae::ExpressionOperation::Literal(literal) => vec![literal_value(literal, span)?],
-            dae::ExpressionOperation::Coordinate(coordinate) => {
-                self.coordinate_value(coordinate, span)?
+            dae::ExpressionOperation::Literal(literal) => {
+                return Ok(NumericInitialValues::repeat(
+                    literal_value(literal, span)?,
+                    1,
+                ));
             }
-            dae::ExpressionOperation::Unary { operator, operand } => self
-                .expression(operand)?
-                .into_iter()
-                .map(|value| match operator {
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                return self.coordinate_value(coordinate, span);
+            }
+            dae::ExpressionOperation::Unary { operator, operand } => {
+                return Ok(self.source_values(operand)?.map(|value| match operator {
                     dae::UnaryOperator::Plus => value,
                     dae::UnaryOperator::Negate => -value,
                     dae::UnaryOperator::Not => bool_value(value == 0.0),
-                })
-                .collect(),
+                }));
+            }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
                 self.binary_expression(operator, lhs, rhs, span)?
             }
-            dae::ExpressionOperation::Conditional(operands) => self.conditional(operands, span)?,
+            dae::ExpressionOperation::Conditional(operands) => {
+                return self.conditional(operands, span);
+            }
             dae::ExpressionOperation::Array(elements) => {
                 let mut values = Vec::new();
                 for element in elements.iter() {
-                    values.extend(self.expression(element)?);
+                    values.extend(self.source_expression(element)?);
                 }
                 values
             }
-            dae::ExpressionOperation::Record(fields) => self.record(fields)?,
+            dae::ExpressionOperation::Record(fields) => return self.record(fields),
             dae::ExpressionOperation::Field { base, field } => {
-                self.record_field(base, field as usize, span)?
+                return self.record_field(base, field as usize, span);
             }
             dae::ExpressionOperation::Range(range) => range_values(
                 range.start().value(),
@@ -164,36 +280,36 @@ where
                 subscripts,
             } => self.array_update(base, value, subscripts, span)?,
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
-                self.builtin(builtin, arguments, node.value_type().dimensions(), span)?
+                return self.builtin(builtin, arguments, node.value_type().dimensions(), span);
             }
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.comprehension(domain, body, span)?
             }
             dae::ExpressionOperation::Call {
+                owner,
                 function,
                 output,
                 arguments,
-                ..
-            } => self.function_call(function, output, arguments, span)?,
+            } => return self.function_call(owner, function, output, arguments, span),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.expression(definition.rhs())?
+                return self.source_values(definition.rhs());
             }
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
-                .function_fold_values
-                .iter()
-                .rev()
-                .find(|(active, _)| *active == fold)
-                .and_then(|(_, values)| values.get(carried as usize))
-                .cloned()
-                .ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::UnsupportedOperation,
-                        "function loop transition parameter escaped its fold",
-                        span,
-                    )
-                })?,
-            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
-                self.function_fold(fold, carried, span)?
+            dae::ExpressionOperation::FunctionConditionalOutput { .. } => {
+                return Err(failure(
+                    NumericEvaluationErrorKind::UnsupportedOperation,
+                    "function conditional projection has no executed source statement",
+                    span,
+                ));
+            }
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
+                return self.function_fold_parameter(fold, carried, span);
+            }
+            dae::ExpressionOperation::FunctionFoldOutput {
+                fold,
+                carried,
+                definition,
+            } => {
+                return self.function_fold(fold, carried, definition, span);
             }
             dae::ExpressionOperation::StringConversion { .. } => {
                 return Err(failure(
@@ -202,31 +318,68 @@ where
                     span,
                 ));
             }
-            dae::ExpressionOperation::ClockTransfer { source, .. } => self.expression(source)?,
+            dae::ExpressionOperation::ClockTransfer { source, .. } => {
+                return self.source_values(source);
+            }
         };
-        Ok(value)
+        Ok(NumericInitialValues::literal(value))
+    }
+
+    fn function_fold_parameter(
+        &self,
+        fold: dae::FunctionFoldId<'dae>,
+        carried: u32,
+        span: Span,
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        self.function_fold_values
+            .iter()
+            .rev()
+            .find(|(active, _)| *active == fold)
+            .and_then(|(_, values)| values.get(carried as usize))
+            .cloned()
+            .ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::UnsupportedOperation,
+                    "function loop transition parameter escaped its fold",
+                    span,
+                )
+            })
     }
 
     fn cached_expression(
         &self,
         id: dae::ExprId<'dae>,
         context_independent: bool,
-    ) -> Option<&Vec<f64>> {
-        if !context_independent && let Some(values) = self.scoped_expression_values.last() {
-            values.get(&id.index())
-        } else {
-            self.expression_values[id.index() as usize].as_ref()
+    ) -> Option<&SourceValues> {
+        if context_independent {
+            return self.expression_values[id.index() as usize].as_ref();
         }
+        let current = self.scoped_expression_values.last()?;
+        if let Some(value) = current.expressions.get(&id.index()) {
+            return Some(value);
+        }
+        let node = self.view.expression(id)?;
+        let definition = match node.operation() {
+            dae::ExpressionOperation::FunctionValue { definition, .. }
+            | dae::ExpressionOperation::FunctionConditionalOutput { definition, .. }
+            | dae::ExpressionOperation::FunctionFoldOutput { definition, .. } => definition,
+            _ => return None,
+        };
+        self.enclosing_definition_frame(definition, |frame| {
+            frame.expressions.contains_key(&id.index())
+        })?
+        .expressions
+        .get(&id.index())
     }
 
     fn cache_expression(
         &mut self,
         id: dae::ExprId<'dae>,
-        value: Vec<f64>,
+        value: SourceValues,
         context_independent: bool,
     ) {
         if !context_independent && let Some(values) = self.scoped_expression_values.last_mut() {
-            values.insert(id.index(), value);
+            values.expressions.insert(id.index(), value);
         } else {
             self.expression_values[id.index() as usize] = Some(value);
         }
@@ -235,10 +388,10 @@ where
     fn record(
         &mut self,
         fields: dae::ExpressionOperands<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
-        let mut values = Vec::new();
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        let mut values = SourceValues::default();
         for field in fields.iter() {
-            values.extend(self.expression(field)?);
+            values.append(self.source_values(field)?);
         }
         Ok(values)
     }
@@ -248,7 +401,7 @@ where
         base: dae::ExprId<'dae>,
         field: usize,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let base_node = self
             .view
             .expression(base)
@@ -263,7 +416,7 @@ where
                     span,
                 )
             })?;
-        let value = self.expression(base)?;
+        let value = self.source_values(base)?;
         let expected = layout
             .outer_count()
             .checked_mul(layout.record_width())
@@ -272,12 +425,16 @@ where
             return Err(invalid_record_layout(span));
         }
         if layout.record_width() == 0 {
-            return Ok(Vec::new());
+            return Ok(SourceValues::default());
         }
-        let mut projected = Vec::with_capacity(layout.outer_count() * layout.field_width());
-        for record in value.chunks_exact(layout.record_width()) {
-            let end = layout.field_offset() + layout.field_width();
-            projected.extend_from_slice(&record[layout.field_offset()..end]);
+        let mut projected = SourceValues::default();
+        for record in 0..layout.outer_count() {
+            let start = record * layout.record_width() + layout.field_offset();
+            projected.append(
+                value
+                    .slice(start, layout.field_width())
+                    .ok_or_else(|| invalid_record_layout(span))?,
+            );
         }
         Ok(projected)
     }
@@ -286,7 +443,7 @@ where
         &mut self,
         coordinate: dae::CoordinateView<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
             let arguments = self
                 .function_arguments
@@ -307,7 +464,7 @@ where
                 .rev()
                 .find(|(domain, _)| *domain == binder.domain())
                 .and_then(|(_, point)| point.get(binder.ordinal() as usize))
-                .map(|value| vec![*value as f64])
+                .map(|value| NumericInitialValues::repeat(Scalar::Integer(*value), 1))
                 .ok_or_else(|| {
                     failure(
                         NumericEvaluationErrorKind::UnsupportedOperation,
@@ -317,7 +474,10 @@ where
                 });
         }
         if let dae::CoordinateView::ClockInterval(clock) = coordinate {
-            return Ok(vec![self.view.periodic_clock(clock).period_seconds()]);
+            return Ok(NumericInitialValues::repeat(
+                Scalar::Real(self.view.periodic_clock(clock).period_seconds()),
+                1,
+            ));
         }
         let variable = coordinate_variable(coordinate).ok_or_else(|| {
             failure(
@@ -334,7 +494,7 @@ where
         domain: dae::DomainId<'dae>,
         body: dae::ExprId<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let domain_view = self.view.domain(domain).ok_or_else(|| {
             failure(
                 NumericEvaluationErrorKind::UnsupportedOperation,
@@ -362,8 +522,13 @@ where
                     )
                 })?;
             self.domain_points.push((domain, point));
-            self.scoped_expression_values.push(FxHashMap::default());
-            let body_values = self.expression(body);
+            let scope = self
+                .scoped_expression_values
+                .last()
+                .and_then(|frame| frame.scope);
+            self.scoped_expression_values
+                .push(function_states::NumericFunctionFrame::lexical_frame(scope));
+            let body_values = self.source_expression(body);
             self.scoped_expression_values.pop();
             self.domain_points.pop();
             values.extend(body_values?);
@@ -375,8 +540,26 @@ where
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         carried: u32,
+        definition: dae::FunctionDefinitionView<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        if let Some(values) = self
+            .scoped_expression_values
+            .last()
+            .and_then(|frame| frame.folds.get(&fold))
+            .or_else(|| {
+                self.enclosing_definition_frame(definition, |frame| {
+                    frame.folds.contains_key(&fold)
+                })?
+                .folds
+                .get(&fold)
+            })
+        {
+            return values
+                .get(carried as usize)
+                .cloned()
+                .ok_or_else(|| function_ordinal_error(span));
+        }
         self.function_fold_values(fold, None, span)?
             .get(carried as usize)
             .cloned()
@@ -388,7 +571,7 @@ where
         fold: dae::FunctionFoldId<'dae>,
         statements: Option<dae::FunctionStatements<'dae>>,
         span: Span,
-    ) -> Result<Vec<Vec<f64>>, NumericEvaluationError> {
+    ) -> Result<Vec<SourceValues>, NumericEvaluationError> {
         let fold_view = self.view.function_fold(fold).ok_or_else(|| {
             failure(
                 NumericEvaluationErrorKind::UnsupportedOperation,
@@ -399,7 +582,7 @@ where
         let mut values = fold_view
             .initial_values()
             .rhs_iter()
-            .map(|initial| self.expression(initial))
+            .map(|initial| self.source_values(initial))
             .collect::<Result<Vec<_>, _>>()?;
         let domain = self
             .view
@@ -409,24 +592,25 @@ where
             let point = function_loop_point(domain, point_index, span)?;
             self.function_fold_values.push((fold, values));
             self.domain_points.push((fold_view.domain(), point));
-            self.scoped_expression_values.push(FxHashMap::default());
+            self.scoped_expression_values.push(
+                function_states::NumericFunctionFrame::lexical_frame(Some(fold_view.body_scope())),
+            );
             // MLS §11.2.3: a bounded `while` stops before the first pass whose
             // condition is false, with the values that pass would have read.
             let next = match fold_view.continuation() {
-                Some(condition) => {
-                    self.expression(condition)
-                        .and_then(|value| match value.as_slice() {
-                            [0.0] => Ok(None),
-                            [1.0] => self
-                                .function_loop_iteration(fold_view, statements.clone())
-                                .map(Some),
-                            _ => Err(failure(
-                                NumericEvaluationErrorKind::InvalidValue,
-                                "while condition is not scalar Boolean",
-                                span,
-                            )),
-                        })
-                }
+                Some(condition) => self
+                    .source_expression(condition)
+                    .and_then(|value| match value.as_slice() {
+                        [Scalar::Boolean(false)] => Ok(None),
+                        [Scalar::Boolean(true)] => self
+                            .function_loop_iteration(fold_view, statements.clone())
+                            .map(Some),
+                        _ => Err(failure(
+                            NumericEvaluationErrorKind::InvalidValue,
+                            "while condition is not scalar Boolean",
+                            span,
+                        )),
+                    }),
                 None => self
                     .function_loop_iteration(fold_view, statements.clone())
                     .map(Some),
@@ -453,11 +637,22 @@ where
 
     fn function_call(
         &mut self,
+        owner: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         output: u32,
         arguments: dae::ExpressionOperands<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        if let Some(tuple) = self
+            .scoped_expression_values
+            .last()
+            .and_then(|frame| frame.calls.get(&owner.index()))
+        {
+            return tuple
+                .get(output as usize)
+                .cloned()
+                .ok_or_else(|| function_result_error(span));
+        }
         if self.function_arguments.len() >= 256 {
             return Err(failure(
                 NumericEvaluationErrorKind::CyclicDependency,
@@ -467,7 +662,7 @@ where
         }
         let arguments = arguments
             .iter()
-            .map(|argument| self.expression(argument))
+            .map(|argument| self.source_values(argument))
             .collect::<Result<Vec<_>, _>>()?;
         let definition = self.view.function(function).ok_or_else(|| {
             failure(
@@ -485,27 +680,51 @@ where
                 return Err(external_function_failure(definition.name(), external, span));
             };
             self.function_arguments.push((function, arguments));
-            self.scoped_expression_values.push(FxHashMap::default());
+            self.scoped_expression_values
+                .push(function_states::NumericFunctionFrame::function_entry());
             let inputs = binding
                 .inputs()
-                .map(|input| self.expression(input))
+                .map(|input| self.source_values(input))
                 .collect::<Result<Vec<_>, _>>();
             self.scoped_expression_values.pop();
             self.function_arguments.pop();
-            return native_function_call(binding, &inputs?, output, span);
+            let tuple = native_function_call(binding, &inputs?, span)?;
+            let value = tuple
+                .get(output as usize)
+                .cloned()
+                .ok_or_else(|| function_result_error(span))?;
+            self.scoped_expression_values
+                .last_mut()
+                .expect("numeric source frame exists")
+                .calls
+                .insert(owner.index(), tuple);
+            return Ok(value);
         }
-        let result = definition
-            .result_values()
-            .rhs(output as usize)
-            .ok_or_else(|| function_result_error(span))?;
         self.function_arguments.push((function, arguments));
-        self.scoped_expression_values.push(FxHashMap::default());
-        let value = self
+        self.scoped_expression_values
+            .push(function_states::NumericFunctionFrame::function_entry());
+        let tuple = self
             .function_statements(definition.statements())
-            .and_then(|()| self.expression(result));
+            .and_then(|()| {
+                definition
+                    .result_values()
+                    .rhs_iter()
+                    .map(|result| self.source_values(result))
+                    .collect::<Result<Vec<_>, _>>()
+            });
         self.scoped_expression_values.pop();
         self.function_arguments.pop();
-        value
+        let tuple = tuple?;
+        let value = tuple
+            .get(output as usize)
+            .cloned()
+            .ok_or_else(|| function_result_error(span))?;
+        self.scoped_expression_values
+            .last_mut()
+            .expect("numeric source frame exists")
+            .calls
+            .insert(owner.index(), tuple);
+        Ok(value)
     }
 
     fn function_statements(
@@ -514,20 +733,54 @@ where
     ) -> Result<(), NumericEvaluationError> {
         for statement in statements {
             match statement {
-                dae::FunctionStatementView::Assignment { .. }
-                | dae::FunctionStatementView::AssignmentGroup { .. } => {}
+                dae::FunctionStatementView::Assignment { definition } => {
+                    self.source_values(definition.rhs())?;
+                }
+                dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
+                    self.function_assignment_group(definitions)?;
+                }
+                dae::FunctionStatementView::Conditional { conditional } => {
+                    self.ordered_function_conditional(conditional)?
+                }
+                dae::FunctionStatementView::RequireAssigned {
+                    conditional,
+                    value,
+                    definition,
+                    provenance,
+                } => {
+                    self.require_function_assigned(
+                        conditional,
+                        value,
+                        definition,
+                        provenance.span(),
+                    )?;
+                }
                 // A warning-level assertion never aborts an evaluation and has
                 // no influence on any value (MLS §8.3.7).
                 dae::FunctionStatementView::Assertion {
+                    condition,
+                    message,
                     level: dae::AssertionLevel::Warning,
                     ..
-                } => {}
+                } => match self.source_expression(condition)?.as_slice() {
+                    [Scalar::Boolean(true)] => {}
+                    [Scalar::Boolean(false)] => {
+                        self.assertion_message(message)?;
+                    }
+                    _ => {
+                        return Err(failure(
+                            NumericEvaluationErrorKind::InvalidValue,
+                            "function assertion condition is not scalar Boolean",
+                            self.expression_span(condition),
+                        ));
+                    }
+                },
                 dae::FunctionStatementView::Assertion {
                     condition,
-                    message: _,
+                    message,
                     level: dae::AssertionLevel::Error,
                     provenance,
-                } => self.function_assertion(condition, provenance.span())?,
+                } => self.function_assertion(condition, message, provenance.span())?,
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
@@ -541,13 +794,14 @@ where
     fn function_assertion(
         &mut self,
         condition: dae::ExprId<'dae>,
+        message: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<(), NumericEvaluationError> {
-        match self.expression(condition)?.as_slice() {
-            [1.0] => Ok(()),
-            [0.0] => Err(failure(
+        match self.source_expression(condition)?.as_slice() {
+            [Scalar::Boolean(true)] => Ok(()),
+            [Scalar::Boolean(false)] => Err(failure(
                 NumericEvaluationErrorKind::AssertionFailed,
-                "function assertion failed",
+                self.assertion_message(message)?,
                 span,
             )),
             _ => Err(failure(
@@ -558,41 +812,67 @@ where
         }
     }
 
+    fn assertion_message(
+        &self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<String, NumericEvaluationError> {
+        match self
+            .view
+            .expression(expression)
+            .map(|node| node.operation())
+        {
+            Some(dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message))) => {
+                Ok(message.clone())
+            }
+            _ => Err(failure(
+                NumericEvaluationErrorKind::UnsupportedOperation,
+                "source assertion message execution is outside the numerical evaluator's String profile",
+                self.expression_span(expression),
+            )),
+        }
+    }
+
     fn function_loop_statements(
         &mut self,
         fold: dae::FunctionFoldId<'dae>,
         statements: dae::FunctionStatements<'dae>,
         span: Span,
     ) -> Result<(), NumericEvaluationError> {
-        self.function_fold_values(fold, Some(statements), span)
-            .map(drop)
+        let values = self.function_fold_values(fold, Some(statements), span)?;
+        self.scoped_expression_values
+            .last_mut()
+            .expect("numeric source frame exists")
+            .folds
+            .insert(fold, values);
+        Ok(())
     }
 
     fn function_loop_iteration(
         &mut self,
         fold: dae::FunctionFoldView<'dae>,
         statements: Option<dae::FunctionStatements<'dae>>,
-    ) -> Result<Vec<Vec<f64>>, NumericEvaluationError> {
+    ) -> Result<Vec<SourceValues>, NumericEvaluationError> {
         if let Some(statements) = statements {
             self.function_statements(statements)?;
         }
         fold.update_values()
             .rhs_iter()
-            .map(|update| self.expression(update))
+            .map(|update| self.source_values(update))
             .collect()
     }
 
     /// Evaluate the constructor-proven initial value of a variable.
-    pub fn initial_value(
+    /// Preserve source fill/broadcast runs before any extent-sized allocation.
+    pub fn source_initial_values(
         &mut self,
         id: dae::VariableId<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let variable = self
             .view
             .variable(id)
             .expect("finalized variable identity resolves");
         if variable.scalar_count() == 0 {
-            return Ok(Vec::new());
+            return Ok(NumericInitialValues::default());
         }
         if matches!(
             variable.role(),
@@ -609,7 +889,7 @@ where
             | dae::VariableRole::Output
             | dae::VariableRole::DiscreteReal
             | dae::VariableRole::DiscreteValue => {
-                variable.start().or(variable.binding()).ok_or_else(|| {
+                declaration_initial_expression(variable, self.input_policy).ok_or_else(|| {
                     failure(
                         NumericEvaluationErrorKind::MissingValue,
                         format!(
@@ -631,12 +911,17 @@ where
     fn input_value(
         &mut self,
         variable: dae::VariableView<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
-        if variable.scalar_count() == 0 {
-            return Ok(Vec::new());
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        if self.input_policy == InputInitializationPolicy::FmiExportDefaults {
+            return self
+                .input_initialization(variable.id())
+                .map(|values| values.effective().clone());
         }
-        if let Some(binding) = variable.binding() {
-            return self.variable_expression(variable, binding);
+        if variable.scalar_count() == 0 {
+            return Ok(NumericInitialValues::default());
+        }
+        if let Some(expression) = declaration_initial_expression(variable, self.input_policy) {
+            return self.variable_expression(variable, expression);
         }
         let mut values = Vec::with_capacity(variable.scalar_count());
         for scalar in 0..variable.scalar_count() {
@@ -664,15 +949,15 @@ where
                     variable.declaration().span(),
                 ));
             }
-            values.push(value);
+            values.push(host_scalar(variable, value)?);
         }
-        Ok(values)
+        Ok(NumericInitialValues::literal(values))
     }
 
     fn parameter_value(
         &mut self,
         id: dae::VariableId<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let index = id.index() as usize;
         if let Some(value) = &self.values[index] {
             return Ok(value.clone());
@@ -682,8 +967,8 @@ where
             .variable(id)
             .expect("finalized parameter identity resolves");
         if variable.scalar_count() == 0 {
-            self.values[index] = Some(Vec::new());
-            return Ok(Vec::new());
+            self.values[index] = Some(NumericInitialValues::default());
+            return Ok(NumericInitialValues::default());
         }
         if !matches!(
             variable.role(),
@@ -709,17 +994,18 @@ where
                 variable.declaration().span(),
             ));
         }
-        let expression = variable.binding().or(variable.start()).ok_or_else(|| {
-            failure(
-                NumericEvaluationErrorKind::MissingValue,
-                format!(
-                    "{} `{}` has neither a binding nor an initial value",
-                    role_name(variable.role()),
-                    variable.name()
-                ),
-                variable.declaration().span(),
-            )
-        })?;
+        let expression =
+            declaration_initial_expression(variable, self.input_policy).ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::MissingValue,
+                    format!(
+                        "{} `{}` has neither a binding nor an initial value",
+                        role_name(variable.role()),
+                        variable.name()
+                    ),
+                    variable.declaration().span(),
+                )
+            })?;
         self.evaluating[index] = true;
         let result = self.variable_expression(variable, expression);
         self.evaluating[index] = false;
@@ -732,9 +1018,26 @@ where
         &mut self,
         variable: dae::VariableView<'dae>,
         expression: dae::ExprId<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
-        let mut values = self.expression(expression)?;
-        variable.broadcast_values(&mut values);
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        let mut values = self.variable_source_expression(variable, expression)?;
+        self.apply_overrides(variable, &mut values)?;
+        require_finite(&values, self.expression_span(expression))?;
+        Ok(values)
+    }
+
+    fn variable_source_expression(
+        &mut self,
+        variable: dae::VariableView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<SourceValues, NumericEvaluationError> {
+        if variable.scalar_count() == 0 {
+            return Ok(SourceValues::default());
+        }
+        let mut values = self.source_values(expression)?;
+        if variable.value_type().scalar_type() == dae::ScalarType::Real {
+            values = values.map(|value| Scalar::Real(value.real()));
+        }
+        values.broadcast(variable.scalar_count());
         if values.len() != variable.scalar_count() {
             return Err(failure(
                 NumericEvaluationErrorKind::ShapeMismatch,
@@ -747,17 +1050,26 @@ where
                 self.expression_span(expression),
             ));
         }
-        self.apply_overrides(variable, &mut values)?;
-        require_finite(&values, self.expression_span(expression))?;
         Ok(values)
     }
 
     fn apply_overrides(
         &mut self,
         variable: dae::VariableView<'dae>,
-        values: &mut [f64],
+        values: &mut SourceValues,
     ) -> Result<(), NumericEvaluationError> {
-        for (scalar, value) in values.iter_mut().enumerate() {
+        let overrides = self.checked_overrides(variable, values.len())?;
+        values.apply_source_overrides(&overrides);
+        Ok(())
+    }
+
+    fn checked_overrides(
+        &mut self,
+        variable: dae::VariableView<'dae>,
+        count: usize,
+    ) -> Result<Vec<(usize, Scalar)>, NumericEvaluationError> {
+        let mut overrides = Vec::new();
+        for scalar in 0..count {
             let Some(override_value) = (self.override_value)(variable, scalar) else {
                 continue;
             };
@@ -780,30 +1092,30 @@ where
                     variable.declaration().span(),
                 ));
             }
-            *value = override_value;
+            overrides.push((scalar, host_scalar(variable, override_value)?));
         }
-        Ok(())
+        Ok(overrides)
     }
 
     fn conditional(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         for ordinal in (0..operands.len() - 1).step_by(2) {
-            let condition = self.expression(
+            let condition = self.source_expression(
                 operands
                     .get(ordinal)
                     .expect("checked conditional condition resolves"),
             )?;
-            if condition.as_slice() == [1.0] {
-                return self.expression(
+            if condition.as_slice() == [Scalar::Boolean(true)] {
+                return self.source_values(
                     operands
                         .get(ordinal + 1)
                         .expect("checked conditional value resolves"),
                 );
             }
-            if condition.as_slice() != [0.0] {
+            if condition.as_slice() != [Scalar::Boolean(false)] {
                 return Err(failure(
                     NumericEvaluationErrorKind::InvalidValue,
                     "conditional guard is not scalar Boolean",
@@ -811,7 +1123,7 @@ where
                 ));
             }
         }
-        self.expression(
+        self.source_values(
             operands
                 .get(operands.len() - 1)
                 .expect("checked conditional fallback resolves"),
@@ -824,7 +1136,7 @@ where
         lhs_id: dae::ExprId<'dae>,
         rhs_id: dae::ExprId<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let lhs_dimensions = self
             .view
             .expression(lhs_id)
@@ -837,8 +1149,8 @@ where
             .expect("checked binary rhs resolves")
             .value_type()
             .dimensions();
-        let lhs = self.expression(lhs_id)?;
-        let rhs = self.expression(rhs_id)?;
+        let lhs = self.source_expression(lhs_id)?;
+        let rhs = self.source_expression(rhs_id)?;
         if operator == dae::BinaryOperator::Multiply {
             return multiply_values(&lhs, &rhs, lhs_dimensions, rhs_dimensions, span);
         }
@@ -859,7 +1171,7 @@ where
         }
         Ok((0..count)
             .map(|index| {
-                binary(
+                source_binary(
                     operator,
                     lhs[if lhs.len() == 1 { 0 } else { index }],
                     rhs[if rhs.len() == 1 { 0 } else { index }],
@@ -874,13 +1186,13 @@ where
         subscripts: dae::SubscriptsView<'dae>,
         _result_type: &dae::ValueType,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let base_node = self
             .view
             .expression(base)
             .expect("checked index base resolves");
         let selected = self.selected_scalar_slots(base_node, subscripts, span)?;
-        let base = self.expression(base)?;
+        let base = self.source_expression(base)?;
         selected
             .into_iter()
             .map(|flat| {
@@ -901,13 +1213,13 @@ where
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let base_node = self
             .view
             .expression(base)
             .expect("checked array-update base resolves");
         let targets = self.selected_scalar_slots(base_node, subscripts, span)?;
-        let updated = self.expression(value)?;
+        let updated = self.source_expression(value)?;
         if updated.len() != targets.len() {
             return Err(failure(
                 NumericEvaluationErrorKind::ShapeMismatch,
@@ -919,7 +1231,7 @@ where
                 span,
             ));
         }
-        let mut result = self.expression(base)?;
+        let mut result = self.source_expression(base)?;
         for (flat, value) in targets.into_iter().zip(updated) {
             let target = result.get_mut(flat).ok_or_else(|| {
                 failure(
@@ -1035,18 +1347,20 @@ where
         extent: u32,
         span: Span,
     ) -> Result<Vec<usize>, NumericEvaluationError> {
-        self.expression(expression)?
+        self.source_expression(expression)?
             .into_iter()
             .map(|index| {
-                let rounded = index.round();
-                if index != rounded || rounded < 1.0 || rounded > f64::from(extent) {
+                let exact = index
+                    .integer()
+                    .and_then(|value| usize::try_from(value).ok());
+                if !exact.is_some_and(|value| value >= 1 && value <= extent as usize) {
                     return Err(failure(
                         NumericEvaluationErrorKind::OutOfBounds,
                         format!("array index {index} is outside 1..={extent}"),
                         span,
                     ));
                 }
-                Ok(rounded as usize - 1)
+                Ok(exact.expect("checked source index") - 1)
             })
             .collect()
     }
@@ -1057,21 +1371,21 @@ where
         arguments: dae::ExpressionOperands<'dae>,
         result_dimensions: &[u32],
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         if let Some(values) =
             self.array_constructor_builtin(builtin, arguments, result_dimensions, span)?
         {
             return Ok(values);
         }
         let first = arguments.get(0).expect("checked builtin operand");
-        let mut values = self.expression(first)?;
+        let mut values = self.source_expression(first)?;
         use dae::PureBuiltin as B;
         match builtin {
             dae::PureBuiltin::Abs => values.iter_mut().for_each(|value| *value = value.abs()),
-            dae::PureBuiltin::Sign => values.iter_mut().for_each(|v| *v = modelica_sign(*v)),
+            dae::PureBuiltin::Sign => values.iter_mut().for_each(|v| *v = v.sign()),
             dae::PureBuiltin::Sqrt => values.iter_mut().for_each(|value| *value = value.sqrt()),
             dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
-                let rhs = self.expression(
+                let rhs = self.source_expression(
                     arguments
                         .get(1)
                         .expect("checked quotient builtin has two arguments"),
@@ -1082,7 +1396,7 @@ where
             dae::PureBuiltin::Ceil => values.iter_mut().for_each(|value| *value = value.ceil()),
             dae::PureBuiltin::Integer => values
                 .iter_mut()
-                .for_each(|value| *value = rumoca_core::modelica_integer_value(*value)),
+                .for_each(|value| *value = value.integer_builtin()),
             dae::PureBuiltin::Sin => values.iter_mut().for_each(|value| *value = value.sin()),
             dae::PureBuiltin::Cos => values.iter_mut().for_each(|value| *value = value.cos()),
             dae::PureBuiltin::Tan => values.iter_mut().for_each(|value| *value = value.tan()),
@@ -1090,8 +1404,9 @@ where
             dae::PureBuiltin::Acos => values.iter_mut().for_each(|value| *value = value.acos()),
             dae::PureBuiltin::Atan => values.iter_mut().for_each(|value| *value = value.atan()),
             dae::PureBuiltin::Atan2 => {
-                let rhs =
-                    self.expression(arguments.get(1).expect("checked atan2 has two arguments"))?;
+                let rhs = self.source_expression(
+                    arguments.get(1).expect("checked atan2 has two arguments"),
+                )?;
                 for (lhs, rhs) in values.iter_mut().zip(rhs) {
                     *lhs = lhs.atan2(rhs);
                 }
@@ -1103,8 +1418,8 @@ where
             dae::PureBuiltin::Log => values.iter_mut().for_each(|value| *value = value.ln()),
             dae::PureBuiltin::Log10 => values.iter_mut().for_each(|value| *value = value.log10()),
             dae::PureBuiltin::Smooth => {
-                values =
-                    self.expression(arguments.get(1).expect("checked smooth value argument"))?;
+                values = self
+                    .source_expression(arguments.get(1).expect("checked smooth value argument"))?;
             }
             dae::PureBuiltin::NoEvent => {}
             dae::PureBuiltin::Homotopy => {}
@@ -1137,7 +1452,7 @@ where
                 unreachable!("array constructors return before operand evaluation")
             }
         }
-        Ok(values)
+        Ok(NumericInitialValues::literal(values))
     }
 
     fn array_constructor_builtin(
@@ -1146,7 +1461,7 @@ where
         arguments: dae::ExpressionOperands<'dae>,
         result_dimensions: &[u32],
         span: Span,
-    ) -> Result<Option<Vec<f64>>, NumericEvaluationError> {
+    ) -> Result<Option<SourceValues>, NumericEvaluationError> {
         let values = match builtin {
             dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2 => {
                 let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);
@@ -1155,19 +1470,20 @@ where
             dae::PureBuiltin::Identity => identity_values(result_dimensions),
             dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones => {
                 let value = if builtin == dae::PureBuiltin::Ones {
-                    1.0
+                    Scalar::Integer(1)
                 } else {
-                    0.0
+                    Scalar::Integer(0)
                 };
-                self.filled_array(arguments, 0, value, span)?
+                return Ok(Some(self.filled_array(arguments, 0, value, span)?));
             }
             dae::PureBuiltin::Fill => {
-                let fill =
-                    self.expression(arguments.get(0).expect("checked fill has a value argument"))?;
+                let fill = self.source_expression(
+                    arguments.get(0).expect("checked fill has a value argument"),
+                )?;
                 let [fill] = fill.as_slice() else {
                     unreachable!("checked fill value is scalar")
                 };
-                self.filled_array(arguments, 1, *fill, span)?
+                return Ok(Some(self.filled_array(arguments, 1, *fill, span)?));
             }
             dae::PureBuiltin::Linspace => self.linspace(arguments)?,
             dae::PureBuiltin::Cross => self.cross(arguments)?,
@@ -1179,19 +1495,19 @@ where
             }
             _ => return Ok(None),
         };
-        Ok(Some(values))
+        Ok(Some(NumericInitialValues::literal(values)))
     }
 
     fn matrix_product(
         &mut self,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
-        lhs: Vec<f64>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        lhs: Vec<Scalar>,
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         match builtin {
             dae::PureBuiltin::Diagonal => Ok(diagonal_values(&lhs)),
             dae::PureBuiltin::OuterProduct => {
-                let rhs = self.expression(
+                let rhs = self.source_expression(
                     arguments
                         .get(1)
                         .expect("checked outerProduct has two arguments"),
@@ -1209,7 +1525,7 @@ where
         axis: usize,
         result_dimensions: &[u32],
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let operands = arguments
             .iter()
             .map(|argument| {
@@ -1220,7 +1536,7 @@ where
                     .value_type()
                     .dimensions();
                 let axis_extent = dimensions.get(axis).copied().unwrap_or(1) as usize;
-                self.expression(argument)
+                self.source_expression(argument)
                     .map(|values| (axis_extent, values))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1281,12 +1597,12 @@ where
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
         first_extent: usize,
-        value: f64,
+        value: Scalar,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<SourceValues, NumericEvaluationError> {
         let mut count = 1_usize;
         for argument in arguments.iter().skip(first_extent) {
-            let extent = self.expression(argument)?;
+            let extent = self.source_expression(argument)?;
             let [extent] = extent.as_slice() else {
                 return Err(failure(
                     NumericEvaluationErrorKind::ShapeMismatch,
@@ -1294,14 +1610,24 @@ where
                     span,
                 ));
             };
-            if *extent < 0.0 || extent.fract() != 0.0 {
+            let extent = extent
+                .integer()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    failure(
+                        NumericEvaluationErrorKind::InvalidValue,
+                        "array extent is not a nonnegative exact Integer",
+                        span,
+                    )
+                })?;
+            if extent > isize::MAX as usize {
                 return Err(failure(
                     NumericEvaluationErrorKind::InvalidValue,
                     "checked array-constructor extent is not a nonnegative integer",
                     span,
                 ));
             }
-            count = count.checked_mul(*extent as usize).ok_or_else(|| {
+            count = count.checked_mul(extent).ok_or_else(|| {
                 failure(
                     NumericEvaluationErrorKind::Overflow,
                     "checked array-constructor scalar count overflowed",
@@ -1309,15 +1635,15 @@ where
                 )
             })?;
         }
-        Ok(vec![value; count])
+        Ok(NumericInitialValues::repeat(value, count))
     }
 
     fn linspace(
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
-        let start = self.expression(arguments.get(0).expect("checked linspace start"))?[0];
-        let stop = self.expression(arguments.get(1).expect("checked linspace stop"))?[0];
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
+        let start = self.source_expression(arguments.get(0).expect("checked linspace start"))?[0];
+        let stop = self.source_expression(arguments.get(1).expect("checked linspace stop"))?[0];
         let count = arguments.get(2).expect("checked linspace extent");
         let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(count)) = self
             .view
@@ -1328,18 +1654,18 @@ where
             unreachable!("checked linspace extent is a literal Integer")
         };
         let count = u32::try_from(*count).expect("checked linspace extent is in the u32 domain");
-        let denominator = f64::from(count - 1);
+        let denominator = Scalar::Real(f64::from(count - 1));
         Ok((0..count)
-            .map(|ordinal| start + (stop - start) * f64::from(ordinal) / denominator)
+            .map(|ordinal| start + (stop - start) * Scalar::Real(f64::from(ordinal)) / denominator)
             .collect())
     }
 
     fn cross(
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
-        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"))?;
-        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"))?;
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
+        let lhs = self.source_expression(arguments.get(0).expect("checked cross lhs"))?;
+        let rhs = self.source_expression(arguments.get(1).expect("checked cross rhs"))?;
         Ok(vec![
             lhs[1] * rhs[2] - lhs[2] * rhs[1],
             lhs[2] * rhs[0] - lhs[0] * rhs[2],
@@ -1351,14 +1677,14 @@ where
         &mut self,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
-        mut values: Vec<f64>,
+        mut values: Vec<Scalar>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         if arguments.len() == 1 {
             let compare = if builtin == dae::PureBuiltin::Min {
-                f64::min
+                Scalar::min
             } else {
-                f64::max
+                Scalar::max
             };
             return values
                 .into_iter()
@@ -1373,7 +1699,7 @@ where
                 });
         }
         for argument in arguments.iter().skip(1) {
-            let rhs = self.expression(argument)?;
+            let rhs = self.source_expression(argument)?;
             expect_same_length(&values, &rhs, span)?;
             combine_extremum(builtin, &mut values, rhs);
         }
@@ -1385,7 +1711,7 @@ where
         arguments: dae::ExpressionOperands<'dae>,
         first: dae::ExprId<'dae>,
         span: Span,
-    ) -> Result<Vec<f64>, NumericEvaluationError> {
+    ) -> Result<Vec<Scalar>, NumericEvaluationError> {
         let dimensions = self
             .view
             .expression(first)
@@ -1393,9 +1719,12 @@ where
             .value_type()
             .dimensions();
         let Some(dimension) = arguments.get(1) else {
-            return Ok(dimensions.iter().map(|extent| f64::from(*extent)).collect());
+            return Ok(dimensions
+                .iter()
+                .map(|extent| Scalar::Integer(i64::from(*extent)))
+                .collect());
         };
-        let dimension = self.expression(dimension)?;
+        let dimension = self.source_expression(dimension)?;
         let [dimension] = dimension.as_slice() else {
             return Err(failure(
                 NumericEvaluationErrorKind::ShapeMismatch,
@@ -1403,14 +1732,19 @@ where
                 span,
             ));
         };
-        if dimension.fract() != 0.0 || *dimension < 1.0 || *dimension > dimensions.len() as f64 {
+        let dimension = dimension
+            .integer()
+            .and_then(|value| usize::try_from(value).ok());
+        if !dimension.is_some_and(|value| value >= 1 && value <= dimensions.len()) {
             return Err(failure(
                 NumericEvaluationErrorKind::OutOfBounds,
                 "size dimension is outside the array rank",
                 span,
             ));
         }
-        Ok(vec![f64::from(dimensions[*dimension as usize - 1])])
+        Ok(vec![Scalar::Integer(i64::from(
+            dimensions[dimension.expect("checked dimension") - 1],
+        ))])
     }
 
     fn expression_span(&self, expression: dae::ExprId<'dae>) -> Span {
@@ -1420,91 +1754,6 @@ where
             .provenance()
             .span()
     }
-}
-
-fn function_loop_point(
-    domain: dae::DomainView<'_>,
-    point_index: usize,
-    span: Span,
-) -> Result<Vec<i64>, NumericEvaluationError> {
-    domain
-        .structured()
-        .index_tuple_at(point_index)
-        .map_err(|_| {
-            failure(
-                NumericEvaluationErrorKind::Overflow,
-                "function loop domain projection overflowed",
-                span,
-            )
-        })?
-        .ok_or_else(|| {
-            failure(
-                NumericEvaluationErrorKind::OutOfBounds,
-                "function loop domain point does not resolve",
-                span,
-            )
-        })
-}
-
-/// Reorder one checked transpose result in row-major order. The result shape
-/// already owns the exchanged first two extents, so swapping its first two
-/// coordinates maps each result scalar back to the unique operand scalar.
-fn transpose_values(values: &[f64], result_dimensions: &[u32]) -> Vec<f64> {
-    let mut operand_dimensions = result_dimensions.to_vec();
-    operand_dimensions.swap(0, 1);
-    (0..values.len())
-        .map(|scalar| {
-            let mut coordinates = row_major_coordinates(result_dimensions, scalar)
-                .expect("checked transpose scalar belongs to its result shape");
-            coordinates.swap(0, 1);
-            let operand_scalar = flatten_coordinates(&operand_dimensions, &coordinates)
-                .expect("transposed coordinate belongs to its checked operand shape");
-            values[operand_scalar]
-        })
-        .collect()
-}
-
-fn identity_values(dimensions: &[u32]) -> Vec<f64> {
-    let [rows, columns] = dimensions else {
-        unreachable!("checked identity result has rank two")
-    };
-    let count = (*rows as usize)
-        .checked_mul(*columns as usize)
-        .expect("checked identity scalar count fits usize");
-    (0..count)
-        .map(|scalar| {
-            f64::from(u8::from(
-                scalar / *columns as usize == scalar % *columns as usize,
-            ))
-        })
-        .collect()
-}
-
-fn diagonal_values(values: &[f64]) -> Vec<f64> {
-    let count = values
-        .len()
-        .checked_mul(values.len())
-        .expect("checked diagonal scalar count fits usize");
-    (0..count)
-        .map(|scalar| {
-            let row = scalar / values.len();
-            let column = scalar % values.len();
-            if row == column { values[row] } else { 0.0 }
-        })
-        .collect()
-}
-
-fn outer_product_values(lhs: &[f64], rhs: &[f64]) -> Vec<f64> {
-    lhs.iter()
-        .flat_map(|lhs| rhs.iter().map(move |rhs| lhs * rhs))
-        .collect()
-}
-
-fn skew_values(values: &[f64]) -> Vec<f64> {
-    let [x, y, z] = values else {
-        unreachable!("checked skew operand has exactly three scalars")
-    };
-    vec![0.0, -*z, *y, *z, 0.0, -*x, -*y, *x, 0.0]
 }
 
 fn invalid_record_layout(span: Span) -> NumericEvaluationError {
@@ -1517,8 +1766,8 @@ fn invalid_record_layout(span: Span) -> NumericEvaluationError {
 
 fn apply_quotient(
     builtin: dae::PureBuiltin,
-    values: &mut [f64],
-    rhs: Vec<f64>,
+    values: &mut [Scalar],
+    rhs: Vec<Scalar>,
     span: Span,
 ) -> Result<(), NumericEvaluationError> {
     let function = match builtin {
@@ -1528,7 +1777,17 @@ fn apply_quotient(
         _ => unreachable!("caller restricts quotient builtins"),
     };
     for (lhs, rhs) in values.iter_mut().zip(rhs) {
-        let value = rumoca_core::apply_scalar_binary_math(function, *lhs, rhs);
+        let value = match (lhs.integer(), rhs.integer()) {
+            (Some(lhs), Some(rhs)) => match builtin {
+                dae::PureBuiltin::Div => rumoca_core::eval_integer_div_builtin(lhs, rhs),
+                dae::PureBuiltin::Mod => rumoca_core::eval_integer_mod_builtin(lhs, rhs),
+                dae::PureBuiltin::Rem => rumoca_core::eval_integer_rem_builtin(lhs, rhs),
+                _ => unreachable!("checked quotient builtin"),
+            }
+            .map(Scalar::Integer),
+            _ => rumoca_core::apply_scalar_binary_math(function, lhs.real(), rhs.real())
+                .map(Scalar::Real),
+        };
         *lhs = value.ok_or_else(|| {
             failure(
                 NumericEvaluationErrorKind::InvalidValue,
@@ -1542,6 +1801,39 @@ fn apply_quotient(
 
 fn no_override(_variable: dae::VariableView<'_>, _scalar: usize) -> Option<f64> {
     None
+}
+
+fn host_scalar(
+    variable: dae::VariableView<'_>,
+    value: f64,
+) -> Result<Scalar, NumericEvaluationError> {
+    let payload = match variable.value_type().scalar_type() {
+        dae::ScalarType::Real => Some(Scalar::Real(value)),
+        dae::ScalarType::Integer | dae::ScalarType::Enumeration
+            if value.is_finite()
+                && value.fract() == 0.0
+                && value.abs() <= 9_007_199_254_740_992.0 =>
+        {
+            Some(
+                if variable.value_type().scalar_type() == dae::ScalarType::Integer {
+                    Scalar::Integer(value as i64)
+                } else {
+                    Scalar::Enumeration(value as i64)
+                },
+            )
+        }
+        dae::ScalarType::Boolean if value == 0.0 || value == 1.0 => {
+            Some(Scalar::Boolean(value == 1.0))
+        }
+        _ => None,
+    };
+    payload.ok_or_else(|| {
+        failure(
+            NumericEvaluationErrorKind::InvalidOverride,
+            "numerical host override cannot represent the declared exact scalar type",
+            variable.declaration().span(),
+        )
+    })
 }
 
 fn function_parameter_error(span: Span) -> NumericEvaluationError {
@@ -1592,11 +1884,11 @@ fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<dae::Varia
     }
 }
 
-fn literal_value(literal: &dae::DaeLiteral, span: Span) -> Result<f64, NumericEvaluationError> {
+fn literal_value(literal: &dae::DaeLiteral, span: Span) -> Result<Scalar, NumericEvaluationError> {
     match literal {
-        dae::DaeLiteral::Real(value) => Ok(*value),
-        dae::DaeLiteral::Integer(value) => Ok(*value as f64),
-        dae::DaeLiteral::Enumeration(value) => Ok(*value as f64),
+        dae::DaeLiteral::Real(value) => Ok(Scalar::Real(*value)),
+        dae::DaeLiteral::Integer(value) => Ok(Scalar::Integer(*value)),
+        dae::DaeLiteral::Enumeration(value) => Ok(Scalar::Enumeration(*value)),
         dae::DaeLiteral::Boolean(value) => Ok(bool_value(*value)),
         dae::DaeLiteral::String(_) => Err(failure(
             NumericEvaluationErrorKind::UnsupportedOperation,
@@ -1607,6 +1899,10 @@ fn literal_value(literal: &dae::DaeLiteral, span: Span) -> Result<f64, NumericEv
 }
 
 pub(crate) fn binary(operator: dae::BinaryOperator, lhs: f64, rhs: f64) -> f64 {
+    source_binary(operator, Scalar::Real(lhs), Scalar::Real(rhs)).real()
+}
+
+fn source_binary(operator: dae::BinaryOperator, lhs: Scalar, rhs: Scalar) -> Scalar {
     match operator {
         dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => lhs + rhs,
         dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => lhs - rhs,
@@ -1624,191 +1920,27 @@ pub(crate) fn binary(operator: dae::BinaryOperator, lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-fn multiply_values(
-    lhs: &[f64],
-    rhs: &[f64],
-    lhs_dimensions: &[u32],
-    rhs_dimensions: &[u32],
-    span: Span,
-) -> Result<Vec<f64>, NumericEvaluationError> {
-    if lhs_dimensions.is_empty() {
-        return Ok(rhs.iter().map(|value| lhs[0] * value).collect());
-    }
-    if rhs_dimensions.is_empty() {
-        return Ok(lhs.iter().map(|value| value * rhs[0]).collect());
-    }
-    let (rows, inner, columns) = match (lhs_dimensions, rhs_dimensions) {
-        ([inner], [rhs_inner]) if inner == rhs_inner => (1usize, *inner as usize, 1usize),
-        ([rows, inner], [rhs_inner]) if inner == rhs_inner => {
-            (*rows as usize, *inner as usize, 1usize)
+const fn bool_value(value: bool) -> Scalar {
+    Scalar::Boolean(value)
+}
+
+fn require_finite(values: &SourceValues, span: Span) -> Result<(), NumericEvaluationError> {
+    if values.runs().any(|run| match run {
+        NumericInitialRun::Repeat { value, .. } => matches!(value, Scalar::Invalid),
+        NumericInitialRun::Literal(values) => {
+            values.iter().any(|value| matches!(value, Scalar::Invalid))
         }
-        ([inner], [rhs_inner, columns]) if inner == rhs_inner => {
-            (1usize, *inner as usize, *columns as usize)
-        }
-        ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => {
-            (*rows as usize, *inner as usize, *columns as usize)
-        }
-        _ => {
-            return Err(failure(
-                NumericEvaluationErrorKind::ShapeMismatch,
-                "checked multiplication shape is not computable",
-                span,
-            ));
-        }
-    };
-    let mut result = Vec::with_capacity(rows * columns);
-    for row in 0..rows {
-        for column in 0..columns {
-            let mut sum = 0.0;
-            for term in 0..inner {
-                let lhs_index = matrix_lhs_index(lhs_dimensions, row, inner, term);
-                let rhs_index = matrix_rhs_index(rhs_dimensions, term, columns, column);
-                sum += lhs[lhs_index] * rhs[rhs_index];
-            }
-            result.push(sum);
-        }
-    }
-    Ok(result)
-}
-
-fn matrix_lhs_index(dimensions: &[u32], row: usize, inner: usize, term: usize) -> usize {
-    if dimensions.len() == 1 {
-        term
-    } else {
-        row * inner + term
-    }
-}
-
-fn matrix_rhs_index(dimensions: &[u32], term: usize, columns: usize, column: usize) -> usize {
-    if dimensions.len() == 1 {
-        term
-    } else {
-        term * columns + column
-    }
-}
-
-fn expect_same_length(lhs: &[f64], rhs: &[f64], span: Span) -> Result<(), NumericEvaluationError> {
-    if lhs.len() == rhs.len() {
-        Ok(())
-    } else {
-        Err(failure(
-            NumericEvaluationErrorKind::ShapeMismatch,
-            "builtin argument shape mismatch",
-            span,
-        ))
-    }
-}
-
-fn combine_extremum(builtin: dae::PureBuiltin, lhs: &mut [f64], rhs: Vec<f64>) {
-    for (lhs, rhs) in lhs.iter_mut().zip(rhs) {
-        *lhs = if builtin == dae::PureBuiltin::Min {
-            lhs.min(rhs)
-        } else {
-            lhs.max(rhs)
-        };
-    }
-}
-
-const fn bool_value(value: bool) -> f64 {
-    if value { 1.0 } else { 0.0 }
-}
-
-fn range_values(
-    start: i64,
-    step: i64,
-    stop: i64,
-    span: Span,
-) -> Result<Vec<f64>, NumericEvaluationError> {
-    let count = if step > 0 && start <= stop {
-        (i128::from(stop) - i128::from(start)) / i128::from(step) + 1
-    } else if step < 0 && start >= stop {
-        (i128::from(start) - i128::from(stop)) / -i128::from(step) + 1
-    } else if step == 0 {
+    }) {
         return Err(failure(
-            NumericEvaluationErrorKind::InvalidValue,
-            "integer range step is zero",
+            NumericEvaluationErrorKind::Overflow,
+            "exact Integer operation has no supported checked result",
             span,
         ));
-    } else {
-        0
-    };
-    let count = usize::try_from(count).map_err(|_| {
-        failure(
-            NumericEvaluationErrorKind::Overflow,
-            "integer range cardinality overflowed",
-            span,
-        )
-    })?;
-    (0..count)
-        .map(|ordinal| {
-            let ordinal = i64::try_from(ordinal).map_err(|_| {
-                failure(
-                    NumericEvaluationErrorKind::Overflow,
-                    "integer range ordinal overflowed",
-                    span,
-                )
-            })?;
-            start
-                .checked_add(step.checked_mul(ordinal).ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::Overflow,
-                        "integer range value overflowed",
-                        span,
-                    )
-                })?)
-                .map(|value| value as f64)
-                .ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::Overflow,
-                        "integer range value overflowed",
-                        span,
-                    )
-                })
-        })
-        .collect()
-}
-
-fn expand_flat_indices(
-    flats: Vec<usize>,
-    selected: &[usize],
-    extent: u32,
-    span: Span,
-) -> Result<Vec<usize>, NumericEvaluationError> {
-    let capacity = flats.len().checked_mul(selected.len()).ok_or_else(|| {
-        failure(
-            NumericEvaluationErrorKind::Overflow,
-            "array selection size overflowed",
-            span,
-        )
-    })?;
-    let mut expanded = Vec::with_capacity(capacity);
-    for flat in flats {
-        for index in selected {
-            expanded.push(checked_expanded_index(flat, *index, extent, span)?);
-        }
     }
-    Ok(expanded)
-}
-
-fn checked_expanded_index(
-    flat: usize,
-    index: usize,
-    extent: u32,
-    span: Span,
-) -> Result<usize, NumericEvaluationError> {
-    flat.checked_mul(extent as usize)
-        .and_then(|value| value.checked_add(index))
-        .ok_or_else(|| {
-            failure(
-                NumericEvaluationErrorKind::Overflow,
-                "array index calculation overflowed",
-                span,
-            )
-        })
-}
-
-fn require_finite(values: &[f64], span: Span) -> Result<(), NumericEvaluationError> {
-    if values.iter().all(|value| value.is_finite()) {
+    if values.runs().all(|run| match run {
+        NumericInitialRun::Repeat { value, .. } => value.is_finite(),
+        NumericInitialRun::Literal(values) => values.iter().all(|value| value.is_finite()),
+    }) {
         Ok(())
     } else {
         Err(failure(
@@ -1842,50 +1974,4 @@ fn failure(
         message: message.into(),
         span,
     }
-}
-
-/// Evaluate one result of a SPEC_0040 DAE-C30 native body through its one
-/// definitional evaluator. Integer arguments are exact in binary64.
-fn native_function_call(
-    binding: dae::NativeBodyView<'_>,
-    inputs: &[Vec<f64>],
-    output: u32,
-    span: Span,
-) -> Result<Vec<f64>, NumericEvaluationError> {
-    use rumoca_core::native_body::{NativeBodyError, NativeElement, NativeScalar};
-    let body = binding.body();
-    let inputs = inputs
-        .iter()
-        .zip(body.inputs())
-        .map(|(values, input)| {
-            values
-                .iter()
-                .map(|value| match input.element {
-                    NativeElement::Integer => NativeScalar::Integer(*value as i64),
-                    NativeElement::Real => NativeScalar::Real(*value),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let inputs = inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let outputs = body.evaluate(&inputs).map_err(|error| {
-        let kind = match error {
-            NativeBodyError::Failure { .. } => NumericEvaluationErrorKind::AssertionFailed,
-            NativeBodyError::OperandMismatch { .. } => NumericEvaluationErrorKind::InvalidValue,
-        };
-        failure(kind, error.to_string(), span)
-    })?;
-    let position = binding
-        .results()
-        .iter()
-        .position(|result| *result == output)
-        .ok_or_else(|| function_result_error(span))?;
-    Ok(outputs[position]
-        .iter()
-        .copied()
-        .map(|value| match value {
-            NativeScalar::Integer(value) => value as f64,
-            NativeScalar::Real(value) => value,
-        })
-        .collect())
 }

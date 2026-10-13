@@ -271,3 +271,19 @@ fn test_predefined_assertion_level_type_resolution() {
     assert!(level.type_id.is_some());
     assert_ne!(level.type_id.unwrap(), TypeId::UNKNOWN);
 }
+
+#[test]
+fn zeros_and_ones_bind_to_integer_arrays() {
+    let source = r#"
+        model Test
+            parameter Integer n = 3;
+            parameter Integer z[n] = zeros(n);
+            parameter Integer o[2] = ones(2);
+            parameter Real r[2] = ones(2);
+        end Test;
+    "#;
+
+    let parsed = parse(source);
+    let resolved = resolve(parsed).expect("resolve should succeed");
+    typecheck(resolved).expect("zeros and ones are Integer arrays (MLS 10.3.3)");
+}

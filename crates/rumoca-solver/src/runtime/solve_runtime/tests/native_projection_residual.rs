@@ -19,7 +19,7 @@ impl CompiledSolveExpression for SelectedResidual {
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
         _out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         panic!("selected residuals must not execute unrelated programs");
     }
 
@@ -30,7 +30,7 @@ impl CompiledSolveExpression for SelectedResidual {
         _p: &[f64],
         _t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<Option<f64>, String> {
+    ) -> Result<Option<f64>, crate::RuntimeSolveError> {
         assert_eq!(coordinate, self.coordinate);
         self.calls.set(self.calls.get() + 1);
         if self.fail {
@@ -50,7 +50,7 @@ fn selected_projection_residual_uses_native_or_explicit_decline() {
             decline,
             coordinate: (1, 0),
         });
-        runtime.compiled_implicit_rhs = Some(native.clone());
+        runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
         for value in [2.0, -7.0] {
             assert_eq!(
                 selected_projection(&runtime, false)
@@ -76,7 +76,7 @@ fn selected_projection_residual_propagates_native_errors() {
         decline: false,
         coordinate: (1, 0),
     });
-    runtime.compiled_implicit_rhs = Some(native.clone());
+    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
     let error = selected_projection(&runtime, false)
         .eval_implicit_residual_row(1, &[1.0, 2.0], &[], 0.0)
         .expect_err("native failure must not be retried through the interpreter");
@@ -105,14 +105,15 @@ fn selected_projection_residual_preserves_aggregate_output_mapping() {
         vec![4, 1],
     )
     .unwrap();
-    runtime.implicit_scalar_rhs = PreparedScalarProgramBlock::new(block).unwrap();
+    runtime.scalar_fixture_mut().implicit_scalar_rhs =
+        PreparedScalarProgramBlock::new(block).unwrap();
     let native = Rc::new(SelectedResidual {
         calls: Cell::new(0),
         fail: false,
         decline: false,
         coordinate: (0, 1),
     });
-    runtime.compiled_implicit_rhs = Some(native.clone());
+    runtime.scalar_fixture_mut().compiled_implicit_rhs = Some(native.clone());
     assert_eq!(
         selected_projection(&runtime, false)
             .eval_implicit_residual_row(1, &[1.0, 7.0], &[], 0.0)

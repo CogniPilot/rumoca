@@ -1,10 +1,15 @@
+mod assignment_reads;
 mod iterator_values;
 mod loop_entry;
+mod path_partial_admission;
+mod read_checker;
 pub(super) use iterator_values::ComprehensionValues;
+use read_checker::DefinedValueReadChecker;
 
 use super::fold_scopes::{FoldScopes, SymbolicIndices};
 use super::guard_facts::{GuardFacts, PathSet};
 use super::*;
+pub(in crate::construction::analysis) use path_partial_admission::PathPartialAdmission;
 use rumoca_core::FallibleExpressionVisitor;
 use rumoca_core::{IndexBox, IndexUnion, Progression};
 
@@ -27,15 +32,11 @@ pub(super) struct FunctionDefinitions {
     /// top-level sequence walk for exactly that conditional, which takes it
     /// before its branches clone this certificate, so no nested conditional
     /// or loop ever sees it.
-    admit_path_partial: HashSet<VarName>,
+    admit_path_partial: PathPartialAdmission,
     /// The compact loops being resolved as one generic iteration.
     pub(super) folds: FoldScopes,
     /// The value facts proven on the current path.
     facts: PathSet,
-    /// Dead entry seeds of values a join leaves undefined on some paths whose
-    /// facts a later path may contradict: lowering joins them, and the
-    /// certificate proves the seed is never read.
-    contradiction_seeds: Vec<(VarName, FunctionValueSeed)>,
 }
 
 /// Guarded definedness proofs captured before a conditional joins its branches.
@@ -149,10 +150,9 @@ impl FunctionDefinitions {
         Self {
             values,
             branch_only: HashMap::new(),
-            admit_path_partial: HashSet::new(),
+            admit_path_partial: PathPartialAdmission::default(),
             folds: FoldScopes::default(),
             facts: PathSet::single(GuardFacts::entry()),
-            contradiction_seeds: Vec::new(),
         }
     }
 
@@ -303,7 +303,7 @@ impl FunctionDefinitions {
         span: Span,
     ) {
         for target in targets {
-            if self.values.contains_key(target) {
+            if self.is_total(target) {
                 continue;
             }
             // A value proven under a guard and now under the guard's other
@@ -426,12 +426,12 @@ impl FunctionDefinitions {
     }
 
     /// Let the next resolved conditional join path-partial values.
-    pub(super) fn admit_next_path_partial_join(&mut self, uses: HashSet<VarName>) {
+    pub(super) fn admit_next_path_partial_join(&mut self, uses: PathPartialAdmission) {
         self.admit_path_partial = uses;
     }
 
     /// Take the one-shot admission set by `admit_next_path_partial_join`.
-    pub(super) fn take_path_partial_admission(&mut self) -> HashSet<VarName> {
+    pub(super) fn take_path_partial_admission(&mut self) -> PathPartialAdmission {
         std::mem::take(&mut self.admit_path_partial)
     }
 
@@ -470,6 +470,11 @@ impl FunctionDefinitions {
                 definition.path_partial = false;
             }
         }
+    }
+
+    /// Whether this path tracks a definition of `name` itself.
+    pub(super) fn tracks_value(&self, name: &VarName) -> bool {
+        self.values.contains_key(name) || self.branch_only.contains_key(name)
     }
 
     pub(super) fn is_total(&self, name: &VarName) -> bool {
@@ -698,7 +703,23 @@ impl FunctionDefinitions {
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<(), ToDaeError> {
-        let name = reference.var_name();
+        self.require_named_readable(
+            (folds, selected_by),
+            reference.var_name(),
+            subscripts,
+            context,
+            span,
+        )
+    }
+
+    fn require_named_readable(
+        &self,
+        (folds, selected_by): (&FoldScopes, &[Expression]),
+        name: &VarName,
+        subscripts: &[Subscript],
+        context: FunctionValidationContext<'_>,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
         // MLS §11.2.2: a loop binder shadows every outer value of its name and
         // holds a value in every iteration.
         if context.loop_binders.contains(name) {
@@ -720,17 +741,30 @@ impl FunctionDefinitions {
             };
             by_guard().or_else(|| conditional.defined_where_selected(selected_by, context))
         });
-        if let Some(conditional) = self.branch_only.get(name)
-            && admitted.is_none()
-        {
-            return Err(ToDaeError::unsupported_flat(
+        let unselected = self.branch_only.get(name).filter(|_| admitted.is_none());
+        let conditional_error = |conditional: &BranchOnlyCoverage| {
+            ToDaeError::unsupported_flat(
                 "function conditional",
                 format!(
                     "`{}` reads `{name}`, which only some branches of the conditional at byte {} define",
                     context.function.name, conditional.span.start.0
                 ),
                 span,
-            ));
+            )
+        };
+        if !self.values.contains_key(name)
+            && let Some(conditional) = unselected
+        {
+            return Err(conditional_error(conditional));
+        }
+        // A whole value no statement of this path defines, which every earlier
+        // iteration of an enclosing loop defined, is defined on a path that
+        // excludes the first iteration.
+        if !self.values.contains_key(name)
+            && unselected.is_none()
+            && folds.defined_by_earlier_iteration_whole(name)
+        {
+            return Ok(());
         }
         let empty = IndexUnion::default();
         let covered = match admitted.or_else(|| self.values.get(name)) {
@@ -741,6 +775,19 @@ impl FunctionDefinitions {
             // writes element by element: only elements an earlier write of the
             // loop defined are readable.
             None if folds.writes(name) => &empty,
+            None if declared_value(name, context).is_some() => {
+                if declared_dimensions(name, context, span)?.contains(&0) {
+                    return Ok(());
+                }
+                return Err(ToDaeError::unsupported_flat(
+                    "function element assignment",
+                    format!(
+                        "`{}` reads elements of `{name}` that do not all have a definition",
+                        context.function.name
+                    ),
+                    span,
+                ));
+            }
             _ => return Ok(()),
         };
         let dimensions = declared_dimensions(name, context, span)?;
@@ -759,6 +806,9 @@ impl FunctionDefinitions {
             };
         if defined {
             return Ok(());
+        }
+        if let Some(conditional) = unselected {
+            return Err(conditional_error(conditional));
         }
         Err(ToDaeError::unsupported_flat(
             "function element assignment",
@@ -786,7 +836,7 @@ impl FunctionDefinitions {
         branches: &[Self],
         (exhaustive, conditions): (bool, &[&Expression]),
         ordered_targets: &[VarName],
-        admit_path_partial: &HashSet<VarName>,
+        admit_path_partial: &PathPartialAdmission,
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<Vec<VarName>, ToDaeError> {
@@ -992,214 +1042,6 @@ pub(super) fn generated_boolean_value<'expression>(
         .iter()
         .find(|definition| !definition.mutable && definition.target == *name.var_name())
         .map(|definition| &definition.value)
-}
-
-struct DefinedValueReadChecker<'scope> {
-    definitions: &'scope FunctionDefinitions,
-    /// The loop binder region of the expression being read: narrowed inside
-    /// an if-expression branch by the conditions that select it.
-    folds: std::borrow::Cow<'scope, FoldScopes>,
-    /// The if-expression conditions that select the expression being read.
-    selected_by: Vec<Expression>,
-    context: FunctionValidationContext<'scope>,
-    span: Span,
-}
-
-impl<'scope> DefinedValueReadChecker<'scope> {
-    fn narrowed(&self, folds: FoldScopes) -> DefinedValueReadChecker<'scope> {
-        DefinedValueReadChecker {
-            definitions: self.definitions,
-            folds: std::borrow::Cow::Owned(folds),
-            selected_by: self.selected_by.clone(),
-            context: self.context,
-            span: self.span,
-        }
-    }
-
-    /// The checker for a branch value that `condition` selects.
-    fn selected(mut self, condition: &Expression) -> Self {
-        self.selected_by.push(condition.clone());
-        self
-    }
-}
-
-impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
-    type Error = ToDaeError;
-
-    fn visit_var_ref(
-        &mut self,
-        name: &rumoca_core::Reference,
-        subscripts: &[Subscript],
-    ) -> Result<(), Self::Error> {
-        for subscript in subscripts {
-            self.visit_subscript(subscript)?;
-        }
-        self.definitions.require_reference_readable(
-            (&self.folds, &self.selected_by),
-            name,
-            subscripts,
-            self.context,
-            self.span,
-        )
-    }
-
-    /// MLS §3.6.5: a branch value is evaluated only when its condition, and
-    /// the failure of every earlier one, select it; inside a loop iteration
-    /// its reads are judged on the binder values that select it.
-    fn visit_if(
-        &mut self,
-        branches: &[(Expression, Expression)],
-        else_branch: &Expression,
-    ) -> Result<(), Self::Error> {
-        if !self.folds.is_active() {
-            for (condition, value) in branches {
-                self.visit_expression(condition)?;
-                DefinedValueReadChecker {
-                    definitions: self.definitions,
-                    folds: std::borrow::Cow::Borrowed(&*self.folds),
-                    selected_by: self.selected_by.clone(),
-                    context: self.context,
-                    span: self.span,
-                }
-                .selected(condition)
-                .visit_expression(value)?;
-            }
-            return self.visit_expression(else_branch);
-        }
-        let mut remaining = self.folds.clone().into_owned();
-        for (condition, value) in branches {
-            self.narrowed(remaining.clone())
-                .visit_expression(condition)?;
-            let mut selected = remaining.clone();
-            let reached = selected.assume(condition, true, self.context);
-            remaining.assume(condition, false, self.context);
-            if reached {
-                self.narrowed(selected)
-                    .selected(condition)
-                    .visit_expression(value)?;
-            }
-        }
-        if remaining.reaches() {
-            self.narrowed(remaining).visit_expression(else_branch)?;
-        }
-        Ok(())
-    }
-
-    fn visit_index(
-        &mut self,
-        base: &Expression,
-        subscripts: &[Subscript],
-    ) -> Result<(), Self::Error> {
-        let mut selected = Vec::new();
-        if let Some(name) = indexed_reference(base, &mut selected) {
-            selected.extend_from_slice(subscripts);
-            for subscript in &selected {
-                self.visit_subscript(subscript)?;
-            }
-            return self.definitions.require_reference_readable(
-                (&self.folds, &self.selected_by),
-                name,
-                &selected,
-                self.context,
-                self.span,
-            );
-        }
-        self.visit_expression(base)?;
-        for subscript in subscripts {
-            self.visit_subscript(subscript)?;
-        }
-        Ok(())
-    }
-
-    /// Check a comprehension body once per point of its iteration domain.
-    ///
-    /// MLS §10.4.2 binds each iterator to every value of its range in turn, so
-    /// `{u[i] * V[i, j + 1] for i in 1:size(u, 1)}` reads exactly the elements
-    /// those points name. When every range settles, each point is checked with
-    /// its iterators as static integers, which names the read indices; a range
-    /// that does not settle keeps the conservative whole-body check.
-    fn visit_array_comprehension(
-        &mut self,
-        expr: &Expression,
-        indices: &[rumoca_core::ComprehensionIndex],
-        filter: Option<&Expression>,
-    ) -> Result<(), Self::Error> {
-        for index in indices.iter().rev() {
-            self.visit_expression(&index.range)?;
-        }
-        let Some(points) = comprehension_points(indices, self.context) else {
-            self.visit_expression(expr)?;
-            return filter.map_or(Ok(()), |filter| self.visit_expression(filter));
-        };
-        for point in points {
-            let mut checker = DefinedValueReadChecker {
-                definitions: self.definitions,
-                folds: std::borrow::Cow::Borrowed(&self.folds),
-                selected_by: self.selected_by.clone(),
-                context: FunctionValidationContext {
-                    comprehension_values: Some(&point),
-                    ..self.context
-                },
-                span: self.span,
-            };
-            if let Some(filter) = filter {
-                checker.visit_expression(filter)?;
-            }
-            checker.visit_expression(expr)?;
-        }
-        Ok(())
-    }
-}
-
-/// Enumerate every iterator binding of a comprehension whose ranges all
-/// settle to static integers, opening the last textual iterator first.
-fn comprehension_points(
-    indices: &[rumoca_core::ComprehensionIndex],
-    context: FunctionValidationContext<'_>,
-) -> Option<Vec<ComprehensionValues>> {
-    let mut points = vec![context.comprehension_values.cloned().unwrap_or_default()];
-    for index in indices.iter().rev() {
-        let mut extended = Vec::new();
-        for prefix in &points {
-            let point_context = FunctionValidationContext {
-                comprehension_values: Some(prefix),
-                ..context
-            };
-            for value in static_subscript_indices(&index.range, point_context)? {
-                let mut point = prefix.clone();
-                point.bind(index, value);
-                extended.push(point);
-            }
-        }
-        points = extended;
-    }
-    Some(points)
-}
-
-fn indexed_reference<'expression>(
-    expression: &'expression Expression,
-    subscripts: &mut Vec<Subscript>,
-) -> Option<&'expression rumoca_core::Reference> {
-    match expression {
-        Expression::VarRef {
-            name,
-            subscripts: direct,
-            ..
-        } => {
-            subscripts.extend_from_slice(direct);
-            Some(name)
-        }
-        Expression::Index {
-            base,
-            subscripts: selected,
-            ..
-        } => {
-            let name = indexed_reference(base, subscripts)?;
-            subscripts.extend_from_slice(selected);
-            Some(name)
-        }
-        _ => None,
-    }
 }
 
 /// An output the conditional cannot define on every path has no owner at all,
@@ -1595,6 +1437,28 @@ enum WrittenIndices {
 
 /// Value facts and the definedness they prove (see `guard_facts`).
 impl FunctionDefinitions {
+    /// Replace the undefined paths of every tracked value by `step` of them.
+    /// Values that left the same conditional hold equal paths, so each
+    /// distinct set is advanced once and its result shared by every value that
+    /// held it.
+    fn map_undefined_paths(&mut self, mut step: impl FnMut(&PathSet) -> PathSet) {
+        let mut advanced: Vec<(PathSet, PathSet)> = Vec::new();
+        for definition in self.branch_only.values_mut() {
+            let Some(paths) = &mut definition.undefined_when else {
+                continue;
+            };
+            let next = match advanced.iter().find(|(before, _)| before == paths) {
+                Some((_, after)) => after.clone(),
+                None => {
+                    let after = step(paths);
+                    advanced.push((paths.clone(), after.clone()));
+                    after
+                }
+            };
+            *paths = next;
+        }
+    }
+
     /// The facts after `statement` runs on this path, here and on every path
     /// that leaves a tracked value undefined.
     pub(super) fn advance_facts(
@@ -1604,11 +1468,11 @@ impl FunctionDefinitions {
     ) {
         let scope = context.fact_scope();
         self.facts.after(statement, scope);
-        for definition in self.branch_only.values_mut() {
-            if let Some(facts) = &mut definition.undefined_when {
-                facts.after(statement, scope);
-            }
-        }
+        self.map_undefined_paths(|paths| {
+            let mut after = paths.clone();
+            after.after(statement, scope);
+            after
+        });
     }
 
     /// The facts after the whole scalar `target` is assigned `value`, here and
@@ -1621,11 +1485,11 @@ impl FunctionDefinitions {
     ) {
         let scope = context.fact_scope();
         self.facts.assign(target, value, scope);
-        for definition in self.branch_only.values_mut() {
-            if let Some(facts) = &mut definition.undefined_when {
-                facts.assign(target, value, scope);
-            }
-        }
+        self.map_undefined_paths(|paths| {
+            let mut after = paths.clone();
+            after.assign(target, value, scope);
+            after
+        });
     }
 
     /// The facts after each statement of `statements` runs in order; a
@@ -1652,11 +1516,7 @@ impl FunctionDefinitions {
     ) {
         let scope = context.fact_scope();
         self.facts = self.facts.loop_entry(body, binders, scope);
-        for definition in self.branch_only.values_mut() {
-            if let Some(facts) = &mut definition.undefined_when {
-                *facts = facts.loop_entry(body, binders, scope);
-            }
-        }
+        self.map_undefined_paths(|paths| paths.loop_entry(body, binders, scope));
     }
 
     /// Take the path into branch `ordinal` of a conditional over
@@ -1670,16 +1530,18 @@ impl FunctionDefinitions {
     ) {
         let scope = context.fact_scope();
         self.facts = self.facts.entering(conditions, ordinal, scope);
-        let mut defined = Vec::new();
-        for (name, definition) in &mut self.branch_only {
-            let Some(facts) = &mut definition.undefined_when else {
-                continue;
-            };
-            *facts = facts.entering(conditions, ordinal, scope);
-            if facts.is_unreachable() {
-                defined.push((name.clone(), definition.defined_coverage.clone()));
-            }
-        }
+        self.map_undefined_paths(|paths| paths.entering(conditions, ordinal, scope));
+        let defined = self
+            .branch_only
+            .iter()
+            .filter(|(_, definition)| {
+                definition
+                    .undefined_when
+                    .as_ref()
+                    .is_some_and(PathSet::is_unreachable)
+            })
+            .map(|(name, definition)| (name.clone(), definition.defined_coverage.clone()))
+            .collect::<Vec<_>>();
         for (name, coverage) in defined {
             self.branch_only.remove(&name);
             self.values
@@ -1724,11 +1586,6 @@ impl FunctionDefinitions {
         })
     }
 
-    /// The dead entry seeds of tracked values, for lowering.
-    pub(super) fn take_contradiction_seeds(&mut self) -> Vec<(VarName, FunctionValueSeed)> {
-        std::mem::take(&mut self.contradiction_seeds)
-    }
-
     /// The facts after the branches rejoin; the fall-through path is this
     /// certificate when the conditional has no `else`.
     pub(super) fn join_facts(
@@ -1748,18 +1605,6 @@ impl FunctionDefinitions {
             joined.join_path(fallthrough);
         }
         self.facts = joined;
-        for (name, seed) in branches
-            .iter()
-            .flat_map(|branch| &branch.contradiction_seeds)
-        {
-            if !self
-                .contradiction_seeds
-                .iter()
-                .any(|(known, _)| known == name)
-            {
-                self.contradiction_seeds.push((name.clone(), seed.clone()));
-            }
-        }
     }
 
     /// Join a value some paths leave undefined: tracked by its undefined
@@ -1772,7 +1617,7 @@ impl FunctionDefinitions {
         path_partial: bool,
         (context, span): (FunctionValidationContext<'_>, Span),
     ) -> Result<bool, ToDaeError> {
-        if self.track_undefined_paths(paths, target, path_partial, (context, span))? {
+        if self.track_undefined_paths(paths, target, path_partial, span) {
             return Ok(true);
         }
         self.leave_branch_only(target, path_partial, context, span)?;
@@ -1780,17 +1625,16 @@ impl FunctionDefinitions {
     }
 
     /// Track a value some paths leave undefined by the facts every such path
-    /// proves. When those facts constrain something and some path defines
-    /// the value, it is joined (lowering reads a dead entry seed on the other
-    /// paths) and a later path that contradicts them has it defined; returns
-    /// whether it was tracked.
+    /// proves. A later path that contradicts every undefined path has the
+    /// value defined. Runtime construction retains its partial assigned state
+    /// until the selected path writes it or an ordered read checks it.
     fn track_undefined_paths(
         &mut self,
         (branches, exhaustive, fallthrough_facts): (&[Self], bool, &PathSet),
         target: &VarName,
         path_partial: bool,
-        (context, span): (FunctionValidationContext<'_>, Span),
-    ) -> Result<bool, ToDaeError> {
+        span: Span,
+    ) -> bool {
         let fallthrough = (!exhaustive).then_some(&*self);
         let mut undefined: Option<PathSet> = None;
         let mut coverage: Option<ValueCoverage> = None;
@@ -1822,19 +1666,10 @@ impl FunctionDefinitions {
             }
         }
         let (Some(undefined), Some(coverage)) = (undefined, coverage) else {
-            return Ok(false);
+            return false;
         };
         if undefined.is_trivial() {
-            return Ok(false);
-        }
-        if !path_partial
-            && !self
-                .contradiction_seeds
-                .iter()
-                .any(|(name, _)| name == target)
-        {
-            let seed = self.whole_loop_seed(target, context, span)?;
-            self.contradiction_seeds.push((target.clone(), seed));
+            return false;
         }
         self.values.remove(target);
         self.branch_only.insert(
@@ -1844,12 +1679,12 @@ impl FunctionDefinitions {
                 guard: None,
                 coverage: None,
                 path_partial,
-                seeded: !path_partial,
+                seeded: false,
                 undefined_when: Some(undefined),
                 defined_coverage: Some(coverage),
             },
         );
-        Ok(true)
+        true
     }
 }
 

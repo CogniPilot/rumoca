@@ -155,6 +155,24 @@ pub fn modelica_sign(value: f64) -> f64 {
     }
 }
 
+/// MLS §10.6.7 Real-result power with an exact signed Integer exponent.
+/// The exponent remains signed, including i64::MIN, throughout the bounded
+/// squaring recurrence translated by Solve's typed expression adapter.
+pub fn modelica_integer_power(mut base: f64, mut exponent: i64) -> f64 {
+    if exponent < 0 {
+        base = 1.0 / base;
+    }
+    let mut result = 1.0;
+    while exponent != 0 {
+        if exponent % 2 != 0 {
+            result *= base;
+        }
+        base *= base;
+        exponent /= 2;
+    }
+    result
+}
+
 /// Apply the MLS §3.7.2 `integer(x)` value rule in the compiler's numeric
 /// scalar domain.
 ///

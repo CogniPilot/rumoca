@@ -433,3 +433,100 @@ fn issued_storage_leaves_do_not_poison_later_projection_queries() {
         ));
     });
 }
+
+#[test]
+fn plain_actual_classification_is_shared_without_caching_the_query_predicate() {
+    record_argument().inspect(|view| {
+        let root = *calls(view).last().unwrap();
+        let mut cache = ScalarCoordinateProjectionCache::default();
+        for _ in 0..32 {
+            assert_eq!(project(view, root, &mut cache, true).unwrap(), []);
+        }
+        assert_eq!(
+            cache.plain_argument_classifications.get(),
+            1,
+            "one immutable actual expression is classified once across scalar views"
+        );
+        assert_eq!(
+            cache.plain_argument_cache_lookups.get(),
+            1,
+            "one complete call inventory reuses its argument facts across scalar views"
+        );
+        let mut observed = Vec::new();
+        let result = for_each_scalar_coordinate_filtered_cached(
+            view,
+            root,
+            0,
+            None,
+            &mut cache,
+            |_| true,
+            |coordinate, scalar| observed.push((coordinate, scalar)),
+        );
+        assert!(matches!(
+            result,
+            Err(ProjectionError::UnsupportedRecordOperation { .. })
+        ));
+        assert_eq!(project(view, root, &mut cache, true).unwrap(), []);
+    });
+}
+
+fn queried<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    cache: &mut ScalarCoordinateProjectionCache<'dae>,
+) -> Result<Vec<(dae::CoordinateView<'dae>, usize)>, ProjectionError> {
+    let mut result = Vec::new();
+    for_each_scalar_coordinate_queried_cached(
+        view,
+        root,
+        0,
+        None,
+        cache,
+        CoordinateQuery::Unknowns,
+        |coordinate, scalar| result.push((coordinate, scalar)),
+    )?;
+    Ok(result)
+}
+
+#[test]
+fn named_unknown_query_selects_exactly_what_the_equivalent_predicate_selects() {
+    complex_arguments().inspect(|view| {
+        let mut named = ScalarCoordinateProjectionCache::default();
+        for root in (0..view.expression_count()).filter_map(|index| view.expression_id(index)) {
+            let mut full = ScalarCoordinateProjectionCache::default();
+            let Ok(everything) = project(view, root, &mut full, false) else {
+                continue;
+            };
+            let expected = everything
+                .into_iter()
+                .filter(|(coordinate, _)| {
+                    matches!(
+                        coordinate,
+                        dae::CoordinateView::Algebraic(_) | dae::CoordinateView::Derivative(_)
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(queried(view, root, &mut named).unwrap(), expected);
+            // A second view of the same expression reuses its classification.
+            assert_eq!(queried(view, root, &mut named).unwrap(), expected);
+        }
+    });
+}
+
+#[test]
+fn expression_reading_no_selected_coordinate_is_classified_once_and_not_walked() {
+    fold_external::external_fold_model().inspect(|view| {
+        let root = *calls(view).last().unwrap();
+        let mut cache = ScalarCoordinateProjectionCache::default();
+        assert_eq!(queried(view, root, &mut cache).unwrap(), []);
+        assert_eq!(
+            cache
+                .query_free_expressions
+                .get(&(root.index(), CoordinateQuery::Unknowns)),
+            Some(&true)
+        );
+        assert!(cache.function_results.is_empty());
+        assert_eq!(queried(view, root, &mut cache).unwrap(), []);
+        assert_eq!(cache.query_free_expressions.len(), 1);
+    });
+}

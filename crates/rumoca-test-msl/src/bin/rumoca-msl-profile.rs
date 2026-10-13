@@ -439,6 +439,7 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::StringConversion { .. }
         | ExpressionOperation::ClockTransfer { .. }
         | ExpressionOperation::FunctionValue { .. }
+        | ExpressionOperation::FunctionConditionalOutput { .. }
         | ExpressionOperation::FunctionFoldParameter { .. }
         | ExpressionOperation::FunctionFoldOutput { .. }
         | ExpressionOperation::Coordinate(CoordinateView::FunctionParameter(_)) => None,

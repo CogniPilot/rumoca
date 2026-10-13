@@ -346,6 +346,26 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     }
 }
 
+fn own_clocked_target<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    clock: dae::ClockId<'dae>,
+    target: &VarName,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    construction.clocks(|clocks| match coordinates[target] {
+        Coordinate::DiscreteReal(variable) => {
+            clocks.own_discrete_real(clock, variable, provenance)?;
+            Ok(())
+        }
+        Coordinate::DiscreteValue(variable) => {
+            clocks.own_discrete_value(clock, variable, provenance)?;
+            Ok(())
+        }
+        _ => unreachable!("clock analysis accepts only discrete clocked targets"),
+    })
+}
+
 fn own_clocked_targets<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     request: WhenChainsRequest<'_, '_, 'dae>,
@@ -357,17 +377,7 @@ fn own_clocked_targets<'dae>(
         match equation {
             flat::WhenEquation::Assign { target, .. } => {
                 let provenance = dae::DaeProvenance::source(equation.span())?;
-                construction.clocks(|clocks| match coordinates[target] {
-                    Coordinate::DiscreteReal(variable) => {
-                        clocks.own_discrete_real(clock, variable, provenance)?;
-                        Ok(())
-                    }
-                    Coordinate::DiscreteValue(variable) => {
-                        clocks.own_discrete_value(clock, variable, provenance)?;
-                        Ok(())
-                    }
-                    _ => unreachable!("clock analysis accepts only discrete clocked targets"),
-                })?;
+                own_clocked_target(construction, coordinates, clock, target, provenance)?;
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -676,7 +686,6 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             provenance,
         )
     }
-
     fn lower_reinit(
         &mut self,
         source_owner: WhenSourceOwner,

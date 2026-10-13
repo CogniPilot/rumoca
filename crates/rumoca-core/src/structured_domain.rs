@@ -30,7 +30,7 @@ pub struct StructuredIndexDomain {
 ///
 /// This is the compact, materialization-free description of how one array
 /// subscript varies across a regular elementwise `for` family.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AffineForm {
     pub constant: i64,
     pub coeffs: Vec<i64>,
@@ -188,6 +188,37 @@ pub fn row_major_coordinates(extents: &[u32], ordinal: usize) -> Option<Vec<u32>
         remainder /= *extent as usize;
     }
     Some(coordinates)
+}
+
+/// Render one scalar declaration component using checked row-major geometry.
+pub fn scalar_component_name(name: &str, extents: &[u32], ordinal: usize) -> Option<String> {
+    let coordinates = row_major_coordinates(extents, ordinal)?
+        .into_iter()
+        .map(|coordinate| (coordinate as usize).checked_add(1))
+        .collect::<Option<Vec<_>>>()?;
+    scalar_component_display_name(name, &coordinates)
+}
+
+/// Render already selected one-based subscripts; display grants no identity proof.
+pub fn scalar_component_display_name(name: &str, coordinates: &[usize]) -> Option<String> {
+    use std::fmt::Write as _;
+    if coordinates.contains(&0) {
+        return None;
+    }
+    if coordinates.is_empty() {
+        return Some(name.to_owned());
+    }
+    let mut result = String::with_capacity(name.len() + 4 * coordinates.len() + 2);
+    result.push_str(name);
+    result.push('[');
+    for (axis, coordinate) in coordinates.iter().enumerate() {
+        if axis > 0 {
+            result.push(',');
+        }
+        write!(result, "{coordinate}").ok()?;
+    }
+    result.push(']');
+    Some(result)
 }
 
 /// Convert zero-based coordinates to one zero-based row-major scalar ordinal.
@@ -563,6 +594,27 @@ impl std::error::Error for StructuredIndexDomainError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scalar_component_names_preserve_row_major_identity_and_empty_shapes() {
+        assert_eq!(
+            super::scalar_component_name("a.b", &[], 0).as_deref(),
+            Some("a.b")
+        );
+        assert_eq!(
+            super::scalar_component_name("a.b", &[2, 3], 0).as_deref(),
+            Some("a.b[1,1]")
+        );
+        assert_eq!(
+            super::scalar_component_name("a.b", &[2, 3], 3).as_deref(),
+            Some("a.b[2,1]")
+        );
+        assert_eq!(
+            super::scalar_component_name("a.b", &[2, 3], 5).as_deref(),
+            Some("a.b[2,3]")
+        );
+        assert_eq!(super::scalar_component_name("a.b", &[2, 3], 6), None);
+        assert_eq!(super::scalar_component_name("a.b", &[2, 0, 3], 0), None);
+    }
     use super::*;
 
     #[test]

@@ -1,0 +1,69 @@
+{
+  "reference": "one independent OpenModelica attempt",
+  "omc_version": "a96aa1a-cmake",
+  "omc_executable_sha256": "840e73b72019550d8ad43cfc50dcac3bb882c395a306cd8be5a3ab25659afca6",
+  "MSL": "4.1.0",
+  "model": "Fourbar1Wrap",
+  "extends": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
+  "wrapper_sha256": "c4f892fb89d2c69c85fe57f82e06b45aa886cd74bb65f0739f4347161247bda6",
+  "msl_model_sha256": "9f07ad7b6347c6fcdd03045d935c8a36bc2ce5a3e1096dc6af84d40de64ee6fb",
+  "settings": {
+    "startTime": 0,
+    "stopTime": 0.1,
+    "numberOfIntervals": 20,
+    "tolerance": 1e-08,
+    "method": "dassl",
+    "outputFormat": "csv",
+    "variableFilter": "j1_phi|j1_w",
+    "numProcs": 4
+  },
+  "limits": {
+    "virtual_memory_bytes": 6442450944,
+    "timeout_seconds": 180,
+    "kill_after_seconds": 5
+  },
+  "result": {
+    "exit_code": 0,
+    "elapsed_seconds": 10.93,
+    "max_rss_kib": 528016,
+    "csv_rows": 22,
+    "duplicate_final_rows": 1,
+    "channels": [
+      "j1_phi",
+      "j1_w"
+    ],
+    "initialization": "without homotopy",
+    "simulation": "PASS"
+  },
+  "raw_evidence_directory": "$HOME/scratch/rumoca/fmi-slam-codegen/evidence/fourbar-contract-reference",
+  "raw_sha256": {
+    "Fourbar1Wrap.mo": "c4f892fb89d2c69c85fe57f82e06b45aa886cd74bb65f0739f4347161247bda6",
+    "reference.mos": "5db00817273034ee14e9a4f999375bcd14b371d9a5031903c35378e9c7db49c0",
+    "reference.log": "8d0eb8de7a5d8fec3be7c770d470a0d549b8fac2f7c48baac3042c72b703359d",
+    "usage.txt": "1dd41bb58a7a87bea5087fb919d5f9e7e479d1df24bc6bb2971a7394efbcd042",
+    "fourbar_reference_res.csv": "4c8de3e68208edd1d6f175a8ab849f40d3228805b5a37a7fb3d3cd8f423272f9"
+  },
+  "public_strings_fixture": {
+    "entries": 27,
+    "scalar_cells": 31,
+    "provenance": "canonical FmiComponent::variables from original unchanged wrapper; retained raw inventory",
+    "raw_inventory_sha256": "cd61934d75e799b49ef455367ef7dcb52e24ad74674b342a4de0e9765e8521ec",
+    "fixture_sha256": "cb0ac875a413ae8b333fb39324c2f03c7848d6ddd1e321f2d522557417f75fc2"
+  },
+  "qualification": {
+    "FMI_LS_Fourbar_numerical_credit": false,
+    "String_support_implemented": false,
+    "full_slam": false,
+    "fixed20_attempt": false
+  },
+  "MSL_source_inventory": {
+    "files": 2556,
+    "inventory_sha256": "8f1f7f9e70a2410e857fd93e141590131fb11311a635468a7c4be30f58e455e2",
+    "definition": "sorted relative *.mo path, NUL, SHA256(file), newline"
+  },
+  "OMC_services_source_inventory": {
+    "files": 2671,
+    "inventory_sha256": "9781a5944b463f2160c1d6d448c73a63c0dc17f161e7044211d0d25a84c847a5",
+    "definition": "sorted relative *.mo path, NUL, SHA256(file), newline"
+  }
+}

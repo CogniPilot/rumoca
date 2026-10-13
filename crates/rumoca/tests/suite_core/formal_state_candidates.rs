@@ -34,7 +34,7 @@ fn constrained_rotation_lowering_selects_only_independent_states() {
                 assert!(
                     lowered
                         .model()
-                        .visible_names
+                        .visible_names()
                         .contains(&variable.scalar_name(scalar).unwrap())
                 );
             }

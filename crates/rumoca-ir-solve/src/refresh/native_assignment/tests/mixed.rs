@@ -93,7 +93,7 @@ fn replace_boundary(
 }
 
 #[test]
-fn mixed_scalar_sparse_outputs_keep_compact_order_and_complete_source_prefix() {
+fn mixed_scalar_sparse_outputs_keep_compact_order_and_their_read_source_prefix() {
     for count in [16, 160 * 90, 320 * 180] {
         let (source, targets, layout) = mixed(count);
         let schedule = derive(&source, &targets, &layout).unwrap();
@@ -121,10 +121,14 @@ fn mixed_scalar_sparse_outputs_keep_compact_order_and_complete_source_prefix() {
         else {
             panic!("value")
         };
+        // The target load, the residual difference and the unused literal are
+        // not read by the isolated store.
         assert!(operations_match(
-            &original.programs()[1][..6],
-            &value.programs()[0][..6]
+            &original.programs()[1][1..4],
+            &value.programs()[0][..3]
         ));
+        assert_eq!(value.programs()[0].len(), 4);
+        assert_only_fault_free_operations_dropped(&original.programs()[1], &value.programs()[0]);
         assert_eq!(
             value.programs()[0].last(),
             Some(&LinearOp::StoreOutput { src: 3 })
@@ -133,9 +137,10 @@ fn mixed_scalar_sparse_outputs_keep_compact_order_and_complete_source_prefix() {
         else {
             panic!("zero")
         };
-        assert_eq!(zero.programs()[0][0], original.programs()[0][0]);
+        assert_eq!(zero.programs()[0].len(), 2);
+        assert_only_fault_free_operations_dropped(&original.programs()[0], &zero.programs()[0]);
         assert!(matches!(
-            zero.programs()[0][1],
+            zero.programs()[0][0],
             LinearOp::Const { value: 0.0, .. }
         ));
     }

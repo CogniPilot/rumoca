@@ -1,3 +1,7 @@
+mod assertion_carrier;
+mod nocaptures_directional;
+mod reductions;
+
 use std::num::NonZeroU64;
 
 use rumoca_core::{SourceId, Span};
@@ -5,6 +9,43 @@ use rumoca_ir_solve as solve;
 use serde_json::Value as Json;
 
 use super::PureCallFamilies;
+
+#[test]
+fn ordered_assertion_checks_keep_the_stop_before_output_publication() {
+    let table = solve::SolvePureCallTable::construct(profile(), |table| {
+        table.add_owner(
+            identity(900),
+            vec![],
+            vec![solve::SolvePureCallOutput::assertion_predicate()],
+            span(900),
+            |builder, _, outputs| {
+                let condition = builder.constant(solve::SolveValue::boolean(false), span(901))?;
+                let assertion = builder.assertion_output(0, span(902))?;
+                builder.check_assertion(assertion, condition, &[], span(903), |_, _, _| Ok(()))?;
+                builder.store(outputs[0], condition, span(904))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let families = PureCallFamilies::new(&table).unwrap();
+    let mut environment = super::super::create_environment();
+    environment
+        .add_template(
+            "assertion_adapter_control",
+            "{% from \"fmi-typed-functions.jinja\" import functions %}{{ functions(table) }}",
+        )
+        .unwrap();
+    let generated = environment
+        .get_template("assertion_adapter_control")
+        .unwrap()
+        .render(minijinja::context! { table => families.owners_value() })
+        .unwrap();
+    let check = generated.find("observer->observe").unwrap();
+    let stop = generated.find("return 2;").unwrap();
+    let output = generated.find("if (out[0]) memcpy").unwrap();
+    assert!(check < stop && stop < output, "{generated}");
+}
 
 fn span(start: usize) -> Span {
     Span::from_offsets(

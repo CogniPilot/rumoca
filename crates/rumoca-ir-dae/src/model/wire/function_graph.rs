@@ -275,7 +275,8 @@ fn expression_scopes(
             ExprNodeWire::Coordinate(CoordinateWire::FunctionParameter { function, .. })
             | ExprNodeWire::FunctionValue { function, .. }
             | ExprNodeWire::FunctionFoldParameter { function, .. }
-            | ExprNodeWire::FunctionFoldOutput { function, .. } => Some(*function as usize),
+            | ExprNodeWire::FunctionFoldOutput { function, .. }
+            | ExprNodeWire::FunctionConditionalOutput { function } => Some(*function as usize),
             _ => None,
         };
         let mut scope = leaf;
@@ -327,16 +328,9 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
     for statement in statements {
         match statement {
             FunctionStatementInput::Assignment { rhs, .. } => pending.push(*rhs),
-            FunctionStatementInput::AssignmentGroup {
-                assignments,
-                conditional,
-            } => {
+            FunctionStatementInput::RequireAssigned { .. } => {}
+            FunctionStatementInput::AssignmentGroup { assignments } => {
                 pending.extend(assignments.iter().map(|assignment| assignment.rhs));
-                if let Some(conditional) = conditional {
-                    pending.extend(conditional.conditions.iter().copied());
-                    pending.extend(conditional.branches.iter().flatten().copied());
-                    pending.extend(conditional.fallback.iter().copied());
-                }
             }
             FunctionStatementInput::Assertion {
                 condition, message, ..
@@ -351,6 +345,17 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
             } => {
                 pending.extend(continuation.iter().copied());
                 push_statement_roots(statements, pending);
+            }
+            FunctionStatementInput::Conditional {
+                conditions,
+                branches,
+                fallback,
+                ..
+            } => {
+                pending.extend(conditions.iter().copied());
+                for branch in branches.iter().chain(std::iter::once(fallback)) {
+                    push_statement_roots(&branch.statements, pending);
+                }
             }
         }
     }

@@ -1,6 +1,19 @@
 mod aggregate_logarithms;
+mod assertion_forwarding;
+mod assertion_message_options;
+mod assertion_observation;
+mod assertion_regions;
+mod assertions;
+mod assigned_state;
 mod broadcast_power;
+mod construction_properties;
+mod directional_abs;
+mod directional_assertions;
+mod directional_captured_assertions;
 mod directional_map;
+mod directional_maximum;
+mod directional_pointwise;
+mod directional_power;
 mod immutable_payloads;
 mod index_bounds;
 mod linear_solve;
@@ -21,7 +34,10 @@ use rumoca_ir_solve::{
     TypedProgramBuilder,
 };
 
-use super::{TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_directional};
+use super::{
+    TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_checked as stopping_call,
+    eval_pure_call_directional, eval_pure_call_directional_checked as stopping_directional_call,
+};
 
 fn span(start: usize) -> Span {
     Span::from_offsets(
@@ -838,7 +854,7 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
                     &[zero],
                     &[],
                     span(72),
-                    |predicate, carried, _captures, outputs| {
+                    |predicate, carried, _captures, _binders, outputs| {
                         let sum = predicate.load(carried[0], span(72))?;
                         let limit = predicate
                             .constant(SolveValue::integer(arithmetic, 10).unwrap(), span(72))?;
@@ -871,6 +887,70 @@ fn a_continued_fold_ends_at_its_first_false_predicate() {
     let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
     assert_eq!(output[0].elements(), [SolveValueKind::Integer(10)]);
     assert_scalar_call_projection(&table, 0, &[], &[10.0]);
+}
+
+#[test]
+fn a_fold_exit_test_reads_the_binder_of_the_pass_it_guards() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
+            id: 7,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 100,
+            step: 1,
+        }],
+    };
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(9),
+            Vec::new(),
+            vec![SolvePureCallOutput::result(integer.clone())],
+            span(80),
+            |builder, _inputs, outputs| {
+                let zero =
+                    builder.constant(SolveValue::integer(arithmetic, 0).unwrap(), span(81))?;
+                let bound =
+                    builder.constant(SolveValue::integer(arithmetic, 5).unwrap(), span(81))?;
+                // `for i in 1:bound` over the capacity 100: the exit test is
+                // `i <= bound`, read from the binder of the pass about to run.
+                let sum = builder.fold_while(
+                    domain.clone(),
+                    &[zero],
+                    &[bound],
+                    span(82),
+                    |predicate, _carried, captures, binders, outputs| {
+                        let index = predicate.load(binders[0], span(82))?;
+                        let bound = predicate.load(captures[0], span(82))?;
+                        let within = predicate.compare(
+                            rumoca_ir_solve::SolveCompareOperator::LessEqual,
+                            index,
+                            bound,
+                            span(82),
+                        )?;
+                        predicate.store(outputs[0], within, span(82))
+                    },
+                    |transition, carried, _captures, binders, outputs| {
+                        let sum = transition.load(carried[0], span(82))?;
+                        let index = transition.load(binders[0], span(82))?;
+                        let next =
+                            transition.binary(SolveBinaryOperator::Add, sum, index, span(82))?;
+                        transition.store(outputs[0], next, span(82))
+                    },
+                )?;
+                builder.store(outputs[0], sum[0], span(83))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let json = serde_json::to_string(&table).unwrap();
+    let table: SolvePureCallTable = serde_json::from_str(&json).unwrap();
+    // 1 + 2 + 3 + 4 + 5: the sixth pass is not run, though the body would add 6.
+    let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
+    assert_eq!(output[0].elements(), [SolveValueKind::Integer(15)]);
 }
 
 #[test]
@@ -1372,7 +1452,8 @@ fn scalar_broadcast_quotient_carries_the_elementwise_quotient_rule() {
     for owner in table.owners() {
         assert!(
             owner.directional().is_some(),
-            "both quotient orientations are checked"
+            "both quotient orientations are checked; a scalar dividend over an aggregate lifts \
+             the quotient rule elementwise"
         );
     }
     let owner = &table.owners()[0];

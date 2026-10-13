@@ -153,56 +153,84 @@ const MAX_IMPLICATION_DEPTH: usize = 8;
 /// path, where every fact holds.
 type PathFacts = Option<Facts>;
 
-/// The facts of one path, shared between the paths forked from it: a fork
-/// is a reference count, and a write copies the map only while another path
-/// still reads it.
-#[derive(Clone, PartialEq, Debug, Default)]
-pub(super) struct Facts(std::sync::Arc<BTreeMap<FactSubject, ValueFact>>);
+/// An ordered map shared between the paths forked from it: a fork is a
+/// reference count, and a write copies the map only while another path still
+/// reads it.
+#[derive(Debug)]
+pub(super) struct SharedMap<K, V>(std::sync::Arc<BTreeMap<K, V>>);
 
-impl Facts {
-    fn new() -> Self {
+/// The facts of one path.
+pub(super) type Facts = SharedMap<FactSubject, ValueFact>;
+
+impl<K, V> Clone for SharedMap<K, V> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<K, V> Default for SharedMap<K, V> {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(BTreeMap::new()))
+    }
+}
+
+/// Forks of one path share their map, so equality of a fork with its origin is
+/// a pointer comparison; maps held apart compare by content.
+impl<K: PartialEq, V: PartialEq> PartialEq for SharedMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl<K, V> SharedMap<K, V> {
+    pub(super) fn new() -> Self {
         Self::default()
     }
-}
 
-impl From<BTreeMap<FactSubject, ValueFact>> for Facts {
-    fn from(facts: BTreeMap<FactSubject, ValueFact>) -> Self {
-        Self(std::sync::Arc::new(facts))
+    /// Drop every entry without copying a map another path still reads.
+    pub(super) fn clear(&mut self) {
+        *self = Self::default();
     }
 }
 
-impl FromIterator<(FactSubject, ValueFact)> for Facts {
-    fn from_iter<I: IntoIterator<Item = (FactSubject, ValueFact)>>(iter: I) -> Self {
+impl<K, V> From<BTreeMap<K, V>> for SharedMap<K, V> {
+    fn from(map: BTreeMap<K, V>) -> Self {
+        Self(std::sync::Arc::new(map))
+    }
+}
+
+impl<K: Ord, V> FromIterator<(K, V)> for SharedMap<K, V> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         Self(std::sync::Arc::new(iter.into_iter().collect()))
     }
 }
 
-impl std::ops::Deref for Facts {
-    type Target = BTreeMap<FactSubject, ValueFact>;
+impl<K, V> std::ops::Deref for SharedMap<K, V> {
+    type Target = BTreeMap<K, V>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl std::ops::DerefMut for Facts {
+impl<K: Clone, V: Clone> std::ops::DerefMut for SharedMap<K, V> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         std::sync::Arc::make_mut(&mut self.0)
     }
 }
 
-impl<'a> IntoIterator for &'a Facts {
-    type Item = (&'a FactSubject, &'a ValueFact);
-    type IntoIter = std::collections::btree_map::Iter<'a, FactSubject, ValueFact>;
+impl<'a, K, V> IntoIterator for &'a SharedMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = std::collections::btree_map::Iter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
 }
 
-impl IntoIterator for Facts {
-    type Item = (FactSubject, ValueFact);
-    type IntoIter = std::collections::btree_map::IntoIter<FactSubject, ValueFact>;
+impl<K: Clone, V: Clone> IntoIterator for SharedMap<K, V> {
+    type Item = (K, V);
+    type IntoIter = std::collections::btree_map::IntoIter<K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         std::sync::Arc::try_unwrap(self.0)
@@ -278,7 +306,7 @@ pub(super) struct GuardFacts {
     path: PathFacts,
     /// The facts implied by each value a local selected among literals can
     /// hold.
-    selections: BTreeMap<VarName, Selection>,
+    selections: SharedMap<VarName, Selection>,
 }
 
 impl GuardFacts {
@@ -286,7 +314,7 @@ impl GuardFacts {
     pub(super) fn entry() -> Self {
         Self {
             path: Some(Facts::new()),
-            selections: BTreeMap::new(),
+            selections: SharedMap::new(),
         }
     }
 
@@ -384,7 +412,7 @@ impl GuardFacts {
     pub(super) fn join(paths: &[Self]) -> Self {
         let mut joined = Self {
             path: None,
-            selections: BTreeMap::new(),
+            selections: SharedMap::new(),
         };
         for path in paths {
             joined.join_path(path);
@@ -402,9 +430,16 @@ impl GuardFacts {
             *self = other.clone();
             return;
         }
-        self.path = disjoin(self.path.take(), other.path.clone());
-        self.selections
-            .retain(|name, selection| selection.join(other.selections.get(name)));
+        // Joining a path with what it already holds changes nothing; forks that
+        // rejoin unchanged are the common case, and equality of shared maps is a
+        // pointer comparison.
+        if self.path != other.path {
+            self.path = disjoin(self.path.take(), other.path.clone());
+        }
+        if self.selections != other.selections {
+            self.selections
+                .retain(|name, selection| selection.join(other.selections.get(name)));
+        }
     }
 
     /// The facts after the whole scalar `target` is assigned `value`.
@@ -472,9 +507,19 @@ impl GuardFacts {
 
     fn forget(&mut self, name: &VarName) {
         forget_in(&mut self.path, name);
-        self.selections.remove(name);
-        for selection in self.selections.values_mut() {
-            selection.forget_name(name);
+        if self.selections.contains_key(name) {
+            self.selections.remove(name);
+        }
+        let touched: Vec<VarName> = self
+            .selections
+            .iter()
+            .filter(|(_, selection)| selection.mentions(name))
+            .map(|(local, _)| local.clone())
+            .collect();
+        for local in touched {
+            if let Some(selection) = self.selections.get_mut(&local) {
+                selection.forget_name(name);
+            }
         }
     }
 
@@ -666,6 +711,49 @@ impl GuardFacts {
         }
         for (other, holds) in selection.implied_when(|arm| arm.is_boolean(value)) {
             self.narrow_boolean(&other, holds, depth + 1);
+        }
+        self.narrow_boolean_exclusions(depth);
+    }
+
+    fn remaining_boolean_exclusion(
+        &self,
+        clause: Vec<(VarName, bool)>,
+    ) -> Option<Vec<(VarName, bool)>> {
+        let mut remaining = Vec::new();
+        for (name, holds) in clause {
+            match self.known_boolean(&name) {
+                Some(actual) if actual != holds => return None,
+                None => remaining.push((name, holds)),
+                _ => {}
+            }
+        }
+        Some(remaining)
+    }
+
+    fn narrow_boolean_exclusions(&mut self, depth: usize) {
+        let clauses = self
+            .selections
+            .values()
+            .flat_map(Selection::exclusions)
+            .collect::<Vec<_>>();
+        for clause in clauses {
+            let Some(remaining) = self.remaining_boolean_exclusion(clause) else {
+                continue;
+            };
+            match remaining.as_slice() {
+                [] => {
+                    self.path = None;
+                    self.selections.clear();
+                    return;
+                }
+                [(name, holds)] if depth < MAX_IMPLICATION_DEPTH => {
+                    self.narrow_boolean(name, !holds, depth + 1)
+                }
+                _ => {}
+            }
+            if self.path.is_none() {
+                return;
+            }
         }
     }
 
@@ -929,9 +1017,33 @@ impl<'scope> FunctionValidationContext<'scope> {
     }
 }
 
+/// The facts about `name`, which order contiguously.
+fn subjects_named<'a>(
+    facts: &'a Facts,
+    name: &'a VarName,
+) -> impl Iterator<Item = &'a FactSubject> {
+    facts
+        .range(FactSubject::scalar(name.clone())..)
+        .map(|(subject, _)| subject)
+        .take_while(move |subject| &subject.name == name)
+}
+
+/// Whether any fact is about `name`.
+fn facts_mention(facts: &Facts, name: &VarName) -> bool {
+    subjects_named(facts, name).next().is_some()
+}
+
 /// Drop every fact about `name` from one path's facts.
+///
+/// Subjects order by name first, so the facts about one name are contiguous;
+/// the walk visits only them, and the shared map is copied only when a fact is
+/// actually dropped.
 fn forget_in(facts: &mut PathFacts, name: &VarName) {
-    if let Some(facts) = facts {
-        facts.retain(|subject, _| &subject.name != name);
+    let Some(facts) = facts else {
+        return;
+    };
+    let about_name: Vec<FactSubject> = subjects_named(facts, name).cloned().collect();
+    for subject in about_name {
+        facts.remove(&subject);
     }
 }

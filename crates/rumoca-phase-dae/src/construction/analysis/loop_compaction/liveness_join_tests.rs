@@ -240,3 +240,59 @@ fn the_encoding_names_exactly_the_declared_statements() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(distinct.len(), STATEMENT_COUNT);
 }
+
+/// Whether `name` has evidence of an unobserved store when `exit` runs after
+/// the loop and nothing else can observe it.
+fn store_is_unobserved(
+    name: &VarName,
+    exit: &[&[rumoca_core::Statement]],
+    live_on_exit: &LiveSet,
+) -> bool {
+    liveness::prove_unobserved_loop_local_store(
+        name,
+        liveness::LoopLocalStoreRegions {
+            substituted: &[],
+            body_prefix: &[],
+            enclosing_bodies: &[],
+            exit,
+            live_on_exit,
+        },
+    )
+    .is_some()
+}
+
+fn assert_segments_match_concatenation(picks: &[u8]) {
+    let first = segment(&picks[..SEGMENT_LEN]);
+    let second = segment(&picks[SEGMENT_LEN..]);
+    let joined = [first.clone(), second.clone()].concat();
+    for subset in 0..SUBSET_COUNT {
+        let live_on_exit = exit_set(subset);
+        for name in NAMES.map(VarName::new) {
+            assert_eq!(
+                store_is_unobserved(&name, &[&first, &second], &live_on_exit),
+                store_is_unobserved(&name, &[&joined], &live_on_exit),
+                "{} | {} with {name:?} and exit set {subset}",
+                render(&picks[..SEGMENT_LEN]),
+                render(&picks[SEGMENT_LEN..]),
+            );
+        }
+    }
+}
+
+/// A store's evidence reads the exit path as the segments that run after the
+/// loop, so naming those segments separately proves exactly what one
+/// concatenated list proves.
+#[test]
+fn exit_segments_prove_what_their_concatenation_proves_over_the_whole_bounded_domain() {
+    let width = u32::try_from(SEGMENT_LEN * 2).expect("segment width fits a u32");
+    let codes = u32::from(CODE_MASK) + 1;
+    for encoded in 0..codes.pow(width) {
+        let mut picks = [0u8; SEGMENT_LEN * 2];
+        let mut rest = encoded;
+        for pick in &mut picks {
+            *pick = u8::try_from(rest % codes).expect("statement code fits a byte");
+            rest /= codes;
+        }
+        assert_segments_match_concatenation(&picks);
+    }
+}

@@ -89,6 +89,10 @@ struct CountedExecution<'a> {
 }
 
 impl PureCallExecution for CountedExecution<'_> {
+    fn executes(&self, invocation: PureCallInvocation<'_>) -> bool {
+        self.inner.executes(invocation)
+    }
+
     fn call(
         &self,
         invocation: PureCallInvocation<'_>,
@@ -223,17 +227,24 @@ fn native_directional_calls_agree_with_reference_for_changed_inputs_and_seeds() 
     assert_eq!(execution.calls.get(), 4);
 }
 
-struct FailedExecution;
+struct FailedExecution {
+    calls: Cell<usize>,
+}
 
 impl PureCallExecution for FailedExecution {
+    fn executes(&self, _invocation: PureCallInvocation<'_>) -> bool {
+        true
+    }
+
     fn call(
         &self,
         _invocation: PureCallInvocation<'_>,
         _input: &[f64],
         output: &mut [f64],
     ) -> Result<(), EvalSolveError> {
+        self.calls.set(self.calls.get() + 1);
         output.fill(123.0);
-        Err(EvalSolveError::InvalidRow {
+        Err(EvalSolveError::CompiledExecution {
             message: "injected execution failure".into(),
             span: None,
         })
@@ -259,6 +270,9 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
     )
     .unwrap();
     let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    let failed = FailedExecution {
+        calls: Cell::new(0),
+    };
     let mut output = [0.0];
     let error = prepared
         .eval_with_context(
@@ -267,12 +281,20 @@ fn native_failure_is_propagated_without_publishing_partial_outputs_or_retrying()
             0.0,
             RowEvalContext {
                 pure_calls: Some(&table),
-                pure_call_execution: Some(&FailedExecution),
+                pure_call_execution: Some(&failed),
                 ..Default::default()
             },
             &mut output,
         )
         .unwrap_err();
+    assert_eq!(failed.calls.get(), 1);
+    assert!(matches!(&error, EvalSolveError::CompiledExecution { .. }));
+    let runtime: rumoca_solver::RuntimeSolveError = error.clone().into();
+    assert!(matches!(
+        &runtime,
+        rumoca_solver::RuntimeSolveError::CompiledExecution { .. }
+    ));
+    assert_eq!(runtime.source_span(), Some(span()));
     assert!(error.to_string().contains("injected execution failure"));
     assert_eq!(error.source_span(), Some(span()));
     assert_eq!(output, [0.0]);
@@ -326,4 +348,131 @@ fn a_compact_map_compiles_as_one_native_kernel_without_per_row_code() {
             compiled_rows: 0,
         }
     );
+}
+
+#[test]
+fn native_status_source_faults_remain_distinct_from_backend_failure() {
+    use rumoca_exec_cranelift::{CompileError, NativeSourceFault};
+    let index = super::compiled_execution_error(CompileError::SourceOperation {
+        kind: NativeSourceFault::TensorIndex,
+        message: "issued source index fault".into(),
+    });
+    assert!(matches!(
+        index,
+        rumoca_solver::RuntimeSolveError::SourceFault { .. }
+    ));
+    let numerical = super::compiled_execution_error(CompileError::SourceOperation {
+        kind: NativeSourceFault::LinearSolve,
+        message: "issued singular trial".into(),
+    });
+    assert!(matches!(
+        numerical,
+        rumoca_solver::RuntimeSolveError::SolveIr { .. }
+    ));
+    let backend =
+        super::compiled_execution_error(CompileError::Backend("issued interface fault".into()));
+    assert!(matches!(
+        backend,
+        rumoca_solver::RuntimeSolveError::CompiledExecution { .. }
+    ));
+}
+
+/// Owns the quadratic call form only when `admits`; a call it receives fails.
+struct GatedExecution {
+    admits: bool,
+    calls: Cell<usize>,
+}
+
+impl PureCallExecution for GatedExecution {
+    fn executes(&self, _invocation: PureCallInvocation<'_>) -> bool {
+        self.admits
+    }
+
+    fn call(
+        &self,
+        _invocation: PureCallInvocation<'_>,
+        _input: &[f64],
+        _output: &mut [f64],
+    ) -> Result<(), EvalSolveError> {
+        self.calls.set(self.calls.get() + 1);
+        Err(EvalSolveError::CompiledExecution {
+            message: "the admitted owner was called".into(),
+            span: None,
+        })
+    }
+}
+
+fn quadratic_call_program() -> (solve::SolvePureCallTable, PreparedScalarProgramBlock) {
+    let table = quadratic_table();
+    let block = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::PureCall {
+                dst_start: 1,
+                input_starts: vec![0].into(),
+                site: table.owners()[0].call_site(),
+            },
+            solve::LinearOp::StoreOutput { src: 1 },
+        ]],
+        span().require_provenance("gated owner").unwrap(),
+    )
+    .unwrap();
+    (table, PreparedScalarProgramBlock::new(block).unwrap())
+}
+
+#[test]
+fn an_owner_the_execution_does_not_admit_runs_in_the_typed_interpreter() {
+    let (table, prepared) = quadratic_call_program();
+    let execution = GatedExecution {
+        admits: false,
+        calls: Cell::new(0),
+    };
+    let reference_context = RowEvalContext {
+        pure_calls: Some(&table),
+        ..Default::default()
+    };
+    let mut expected = [0.0];
+    prepared
+        .eval_with_context(&[3.0], &[], 0.0, reference_context, &mut expected)
+        .unwrap();
+    let mut actual = [0.0];
+    prepared
+        .eval_with_context(
+            &[3.0],
+            &[],
+            0.0,
+            RowEvalContext {
+                pure_call_execution: Some(&execution),
+                ..reference_context
+            },
+            &mut actual,
+        )
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(execution.calls.get(), 0);
+}
+
+#[test]
+fn an_owner_the_execution_admits_is_called_and_its_failure_surfaces() {
+    let (table, prepared) = quadratic_call_program();
+    let execution = GatedExecution {
+        admits: true,
+        calls: Cell::new(0),
+    };
+    let mut out = [0.0];
+    let error = prepared
+        .eval_with_context(
+            &[3.0],
+            &[],
+            0.0,
+            RowEvalContext {
+                pure_calls: Some(&table),
+                pure_call_execution: Some(&execution),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("the admitted owner was called"));
+    assert_eq!(execution.calls.get(), 1);
 }

@@ -340,7 +340,7 @@ fn infer_user_function_call_dimensions(
     let output = func.outputs.first()?;
     if output.shape_expr.is_empty() {
         return concrete_param_dims(output)
-            .or_else(|| broadcast_function_arg_dims(args, ctx))
+            .or_else(|| broadcast_function_arg_dims(func, args, ctx))
             .or_else(|| {
                 args.iter()
                     .all(|arg| {
@@ -389,13 +389,30 @@ fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
     Some(param.dimensions().to_vec())
 }
 
+/// MLS §12.4.6: a function applied to an actual with more dimensions than its
+/// formal declares maps over the extra leading dimensions, so the result takes
+/// the largest such extra shape. Dimensions a formal consumes itself (a table
+/// matrix, an external object) never broadcast.
 fn broadcast_function_arg_dims(
+    func: &rumoca_core::Function,
     args: &[rumoca_core::Expression],
     ctx: &DimensionScope<'_, '_>,
 ) -> Option<Vec<i64>> {
+    let mut positional = 0usize;
     args.iter()
-        .map(function_arg_value)
-        .filter_map(|arg| infer_function_arg_dims(arg, ctx))
+        .filter_map(|arg| {
+            let (formal, value) = if let Some((name, value)) = named_call_arg(arg) {
+                (func.inputs.iter().find(|input| input.name == name)?, value)
+            } else {
+                let formal = func.inputs.get(positional)?;
+                positional += 1;
+                (formal, arg)
+            };
+            let formal_rank = formal.shape_expr.len().max(formal.dimensions().len());
+            let dims = infer_function_arg_dims(value, ctx)?;
+            let extra = dims.len().checked_sub(formal_rank)?;
+            Some(dims[..extra].to_vec())
+        })
         .max_by_key(Vec::len)
         .filter(|dims| !dims.is_empty())
 }

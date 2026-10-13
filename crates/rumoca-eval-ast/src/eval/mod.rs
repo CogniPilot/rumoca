@@ -1404,7 +1404,7 @@ fn infer_dims_from_user_func(
     if output.shape_expr.is_empty() {
         // MLS §12.4.6: scalar functions applied element-wise to arrays.
         // If any actual argument has array dims, the result inherits those dims.
-        return Some(find_broadcast_dims(args, ctx, scope));
+        return Some(find_broadcast_dims(func_def, args, ctx, scope));
     }
     // Evaluate each dimension expression in the local context
     output
@@ -1419,23 +1419,50 @@ fn infer_dims_from_user_func(
         .collect()
 }
 
-/// Find the largest array dimensions among actual arguments (MLS §12.4.6).
+/// Find the extra leading dimensions of the actual arguments (MLS §12.4.6).
 ///
-/// When a scalar function is called with array arguments, the result has
-/// the shape of the largest argument (element-wise broadcast).
-fn find_broadcast_dims(args: &[Expression], ctx: &TypeCheckEvalContext, scope: &str) -> Vec<usize> {
+/// A function applied to an actual with more dimensions than its formal
+/// parameter declares is applied element-wise over the extra leading
+/// dimensions, so the result has the largest such extra shape. Only the
+/// dimensions a formal does not itself consume broadcast: an actual bound to
+/// a formal of the same rank (a table matrix, an external object) adds none.
+fn find_broadcast_dims(
+    func_def: &ClassDef,
+    args: &[Expression],
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Vec<usize> {
+    let formal_ranks: Vec<(&str, usize)> = func_def
+        .components
+        .iter()
+        .filter(|(_, comp)| matches!(comp.causality, Causality::Input(_)))
+        .map(|(name, comp)| (name.as_str(), comp.shape_expr.len()))
+        .collect();
+    let mut positional = 0;
     let mut best: Vec<usize> = vec![];
     for arg in args {
-        // Skip named arguments, use the value inside
-        let expr = if let Expression::NamedArgument { value, .. } = arg {
-            value.as_ref()
-        } else {
-            arg
+        let (formal_rank, expr) = match arg {
+            Expression::NamedArgument { name, value, .. } => (
+                formal_ranks
+                    .iter()
+                    .find(|(formal, _)| *formal == name.text.as_ref())
+                    .map(|(_, rank)| *rank),
+                value.as_ref(),
+            ),
+            _ => {
+                let rank = formal_ranks.get(positional).map(|(_, rank)| *rank);
+                positional += 1;
+                (rank, arg)
+            }
         };
-        if let Some(dims) = infer_dimensions_from_binding_with_scope(expr, ctx, scope)
-            && dims.len() > best.len()
-        {
-            best = dims;
+        let Some(formal_rank) = formal_rank else {
+            continue;
+        };
+        if let Some(dims) = infer_dimensions_from_binding_with_scope(expr, ctx, scope) {
+            let extra = dims.len().saturating_sub(formal_rank);
+            if extra > best.len() {
+                best = dims[..extra].to_vec();
+            }
         }
     }
     best

@@ -30,7 +30,7 @@ pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVari
             });
             if binding_owned {
                 variable.initial = Some(super::FmiInitial::Calculated);
-                variable.start = None;
+                variable.start_allowed = false;
             } else {
                 variable.initial = Some(super::FmiInitial::Approx);
             }
@@ -41,7 +41,7 @@ pub(super) fn classify_metadata(problem: &SolveProblem, variables: &mut [FmiVari
             // form (FMI 3.0.2 §2.4.7.4).
             variable.causality = FmiCausality::CalculatedParameter;
             variable.initial = Some(super::FmiInitial::Calculated);
-            variable.start = None;
+            variable.start_allowed = false;
         }
     }
 }
@@ -102,7 +102,7 @@ fn classify_initialized_coordinates(problem: &SolveProblem, variables: &mut [Fmi
         };
         if calculated {
             variable.initial = Some(super::FmiInitial::Calculated);
-            variable.start = None;
+            variable.start_allowed = false;
         } else if column == super::FmiStorageColumn::Y
             && variable.initial == Some(super::FmiInitial::Exact)
             && range.clone().any(|i| projected.contains(&i))

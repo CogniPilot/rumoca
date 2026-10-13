@@ -1,6 +1,12 @@
 use super::*;
 
 pub(in crate::construction) enum ModelAlgorithmPlan {
+    /// One total tuple assignment to continuous coordinates, with no sequential
+    /// intermediate reads: the checked call owns all retained result ordinals.
+    DeclarativeFunctionCall {
+        receivers: Vec<Expression>,
+        plan: MultiOutputEquationPlan,
+    },
     Declarative {
         target: VarName,
     },
@@ -907,7 +913,7 @@ fn validate_declarative_sequence(
     Ok(assigned)
 }
 
-fn reject_read_before_definition(
+pub(super) fn reject_read_before_definition(
     expression: &Expression,
     target: &VarName,
     assigned: bool,

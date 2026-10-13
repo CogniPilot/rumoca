@@ -31,7 +31,7 @@ struct JacobianSeed<'a> {
     buffer: &'a mut Vec<f64>,
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     /// Exact state Jacobian-vector product `d(der)/d(state)·v` for the state-only
     /// BDF path, accounting for the algebraic projection.
     ///
@@ -72,7 +72,7 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.update_solver_y_guess_from_state(solver_y_guess, state)?;
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let StateDerivativeScratch { seed_buf, .. } = &mut *scratch;
         self.eval_derivative_jacobian_v_at_solver_y(
             lin,
@@ -101,7 +101,7 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         self.validate_refresh_inputs(solver_y, lin.params)?;
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let StateDerivativeScratch { seed_buf, .. } = &mut *scratch;
         self.eval_derivative_jacobian_v_from_settled_solver_y(
             lin,
@@ -181,7 +181,7 @@ impl SolveRuntime {
         let AlgebraicLinearization { t, params, settle } = lin;
         let n = layout.states;
         let p_scalars = self.model.problem.layout.p_scalars();
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let StateDerivativeScratch { solver_y, seed_buf } = &mut *scratch;
         self.populate_solver_y_from_state(solver_y, &state[..n])?;
         self.eval_state_derivatives_at_solver_y(
@@ -243,7 +243,7 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let StateDerivativeScratch { solver_y, seed_buf } = &mut *scratch;
         // Linearization point: settle *all* solver-y algebraics from the state
         // (the full plan, not just the derivative-dependency subset) so that leaf
@@ -252,7 +252,7 @@ impl SolveRuntime {
         self.refresh_algebraic_and_output_slots(t, solver_y, params, settle.tol, settle.max_iters)?;
         let p_scalars = self.model.problem.layout.p_scalars();
         let seed_len = (self.solver_count + p_scalars)
-            .max(self.implicit_jacobian_v.requirements().seed_len)
+            .max(self.scalar.implicit_jacobian_v.requirements().seed_len)
             .max(self.solver_count);
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
@@ -269,7 +269,7 @@ impl SolveRuntime {
         }
         // Seed against the full algebraic plan so every solver-y algebraic (states
         // pass through unchanged) receives its `∂(alg)/∂state·v + ∂(alg)/∂p` seed.
-        self.seed_refresh_with_plan(&self.algebraic_refresh, lin, solver_y, seed_buf)?;
+        self.seed_refresh_with_plan(&self.scalar.algebraic_refresh, lin, solver_y, seed_buf)?;
         let copy = self.solver_count.min(out.len()).min(seed_buf.len());
         out[..copy].copy_from_slice(&seed_buf[..copy]);
         Ok(())
@@ -278,13 +278,7 @@ impl SolveRuntime {
     /// Index of a solver-y variable (state or algebraic) by qualified name, or
     /// `None` if it is not a solver variable (e.g. a parameter or unknown name).
     pub fn solver_variable_index(&self, name: &str) -> Option<usize> {
-        self.model
-            .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .iter()
-            .position(|candidate| candidate == name)
+        self.model.problem.solver_index(name)
     }
 
     /// Reverse-mode VJP of the state-derivative function: given the output
@@ -328,7 +322,7 @@ impl SolveRuntime {
                 out.len()
             )));
         }
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let solver_y = &mut scratch.solver_y;
         // Reconstruct the linearization point (states + derivative-dependency
         // algebraics), matching the forward JVP's primal point.
@@ -336,8 +330,9 @@ impl SolveRuntime {
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
         out.fill(0.0);
         let (cot_y, cot_p) = out.split_at_mut(self.solver_count);
-        let mut reverse_scratch = self.reverse_scratch.borrow_mut();
-        self.derivative_scalar
+        let mut reverse_scratch = self.scalar.reverse_scratch.borrow_mut();
+        self.scalar
+            .derivative_scalar
             .reverse_vjp(
                 &rumoca_eval_solve::reverse::ReverseInputs {
                     y: solver_y,
@@ -392,7 +387,8 @@ impl SolveRuntime {
         // A self-contained scratch keeps this composable with the derivative VJP
         // (the algebraic adjoint drives both); reuse can come once it is hot.
         let mut scratch = rumoca_eval_solve::reverse::ReverseScratch::default();
-        self.implicit_scalar_rhs
+        self.scalar
+            .implicit_scalar_rhs
             .reverse_vjp(
                 &rumoca_eval_solve::reverse::ReverseInputs {
                     y: solver_y,
@@ -424,6 +420,7 @@ impl SolveRuntime {
             .continuous
             .algebraic_projection_plan
             .blocks
+            .scalar_blocks()
             .iter()
             .flat_map(|block| block.rows.iter().copied())
             .collect()
@@ -474,7 +471,8 @@ impl SolveRuntime {
         let state_lambda = &lambda[..self.state_count];
         self.accumulate_block_vjp(
             &mut |inputs, cot, scratch| {
-                self.derivative_scalar
+                self.scalar
+                    .derivative_scalar
                     .reverse_vjp(inputs, state_lambda, cot, scratch)
             },
             (t, solver_y, params),
@@ -507,7 +505,8 @@ impl SolveRuntime {
             let mu = self.scatter_algebraic_multipliers(&alg, lambda);
             self.accumulate_block_vjp(
                 &mut |inputs, cot, scratch| {
-                    self.implicit_scalar_rhs
+                    self.scalar
+                        .implicit_scalar_rhs
                         .reverse_vjp(inputs, &mu, cot, scratch)
                 },
                 (t, solver_y, params),
@@ -553,7 +552,7 @@ impl SolveRuntime {
     /// k-th algebraic constraint row carries the multiplier `λ[state_count + k]`
     /// (the steady residual's algebraic-equation index); all other rows are zero.
     fn scatter_algebraic_multipliers(&self, alg_rows: &[usize], lambda: &[f64]) -> Vec<f64> {
-        let mut mu = vec![0.0_f64; self.implicit_scalar_rhs.len()];
+        let mut mu = vec![0.0_f64; self.scalar.implicit_scalar_rhs.len()];
         for (k, &row) in alg_rows.iter().enumerate() {
             if let (Some(slot), Some(&value)) = (mu.get_mut(row), lambda.get(self.state_count + k))
             {
@@ -574,7 +573,7 @@ impl SolveRuntime {
         seed_copy_len: usize,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let mut scratch = self.derivative_scratch.borrow_mut();
+        let mut scratch = self.scalar.derivative_scratch.borrow_mut();
         let StateDerivativeScratch { solver_y, seed_buf } = &mut *scratch;
         self.populate_solver_y_from_state(solver_y, state)?;
         self.eval_derivative_jacobian_v_at_solver_y(
@@ -623,10 +622,11 @@ impl SolveRuntime {
         // state Jacobian, the whole span for ∂der/∂p); the algebraic seeds are
         // then filled by the projection forward-sensitivity below.
         let seed_len = self
+            .scalar
             .derivative_jacobian_v
             .requirements()
             .seed_len
-            .max(self.implicit_jacobian_v.requirements().seed_len)
+            .max(self.scalar.implicit_jacobian_v.requirements().seed_len)
             .max(self.solver_count);
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
@@ -639,7 +639,8 @@ impl SolveRuntime {
             seed: Some(seed_buf.as_slice()),
             ..self.row_eval_context()
         };
-        self.derivative_jacobian_v
+        self.scalar
+            .derivative_jacobian_v
             .eval_with_context(solver_y, params, t, context, out)
             .map_err(Into::into)
     }
@@ -655,7 +656,7 @@ impl SolveRuntime {
         solver_y: &[f64],
         seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        self.seed_refresh_with_plan(&self.derivative_refresh, lin, solver_y, seed)
+        self.seed_refresh_with_plan(&self.scalar.derivative_refresh, lin, solver_y, seed)
     }
 
     /// Plan-parameterized forward-sensitivity refresh shared by the
@@ -689,18 +690,21 @@ impl SolveRuntime {
         seed: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let projection_model = RefreshProjectionModel {
-            runtime: self,
+            runtime: *self,
             seed_linearizations: Some(RefCell::new(SeedProjectionCache::at_point(
-                &self.seed_projection_cache,
+                &self.scalar.seed_projection_cache,
                 lin,
                 solver_y,
-                self.continuous_structural.algebraic_projection().len(),
+                self.scalar
+                    .continuous_structural
+                    .algebraic_projection()
+                    .len(),
             ))),
             #[cfg(test)]
             plan,
             block_indices,
             plan_validated: false,
-            jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
+            jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.scalar.implicit_jacobian_v),
         };
         let result = project_algebraic_seed_with_plan(
             &projection_model,

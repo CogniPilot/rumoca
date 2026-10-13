@@ -78,12 +78,13 @@ fn application(source: &ScalarProgramBlock, rows: Vec<usize>) -> ProjectionJacob
     let pattern =
         StructuralPattern::from_row_dependencies(2, 2, &dependencies, provenance).unwrap();
     let plan = AlgebraicProjectionPlan {
-        blocks: vec![AlgebraicProjectionBlock {
+        blocks: (vec![AlgebraicProjectionBlock {
             rows,
             y_indices: vec![1, 0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     let artifacts = ContinuousStructuralArtifacts::derived(
         None,

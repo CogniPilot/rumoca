@@ -88,7 +88,8 @@ pub fn linearization_for_dae(
     let inputs: Vec<(String, usize)> = layout
         .input_scalar_names()
         .iter()
-        .filter_map(|name| Some((name.clone(), layout.input_parameter_index(name)?)))
+        .enumerate()
+        .map(|(offset, name)| (name, layout.parameter_count + offset))
         .collect();
     let n = states.len();
     let b = input_columns(&runtime, &solve_model, lin, &state, &inputs)?;
@@ -151,8 +152,8 @@ fn output_slots(
     model: &solve::SolveModel,
 ) -> Result<Vec<(String, OutputSlot)>, SimulationDiagnosticError> {
     model
-        .variable_meta
-        .iter()
+        .visible_metadata()
+        .into_iter()
         .filter(|meta| meta.role == "output")
         .map(|meta| {
             let slot = match model.problem.layout.binding(&meta.name) {

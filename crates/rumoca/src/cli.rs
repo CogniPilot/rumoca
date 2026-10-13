@@ -1607,7 +1607,7 @@ fn run_lint(args: LintArgs) -> Result<()> {
 /// could not determine it, so a consumer comparing the two artifacts skips the
 /// check instead of comparing two equal placeholders and concluding they match.
 fn run_build_info() -> Result<()> {
-    let Some(identity) = rumoca_core::build_identity() else {
+    let Some(identity) = rumoca_tool_build_info::build_identity() else {
         anyhow::bail!(
             "build identity unavailable: this binary was built without commit \
              information, so it cannot be compared against another artifact"

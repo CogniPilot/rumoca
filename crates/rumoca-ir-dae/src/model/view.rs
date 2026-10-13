@@ -245,16 +245,15 @@ impl<'dae> DaeView<'dae> {
             return None;
         }
         let outer_count = checked_extent_product(record.dimensions())?;
-        let field_offset = (0..ordinal).try_fold(0usize, |offset, field| {
-            let (_, value_type) = self.record_field(id, field)?;
-            offset.checked_add(self.packed_value_count(value_type)?)
-        })?;
-        let (_, selected) = self.record_field(id, ordinal)?;
-        let field_width = self.packed_value_count(selected)?;
-        let record_width = (0..record.record_field_count()).try_fold(0usize, |width, field| {
-            let (_, value_type) = self.record_field(id, field)?;
-            width.checked_add(self.packed_value_count(value_type)?)
-        })?;
+        let prefixes = self
+            .dae
+            .storage
+            .record_field_prefixes
+            .get(id.index() as usize)?
+            .as_deref()?;
+        let field_offset = *prefixes.get(ordinal)?;
+        let field_width = prefixes.get(ordinal + 1)? - field_offset;
+        let record_width = *prefixes.last()?;
         outer_count.checked_mul(record_width)?;
         outer_count.checked_mul(field_width)?;
         Some(RecordFieldLayout {
@@ -276,17 +275,11 @@ impl<'dae> DaeView<'dae> {
     }
 
     fn packed_value_count(self, id: ValueTypeId<'dae>) -> Option<usize> {
-        let value_type = self.value_type(id)?;
-        if !value_type.is_record() {
-            return value_type.scalar_count();
-        }
-        let outer_count = checked_extent_product(value_type.dimensions())?;
-        let record_width =
-            (0..value_type.record_field_count()).try_fold(0usize, |width, ordinal| {
-                let (_, field) = self.record_field(id, ordinal)?;
-                width.checked_add(self.packed_value_count(field)?)
-            })?;
-        outer_count.checked_mul(record_width)
+        self.dae
+            .storage
+            .packed_value_counts
+            .get(id.index() as usize)
+            .copied()?
     }
 
     pub fn value_type_provenance(self, id: ValueTypeId<'dae>) -> Option<DaeProvenance> {
@@ -715,23 +708,14 @@ impl<'dae> VariableView<'dae> {
     }
 
     pub fn scalar_name(self, flat_index: usize) -> Option<String> {
-        let subscripts = self.value_type.scalar_subscripts(flat_index)?;
-        if subscripts.is_empty() {
-            return Some(self.entry.name.to_string());
+        if self.value_type.is_record() {
+            return None;
         }
-        use std::fmt::Write as _;
-        let base = self.entry.name.as_str();
-        let mut name = String::with_capacity(base.len() + 4 * subscripts.len() + 2);
-        name.push_str(base);
-        name.push('[');
-        for (position, index) in subscripts.iter().enumerate() {
-            if position > 0 {
-                name.push(',');
-            }
-            write!(name, "{index}").ok()?;
-        }
-        name.push(']');
-        Some(name)
+        rumoca_core::scalar_component_name(
+            self.entry.name.as_str(),
+            self.value_type.dimensions(),
+            flat_index,
+        )
     }
 
     fn attributes(self) -> &'dae VariableAttributesWire {
@@ -1057,7 +1041,7 @@ impl<'dae> FunctionDefinitionValues<'dae> {
     }
 }
 
-fn function_definition_view<'dae>(
+pub(super) fn function_definition_view<'dae>(
     dae: &'dae Dae,
     function: FunctionId<'dae>,
     ordinal: u32,
@@ -1073,12 +1057,20 @@ fn function_definition_view<'dae>(
 
 #[derive(Clone)]
 pub enum FunctionStatementView<'dae> {
+    RequireAssigned {
+        conditional: FunctionConditionalBodyView<'dae>,
+        value: FunctionValueId<'dae>,
+        definition: FunctionDefinitionView<'dae>,
+        provenance: DaeProvenance,
+    },
+    Conditional {
+        conditional: FunctionConditionalBodyView<'dae>,
+    },
     Assignment {
         definition: FunctionDefinitionView<'dae>,
     },
     AssignmentGroup {
         definitions: FunctionDefinitionValues<'dae>,
-        conditional: Option<FunctionConditionalView<'dae>>,
     },
     Assertion {
         condition: ExprId<'dae>,
@@ -1093,36 +1085,6 @@ pub enum FunctionStatementView<'dae> {
     },
 }
 
-/// Checked shared branch correlation for one atomic function assignment group.
-#[derive(Clone, Copy)]
-pub struct FunctionConditionalView<'dae> {
-    raw: &'dae FunctionConditionalWire,
-}
-
-impl<'dae> FunctionConditionalView<'dae> {
-    pub fn conditions(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae {
-        self.raw.conditions.iter().copied().map(ExprId::from_raw)
-    }
-
-    pub fn branch_count(self) -> usize {
-        self.raw.branches.len()
-    }
-
-    pub fn branch(
-        self,
-        ordinal: usize,
-    ) -> Option<impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae> {
-        self.raw
-            .branches
-            .get(ordinal)
-            .map(|values| values.iter().copied().map(ExprId::from_raw))
-    }
-
-    pub fn fallback(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae {
-        self.raw.fallback.iter().copied().map(ExprId::from_raw)
-    }
-}
-
 impl<'dae> FunctionStatementView<'dae> {
     fn from_wire(
         dae: &'dae Dae,
@@ -1130,21 +1092,41 @@ impl<'dae> FunctionStatementView<'dae> {
         statement: &'dae FunctionStatementWire,
     ) -> Self {
         match statement {
+            FunctionStatementWire::RequireAssigned {
+                owner,
+                target,
+                definition,
+            } => {
+                let definition = function_definition_view(dae, function, *definition);
+                Self::RequireAssigned {
+                    conditional: DaeView {
+                        dae,
+                        marker: PhantomData,
+                    }
+                    .function_conditional(FunctionConditionalId::from_raw(function.index(), *owner))
+                    .expect("checked partial-state owner resolves"),
+                    value: FunctionValueId::from_raw(function.index(), *target),
+                    definition,
+                    provenance: definition.provenance(),
+                }
+            }
+            FunctionStatementWire::ScopedConditional { owner } => Self::Conditional {
+                conditional: DaeView {
+                    dae,
+                    marker: PhantomData,
+                }
+                .function_conditional(FunctionConditionalId::from_raw(function.index(), *owner))
+                .expect("issued conditional owner resolves"),
+            },
             FunctionStatementWire::Assignment { definition } => Self::Assignment {
                 definition: function_definition_view(dae, function, *definition),
             },
-            FunctionStatementWire::AssignmentGroup {
-                definitions,
-                conditional,
-            } => Self::AssignmentGroup {
+            FunctionStatementWire::AssignmentGroup { definitions } => Self::AssignmentGroup {
                 definitions: FunctionDefinitionValues {
                     dae,
                     function,
                     raw: definitions,
                 },
-                conditional: conditional
-                    .as_ref()
-                    .map(|raw| FunctionConditionalView { raw }),
             },
             FunctionStatementWire::Assertion {
                 condition,
@@ -1181,6 +1163,21 @@ pub struct FunctionStatements<'dae> {
     function: FunctionId<'dae>,
     statements: &'dae [FunctionStatementWire],
     next: usize,
+}
+
+impl<'dae> FunctionStatements<'dae> {
+    pub(super) const fn new(
+        dae: &'dae Dae,
+        function: FunctionId<'dae>,
+        statements: &'dae [FunctionStatementWire],
+    ) -> Self {
+        Self {
+            dae,
+            function,
+            statements,
+            next: 0,
+        }
+    }
 }
 
 impl<'dae> Iterator for FunctionStatements<'dae> {
@@ -1344,6 +1341,7 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::FunctionValue { .. } => ExpressionKind::FunctionValue,
             ExprNode::FunctionFoldParameter { .. } => ExpressionKind::FunctionFoldParameter,
             ExprNode::FunctionFoldOutput { .. } => ExpressionKind::FunctionFoldOutput,
+            ExprNode::FunctionConditionalOutput { .. } => ExpressionKind::FunctionConditionalOutput,
             ExprNode::ClockTransfer { .. } => ExpressionKind::ClockTransfer,
         }
     }
@@ -1369,7 +1367,8 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::ClockTransfer { .. } => self.application_operation(),
             ExprNode::FunctionValue { .. }
             | ExprNode::FunctionFoldParameter { .. }
-            | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
+            | ExprNode::FunctionFoldOutput { .. }
+            | ExprNode::FunctionConditionalOutput { .. } => self.function_operation(),
         }
     }
 
@@ -1494,6 +1493,20 @@ impl<'dae> ExpressionView<'dae> {
 
     fn function_operation(self) -> ExpressionOperation<'dae> {
         match self.node {
+            ExprNode::FunctionConditionalOutput {
+                function,
+                conditional,
+                value,
+                definition_ordinal,
+            } => ExpressionOperation::FunctionConditionalOutput {
+                conditional: FunctionConditionalId::from_raw(*function, *conditional),
+                value: FunctionValueId::from_raw(*function, *value),
+                definition: function_definition_view(
+                    self.dae,
+                    FunctionId::from_raw(*function),
+                    *definition_ordinal,
+                ),
+            },
             ExprNode::FunctionValue {
                 function,
                 value,
@@ -1723,6 +1736,11 @@ impl<'dae> RangeView<'dae> {
 
 #[derive(Clone, Copy)]
 pub enum ExpressionOperation<'dae> {
+    FunctionConditionalOutput {
+        conditional: FunctionConditionalId<'dae>,
+        value: FunctionValueId<'dae>,
+        definition: FunctionDefinitionView<'dae>,
+    },
     Literal(&'dae DaeLiteral),
     Coordinate(CoordinateView<'dae>),
     Unary {
@@ -1844,6 +1862,7 @@ fn coordinate_view<'dae>(coordinate: Coordinate) -> CoordinateView<'dae> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionKind {
+    FunctionConditionalOutput,
     Literal,
     Coordinate,
     Unary,

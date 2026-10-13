@@ -110,7 +110,13 @@ fn projection_producer_rows(
     implicit_output_count: usize,
 ) -> Result<BTreeMap<usize, usize>, MeError> {
     let mut producer_rows = BTreeMap::new();
-    for block in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for block in model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks()
+    {
         for (row_index, target_index) in block
             .rows
             .iter()
@@ -162,11 +168,7 @@ fn non_state_y_loads(
 fn coordinate_name(model: &solve::SolveModel, index: usize) -> String {
     model
         .problem
-        .solve_layout
-        .solver_maps
-        .names
-        .get(index)
-        .cloned()
+        .solver_name(index)
         .unwrap_or_else(|| format!("y[{index}]"))
 }
 
@@ -202,12 +204,15 @@ mod tests {
         let mut model = solve::SolveModel::default();
         model.problem.solve_layout.state_scalar_count = 1;
         model.problem.solve_layout.algebraic_scalar_count = 1;
-        model.problem.solve_layout.solver_maps.names = vec!["x".to_owned(), "a".to_owned()];
+        model.problem.layout = crate::fixture_layout::named_y_layout(
+            model.problem.layout.clone(),
+            vec!["x".to_owned(), "a".to_owned()],
+        );
         model.problem.continuous.derivative_rhs = block(vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 1 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        model.initial_y = vec![0.0, 0.0];
+        model.initial_y = vec![0.0, 0.0].into();
 
         let error = validate_explicit_solve_model(&model)
             .expect_err("an unproduced derivative dependency must be rejected");

@@ -138,7 +138,7 @@ fn halving_table() -> SolvePureCallTable {
                     &[x],
                     &[limit],
                     span,
-                    |predicate, carried, captures, outputs| {
+                    |predicate, carried, captures, _binders, outputs| {
                         let x = predicate.load(carried[0], span)?;
                         let limit = predicate.load(captures[0], span)?;
                         let above =

@@ -12,12 +12,11 @@
 //! the region already computed instead of being rebuilt per branch
 //! (SPEC_0040 SOLVE-C61).
 
-use std::collections::HashMap;
-
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::{ExpressionLowerer, LoweredValue};
+use crate::lower::dae_faults::{DaeFaults, FaultMemo};
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     /// Lower `operands` (`[condition, value, (condition, value)*, else]`) as
@@ -58,100 +57,14 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
     }
 }
 
-/// Whether evaluating `root` can neither fail nor have an effect, memoized in
-/// `totality` over the expression graph (iteratively, since the graph may be
-/// deep).
+/// Whether evaluating `root` can neither fail nor have an effect: the shared
+/// DAE fault classification, with loop binders at their declared ranges.
 pub(super) fn is_total<'dae>(
     view: dae::DaeView<'dae>,
-    totality: &mut HashMap<dae::ExprId<'dae>, bool>,
+    totality: &mut FaultMemo<'dae>,
     root: dae::ExprId<'dae>,
 ) -> bool {
-    let mut stack = vec![(root, false)];
-    while let Some((expression, expanded)) = stack.pop() {
-        if totality.contains_key(&expression) {
-            continue;
-        }
-        let Some(node) = view.expression(expression) else {
-            totality.insert(expression, false);
-            continue;
-        };
-        let Some(operands) = total_operation_operands(view, node) else {
-            totality.insert(expression, false);
-            continue;
-        };
-        if expanded {
-            let total = operands
-                .iter()
-                .all(|operand| totality.get(operand).copied().unwrap_or(false));
-            totality.insert(expression, total);
-            continue;
-        }
-        stack.push((expression, true));
-        stack.extend(
-            operands
-                .into_iter()
-                .filter(|operand| !totality.contains_key(operand))
-                .map(|operand| (operand, false)),
-        );
-    }
-    totality.get(&root).copied().unwrap_or(false)
-}
-
-/// The operands of a node whose own operation is total, or `None` when the
-/// operation itself can fail.
-fn total_operation_operands<'dae>(
-    view: dae::DaeView<'dae>,
-    node: dae::ExpressionView<'dae>,
-) -> Option<Vec<dae::ExprId<'dae>>> {
-    let scalar = node.value_type().scalar_type();
-    match node.operation() {
-        dae::ExpressionOperation::Literal(literal) => {
-            (!matches!(literal, dae::DaeLiteral::String(_))).then(Vec::new)
-        }
-        dae::ExpressionOperation::Coordinate(_)
-        | dae::ExpressionOperation::FunctionValue { .. } => Some(Vec::new()),
-        dae::ExpressionOperation::Unary { operator, operand } => {
-            // Integer negation overflows at the bottom of its domain.
-            (operator != dae::UnaryOperator::Negate || scalar != dae::ScalarType::Integer)
-                .then(|| vec![operand])
-        }
-        dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
-            // Real arithmetic follows IEEE 754; comparisons and logical
-            // operators always produce a Boolean. Integer arithmetic is
-            // checked and can fail.
-            matches!(scalar, dae::ScalarType::Real | dae::ScalarType::Boolean)
-                .then(|| vec![lhs, rhs])
-        }
-        dae::ExpressionOperation::Conditional(operands)
-        | dae::ExpressionOperation::Array(operands) => Some(operands.iter().collect()),
-        dae::ExpressionOperation::Builtin { builtin, arguments } => {
-            let total = match builtin {
-                dae::PureBuiltin::Max | dae::PureBuiltin::Min => true,
-                dae::PureBuiltin::Abs | dae::PureBuiltin::Sqrt => scalar == dae::ScalarType::Real,
-                _ => false,
-            };
-            total.then(|| arguments.iter().collect())
-        }
-        dae::ExpressionOperation::Index { base, subscripts } => {
-            let dimensions = view.expression(base)?.value_type().dimensions().to_vec();
-            let in_range = subscripts
-                .iter()
-                .zip(&dimensions)
-                .all(|(subscript, extent)| match subscript {
-                    dae::SubscriptView::Whole { .. } => true,
-                    dae::SubscriptView::Index { expression, .. } => literal_index(view, expression)
-                        .is_some_and(|index| index >= 1 && index <= i64::from(*extent)),
-                    dae::SubscriptView::Slice { .. } => false,
-                });
-            (in_range && subscripts.len() <= dimensions.len()).then(|| vec![base])
-        }
-        _ => None,
-    }
-}
-
-fn literal_index<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> Option<i64> {
-    match view.expression(expression)?.operation() {
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(index)) => Some(*index),
-        _ => None,
-    }
+    DaeFaults::new(view, &[])
+        .differentiable()
+        .is_total(totality, root)
 }

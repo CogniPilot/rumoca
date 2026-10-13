@@ -16,7 +16,7 @@ impl RefreshProjectionModel<'_> {
                 "grouped residual output extent mismatch",
             ));
         }
-        let mut values = self.runtime.compiled_output_scratch.borrow_mut();
+        let mut values = self.runtime.scalar.compiled_output_scratch.borrow_mut();
         for program in selection.programs() {
             self.eval_residual_program_outputs(program.program(), y, p, t, &mut values)?;
             if values.len() != program.output_count() {
@@ -42,6 +42,7 @@ impl RefreshProjectionModel<'_> {
             if !value.is_finite() {
                 let source = self
                     .runtime
+                    .scalar
                     .implicit_scalar_rhs
                     .row_output_index(program.program(), offset)
                     .ok_or(RuntimeSolveError::solve_ir(
@@ -65,26 +66,25 @@ impl RefreshProjectionModel<'_> {
     ) -> Result<(), RuntimeSolveError> {
         if self
             .runtime
-            .eval_split_residual_program(program, (y, p, t), out)
+            .eval_split_residual_program(program, (y, p, t), out)?
             .is_some()
         {
             return Ok(());
         }
-        if let Some(compiled) = &self.runtime.compiled_implicit_rhs
-            && compiled
-                .call_program_outputs(
-                    program,
-                    y,
-                    p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                    out,
-                )
-                .map_err(RuntimeSolveError::solve_ir)?
+        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs
+            && compiled.call_program_outputs(
+                program,
+                y,
+                p,
+                t,
+                self.runtime.model.external_tables.as_slice(),
+                out,
+            )?
         {
             return Ok(());
         }
         self.runtime
+            .scalar
             .implicit_scalar_rhs
             .eval_row_outputs_unchecked_with_context(
                 program,

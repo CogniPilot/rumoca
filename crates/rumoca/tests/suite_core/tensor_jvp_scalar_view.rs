@@ -52,14 +52,14 @@ fn the_derivative_jacobian_rows_are_the_view_of_the_tensor_jvp() {
     let native = rumoca_sim::native_compute_inventory(block).expect("native compile");
     assert_eq!(native.kernels, counts.map + counts.affine_stencil);
     let primal = rumoca_eval_solve::to_scalar_program_block(block).expect("primal view");
-    let per_row = rumoca_phase_solve::lower_scalar_program_block_full_ad_with_spans(
+    let per_row = rumoca_eval_solve::ad::lower_scalar_program_block_full_ad_with_spans(
         primal.programs(),
         primal.program_spans(),
         &problem.layout,
     )
     .expect("per-row JVP");
     let tensor =
-        rumoca_phase_solve::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
+        rumoca_eval_solve::ad::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
             .expect("tensor JVP");
     let view = rumoca_eval_solve::to_scalar_program_block(&tensor).expect("JVP view");
     assert_eq!(view.programs(), per_row.as_slice());
@@ -85,8 +85,9 @@ fn the_mixed_derivative_jacobian_relation_equals_its_scalar_view() {
         counts.scalar_programs + counts.map + counts.affine_stencil >= 2,
         "the derivative block holds several nodes: {counts:?}"
     );
-    let jvp = rumoca_phase_solve::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
-        .expect("tensor JVP");
+    let jvp =
+        rumoca_eval_solve::ad::lower_compute_block_full_jvp(block, problem.layout.y_scalars())
+            .expect("tensor JVP");
     let view = rumoca_eval_solve::to_scalar_program_block(&jvp).expect("JVP view");
     let rows = view.output_count();
     let columns = problem.layout.y_scalars() + problem.layout.p_scalars();
@@ -101,5 +102,8 @@ fn the_mixed_derivative_jacobian_relation_equals_its_scalar_view() {
         rumoca_eval_solve::derive_jacobian_pattern_from_scalar_jvp(&view, rows, columns, span)
             .expect("scalar-view relation");
     assert_eq!(pattern.nonzero_coordinates(), scalar.nonzero_coordinates());
-    assert_eq!(pattern.column_coloring(), scalar.column_coloring());
+    assert_eq!(
+        pattern.clone().with_column_coloring().coloring(),
+        scalar.clone().with_column_coloring().coloring()
+    );
 }

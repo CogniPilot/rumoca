@@ -164,3 +164,28 @@ fn derivative_through_a_recursive_call_is_refused() {
     let error = simulate(&source).expect_err("SOLVE-C62 members have no directional relation");
     assert!(error.contains("directional"), "{error}");
 }
+
+#[test]
+fn recursive_function_with_a_conditional_and_a_parameter_argument_simulates() {
+    let source = r#"
+package Recursion
+  function rec
+    input Real A;
+    input Real a;
+    output Real I;
+  algorithm
+    I := if a > 1 then A else rec(A, a + 1);
+  end rec;
+  model Model
+    parameter Real A = 2;
+    parameter Real s = rec(A, 0);
+    Real x(start = 1, fixed = true);
+  equation
+    der(x) = -s*x;
+  end Model;
+end Recursion;
+"#;
+    let sim = simulate(source).expect("a recursive conditional with a parameter argument");
+    let x = last(&sim, "x");
+    assert!((x - (-2.0f64).exp()).abs() < 1e-4, "x={x}");
+}

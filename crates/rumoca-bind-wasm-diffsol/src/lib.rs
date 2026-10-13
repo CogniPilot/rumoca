@@ -25,7 +25,7 @@ use wasm_bindgen::prelude::*;
 /// annotation when the caller defers).
 #[derive(Deserialize)]
 struct DiffsolInput {
-    #[serde(deserialize_with = "rumoca_phase_solve::fmi::deserialize_fmi_component")]
+    #[serde(deserialize_with = "rumoca_eval_solve::fmi_wire::deserialize_fmi_component")]
     fmi_component: FmiComponent,
     #[serde(default)]
     t_end: f64,

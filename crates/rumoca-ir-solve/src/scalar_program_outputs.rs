@@ -17,9 +17,9 @@ impl ScalarProgramBlock {
                 let count = Self::program_output_count(ops);
                 (0..count).map(move |offset| (program, offset, count))
             })
-            .zip(self.output_indices())
+            .zip(self.data.output_placements.indices())
             .map(
-                |((program, offset, output_count), &logical_index)| ProgramOutputBinding {
+                |((program, offset, output_count), logical_index)| ProgramOutputBinding {
                     program,
                     offset,
                     output_count,

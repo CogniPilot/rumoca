@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AlgebraicProjectionPlan, ComputeBlock, ComputeNode, ContinuousRefreshOwners,
     ContinuousSolveArtifacts, ContinuousSolveSystem, LinearOp, ReducedChartPlan, RefreshPlan,
-    ScalarProgramBlock, ScalarSlot,
+    ScalarProgramBlock,
 };
 
 /// Entries of a base vector replaced by index when the lengths agree, an edit
@@ -327,9 +327,9 @@ impl ComputeBlockDelta {
 /// One refresh plan as replacements of the primary's.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RefreshPlanDelta {
-    simultaneous_blocks: VecDelta<crate::AlgebraicProjectionBlock>,
+    simultaneous_blocks: VecDelta<crate::ProjectionStage>,
     simultaneous_block_indices: VecDelta<usize>,
-    value_projection_blocks: VecDelta<crate::AlgebraicProjectionBlock>,
+    value_projection_blocks: VecDelta<crate::ProjectionStage>,
     rows: VecDelta<crate::AlgebraicRefreshRow>,
     causal_seed_rows: crate::RefreshRowSelection,
     static_causal_seed_rows: crate::RefreshRowSelection,
@@ -342,16 +342,16 @@ impl RefreshPlanDelta {
     fn diff(base: &RefreshPlan, target: &RefreshPlan) -> Self {
         Self {
             simultaneous_blocks: VecDelta::diff(
-                &base.simultaneous_plan.blocks,
-                &target.simultaneous_plan.blocks,
+                base.simultaneous_plan.blocks.stages(),
+                target.simultaneous_plan.blocks.stages(),
             ),
             simultaneous_block_indices: VecDelta::diff(
                 &base.simultaneous_block_indices,
                 &target.simultaneous_block_indices,
             ),
             value_projection_blocks: VecDelta::diff(
-                &base.value_projection_plan.blocks,
-                &target.value_projection_plan.blocks,
+                base.value_projection_plan.blocks.stages(),
+                target.value_projection_plan.blocks.stages(),
             ),
             rows: VecDelta::diff(&base.rows, &target.rows),
             causal_seed_rows: target.causal_seed_rows.clone(),
@@ -367,17 +367,21 @@ impl RefreshPlanDelta {
             static_causal_sequence: Default::default(),
             dynamic_causal_sequence: Default::default(),
             simultaneous_plan: AlgebraicProjectionPlan {
-                blocks: self
-                    .simultaneous_blocks
-                    .apply(&base.simultaneous_plan.blocks)?,
+                blocks: crate::ProjectionBlocks::from_stages(
+                    self.simultaneous_blocks
+                        .apply(base.simultaneous_plan.blocks.stages())?,
+                )
+                .map_err(|_| ChartDeltaError::NotFaithful)?,
             },
             simultaneous_block_indices: self
                 .simultaneous_block_indices
                 .apply(&base.simultaneous_block_indices)?,
             value_projection_plan: AlgebraicProjectionPlan {
-                blocks: self
-                    .value_projection_blocks
-                    .apply(&base.value_projection_plan.blocks)?,
+                blocks: crate::ProjectionBlocks::from_stages(
+                    self.value_projection_blocks
+                        .apply(base.value_projection_plan.blocks.stages())?,
+                )
+                .map_err(|_| ChartDeltaError::NotFaithful)?,
             },
             rows: self.rows.apply(&base.rows)?,
             causal_seed_rows: self.causal_seed_rows.clone(),
@@ -406,6 +410,7 @@ fn same_refresh_plan(a: &RefreshPlan, b: &RefreshPlan) -> bool {
 /// Complete refresh owners as per-plan deltas of the primary's.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RefreshOwnersDelta {
+    compact_projection: Option<crate::ProjectionBlocks>,
     algebraic: RefreshPlanDelta,
     derivative: RefreshPlanDelta,
     root: RefreshPlanDelta,
@@ -416,6 +421,7 @@ pub(crate) struct RefreshOwnersDelta {
 impl RefreshOwnersDelta {
     fn diff(base: &ContinuousRefreshOwners, target: &ContinuousRefreshOwners) -> Self {
         Self {
+            compact_projection: target.compact_projection().cloned(),
             algebraic: RefreshPlanDelta::diff(base.algebraic(), target.algebraic()),
             derivative: RefreshPlanDelta::diff(base.derivative(), target.derivative()),
             root: RefreshPlanDelta::diff(base.root(), target.root()),
@@ -428,6 +434,19 @@ impl RefreshOwnersDelta {
         &self,
         base: &ContinuousRefreshOwners,
     ) -> Result<ContinuousRefreshOwners, ChartDeltaError> {
+        if let Some(blocks) = &self.compact_projection {
+            return ContinuousRefreshOwners::from_compact_wire(
+                blocks.clone(),
+                [
+                    self.algebraic.apply(base.algebraic())?,
+                    self.derivative.apply(base.derivative())?,
+                    self.root.apply(base.root())?,
+                    self.event.apply(base.event())?,
+                ],
+                self.clock_events.clone(),
+            )
+            .map_err(|_| ChartDeltaError::InvalidRefreshOwners);
+        }
         ContinuousRefreshOwners::from_wire_plans(
             self.algebraic.apply(base.algebraic())?,
             self.derivative.apply(base.derivative())?,
@@ -448,7 +467,8 @@ impl ContinuousRefreshOwners {
 }
 
 fn same_refresh_owners(a: &ContinuousRefreshOwners, b: &ContinuousRefreshOwners) -> bool {
-    same_refresh_plan(a.algebraic(), b.algebraic())
+    a.compact_projection() == b.compact_projection()
+        && same_refresh_plan(a.algebraic(), b.algebraic())
         && same_refresh_plan(a.derivative(), b.derivative())
         && same_refresh_plan(a.root(), b.root())
         && same_refresh_plan(a.event(), b.event())
@@ -466,8 +486,8 @@ fn same_refresh_owners(a: &ContinuousRefreshOwners, b: &ContinuousRefreshOwners)
 pub struct ChartPlanDelta {
     residual: ComputeBlockDelta,
     implicit_rhs: Option<ComputeBlockDelta>,
-    implicit_row_targets: VecDelta<Option<ScalarSlot>>,
-    projection_blocks: VecDelta<crate::AlgebraicProjectionBlock>,
+    implicit_row_targets: crate::projection_stages::ImplicitRowTargetsWire,
+    projection_blocks: VecDelta<crate::ProjectionStage>,
     derivative_rhs: ComputeBlock,
     refresh_owners: RefreshOwnersDelta,
 }
@@ -484,13 +504,10 @@ impl ChartPlanDelta {
         let delta = Self {
             residual: ComputeBlockDelta::diff(&primary.residual, &plan.residual),
             implicit_rhs,
-            implicit_row_targets: VecDelta::diff(
-                &primary.implicit_row_targets,
-                &plan.implicit_row_targets,
-            ),
+            implicit_row_targets: plan.implicit_row_targets.wire(),
             projection_blocks: VecDelta::diff(
-                &primary.algebraic_projection_plan.blocks,
-                &plan.algebraic_projection_plan.blocks,
+                primary.algebraic_projection_plan.blocks.stages(),
+                plan.algebraic_projection_plan.blocks.stages(),
             ),
             derivative_rhs: plan.derivative_rhs.clone(),
             refresh_owners: RefreshOwnersDelta::diff(&primary.refresh_owners, &plan.refresh_owners),
@@ -514,16 +531,20 @@ impl ChartPlanDelta {
             Some(delta) => delta.apply(&primary.implicit_rhs)?,
             None => residual.clone(),
         };
+        let algebraic_projection_plan = AlgebraicProjectionPlan {
+            blocks: crate::ProjectionBlocks::from_stages(
+                self.projection_blocks
+                    .apply(primary.algebraic_projection_plan.blocks.stages())?,
+            )
+            .map_err(|_| ChartDeltaError::NotFaithful)?,
+        };
         Ok(ReducedChartPlan {
             implicit_rhs,
-            implicit_row_targets: self
-                .implicit_row_targets
-                .apply(&primary.implicit_row_targets)?,
-            algebraic_projection_plan: AlgebraicProjectionPlan {
-                blocks: self
-                    .projection_blocks
-                    .apply(&primary.algebraic_projection_plan.blocks)?,
-            },
+            implicit_row_targets: crate::ImplicitRowTargets::from_wire(
+                self.implicit_row_targets.clone(),
+                &algebraic_projection_plan.blocks,
+            ),
+            algebraic_projection_plan,
             residual,
             derivative_rhs: self.derivative_rhs.clone(),
             refresh_owners: self.refresh_owners.apply(&primary.refresh_owners)?,

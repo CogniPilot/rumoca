@@ -28,12 +28,12 @@ impl ValueProjections {
             let elements = projection.input_elements(
                 output.value_type(),
                 output_element,
-                inputs.get(projection.input)?,
+                inputs.get(projection.first_input())?,
             )?;
             let [element] = elements.as_slice() else {
                 return None;
             };
-            return Some((projection.input, *element));
+            return Some((projection.first_input(), *element));
         }
         None
     }
@@ -53,16 +53,15 @@ pub(in crate::typed_program) fn derive(
     }
     let mut slots = vec![None; body.slots().len()];
     for (index, slot) in slots.iter_mut().take(input_count).enumerate() {
-        *slot = Some(ValueProjection(SolveCallDependency {
-            input: index,
-            coordinates: Some(Coordinates::identity(
-                body.slots()[index].value_type().dimensions().len(),
-            )),
-        }));
+        *slot = Some(ValueProjection(SolveCallDependency::exact(
+            index,
+            Coordinates::identity(body.slots()[index].value_type().dimensions().len()),
+        )));
     }
     let mut registers = vec![None; body.register_types().len()];
     for spanned in body.operations() {
         match spanned.operation() {
+            SolveOperation::CheckAssertion { .. } => return None,
             SolveOperation::Load { destination, slot } => {
                 registers[destination.index()] = slots[slot.index()].clone();
             }
@@ -74,6 +73,7 @@ pub(in crate::typed_program) fn derive(
                 owner,
                 arguments,
                 destinations,
+                ..
             } => substitute_call(
                 available.get(owner.index() as usize)?.projections?,
                 arguments,
@@ -112,7 +112,7 @@ fn substitute_call(
     for (destination, projection) in destinations.iter().zip(&summary.0) {
         let result = match projection {
             Some(ValueProjection(input)) => {
-                let argument = arguments.get(input.input)?;
+                let argument = arguments.get(input.first_input())?;
                 remap(
                     &registers[argument.index()],
                     input.coordinates.as_ref()?,

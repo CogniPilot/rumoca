@@ -143,9 +143,10 @@ fn lowered(
         .targets
         .iter()
         .map(|&index| Some(solve::scalar_slot_y(index)))
-        .collect();
+        .collect::<Vec<_>>()
+        .into();
     continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: basis
+        blocks: (basis
             .blocks
             .iter()
             .map(|&(row, y)| solve::AlgebraicProjectionBlock {
@@ -154,7 +155,8 @@ fn lowered(
                 tearing: None,
                 alternate_charts: Vec::new(),
             })
-            .collect(),
+            .collect::<Vec<_>>())
+        .into(),
     };
     let tangents = block(basis.tangents.clone(), "chart_jvp.mo");
     let mut artifacts = solve::SolveArtifacts {
@@ -183,11 +185,11 @@ fn lowered(
 /// The two-chart model; `a` carries a nominal ten times `q`'s.
 fn two_chart_model(solvable_alternate: bool) -> solve::SolveModel {
     let skeleton = solve::SolveProblem {
+        layout: crate::fixture_layout::named_y_layout(
+            rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 0),
+            vec!["x".to_string(), "q".to_string(), "a".to_string()],
+        ),
         solve_layout: solve::SolveLayout {
-            solver_maps: solve::SolverNameIndexMaps {
-                names: vec!["x".to_string(), "q".to_string(), "a".to_string()],
-                ..Default::default()
-            },
             state_scalar_count: 1,
             algebraic_scalar_count: 2,
             ..Default::default()
@@ -228,18 +230,23 @@ fn two_chart_model(solvable_alternate: bool) -> solve::SolveModel {
             }),
         ),
     ];
-    solve::SolveModel {
-        problem,
-        artifacts: solve::SolveArtifacts {
-            discrete: Default::default(),
-            continuous: artifacts,
+    crate::fixture_layout::with_visible_expressions(
+        solve::SolveModel {
+            problem,
+            artifacts: solve::SolveArtifacts {
+                discrete: Default::default(),
+                continuous: artifacts,
+                ..Default::default()
+            },
+            initial_y: vec![0.5, 0.5, 1.5].into(),
+            solver_nominals: vec![1.0, 1.0, 10.0],
+
             ..Default::default()
         },
-        initial_y: vec![0.5, 0.5, 1.5],
-        solver_nominals: vec![1.0, 1.0, 10.0],
-        visible_names: vec!["x".to_string(), "q".to_string(), "a".to_string()],
-        ..Default::default()
-    }
+        vec!["x".to_string(), "q".to_string(), "a".to_string()],
+        Default::default(),
+        Vec::new(),
+    )
 }
 
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
@@ -302,7 +309,7 @@ fn a_failed_transfer_leaves_the_active_chart_states_and_caches_unchanged() {
 fn a_saved_state_restores_with_an_alternate_that_was_never_built() {
     let mut kernel = instantiate(&two_chart_model(true));
     let primary = Rc::clone(&kernel.runtime);
-    let saved = kernel.fmu_state();
+    let saved = kernel.fmu_state().unwrap();
     assert!(
         saved.component.runtimes[1].is_none(),
         "an alternate is built only on first use"

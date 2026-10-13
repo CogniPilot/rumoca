@@ -52,7 +52,12 @@ pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
         backing: FmiValueBacking::MaxStepDuration,
         // FMI 3.0.2 forbids `start` where `initial="calculated"`, so the entry
         // has none to give rather than an empty or defaulted one.
-        start: None,
+        start_allowed: false,
+        declaration_start: crate::SolveDeclarationStart::Missing {
+            value_kind: crate::SolveVariableValueKind::Real,
+            count: 1,
+        },
+        effective_input_default: None,
         minimum: None,
         maximum: None,
         nominal: None,

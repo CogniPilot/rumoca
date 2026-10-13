@@ -137,21 +137,11 @@ impl ValueType {
         if self.scalar == ScalarType::Record {
             return None;
         }
-        if self.dimensions.is_empty() {
-            return (flat_index == 0).then(Vec::new);
+        let mut coordinates = rumoca_core::row_major_coordinates(&self.dimensions, flat_index)?;
+        for coordinate in &mut coordinates {
+            *coordinate = coordinate.checked_add(1)?;
         }
-        let scalar_count = self.scalar_count()?;
-        if flat_index >= scalar_count || self.dimensions.contains(&0) {
-            return None;
-        }
-        let mut remainder = flat_index;
-        let mut subscripts = Vec::with_capacity(self.dimensions.len());
-        for extent in self.dimensions.iter().rev() {
-            subscripts.push(u32::try_from(remainder % *extent as usize).ok()? + 1);
-            remainder /= *extent as usize;
-        }
-        subscripts.reverse();
-        Some(subscripts)
+        Some(coordinates)
     }
 
     pub fn is_record(&self) -> bool {

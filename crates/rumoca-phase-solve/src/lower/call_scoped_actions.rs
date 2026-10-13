@@ -99,7 +99,28 @@ pub(super) fn append_collected_actions<'dae>(
     events: &mut solve::SolveEventPartition,
     transactions: Vec<crate::lower::typed_functions::model_events::PendingEventTransaction<'dae>>,
 ) -> Result<Vec<solve::EventTransactionProgram>, LowerError> {
-    let collected = std::mem::take(&mut layout.call_scoped_actions.borrow_mut().actions);
+    let mut collected = std::mem::take(&mut layout.call_scoped_actions.borrow_mut().actions);
+    // A transaction publishes the predicates of the assertions it claims and the
+    // runtime projects them onto their actions, so a claimed action is not also
+    // observed through a separate invocation: its message is the authored text
+    // and its own condition cell stays unset.
+    let claimed = transactions
+        .iter()
+        .flat_map(|transaction| transaction.assertion_projections())
+        .collect::<std::collections::HashSet<_>>();
+    for action in &mut collected {
+        if action
+            .projection
+            .is_some_and(|projection| claimed.contains(&projection))
+        {
+            action.action.assertion_projection = None;
+            action.root_program = None;
+            action.action_program = CollectedCallAssertionProgram::Ready(vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]);
+        }
+    }
     let action_indices = if collected.is_empty() {
         HashMap::new()
     } else {

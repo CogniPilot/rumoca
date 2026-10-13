@@ -187,7 +187,7 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
     plan: &solve::AlgebraicProjectionPlan,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
     let mut scales = Vec::new();
-    for (block_index, block) in plan.blocks.iter().enumerate() {
+    for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
         let structure = model.algebraic_projection_block_structure(block_index);
         let jacobian =
             algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
@@ -197,7 +197,7 @@ pub(super) fn algebraic_plan_row_scales<M: ImplicitProjectionModel>(
                 y,
                 block,
                 &jacobian,
-                structure.map(solve::JacobianStructure::pattern),
+                structure.map(solve::ColoredJacobianStructure::pattern),
             )
             .0,
         );
@@ -221,11 +221,11 @@ pub(super) fn initial_residual_scales<M: AlgebraicProjectionModel>(
                 .map_or(1.0, |index| model_variable_scale(model, index, y[index]))
         })
         .collect::<Vec<_>>();
-    for (block_index, block) in plan.blocks.iter().enumerate() {
+    for (block_index, block) in plan.blocks.scalar_blocks().iter().enumerate() {
         let jacobian = initial_block_jacobian(model, y, p, t, &block.rows, &block.y_indices)?;
         let structure = model
             .initial_projection_block_structure(block_index)
-            .map(solve::JacobianStructure::pattern);
+            .map(solve::ColoredJacobianStructure::pattern);
         let block_scales = initial_block_scales(model, y, block, &jacobian, structure).0;
         for (&row, scale) in block.rows.iter().zip(block_scales) {
             let Some(slot) = scales.get_mut(row) else {

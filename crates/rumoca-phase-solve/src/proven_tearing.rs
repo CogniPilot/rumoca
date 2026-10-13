@@ -19,7 +19,7 @@ pub(crate) fn retear_unproven_blocks(
 ) -> Result<(), EvalSolveError> {
     let blocks = &problem.continuous.algebraic_projection_plan.blocks;
     if blocks
-        .iter()
+        .explicit_blocks()
         .filter_map(|block| block.tearing.as_ref())
         .all(|tearing| tearing.causal_steps.is_empty())
     {
@@ -29,9 +29,20 @@ pub(crate) fn retear_unproven_blocks(
         rumoca_eval_solve::to_scalar_program_projection(&problem.continuous.implicit_rhs)?
             .into_block(),
     )?;
-    for block in &mut problem.continuous.algebraic_projection_plan.blocks {
+    let blocks = &problem.continuous.algebraic_projection_plan.blocks;
+    let targets_shared = problem
+        .continuous
+        .implicit_row_targets
+        .shares_projection_owner(blocks);
+    let rewritten = blocks.map_explicit_blocks(|block| {
         retear_block(block, &prepared);
+        Ok::<_, EvalSolveError>(())
+    })?;
+    if targets_shared {
+        problem.continuous.implicit_row_targets =
+            solve::ImplicitRowTargets::from_projection(&rewritten);
     }
+    problem.continuous.algebraic_projection_plan.blocks = rewritten;
     Ok(())
 }
 

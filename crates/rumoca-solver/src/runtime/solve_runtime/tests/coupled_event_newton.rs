@@ -105,11 +105,11 @@ fn coupled_event_model(discrete_jvp: bool) -> solve::SolveModel {
     let (implicit_jvp, discrete_jvp_rows) = coupled_event_jvp_rows();
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
+            layout: crate::fixture_layout::named_y_layout(
+                rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 1),
+                vec!["y".to_string()],
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["y".to_string()],
-                    ..Default::default()
-                },
                 algebraic_scalar_count: 1,
                 compiled_parameter_len: 1,
                 discrete_real_scalar_names: vec!["z".to_string()],
@@ -117,14 +117,15 @@ fn coupled_event_model(discrete_jvp: bool) -> solve::SolveModel {
             },
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                implicit_row_targets: (vec![Some(solve::scalar_slot_y(0))]).into(),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
+                    blocks: (vec![solve::AlgebraicProjectionBlock {
                         rows: vec![0],
                         y_indices: vec![0],
                         tearing: None,
                         alternate_charts: Vec::new(),
-                    }],
+                    }])
+                    .into(),
                 },
                 ..Default::default()
             },
@@ -140,8 +141,8 @@ fn coupled_event_model(discrete_jvp: bool) -> solve::SolveModel {
             },
             ..Default::default()
         },
-        initial_y: vec![0.0],
-        parameters: vec![0.0],
+        initial_y: vec![0.0].into(),
+        parameters: vec![0.0].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(&mut model, implicit_jvp, "coupled_event_implicit_jvp.mo");
@@ -163,16 +164,19 @@ fn solve_coupled(model: &solve::SolveModel) -> Result<(Vec<f64>, Vec<f64>), Runt
         root_relation_overrides: &[],
         event_iteration: 0,
     };
-    runtime.solve_coupled_event_rows(
-        &snapshot,
-        &mut DiscreteRowsSettleInput {
-            y: &mut y,
-            p: &mut p,
-            t: 0.0,
-            tol: 1.0e-12,
-            max_iters: 20,
-        },
-    )?;
+    runtime
+        .scalar_execution()
+        .unwrap()
+        .solve_coupled_event_rows(
+            &snapshot,
+            &mut DiscreteRowsSettleInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1.0e-12,
+                max_iters: 20,
+            },
+        )?;
     Ok((y, p))
 }
 

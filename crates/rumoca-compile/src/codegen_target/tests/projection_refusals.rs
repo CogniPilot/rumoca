@@ -11,18 +11,22 @@ fn with_alternate_chart() -> solve::SolveProblem {
     let mut projection = solve_with_dependent_algebraic_assignments()
         .continuous
         .algebraic_projection_plan;
-    projection.blocks[0]
-        .alternate_charts
-        .push(solve::BlockTearing {
-            tear_y_indices: vec![0],
-            residual_rows: vec![0],
-            causal_steps: Vec::new(),
-        });
+    let mut blocks = projection.blocks.scalar_blocks().to_vec();
+    blocks[0].alternate_charts.push(solve::BlockTearing {
+        tear_y_indices: vec![0],
+        residual_rows: vec![0],
+        causal_steps: Vec::new(),
+    });
+    projection.blocks = blocks.into();
     solve_with_dependent_algebraic_projection(projection)
 }
 
 fn render_error(problem: solve::SolveProblem) -> String {
     let model = solve::SolveModel {
+        initial_y: solve::SolveInitialValues::repeat(0.0, problem.layout.y_scalars())
+            .expect("fixture initial values fit the layout"),
+        parameters: solve::SolveInitialValues::repeat(0.0, problem.layout.p_scalars())
+            .expect("fixture parameter values fit the layout"),
         problem,
         ..solve::SolveModel::default()
     };
@@ -64,7 +68,15 @@ fn solve_with_unsettled_algebraic_coordinate() -> solve::SolveProblem {
     let row = problem.continuous.refresh_owners.algebraic().rows[0].clone();
     let partial = solve::RefreshPlan {
         simultaneous_plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![problem.continuous.algebraic_projection_plan.blocks[0].clone()],
+            blocks: (vec![
+                problem
+                    .continuous
+                    .algebraic_projection_plan
+                    .blocks
+                    .scalar_blocks()[0]
+                    .clone(),
+            ])
+            .into(),
         },
         simultaneous_block_indices: vec![0],
         rows: vec![row],

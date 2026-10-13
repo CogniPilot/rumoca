@@ -51,7 +51,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         };
         let dst = self.solve_unary(op, operand, span)?;
         if operator == LoweredUnaryOperator::Negate {
-            self.record_negation(dst, operand);
+            self.record_negation(dst, operand)?;
         }
         let integer = self
             .integer_register(operand)
@@ -59,7 +59,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 LoweredUnaryOperator::Negate => value.checked_neg(),
                 LoweredUnaryOperator::Not => Some(i64::from(value == 0)),
             });
-        self.set_integer_register(dst, integer);
+        self.set_integer_register(dst, integer)?;
         Ok(dst)
     }
 
@@ -108,34 +108,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
             }
             dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower => {
-                match self.integer_register(rhs).and_then(product_power_factors) {
-                    Some(2) => solve::LinearOp::Binary {
-                        dst,
-                        op: solve::BinaryOp::Mul,
-                        lhs,
-                        rhs: lhs,
-                    },
-                    Some(3) => {
-                        let square = self.register(span)?;
-                        self.ops.push(solve::LinearOp::Binary {
-                            dst: square,
-                            op: solve::BinaryOp::Mul,
-                            lhs,
-                            rhs: lhs,
-                        });
-                        solve::LinearOp::Binary {
-                            dst,
-                            op: solve::BinaryOp::Mul,
-                            lhs: square,
-                            rhs: lhs,
-                        }
-                    }
-                    _ => solve::LinearOp::Binary {
-                        dst,
-                        op: solve::BinaryOp::Pow,
-                        lhs,
-                        rhs,
-                    },
+                solve::LinearOp::Binary {
+                    dst,
+                    op: solve::BinaryOp::Pow,
+                    lhs,
+                    rhs,
                 }
             }
             dae::BinaryOperator::And => solve::LinearOp::Binary {
@@ -157,10 +134,41 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 rhs,
             },
         };
-        self.ops.push(operation);
+        self.emit(operation)?;
         let integer = self.integer_binary_result(operator, lhs, rhs);
-        self.set_integer_register(dst, integer);
+        self.set_integer_register(dst, integer)?;
         Ok(dst)
+    }
+
+    /// `lhs` raised to a literal Integer exponent as the shared plan of the
+    /// canonical integer-power rule.
+    fn literal_power(
+        &mut self,
+        lhs: solve::Reg,
+        plan: LiteralPower,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let one = self.constant(1.0, span)?;
+        if plan.magnitude == 0 {
+            return Ok(one);
+        }
+        let base = if plan.reciprocal {
+            self.binary(dae::BinaryOperator::Divide, one, lhs, span)?
+        } else {
+            lhs
+        };
+        let mut values = vec![base];
+        let mut latest = base;
+        for (first, second) in plan.steps() {
+            latest = self.binary(
+                dae::BinaryOperator::Multiply,
+                values[first],
+                values[second],
+                span,
+            )?;
+            values.push(latest);
+        }
+        Ok(latest)
     }
 
     fn integer_binary_result(
@@ -231,8 +239,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } else {
             scalar
         };
+        let integer_exponent =
+            self.node(rhs).value_type().scalar_type() == dae::ScalarType::Integer;
         let lhs = self.expression(lhs, lhs_scalar)?;
         let rhs = self.expression(rhs, rhs_scalar)?;
+        if integer_exponent
+            && matches!(
+                operator,
+                dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower
+            )
+            && let Some(exponent) = self.integer_register(rhs)
+        {
+            return self.literal_power(lhs, LiteralPower::new(exponent), span);
+        }
         self.binary(operator, lhs, rhs, span)
     }
 
@@ -299,7 +318,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let lhs_start = self.pack_expression(lhs)?;
         let rhs_start = self.pack_expression(rhs)?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorBinary {
+        self.emit(solve::LinearOp::TensorBinary {
             dst_start,
             op,
             lhs_start,
@@ -308,7 +327,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             lhs_stride: usize::from(lhs_count != 1),
             rhs_stride: usize::from(rhs_count != 1),
             lanes: 1,
-        });
+        })?;
         self.tensor_binary_cache.insert(key, (dst_start, count));
         (scalar < count)
             .then(|| Some(dst_start + scalar as solve::Reg))
@@ -487,7 +506,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .checked_mul(columns)
             .ok_or_else(|| LowerError::contract("matrix product output extent overflow", span))?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::MatrixMultiply {
+        self.emit(solve::LinearOp::MatrixMultiply {
             dst_start,
             lhs_start,
             rhs_start,
@@ -495,7 +514,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             inner,
             columns,
             lanes,
-        });
+        })?;
         self.matrix_multiply_cache.insert(key, (dst_start, count));
         (scalar < count)
             .then(|| dst_start + scalar as solve::Reg)
@@ -559,11 +578,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return Ok(value);
         }
         let dst = self.register(span)?;
-        self.ops.push(solve::LinearOp::Unary {
+        self.emit(solve::LinearOp::Unary {
             dst,
             op,
             arg: argument,
-        });
+        })?;
         self.unary_values.insert(key, dst);
         Ok(dst)
     }

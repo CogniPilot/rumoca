@@ -23,8 +23,9 @@ use crate::temporal::{DelayEntry, DelayKind};
 use crate::{
     AlgebraicId, ClockId, ClockTransferKind, DaeConstructionError, DaeProvenance, DelayCoordinate,
     DelayId, DiscreteRealId, DiscreteValueId, DomainBinderId, DomainId, ExprId,
-    FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
-    InputId, ParameterId, PeriodicClockId, PositiveParameter, StateId, ValueTypeId,
+    FunctionConditionalId, FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId,
+    FunctionValueId, InputId, ParameterId, PeriodicClockId, PositiveParameter, StateId,
+    ValueTypeId,
 };
 use derived_facts::{definition_type, max_variability, merge_binder_domain, merged_binder_domain};
 use function_facts::{FunctionCallFact, node_function_facts};
@@ -37,7 +38,8 @@ use type_rules::{
 
 pub(crate) use arena::{ExpressionArenaStorage, FrozenExpressionArenaStorage, OperandRange};
 pub(crate) use function_nodes::{
-    insert_function_fold_output, insert_function_fold_parameter, insert_function_value_use,
+    insert_function_conditional_output, insert_function_fold_output,
+    insert_function_fold_parameter, insert_function_value_use,
 };
 pub use nodes::{BinaryOperator, CoordinateInput, PureBuiltin, UnaryOperator};
 pub(crate) use nodes::{Coordinate, ExprNode, PackedSubscript, PackedSubscriptKind};

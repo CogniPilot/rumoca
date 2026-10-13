@@ -130,6 +130,20 @@ impl std::fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
+impl From<rumoca_eval_solve::ad::SolveDerivationError> for LowerError {
+    fn from(error: rumoca_eval_solve::ad::SolveDerivationError) -> Self {
+        use rumoca_eval_solve::ad::SolveDerivationError;
+        match error {
+            SolveDerivationError::ContractViolation { reason, span } => {
+                Self::ContractViolation { reason, span }
+            }
+            SolveDerivationError::UnspannedContractViolation { reason } => {
+                Self::UnspannedContractViolation { reason }
+            }
+        }
+    }
+}
+
 impl PhaseError for LowerError {
     fn to_diagnostic(&self) -> Diagnostic {
         match self.source_span() {

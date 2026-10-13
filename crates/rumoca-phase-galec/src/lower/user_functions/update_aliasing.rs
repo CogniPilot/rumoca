@@ -1173,7 +1173,8 @@ fn read_function_value<'dae>(
     operation: dae::ExpressionOperation<'dae>,
 ) -> Option<dae::FunctionValueId<'dae>> {
     let (fold, carried) = match operation {
-        dae::ExpressionOperation::FunctionValue { value, .. } => return Some(value),
+        dae::ExpressionOperation::FunctionValue { value, .. }
+        | dae::ExpressionOperation::FunctionConditionalOutput { value, .. } => return Some(value),
         dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
         | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => (fold, carried),
         _ => return None,

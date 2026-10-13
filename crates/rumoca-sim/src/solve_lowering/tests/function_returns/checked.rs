@@ -263,9 +263,9 @@ fn a_record_output_default_survives_the_return_guard_lowering() {
 /// One store into a function value, as the lowered body ordered them.
 struct OutputStore<'dae> {
     rhs: dae::ExprId<'dae>,
-    /// Which arm of a conditional group the store sits in (its fallback is
-    /// `Some(branch_count)`); `None` for a store that is not inside one.
-    branch: Option<usize>,
+    /// Selected branch ordinals from the outermost conditional inward.
+    /// Each fallback uses its conditional's branch count; empty is top-level.
+    branch: Vec<usize>,
     /// Whether the store sits inside a generated `for` body.
     ///
     /// Tracked separately from `branch` because a loop body is *also* not
@@ -280,56 +280,38 @@ impl OutputStore<'_> {
     /// A plain top-level body statement: not in a conditional arm, not in a
     /// loop. Only such a store can be the §12.4.4 declaration binding.
     fn is_unconditional(&self) -> bool {
-        self.branch.is_none() && !self.in_loop
+        self.branch.is_empty() && !self.in_loop
     }
 }
 
 fn append_assignment_group_stores<'dae>(
     definitions: dae::FunctionDefinitionValues<'dae>,
-    conditional: Option<dae::FunctionConditionalView<'dae>>,
     target: dae::FunctionValueId<'dae>,
+    branch: &[usize],
     in_loop: bool,
     stores: &mut Vec<OutputStore<'dae>>,
 ) {
-    for (ordinal, definition) in definitions.iter().enumerate() {
-        if definition.target() != target {
-            continue;
-        }
-        let Some(conditional) = conditional else {
-            stores.push(OutputStore {
-                rhs: definition.rhs(),
-                branch: None,
-                in_loop,
-            });
-            continue;
-        };
-        for branch in 0..conditional.branch_count() {
-            let values = conditional
-                .branch(branch)
-                .expect("a checked conditional group resolves every branch");
-            stores.extend(values.into_iter().nth(ordinal).map(|rhs| OutputStore {
-                rhs,
-                branch: Some(branch),
-                in_loop,
-            }));
-        }
-        stores.extend(conditional.fallback().nth(ordinal).map(|rhs| OutputStore {
-            rhs,
-            branch: Some(conditional.branch_count()),
+    for definition in definitions
+        .iter()
+        .filter(|definition| definition.target() == target)
+    {
+        stores.push(OutputStore {
+            rhs: definition.rhs(),
+            branch: branch.to_vec(),
             in_loop,
-        }));
+        });
     }
 }
 
-/// Every store into `target`, in lowered-body order, including the arms of a
-/// conditional group and the bodies of generated loops.
+/// Every authored store into `target`, in lexical body order, including
+/// selected-branch prefixes and generated loop bodies.
 ///
-/// Written against `FunctionStatementView` exhaustively rather than against the
-/// seeding code, so a seed emitted through a *different* statement form than
-/// today's is still collected instead of silently skipped.
+/// The exhaustive statement match records actual assignments rather than
+/// conditional output metadata, so every store is counted once.
 fn output_stores<'dae>(
     statements: dae::FunctionStatements<'dae>,
     target: dae::FunctionValueId<'dae>,
+    branch: &[usize],
     in_loop: bool,
     stores: &mut Vec<OutputStore<'dae>>,
 ) {
@@ -339,19 +321,32 @@ fn output_stores<'dae>(
                 if definition.target() == target {
                     stores.push(OutputStore {
                         rhs: definition.rhs(),
-                        branch: None,
+                        branch: branch.to_vec(),
                         in_loop,
                     });
                 }
             }
-            dae::FunctionStatementView::AssignmentGroup {
-                definitions,
-                conditional,
-            } => append_assignment_group_stores(definitions, conditional, target, in_loop, stores),
+            dae::FunctionStatementView::AssignmentGroup { definitions } => {
+                append_assignment_group_stores(definitions, target, branch, in_loop, stores);
+            }
+            dae::FunctionStatementView::Conditional { conditional } => {
+                for (index, arm) in conditional
+                    .branches()
+                    .chain(std::iter::once(conditional.fallback()))
+                    .enumerate()
+                {
+                    let mut selected = branch.to_vec();
+                    selected.push(index);
+                    output_stores(arm.statements(), target, &selected, in_loop, stores);
+                }
+            }
             dae::FunctionStatementView::For {
                 statements: body, ..
-            } => output_stores(body, target, true, stores),
-            dae::FunctionStatementView::Assertion { .. } => {}
+            } => {
+                output_stores(body, target, branch, true, stores);
+            }
+            dae::FunctionStatementView::Assertion { .. }
+            | dae::FunctionStatementView::RequireAssigned { .. } => {}
         }
     }
 }
@@ -373,11 +368,11 @@ fn describe_stores<'dae>(view: dae::DaeView<'dae>, stores: &[OutputStore<'dae>])
     stores
         .iter()
         .map(|store| {
-            let where_ = match (store.branch, store.in_loop) {
-                (None, false) => "body".to_owned(),
-                (None, true) => "loop body".to_owned(),
-                (Some(branch), false) => format!("branch {branch}"),
-                (Some(branch), true) => format!("loop body, branch {branch}"),
+            let where_ = match (store.branch.as_slice(), store.in_loop) {
+                ([], false) => "body".to_owned(),
+                ([], true) => "loop body".to_owned(),
+                (branch, false) => format!("branch path {branch:?}"),
+                (branch, true) => format!("loop body, branch path {branch:?}"),
             };
             match stored_real(view, store.rhs) {
                 Some(value) => format!("{where_}: constant {value}"),
@@ -438,7 +433,7 @@ fn a_declared_output_default_is_the_live_seed_of_the_lowered_body() {
             })
             .expect("`y` is the declared output of defaultedReturn");
         let mut stores = Vec::new();
-        output_stores(function.statements(), output.id(), false, &mut stores);
+        output_stores(function.statements(), output.id(), &[], false, &mut stores);
         let rendered = describe_stores(view, &stores);
 
         let constants = stores

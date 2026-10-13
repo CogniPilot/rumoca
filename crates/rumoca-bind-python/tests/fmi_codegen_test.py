@@ -32,7 +32,9 @@ def _render(target: str, expected: set[str]) -> dict[str, str]:
     files = dict(pairs)
     assert len(files) == len(pairs) == len(result), "paths must be unique"
     assert result.paths == [path for path, _ in pairs]
-    assert set(files) == expected, f"{target}: incomplete rendered source set"
+    assert set(files) == expected, (
+        f"{target}: rendered source set {sorted(files)} does not match {sorted(expected)}"
+    )
     assert [(file.path, file.content) for file in result.files] == pairs
     for path, content in pairs:
         relative = PurePosixPath(path)
@@ -115,7 +117,15 @@ def test_codegen_fmi3_sources_and_metadata() -> None:
 
 
 def test_codegen_fmi_ls_wasm_rendered_component_sources() -> None:
-    expected = {"Cargo.toml", "build.rs", "src/lib.rs", "UPSTREAM.md", "csrc/model.h"}
+    expected = {
+        "Cargo.toml",
+        "build.rs",
+        "src/lib.rs",
+        "UPSTREAM.md",
+        "csrc/model.h",
+        "modelDescription.xml",
+        "extra/org.modelica.fmi-ls-wasm/manifest.xml",
+    }
     expected.update("csrc/" + name for name in TRANSLATION_UNITS)
     files = _render("fmi-ls-wasm", expected)
     assert 'crate-type = ["cdylib"]' in files["Cargo.toml"]

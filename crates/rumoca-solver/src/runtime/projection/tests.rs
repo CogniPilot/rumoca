@@ -3,6 +3,7 @@ mod affine_elimination;
 mod certification;
 mod colored_rows;
 mod column_gradient;
+mod combined_names;
 mod manifold;
 mod order_robustness;
 mod row_scoped_initial_residual;
@@ -30,6 +31,7 @@ fn project_initial_y_plan<M: AlgebraicProjectionModel>(
         iterates_discretes: false,
         blocks: plan
             .blocks
+            .scalar_blocks()
             .iter()
             .map(|block| solve::InitializationProjectionBlock {
                 rows: block.rows.clone(),
@@ -86,10 +88,6 @@ impl ImplicitProjectionModel for PoorlyScaledProjectionModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("x")
     }
 }
 
@@ -180,14 +178,6 @@ impl ImplicitProjectionModel for ReverseOrderedResistorModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
-        match row_idx {
-            0 => Some("current"),
-            1 => Some("voltage"),
-            _ => None,
-        }
-    }
 }
 
 impl ImplicitProjectionModel for ScaledContinuousAssignmentModel {
@@ -241,10 +231,6 @@ impl ImplicitProjectionModel for ScaledContinuousAssignmentModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("current")
     }
 
     fn variable_scale_for_y_index(&self, _y_index: usize) -> f64 {
@@ -316,10 +302,6 @@ impl ImplicitProjectionModel for ContinuousCausalAssignmentModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("x")
     }
 }
 
@@ -409,10 +391,6 @@ impl ImplicitProjectionModel for ReverseRowProjectionModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
-    }
 }
 
 impl ImplicitProjectionModel for SparseRowSelectiveProjectionModel {
@@ -479,10 +457,6 @@ impl ImplicitProjectionModel for SparseRowSelectiveProjectionModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
     }
 }
 
@@ -558,10 +532,6 @@ impl ImplicitProjectionModel for RowSelectiveBlockProjectionModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
     }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
-    }
 }
 
 #[test]
@@ -571,12 +541,13 @@ fn coupled_projection_uses_selected_residual_and_jacobian_rows() {
         residual_row_calls: Cell::new(0),
         jacobian_row_calls: Cell::new(0),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0, 0.0];
@@ -597,12 +568,13 @@ fn coupled_projection_skips_structurally_zero_jacobian_entries() {
         full_jacobian_calls: Cell::new(0),
         jacobian_row_calls: Cell::new(0),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0, 0.0];
@@ -622,12 +594,13 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
         residual_row_calls: Cell::new(0),
         jacobian_row_calls: Cell::new(0),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let y = vec![2.0, 3.0];
@@ -690,10 +663,6 @@ impl ImplicitProjectionModel for BlockProjectionModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
     }
 }
 
@@ -768,10 +737,6 @@ impl ImplicitProjectionModel for InitialCausalAssignmentModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("x")
     }
 }
 
@@ -868,10 +833,6 @@ impl ImplicitProjectionModel for RectInitialProjectionModel {
             std::sync::OnceLock::new();
         PLAN.get_or_init(solve::AlgebraicProjectionPlan::default)
     }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
-    }
 }
 
 impl AlgebraicProjectionModel for RectInitialProjectionModel {
@@ -943,8 +904,12 @@ impl ImplicitProjectionModel for TargetedInitialProjectionModel {
         PLAN.get_or_init(solve::AlgebraicProjectionPlan::default)
     }
 
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("target")
+    fn target_name_for_row(&self, row_idx: usize) -> Option<String> {
+        Some(format!("unknown{row_idx}"))
+    }
+
+    fn variable_name_for_y_index(&self, y_index: usize) -> Option<String> {
+        Some(format!("y{y_index}"))
     }
 }
 
@@ -1017,17 +982,14 @@ impl ImplicitProjectionModel for CoupledTargetedInitialProjectionModel {
         static PLAN: std::sync::OnceLock<solve::AlgebraicProjectionPlan> =
             std::sync::OnceLock::new();
         PLAN.get_or_init(|| solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         })
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("target")
     }
 }
 
@@ -1068,7 +1030,7 @@ impl AlgebraicProjectionModel for CoupledTargetedInitialProjectionModel {
 fn project_algebraics_uses_solve_projection_plan_blocks() {
     let model = BlockProjectionModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
@@ -1081,7 +1043,8 @@ fn project_algebraics_uses_solve_projection_plan_blocks() {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         },
         initial_residual_len: 0,
     };
@@ -1097,12 +1060,13 @@ fn project_algebraics_uses_solve_projection_plan_blocks() {
 fn project_algebraics_backtracks_to_variable_resolution() {
     let model = PoorlyScaledProjectionModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0];
@@ -1181,7 +1145,7 @@ fn check_singleton_assignment_queries(affine: bool, torn: bool) {
         target_value: 5.0,
         exact_assignment: true,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: torn.then(|| solve::BlockTearing {
@@ -1190,7 +1154,8 @@ fn check_singleton_assignment_queries(affine: bool, torn: bool) {
                     causal_steps: vec![],
                 }),
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0];
@@ -1224,12 +1189,13 @@ fn resistor_assignment_reports_sub_tolerance_current_as_semantic_progress() {
         target_value: voltage / resistance,
         variable_scale: 1.0,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut current = vec![0.0];
@@ -1238,7 +1204,7 @@ fn resistor_assignment_reports_sub_tolerance_current_as_semantic_progress() {
         &mut current,
         &[],
         0.0,
-        &model.plan.blocks[0],
+        &model.plan.blocks.scalar_blocks()[0],
         1.0e-6,
     )
     .expect("resistor assignment should evaluate")
@@ -1262,7 +1228,7 @@ fn reverse_ordered_resistor_blocks_revisit_a_locally_settled_current() {
         plan: solve::AlgebraicProjectionPlan {
             // The current row is intentionally visited before its voltage
             // producer, matching a valid non-causal BLT fallback order.
-            blocks: vec![
+            blocks: (vec![
                 solve::AlgebraicProjectionBlock {
                     rows: vec![0],
                     y_indices: vec![0],
@@ -1275,7 +1241,8 @@ fn reverse_ordered_resistor_blocks_revisit_a_locally_settled_current() {
                     tearing: None,
                     alternate_charts: Vec::new(),
                 },
-            ],
+            ])
+            .into(),
         },
     };
     let mut y = vec![0.0, 0.0];
@@ -1296,12 +1263,13 @@ fn algebraic_seed_certifies_residual_in_row_units() {
         target_value: 1.0 + 1.0e-5,
         variable_scale: 1.0,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0];
@@ -1333,12 +1301,13 @@ fn coupled_projection_prefers_complete_reverse_row_gradients() {
         forward_jvp_calls: Cell::new(0),
         reverse_row_calls: Cell::new(0),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0, 1],
                 y_indices: vec![0, 1],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0, 0.0];
@@ -1356,12 +1325,13 @@ fn coupled_projection_prefers_complete_reverse_row_gradients() {
 fn partial_projection_ignores_unselected_residuals_and_unknowns() {
     let model = BlockProjectionModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
         initial_residual_len: 0,
     };
@@ -1385,12 +1355,13 @@ fn continuous_singleton_assignment_does_not_accept_inexact_improvement() {
         target_value: 4.0,
         exact_assignment: false,
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0];
@@ -1409,12 +1380,13 @@ fn initial_singleton_assignment_is_certified_by_complete_residual() {
         initial_residual_calls: Cell::new(0),
         initial_residual_row_calls: Cell::new(0),
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
     };
     let mut y = vec![0.0];
@@ -1435,12 +1407,13 @@ fn initial_singleton_assignment_is_certified_by_complete_residual() {
 fn initial_projection_rejects_omitted_residual_and_restores_candidate() {
     let model = BlockProjectionModel {
         plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         },
         initial_residual_len: 2,
     };
@@ -1601,17 +1574,14 @@ impl ImplicitProjectionModel for ScaledResidualProjectionModel {
         static PLAN: std::sync::OnceLock<solve::AlgebraicProjectionPlan> =
             std::sync::OnceLock::new();
         PLAN.get_or_init(|| solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
+            blocks: (vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
                 y_indices: vec![0],
                 tearing: None,
                 alternate_charts: Vec::new(),
-            }],
+            }])
+            .into(),
         })
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
     }
 
     fn variable_scale_for_y_index(&self, _y_index: usize) -> f64 {
@@ -1730,12 +1700,13 @@ fn project_initial_variables_uses_compiler_plan_indices() {
 fn project_initial_variables_rejects_plan_rows_outside_residual_vector() {
     let model = CoupledTargetedInitialProjectionModel;
     let plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![2],
             y_indices: vec![0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     let mut y = vec![0.0, 0.0];
 
@@ -1777,10 +1748,6 @@ impl ImplicitProjectionModel for ParameterInitialProjectionModel {
 
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
         &self.algebraic_plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("p")
     }
 }
 

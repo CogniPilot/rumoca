@@ -19,6 +19,26 @@ struct CoordinateExtent {
     input_start: usize,
 }
 
+/// Whether binary64 holds `value` exactly.
+pub(in crate::lower) fn integer_is_exact_binary64(value: i64) -> bool {
+    value.unsigned_abs() <= 1 << 53
+}
+
+/// The Real value of an Integer, refused when binary64 cannot hold it exactly:
+/// scalar row programs store every coordinate as binary64, so an Integer
+/// beyond 2^53 would otherwise round silently.
+pub(super) fn integer_as_real(value: i64, span: Span) -> Result<f64, LowerError> {
+    if !integer_is_exact_binary64(value) {
+        return Err(LowerError::unsupported(
+            format!(
+                "Integer value {value} is not exactly representable in binary64 scalar row storage"
+            ),
+            span,
+        ));
+    }
+    Ok(value as f64)
+}
+
 fn tensor_coordinate_index(base: usize, scalar: usize, span: Span) -> Result<usize, LowerError> {
     base.checked_add(scalar)
         .ok_or_else(|| LowerError::contract("tensor coordinate storage extent overflow", span))
@@ -102,14 +122,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             span,
         )?;
         let dst_start = self.register_range(count, span)?;
-        self.ops.push(solve::LinearOp::TensorLoad {
+        self.emit(solve::LinearOp::TensorLoad {
             dst_start,
             input,
             input_start,
             count,
             seed_start: None,
             lanes: 1,
-        });
+        })?;
         self.tensor_load_cache.insert(key, (dst_start, count));
         Ok(Some(dst_start))
     }
@@ -190,7 +210,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let value = start
             .checked_add(scaled)
             .ok_or_else(|| LowerError::contract("range scalar addition overflow", span))?;
-        self.constant(value as f64, span)
+        self.constant(integer_as_real(value, span)?, span)
     }
 
     pub(super) fn literal(
@@ -200,8 +220,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let value = match value {
             dae::DaeLiteral::Real(value) => *value,
-            dae::DaeLiteral::Integer(value) => *value as f64,
-            dae::DaeLiteral::Enumeration(value) => *value as f64,
+            dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value) => {
+                integer_as_real(*value, span)?
+            }
             dae::DaeLiteral::Boolean(value) => f64::from(*value),
             dae::DaeLiteral::String(_) => {
                 return Err(LowerError::unsupported(
@@ -313,7 +334,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .get(ordinal)
             .copied()
             .ok_or_else(|| LowerError::contract("binder ordinal is out of range", span))?;
-        self.constant(value as f64, span)
+        self.constant(integer_as_real(value, span)?, span)
     }
 
     // SPEC_0021: Exception - exhaustive coordinate dispatch, including scoped binders.
@@ -335,7 +356,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         if matches!(coordinate, dae::CoordinateView::Time) {
             let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::LoadTime { dst });
+            self.emit(solve::LinearOp::LoadTime { dst })?;
             return Ok(dst);
         }
         if let dae::CoordinateView::ClockInterval(clock) = coordinate {
@@ -402,10 +423,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let dst = self.register(span)?;
         match slot {
             solve::ScalarSlot::Y { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadY { dst, index });
+                self.emit(solve::LinearOp::LoadY { dst, index })?;
             }
             solve::ScalarSlot::P { index, .. } => {
-                self.ops.push(solve::LinearOp::LoadP { dst, index });
+                self.emit(solve::LinearOp::LoadP { dst, index })?;
             }
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
                 unreachable!("variable layouts contain only Y/P slots")

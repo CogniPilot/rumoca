@@ -752,7 +752,8 @@ fn reconstruct_next_expression<'dae>(
         }
         ExprNodeWire::FunctionValue { .. }
         | ExprNodeWire::FunctionFoldParameter { .. }
-        | ExprNodeWire::FunctionFoldOutput { .. } => {
+        | ExprNodeWire::FunctionFoldOutput { .. }
+        | ExprNodeWire::FunctionConditionalOutput { .. } => {
             return Ok(false);
         }
         ExprNodeWire::RuntimeQuotientOwner {
@@ -1083,7 +1084,9 @@ fn rebuild_node<'dae>(
             rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
         }
         ExprNodeWire::FunctionValue { .. } => Err(malformed("expressions.nodes.function_value")),
-        ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
+        ExprNodeWire::FunctionFoldParameter { .. }
+        | ExprNodeWire::FunctionFoldOutput { .. }
+        | ExprNodeWire::FunctionConditionalOutput { .. } => {
             Err(malformed("expressions.nodes.function_fold"))
         }
         node @ ExprNodeWire::ClockTransfer { .. } => {

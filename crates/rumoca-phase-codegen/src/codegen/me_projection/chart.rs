@@ -248,6 +248,7 @@ fn slope_geometry(
 ) -> Result<SlopeGeometry, CodegenError> {
     let blocks = plan
         .blocks
+        .scalar_blocks()
         .iter()
         .filter(|block| block.y_indices.iter().any(|y| dependent.contains(y)))
         .collect::<Vec<_>>();

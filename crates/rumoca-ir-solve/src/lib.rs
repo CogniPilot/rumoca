@@ -7,6 +7,7 @@
 // SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 mod affinity;
+mod assertion_observation;
 mod certificate;
 #[cfg(test)]
 mod certificate_tests;
@@ -16,29 +17,37 @@ mod compact_pattern;
 mod compute_block_tests;
 mod continuous_wire;
 mod event_writes;
+mod exact_initial_values;
+mod fault;
 mod feature_query;
 pub mod fmi;
+mod initial_values;
 mod initialization;
 mod layout;
 mod linear_op;
 mod model;
 mod parameter_classification;
 mod parameter_reads;
+mod projection_stages;
 mod quotient_memory;
 mod refresh;
 mod root_search;
+mod scalar_names;
+mod scalar_output_placements;
+mod scalar_program_output_spans;
 mod scalar_program_outputs;
 #[cfg(test)]
 mod scalar_program_tests;
 mod sensitivity;
 mod shape_error;
 mod static_parameters;
+mod storage_run_index;
 mod tangent_lanes;
 mod typed_program;
 mod variable_bounds;
+mod visible;
 pub mod visitor;
 
-use indexmap::IndexMap;
 use rumoca_core::{
     ExternalTableData, ProvenanceSpan, SourceId, Span, StructuredIndexDomain,
     StructuredIndexDomainError,
@@ -47,6 +56,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+pub use scalar_output_placements::{
+    ScalarOutputPlacementView, ScalarOutputSegment, ScalarProgramOutputPlacement,
+};
+use scalar_output_placements::{ScalarOutputPlacements, ScalarOutputPlacementsWire};
+use storage_run_index::ProducerStorage;
+
+pub use assertion_observation::{
+    AssertionCaptureSelector, AssertionProgramProof, CheckedAssertionAction,
+    CheckedAssertionConversion, CheckedAssertionInvocation, CheckedAssertionMessagePart,
+    RetainedAssertionAction, RetainedAssertionInputError, RetainedAssertionInvocation,
+    RetainedAssertionMessagePart, RetainedAssertionResolutionError, RetainedAssertionRoot,
+    RetainedAssertionSource, RetainedNativePreparation, RetainedNativeSchedule,
+    RetainedNativeScheduleError, SolveAssertionObservationSite,
+};
 pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
     derive_runtime_assignment_roles,
@@ -54,10 +77,15 @@ pub use certificate::{
 pub use chart_delta::{ChartDeltaError, ChartPlanDelta};
 pub use compact_pattern::CompactPatternLayout;
 pub use event_writes::{EventWrites, event_writes};
+pub use exact_initial_values::{
+    SolveDeclarationStart, SolveExactInitialRun, SolveExactInitialValues,
+};
+pub use fault::{FaultClass, FaultKind};
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
     solve_has_initialization, solve_has_runtime_events, solve_initialization_is_explicit,
 };
+pub use initial_values::{SolveInitialValueRun, SolveInitialValues, SolveInitialValuesError};
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
     ComponentReferenceKeyPart, ComponentReferenceSubscriptKey, IndexedScalarSlot, ScalarSlot,
@@ -75,13 +103,16 @@ pub use linear_op::{
     FunctionFoldProgram, LinearOp, MAX_TENSOR_LANES, MatrixProductShape, RandomGenerator, Reg,
     ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand, TargetAssignmentShape,
     TensorConcatenateSource, TensorIndex, TensorInputKind, TensorUpdateSubscript, UnaryOp,
-    prune_dead_constants, resolve_indexed_slot,
+    prune_dead_constants, prune_unread_pure_operations, resolve_indexed_slot,
 };
 pub use model::*;
 pub use parameter_classification::{ExcludedParameter, ExclusionReason, ParameterClassification};
-pub use parameter_reads::{read_continuous_parameter_slots, read_parameter_slots};
+pub use parameter_reads::{ParameterSlots, read_continuous_parameter_slots, read_parameter_slots};
+pub use projection_stages::{ImplicitRowTargets, ProjectionBlocks, ProjectionStage};
 pub use refresh::*;
 pub use root_search::{RootSearchPlan, RootSearchRole, TimeRootSign, root_neighborhoods};
+pub use scalar_names::{SolveScalarNameRun, SolveScalarNames, SolveScalarNamesOverflow};
+pub use scalar_program_output_spans::ScalarProgramOutputSpan;
 pub use sensitivity::{
     AdmittedRelation, CheckpointPolicy, InitialSensitivityPlan, RelationOperand, SensitivityLayout,
     SensitivityParameter, SensitivityProblem, SensitivityRefusal, SettlePolicy, SwitchingValueNote,
@@ -94,15 +125,18 @@ pub use tangent_lanes::{
     TangentRowSource, TornTangentPlan, TornTangentResidual, TornTangentStep, tensor_lanes,
 };
 pub use typed_program::*;
+pub use visible::*;
 pub use visitor::{
-    LinearOpSliceKind, SolveVisitor, walk_compute_block, walk_compute_node,
+    LinearOpSliceKind, SolveVisitor, walk_compute_block, walk_compute_node, walk_pure_call_table,
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
+    walk_typed_program,
 };
 
 pub use initialization::{InitializationSolveSystem, InitializationSystemInput};
 
 /// 78 checks lazy quotient root/step activation and exact inactive private holds.
-pub const SOLVE_SCHEMA_VERSION: u16 = 78;
+/// 79 to 88 carry this lineage's native-product Solve rows on top of that.
+pub const SOLVE_SCHEMA_VERSION: u16 = 88;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -150,7 +184,10 @@ pub struct ScalarProgramBlock {
 struct ScalarProgramData {
     programs: Vec<Vec<LinearOp>>,
     program_spans: Vec<Span>,
-    output_indices: Vec<usize>,
+    output_placements: ScalarOutputPlacements,
+    materialized_output_indices: std::sync::OnceLock<Vec<usize>>,
+    program_output_ends: Box<[usize]>,
+    output_spans: Vec<Vec<Option<ScalarProgramOutputSpan>>>,
     /// Construction-owned execution capacity for each stored program.
     ///
     /// This proof is rebuilt on wire replay and deliberately is not
@@ -163,14 +200,14 @@ struct ScalarProgramData {
 struct ScalarProgramBlockWire {
     programs: Vec<Vec<LinearOp>>,
     program_spans: Vec<Span>,
-    output_indices: Vec<usize>,
+    output_placements: ScalarOutputPlacementsWire,
 }
 
 #[derive(Serialize)]
 struct ScalarProgramBlockWireRef<'a> {
     programs: &'a [Vec<LinearOp>],
     program_spans: &'a [Span],
-    output_indices: &'a [usize],
+    output_placements: ScalarOutputPlacementView<'a>,
 }
 
 impl Serialize for ScalarProgramBlock {
@@ -181,7 +218,7 @@ impl Serialize for ScalarProgramBlock {
         ScalarProgramBlockWireRef {
             programs: &self.data.programs,
             program_spans: &self.data.program_spans,
-            output_indices: &self.data.output_indices,
+            output_placements: self.data.output_placements.view(),
         }
         .serialize(serializer)
     }
@@ -193,7 +230,7 @@ impl<'de> Deserialize<'de> for ScalarProgramBlock {
         D: serde::Deserializer<'de>,
     {
         let wire = ScalarProgramBlockWire::deserialize(deserializer)?;
-        Self::with_output_indices(wire.programs, wire.program_spans, wire.output_indices)
+        Self::construct(wire.programs, wire.program_spans, wire.output_placements)
             .map_err(serde::de::Error::custom)
     }
 }
@@ -220,8 +257,12 @@ impl ScalarProgramBlock {
         programs: Vec<Vec<LinearOp>>,
         program_spans: Vec<Span>,
     ) -> Result<Self, SolveProblemShapeContractError> {
-        let output_indices = (0..stored_output_count(&programs)).collect();
-        Self::with_output_indices(programs, program_spans, output_indices)
+        let count = stored_output_count(&programs);
+        Self::construct(
+            programs,
+            program_spans,
+            ScalarOutputPlacementsWire::Dense { count },
+        )
     }
 
     /// A block of checked tangent-lane programs, each storing its lane-major
@@ -235,18 +276,24 @@ impl ScalarProgramBlock {
             .iter()
             .map(|program| program.ops().to_vec())
             .collect::<Vec<_>>();
-        let output_indices = operations
+        let program_output_ends = checked_program_output_ends(&operations, &program_spans)?;
+        let entries = operations
             .iter()
-            .flat_map(|program| 0..Self::program_output_count(program))
-            .collect::<Vec<_>>();
+            .map(|ops| ScalarProgramOutputPlacement::Range(0..Self::program_output_count(ops)))
+            .collect();
         validate_scalar_program_metadata_lengths(
             "ScalarProgramBlock",
             0,
             operations.len(),
             program_spans.len(),
-            output_indices.len(),
-            output_indices.len(),
+            0,
+            0,
             first_span(&program_spans),
+        )?;
+        let output_placements = ScalarOutputPlacements::checked(
+            ScalarOutputPlacementsWire::ProgramRanges(entries),
+            &program_output_ends,
+            &program_spans,
         )?;
         validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
         validate_scalar_program_outputs("ScalarProgramBlock", 0, &operations, &program_spans)?;
@@ -257,7 +304,8 @@ impl ScalarProgramBlock {
         Ok(Self::from_valid_parts(
             operations,
             program_spans,
-            output_indices,
+            output_placements,
+            program_output_ends,
             register_counts,
         ))
     }
@@ -280,15 +328,43 @@ impl ScalarProgramBlock {
         program_spans: Vec<Span>,
         output_indices: Vec<usize>,
     ) -> Result<Self, SolveProblemShapeContractError> {
+        Self::construct(
+            programs,
+            program_spans,
+            ScalarOutputPlacementsWire::Explicit(output_indices),
+        )
+    }
+
+    pub fn with_program_output_placements(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+        placements: Vec<ScalarProgramOutputPlacement>,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        Self::construct(
+            programs,
+            program_spans,
+            ScalarOutputPlacementsWire::ProgramRanges(placements),
+        )
+    }
+
+    fn construct(
+        programs: Vec<Vec<LinearOp>>,
+        program_spans: Vec<Span>,
+        placement_input: ScalarOutputPlacementsWire,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let program_output_ends = checked_program_output_ends(&programs, &program_spans)?;
+        let count = program_output_ends.last().copied().unwrap_or(0);
         validate_scalar_program_metadata_lengths(
             "ScalarProgramBlock",
             0,
             programs.len(),
             program_spans.len(),
-            stored_output_count(&programs),
-            output_indices.len(),
+            count,
+            count,
             first_span(&program_spans),
         )?;
+        let output_placements =
+            ScalarOutputPlacements::checked(placement_input, &program_output_ends, &program_spans)?;
         validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
         validate_scalar_program_outputs("ScalarProgramBlock", 0, &programs, &program_spans)?;
         validate_function_conditional_owners("ScalarProgramBlock", 0, &programs, &program_spans)?;
@@ -301,7 +377,8 @@ impl ScalarProgramBlock {
         Ok(Self::from_valid_parts(
             programs,
             program_spans,
-            output_indices,
+            output_placements,
+            program_output_ends,
             program_register_counts,
         ))
     }
@@ -309,14 +386,22 @@ impl ScalarProgramBlock {
     fn from_valid_parts(
         programs: Vec<Vec<LinearOp>>,
         program_spans: Vec<Span>,
-        output_indices: Vec<usize>,
+        output_placements: ScalarOutputPlacements,
+        program_output_ends: Box<[usize]>,
         program_register_counts: Box<[usize]>,
     ) -> Self {
         Self {
             data: Arc::new(ScalarProgramData {
+                output_spans: scalar_program_output_spans::output_spans(
+                    &programs,
+                    &output_placements,
+                    &program_output_ends,
+                ),
                 programs,
                 program_spans,
-                output_indices,
+                output_placements,
+                program_output_ends,
+                materialized_output_indices: std::sync::OnceLock::new(),
                 program_register_counts,
             }),
         }
@@ -345,8 +430,7 @@ impl ScalarProgramBlock {
     ) -> Result<Self, SolveProblemShapeContractError> {
         let span = provenance.span();
         let program_spans = vec![span; programs.len()];
-        let output_indices = (0..stored_output_count(&programs)).collect();
-        Self::with_output_indices(programs, program_spans, output_indices)
+        Self::with_program_spans(programs, program_spans)
     }
 
     pub fn program_span(&self, row: usize) -> Option<Span> {
@@ -378,7 +462,46 @@ impl ScalarProgramBlock {
     }
 
     pub fn output_indices(&self) -> &[usize] {
-        &self.data.output_indices
+        if let ScalarOutputPlacementView::Explicit(indices) = self.output_placements() {
+            return indices;
+        }
+        self.data
+            .materialized_output_indices
+            .get_or_init(|| self.data.output_placements.indices().collect())
+    }
+
+    pub fn output_placements(&self) -> ScalarOutputPlacementView<'_> {
+        self.data.output_placements.view()
+    }
+
+    pub fn output_index_at(&self, ordinal: usize) -> Option<usize> {
+        self.data
+            .output_placements
+            .index_at(ordinal, &self.data.program_output_ends)
+    }
+
+    pub fn program_output_ordinals(&self, program: usize) -> Option<std::ops::Range<usize>> {
+        let end = *self.data.program_output_ends.get(program)?;
+        let start = program
+            .checked_sub(1)
+            .map_or(0, |p| self.data.program_output_ends[p]);
+        Some(start..end)
+    }
+
+    pub fn program_contiguous_output_range(
+        &self,
+        program: usize,
+    ) -> Option<std::ops::Range<usize>> {
+        let ordinals = self.program_output_ordinals(program)?;
+        let span = self.data.output_placements.span_for_ordinals(
+            ordinals.start,
+            ordinals.len(),
+            &self.data.program_output_ends,
+        )?;
+        if span.count() > 1 && (span.descending() || span.stride() != 1) {
+            return None;
+        }
+        Some(span.start()..span.start().checked_add(span.count())?)
     }
 
     pub fn first_source_span(&self) -> Option<Span> {
@@ -391,23 +514,18 @@ impl ScalarProgramBlock {
     /// one self-contained program that computes its operands once and stores
     /// every result via consecutive `StoreOutput` ops.
     pub fn program_output_count(program: &[LinearOp]) -> usize {
-        program
-            .iter()
-            .map(|op| match op {
-                LinearOp::StoreOutput { .. } => 1,
-                LinearOp::StoreOutputRange { count, .. } => *count,
-                _ => 0,
-            })
-            .sum()
+        checked_program_output_count(program).unwrap_or(usize::MAX)
+    }
+
+    /// Source-store cardinality, including native ranges, or `None` on overflow.
+    /// This arithmetic query does not issue a checked program or placement proof.
+    pub fn checked_program_output_count(program: &[LinearOp]) -> Option<usize> {
+        checked_program_output_count(program)
     }
 
     /// Total number of `StoreOutput` ops produced by this block.
     pub fn stored_output_count(&self) -> usize {
-        self.data
-            .programs
-            .iter()
-            .map(|program| Self::program_output_count(program))
-            .sum()
+        self.data.output_placements.count()
     }
 
     pub fn uses_linear_solve_component(&self) -> bool {
@@ -428,19 +546,18 @@ impl ScalarProgramBlock {
     /// The program that produces dense output slot `output` and the position
     /// of that output among the program's own stored outputs.
     pub fn output_position(&self, output: usize) -> Option<(usize, usize)> {
-        let mut remaining = self
+        let ordinal = self
             .data
-            .output_indices
-            .iter()
-            .position(|output_index| *output_index == output)?;
-        for (idx, program) in self.data.programs.iter().enumerate() {
-            let count = Self::program_output_count(program);
-            if remaining < count {
-                return Some((idx, remaining));
-            }
-            remaining -= count;
-        }
-        None
+            .output_placements
+            .ordinal_for_output(output, &self.data.program_output_ends)?;
+        let program = self
+            .data
+            .program_output_ends
+            .partition_point(|&end| end <= ordinal);
+        let start = program
+            .checked_sub(1)
+            .map_or(0, |previous| self.data.program_output_ends[previous]);
+        Some((program, ordinal - start))
     }
 
     /// Source span for a dense output slot, looked up via its owning program.
@@ -462,19 +579,13 @@ impl ScalarProgramBlock {
 
     pub fn output_count(&self) -> usize {
         self.data
-            .output_indices
-            .iter()
-            .copied()
-            .max()
+            .output_placements
+            .maximum()
             .map_or(0, |index| index + 1)
     }
 
     pub fn uses_local_contiguous_output_indices(&self) -> bool {
-        self.data
-            .output_indices
-            .iter()
-            .copied()
-            .eq(0..self.stored_output_count())
+        self.data.output_placements.is_dense()
     }
 
     pub fn compute_block_output_indices(
@@ -491,7 +602,7 @@ impl ScalarProgramBlock {
                 })?;
             Ok((output_cursor..end).collect())
         } else {
-            Ok(self.data.output_indices.clone())
+            Ok(self.data.output_placements.indices().collect())
         }
     }
 
@@ -501,11 +612,14 @@ impl ScalarProgramBlock {
         node_index: usize,
         output_cursor: usize,
     ) -> Result<usize, SolveProblemShapeContractError> {
-        let Some(max_index) = self
-            .compute_block_output_indices(context, node_index, output_cursor)?
-            .into_iter()
-            .max()
-        else {
+        if self.uses_local_contiguous_output_indices() {
+            return output_cursor
+                .checked_add(self.stored_output_count())
+                .ok_or_else(|| {
+                    output_index_overflow(context, node_index, self.first_program_span())
+                });
+        }
+        let Some(max_index) = self.data.output_placements.maximum() else {
             return Ok(output_cursor);
         };
         let next = max_index
@@ -527,11 +641,44 @@ fn first_span(spans: &[Span]) -> Option<Span> {
     spans.first().copied()
 }
 
+fn checked_program_output_count(program: &[LinearOp]) -> Option<usize> {
+    program.iter().try_fold(0usize, |count, op| {
+        count.checked_add(match op {
+            LinearOp::StoreOutput { .. } => 1,
+            LinearOp::StoreOutputRange { count, .. } => *count,
+            _ => 0,
+        })
+    })
+}
+
 fn stored_output_count(programs: &[Vec<LinearOp>]) -> usize {
     programs
         .iter()
         .map(|program| ScalarProgramBlock::program_output_count(program))
-        .sum()
+        .fold(0usize, usize::saturating_add)
+}
+
+fn checked_program_output_ends(
+    programs: &[Vec<LinearOp>],
+    spans: &[Span],
+) -> Result<Box<[usize]>, SolveProblemShapeContractError> {
+    let mut end = 0usize;
+    programs
+        .iter()
+        .enumerate()
+        .map(|(program, ops)| {
+            end = checked_program_output_count(ops)
+                .and_then(|count| end.checked_add(count))
+                .ok_or_else(|| {
+                    output_index_overflow(
+                        "ScalarProgramBlock",
+                        program,
+                        spans.get(program).copied(),
+                    )
+                })?;
+            Ok(end)
+        })
+        .collect()
 }
 
 fn validate_scalar_program_provenance(
@@ -717,10 +864,14 @@ fn validate_function_conditional_owners(
 
 mod index_intervals;
 pub use index_intervals::{IndexIntervals, SettledIntervals};
+mod register_versions;
 mod structural_pattern;
+pub use register_versions::{
+    RegisterOperandPiece, RegisterOperationVersions, RegisterVersionProgram,
+};
 pub use structural_pattern::{
-    ColumnColoring, PatternDerivation, PatternProvenance, StructuralPattern,
-    StructuralPatternError, StructuralPatternView,
+    ColoredStructuralPattern, ColumnColoring, PatternDerivation, PatternProvenance,
+    StructuralPattern, StructuralPatternError, StructuralPatternView,
 };
 
 #[cfg(test)]
@@ -747,13 +898,14 @@ pub(crate) fn fixture_pattern(rows: usize, columns: usize, diagonal: bool) -> St
         .expect("fixture pattern")
 }
 
+mod solver_views;
 mod tensor;
 use tensor::output_index_overflow;
 pub use tensor::{
     AffineStencilConstStride, AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm,
-    AffineStencilLoadStride, ComputeBlock, ComputeNode, ComputeNodeCounts, ScalarFallback,
-    TensorElementType, TensorLayout, TensorNodeMetadata, TensorOutputMap, TensorOutputMapError,
-    TensorSource,
+    AffineStencilLoadStride, ComputeBlock, ComputeNode, ComputeNodeCounts, ComputeOutputImage,
+    ComputeOutputPlacement, ComputeSourceView, ScalarFallback, TensorElementType, TensorLayout,
+    TensorNodeMetadata, TensorOutputMap, TensorOutputMapError, TensorSource,
 };
 
 #[cfg(test)]
@@ -827,62 +979,24 @@ impl<'de> Deserialize<'de> for SolveProblem {
             .refresh_owners
             .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
             .map_err(serde::de::Error::custom)?;
+        if problem
+            .continuous
+            .refresh_owners
+            .has_compact_source_recipe()
+        {
+            issue_native_assignment_schedule(&mut problem);
+        }
         problem.validate().map_err(serde::de::Error::custom)?;
         // The native value schedule is issued from the checked canonical rows.
-        issue_native_assignment_schedule(&mut problem);
+        if !problem
+            .continuous
+            .refresh_owners
+            .has_compact_source_recipe()
+        {
+            issue_native_assignment_schedule(&mut problem);
+        }
         Ok(problem)
     }
-}
-
-/// The solver coordinates of a derivative-only problem: one per state, named
-/// by the scalar binding of its `Y` slot.
-fn state_solver_maps(
-    layout: &VarLayout,
-    state_count: usize,
-) -> Result<SolverNameIndexMaps, SolveProblemShapeContractError> {
-    let storage_error =
-        |detail: String| SolveProblemShapeContractError::DerivativeStateStorage { detail };
-    if layout.y_scalars() != state_count {
-        return Err(storage_error(format!(
-            "{state_count} states need {state_count} Y scalars, the layout owns {}",
-            layout.y_scalars()
-        )));
-    }
-    let mut names: Vec<Option<String>> = vec![None; state_count];
-    for (name, slot) in layout.bindings() {
-        let ScalarSlot::Y { index, .. } = *slot else {
-            continue;
-        };
-        let Some(entry) = names.get_mut(index) else {
-            continue;
-        };
-        if layout.shape(name.as_str()).is_some() || entry.is_some() {
-            return Err(storage_error(format!(
-                "state slot Y[{index}] is not named by exactly one scalar binding"
-            )));
-        }
-        *entry = Some(name.as_str().to_string());
-    }
-    let names = names
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| {
-            name.ok_or_else(|| storage_error(format!("state slot Y[{index}] has no name")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(SolverNameIndexMaps {
-        name_to_idx: names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| (name.clone(), index))
-            .collect(),
-        base_to_indices: names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| (name.clone(), vec![index]))
-            .collect(),
-        names,
-    })
 }
 
 impl SolveProblem {
@@ -906,11 +1020,10 @@ impl SolveProblem {
         layout: VarLayout,
     ) -> Result<Self, SolveProblemShapeContractError> {
         let state_scalar_count = derivative_rhs.output_count("continuous.derivative_rhs")?;
-        let solver_maps = state_solver_maps(&layout, state_scalar_count)?;
+        layout.validate_named_y_coverage(state_scalar_count)?;
         let problem = Self {
             layout,
             solve_layout: SolveLayout {
-                solver_maps,
                 state_scalar_count,
                 ..SolveLayout::default()
             },
@@ -953,6 +1066,7 @@ impl SolveProblem {
             .validate_shape_contract()
             .map_err(SolveProblemShapeContractError::Layout)?;
         validate_variable_storage_runs(self)?;
+        self.validate_solver_storage()?;
         validate_event_iteration_plan(self)?;
         validate_continuous_system_shape(self)?;
         validate_initialization_system_shape(self)?;
@@ -972,9 +1086,12 @@ impl SolveModel {
     /// reference against this model's sole checked owner table.
     pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
         self.problem.validate()?;
-        let mut validator = ModelPureCallSiteValidator {
-            table: &self.pure_calls,
-        };
+        self.visible_projection
+            .validate_against(&self.problem)
+            .map_err(|error| SolveProblemShapeContractError::SolverStorage {
+                detail: error.to_string(),
+            })?;
+        let mut validator = ModelPureCallSiteValidator::new(&self.problem, &self.pure_calls);
         validator.visit_solve_model(self)
     }
 }
@@ -986,16 +1103,66 @@ pub fn validate_problem_pure_call_sites(
     table: &SolvePureCallTable,
 ) -> Result<(), SolveProblemShapeContractError> {
     problem.validate()?;
-    let mut validator = ModelPureCallSiteValidator { table };
+    validate_problem_call_references(problem, table)
+}
+
+/// Check call-table membership during construction, before refresh owners and
+/// artifacts exist. This does not prove the finalized problem shape contract.
+pub fn validate_problem_call_references(
+    problem: &SolveProblem,
+    table: &SolvePureCallTable,
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut validator = ModelPureCallSiteValidator::new(problem, table);
     validator.visit_solve_problem(problem)
 }
 
 struct ModelPureCallSiteValidator<'model> {
     table: &'model SolvePureCallTable,
+    events: &'model SolveEventPartition,
+    observation_allowed: bool,
 }
 
 impl SolveVisitor for ModelPureCallSiteValidator<'_> {
     type Error = SolveProblemShapeContractError;
+
+    fn visit_scalar_program_block(
+        &mut self,
+        block: &ScalarProgramBlock,
+    ) -> Result<(), Self::Error> {
+        let previous = self.observation_allowed;
+        self.observation_allowed = std::ptr::eq(block, &self.events.root_conditions)
+            || std::ptr::eq(block, &self.events.action_conditions);
+        let result = visitor::walk_scalar_program_block(self, block);
+        self.observation_allowed = previous;
+        result
+    }
+
+    fn visit_linear_op_slice(
+        &mut self,
+        kind: LinearOpSliceKind,
+        ops: &[LinearOp],
+    ) -> Result<(), Self::Error> {
+        let mut checked_program = None;
+        for (index, operation) in ops.iter().enumerate() {
+            if let LinearOp::PureCallObservation { site, .. } = operation
+                && (!self.observation_allowed
+                    || !admitted_assertion_observation(
+                        self.table,
+                        &self.events.actions,
+                        ops,
+                        index,
+                        &mut checked_program,
+                    ))
+            {
+                return Err(SolveProblemShapeContractError::PureCallSiteMismatch {
+                    context: "checked event-action assertion observation",
+                    owner: site.value_site().owner().index(),
+                    span: linear_op_slice_span(kind),
+                });
+            }
+        }
+        visitor::walk_linear_op_slice(self, kind, ops)
+    }
 
     fn visit_event_transaction_program(
         &mut self,
@@ -1026,7 +1193,15 @@ impl SolveVisitor for ModelPureCallSiteValidator<'_> {
     }
 }
 
-impl ModelPureCallSiteValidator<'_> {
+impl<'model> ModelPureCallSiteValidator<'model> {
+    fn new(problem: &'model SolveProblem, table: &'model SolvePureCallTable) -> Self {
+        Self {
+            table,
+            events: &problem.events,
+            observation_allowed: false,
+        }
+    }
+
     fn require_site(
         &self,
         context: &'static str,
@@ -1042,6 +1217,22 @@ impl ModelPureCallSiteValidator<'_> {
             span,
         })
     }
+}
+
+fn admitted_assertion_observation<'program>(
+    table: &'program SolvePureCallTable,
+    actions: &'program [SolveEventAction],
+    ops: &'program [LinearOp],
+    index: usize,
+    checked: &mut Option<assertion_observation::CheckedAssertionProgram<'program>>,
+) -> bool {
+    if checked.is_none() {
+        *checked = assertion_observation::CheckedAssertionProgram::new(ops);
+    }
+    checked
+        .as_ref()
+        .and_then(|program| program.invocation(table, index, actions))
+        .is_some()
 }
 
 const fn linear_op_slice_span(kind: LinearOpSliceKind) -> Option<Span> {
@@ -1256,16 +1447,6 @@ fn validate_event_iteration_run(
         return Err(event_iteration_contract(row, "run is empty"));
     }
     let current_base = validate_event_iteration_bindings(problem, row, run, *storage, claims)?;
-    if claims
-        .current_indices
-        .iter()
-        .any(|index| claims.pre_indices.contains(index))
-    {
-        return Err(event_iteration_contract(
-            row,
-            "current and pre lanes overlap",
-        ));
-    }
     validate_event_iteration_owner(problem, row, run, *storage, current_base, claims)
 }
 
@@ -1296,6 +1477,7 @@ fn validate_event_iteration_bindings(
         ));
     };
     let mut pre_base = None;
+    let mut overlapping = false;
     for (offset, binding) in bindings.iter().enumerate() {
         let binding_index = run.pre_binding_start + offset;
         if !claims.covered_bindings.insert(binding_index) {
@@ -1342,6 +1524,16 @@ fn validate_event_iteration_bindings(
                 "current or pre lanes are duplicated",
             ));
         }
+        // The two sets were disjoint before this run, so a shared lane is one a
+        // lane of this run added to the opposite set.
+        overlapping |= claims.pre_indices.contains(&current)
+            || claims.current_indices.contains(&binding.dest_p_index);
+    }
+    if overlapping {
+        return Err(event_iteration_contract(
+            row,
+            "current and pre lanes overlap",
+        ));
     }
     Ok(current_base)
 }
@@ -1880,8 +2072,10 @@ fn validate_scalar_event_producers(
     claimed_rows: &BTreeSet<usize>,
 ) -> Result<(), SolveProblemShapeContractError> {
     let layout = &problem.solve_layout;
+    let storage = ProducerStorage::new(layout);
     for (row, target) in problem.discrete.update_targets.iter().copied().enumerate() {
-        let storage_variable = storage_variable_for_slot(layout, target)
+        let storage_variable = storage
+            .variable(target)
             .map_err(|detail| event_iteration_contract(row, detail))?;
         let is_discrete = storage_variable.is_some_and(|variable| {
             layout.variable_storage_runs[variable]
@@ -1908,7 +2102,7 @@ fn validate_scalar_event_producers(
                 "a scalar discrete producer is not owned by its plan run",
             ));
         }
-        if external_input_storage_contains(layout, target) {
+        if storage.external_input(target) {
             return Err(event_iteration_contract(
                 row,
                 "an external input cannot have a discrete producer",
@@ -1923,8 +2117,10 @@ fn validate_structured_event_producers(
     claimed_updates: &BTreeSet<usize>,
 ) -> Result<(), SolveProblemShapeContractError> {
     let layout = &problem.solve_layout;
+    let storage = ProducerStorage::new(layout);
     for (update_index, update) in problem.discrete.structured_updates.iter().enumerate() {
-        let storage_variable = storage_variable_for_slot(layout, update.target.base)
+        let storage_variable = storage
+            .variable(update.target.base)
             .map_err(|detail| event_iteration_contract(update_index, detail))?;
         let is_discrete = storage_variable.is_some_and(|variable| {
             layout.variable_storage_runs[variable]
@@ -1951,7 +2147,7 @@ fn validate_structured_event_producers(
                 "a structured discrete producer is not owned by its plan run",
             ));
         }
-        if external_input_storage_contains(layout, update.target.base) {
+        if storage.external_input(update.target.base) {
             return Err(event_iteration_contract(
                 update_index,
                 "an external input cannot have a structured producer",
@@ -1966,9 +2162,11 @@ fn validate_guarded_event_producers(
     claimed_ranges: &BTreeSet<(usize, usize)>,
 ) -> Result<(), SolveProblemShapeContractError> {
     let layout = &problem.solve_layout;
+    let storage = ProducerStorage::new(layout);
     for (program_index, program) in problem.discrete.guarded_assignments.iter().enumerate() {
         for (target_range_index, range) in program.target_ranges().iter().enumerate() {
-            let storage_variable = storage_variable_for_slot(layout, range.base())
+            let storage_variable = storage
+                .variable(range.base())
                 .map_err(|detail| event_iteration_contract(program_index, detail))?;
             let is_discrete = storage_variable.is_some_and(|variable| {
                 layout.variable_storage_runs[variable]
@@ -1988,7 +2186,7 @@ fn validate_guarded_event_producers(
                     "a guarded discrete target is not owned by its plan run",
                 ));
             }
-            if external_input_storage_contains(layout, range.base()) {
+            if storage.external_input(range.base()) {
                 return Err(event_iteration_contract(
                     program_index,
                     "an external input cannot have a guarded producer",
@@ -1998,39 +2196,6 @@ fn validate_guarded_event_producers(
     }
     Ok(())
 }
-fn storage_variable_for_slot(
-    layout: &SolveLayout,
-    slot: ScalarSlot,
-) -> Result<Option<usize>, &'static str> {
-    let mut owners = layout
-        .variable_storage_runs
-        .iter()
-        .enumerate()
-        .filter_map(|(variable, storage)| storage_run_contains(*storage, slot).then_some(variable));
-    let first = owners.next();
-    if owners.next().is_some() {
-        return Err("one producer slot belongs to multiple variable-storage runs");
-    }
-    Ok(first)
-}
-
-fn external_input_storage_contains(layout: &SolveLayout, slot: ScalarSlot) -> bool {
-    layout.variable_storage_runs.iter().any(|storage| {
-        storage.role == SolveVariableStorageRole::ExternalInput
-            && storage_run_contains(*storage, slot)
-    })
-}
-
-fn storage_run_contains(storage: SolveVariableStorageRun, slot: ScalarSlot) -> bool {
-    match (storage.base, slot) {
-        (ScalarSlot::P { index: base, .. }, ScalarSlot::P { index, .. })
-        | (ScalarSlot::Y { index: base, .. }, ScalarSlot::Y { index, .. }) => base
-            .checked_add(storage.scalar_count)
-            .is_some_and(|end| (base..end).contains(&index)),
-        _ => false,
-    }
-}
-
 fn event_iteration_contract(row: usize, detail: &'static str) -> SolveProblemShapeContractError {
     SolveProblemShapeContractError::DiscreteCertificate {
         context: "discrete.event_iteration_plan",
@@ -2044,6 +2209,14 @@ fn validate_continuous_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.continuous;
+    system
+        .refresh_owners
+        .validate_compact_root(problem)
+        .map_err(
+            |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
+                detail: error.to_string(),
+            },
+        )?;
     system
         .implicit_rhs
         .validate_shape_contract("continuous.implicit_rhs")?;
@@ -2106,95 +2279,7 @@ fn validate_continuous_system_shape(
 fn validate_implicit_output_ownership(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
-    let system = &problem.continuous;
-    let produced = system
-        .implicit_rhs
-        .produced_output_indices("continuous.implicit_rhs")?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let projection_pairs = system
-        .algebraic_projection_plan
-        .blocks
-        .iter()
-        .flat_map(|block| {
-            block
-                .rows
-                .iter()
-                .copied()
-                .zip(block.y_indices.iter().copied())
-        })
-        .collect::<BTreeSet<_>>();
-    let state_count = problem.solve_layout.state_scalar_count();
-    let required_algebraic_end = state_count
-        .checked_add(problem.solve_layout.algebraic_scalar_count())
-        .ok_or_else(|| SolveProblemShapeContractError::ContinuousRefreshOwner {
-            detail: "continuous algebraic Y inventory overflows host range".to_string(),
-        })?;
-    let mut target_pairs = BTreeSet::new();
-    for (row, target) in system
-        .implicit_row_targets
-        .iter()
-        .enumerate()
-        .filter_map(|(row, target)| target.map(|target| (row, target)))
-    {
-        let ScalarSlot::Y { index, .. } = target else {
-            return implicit_output_ownership_error(
-                &produced,
-                &projection_pairs,
-                &target_pairs,
-                state_count,
-                required_algebraic_end,
-            );
-        };
-        if !(state_count..problem.solve_layout.solver_scalar_count()).contains(&index)
-            || !target_pairs.insert((row, index))
-        {
-            return implicit_output_ownership_error(
-                &produced,
-                &projection_pairs,
-                &target_pairs,
-                state_count,
-                required_algebraic_end,
-            );
-        }
-    }
-    let target_rows = target_pairs
-        .iter()
-        .map(|(row, _)| *row)
-        .collect::<BTreeSet<_>>();
-    let target_indices = target_pairs
-        .iter()
-        .map(|(_, index)| *index)
-        .collect::<BTreeSet<_>>();
-    let required_indices = (state_count..required_algebraic_end).collect::<BTreeSet<_>>();
-    if produced == target_rows
-        && projection_pairs == target_pairs
-        && required_indices.is_subset(&target_indices)
-    {
-        Ok(())
-    } else {
-        implicit_output_ownership_error(
-            &produced,
-            &projection_pairs,
-            &target_pairs,
-            state_count,
-            required_algebraic_end,
-        )
-    }
-}
-
-fn implicit_output_ownership_error<T>(
-    produced: &BTreeSet<usize>,
-    projection_pairs: &BTreeSet<(usize, usize)>,
-    target_pairs: &BTreeSet<(usize, usize)>,
-    state_count: usize,
-    required_algebraic_end: usize,
-) -> Result<T, SolveProblemShapeContractError> {
-    Err(SolveProblemShapeContractError::ContinuousRefreshOwner {
-        detail: format!(
-            "continuous implicit produced outputs {produced:?}, projection row/target pairs {projection_pairs:?}, and explicit row/target pairs {target_pairs:?} do not cover the required algebraic Y inventory {state_count}..{required_algebraic_end}"
-        ),
-    })
+    projection_stages::validate_root_inventory(problem)
 }
 
 fn validate_initialization_system_shape(
@@ -2348,14 +2433,12 @@ fn validate_observation_refresh_coupling(
     let mut output_ordinal = 0usize;
     for (program_index, program) in system.rhs.programs().iter().enumerate() {
         let span = system.rhs.program_span(program_index);
-        let dependencies =
-            StructuralPattern::derive_output_y_dependencies(program, span).map_err(|_| {
-                SolveProblemShapeContractError::DiscreteCertificate {
-                    context: "discrete.observation_refresh_reads_y",
-                    row: program_index,
-                    detail: "observation dependency program is not certifiable",
-                    span,
-                }
+        let dependencies = StructuralPattern::derive_output_y_dependency_ranges(program, span)
+            .map_err(|_| SolveProblemShapeContractError::DiscreteCertificate {
+                context: "discrete.observation_refresh_reads_y",
+                row: program_index,
+                detail: "observation dependency program is not certifiable",
+                span,
             })?;
         for y_dependencies in dependencies {
             let row = system
@@ -2554,7 +2637,11 @@ fn validate_guarded_assignment_shape(
                 ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
                 ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
                 ScalarSlot::Time | ScalarSlot::Constant(_) => {
-                    unreachable!("checked guarded target range uses only Y/P storage")
+                    return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+                        program_index,
+                        detail: "target range is not backed by Y/P storage",
+                        span: Some(program.span()),
+                    });
                 }
             };
             let end = base.checked_add(range.count()).ok_or(
@@ -2620,7 +2707,12 @@ fn validate_structured_discrete_shape(
                 ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
                 ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
                 ScalarSlot::Time | ScalarSlot::Constant(_) => {
-                    unreachable!("structured_assignments admits only Y/P target bases")
+                    return Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                        update_index,
+                        node_index: update.node_index,
+                        detail: "target is not backed by Y/P storage",
+                        span: None,
+                    });
                 }
             };
             if index >= extent {
@@ -2829,14 +2921,63 @@ fn validate_projection_plan(
     row_upper_bound: usize,
     y_upper_bound: usize,
 ) -> Result<(), SolveProblemShapeContractError> {
-    let mut rows_seen = BTreeSet::new();
-    let mut unknowns_seen = BTreeSet::new();
-    for block in &plan.blocks {
-        validate_projection_block_shape(context, block.rows.len(), block.y_indices.len())?;
-        validate_indices(context, &block.rows, row_upper_bound)?;
-        validate_indices(context, &block.y_indices, y_upper_bound)?;
-        validate_unique_projection_indices(context, &block.rows, &mut rows_seen)?;
-        validate_unique_projection_indices(context, &block.y_indices, &mut unknowns_seen)?;
+    let mut rows_seen = IndexIntervals::default();
+    let mut unknowns_seen = IndexIntervals::default();
+    for stage in plan.blocks.stages() {
+        let (rows, unknowns) = match stage {
+            ProjectionStage::Explicit(block) => {
+                validate_projection_block_shape(context, block.rows.len(), block.y_indices.len())?;
+                validate_indices(context, &block.rows, row_upper_bound)?;
+                validate_indices(context, &block.y_indices, y_upper_bound)?;
+                validate_unique_indices(context, &block.rows)?;
+                validate_unique_indices(context, &block.y_indices)?;
+                (
+                    IndexIntervals::of(block.rows.iter().copied()),
+                    IndexIntervals::of(block.y_indices.iter().copied()),
+                )
+            }
+            ProjectionStage::SingletonDeclarationRun {
+                first_row, storage, ..
+            } => {
+                let ScalarSlot::Y { index, .. } = storage.base else {
+                    return Err(SolveProblemShapeContractError::ContinuousRefreshOwner {
+                        detail: "projection run requires Y storage".into(),
+                    });
+                };
+                let row_end = first_row.checked_add(storage.scalar_count);
+                let target_end = index.checked_add(storage.scalar_count);
+                let (Some(row_end), Some(target_end)) = (row_end, target_end) else {
+                    return Err(SolveProblemShapeContractError::ContinuousRefreshOwner {
+                        detail: "projection run overflows host range".into(),
+                    });
+                };
+                if storage.scalar_count == 0 {
+                    return Err(SolveProblemShapeContractError::ContinuousRefreshOwner {
+                        detail: "projection run is empty".into(),
+                    });
+                }
+                validate_indices(context, &[row_end - 1], row_upper_bound)?;
+                validate_indices(context, &[target_end - 1], y_upper_bound)?;
+                (
+                    IndexIntervals::range(*first_row, row_end),
+                    IndexIntervals::range(index, target_end),
+                )
+            }
+        };
+        for overlap in [
+            rows_seen.intersection(&rows),
+            unknowns_seen.intersection(&unknowns),
+        ] {
+            if let Some(index) = overlap.iter().next() {
+                return Err(SolveProblemShapeContractError::DuplicateIndex {
+                    context,
+                    index,
+                    span: None,
+                });
+            }
+        }
+        rows_seen = rows_seen.union(&rows);
+        unknowns_seen = unknowns_seen.union(&unknowns);
     }
     Ok(())
 }
@@ -2849,7 +2990,12 @@ fn validate_manifold_projection_plan(
 ) -> Result<(), SolveProblemShapeContractError> {
     let mut rows_seen = BTreeSet::new();
     let mut states_seen = BTreeSet::new();
-    for block in &plan.blocks {
+    for stage in plan.blocks.stages() {
+        let ProjectionStage::Explicit(block) = stage else {
+            return Err(SolveProblemShapeContractError::ContinuousRefreshOwner {
+                detail: "manifold projection cannot own an algebraic declaration run".into(),
+            });
+        };
         if block.rows.is_empty()
             || block.y_indices.is_empty()
             || block.rows.len() > block.y_indices.len()

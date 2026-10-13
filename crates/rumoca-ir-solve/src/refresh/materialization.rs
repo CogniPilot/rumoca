@@ -53,6 +53,33 @@ impl<'a> ExactAssignmentProgramBuilder<'a> {
         Some(())
     }
 
+    /// Store a checked native value progression. A repeated scalar value is
+    /// one TensorFill, so the canonical store keeps its nonzero stride.
+    pub(super) fn push_range_output(
+        &mut self,
+        start: u32,
+        count: usize,
+        stride: usize,
+    ) -> Option<()> {
+        let (start, stride) = if stride == 0 {
+            let dst_start = self.allocate_range(count)?;
+            self.push(LinearOp::TensorFill {
+                dst_start,
+                value_start: start,
+                count,
+                lanes: 1,
+            })?;
+            (dst_start, 1)
+        } else {
+            (start, stride)
+        };
+        self.push(LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        })
+    }
+
     // Finite coefficients contribute exactly +0, preserving the value's bits;
     // an infinite/NaN coefficient makes every materialized consumer decline.
     fn poison_non_finite(&mut self, value: u32, coefficient: u32) -> Option<u32> {

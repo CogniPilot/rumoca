@@ -10,6 +10,7 @@ homepage.workspace = true
 [features]
 default = ["sparse-linalg"]
 sparse-linalg = ["dep:faer"]
+native-wasm = ["dep:rumoca-exec-wasm"]
 
 [dependencies]
 faer = { workspace = true, optional = true }
@@ -17,6 +18,7 @@ indexmap = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-exec-wasm = { workspace = true, optional = true }
 rustc-hash = { workspace = true }
 nalgebra = "0.34"
 serde = { workspace = true, features = ["derive"] }
@@ -24,11 +26,13 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring
 # the feature here and nowhere else keeps it out of every production build of
 # this crate.

@@ -106,9 +106,12 @@ fn derive_scoped(
                 program,
                 ..
             } => conditional::derive(&mut result, before, *capture_start, program, target, layout)?,
-            LinearOp::StoreOutput { src } if captures.is_some() => {
-                result.depends_on(before, *src, 1, 1)?
-            }
+            LinearOp::StoreOutput { src } => result.depends_on(before, *src, 1, 1)?,
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } if captures.is_none() => result.depends_on(before, *start, *count, *stride)?,
             _ => operation_dependency(&result, before, op)?,
         };
         result.dependent.push(dependent);

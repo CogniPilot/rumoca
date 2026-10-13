@@ -3,15 +3,16 @@ use super::*;
 impl ScalarProgramRegisterFlow {
     /// Whether every source register of `op` is marked in `readable`.
     pub fn op_reads_only(op: &LinearOp, op_index: usize, readable: &[bool]) -> bool {
+        let readable = DefinedRegisters::from_flags(readable);
         let mut validation = ScalarProgramValidationCache::default();
-        validate_op_sources(op, op_index, readable, None, None, &mut validation).is_ok()
+        validate_op_sources(op, op_index, &readable, None, None, &mut validation).is_ok()
     }
 
     /// Whole-operation input invariance at fixed Y/P/time/external coordinates.
     /// Repeatability of executed effects is a separate application obligation.
     pub(crate) fn seed_invariant_operations(program: &[LinearOp]) -> Option<Box<[bool]>> {
-        let flow = Self::derive(program).ok()?;
-        let mut invariant = vec![false; flow.register_count()];
+        Self::derive(program).ok()?;
+        let mut invariant = DefinedRegisters::default();
         let mut validation = ScalarProgramValidationCache::default();
         let mut operations = Vec::with_capacity(program.len());
         for (index, op) in program.iter().enumerate() {
@@ -27,7 +28,7 @@ impl ScalarProgramRegisterFlow {
             let reusable = !reads_seed
                 && validate_op_sources(op, index, &invariant, None, None, &mut validation).is_ok();
             if let Some(start) = op.dst_register() {
-                invariant[start as usize..start as usize + op.dst_register_count()].fill(reusable);
+                invariant.set(start, op.dst_register_count(), reusable);
             }
             operations.push(reusable && op.dst_register().is_some());
         }

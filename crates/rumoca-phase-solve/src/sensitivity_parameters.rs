@@ -69,7 +69,6 @@ pub fn select_sensitivity_parameters(
     let read = solve::read_parameter_slots(problem);
     let owned = InitializationOwned::of(problem);
     let readers = start_readers(model);
-    let maps = &problem.solve_layout.solver_maps;
     let dae_selection = classify(model);
     let mut selected = Vec::new();
     let mut excluded = dae_selection.excluded().to_vec();
@@ -97,9 +96,9 @@ pub fn select_sensitivity_parameters(
             .into_iter()
             .flatten()
             .filter(|state| {
-                maps.name_to_idx
-                    .get(state.as_str())
-                    .is_none_or(|index| !owned.solver.contains(index))
+                problem
+                    .solver_index(state.as_str())
+                    .is_none_or(|index| !owned.solver.contains(&index))
             })
             .cloned()
             .collect();

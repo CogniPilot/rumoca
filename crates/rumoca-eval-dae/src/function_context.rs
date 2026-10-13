@@ -1,6 +1,11 @@
 //! Source-bound function substitutions shared by DAE proof consumers.
 
+mod exact_initial;
 mod scalar;
+pub use exact_initial::{
+    ExactDeclarationValues, ExactInitialError, ExactInitialRun, ExactInitialValues,
+    exact_initial_values, exact_source_values,
+};
 #[cfg(test)]
 mod tests;
 

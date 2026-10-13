@@ -110,8 +110,8 @@ fn native_snapshot(compiled: &CompilationResult, model: &str) -> NativeSnapshot 
         })
         .collect();
     NativeSnapshot {
-        parameters: native.parameters,
-        initial_y: native.initial_y,
+        parameters: native.parameters.to_vec(),
+        initial_y: native.initial_y.to_vec(),
         state_count,
         computed_starts,
         probes,

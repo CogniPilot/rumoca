@@ -288,3 +288,123 @@ fn a_dominated_scratch_definition_still_fuses_into_its_recurrence() {
     );
     assert_iteration_values(&values, [1.0, 2.0, 3.0]);
 }
+
+const CONDITIONAL_TUPLE_SCRATCH: &str = r#"
+function scratchPair
+  input Real value;
+  output Real point[3];
+  output Boolean valid;
+algorithm
+  point := {value, value, value};
+  valid := value > 1.0;
+end scratchPair;
+function selectedTuple
+  input Real scores[3];
+  output Real qualified[3];
+protected
+  Real point[3];
+  Boolean valid;
+  Integer index;
+algorithm
+  qualified := scores;
+  for row in 1:1 loop
+    for column in 1:3 loop
+      index := column;
+      if scores[index] > 0.0 then
+        (point,valid) := scratchPair(scores[index]);
+        if not valid then
+          qualified[index] := 0.0;
+        end if;
+      end if;
+    end for;
+  end for;
+end selectedTuple;
+model ConditionalTupleScratch
+  input Real scores[3] = {1.0, 0.0, 3.0};
+  Real state[3](each start = 0.0, each fixed = true);
+equation
+  der(state) = selectedTuple(scores);
+end ConditionalTupleScratch;
+"#;
+
+#[test]
+fn branch_only_tuple_scratch_keeps_its_nested_loop_assignment_owner() {
+    let values = loop_derivatives(
+        CONDITIONAL_TUPLE_SCRATCH,
+        "ConditionalTupleScratch",
+        "ConditionalTupleScratch.mo",
+    );
+    assert_iteration_values(&values, [0.0, 0.0, 3.0]);
+}
+
+#[test]
+fn branch_only_tuple_scratch_has_no_value_before_its_call() {
+    let source = CONDITIONAL_TUPLE_SCRATCH.replace(
+        "(point,valid) := scratchPair(scores[index]);",
+        "qualified[index] := point[1]; (point,valid) := scratchPair(scores[index]);",
+    );
+    let error = Compiler::new()
+        .model("ConditionalTupleScratch")
+        .compile_str(&source, "UndefinedConditionalTupleScratch.mo")
+        .expect_err("a reached read before the tuple defines its receiver is refused");
+    super::function_guarded_loop_definitions::undefined_source::assert_refusal(
+        &error,
+        &source,
+        "ConditionalTupleScratch",
+        "function element assignment",
+        "`selectedTuple` reads elements of `point` that do not all have a definition",
+    );
+}
+
+#[test]
+fn original_rgbd_depth_qualified_scores_function_keeps_its_loop_targets() {
+    let functions = include_str!("fixtures/rgbd_depth_qualified_scores.mo");
+    let source = format!(
+        "{functions}\nmodel OriginalDepthQualifiedScores\n  input Real depth[2,2] = fill(1.0,2,2);\n  input Real scores[4] = fill(1.0,4);\n  Real qualified[4];\nequation\n  qualified = RGBDDepthQualifiedScores(depth,scores,{{1.0,1.0,0.0,0.0}},{{1.0,1.0,0.0,0.0}},0.1,10.0,0.0,1.0,0.1);\nend OriginalDepthQualifiedScores;"
+    );
+    Compiler::new()
+        .model("OriginalDepthQualifiedScores")
+        .compile_str(&source, "OriginalDepthQualifiedScores.mo")
+        .expect("the original two source functions retain their checked loop assignment owners");
+}
+
+const GUARDED_WHOLE_LOOP_SCRATCH: &str = include_str!("fixtures/guarded_whole_loop_scratch.mo");
+
+#[test]
+fn guarded_whole_loop_scratch_needs_no_unused_entry_value() {
+    let actual = loop_derivatives(
+        GUARDED_WHOLE_LOOP_SCRATCH,
+        "GuardedWholeLoopScratch",
+        "GuardedWholeLoopScratch.mo",
+    );
+    assert_iteration_values(&actual, [8.0, 0.0, 16.0]);
+}
+
+#[test]
+fn guarded_whole_loop_scratch_refuses_a_reached_incoming_read() {
+    let source = GUARDED_WHOLE_LOOP_SCRATCH.replace(
+        "color := {i+row+column, 0.0, 0.0};",
+        "result[i] := result[i]+color[1]; color := {i+row+column, 0.0, 0.0};",
+    );
+    let error = Compiler::new()
+        .model("GuardedWholeLoopScratch")
+        .compile_str(&source, "UndefinedGuardedWholeLoopScratch.mo")
+        .expect_err("the reached first-iteration read has no prior color value");
+    super::function_guarded_loop_definitions::undefined_source::assert_refusal(
+        &error,
+        &source,
+        "GuardedWholeLoopScratch",
+        "function element assignment",
+        "`guardedWholeScratch` reads elements of `color` that do not all have a definition",
+    );
+}
+
+#[test]
+fn guarded_whole_loop_scratch_alias_derivative_replays_projection() {
+    let actual = loop_derivatives(
+        include_str!("fixtures/guarded_whole_loop_scratch_alias.mo"),
+        "GuardedWholeLoopScratch",
+        "GuardedWholeLoopScratchAlias.mo",
+    );
+    assert_iteration_values(&actual, [8.0, 0.0, 16.0]);
+}

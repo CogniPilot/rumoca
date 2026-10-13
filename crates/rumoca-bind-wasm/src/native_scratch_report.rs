@@ -13,7 +13,7 @@ pub(crate) fn scratch_report_json(report: &ScratchReport) -> Value {
         "call_scratch_bytes": report.call_scratch_bytes,
         "memo_bytes": report.memo_bytes,
         "typed_lane_bytes": report.typed_lane_bytes,
-        "p_copy_bytes": report.p_copy_bytes,
+        "p_save_bytes": report.p_save_bytes,
         "unshared_call_scratch_bytes": report.unshared_call_scratch_bytes,
         "widest_owner": report.widest_owner,
         "owners": report.owners.iter().map(owner_json).collect::<Vec<_>>(),

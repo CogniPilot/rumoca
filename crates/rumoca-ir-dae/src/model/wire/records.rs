@@ -133,7 +133,6 @@ pub(super) enum FunctionStatementInput {
     },
     AssignmentGroup {
         assignments: Vec<FunctionAssignmentInput>,
-        conditional: Option<FunctionConditionalInput>,
     },
     Assertion {
         condition: u32,
@@ -156,14 +155,26 @@ pub(super) enum FunctionStatementInput {
         #[serde(deserialize_with = "deserialize_provenance")]
         finish_provenance: DaeProvenance,
     },
+    Conditional {
+        conditions: Vec<u32>,
+        branches: Vec<FunctionBranchInput>,
+        fallback: FunctionBranchInput,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+    RequireAssigned {
+        target: u32,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct FunctionConditionalInput {
-    pub(super) conditions: Vec<u32>,
-    pub(super) branches: Vec<Vec<u32>>,
-    pub(super) fallback: Vec<u32>,
+pub(super) struct FunctionBranchInput {
+    pub(super) statements: Vec<FunctionStatementInput>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    pub(super) provenance: DaeProvenance,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

@@ -31,12 +31,11 @@ fn seed(index: usize) -> Vec<solve::LinearOp> {
 fn chained_model() -> solve::SolveModel {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 4, 0),
+            layout: crate::fixture_layout::named_y_layout(
+                solve::VarLayout::from_parts(IndexMap::new(), 4, 0),
+                ["x0", "x1", "x2", "z"].map(str::to_string).to_vec(),
+            ),
             solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: ["x0", "x1", "x2", "z"].map(str::to_string).to_vec(),
-                    ..Default::default()
-                },
                 state_scalar_count: 3,
                 algebraic_scalar_count: 1,
                 ..Default::default()
@@ -53,7 +52,8 @@ fn chained_model() -> solve::SolveModel {
                 )),
                 implicit_row_targets: (0..4)
                     .map(|index| Some(solve::scalar_slot_y(index)))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
                     vec![
                         derivative_placeholder_row(1),
@@ -63,18 +63,19 @@ fn chained_model() -> solve::SolveModel {
                     "state_jacobian_derivative.mo",
                 )),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
+                    blocks: (vec![solve::AlgebraicProjectionBlock {
                         rows: vec![3],
                         y_indices: vec![3],
                         tearing: None,
                         alternate_charts: Vec::new(),
-                    }],
+                    }])
+                    .into(),
                 },
                 ..Default::default()
             },
             ..Default::default()
         },
-        initial_y: vec![0.0; 4],
+        initial_y: vec![0.0; 4].into(),
         ..Default::default()
     };
     set_test_implicit_jvp(

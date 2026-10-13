@@ -5,6 +5,8 @@ use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 use super::runtime_quotients::RuntimeQuotientReplayPlan;
 
+mod scoped_regions;
+
 #[derive(Clone)]
 pub(super) struct RebuiltFunction<'dae> {
     pub(super) id: dae::FunctionId<'dae>,
@@ -100,24 +102,15 @@ fn declare_values<'target>(
         .collect())
 }
 
-fn rebuild_expression_branch<'source, 'target>(
-    rebuilder: &mut FunctionRebuilder<'source, '_, 'target>,
-    target: &mut dae::DaeConstruction<'target>,
-    body: &dae::FunctionBody<'target>,
-    expressions: impl IntoIterator<Item = dae::ExprId<'source>>,
-) -> Result<Vec<dae::ExprId<'target>>, dae::DaeConstructionError> {
-    expressions
-        .into_iter()
-        .map(|expression| rebuilder.rebuild_expression(target, body, expression))
-        .collect()
-}
-
 pub(super) fn rebuild_functions<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
     identities: RebuiltBaseIdentities<'_, 'target>,
     facts: &DifferentiationFacts,
-    candidate: Option<DirectStateConstraint>,
+    (candidate, literals): (
+        Option<DirectStateConstraint>,
+        &[Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
+    ),
     rebuilt: &mut [Option<dae::ExprId<'target>>],
     quotients: &mut RuntimeQuotientReplayPlan<'target>,
 ) -> Result<Vec<RebuiltFunction<'target>>, dae::DaeConstructionError> {
@@ -147,6 +140,7 @@ pub(super) fn rebuild_functions<'source, 'target>(
         function_definitions,
         quotients,
         active_function: None,
+        literals,
     };
     rebuilder.rebuild_all(target)?;
     Ok(rebuilder.functions)
@@ -376,6 +370,8 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
     function_definitions: Vec<Vec<Option<dae::FunctionDefinitionId<'target>>>>,
     quotients: &'borrow mut RuntimeQuotientReplayPlan<'target>,
     active_function: Option<usize>,
+    /// Literal values that replace constant expressions of function bodies.
+    literals: &'borrow [Option<std::sync::Arc<super::evaluable_parameters::FoldedValue>>],
 }
 
 impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
@@ -622,13 +618,25 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     ) -> Result<dae::FunctionBody<'target>, dae::DaeConstructionError> {
         for statement in statements {
             match statement {
+                dae::FunctionStatementView::Conditional { conditional } => {
+                    body = self.rebuild_scoped_conditional(target, function, body, conditional)?;
+                }
+                dae::FunctionStatementView::RequireAssigned {
+                    value,
+                    definition,
+                    provenance,
+                    ..
+                } => {
+                    self.rebuild_assigned_read(
+                        target, function, &mut body, value, definition, provenance,
+                    )?;
+                }
                 dae::FunctionStatementView::Assignment { definition } => {
                     self.assign_statement(target, function, &mut body, definition)?
                 }
-                dae::FunctionStatementView::AssignmentGroup {
-                    definitions,
-                    conditional,
-                } => self.assign_group(target, function, &mut body, definitions, conditional)?,
+                dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
+                    self.assign_group(target, function, &mut body, definitions)?
+                }
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message,
@@ -704,7 +712,6 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         function: &RebuiltFunction<'target>,
         body: &mut dae::FunctionBody<'target>,
         definitions: dae::FunctionDefinitionValues<'source>,
-        conditional: Option<dae::FunctionConditionalView<'source>>,
     ) -> Result<(), dae::DaeConstructionError> {
         let source = definitions.iter().collect::<Vec<_>>();
         let provenance = source
@@ -715,47 +722,17 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .iter()
             .map(|definition| function.values[definition.target().ordinal() as usize])
             .collect::<Vec<_>>();
-        if let Some(conditional) = conditional {
-            let conditions = conditional
-                .conditions()
-                .map(|expression| self.rebuild_expression(target, body, expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            let branches = (0..conditional.branch_count())
-                .map(|ordinal| {
-                    conditional
-                        .branch(ordinal)
-                        .expect("checked function conditional branch resolves")
-                        .map(|expression| self.rebuild_expression(target, body, expression))
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let fallback = conditional
-                .fallback()
-                .map(|expression| self.rebuild_expression(target, body, expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            target.functions(|functions| {
-                functions.assign_conditional_all(
-                    body,
-                    &target_values,
-                    &conditions,
-                    &branches,
-                    &fallback,
-                    provenance,
-                )
-            })?;
-        } else {
-            let assignments = source
-                .iter()
-                .zip(&target_values)
-                .map(|(definition, target_value)| {
-                    Ok((
-                        *target_value,
-                        self.rebuild_expression(target, body, definition.rhs())?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
-            target.functions(|functions| functions.assign_all(body, &assignments, provenance))?;
-        }
+        let assignments = source
+            .iter()
+            .zip(&target_values)
+            .map(|(definition, target_value)| {
+                Ok((
+                    *target_value,
+                    self.rebuild_expression(target, body, definition.rhs())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+        target.functions(|functions| functions.assign_all(body, &assignments, provenance))?;
         for (definition, target_value) in source.into_iter().zip(target_values) {
             let target_definition = target.functions(|functions| {
                 functions.current_definition_id(body, target_value, provenance)
@@ -931,17 +908,34 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     ) -> Result<dae::FunctionLoop<'target>, dae::DaeConstructionError> {
         for statement in statements {
             let definition = match statement {
-                dae::FunctionStatementView::Assignment { definition } => definition,
-                dae::FunctionStatementView::AssignmentGroup {
-                    definitions,
-                    conditional,
+                dae::FunctionStatementView::Conditional { conditional } => {
+                    loop_body =
+                        self.rebuild_scoped_conditional(target, function, loop_body, conditional)?;
+                    continue;
+                }
+                dae::FunctionStatementView::RequireAssigned {
+                    value,
+                    definition,
+                    provenance,
+                    ..
                 } => {
+                    self.rebuild_assigned_read(
+                        target,
+                        function,
+                        &mut loop_body,
+                        value,
+                        definition,
+                        provenance,
+                    )?;
+                    continue;
+                }
+                dae::FunctionStatementView::Assignment { definition } => definition,
+                dae::FunctionStatementView::AssignmentGroup { definitions, .. } => {
                     self.rebuild_loop_assignment_group(
                         target,
                         function,
                         &mut loop_body,
                         definitions,
-                        conditional,
                     )?;
                     continue;
                 }
@@ -989,7 +983,6 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         function: &RebuiltFunction<'target>,
         loop_body: &mut dae::FunctionLoop<'target>,
         definitions: dae::FunctionDefinitionValues<'source>,
-        conditional: Option<dae::FunctionConditionalView<'source>>,
     ) -> Result<(), dae::DaeConstructionError> {
         let source = definitions.iter().collect::<Vec<_>>();
         let provenance = source
@@ -1000,49 +993,19 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .iter()
             .map(|definition| function.values[definition.target().ordinal() as usize])
             .collect::<Vec<_>>();
-        if let Some(conditional) = conditional {
-            let conditions = conditional
-                .conditions()
-                .map(|expression| self.rebuild_expression(target, loop_body.body(), expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut branches = Vec::with_capacity(conditional.branch_count());
-            for ordinal in 0..conditional.branch_count() {
-                let source_branch = conditional
-                    .branch(ordinal)
-                    .expect("checked loop conditional branch resolves");
-                let branch =
-                    rebuild_expression_branch(self, target, loop_body.body(), source_branch)?;
-                branches.push(branch);
-            }
-            let fallback = conditional
-                .fallback()
-                .map(|expression| self.rebuild_expression(target, loop_body.body(), expression))
-                .collect::<Result<Vec<_>, _>>()?;
-            target.functions(|functions| {
-                functions.assign_conditional_all_loop(
-                    loop_body,
-                    &target_values,
-                    &conditions,
-                    &branches,
-                    &fallback,
-                    provenance,
-                )
-            })?;
-        } else {
-            let assignments = source
-                .iter()
-                .zip(&target_values)
-                .map(|(definition, target_value)| {
-                    Ok((
-                        *target_value,
-                        self.rebuild_expression(target, loop_body.body(), definition.rhs())?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
-            target.functions(|functions| {
-                functions.assign_all_loop(loop_body, &assignments, provenance)
-            })?;
-        }
+        let assignments = source
+            .iter()
+            .zip(&target_values)
+            .map(|(definition, target_value)| {
+                Ok((
+                    *target_value,
+                    self.rebuild_expression(target, loop_body.body(), definition.rhs())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+        target.functions(|functions| {
+            functions.assign_all_loop(loop_body, &assignments, provenance)
+        })?;
         for (definition, target_value) in source.into_iter().zip(target_values) {
             let target_definition = target.functions(|functions| {
                 functions.current_definition_id(loop_body.body(), target_value, provenance)
@@ -1151,6 +1114,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     )?;
                 }
                 dae::ExpressionOperation::FunctionFoldParameter { .. }
+                | dae::ExpressionOperation::FunctionConditionalOutput { .. }
                 | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
                     return Err(dae::DaeConstructionError::IncompleteDefinition {
                         kind: "function fold expression",
@@ -1158,7 +1122,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                         span: provenance.span(),
                     });
                 }
-                _operation if expanded => {
+                _operation if expanded || self.is_folded_literal(current) => {
                     self.rebuild_expanded_expression(target, current, body)?
                 }
                 operation => {
@@ -1247,6 +1211,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         let source = self.source;
         let facts = self.facts;
         let candidate = self.candidate;
+        let literals = self.literals;
         let rebuilt_state = &mut *self.rebuilt;
         let rebuilt = target.expressions(|expressions| {
             ExpressionRebuilder::new(
@@ -1257,10 +1222,19 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 candidate,
                 rebuilt_state,
             )
+            .replacing_literals(literals)
             .rebuild(current)
         })?;
         self.rebuilt[current.index() as usize] = Some(rebuilt);
         Ok(())
+    }
+
+    /// Whether the plan replaces this expression with a literal, so its
+    /// operands are not part of the rebuilt body.
+    fn is_folded_literal(&self, expression: dae::ExprId<'source>) -> bool {
+        self.literals
+            .get(expression.index() as usize)
+            .is_some_and(Option::is_some)
     }
 
     fn push_dependencies(
@@ -1272,6 +1246,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Coordinate(_)
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
+            | dae::ExpressionOperation::FunctionConditionalOutput { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. }
             | dae::ExpressionOperation::FunctionValue { .. } => {}
             dae::ExpressionOperation::Range(range) => {

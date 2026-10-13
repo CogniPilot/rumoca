@@ -1,6 +1,6 @@
 //! Target-local function outlining at complete certified stage boundaries.
 //!
-//! The wrapper alone guards/copies/publishes Y and resets invocation memos.
+//! The wrapper alone guards/copies/publishes Y.
 //! Groups keep the same arena, scratch offsets, helper indices and status ABI;
 //! no expression, target, call coordinate or schedule edge is reconstructed.
 #[cfg(test)]
@@ -12,10 +12,8 @@ pub(super) struct GatherFaults {
     pub entries: Vec<crate::NativeGatherFault>,
 }
 
-pub(super) const FUNCTION_BYTES: usize = 1024 * 1024;
-// i32.const 0 followed by the function's end, including local declarations in
-// every actual byte-length check. This leaves no estimated opcode budget.
-const SUCCESS_BYTES: usize = 3;
+pub(super) use crate::outline::FUNCTION_BYTES;
+use crate::outline::Outliner;
 
 pub(super) fn locals(arena: arena::ArenaPlan) -> Vec<(u32, ValType)> {
     let mut locals = arena.locals();
@@ -26,7 +24,8 @@ pub(super) fn locals(arena: arena::ArenaPlan) -> Vec<(u32, ValType)> {
 pub(super) fn check_size(body: &Function, budget: usize, kind: &str) -> Result<(), String> {
     if body.byte_len() > budget {
         return Err(format!(
-            "{kind} exceeds native function byte budget ({budget})"
+            "{kind} is {} bytes, exceeding the native function byte budget ({budget})",
+            body.byte_len()
         ));
     }
     Ok(())
@@ -41,52 +40,88 @@ pub(super) fn outline(
     budget: usize,
     faults: &mut GatherFaults,
 ) -> Result<Vec<Function>, String> {
-    let locals = locals(arena);
-    let prefix = Function::new(locals.clone()).byte_len();
-    let mut current = Function::new(locals.clone());
-    let mut groups = Vec::new();
-    for (kernel, plan) in plans.iter().enumerate().take(schedule.stages().len()) {
-        let encoded =
-            stage_body(schedule, kernel, plan, catalog, arena, calls, faults)?.into_raw_body();
-        let instructions = &encoded[prefix..];
-        if prefix
-            .checked_add(instructions.len())
-            .and_then(|n| n.checked_add(SUCCESS_BYTES))
-            .is_none_or(|n| n > budget)
-        {
-            return Err("single native assignment stage exceeds function byte budget".into());
-        }
-        if current
-            .byte_len()
-            .checked_add(instructions.len())
-            .and_then(|n| n.checked_add(SUCCESS_BYTES))
-            .is_none_or(|n| n > budget)
-        {
-            finish(&mut current);
-            groups.push(current);
-            current = Function::new(locals.clone());
-        }
-        current.raw(instructions.iter().copied());
+    let mut outliner = Outliner::new(locals(arena.clone()), budget);
+    let transfer = Transfer {
+        catalog,
+        arena: &arena,
+        calls,
+    };
+    // A run no operation reads the Real view of (SOLVE-C69) has none written.
+    for input in schedule
+        .input_runs()
+        .iter()
+        .filter(|run| run.view_is_read())
+    {
+        let chunk = transfer.encode(&outliner, |e| {
+            e.write_input_run(input, schedule.input_checks())
+        })?;
+        push_chunk(&mut outliner, &chunk, "input run")?;
     }
-    finish(&mut current);
-    groups.push(current);
-    Ok(groups)
+    let mut program_start = 0usize;
+    for (kernel, plan) in plans.iter().enumerate().take(schedule.stages().len()) {
+        let encoded = outliner.instructions(stage_body(
+            schedule,
+            (kernel, program_start),
+            plan,
+            catalog,
+            arena.clone(),
+            calls,
+            faults,
+        )?);
+        program_start = program_start
+            .checked_add(plan.programs.len())
+            .ok_or("native stage program ordinal overflows")?;
+        push_chunk(&mut outliner, &encoded, "assignment stage")?;
+    }
+    for run in buffers::derived_runs(schedule.derived_outputs()) {
+        let chunk = transfer.encode(&outliner, |e| e.publish_derived_run(run))?;
+        push_chunk(&mut outliner, &chunk, "derived output publication")?;
+    }
+    Ok(outliner.finish())
 }
 
-fn finish(function: &mut Function) {
-    function.instruction(&Instruction::I32Const(0));
-    function.instruction(&Instruction::End);
+/// Encodes the memory-only entry work (input packing, output
+/// staging) as operations the one outliner places alongside the stages.
+struct Transfer<'a> {
+    catalog: &'a ImportCatalog,
+    arena: &'a arena::ArenaPlan,
+    calls: &'a CallProgramPlan,
+}
+
+impl Transfer<'_> {
+    fn encode(
+        &self,
+        outliner: &Outliner,
+        step: impl FnOnce(&mut BodyEmitter<'_>) -> Result<(), String>,
+    ) -> Result<Vec<u8>, String> {
+        let mut function = Function::new(locals(self.arena.clone()));
+        let mut emitter = BodyEmitter::new(self.catalog, &mut function);
+        emitter.arena = Some(self.arena.clone());
+        emitter.calls = Some(self.calls);
+        step(&mut emitter)?;
+        Ok(outliner.instructions(function))
+    }
+}
+
+fn push_chunk(outliner: &mut Outliner, chunk: &[u8], what: &str) -> Result<(), String> {
+    outliner.push(chunk).map_err(|too_large| {
+        format!(
+            "single native {what} is {} bytes, exceeding the function byte budget ({})",
+            too_large.bytes, too_large.budget
+        )
+    })
 }
 
 fn stage_body(
     schedule: &solve::NativeRefreshAssignmentSchedule,
-    kernel: usize,
+    binding: (usize, usize),
     plan: &KernelPlan<'_>,
     catalog: &ImportCatalog,
     arena: arena::ArenaPlan,
     calls: &CallProgramPlan,
     faults: &mut GatherFaults,
 ) -> Result<Function, String> {
+    let (kernel, program_start) = binding;
     let stage = &schedule.stages()[kernel];
     let capture = integer_capture(schedule, stage, calls)?;
     let offset = stage
@@ -95,11 +130,12 @@ fn stage_body(
         .checked_mul(8)
         .and_then(|n| i32::try_from(n).ok())
         .ok_or("native target address overflow")?;
-    let mut function = Function::new(locals(arena));
+    let mut function = Function::new(locals(arena.clone()));
     let mut emitter = BodyEmitter::new(catalog, &mut function);
     emitter.arena = Some(arena);
     emitter.calls = Some(calls);
     emitter.kernel_ordinal = kernel;
+    emitter.root_program_cursor = program_start;
     emitter.integer_capture = capture;
     emitter.native_stage = Some(stage);
     emitter.gather_status_base = Some(
@@ -121,33 +157,70 @@ fn stage_body(
             NodePlan::Matrix(_) => return Err("native matrix stage is not admitted".into()),
         }
     }
+    if emitter.root_program_cursor
+        != program_start
+            .checked_add(plan.programs.len())
+            .ok_or("native stage program ordinal overflows")?
+    {
+        return Err("native stage did not consume its complete issued programs".into());
+    }
     faults.entries.append(&mut emitter.gather_faults);
     Ok(function)
 }
 
-/// The Integer call cell a derived-output stage publishes into its lane.
+/// Capture every exact Integer call cell before another call reuses scratch.
 fn integer_capture(
     schedule: &solve::NativeRefreshAssignmentSchedule,
     stage: &solve::NativeRefreshAssignmentStage,
     calls: &CallProgramPlan,
-) -> Result<Option<crate::emit::IntegerCapture>, String> {
-    let solve::NativeStageSource::Discrete { row } = stage.source() else {
-        return Ok(None);
-    };
-    let output = schedule
-        .derived_outputs()
-        .iter()
-        .find(|output| output.row() == row)
-        .ok_or("native discrete stage has no derived output")?;
-    let Some(solve::NativeIntegerSource::CallCell { operation, cell }) = output.integer_source()
-    else {
-        return Ok(None);
-    };
-    Ok(Some(crate::emit::IntegerCapture {
+) -> Result<Vec<crate::emit::IntegerCapture>, String> {
+    if !matches!(stage.source(), solve::NativeStageSource::Discrete { .. }) {
+        return Ok(Vec::new());
+    }
+    let mut captures = Vec::new();
+    for output in schedule.derived_outputs_in(stage.target_span()) {
+        if let Some(solve::NativeIntegerSource::CallCell { operation, cell }) =
+            output.integer_source()
+        {
+            append_capture(
+                &mut captures,
+                operation,
+                cell,
+                super::buffers::lane_address(calls, output)?,
+            )?;
+        }
+    }
+    Ok(captures)
+}
+
+fn append_capture(
+    captures: &mut Vec<crate::emit::IntegerCapture>,
+    operation: usize,
+    cell: u32,
+    lane: u32,
+) -> Result<(), String> {
+    if let Some(last) = captures.last_mut()
+        && last.operation == operation
+        && last.cell.checked_add(last.count) == Some(cell)
+        && last
+            .count
+            .checked_mul(8)
+            .and_then(|bytes| last.lane.checked_add(bytes))
+            == Some(lane)
+    {
+        last.count = last
+            .count
+            .checked_add(1)
+            .ok_or("native Integer capture count overflow")?;
+        return Ok(());
+    }
+    captures.push(crate::emit::IntegerCapture {
         operation,
         cell,
-        lane: super::buffers::lane_address(calls, output)?,
-    }))
+        lane,
+        count: 1,
+    });
+    Ok(())
 }
 
 pub(super) fn invoke(
@@ -155,7 +228,11 @@ pub(super) fn invoke(
     first: u32,
     count: usize,
 ) -> Result<(), String> {
-    let status = emitter.calls.ok_or("missing native call layout")?.status;
+    let status = emitter
+        .calls
+        .ok_or("missing native call layout")?
+        .view()
+        .status;
     for index in 0..count {
         let target = u32::try_from(index)
             .ok()

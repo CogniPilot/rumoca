@@ -24,7 +24,7 @@ impl CompiledSolveAssignmentSchedule for FailingAssignment {
         _p: &[f64],
         _t: f64,
         _tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.0.set(self.0.get() + 1);
         y[1] = 123.0;
         Err("native assignment failed after a partial write".into())
@@ -45,14 +45,14 @@ impl CompiledSolveExpression for AssignmentExpression {
         t: f64,
         _external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("native projection assignment failed".into());
         }
         self.block
             .eval_with_context(y, p, t, RowEvalContext::default(), out)
-            .map_err(|error| error.to_string())
+            .map_err(Into::into)
     }
 }
 
@@ -70,7 +70,7 @@ impl CompiledSolveTargetValues for PrivateTargetValues {
         p: &[f64],
         time: f64,
         context: RowEvalContext<'_>,
-    ) -> Result<f64, String> {
+    ) -> Result<f64, crate::RuntimeSolveError> {
         self.calls.set(self.calls.get() + 1);
         if self.fail {
             return Err("admitted private target-value fault".into());
@@ -155,14 +155,13 @@ impl SolveExecutionBackend for AssignmentBackend {
 #[test]
 fn failed_native_refresh_restores_values_without_disabling_native_execution() {
     let model = warm_start_test_model();
-    let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend {
         schedule_failure: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    let runtime = SolveRuntime::new_fixture_with_backend(&model, backend.clone()).unwrap();
     for _ in 0..2 {
-        let mut y = model.initial_y.clone();
+        let mut y = model.initial_y.to_vec();
         let error = runtime
             .refresh_algebraic_and_output_slots(0.0, &mut y, &[], 1e-10, 4)
             .expect_err("admitted native assignment errors must reach the caller");
@@ -172,7 +171,8 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
                 .contains("native assignment failed after a partial write")
         );
         assert_eq!(
-            y, model.initial_y,
+            y,
+            model.initial_y.to_vec(),
             "a failed refresh must restore the complete snapshot"
         );
     }
@@ -185,14 +185,32 @@ fn failed_native_refresh_restores_values_without_disabling_native_execution() {
 
 fn projection(runtime: &SolveRuntime) -> RefreshProjectionModel<'_> {
     RefreshProjectionModel {
-        runtime,
+        runtime: runtime.scalar_execution().unwrap(),
         seed_linearizations: None,
-        plan: &runtime.algebraic_refresh.simultaneous_plan,
-        block_indices: &runtime.algebraic_refresh.simultaneous_block_indices,
+        plan: &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .simultaneous_plan,
+        block_indices: &runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .algebraic_refresh
+            .simultaneous_block_indices,
         plan_validated: true,
         jacobian_v: ProjectionJacobian::SolverY {
-            block: &runtime.implicit_projection_jacobian_v,
-            scalar: &runtime.implicit_projection_scalar_jacobian_v,
+            block: &runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .implicit_projection_jacobian_v,
+            scalar: &runtime
+                .scalar_execution()
+                .unwrap()
+                .scalar
+                .implicit_projection_scalar_jacobian_v,
         },
     }
 }
@@ -202,7 +220,7 @@ fn singleton_assignment_uses_one_compiled_exact_program() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     for target in [2.0, -3.0, 1e20] {
         assert_eq!(
             projection(&runtime)
@@ -223,7 +241,7 @@ fn singleton_native_failure_is_not_retried_through_the_interpreter() {
         fail: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     let error = projection(&runtime)
         .eval_implicit_target_value(1, 1, &[1.0, 2.0], &[], 0.0)
         .unwrap_err();
@@ -243,7 +261,7 @@ fn unsupported_native_assignment_keeps_the_interpreter_and_caches_the_decline() 
         decline: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     for target in [3.0, -8.0] {
         assert_eq!(
             projection(&runtime)
@@ -261,13 +279,13 @@ fn aggregate_outputs_do_not_generate_separate_native_assignment_programs() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     let mut row = shifted_variable_residual_row(1, 3.0);
     row.extend([
         solve::LinearOp::Const { dst: 3, value: 9.0 },
         solve::LinearOp::StoreOutput { src: 3 },
     ]);
-    runtime.implicit_scalar_rhs =
+    runtime.scalar_fixture_mut().implicit_scalar_rhs =
         PreparedScalarProgramBlock::new(spanned_block(vec![row], "shared_assignment.mo")).unwrap();
     assert_eq!(
         projection(&runtime)
@@ -283,12 +301,13 @@ fn native_assignment_preserves_a_tiny_root_beside_a_large_incoming_value() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.execution_backend = Some(backend.clone());
-    runtime.implicit_scalar_rhs = PreparedScalarProgramBlock::new(spanned_block(
-        vec![shifted_variable_residual_row(1, 1e-17)],
-        "tiny_assignment.mo",
-    ))
-    .unwrap();
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().implicit_scalar_rhs =
+        PreparedScalarProgramBlock::new(spanned_block(
+            vec![shifted_variable_residual_row(1, 1e-17)],
+            "tiny_assignment.mo",
+        ))
+        .unwrap();
     assert_eq!(
         projection(&runtime)
             .eval_implicit_target_value(0, 1, &[1.0, 1e20], &[], 0.0)
@@ -303,34 +322,35 @@ fn singular_coefficients_preserve_the_projection_decline() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.implicit_scalar_rhs = PreparedScalarProgramBlock::new(spanned_block(
-        vec![vec![
-            solve::LinearOp::LoadP { dst: 0, index: 0 },
-            solve::LinearOp::LoadY { dst: 1, index: 1 },
-            solve::LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Mul,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::Const { dst: 3, value: 1.0 },
-            solve::LinearOp::Binary {
-                dst: 4,
-                op: solve::BinaryOp::Sub,
-                lhs: 2,
-                rhs: 3,
-            },
-            solve::LinearOp::StoreOutput { src: 4 },
-        ]],
-        "singular_assignment.mo",
-    ))
-    .unwrap();
+    runtime.scalar_fixture_mut().implicit_scalar_rhs =
+        PreparedScalarProgramBlock::new(spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::LoadY { dst: 1, index: 1 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Const { dst: 3, value: 1.0 },
+                solve::LinearOp::Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                solve::LinearOp::StoreOutput { src: 4 },
+            ]],
+            "singular_assignment.mo",
+        ))
+        .unwrap();
     for coefficient in [2.0, 0.0, f64::INFINITY, f64::NAN] {
-        runtime.execution_backend = None;
+        runtime.scalar_fixture_mut().execution_backend = None;
         let reference = projection(&runtime)
             .isolation_value(0, 1, &[1.0, 3.0], &[coefficient], 0.0)
             .unwrap();
-        runtime.execution_backend = Some(backend.clone());
+        runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
         assert_eq!(
             projection(&runtime)
                 .isolation_value(0, 1, &[1.0, 3.0], &[coefficient], 0.0)
@@ -351,7 +371,7 @@ fn compiled_private_target_returns_checked_value_without_y_commit() {
         target_values: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     for previous in [2., -3., 1e20] {
         let y = [1., previous];
         let bits = y.map(f64::to_bits);
@@ -377,7 +397,7 @@ fn admitted_private_target_fault_is_authoritative_and_does_not_demote() {
         fail: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     let y = [1., 2.];
     for _ in 0..2 {
         let error = projection(&runtime)
@@ -404,7 +424,7 @@ fn private_target_pre_admission_decline_is_cached_and_keeps_canonical_path() {
         decline: true,
         ..Default::default()
     });
-    runtime.execution_backend = Some(backend.clone());
+    runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
     for previous in [3., -8.] {
         assert_eq!(
             projection(&runtime)
@@ -415,4 +435,151 @@ fn private_target_pre_admission_decline_is_cached_and_keeps_canonical_path() {
     }
     assert_eq!(backend.target_compilations.get(), 1);
     assert_eq!(backend.calls.get(), 0);
+}
+
+/// A backend that admits or declines each exact assignment schedule in issue
+/// order and counts how many it was asked to compile.
+struct ScheduleAdmission {
+    declined: Vec<usize>,
+    asked: Cell<usize>,
+    executions: Rc<Cell<usize>>,
+    transactions_asked: Cell<usize>,
+}
+
+struct AdmittedSchedule(Rc<Cell<usize>>);
+
+impl CompiledSolveAssignmentSchedule for AdmittedSchedule {
+    fn call(
+        &self,
+        _y: &mut [f64],
+        _p: &[f64],
+        _t: f64,
+        _tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<(), crate::RuntimeSolveError> {
+        self.0.set(self.0.get() + 1);
+        Ok(())
+    }
+}
+
+impl SolveExecutionBackend for ScheduleAdmission {
+    fn compile_expression(
+        &self,
+        _block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        Err("unused by schedule admission test".into())
+    }
+
+    fn compile_jacobian_expression(
+        &self,
+        _block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        Err("unused by schedule admission test".into())
+    }
+
+    fn compile_assignment_schedule(
+        &self,
+        _source: &solve::ComputeBlock,
+        _owners: &solve::ContinuousRefreshOwners,
+        _schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        let ordinal = self.asked.get();
+        self.asked.set(ordinal + 1);
+        if self.declined.contains(&ordinal) {
+            return Err("test backend declines this schedule".into());
+        }
+        Ok(Rc::new(AdmittedSchedule(self.executions.clone())))
+    }
+
+    fn compile_event_transaction(
+        &self,
+        _program: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+        self.transactions_asked
+            .set(self.transactions_asked.get() + 1);
+        Err("test backend declines every event transaction".into())
+    }
+}
+
+fn schedule_admission(declined: Vec<usize>) -> Rc<ScheduleAdmission> {
+    Rc::new(ScheduleAdmission {
+        declined,
+        asked: Cell::new(0),
+        executions: Rc::default(),
+        transactions_asked: Cell::new(0),
+    })
+}
+
+fn runtime_with_admission(
+    model: &solve::SolveModel,
+    backend: &Rc<ScheduleAdmission>,
+) -> (SolveRuntime, usize) {
+    let runtime = SolveRuntime::new_fixture_with_backend(model, backend.clone()).unwrap();
+    let issued = runtime
+        .model
+        .problem
+        .continuous
+        .refresh_owners
+        .exact_assignment_schedules()
+        .len();
+    assert!(
+        issued > 0,
+        "the fixture issues an exact assignment schedule"
+    );
+    assert_eq!(backend.asked.get(), issued, "each schedule is asked once");
+    (runtime, issued)
+}
+
+#[test]
+fn schedules_the_backend_admits_have_no_interpreter_copy_and_run_compiled() {
+    let model = warm_start_test_model();
+    let backend = schedule_admission(Vec::new());
+    let (runtime, _issued) = runtime_with_admission(&model, &backend);
+    assert_eq!(runtime.interpreted_schedule_count(), 0);
+    let mut y = model.initial_y.to_vec();
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut y, &[], 1e-10, 4)
+        .unwrap();
+    assert_eq!(
+        backend.executions.get(),
+        1,
+        "the admitted schedule is the one that executes"
+    );
+}
+
+#[test]
+fn only_the_schedule_the_backend_declines_is_prepared_for_the_interpreter() {
+    let model = warm_start_test_model();
+    let backend = schedule_admission(vec![0]);
+    let (runtime, issued) = runtime_with_admission(&model, &backend);
+    assert_eq!(runtime.interpreted_schedule_count(), 1);
+    assert!(issued >= 1);
+}
+
+#[test]
+fn the_backend_is_asked_once_per_event_transaction_and_a_decline_keeps_the_interpreter() {
+    let mut model = super::super::event_transactions::tests::transaction_model();
+    model.problem.continuous.refresh_owners =
+        solve_eval::refresh_plan::build_continuous_refresh_owners(&mut model.problem).unwrap();
+    let backend = schedule_admission(Vec::new());
+    let runtime = SolveRuntime::new_with_execution_backend(&model, Some(backend.clone())).unwrap();
+    assert_eq!(backend.transactions_asked.get(), 1);
+    assert!(
+        runtime
+            .scalar_execution()
+            .unwrap()
+            .scalar
+            .compiled_event_transactions[0]
+            .is_none()
+    );
+}
+
+#[test]
+fn the_refresh_projection_names_its_variables_and_row_targets() {
+    let model = warm_start_test_model();
+    let runtime = SolveRuntime::new_fixture(&model).unwrap();
+    let refresh = projection(&runtime);
+    assert_eq!(refresh.variable_name_for_y_index(0).as_deref(), Some("x"));
+    assert_eq!(refresh.variable_name_for_y_index(1).as_deref(), Some("z"));
+    assert_eq!(refresh.variable_name_for_y_index(9), None);
+    assert_eq!(refresh.target_name_for_row(1).as_deref(), Some("z"));
 }

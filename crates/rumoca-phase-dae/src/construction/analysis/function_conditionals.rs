@@ -65,6 +65,7 @@ pub(super) fn plan_function_conditional(
         branches,
         fallback,
         targets: Vec::new(),
+        condition_reads: blocks.iter().map(|_| Vec::new()).collect(),
     })
 }
 
@@ -149,12 +150,13 @@ fn plan_proven_conditional_branch(
 pub(super) fn resolve_function_conditional(
     blocks: &[rumoca_core::StatementBlock],
     fallback_statements: Option<&[rumoca_core::Statement]>,
-    branches: &mut [Vec<FunctionStatementPlan>],
-    fallback_plans: Option<&mut Vec<FunctionStatementPlan>>,
+    plans: FunctionConditionalPlans<'_>,
     span: Span,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<VarName>, ToDaeError> {
+    assert_eq!(blocks.len(), plans.branches.len());
+    assert_eq!(blocks.len(), plans.condition_reads.len());
     // Taken before any branch clones the certificate: only this conditional's
     // own join may admit path-partial values.
     let admit_path_partial = definitions.take_path_partial_admission();
@@ -163,8 +165,7 @@ pub(super) fn resolve_function_conditional(
             StaticLoopBranch {
                 blocks,
                 fallback_statements,
-                branches,
-                fallback_plans,
+                plans,
                 selected,
                 span,
             },
@@ -172,17 +173,10 @@ pub(super) fn resolve_function_conditional(
             definitions,
         );
     }
-    // A conditional that only asserts defines no value; it owns the guarded
-    // actions of its branches, or nothing when every assertion is proven.
-    let carries_assertions = branches
-        .iter()
-        .map(Vec::as_slice)
-        .chain(fallback_plans.as_deref().map(Vec::as_slice))
-        .any(plans_carry_assertion);
     let writes_before = definitions.folds.write_count();
     let resolved = resolve_reachable_branches(
         (blocks, fallback_statements),
-        (branches, fallback_plans),
+        plans,
         span,
         context,
         definitions,
@@ -193,27 +187,15 @@ pub(super) fn resolve_function_conditional(
         ordered,
         exhaustive,
         first_reached,
-        pruned,
     } = resolved;
-    // A conditional whose reachable branches write nothing has no effect at
-    // the binder values that reach it; its other branches never run. The
-    // paths still rejoin, so the facts after it hold on every path through it
-    // and not only on the fall-through.
-    if branch_states.is_empty() || (ordered.is_empty() && (carries_assertions || pruned)) {
+    // No value join is needed when no reachable branch writes a target. The
+    // ordered source statement still owns its conditions and branch effects;
+    // construction retains it even when its output projection is empty.
+    if branch_states.is_empty() || ordered.is_empty() {
         let conditions = blocks.iter().map(|block| &block.cond).collect::<Vec<_>>();
         let fallthrough = definitions.fallthrough_facts(&conditions, context);
         definitions.join_facts(&branch_states, exhaustive, &fallthrough);
         return Ok(ordered);
-    }
-    if ordered.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function conditional",
-            format!(
-                "`{}` has a conditional branch without a value definition",
-                context.function.name
-            ),
-            span,
-        ));
     }
     // A branch that never completes defines nothing code after the
     // conditional can observe, so only the completing branches are joined.
@@ -260,8 +242,6 @@ struct ResolvedBranches {
     ordered: Vec<VarName>,
     exhaustive: bool,
     first_reached: bool,
-    /// Some branch is reached by no binder value and was not resolved.
-    pruned: bool,
 }
 
 /// Resolve every branch some binder value reaches.
@@ -276,21 +256,22 @@ fn resolve_reachable_branches(
         &[rumoca_core::StatementBlock],
         Option<&[rumoca_core::Statement]>,
     ),
-    (branches, fallback_plans): (
-        &mut [Vec<FunctionStatementPlan>],
-        Option<&mut Vec<FunctionStatementPlan>>,
-    ),
+    plans: FunctionConditionalPlans<'_>,
     span: Span,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<ResolvedBranches, ToDaeError> {
+    let FunctionConditionalPlans {
+        branches,
+        fallback: fallback_plans,
+        condition_reads,
+    } = plans;
     let mut resolved = ResolvedBranches {
         states: Vec::with_capacity(branches.len() + 1),
         completing: Vec::with_capacity(branches.len() + 1),
         ordered: Vec::new(),
         exhaustive: false,
         first_reached: false,
-        pruned: false,
     };
     let conditions = blocks.iter().map(|block| &block.cond).collect::<Vec<_>>();
     // Value facts may show that no execution reaches a branch, or that every
@@ -300,6 +281,7 @@ fn resolve_reachable_branches(
     let mut remaining = definitions.folds.clone();
     for (ordinal, (block, plans)) in blocks.iter().zip(branches.iter_mut()).enumerate() {
         definitions.require_readable(&block.cond, context, span)?;
+        condition_reads[ordinal] = definitions.proven_assignment_reads(&block.cond, context, span);
         let mut state = definitions.clone();
         let certain = reachable[ordinal + 1..].iter().all(|reaches| !reaches);
         let reached = if certain {
@@ -310,7 +292,6 @@ fn resolve_reachable_branches(
         };
         remaining.assume(&block.cond, false, context);
         if !reached || !reachable[ordinal] {
-            resolved.pruned = true;
             continue;
         }
         resolved.first_reached |= ordinal == 0;
@@ -329,7 +310,6 @@ fn resolve_reachable_branches(
                 resolve_conditional_branch(statements, plans, context, &mut state)?;
                 resolved.push(state, statements, plans);
             }
-            resolved.pruned |= !falls_through;
             true
         }
         (None, None) => !falls_through,
@@ -363,23 +343,6 @@ impl ResolvedBranches {
     }
 }
 
-/// Whether a runtime branch carries at least one assertion: a runtime one is
-/// handed to the action owner, a proven one (MLS §8.3.7, established `true` by
-/// the specialization) is erased and leaves the branch with no value to define.
-fn plans_carry_assertion(plans: &[FunctionStatementPlan]) -> bool {
-    plans.iter().any(|plan| match plan {
-        FunctionStatementPlan::RuntimeAssertion | FunctionStatementPlan::ProvenAssertion => true,
-        FunctionStatementPlan::If {
-            branches, fallback, ..
-        } => {
-            branches.iter().any(|branch| plans_carry_assertion(branch))
-                || fallback.as_deref().is_some_and(plans_carry_assertion)
-        }
-        FunctionStatementPlan::ProvenBranch { statements, .. } => plans_carry_assertion(statements),
-        _ => false,
-    })
-}
-
 fn statically_selected_branch(
     blocks: &[rumoca_core::StatementBlock],
     _fallback: Option<&[rumoca_core::Statement]>,
@@ -402,8 +365,7 @@ fn statically_selected_branch(
 struct StaticLoopBranch<'source, 'plan> {
     blocks: &'source [rumoca_core::StatementBlock],
     fallback_statements: Option<&'source [rumoca_core::Statement]>,
-    branches: &'plan mut [Vec<FunctionStatementPlan>],
-    fallback_plans: Option<&'plan mut Vec<FunctionStatementPlan>>,
+    plans: FunctionConditionalPlans<'plan>,
     selected: Option<usize>,
     span: Span,
 }
@@ -416,17 +378,22 @@ fn resolve_static_loop_branch(
     let StaticLoopBranch {
         blocks,
         fallback_statements,
-        branches,
-        mut fallback_plans,
+        plans,
         selected,
         span,
     } = input;
+    let FunctionConditionalPlans {
+        branches,
+        fallback: mut fallback_plans,
+        condition_reads,
+    } = plans;
     // Resolution-time folding is subject to the same well-formedness rule as
     // specialization-time folding: MLS §11.5 selects execution, but it does
     // not make malformed statements in the other arms legal.
     check_unexecuted_branches(blocks, fallback_statements, selected, context)?;
-    for block in blocks {
+    for (block, reads) in blocks.iter().zip(condition_reads) {
         definitions.require_readable(&block.cond, context, span)?;
+        *reads = definitions.proven_assignment_reads(&block.cond, context, span);
     }
     match selected {
         Some(ordinal) => resolve_conditional_branch(
@@ -628,8 +595,8 @@ fn validate_conditional_branch_shape(
         match (statement, plan) {
             (_, FunctionStatementPlan::ProvenAssertion) => continue,
             (_, FunctionStatementPlan::RuntimeAssertion) => continue,
-            (_, FunctionStatementPlan::Assignment(_)) => continue,
-            (_, FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => continue,
+            (_, FunctionStatementPlan::Assignment(_))
+            | (_, FunctionStatementPlan::GeneratedBooleanAssignment { .. }) => continue,
             (_, FunctionStatementPlan::RecordAssembly(_))
             | (_, FunctionStatementPlan::RecordAssemblyMember) => continue,
             (_, FunctionStatementPlan::MultiOutputCall { .. }) => continue,
@@ -685,16 +652,16 @@ fn validate_conditional_branch_shape(
 fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<VarName>) {
     for plan in plans {
         match plan {
-            FunctionStatementPlan::Assignment(assignment) => {
-                collect_branch_target(assignment.target(), ordered);
-            }
             FunctionStatementPlan::GeneratedBooleanAssignment { target, .. } => {
                 collect_branch_target(target, ordered);
+            }
+            FunctionStatementPlan::Assignment(assignment) => {
+                collect_branch_target(assignment.target(), ordered);
             }
             FunctionStatementPlan::RecordAssembly(assembly) => {
                 collect_branch_target(&assembly.target, ordered);
             }
-            FunctionStatementPlan::MultiOutputCall { outputs } => {
+            FunctionStatementPlan::MultiOutputCall { outputs, .. } => {
                 for output in outputs.iter().flatten() {
                     collect_branch_target(output.target(), ordered);
                 }

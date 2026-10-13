@@ -40,9 +40,11 @@ fn one_row_block() -> solve::ScalarProgramBlock {
 
 /// One two-scalar state run, so a version template has an ordinary entry to
 /// walk, plus the delay partition the caller asks for.
-fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
+pub(super) fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
     let mut model = solve::SolveModel::default();
     model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, 1);
+    model.initial_y = solve::SolveInitialValues::repeat(0.0, 2).unwrap();
+    model.parameters = solve::SolveInitialValues::repeat(0.0, 1).unwrap();
     model.problem.solve_layout.variable_storage_runs = vec![solve::SolveVariableStorageRun {
         base: solve::ScalarSlot::Y {
             index: 0,
@@ -69,14 +71,15 @@ fn model_with_one_state_run(delay_bearing: bool) -> solve::SolveModel {
     model
 }
 
-fn state_input() -> solve::fmi::FmiVariableInput {
+pub(super) fn state_input() -> solve::fmi::FmiVariableInput {
     solve::fmi::FmiVariableInput {
         name: "x".to_string(),
-        scalar_names: vec!["x[1]".to_string(), "x[2]".to_string()],
+
         role: solve::SolveVariableStorageRole::State,
         value_kind: solve::SolveVariableValueKind::Real,
         dimensions: vec![2],
-        start: vec![1.0, 2.0],
+        start: vec![1.0, 2.0].into(),
+        effective_input_default: None,
         minimum: None,
         maximum: None,
         nominal: None,
@@ -362,12 +365,13 @@ fn a_state_manifold_projection_is_refused_before_any_byte() {
         .expect("the retained manifold row closes the initialization residual");
     model.problem.continuous.manifold_residual = manifold;
     model.problem.continuous.manifold_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: vec![solve::AlgebraicProjectionBlock {
+        blocks: (vec![solve::AlgebraicProjectionBlock {
             rows: vec![0],
             y_indices: vec![0],
             tearing: None,
             alternate_charts: Vec::new(),
-        }],
+        }])
+        .into(),
     };
     model
         .problem
@@ -395,6 +399,7 @@ fn component_with_binding_chain(depth: usize) -> solve::fmi::FmiComponent {
     let mut model = model_with_one_state_run(false);
     let count = depth + 1;
     model.problem.layout = solve::VarLayout::from_parts(IndexMap::new(), 2, count);
+    model.parameters = solve::SolveInitialValues::repeat(0.0, count).unwrap();
     model
         .problem
         .solve_layout
@@ -453,10 +458,10 @@ fn component_with_binding_chain(depth: usize) -> solve::fmi::FmiComponent {
         .expect("each binding owns its own target");
     let parameter = solve::fmi::FmiVariableInput {
         name: "p".to_string(),
-        scalar_names: (1..=count).map(|k| format!("p[{k}]")).collect(),
+
         role: solve::SolveVariableStorageRole::Parameter,
         dimensions: vec![count as u32],
-        start: vec![0.0; count],
+        start: vec![0.0; count].into(),
         causality: solve::fmi::FmiCausality::Parameter,
         variability: solve::fmi::FmiVariability::Fixed,
         ..state_input()

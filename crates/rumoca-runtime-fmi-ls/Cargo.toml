@@ -1,0 +1,29 @@
+[package]
+name = "rumoca-runtime-fmi-ls"
+description = "Fixed FMI-LS WIT adapter over the existing retained ME owner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+rumoca-solver = { path = "../rumoca-solver", default-features = false, features = ["sparse-linalg", "native-wasm"] }
+rumoca-ir-solve = { workspace = true }
+rumoca-solver-rk45 = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "wasi", target_env = "p2"))'.dependencies]
+wit-bindgen = { version = "=0.43.0", default-features = false, features = ["macros", "realloc"] }
+rumoca-exec-wasm = { path = "../rumoca-exec-wasm", default-features = false, features = ["fixed-native-guest-receiver"] }
+
+[dev-dependencies]
+rumoca-compile = { workspace = true }
+rumoca-exec-wasm = { workspace = true, features = ["host-engine"] }
+rumoca-sim = { workspace = true, features = ["fmi"] }
+
+[lints]
+workspace = true

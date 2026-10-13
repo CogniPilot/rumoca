@@ -70,6 +70,18 @@ dependency graph. `Preserve` is constructible only with a proof that the target
 cannot reach continuous dynamics; missing, cyclic, ambiguous, or unsupported
 evidence constructs `Restart` instead.
 
+### Exact Declaration Initialization
+
+Native typed input initialization borrows the retained source owner through the original correlated FMI inventory, preflights every source run before writing any typed cell, and leaves a missing declaration start absent (never authored by an export default). [SPEC_0043 catalog §11](SPEC_0043_CONSTRUCTION_CATALOG.md#11-exact-declaration-initialization-catalog) is normative by reference.
+
+### Source-Ordered Function Assertion Cutover
+
+An assertion check executes at its authored statement; a failed error returns a private stopped outcome that never becomes a successful tuple, and ALG-015 remains the source-language requirement. [SPEC_0043 catalog §12](SPEC_0043_CONSTRUCTION_CATALOG.md#12-function-assertion-cutover-catalog) is normative by reference.
+
+### Executed-Path Function Assigned State
+
+Partial function state crosses DAE-to-Solve only through a separate checked assigned-state product with an absent-or-present state per semantic value. [SPEC_0043 catalog §13](SPEC_0043_CONSTRUCTION_CATALOG.md#13-function-assigned-state-catalog) is normative by reference.
+
 ### Solve Algorithm Block Construction
 
 `SolveAlgorithmBlock::construct` alone constructs the GALEC-derived root under
@@ -85,6 +97,10 @@ and GALEC may restrict it, never reinterpret unresolved rows. The same owner
 derives whether a complete algebraic/output declaration is event-held; Solve
 stores that as one typed declaration domain, and scalar trace metadata is only
 a presentation projection of that proof.
+
+### Linked Native FMI-LS Construction
+
+A fixed native guest core issues only from the canonical retained-source build, and final graph construction consumes one source-correlated library product and one issued fixed core. [SPEC_0043 catalog §14](SPEC_0043_CONSTRUCTION_CATALOG.md#14-linked-native-fmi-ls-construction-catalog) is normative by reference.
 
 ### Flat Aggregate Construction
 
@@ -232,49 +248,11 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 ### Serialization
 
-Only the current wire identified by `rumoca_ir_dae::DAE_SCHEMA_VERSION` exists;
-older/pre-versioned payloads, adapters, migration readers, and dual writes are
-prohibited. The code constant is authoritative.
-
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Current wire records are private and deny unknown fields | DAE serde | Wire is not IR |
-| Finite floating-point values retain their exact bits through current-wire serialization and decoding | IR numeric transport | Replay cannot change coefficients or literals |
-| Operands travel on the operation that consumes them, never in a positional side table | DAE serde | One reading order |
-| Facts a construction operation produces are absent and re-issued by replay | Private wire types | Results cannot be forged |
-| Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |
-| Decode calls the same provenance-requiring operations | DAE serde | Deserialization is construction |
-| Provenance serializes identity/range/origin only | DAE wire | Source text stays canonical |
-| IDs project to deterministic wire-local ordinals; arenas to ordered arrays | DAE serde | Process IDs never leak |
-| Non-dense key duplicates fail before insertion | DAE serde | Maps cannot hide malformed input |
-| Derived counts and indexes are absent from wire | Private wire types | Caches cannot be forged |
-| Invariant-bearing children have no fieldwise `Deserialize` | IR serde | Bytes cannot bypass checks |
-
-`flat::Model`, `Dae`, and `SolveProblem` deserialize only private current-version
-records through checked construction; children prohibit fieldwise `Deserialize`.
+Only the current wire exists; older payloads, adapters, migration readers and dual writes are prohibited. [SPEC_0043 catalog §15](SPEC_0043_CONSTRUCTION_CATALOG.md#15-serialization-catalog) is normative by reference.
 
 ### Other IR Boundaries
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Parse preserves recovered syntax | Parse AST | Diagnostics |
-| Success returns opaque proofs | AST phases | Completed proof |
-| Partial work gets no proof | AST phases | No forgery |
-| `ParsedTree → ResolvedTree` has one mint | Resolve phase | One authority |
-| `ResolvedTree → InstancedTree` has one mint | Instantiate phase | One authority |
-| `InstancedTree → TypedInstancedTree` has one mint | Typecheck phase | One authority |
-| `TypedInstancedTree → flat::Model` consumes by value and has one mint | Flatten phase | Closed proof chain |
-| Proof fields/constructors are private; no `DerefMut`/mutable overlay | Owning phase | No forgery |
-| Invariant fields private | `flat::Model`/`Dae`/`SolveProblem` | No bypass |
-| Public root `validate()` prohibited | `flat::Model`/`Dae`/`SolveProblem` | Construction proves |
-| Unchecked builders prohibited | `flat::Model`/`Dae`/`SolveProblem` | No weaker value |
-| Sparsity patterns derived, not claimed | Solve construction | No unsafe under-approximation |
-
-Instantiation applies modifications and builds its overlay; post-instance
-typechecking sees those results; flattening expands checked connections. No raw
-tree/overlay enters flattening. Consuming a proof transfers its unique phase
-capability, not necessarily its immutable payload; payload sharing is allowed
-when it cannot forge or mutate a proof.
+Parse, AST, Flat and the remaining IR boundaries are governed by the row catalog in [SPEC_0043 catalog §16](SPEC_0043_CONSTRUCTION_CATALOG.md#16-other-ir-boundaries-catalog).
 
 ### Refinement Obligations
 

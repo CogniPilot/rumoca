@@ -51,7 +51,7 @@ pub(super) fn collect_function_sequence_seeds<'plan>(
                     seeds.push((assignment.target(), seed));
                 }
             }
-            FunctionStatementPlan::MultiOutputCall { outputs } => {
+            FunctionStatementPlan::MultiOutputCall { outputs, .. } => {
                 seeds.extend(
                     outputs
                         .iter()
@@ -79,11 +79,45 @@ pub(super) fn collect_function_sequence_seeds<'plan>(
                     collect_function_sequence_seeds(fallback, seeds);
                 }
             }
-            FunctionStatementPlan::ProvenBranch { statements, .. }
-            | FunctionStatementPlan::For { statements, .. } => {
+            FunctionStatementPlan::ProvenBranch { statements, .. } => {
                 collect_function_sequence_seeds(statements, seeds);
+            }
+            FunctionStatementPlan::For {
+                statements,
+                lowering,
+                ..
+            } => {
+                let mut nested = Vec::new();
+                collect_function_sequence_seeds(statements, &mut nested);
+                seeds.extend(nested.into_iter().filter(|(target, _)| {
+                    !matches!(lowering, FunctionLoopLowering::Fold { iteration_locals, .. }
+                        if iteration_locals.contains(target))
+                }));
             }
             _ => {}
         }
     }
+}
+
+pub(super) fn lower_function_iteration_local_seeds<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionLoop<'dae>,
+    plans: &[FunctionStatementPlan],
+    iteration_locals: &[VarName],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut seeds = Vec::new();
+    collect_function_sequence_seeds(plans, &mut seeds);
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, span)?;
+    for (target, seed) in seeds {
+        if iteration_locals.contains(target) {
+            let value = lower_function_value_seed(construction, seed, span)?;
+            let target = function_value_coordinate(symbols.coordinates, target);
+            construction
+                .functions(|functions| functions.assign_loop(body, target, value, provenance))?;
+        }
+    }
+    Ok(())
 }

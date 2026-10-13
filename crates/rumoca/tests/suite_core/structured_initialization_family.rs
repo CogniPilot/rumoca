@@ -59,8 +59,8 @@ fn the_tensor_jvp_of_the_initial_family_equals_the_per_row_jvp() {
     let residual = problem.initialization.residual();
     let seeds = problem.solve_layout.solver_scalar_count();
     let tensor =
-        rumoca_phase_solve::lower_compute_block_full_jvp(residual, seeds).expect("tensor JVP");
-    let rows = rumoca_phase_solve::ad::lower_scalar_program_block_full_jvp(
+        rumoca_eval_solve::ad::lower_compute_block_full_jvp(residual, seeds).expect("tensor JVP");
+    let rows = rumoca_eval_solve::ad::lower_scalar_program_block_full_jvp(
         &rumoca_eval_solve::to_scalar_program_block(residual).expect("scalar view"),
         seeds,
     )

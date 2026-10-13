@@ -1,5 +1,6 @@
 use super::*;
 use crate::construction::analysis::FunctionRecordScalarSource;
+use crate::construction::function_body::require_proven_function_reads;
 use rumoca_core::{ExpressionRewriter, Reference};
 
 pub(super) fn lower_function_record_assembly<'dae>(
@@ -9,8 +10,9 @@ pub(super) fn lower_function_record_assembly<'dae>(
     source: &[rumoca_core::Statement],
     plan: &FunctionRecordAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
+    require_proven_function_reads(construction, symbols, body, &plan.reads)?;
     let (target, record, generated) =
-        lower_function_record_value(construction, symbols, body, &HashMap::new(), source, plan)?;
+        lower_function_record_value(construction, symbols, body, symbols.binders, source, plan)?;
     construction.functions(|functions| functions.assign(body, target, record, generated))
 }
 
@@ -153,6 +155,7 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
     source: &[rumoca_core::Statement],
     plan: &FunctionRecordFieldAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
+    require_proven_function_reads(construction, symbols, body, &plan.reads)?;
     let owner_span = source[0]
         .source_span()
         .expect("analysis requires staged record provenance");
@@ -174,12 +177,13 @@ pub(super) fn lower_function_record_field_assembly<'dae>(
                 available: &available,
             };
             let value = staged_reads.rewrite_expression(value);
-            lower_function_expression(
+            lower_function_expression_scoped(
                 construction,
                 symbols.coordinates,
                 symbols.functions,
                 symbols.shapes,
                 body,
+                symbols.binders,
                 &value,
             )
         })

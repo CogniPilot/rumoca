@@ -64,7 +64,7 @@ impl RefreshProjectionModel<'_> {
     ) -> Result<Rc<SeedBlockLinearization>, RuntimeSolveError> {
         let issued_index = self.block_indices.get(block_index).copied().filter(|_| {
             self.algebraic_projection_block_structure(block_index)
-                .is_some_and(solve::JacobianStructure::linearization_is_repeatable)
+                .is_some_and(solve::ColoredJacobianStructure::linearization_is_repeatable)
         });
         if let (Some(index), Some(cache)) = (issued_index, &self.seed_linearizations) {
             let mut cache = cache.borrow_mut();

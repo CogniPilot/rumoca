@@ -90,6 +90,90 @@ fn seed() -> Vec<f64> {
         .collect()
 }
 
+#[test]
+fn cloned_lane_owner_emits_once() {
+    let owner = std::sync::Arc::new(
+        solve::TangentLaneProgram::replicate(&dual_program(), LANES)
+            .expect("the checked lane owner"),
+    );
+    let mut family = LaneFamily::default();
+    let span = solve::source_span_from_offsets(1, 0, 1);
+    let first = family.intern(std::sync::Arc::clone(&owner), span);
+    let second = family.intern(std::sync::Arc::clone(&owner), span);
+    assert_eq!(
+        first, second,
+        "one issued lane owner has one emitted function"
+    );
+    assert_eq!(emitted_lane_count(family), 1);
+}
+
+fn lane_owner(lanes: usize) -> std::sync::Arc<solve::TangentLaneProgram> {
+    std::sync::Arc::new(
+        solve::TangentLaneProgram::replicate(&dual_program(), lanes)
+            .expect("the checked lane owner"),
+    )
+}
+
+fn emitted_lane_count(family: LaneFamily) -> usize {
+    let plan = family.into_plan().expect("the checked render block");
+    crate::codegen::create_environment()
+        .render_str("{{ plan.programs | length }}", minijinja::context! { plan })
+        .expect("render the program inventory")
+        .parse()
+        .expect("the emitted program count")
+}
+
+#[test]
+fn independent_lane_owners_and_widths_stay_distinct() {
+    let owner = lane_owner(LANES);
+    let independent = lane_owner(LANES);
+    assert_eq!(
+        owner.as_ref(),
+        independent.as_ref(),
+        "identical checked bodies"
+    );
+    let wider = lane_owner(LANES + 1);
+    let mut family = LaneFamily::default();
+    let span = solve::source_span_from_offsets(1, 0, 1);
+    assert_eq!(family.intern(owner, span), 0);
+    assert_eq!(family.intern(independent, span), 1);
+    assert_eq!(family.intern(wider, span), 2);
+    assert_eq!(emitted_lane_count(family), 3);
+}
+
+#[test]
+fn lane_owner_preserves_complete_diagnostic_provenance() {
+    let owner = lane_owner(LANES);
+    let mut family = LaneFamily::default();
+    let spans = [
+        solve::source_span_from_offsets(1, 0, 1),
+        solve::source_span_from_offsets(2, 0, 1),
+        solve::source_span_from_offsets(1, 1, 2),
+        solve::source_span_from_offsets(1, 0, 2),
+    ];
+    for (id, span) in spans.into_iter().enumerate() {
+        assert_eq!(family.intern(std::sync::Arc::clone(&owner), span), id);
+        assert_eq!(family.intern(std::sync::Arc::clone(&owner), span), id);
+    }
+    assert_eq!(emitted_lane_count(family), spans.len());
+}
+
+#[test]
+fn lane_family_retains_owner_until_its_identity_key_is_retired() {
+    let owner = lane_owner(LANES);
+    let weak = std::sync::Arc::downgrade(&owner);
+    let mut family = LaneFamily::default();
+    let span = solve::source_span_from_offsets(1, 0, 1);
+    assert_eq!(family.intern(owner, span), 0);
+    let retained = weak.upgrade().expect("the key retains its issued owner");
+    assert_eq!(family.intern(retained, span), 0);
+    assert_eq!(emitted_lane_count(family), 1);
+    assert!(
+        weak.upgrade().is_none(),
+        "the consumed render view owns its checked block"
+    );
+}
+
 const HARNESS: &str = r#"{%- from "fmi-c-kernel.jinja" import scalar_op %}
 #include <math.h>
 #include <stdio.h>
@@ -119,8 +203,8 @@ fn render(program: &solve::TangentLaneProgram, outputs: usize) -> String {
     // its own outputs from zero.
     let mut family = LaneFamily::default();
     let span = solve::source_span_from_offsets(1, 0, 1);
-    family.push(program.clone(), span);
-    family.push(program.clone(), span);
+    family.intern(std::sync::Arc::new(program.clone()), span);
+    family.intern(std::sync::Arc::new(program.clone()), span);
     let plan = family.into_plan().expect("a checked tangent-lane plan");
     let mut environment = crate::codegen::create_environment();
     environment

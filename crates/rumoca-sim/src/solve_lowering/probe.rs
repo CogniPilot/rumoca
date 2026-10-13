@@ -75,7 +75,10 @@ pub(super) fn resolve_probe_state(
     label: &str,
 ) -> Result<(Vec<f64>, Vec<String>), SimulationDiagnosticError> {
     let state_count = solve_model.state_scalar_count();
-    let state_names = solve_model.problem.solve_layout.solver_maps.names[..state_count].to_vec();
+    let state_names = solve_model
+        .problem
+        .solver_named_report(0..state_count)
+        .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?;
 
     let mut state_used = vec![0.0; state_count];
     for (dst, src) in state_used

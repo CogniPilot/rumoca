@@ -1,5 +1,5 @@
 use super::*;
-use crate::{BinaryOp, TensorInputKind};
+use crate::{BinaryOp, Reg, TensorInputKind};
 
 fn ranged(count: usize) -> Vec<LinearOp> {
     vec![
@@ -49,11 +49,62 @@ fn compare(source: &[LinearOp], requests: &[(usize, usize)]) {
 }
 
 #[test]
+fn lazy_queries_preserve_additive_reciprocal_and_singular_refusal() {
+    for reciprocal in [false, true] {
+        for numerator in [0.0, 2.0] {
+            let source = vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::Const {
+                    dst: 1,
+                    value: numerator,
+                },
+                LinearOp::LoadY { dst: 2, index: 5 },
+                LinearOp::Binary {
+                    dst: 3,
+                    op: if reciprocal {
+                        BinaryOp::Div
+                    } else {
+                        BinaryOp::Add
+                    },
+                    lhs: if reciprocal { 1 } else { 2 },
+                    rhs: 2,
+                },
+                LinearOp::Binary {
+                    dst: 4,
+                    op: BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 3,
+                },
+                LinearOp::StoreOutput { src: 4 },
+            ];
+            let expected = crate::derive_target_assignment_shapes(&source);
+            let mut query = CanonicalAssignmentQueries::new(&source);
+            assert_eq!(query.has_any(0), !expected.is_empty());
+            let shape = query.derive(0, 5);
+            match (reciprocal, numerator) {
+                (false, _) => assert!(matches!(
+                    shape,
+                    Some(TargetAssignmentShape::Additive { .. })
+                )),
+                (true, 0.0) => assert_eq!(shape, None),
+                (true, _) => assert!(matches!(
+                    shape,
+                    Some(TargetAssignmentShape::Reciprocal { .. })
+                )),
+            }
+            assert_eq!(query.derive(0, 9), None);
+            assert_eq!(query.has_any(0), !expected.is_empty());
+            compare(&source, &[(0, 5), (0, 9), (0, 5), (1, 5)]);
+        }
+    }
+}
+
+#[test]
 fn ranged_full14400_certificate_queries_share_one_exact_prefix() {
     let source = ranged(14400);
     let mut cache = CanonicalAssignmentQueries::new(&source);
     assert_eq!(
-        cache.stores.as_ref().unwrap().len(),
+        cache.stores.as_ref().unwrap().store_count(),
         1,
         "range metadata remains compact"
     );
@@ -63,8 +114,11 @@ fn ranged_full14400_certificate_queries_share_one_exact_prefix() {
             .expect("source-owned direct target");
         assert_eq!(shape.target_y_index(), target);
         assert!(matches!(shape, TargetAssignmentShape::Direct { .. }));
+        assert!(cache.has_any(target));
+        assert_eq!(cache.any_shape, Some((target, true)));
     }
     assert_eq!(cache.prefix_builds, 1);
+    assert!(!cache.has_any(14400));
     assert_eq!(cache.derive(14400, 0), None);
     assert_eq!(cache.prefix_builds, 1);
     compare(
@@ -83,6 +137,14 @@ fn prefix_changes_overwrites_and_distinct_sources_keep_original_refusals() {
     compare(&source, &[(0, 0), (1, 1), (3, 0), (4, 0), (0, 0), (2, 2)]);
     let other = ranged(5);
     compare(&other, &[(0, 0), (4, 4), (3, 1), (0, 0)]);
+    let expected = crate::derive_target_assignment_shapes(&source);
+    let mut query = CanonicalAssignmentQueries::new(&source);
+    for output in [0, 3, 4, 0, 2, 99] {
+        assert_eq!(
+            query.has_any(output),
+            expected.iter().any(|(offset, _)| *offset == output)
+        );
+    }
     let mut cache = CanonicalAssignmentQueries::new(&source);
     cache.derive(0, 0);
     cache.derive(3, 0);
@@ -115,19 +177,11 @@ fn compact_output_projection_preserves_zero_stride_empty_and_overflow_skips() {
         },
         LinearOp::StoreOutput { src: 1 },
     ];
-    let stores = output_stores(&source).unwrap();
-    let actual = stores
-        .iter()
-        .flat_map(|store| {
-            (store.first..store.end).map(|offset| {
-                (
-                    store.start + (offset - store.first) as Reg * store.stride as Reg,
-                    store.position,
-                )
-            })
-        })
-        .collect::<Vec<_>>();
+    let stores = ScalarProgramOutputStores::new(&source).unwrap();
     let expected = super::super::store_output_registers(&source).collect::<Vec<_>>();
+    let actual = (0..expected.len())
+        .map(|offset| stores.output(offset).unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(actual, expected);
     compare(&source, &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]);
 }
@@ -152,7 +206,7 @@ fn overflow_in_optional_store_index_keeps_original_early_prefix_answer() {
             stride: 0,
         },
     ];
-    assert!(output_stores(&source).is_none());
+    assert!(ScalarProgramOutputStores::new(&source).is_none());
     compare(&source, &[(0, 0), (1, 0)]);
     let source = vec![
         LinearOp::LoadY { dst: 0, index: 0 },

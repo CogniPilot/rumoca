@@ -33,11 +33,22 @@
 //! encoding is available only after one of those admission proofs.
 
 mod c_codegen;
+
+/// The constructor-reserved independent Float64 time reference in FMI 3.
+pub const FMI3_TIME_VALUE_REFERENCE: u32 = 0;
 mod co_simulation;
+mod deployment;
 mod event_free;
 mod indicator_plan;
+mod input_defaults;
+pub use input_defaults::{
+    FmiInputDefaultInput, FmiInputDefaultOrigin, FmiInputDefaultOriginRun,
+    FmiInputInstantiationDefault,
+};
 mod max_step_duration;
 mod metadata;
+mod metadata_projection;
+mod native_deployment;
 mod parameter_updates;
 mod root_location;
 mod scalar_events;
@@ -46,9 +57,12 @@ mod static_assertions;
 mod tests;
 mod time_events;
 
-pub use c_codegen::{FmiCCodegenError, FmiCCodegenView};
+pub use c_codegen::{FmiCCodegenError, FmiCCodegenView, FmiInstantiationBuffer};
 pub use co_simulation::{
     CoSimulationController, CoSimulationMethod, CoSimulationStepPlan, CoSimulationSubstep,
+};
+pub use deployment::{
+    FmiDeploymentCapabilities, FmiDeploymentError, FmiDeploymentView, FmiInterfaceProfile,
 };
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
 pub use indicator_plan::{
@@ -60,8 +74,12 @@ pub use max_step_duration::{
     MAX_STEP_DURATION_UNIT,
 };
 pub use metadata::{
-    FmiCausality, FmiDeclaredCausality, FmiInitial, FmiStorageColumn, FmiStorageRun,
-    FmiValueBacking, FmiVariability, FmiVariable, FmiVariableInput,
+    FmiCausality, FmiDeclaredCausality, FmiInitial, FmiNumericAttribute, FmiStorageColumn,
+    FmiStorageRun, FmiValueBacking, FmiVariability, FmiVariable, FmiVariableInput,
+};
+pub use native_deployment::{
+    FmiCarryPair, FmiNativeDeploymentView, NativeCarryError, NativeDeploymentError,
+    NativeTypedInventoryGap, check_native_typed_membership, reads_input_lanes,
 };
 pub use root_location::{RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak};
 
@@ -91,6 +109,12 @@ use std::sync::Arc;
 pub enum FmiComponentError {
     #[error("Solve kernel is invalid: {0}")]
     InvalidSolve(String),
+    #[error("FMI input `{name}` has invalid effective default: {message}")]
+    InputDefault {
+        name: String,
+        message: &'static str,
+        span: Span,
+    },
     #[error("FMI declaration count {variables} does not match Solve storage count {storage}")]
     VariableCount { variables: usize, storage: usize },
     #[error("FMI variable `{name}` has {actual} scalars but its shape requires {expected}")]
@@ -98,6 +122,12 @@ pub enum FmiComponentError {
         name: String,
         actual: usize,
         expected: usize,
+        span: Span,
+    },
+    #[error("FMI variable `{name}` has a non-finite `{attribute}` attribute")]
+    NonFiniteAttribute {
+        name: String,
+        attribute: &'static str,
         span: Span,
     },
     #[error("FMI variable `{name}` has duplicate source identity")]
@@ -126,6 +156,8 @@ impl FmiComponentError {
     pub const fn span(&self) -> Option<Span> {
         match self {
             Self::ScalarCount { span, .. }
+            | Self::InputDefault { span, .. }
+            | Self::NonFiniteAttribute { span, .. }
             | Self::DuplicateName { span, .. }
             | Self::StorageTypeMismatch { span, .. }
             | Self::NonAddressableStorage { span, .. }
@@ -184,8 +216,8 @@ impl FmiEventIndicatorInventory {
             .root()
             .static_causal_rows()
             .iter()
-            .map(|row| row.target_index())
-            .collect::<BTreeSet<_>>();
+            .map(|row| row.target_index());
+        let static_y = crate::IndexIntervals::of(static_y);
         let scheduled = model
             .problem
             .events
@@ -280,18 +312,20 @@ impl FmiEventIndicatorInventory {
 /// deadline exactly, so reading `time` alone does not make it an indicator.
 fn dependency_backed_indicator_sources(
     block: &crate::ScalarProgramBlock,
-    static_y: &BTreeSet<usize>,
+    static_y: &crate::IndexIntervals,
     mut source: impl FnMut(usize) -> Option<FmiEventIndicatorSource>,
 ) -> Result<Vec<FmiEventIndicatorSource>, FmiComponentError> {
     let mut sources = Vec::new();
     let mut output_ordinal = 0usize;
     for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index);
-        let dependencies = crate::StructuralPattern::derive_output_y_dependencies(program, span)
-            .map_err(|error| FmiComponentError::EventIndicatorInventory {
-                message: error.to_string(),
-                span,
-            })?;
+        let dependencies = crate::StructuralPattern::derive_output_y_dependency_ranges(
+            program, span,
+        )
+        .map_err(|error| FmiComponentError::EventIndicatorInventory {
+            message: error.to_string(),
+            span,
+        })?;
         for dependencies in dependencies {
             let output_index = block
                 .output_indices()
@@ -335,6 +369,7 @@ fn dependency_backed_indicator_sources(
 #[derive(Debug)]
 pub struct FmiMetadata {
     variables: Vec<FmiVariable>,
+    publication_defaults_complete: bool,
     state_variable_indices: Vec<usize>,
     derivative_value_reference_base_fmi3: u32,
 }
@@ -408,7 +443,7 @@ impl FmiMetadata {
 /// views below, and codegen consumes the whole thing into [`FmiCodegenView`].
 #[derive(Debug)]
 pub struct FmiComponent {
-    metadata: FmiMetadata,
+    metadata: Arc<FmiMetadata>,
     event_indicators: FmiEventIndicatorInventory,
     root_location: RootLocationPlan,
     co_simulation: CoSimulationStepPlan,
@@ -423,16 +458,19 @@ impl FmiComponent {
     /// SPEC_0044 §8 is not among them: this constructor derives it, exactly
     /// when the checked kernel is delay-bearing.
     pub fn construct(
-        model: SolveModel,
+        mut model: SolveModel,
         inputs: Vec<FmiVariableInput>,
     ) -> Result<Self, FmiComponentError> {
         model
             .validate()
             .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
-        let metadata = checked_metadata(&model.problem, inputs)?;
+        let mut metadata = checked_metadata(&model.problem, inputs)?;
+        metadata.publication_defaults_complete =
+            input_defaults::check_model_defaults(&model, &metadata)?;
         let event_indicators = FmiEventIndicatorInventory::derive(&model)?;
+        crate::refresh::issue_model_native_assignment_schedule(&mut model);
         Ok(Self {
-            metadata,
+            metadata: Arc::new(metadata),
             event_indicators,
             root_location: RootLocationPlan::STANDARD,
             co_simulation: CoSimulationStepPlan::STANDARD,
@@ -441,7 +479,7 @@ impl FmiComponent {
     }
 
     #[must_use]
-    pub const fn metadata(&self) -> &FmiMetadata {
+    pub fn metadata(&self) -> &FmiMetadata {
         &self.metadata
     }
 
@@ -455,6 +493,11 @@ impl FmiComponent {
     #[must_use]
     pub const fn root_location(&self) -> &RootLocationPlan {
         &self.root_location
+    }
+
+    #[must_use]
+    pub const fn co_simulation(&self) -> &CoSimulationStepPlan {
+        &self.co_simulation
     }
 
     #[must_use]
@@ -477,7 +520,7 @@ impl FmiComponent {
     }
 
     #[must_use]
-    pub const fn derivative_value_reference_base_fmi3(&self) -> u32 {
+    pub fn derivative_value_reference_base_fmi3(&self) -> u32 {
         self.metadata.derivative_value_reference_base_fmi3()
     }
 
@@ -542,20 +585,28 @@ impl FmiComponent {
     }
 }
 
-/// Borrowed executable view minted only by [`FmiComponent::runtime_view`].
+/// Borrowed executable view minted only by [`FmiComponent::runtime_view`] or
+/// [`FmiDeploymentView::runtime_view`].
 ///
 /// This is the runtime counterpart of [`FmiCodegenView`]: it keeps the
 /// correlation proof but does not consume the component. Deliberately not
 /// `Clone` or `Copy`; a host lends it directly into one component instance.
 #[derive(Debug)]
 pub struct FmiRuntimeView<'component> {
-    model: &'component SolveModel,
-    metadata: &'component FmiMetadata,
+    model: &'component Arc<SolveModel>,
+    metadata: &'component Arc<FmiMetadata>,
     event_indicators: &'component FmiEventIndicatorInventory,
     root_location: &'component RootLocationPlan,
 }
 
 impl<'component> FmiRuntimeView<'component> {
+    /// Retain the exact immutable root for checked assertion compilation.
+    /// The opaque handle cannot recover an Arc or an owned bare model.
+    #[must_use]
+    pub fn retain_assertion_root(&self) -> crate::RetainedAssertionRoot {
+        crate::RetainedAssertionRoot::from_fmi_root(self.model.clone(), self.metadata.clone())
+    }
+
     #[must_use]
     pub const fn configuration_capability(&self) -> FmiConfigurationCapability {
         // The sole current constructor has no structural FMI variable. This
@@ -620,7 +671,7 @@ impl<'component> FmiRuntimeView<'component> {
 /// Deliberately not `Serialize`, for the same reason as [`FmiMetadata`].
 #[derive(Debug)]
 pub struct FmiCodegenView {
-    metadata: FmiMetadata,
+    metadata: Arc<FmiMetadata>,
     event_indicators: FmiEventIndicatorInventory,
     root_location: RootLocationPlan,
     co_simulation: CoSimulationStepPlan,
@@ -628,11 +679,6 @@ pub struct FmiCodegenView {
 }
 
 impl FmiCodegenView {
-    #[must_use]
-    pub const fn metadata(&self) -> &FmiMetadata {
-        &self.metadata
-    }
-
     #[must_use]
     pub const fn event_indicators(&self) -> &FmiEventIndicatorInventory {
         &self.event_indicators
@@ -680,6 +726,7 @@ fn checked_metadata(
 
     let derivative_value_reference_base_fmi3 = value_reference_fmi3(inventory.variables.len())?;
     Ok(FmiMetadata {
+        publication_defaults_complete: false,
         variables: inventory.variables,
         state_variable_indices: inventory.state_variable_indices,
         derivative_value_reference_base_fmi3,
@@ -716,6 +763,7 @@ fn checked_storage_inventory(
         }
         let variable = checked_variable(
             input,
+            index,
             *run,
             declarations[index],
             value_reference_fmi3(inventory.variables.len())?,
@@ -746,12 +794,40 @@ fn value_reference_fmi3(index: usize) -> Result<u32, FmiComponentError> {
         .ok_or(FmiComponentError::ValueReferenceOverflow)
 }
 
+/// Text starts exist only for String storage and cover every scalar.
+fn checked_text_start(
+    input: &mut FmiVariableInput,
+    scalar_count: usize,
+) -> Result<Option<Vec<String>>, FmiComponentError> {
+    match input.text_start.take() {
+        Some(_) if input.value_kind != SolveVariableValueKind::String => {
+            Err(FmiComponentError::StorageTypeMismatch {
+                name: input.name.clone(),
+                span: input.declaration,
+            })
+        }
+        Some(values) if values.len() != scalar_count => Err(FmiComponentError::ScalarCount {
+            name: input.name.clone(),
+            actual: values.len(),
+            expected: scalar_count,
+            span: input.declaration,
+        }),
+        text_start => Ok(text_start),
+    }
+}
+
 fn checked_variable(
-    input: FmiVariableInput,
+    mut input: FmiVariableInput,
+    index: usize,
     run: SolveVariableStorageRun,
     declaration: SolveVariableDeclaration,
     value_reference_fmi3: u32,
 ) -> Result<FmiVariable, FmiComponentError> {
+    let effective_input_default = input
+        .effective_input_default
+        .clone()
+        .map(|default| FmiInputInstantiationDefault::construct(default, index, &input))
+        .transpose()?;
     let scalar_count = checked_scalar_count(&input)?;
     if scalar_count != run.scalar_count
         || input.role != run.role
@@ -783,23 +859,7 @@ fn checked_variable(
             });
         }
     };
-    let text_start = match input.text_start {
-        Some(_) if input.value_kind != SolveVariableValueKind::String => {
-            return Err(FmiComponentError::StorageTypeMismatch {
-                name: input.name,
-                span: input.declaration,
-            });
-        }
-        Some(values) if values.len() != scalar_count => {
-            return Err(FmiComponentError::ScalarCount {
-                name: input.name,
-                actual: values.len(),
-                expected: scalar_count,
-                span: input.declaration,
-            });
-        }
-        text_start => text_start,
-    };
+    let text_start = checked_text_start(&mut input, scalar_count)?;
     // An enumeration declaration is exactly what an `Enumeration` entry needs
     // to name its literals, and no other kind has one.
     if input.enumeration.is_some() != (input.value_kind == SolveVariableValueKind::Enumeration) {
@@ -809,13 +869,16 @@ fn checked_variable(
         });
     }
     let initial = metadata::initial_for_storage(input.role, input.causality, input.variability);
-    let start = if initial == Some(FmiInitial::Calculated)
-        || input.causality == FmiCausality::Independent
-    {
-        None
-    } else {
-        Some(input.start)
-    };
+    if input.start.value_kind() != input.value_kind {
+        return Err(FmiComponentError::StorageTypeMismatch {
+            name: input.name,
+            span: input.declaration,
+        });
+    }
+    let declaration_start = input.start;
+    let start_allowed = initial != Some(FmiInitial::Calculated)
+        && input.causality != FmiCausality::Independent
+        && (effective_input_default.is_some() || !declaration_start.is_missing());
     Ok(FmiVariable {
         name: input.name,
         value_kind: input.value_kind,
@@ -827,9 +890,10 @@ fn checked_variable(
                 base,
                 scalar_count,
             },
-            scalar_names: input.scalar_names,
         },
-        start,
+        start_allowed,
+        declaration_start,
+        effective_input_default,
         minimum: input.minimum,
         maximum: input.maximum,
         nominal: input.nominal,
@@ -855,11 +919,19 @@ fn checked_scalar_count(input: &FmiVariableInput) -> Result<usize, FmiComponentE
         .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
         .ok_or(FmiComponentError::ValueReferenceOverflow)?;
     let counts = [
-        input.scalar_names.len(),
         input.start.len(),
-        input.minimum.as_ref().map_or(expected, Vec::len),
-        input.maximum.as_ref().map_or(expected, Vec::len),
-        input.nominal.as_ref().map_or(expected, Vec::len),
+        input
+            .minimum
+            .as_ref()
+            .map_or(expected, crate::SolveInitialValues::len),
+        input
+            .maximum
+            .as_ref()
+            .map_or(expected, crate::SolveInitialValues::len),
+        input
+            .nominal
+            .as_ref()
+            .map_or(expected, crate::SolveInitialValues::len),
     ];
     if let Some(actual) = counts.into_iter().find(|actual| *actual != expected) {
         return Err(FmiComponentError::ScalarCount {
@@ -868,6 +940,26 @@ fn checked_scalar_count(input: &FmiVariableInput) -> Result<usize, FmiComponentE
             expected,
             span: input.declaration,
         });
+    }
+    if input.start.require_finite().is_err() {
+        return Err(FmiComponentError::NonFiniteAttribute {
+            name: input.name.clone(),
+            attribute: "start",
+            span: input.declaration,
+        });
+    }
+    for (attribute, values) in [
+        ("minimum", input.minimum.as_ref()),
+        ("maximum", input.maximum.as_ref()),
+        ("nominal", input.nominal.as_ref()),
+    ] {
+        if values.is_some_and(|values| values.require_finite().is_err()) {
+            return Err(FmiComponentError::NonFiniteAttribute {
+                name: input.name.clone(),
+                attribute,
+                span: input.declaration,
+            });
+        }
     }
     Ok(expected)
 }

@@ -84,24 +84,14 @@ fn directional_affinity_preserves_primal_and_tangent_interactions() {
 }
 
 #[test]
-fn affine_call_claims_cannot_delete_nonlinear_interactions() {
+fn replayed_owner_tables_derive_the_same_affine_claims_as_issued_ones() {
     let table = nested_scale(3);
     let restored: SolvePureCallTable =
         serde_json::from_value(serde_json::to_value(&table).unwrap()).unwrap();
-    let site = table.owners()[1].call_site();
-    assert!(restored.matches_site(&site));
-    let original = serde_json::to_value(&site).unwrap();
-    for directional in [false, true] {
-        let mut wire = original.clone();
-        let profile = if directional {
-            &mut wire["directional"]["affinity"]
-        } else {
-            &mut wire["affinity"]
-        };
-        profile[0]["nonlinear"] = serde_json::json!([]);
-        let forged: SolvePureCallSite = serde_json::from_value(wire).unwrap();
-        assert!(!restored.matches_site(&forged));
-    }
+    assert!(restored.matches_site(&table.owners()[1].call_site()));
+    assert!(
+        restored.matches_directional_site(table.owners()[1].call_site().directional().unwrap())
+    );
 }
 
 #[test]

@@ -1122,8 +1122,10 @@ fn claim_when_equation_target(
     roles: &HashMap<VarName, PlannedRole>,
     written: &mut HashSet<VarName>,
 ) -> Result<(), ToDaeError> {
-    if !matches!(roles.get(target), Some(PlannedRole::DiscreteValue))
-        || written.insert(target.clone())
+    if !matches!(
+        roles.get(target),
+        Some(PlannedRole::DiscreteValue | PlannedRole::DiscreteReal)
+    ) || written.insert(target.clone())
     {
         return Ok(());
     }

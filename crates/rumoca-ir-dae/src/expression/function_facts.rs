@@ -107,7 +107,10 @@ pub(super) fn node_function_facts(
         | ExprNode::Coordinate(_)
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => unreachable!("leaf expressions returned above"),
+        | ExprNode::FunctionFoldOutput { .. }
+        | ExprNode::FunctionConditionalOutput { .. } => {
+            unreachable!("leaf expressions returned above")
+        }
     }
     fold.finish(storage, at)
 }
@@ -129,6 +132,12 @@ fn leaf_function_facts(
             function,
             value,
             definition_ordinal,
+        }
+        | ExprNode::FunctionConditionalOutput {
+            function,
+            value,
+            definition_ordinal,
+            ..
         } => {
             let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
             let read_set = storage.function_read_sets.singleton(

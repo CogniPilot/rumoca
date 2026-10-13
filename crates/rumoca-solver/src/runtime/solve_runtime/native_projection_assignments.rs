@@ -13,7 +13,7 @@ pub(super) struct NativeProjectionAssignments {
     target_families: RefCell<FxHashMap<(usize, usize), CompiledTargetFamily>>,
 }
 
-impl SolveRuntime {
+impl ScalarExecutionView<'_> {
     pub(super) fn compiled_projection_target_values(
         &self,
         program: usize,
@@ -21,11 +21,12 @@ impl SolveRuntime {
         target: usize,
     ) -> Result<CompiledTargetBinding, RuntimeSolveError> {
         // Runtime construction may evaluate rows before installing its backend.
-        if self.execution_backend.is_none() {
+        if self.scalar.execution_backend.is_none() {
             return Ok(None);
         }
         let key = (program, output, target);
         if let Some(cached) = self
+            .scalar
             .native_projection_assignments
             .target_bindings
             .borrow()
@@ -34,7 +35,8 @@ impl SolveRuntime {
             return Ok(cached.clone());
         }
         let compiled = self.build_projection_target_values(key)?;
-        self.native_projection_assignments
+        self.scalar
+            .native_projection_assignments
             .target_bindings
             .borrow_mut()
             .insert(key, compiled.clone());
@@ -45,10 +47,11 @@ impl SolveRuntime {
         &self,
         (program, output, target): (usize, usize, usize),
     ) -> Result<CompiledTargetBinding, RuntimeSolveError> {
-        let Some(backend) = self.execution_backend.as_ref() else {
+        let Some(backend) = self.scalar.execution_backend.as_ref() else {
             return Ok(None);
         };
         let Some(plan) = self
+            .scalar
             .implicit_scalar_rhs
             .portable_target_value_plan(program, output, target)?
         else {
@@ -56,6 +59,7 @@ impl SolveRuntime {
         };
         let family = (program, plan.canonical_prefix_len());
         let cached = self
+            .scalar
             .native_projection_assignments
             .target_families
             .borrow()
@@ -68,7 +72,8 @@ impl SolveRuntime {
                 "prepared_target_values",
                 backend.compile_target_values(&plan, self.row_eval_context()),
             );
-            self.native_projection_assignments
+            self.scalar
+                .native_projection_assignments
                 .target_families
                 .borrow_mut()
                 .insert(family, compiled.clone());
@@ -82,16 +87,22 @@ impl SolveRuntime {
         program_index: usize,
         target_y_index: usize,
     ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, RuntimeSolveError> {
-        let Some(backend) = self.execution_backend.as_ref() else {
+        let Some(backend) = self.scalar.execution_backend.as_ref() else {
             return Ok(None);
         };
         // A tensor program keeps its shared aggregate owner. Do not manufacture
         // one compiled copy of its source prefix per scalar output projection.
-        if self.implicit_scalar_rhs.row_output_count(program_index) != Some(1) {
+        if self
+            .scalar
+            .implicit_scalar_rhs
+            .row_output_count(program_index)
+            != Some(1)
+        {
             return Ok(None);
         }
         let key = (program_index, target_y_index);
         if let Some(cached) = self
+            .scalar
             .native_projection_assignments
             .entries
             .borrow()
@@ -100,7 +111,8 @@ impl SolveRuntime {
             return Ok(cached.clone());
         }
         let compiled = self.build_projection_assignment(backend.as_ref(), key)?;
-        self.native_projection_assignments
+        self.scalar
+            .native_projection_assignments
             .entries
             .borrow_mut()
             .insert(key, compiled.clone());
@@ -112,7 +124,7 @@ impl SolveRuntime {
         backend: &dyn SolveExecutionBackend,
         (program_index, target_y_index): (usize, usize),
     ) -> Result<Option<Rc<dyn CompiledSolveExpression>>, RuntimeSolveError> {
-        let source = &self.implicit_scalar_rhs;
+        let source = &self.scalar.implicit_scalar_rhs;
         let Some(program) =
             source.exact_target_assignment_output_program(program_index, 0, target_y_index)
         else {

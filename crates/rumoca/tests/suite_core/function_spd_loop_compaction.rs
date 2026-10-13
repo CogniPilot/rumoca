@@ -429,8 +429,13 @@ fn guarded_output_loop_requires_a_fallthrough_value() {
 fn function_statements_have_assertion(statements: dae::FunctionStatements<'_>) -> bool {
     statements.into_iter().any(|statement| match statement {
         dae::FunctionStatementView::Assignment { .. }
-        | dae::FunctionStatementView::AssignmentGroup { .. } => false,
+        | dae::FunctionStatementView::AssignmentGroup { .. }
+        | dae::FunctionStatementView::RequireAssigned { .. } => false,
         dae::FunctionStatementView::Assertion { .. } => true,
+        dae::FunctionStatementView::Conditional { conditional } => conditional
+            .branches()
+            .chain(std::iter::once(conditional.fallback()))
+            .any(|branch| function_statements_have_assertion(branch.statements())),
         dae::FunctionStatementView::For { statements, .. } => {
             function_statements_have_assertion(statements)
         }

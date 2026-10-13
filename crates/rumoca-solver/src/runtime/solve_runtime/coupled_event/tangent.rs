@@ -89,8 +89,13 @@ impl CoupledEventSystem<'_> {
     ) -> Result<(), RuntimeSolveError> {
         let (y, p) = self.settled_point(unknowns)?;
         let y_len = y.len();
-        let seed_len =
-            (y_len + p.len()).max(self.runtime.implicit_jacobian_v.requirements().seed_len);
+        let seed_len = (y_len + p.len()).max(
+            self.runtime
+                .scalar
+                .implicit_jacobian_v
+                .requirements()
+                .seed_len,
+        );
         let mut seed = vec![0.0; seed_len];
         for (unknown, value) in self.inventory.unknowns.iter().zip(direction) {
             let index = match *unknown {
@@ -171,10 +176,14 @@ impl CoupledEventSystem<'_> {
             seed: Some(seed),
             ..runtime.row_eval_context()
         };
-        let mut implicit = vec![0.0; runtime.implicit_jacobian_v.len()];
-        runtime
-            .implicit_jacobian_v
-            .eval_with_context(y, p, self.t, context, &mut implicit)?;
+        let mut implicit = vec![0.0; runtime.scalar.implicit_jacobian_v.len()];
+        runtime.scalar.implicit_jacobian_v.eval_with_context(
+            y,
+            p,
+            self.t,
+            context,
+            &mut implicit,
+        )?;
         let row_p: Cow<'_, [f64]> = if self.snapshot.root_relation_overrides.is_empty() {
             Cow::Borrowed(p)
         } else {
@@ -257,7 +266,7 @@ impl CoupledEventSystem<'_> {
         row: usize,
         point: RowPoint<'_>,
     ) -> Result<f64, RuntimeSolveError> {
-        let entry = self.runtime.structured_discrete_rows.rows()[row];
+        let entry = self.runtime.scalar.structured_discrete_rows.rows()[row];
         let tangent = required(&self.jvps.structured, "structured discrete updates")?
             .eval_row_unchecked_with_context(
                 entry.source_row,

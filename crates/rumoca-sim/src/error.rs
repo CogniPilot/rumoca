@@ -175,6 +175,9 @@ impl SimError {
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
+            error @ RuntimeSolveError::CompiledExecution { .. } => Self::RuntimeContract {
+                reason: error.to_string(),
+            },
             RuntimeSolveError::SolveIr { message, span }
             | RuntimeSolveError::SourceFault { message, span } => {
                 let message = match span {
@@ -211,6 +214,9 @@ impl From<MeError> for SimError {
     fn from(value: MeError) -> Self {
         let stage = value.stage().map(SimFailureStage::from);
         let error = match value.into_kind() {
+            error @ MeError::CompiledExecution { .. } => Self::RuntimeContract {
+                reason: error.to_string(),
+            },
             MeError::NoContinuousStates => Self::EmptySystem,
             MeError::UnsupportedModel { reason } | MeError::Evaluation { message: reason } => {
                 Self::SolveIr(reason)

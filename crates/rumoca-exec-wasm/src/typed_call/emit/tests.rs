@@ -35,18 +35,41 @@ fn harness(body: impl FnOnce(&mut Emitter<'_>)) -> Vec<u8> {
     let linked = LinkedOwners::construct(&table, root).unwrap();
     let owner = table.owner(root).unwrap();
     let mut emitter = Emitter {
-        function: Function::new([(1, ValType::I32), (4, ValType::I64), (2, ValType::F64)]),
+        code: Vec::new(),
+        spans: Vec::new(),
         owner,
+        unit: root.index() as usize,
         plan: linked.plan(root).unwrap(),
         program: owner.body(),
         region_path: Vec::new(),
+        loop_counters: Vec::new(),
+        state_cells: Vec::new(),
+        loop_locals: 0,
+        loop_local_base: 0,
+        observed: false,
+        pending_loop: None,
+        region_loop: None,
+        written_outputs: Vec::new(),
+        region_result: None,
+        known: vec![None; owner.body().register_types().len()],
+        slot_facts: crate::typed_call::known::Facts::default(),
+        known_cells: vec![None; owner.body().register_types().len()],
+        intervals: linked.plan(root).unwrap().intervals.clone(),
+        pending_known: None,
         linked: &linked,
+        local_floor: super::super::layout::LocalCounts::default(),
+        local_total: linked.plan(root).unwrap().demand,
         fault_offset: 0,
         faults: Vec::new(),
     };
     body(&mut emitter);
     emitter.push(I::End);
-    module(vec![emitter.function], 0, &[])
+    let locals = [(1, ValType::I32), (4, ValType::I64), (2, ValType::F64)];
+    module(
+        vec![super::Chunk::function_with(&locals, &emitter.code)],
+        0,
+        &[],
+    )
 }
 
 fn execute(

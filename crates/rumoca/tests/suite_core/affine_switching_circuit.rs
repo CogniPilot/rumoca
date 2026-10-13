@@ -143,7 +143,11 @@ end AmplifiedRoot;
         .unwrap();
     let model = lower_dae_for_simulation(&compiled.dae, &SimOptions::default()).unwrap();
     let runtime = rumoca_solver::SolveRuntime::new(&model).unwrap();
-    assert!(runtime.derivative_settled_coordinate_can_refresh_roots());
+    assert!(
+        runtime
+            .derivative_settled_coordinate_can_refresh_roots()
+            .expect("the scalar circuit has an admitted execution inventory")
+    );
     for time in [0.0, 0.5] {
         let expected = 2e-5 * (time - 0.25);
         let roots = runtime
@@ -151,7 +155,7 @@ end AmplifiedRoot;
             .unwrap();
         assert_eq!(roots.len(), 1);
         assert!((roots[0] - expected).abs() < 1e-10, "cold: {roots:?}");
-        let mut guess = model.initial_y.clone();
+        let mut guess = model.initial_y.to_vec();
         runtime
             .eval_state_derivatives_with_guess(
                 time,

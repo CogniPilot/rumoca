@@ -1,6 +1,4 @@
-mod scalar_types;
-pub(super) use scalar_types::{effective_function_scalar_type, effective_variable_scalar_type};
-
+mod assignment_conditionals;
 mod branch_snapshots;
 mod clocks;
 mod comprehensions;
@@ -43,10 +41,13 @@ mod model_expression_owners;
 mod model_roles;
 mod multi_output_equations;
 mod observed_reads;
+mod pure_conditionals;
 mod record_array_fields;
 mod record_equation_elements;
 mod record_equations;
 mod sample_aliases;
+mod scalar_types;
+pub(super) use scalar_types::{effective_function_scalar_type, effective_variable_scalar_type};
 mod source_balance;
 mod structural_selections;
 mod structured_families;
@@ -99,20 +100,20 @@ use expression_validation::{
 use fixed_loops::{IndexBinding, fixed_range, range_values};
 pub use folded_guards::StructuralSelection;
 use function_array_assemblies::coalesce_function_array_assemblies;
-pub(super) use function_bodies::function_assertion;
 pub(super) use function_bodies::validate_function_certificate;
+pub(super) use function_bodies::{SelectedLoopEntry, function_assertion, selected_loop_entry};
 use function_bodies::{
     plan_function_statements, resolve_function_definitions,
     validate_function_expression_with_roles, validate_function_statements,
     validate_function_subscripts, validate_functions,
 };
-pub(super) use function_conditionals::{branch_never_completes, selected_conditional_statements};
+pub(super) use function_conditionals::selected_conditional_statements;
 use function_conditionals::{
     is_immutable_guard, plan_function_conditional, resolve_function_conditional,
     static_boolean_expression,
 };
-use function_definitions::FunctionDefinitions;
 pub(super) use function_definitions::FunctionValueSeed;
+use function_definitions::{FunctionDefinitions, PathPartialAdmission};
 use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
@@ -133,6 +134,7 @@ use function_returns::{
     validate_guarded_function_return,
 };
 pub(super) use function_value_types::record_field_projections;
+use function_value_types::record_field_roots;
 use function_value_types::validate_function_value_type;
 pub(super) use history_operators::HistoryOperatorPlans;
 use history_operators::analyze_history_operators;
@@ -157,12 +159,12 @@ pub(super) use model_algorithms::{
     when_chain_targets,
 };
 use model_expression_owners::ModelExpressionOwnerVisitor;
-pub(super) use model_roles::is_external_input;
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
+pub(super) use model_roles::{is_external_input, is_public_causality_root};
 pub(in crate::construction) use multi_output_equations::MultiOutputEquationPlan;
-use multi_output_equations::analyze_multi_output_equations;
+use multi_output_equations::{analyze_declarative_function_call, analyze_multi_output_equations};
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
@@ -269,33 +271,17 @@ struct SourceBalanceAnalysis {
 /// MLS §12.4.4 definedness assertions of a function's top-level sequence.
 ///
 /// "It is an error to use or return an uninitialized variable": a value a
-/// top-level conditional defines on some paths only is joined with a dead
-/// operand on the other paths, and each top-level use of it, or its return
-/// as an output, is preceded by a call-scoped assertion that the executed
-/// path defined it. Indices are positions in the top-level statement
-/// sequence, the same positions construction lowers.
+/// top-level conditional defines on some paths retains explicit partial state.
+/// Ordered use and return actions check the current constructor-owned state.
+/// Indices are positions in the top-level statement sequence, the same
+/// positions construction lowers.
 #[derive(Default)]
 pub(super) struct FunctionDefinednessPlan {
     /// Path-partial values asserted defined before the statement (or the
     /// assembly group it leads) at this index runs.
     pub(super) asserted_reads: HashMap<usize, Vec<VarName>>,
-    /// Targets the conditional at this index leaves path-partial.
-    pub(super) partial_joins: HashMap<usize, Vec<PartialJoinPlan>>,
-    /// Path-partial outputs asserted defined when the function returns.
+    /// All declared outputs checked against their actual state at return.
     pub(super) returned: Vec<VarName>,
-}
-
-/// One target a top-level conditional leaves path-partial.
-pub(super) struct PartialJoinPlan {
-    pub(super) target: VarName,
-    /// The target was already path-partial before the conditional, so the
-    /// paths that do not write it keep its earlier definedness predicate.
-    pub(super) was_partial: bool,
-    /// The typed value the join takes on paths that never write the target.
-    /// MLS §12.4.4 makes every use of it there an error owned by the
-    /// definedness assertion, so the seed is never observed; a literal
-    /// keeps the dead operand from evaluating any other path's computation.
-    pub(super) seed: FunctionValueSeed,
 }
 
 pub(super) enum FunctionPlan {
@@ -334,6 +320,13 @@ pub(super) enum FunctionIntegerReduction {
     ForInclusiveCapped,
 }
 
+/// Borrowed slots of the same source-ordered conditional plan.
+pub(super) struct FunctionConditionalPlans<'plan> {
+    pub(super) branches: &'plan mut [Vec<FunctionStatementPlan>],
+    pub(super) fallback: Option<&'plan mut Vec<FunctionStatementPlan>>,
+    pub(super) condition_reads: &'plan mut [Vec<(VarName, Span)>],
+}
+
 pub(super) enum FunctionStatementPlan {
     Assignment(FunctionAssignmentPlan),
     /// An MLS §8.3.7 assertion whose condition this exact value-proven
@@ -353,6 +346,8 @@ pub(super) enum FunctionStatementPlan {
         target: VarName,
         value: Expression,
         span: Span,
+        proven_reads: Vec<(VarName, Span)>,
+        selected: Option<Box<SelectedBooleanCapture>>,
     },
     For {
         domain: StructuredIndexDomain,
@@ -364,6 +359,7 @@ pub(super) enum FunctionStatementPlan {
     If {
         branches: Vec<Vec<FunctionStatementPlan>>,
         fallback: Option<Vec<FunctionStatementPlan>>,
+        condition_reads: Vec<Vec<(VarName, Span)>>,
         targets: Vec<VarName>,
     },
     /// An MLS §11.5 conditional whose executed branch this specialization
@@ -383,6 +379,7 @@ pub(super) enum FunctionStatementPlan {
     /// never reads and therefore never lowers.
     MultiOutputCall {
         outputs: Vec<Option<FunctionAssignmentPlan>>,
+        argument_reads: Vec<(VarName, Span)>,
     },
     /// A pure multi-result call whose receiving list defines every field of
     /// one record-valued function output or local.
@@ -397,15 +394,30 @@ pub(super) enum FunctionStatementPlan {
     RecordFieldAssemblyMember,
 }
 
+pub(super) struct SelectedBooleanCapture {
+    pub(super) source: rumoca_core::Statement,
+    pub(super) plan: FunctionStatementPlan,
+}
+
 pub(super) struct FunctionAssignmentPlan {
     target: VarName,
     subscripts: Box<[Subscript]>,
+    proven_reads: Vec<(VarName, Span)>,
+    base_reads: Vec<(VarName, Span)>,
     /// Aggregate seed this element write starts from, proven dead by the
     /// definedness certificate that every declared element is written.
     seed: Option<FunctionValueSeed>,
 }
 
 impl FunctionAssignmentPlan {
+    pub(super) fn proven_reads(&self) -> &[(VarName, Span)] {
+        &self.proven_reads
+    }
+
+    pub(super) fn base_reads(&self) -> &[(VarName, Span)] {
+        &self.base_reads
+    }
+
     pub(super) fn target(&self) -> &VarName {
         &self.target
     }
@@ -435,6 +447,8 @@ pub(super) struct FunctionRecordAssemblyPlan {
     pub(super) statement_count: usize,
     pub(super) fields: Vec<FunctionRecordFieldAssembly>,
     pub(super) seed: Option<FunctionValueSeed>,
+    /// The mutable values the assembly reads that this path proves defined.
+    pub(super) reads: Vec<(VarName, Span)>,
 }
 
 pub(super) struct FunctionRecordFieldAssemblyPlan {
@@ -445,6 +459,8 @@ pub(super) struct FunctionRecordFieldAssemblyPlan {
     pub(super) available_fields: Vec<VarName>,
     /// Constructor-order field names when this field completes the record.
     pub(super) finalize_fields: Option<Vec<VarName>>,
+    /// The mutable values the field reads that this path proves defined.
+    pub(super) reads: Vec<(VarName, Span)>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -490,6 +506,7 @@ pub(super) enum FunctionRecordFieldSource {
 }
 
 pub(super) struct FunctionRecordCallAssemblyPlan {
+    pub(super) argument_reads: Vec<(VarName, Span)>,
     pub(super) target: VarName,
     pub(super) fields: Vec<FunctionRecordCallField>,
 }
@@ -510,6 +527,11 @@ pub(super) enum FunctionLoopLowering {
     Fold {
         targets: Vec<VarName>,
         iteration_locals: Vec<VarName>,
+        selected_entry: Option<Box<SelectedLoopEntry>>,
+        entry_reads: Vec<(VarName, Span)>,
+        /// Dead initial values of carried targets the loop alone defines in
+        /// full, for an entry state that holds a value on some paths only.
+        entry_seeds: Vec<(VarName, FunctionValueSeed)>,
     },
     TotalArrayDefinition,
 }
@@ -519,11 +541,14 @@ struct FunctionValidationContext<'scope> {
     function: &'scope rumoca_core::Function,
     flat: &'scope flat::Model,
     roles: &'scope HashMap<VarName, PlannedRole>,
+    /// The result or local value that owns each record field path.
+    record_roots: &'scope HashMap<VarName, VarName>,
     static_integers: &'scope HashMap<VarName, i64>,
     comprehension_values: Option<&'scope function_definitions::ComprehensionValues>,
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
     generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],
+    snapshot_loops: &'scope [branch_snapshots::BoundLoopSelection<'scope>],
     /// Record-field coordinates already constructed by an enclosing staged
     /// assembly at this exact source position.
     staged_record_fields: &'scope HashSet<FunctionRecordFieldCoordinate>,
@@ -1229,6 +1254,11 @@ fn analyze_model_algorithms(
     flat.algorithms
         .iter()
         .map(|algorithm| {
+            if let Some(plan) =
+                analyze_declarative_function_call(flat, algorithm, roles, states, function_shapes)?
+            {
+                return Ok(plan);
+            }
             validate_model_algorithm(
                 algorithm,
                 flat,
@@ -1683,8 +1713,7 @@ impl rumoca_core::ExpressionVisitor for ValueReads {
     }
 
     fn visit_builtin_call(&mut self, function: &rumoca_core::BuiltinFunction, args: &[Expression]) {
-        let shape_only = usize::from(matches!(function, rumoca_core::BuiltinFunction::Size));
-        for arg in args.iter().skip(shape_only) {
+        for arg in function.value_args(args) {
             self.visit_expression(arg);
         }
     }

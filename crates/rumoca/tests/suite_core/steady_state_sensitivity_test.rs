@@ -165,7 +165,10 @@ fn nonlinear_algebraic_refresh_converges_to_true_root() {
 
     // Settle the algebraics from the steady state x*=4.5, w*=3 (z is the third,
     // nonlinear, solver-y slot).
-    let names = &solve_model.problem.solve_layout.solver_maps.names;
+    let names = solve_model
+        .problem
+        .solver_named_report(0..solve_model.solver_scalar_count())
+        .unwrap();
     let z_index = names
         .iter()
         .position(|n| n == "z")

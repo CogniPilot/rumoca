@@ -55,6 +55,8 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
         .filter_map(|statement| match statement {
             dae::FunctionStatementView::Assignment { definition } => Some(definition),
             dae::FunctionStatementView::AssignmentGroup { .. }
+            | dae::FunctionStatementView::Conditional { .. }
+            | dae::FunctionStatementView::RequireAssigned { .. }
             | dae::FunctionStatementView::Assertion { .. }
             | dae::FunctionStatementView::For { .. } => None,
         })
@@ -93,6 +95,8 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
         .find_map(|statement| match statement {
             dae::FunctionStatementView::For { fold, .. } => view.function_fold(fold),
             dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::Conditional { .. }
+            | dae::FunctionStatementView::RequireAssigned { .. }
             | dae::FunctionStatementView::AssignmentGroup { .. }
             | dae::FunctionStatementView::Assertion { .. } => None,
         })
@@ -266,6 +270,7 @@ fn function_expression_edges<'dae>(
     match expression.operation() {
         dae::ExpressionOperation::Literal(_)
         | dae::ExpressionOperation::Coordinate(_)
+        | dae::ExpressionOperation::FunctionConditionalOutput { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
         | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
         dae::ExpressionOperation::Range(range) => {
@@ -400,6 +405,17 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
         dae::ExpressionOperation::FunctionValue { value, definition } => format!(
             "function_value:{}:{}:{}",
             value.function().index(),
+            value.ordinal(),
+            definition.id().ordinal()
+        ),
+        dae::ExpressionOperation::FunctionConditionalOutput {
+            conditional,
+            value,
+            definition,
+        } => format!(
+            "conditional_output:{}:{}:{}:{}",
+            conditional.function().index(),
+            conditional.ordinal(),
             value.ordinal(),
             definition.id().ordinal()
         ),

@@ -1311,7 +1311,8 @@ fn branch_halves<'a>(body: &'a str, function: &str) -> (&'a str, &'a str) {
 }
 
 /// A chain whose root is another variable's whole value diverts to the
-/// aggregate path, and the aggregate path computes the right elements.
+/// root is materialized into the target before any element store runs, and the
+/// result keeps that value under the element writes stacked on it.
 #[test]
 fn a_chain_rooted_in_another_value_diverts_and_keeps_that_value() {
     let (generated, stdout) = build_and_run(
@@ -1321,12 +1322,24 @@ fn a_chain_rooted_in_another_value_diverts_and_keeps_that_value() {
     );
     let body = emitted_definition_body(&generated, "rootOther", ADV_ROOT_OTHER_MODEL);
     let (then_arm, else_arm) = branch_halves(body, "rootOther");
+    let then_arm = then_arm
+        .split_once("if (")
+        .map_or(then_arm, |(_, conditional)| conditional);
     for (arm, label) in [(then_arm, "then"), (else_arm, "else")] {
+        let root_read = arm
+            .find("ctx->a)")
+            .or_else(|| arm.find("= ctx->a["))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {label} arm must materialize its root `a` into `y` \
+                     (whole-array move or aggregate loop):\n{arm}"
+                )
+            });
+        let first_element_store = arm.find("ctx->y[").unwrap_or(arm.len());
         assert!(
-            arm.contains("for (") && arm.contains("->a["),
-            "the {label} arm must materialize its root `a` in the aggregate \
-             loop the root guard diverted it to; in-place element stores here \
-             would mean the guard stopped diverting:\n{arm}"
+            root_read < first_element_store,
+            "the {label} arm must materialize its root `a` before any element \
+             store on `y`; a store first would drop the root:\n{arm}"
         );
     }
     assert_eq!(

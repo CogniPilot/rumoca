@@ -38,8 +38,7 @@ impl SourceProgram {
             )
         });
         let input_slots = schedule
-            .input_lanes()
-            .iter()
+            .scalar_input_lanes()
             .enumerate()
             .map(|(ordinal, input)| {
                 assert_eq!(input.lane(), solve::NativeOutputLane::Integer);

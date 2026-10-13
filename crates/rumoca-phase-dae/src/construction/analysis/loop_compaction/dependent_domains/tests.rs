@@ -135,6 +135,21 @@ fn mutable_range_operand_requires_entry_snapshot_instead_of_live_membership_read
 }
 
 #[test]
+fn shape_query_range_operand_needs_no_entry_snapshot_but_element_read_does() {
+    let body = vec![ordered_update(), assign("x", integer(0))];
+    let size_end = Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Size,
+        args: vec![var("x"), integer(1)],
+        span: span(),
+    };
+    require_entry_invariant_range(&size_end, &body, span())
+        .expect("a declared-shape query is not a value read");
+    let error = require_entry_invariant_range(&element("x", integer(1)), &body, span())
+        .expect_err("an element read of a written operand needs the snapshot");
+    assert!(format!("{error:?}").contains("entry snapshot"));
+}
+
+#[test]
 fn full14400_parent_domain_does_not_expand_statement_storage() {
     let body = vec![for_loop(
         "i",

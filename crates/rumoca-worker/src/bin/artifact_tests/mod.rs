@@ -70,12 +70,12 @@ fn structural_artifact_records_the_dae_that_produced_solve() {
             .expect("structural artifact replays checked constructors");
     assert_eq!(state_names(&artifact), ["x"]);
     let bytes = fs::read(directory.0.join("ir-solve.json")).unwrap();
-    let solve = rumoca_phase_solve::deserialize_solve_model(
+    let solve = rumoca_eval_solve::model_wire::deserialize_solve_model(
         &mut serde_json::Deserializer::from_slice(&bytes),
     )
     .expect("Solve artifact replays");
     assert_eq!(solve.state_scalar_count(), 1);
-    assert_eq!(solve.problem.solve_layout.solver_maps.names[0], "x");
+    assert_eq!(solve.problem.solver_name(0).unwrap(), "x");
 }
 
 #[test]

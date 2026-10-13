@@ -106,12 +106,12 @@ fn model_guard_operations_survive_a_settled_literal_plan() {
         for owner in 0..view.model_conditional_count() {
             let owner = view.model_conditional_at(owner).unwrap();
             for expression in owner.guard_operations() {
-                let values = evaluator.expression(expression).unwrap();
+                let values = evaluator.exact_expression_values(expression).unwrap();
                 plan[expression.index() as usize] =
                     Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
                         scalar: dae::ScalarType::Boolean,
                         dimensions: Box::new([]),
-                        values: values.into(),
+                        values,
                     }));
             }
         }
@@ -294,12 +294,12 @@ fn closed_model_conditional_honors_its_checked_literal_replacement() {
         for (ordinal, replacement) in plan.iter_mut().enumerate() {
             let id = view.expression_id(ordinal).unwrap();
             if view.model_conditional_of(id).is_some() {
-                let values = evaluator.expression(id).unwrap();
-                assert_eq!(values.as_slice(), &[3.0]);
+                let values = evaluator.exact_expression_values(id).unwrap();
+                assert_eq!(values.numerical_values().materialize().as_slice(), &[3.0]);
                 *replacement = Some(std::sync::Arc::new(evaluable_parameters::FoldedValue {
                     scalar: dae::ScalarType::Real,
                     dimensions: Box::new([]),
-                    values: values.into(),
+                    values,
                 }));
             }
         }

@@ -56,7 +56,9 @@ impl Ready {
         helpers
             .relocate(&imports)
             .map_err(|error| error.to_string())?;
-        let (bodies, faults) = helpers.bodies(table).map_err(|error| error.to_string())?;
+        let (bodies, faults) = helpers
+            .bodies(table, crate::outline::FUNCTION_BYTES)
+            .map_err(|error| error.to_string())?;
         // A checked forced arena allocates source registers even for scalar-only tuples;
         // this is storage planning, never a synthetic tensor source operation.
         let arena = arena::ArenaPlan::required(&programs, 0)?;
@@ -64,7 +66,7 @@ impl Ready {
         if plan
             .maximum_tuple
             .checked_mul(8)
-            .is_none_or(|bytes| bytes > calls.work_bytes as usize)
+            .is_none_or(|bytes| bytes > calls.view().work_bytes as usize)
         {
             return Err("WASM exact tuple exceeds its checked output scratch".into());
         }

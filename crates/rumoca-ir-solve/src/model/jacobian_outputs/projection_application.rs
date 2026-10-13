@@ -56,20 +56,20 @@ impl ProjectionJacobianColor {
 impl ProjectionJacobianApplication {
     pub(super) fn derive(
         block_index: usize,
-        structure: &JacobianStructure,
+        structure: &ColoredJacobianStructure,
         block: &AlgebraicProjectionBlock,
         source: &ProjectionJacobianSource<'_>,
         outputs: &ProgramOutputCatalog,
     ) -> Option<Self> {
-        if structure.pattern.rows() as usize != block.rows.len()
-            || structure.pattern.columns() as usize != block.y_indices.len()
+        if structure.pattern().rows() as usize != block.rows.len()
+            || structure.pattern().columns() as usize != block.y_indices.len()
         {
             return None;
         }
         let output_len = block.rows.len().checked_mul(block.y_indices.len())?;
         let column_rows = structure.column_rows();
         let colors = structure
-            .coloring
+            .coloring()
             .groups()
             .iter()
             .map(|group| {

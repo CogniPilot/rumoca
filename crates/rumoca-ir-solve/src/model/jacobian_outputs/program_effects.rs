@@ -10,6 +10,7 @@ fn operation_is_repeatable(op: &LinearOp) -> bool {
     match op {
         LinearOp::ImpureRandomInit { .. }
         | LinearOp::ImpureRandom { .. }
+        | LinearOp::PureCallObservation { .. }
         | LinearOp::ImpureRandomInteger { .. } => false,
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }

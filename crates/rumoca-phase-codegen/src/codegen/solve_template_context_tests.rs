@@ -65,7 +65,7 @@ fn implicit_problem_with_artifacts() -> (solve::SolveProblem, solve::SolveArtifa
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
     problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
-    problem.continuous.implicit_row_targets = vec![None];
+    problem.continuous.implicit_row_targets = vec![None].into();
 
     let mut artifacts = solve::SolveArtifacts::default();
     artifacts.continuous.implicit_jacobian_v_scalar = scalar_block(vec![row.clone()]);
@@ -227,4 +227,39 @@ fn test_solve_template_context_mappings_enumerate_only_resolvable_keys() {
             "missing `{line}` in:\n{rendered}"
         );
     }
+}
+
+/// The state-name report is materialized only by an explicit argument-free call;
+/// the report object itself identifies its state count.
+#[test]
+fn test_solve_template_state_names_report_is_an_explicit_argument_free_call() {
+    let (problem, artifacts) = implicit_problem_with_artifacts();
+    let handle = solve_lazy::SolveRenderHandle::standalone(
+        std::sync::Arc::new(problem.clone()),
+        std::sync::Arc::new(artifacts.clone()),
+    );
+    let report = solver_names::SolverStateReport(handle);
+    assert!(
+        format!("{report:?}").starts_with("SolverStateReport { state_scalar_count: 0"),
+        "{report:?}"
+    );
+    let called = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        "{{ solve.state_names() | length }}",
+        "Names",
+    )
+    .expect("the argument-free call reports the named states");
+    assert_eq!(called, "0");
+    let error = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        "{{ solve.state_names(1) }}",
+        "Names",
+    )
+    .expect_err("the report takes no arguments");
+    assert!(
+        error.to_string().contains("state_names takes no arguments"),
+        "{error}"
+    );
 }

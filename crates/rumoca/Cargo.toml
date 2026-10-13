@@ -43,6 +43,7 @@ default = [
     "process-control",
     "native-allocator",
     "fmu-packaging",
+    "component-build",
 ]
 scheduled-sim = ["rumoca-sim/scheduled-sim"]
 scenario-config = ["rumoca-sim/scenario-config"]
@@ -54,7 +55,9 @@ viewer-web = ["rumoca-sim/viewer-web"]
 process-control = ["rumoca-sim/process-control"]
 native-allocator = ["dep:rumoca-allocator"]
 fmi = ["rumoca-sim/fmi"]
-fmu-packaging = ["dep:zip", "fmi"]
+fmu-packaging = ["dep:zip", "dep:rumoca-exec-wasm", "fmi"]
+component-build = ["fmu-packaging", "rumoca-exec-wasm/component-build"]
+native-fmi-ls-build = ["fmu-packaging", "rumoca-sim/native-fmi-ls-build"]
 examples-smoke-tests = []
 msl-sim-tests = []
 # Opt-in RDD2 metric gates inside `suite_gates` (`tests/rdd2_perf_guard.rs`,
@@ -80,7 +83,9 @@ tracing = ["dep:tracing-subscriber", "rumoca-compile/tracing", "rumoca-sim/traci
 # config, scheduling, transports, input devices, viewer web UI, and reports.
 # Library consumers select only the axes they need.
 rumoca-compile = { workspace = true }
+rumoca-exec-wasm = { workspace = true, default-features = false, optional = true }
 rumoca-core = { workspace = true }
+rumoca-tool-build-info = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
@@ -121,8 +126,25 @@ name = "simulation_session_demo"
 path = "examples/simulation_session_demo.rs"
 
 [[example]]
+name = "native_emission"
+required-features = ["fmu-packaging"]
+
+[[example]]
+name = "native_step"
+required-features = ["fmu-packaging"]
+
+[[example]]
+name = "native_package"
+required-features = ["native-fmi-ls-build"]
+
+[[example]]
+name = "compact_inventory"
+required-features = ["fmi"]
+
+[[example]]
 name = "quadrotor_sil"
 path = "examples/quadrotor_sil.rs"
+required-features = ["scheduled-sim"]
 
 # The repo-wide architecture gate. Kept a target of its own because people
 # rerun it by name (`cargo test -p rumoca --test architecture_hardening_test`)
@@ -177,6 +199,13 @@ name = "suite_galec_fmu"
 path = "tests/suite_galec_fmu/main.rs"
 
 [dev-dependencies]
+# In-process engine for the native step example.
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
+# Function-to-owner map of the emitted module.
+wasmparser = "0.241"
+# Fixture authoring verifies its actual executable and exact source bytes.
+sha2 = "0.10"
+rumoca-exec-wasm = { workspace = true, features = ["component-build"] }
 rumoca-eval-dae = { workspace = true }
 crossterm = { workspace = true }
 tungstenite = { workspace = true }
@@ -199,7 +228,7 @@ rumoca-phase-dae = { workspace = true }
 # rules from the crate that owns them rather than restating them where they
 # could drift.
 rumoca-phase-autodiff = { workspace = true }
-rumoca-eval-solve = { workspace = true }
+rumoca-eval-solve = { workspace = true, features = ["wire-replay"] }
 # Native side of the interpreter-versus-JIT differential oracle
 # (`tests/suite_core/backend_executor_differential.rs`). `rumoca-sim` already
 # links this crate unconditionally off wasm, so the edge adds no link cost; the

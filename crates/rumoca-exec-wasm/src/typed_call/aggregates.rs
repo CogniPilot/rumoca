@@ -128,6 +128,7 @@ impl Emitter<'_> {
                 binary,
                 scalar,
                 (Operand::Fixed(output), Operand::Cells(source)),
+                false,
                 status,
             );
             e.store(real);

@@ -312,6 +312,7 @@ pub(super) fn visit_operands(op: &mut LinearOp, visit: &mut impl FnMut(&mut Reg,
         | LinearOp::FunctionFold { .. }
         | LinearOp::GuardedFunctionFold { .. }
         | LinearOp::FunctionConditional { .. }
+        | LinearOp::PureCallObservation { .. }
         | LinearOp::StoreOutputFoldTensorUpdate { .. }
         | LinearOp::StoreOutputFunctionFold { .. } => return false,
     }
@@ -367,7 +368,8 @@ pub(super) fn destination(op: &mut LinearOp) -> Option<&mut Reg> {
         | LinearOp::TensorFill { dst_start, .. }
         | LinearOp::TensorIdentity { dst_start, .. }
         | LinearOp::TensorLoad { dst_start, .. } => Some(dst_start),
-        LinearOp::StoreOutputFoldTensorUpdate { .. }
+        LinearOp::PureCallObservation { .. }
+        | LinearOp::StoreOutputFoldTensorUpdate { .. }
         | LinearOp::StoreOutputFunctionFold { .. }
         | LinearOp::StoreOutputRange { .. }
         | LinearOp::StoreOutput { .. } => None,

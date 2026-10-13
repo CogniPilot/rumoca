@@ -256,21 +256,20 @@ fn statement_roots<'dae>(
 ) {
     for statement in statements {
         match statement {
-            dae::FunctionStatementView::Assignment { .. } => {}
-            dae::FunctionStatementView::AssignmentGroup {
-                conditional: Some(group),
-                ..
-            } => {
-                roots.extend(group.conditions());
-                roots.extend(group.fallback());
-                for branch in (0..group.branch_count()).filter_map(|ordinal| group.branch(ordinal))
+            dae::FunctionStatementView::Conditional { conditional } => {
+                roots.extend(conditional.conditions());
+                for branch in conditional
+                    .branches()
+                    .chain(std::iter::once(conditional.fallback()))
                 {
-                    roots.extend(branch);
+                    statement_roots(branch.statements(), roots);
                 }
             }
-            dae::FunctionStatementView::AssignmentGroup {
-                conditional: None, ..
-            } => {}
+            dae::FunctionStatementView::RequireAssigned { definition, .. } => {
+                roots.push(definition.rhs())
+            }
+            dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::AssignmentGroup { .. } => {}
             dae::FunctionStatementView::Assertion {
                 condition, message, ..
             } => roots.extend([condition, message]),

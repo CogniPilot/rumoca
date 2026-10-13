@@ -185,11 +185,6 @@ fn parameter_name(runtime: &SolveRuntime, index: usize) -> String {
         .model
         .problem
         .layout
-        .bindings()
-        .iter()
-        .find_map(|(name, slot)| match slot {
-            solve::ScalarSlot::P { index: bound, .. } if *bound == index => Some(name.to_string()),
-            _ => None,
-        })
+        .scalar_name_for_slot(solve::scalar_slot_p(index))
         .unwrap_or_else(|| format!("p[{index}]"))
 }

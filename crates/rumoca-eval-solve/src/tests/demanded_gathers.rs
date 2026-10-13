@@ -226,6 +226,137 @@ fn structured_conditional_demanded_gathers_stay_lazy_in_checked_and_fast_executi
     }
 }
 
+fn prepare_mutable_region(mut operations: Vec<LinearOp>) -> PreparedScalarProgramBlock {
+    operations.insert(
+        0,
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+    );
+    let Some(LinearOp::StoreOutput { src }) = operations.pop() else {
+        panic!("one region result")
+    };
+    operations.extend([
+        LinearOp::Const {
+            dst: 90,
+            value: 1.0,
+        },
+        LinearOp::Select {
+            dst: 91,
+            cond: 90,
+            if_true: src,
+            if_false: src,
+        },
+    ]);
+    operations.extend((100..165).map(|dst| LinearOp::Const {
+        dst,
+        value: dst as f64,
+    }));
+    operations.push(LinearOp::StoreOutput { src: 91 });
+    let block =
+        ScalarProgramBlock::with_program_spans(vec![operations], vec![fixture_span()]).unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    assert!(
+        prepared.has_lazy_row_plan(0),
+        "the mixed compact profile remains admitted"
+    );
+    prepared
+}
+
+#[test]
+fn mutable_lazy_conditional_keeps_inactive_body_and_original_fault() {
+    let prepared = prepare_mutable_region(conditional_row());
+    for index in [2.0, 1.5, f64::NAN] {
+        let evaluate = |selected| {
+            prepared.eval_row_with_context(
+                0,
+                &[91.0, 92.0],
+                &[selected, index],
+                0.0,
+                RowEvalContext::default(),
+            )
+        };
+        assert_eq!(evaluate(1.0).unwrap(), 7.0);
+        assert_eq!(
+            evaluate(0.0).unwrap_err().source_span(),
+            Some(fixture_span())
+        );
+        assert_eq!(evaluate(1.0).unwrap(), 7.0);
+    }
+    assert!(prepared.specialized_row_program(0).is_none());
+}
+
+fn guarded_gather_fold() -> Vec<LinearOp> {
+    use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
+    let update = vec![
+        LinearOp::LoadP { dst: 0, index: 1 },
+        LinearOp::Const {
+            dst: 1,
+            value: 42.0,
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 2,
+            base: 1,
+            stride: 1,
+            dimensions: vec![1].into_boxed_slice(),
+            indices: vec![TensorIndex::Runtime(0)].into_boxed_slice(),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            provenance: rumoca_core::IndexBinderProvenance::Generated,
+            id: 0,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 1,
+            step: 1,
+        }],
+    };
+    let program = rumoca_ir_solve::FunctionFoldProgram::checked(domain, 1, 0, update).unwrap();
+    vec![
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::LoadP { dst: 1, index: 0 },
+        LinearOp::GuardedFunctionFold {
+            dst_start: 2,
+            initial_start: 0,
+            capture_start: 0,
+            activation: 1,
+            program: std::sync::Arc::new(program),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
+#[test]
+fn mutable_lazy_guarded_fold_keeps_inactive_body_and_original_fault() {
+    let prepared = prepare_mutable_region(guarded_gather_fold());
+    let evaluate = |active, index| {
+        prepared.eval_row_with_context(
+            0,
+            &[91.0, 92.0],
+            &[active, index],
+            0.0,
+            RowEvalContext::default(),
+        )
+    };
+    assert_eq!(evaluate(1.0, 1.0).unwrap(), 42.0);
+    for index in [2.0, 1.5, f64::NAN] {
+        assert_eq!(evaluate(0.0, index).unwrap(), 7.0);
+        assert_eq!(
+            evaluate(1.0, index).unwrap_err().source_span(),
+            Some(fixture_span())
+        );
+        assert_eq!(evaluate(0.0, index).unwrap(), 7.0);
+    }
+    assert!(prepared.specialized_row_program(0).is_none());
+}
+
 #[test]
 fn fold_carried_and_capture_reads_use_strict_addresses_while_update_no_match_remains_distinct() {
     for carried in [true, false] {
@@ -309,6 +440,205 @@ fn prepared_model_program_gather_faults_keep_reachability_after_success_and_fail
     assert_eq!(evaluate(1., f64::NAN).unwrap(), 7.);
     assert_eq!(evaluate(0., 2.).unwrap(), 64.);
     assert!(prepared.specialized_row_program(0).is_none());
+}
+
+#[test]
+fn mutable_tensor_registers_preserve_inactive_gather_and_original_fault() {
+    let mut operations = row();
+    operations.insert(
+        0,
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 3,
+            seed_start: None,
+            lanes: 1,
+        },
+    );
+    let block =
+        ScalarProgramBlock::with_program_spans(vec![operations], vec![fixture_span()]).unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    let evaluate = |selected, index| {
+        prepared.eval_row_with_context(
+            0,
+            &[91.0, 92.0, 93.0],
+            &[selected, index],
+            0.0,
+            RowEvalContext::default(),
+        )
+    };
+    assert_eq!(evaluate(0.0, 1.0).unwrap(), 42.0);
+    for index in [3.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(evaluate(1.0, index).unwrap(), 7.0);
+        let error = evaluate(0.0, index).unwrap_err();
+        assert_eq!(error.source_span(), Some(fixture_span()));
+        assert_eq!(evaluate(1.0, index).unwrap(), 7.0);
+    }
+    assert_eq!(evaluate(0.0, 2.0).unwrap(), 64.0);
+}
+
+#[test]
+fn mutable_strided_operand_does_not_demand_invalid_gap_version() {
+    let mut operations = vec![
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 3,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::Const {
+            dst: 20,
+            value: 91.0,
+        },
+        LinearOp::Const {
+            dst: 21,
+            value: 92.0,
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 2,
+            base: 20,
+            stride: 1,
+            dimensions: vec![2].into_boxed_slice(),
+            indices: vec![TensorIndex::Runtime(0)].into_boxed_slice(),
+        },
+        LinearOp::Const {
+            dst: 1,
+            value: 42.0,
+        },
+        LinearOp::Const {
+            dst: 3,
+            value: 64.0,
+        },
+        LinearOp::DotProduct {
+            dst: 4,
+            lhs_start: 1,
+            rhs_start: 1,
+            count: 2,
+            lhs_stride: 2,
+            rhs_stride: 2,
+        },
+        LinearOp::Const { dst: 5, value: 7.0 },
+        LinearOp::LoadP { dst: 6, index: 1 },
+        LinearOp::Select {
+            dst: 7,
+            cond: 6,
+            if_true: 5,
+            if_false: 4,
+        },
+    ];
+    operations.extend((22..80).map(|dst| LinearOp::Const {
+        dst,
+        value: dst as f64,
+    }));
+    operations.push(LinearOp::StoreOutput { src: 7 });
+    let block =
+        ScalarProgramBlock::with_program_spans(vec![operations], vec![fixture_span()]).unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    for index in [3.0, f64::NAN, f64::INFINITY] {
+        for (selected, expected) in [(0.0, 42.0 * 42.0 + 64.0 * 64.0), (1.0, 7.0)] {
+            assert_eq!(
+                prepared
+                    .eval_row_with_context(
+                        0,
+                        &[1.0, 2.0, 3.0],
+                        &[index, selected],
+                        0.0,
+                        RowEvalContext::default()
+                    )
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn mutable_dot_product_keeps_interleaved_first_fault() {
+    let mut operations = vec![
+        LinearOp::TensorLoad {
+            dst_start: 1,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 0,
+            count: 4,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::Const {
+            dst: 10,
+            value: 91.0,
+        },
+        LinearOp::Const {
+            dst: 11,
+            value: 92.0,
+        },
+        LinearOp::Const { dst: 5, value: 4.0 },
+        LinearOp::Const { dst: 6, value: 3.0 },
+        LinearOp::Const {
+            dst: 1,
+            value: 42.0,
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 2,
+            base: 10,
+            stride: 1,
+            dimensions: vec![2].into_boxed_slice(),
+            indices: vec![TensorIndex::Runtime(5)].into_boxed_slice(),
+        },
+        LinearOp::LoadIndexedRegister {
+            dst: 3,
+            base: 10,
+            stride: 1,
+            dimensions: vec![2].into_boxed_slice(),
+            indices: vec![TensorIndex::Runtime(6)].into_boxed_slice(),
+        },
+        LinearOp::Const {
+            dst: 4,
+            value: 64.0,
+        },
+        LinearOp::DotProduct {
+            dst: 7,
+            lhs_start: 1,
+            rhs_start: 3,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+        },
+        LinearOp::Const { dst: 8, value: 1.0 },
+        LinearOp::Select {
+            dst: 9,
+            cond: 8,
+            if_true: 7,
+            if_false: 1,
+        },
+    ];
+    operations.extend((20..85).map(|dst| LinearOp::Const {
+        dst,
+        value: dst as f64,
+    }));
+    operations.push(LinearOp::StoreOutput { src: 9 });
+    let block =
+        ScalarProgramBlock::with_program_spans(vec![operations], vec![fixture_span()]).unwrap();
+    let prepared = PreparedScalarProgramBlock::new(block).unwrap();
+    let error = prepared
+        .eval_row_with_context(0, &[0.0; 4], &[], 0.0, RowEvalContext::default())
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EvalSolveError::TensorIndexOutOfBounds {
+                axis: 1,
+                index: 3,
+                extent: 2,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.source_span(), Some(fixture_span()));
 }
 
 #[test]

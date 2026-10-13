@@ -246,20 +246,31 @@ fn validate_assignment(
     scope: WhenScope<'_>,
     clocked: bool,
 ) -> Result<(), ToDaeError> {
-    if !matches!(
-        scope.roles.get(target),
-        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-    ) {
-        return Err(ToDaeError::unsupported_flat(
-            "when assignment",
-            format!("`{target}` is not a discrete coordinate"),
-            span,
-        ));
-    }
+    validate_discrete_target(target, span, scope)?;
     // `previous(...)` names a coordinate, so its operand is proven against the
     // coordinate plan, not the expression catalog.
     validate_clocked_temporal_expressions(value, scope.roles, clocked)?;
     validate_read(value, scope, clocked)
+}
+
+/// An event assignment, including each output of a multi-result call, defines
+/// a discrete coordinate.
+fn validate_discrete_target(
+    target: &VarName,
+    span: Span,
+    scope: WhenScope<'_>,
+) -> Result<(), ToDaeError> {
+    if matches!(
+        scope.roles.get(target),
+        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+    ) {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "when assignment",
+        format!("`{target}` is not a discrete coordinate"),
+        span,
+    ))
 }
 
 fn validate_clocked_temporal_expressions(

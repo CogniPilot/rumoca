@@ -194,6 +194,517 @@ fn add_caller_equation(model: &mut flat::Model, source: &TestSource) {
 const TEXT: &str = "function two input Real x; output Real a; output Real b; algorithm a := x; b := x; end two; \
      function caller input Real u; output Real y; protected Real p; Real q; algorithm (p, q) := two(u); y := p; end caller; caller(1.0);";
 
+#[test]
+fn nested_source_branch_retains_preliminary_complete_tuple_before_overwrite() {
+    let source = TestSource::new(TEXT);
+    let span = source.span("(p, q) := two(u)", 0);
+    let call = multi_output_call(&source, vec![Some("p"), Some("q")], span);
+    let caller = caller_function(&source, call, &["p", "q"]);
+    let mut model = model_with(caller, two_result_function(&source));
+    let variable = |name: &str| Expression::VarRef {
+        name: Reference::new(name),
+        subscripts: Vec::new(),
+        span,
+    };
+    let real = |value| Expression::Literal {
+        value: Literal::Real(value),
+        span,
+    };
+    let condition = |limit| Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(variable("u")),
+        rhs: Box::new(real(limit)),
+        span,
+    };
+    let assignment = |name, value| rumoca_core::Statement::Assignment {
+        comp: test_component_reference(name, span),
+        value,
+        span,
+    };
+    let function = model.functions.get_mut(&VarName::new("caller")).unwrap();
+    let prefix = function.body.remove(0);
+    let inner = rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: condition(2.0),
+            stmts: vec![assignment("p", real(3.0))],
+        }],
+        else_block: Some(vec![assignment(
+            "p",
+            Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(variable("p")),
+                rhs: Box::new(real(4.0)),
+                span,
+            },
+        )]),
+        span,
+    };
+    function.body = vec![rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: condition(10.0),
+            stmts: vec![assignment("y", real(12.0))],
+        }],
+        else_block: Some(vec![prefix, inner, assignment("y", variable("q"))]),
+        span,
+    }];
+    add_caller_equation(&mut model, &source);
+    let lowered = construct(&model, source.map).expect("source-ordered nested branches construct");
+    lowered.inspect(|view| {
+        let function = constructed_function(view, "caller");
+        let statements = function.statements().collect::<Vec<_>>();
+        let [dae::FunctionStatementView::Conditional { conditional }] = &statements[..] else {
+            panic!("the outer source statement retains its branch owner")
+        };
+        let fallback = conditional.fallback().statements().collect::<Vec<_>>();
+        let [
+            dae::FunctionStatementView::AssignmentGroup { definitions },
+            dae::FunctionStatementView::Conditional { .. },
+            dae::FunctionStatementView::Assignment { .. },
+        ] = &fallback[..]
+        else {
+            panic!("the complete preliminary tuple precedes the inner overwrite")
+        };
+        let owners = (*definitions)
+            .rhs_iter()
+            .map(|rhs| {
+                let dae::ExpressionOperation::Call { owner, .. } =
+                    view.expression(rhs).unwrap().operation()
+                else {
+                    panic!("the prefix retains each original call result")
+                };
+                owner
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0], owners[1]);
+    });
+}
+
+#[test]
+fn nested_source_branch_keeps_surviving_first_and_second_results() {
+    let source = TestSource::new(TEXT);
+    let span = source.span("(p, q) := two(u)", 0);
+    let call = multi_output_call(&source, vec![Some("p"), Some("q")], span);
+    let caller = caller_function(&source, call, &["p", "q"]);
+    let mut model = model_with(caller, two_result_function(&source));
+    let variable = |name: &str| Expression::VarRef {
+        name: Reference::new(name),
+        subscripts: Vec::new(),
+        span,
+    };
+    let real = |value| Expression::Literal {
+        value: Literal::Real(value),
+        span,
+    };
+    let condition = |limit| Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(variable("u")),
+        rhs: Box::new(real(limit)),
+        span,
+    };
+    let assignment = |name, value| rumoca_core::Statement::Assignment {
+        comp: test_component_reference(name, span),
+        value,
+        span,
+    };
+    let function = model.functions.get_mut(&VarName::new("caller")).unwrap();
+    let prefix = function.body.remove(0);
+    let inner = rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: condition(2.0),
+            stmts: vec![assignment("p", real(3.0))],
+        }],
+        else_block: Some(vec![assignment(
+            "p",
+            Expression::Binary {
+                op: OpBinary::Add,
+                lhs: Box::new(variable("p")),
+                rhs: Box::new(real(4.0)),
+                span,
+            },
+        )]),
+        span,
+    };
+    function.body = vec![rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: condition(10.0),
+            stmts: vec![assignment("y", real(12.0))],
+        }],
+        else_block: Some(vec![
+            prefix,
+            inner,
+            assignment(
+                "y",
+                Expression::Binary {
+                    op: OpBinary::Add,
+                    lhs: Box::new(variable("p")),
+                    rhs: Box::new(variable("q")),
+                    span,
+                },
+            ),
+        ]),
+        span,
+    }];
+    add_caller_equation(&mut model, &source);
+    let lowered = construct(&model, source.map).expect("source-ordered nested branches construct");
+    lowered.inspect(|view| {
+        let function = constructed_function(view, "caller");
+        let statements = function.statements().collect::<Vec<_>>();
+        let [dae::FunctionStatementView::Conditional { conditional }] = &statements[..] else {
+            panic!("the outer source statement retains its branch owner")
+        };
+        let fallback = conditional.fallback().statements().collect::<Vec<_>>();
+        let [
+            dae::FunctionStatementView::AssignmentGroup { definitions },
+            dae::FunctionStatementView::Conditional { conditional: inner },
+            dae::FunctionStatementView::Assignment { .. },
+        ] = &fallback[..]
+        else {
+            panic!("the complete preliminary tuple precedes the inner overwrite")
+        };
+        assert_eq!(inner.branches().next().unwrap().statements().count(), 1);
+        assert_eq!(inner.fallback().statements().count(), 1);
+        let owners = (*definitions)
+            .rhs_iter()
+            .map(|rhs| {
+                let dae::ExpressionOperation::Call { owner, .. } =
+                    view.expression(rhs).unwrap().operation()
+                else {
+                    panic!("the prefix retains each original call result")
+                };
+                owner
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0], owners[1]);
+    });
+}
+
+#[test]
+fn source_no_output_branch_keeps_its_call_condition() {
+    let source = TestSource::new(TEXT);
+    let span = source.span("(p, q) := two(u)", 0);
+    let call = multi_output_call(&source, vec![Some("p"), Some("q")], span);
+    let caller = caller_function(&source, call, &["p", "q"]);
+    let mut model = model_with(caller, two_result_function(&source));
+    let two = model.functions[&VarName::new("two")].instance_id.unwrap();
+    let condition = Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(Expression::FunctionCall {
+            name: Reference::new("two").with_resolved_function(ResolvedFunctionReference {
+                instance_id: two,
+                base_part_count: 1,
+                transitively_non_replaceable: true,
+            }),
+            args: vec![Expression::VarRef {
+                name: Reference::new("u"),
+                subscripts: Vec::new(),
+                span,
+            }],
+            is_constructor: false,
+            span,
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(0.0),
+            span,
+        }),
+        span,
+    };
+    model
+        .functions
+        .get_mut(&VarName::new("caller"))
+        .unwrap()
+        .body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", span),
+            value: Expression::Literal {
+                value: Literal::Real(0.0),
+                span,
+            },
+            span,
+        },
+        rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: condition,
+                stmts: Vec::new(),
+            }],
+            else_block: Some(Vec::new()),
+            span,
+        },
+    ];
+    add_caller_equation(&mut model, &source);
+    let lowered = construct(&model, source.map).expect("condition owns evaluation without outputs");
+    lowered.inspect(|view| {
+        let function = constructed_function(view, "caller");
+        let conditional = function
+            .statements()
+            .find_map(|statement| match statement {
+                dae::FunctionStatementView::Conditional { conditional } => Some(conditional),
+                _ => None,
+            })
+            .expect("no-output conditional remains ordered");
+        assert_eq!(conditional.outputs().count(), 0);
+        let condition = view
+            .expression(conditional.conditions().next().unwrap())
+            .unwrap();
+        let dae::ExpressionOperation::Binary { lhs, .. } = condition.operation() else {
+            panic!("the source condition remains a comparison")
+        };
+        assert!(matches!(
+            view.expression(lhs).unwrap().operation(),
+            dae::ExpressionOperation::Call { .. }
+        ));
+    });
+}
+
+fn source_partial_join(read: bool) -> dae::Dae {
+    let source = TestSource::new(TEXT);
+    let span = source.span("(p, q) := two(u)", 0);
+    let call = multi_output_call(&source, vec![Some("p"), Some("q")], span);
+    let caller = caller_function(&source, call, &["p", "q"]);
+    let mut model = model_with(caller, two_result_function(&source));
+    let variable = |name: &str| Expression::VarRef {
+        name: Reference::new(name),
+        subscripts: Vec::new(),
+        span,
+    };
+    let real = |value| Expression::Literal {
+        value: Literal::Real(value),
+        span,
+    };
+    let assignment = |name, value| rumoca_core::Statement::Assignment {
+        comp: test_component_reference(name, span),
+        value,
+        span,
+    };
+    let caller = model.functions.get_mut(&VarName::new("caller")).unwrap();
+    caller.body = vec![
+        rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Binary {
+                    op: OpBinary::Gt,
+                    lhs: Box::new(variable("u")),
+                    rhs: Box::new(real(0.0)),
+                    span,
+                },
+                stmts: vec![assignment("p", real(1.0))],
+            }],
+            else_block: None,
+            span,
+        },
+        assignment("y", real(0.0)),
+    ];
+    if read {
+        caller.body.push(assignment("y", variable("p")));
+    }
+    add_caller_equation(&mut model, &source);
+    construct(&model, source.map).expect("executed-path partial assignment constructs")
+}
+
+#[test]
+fn source_retained_tuple_join_keeps_unused_sibling_partial() {
+    let source = TestSource::new(TEXT);
+    let span = source.span("(p, q) := two(u)", 0);
+    let call = multi_output_call(&source, vec![Some("p"), Some("q")], span);
+    let caller = caller_function(&source, call, &["p", "q"]);
+    let mut model = model_with(caller, two_result_function(&source));
+    let variable = |name: &str| Expression::VarRef {
+        name: Reference::new(name),
+        subscripts: Vec::new(),
+        span,
+    };
+    let real = |value| Expression::Literal {
+        value: Literal::Real(value),
+        span,
+    };
+    let assignment = |value| rumoca_core::Statement::Assignment {
+        comp: test_component_reference("y", span),
+        value,
+        span,
+    };
+    let caller = model.functions.get_mut(&VarName::new("caller")).unwrap();
+    let prefix = caller.body.remove(0);
+    caller.body = vec![rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: Expression::Binary {
+                op: OpBinary::Gt,
+                lhs: Box::new(variable("u")),
+                rhs: Box::new(real(0.0)),
+                span,
+            },
+            stmts: vec![prefix, assignment(variable("q"))],
+        }],
+        else_block: Some(vec![assignment(real(0.0))]),
+        span,
+    }];
+    add_caller_equation(&mut model, &source);
+    construct(&model, source.map)
+        .expect("observable sibling retains its complete call tuple")
+        .inspect(|view| {
+            let function = constructed_function(view, "caller");
+            let statements = function.statements().collect::<Vec<_>>();
+            let [dae::FunctionStatementView::Conditional { conditional }] = &statements[..] else {
+                panic!("partial tuple introduces no entry assignment or assignedness action")
+            };
+            let branch = conditional.branches().next().unwrap();
+            assert!(matches!(
+                branch.statements().next(),
+                Some(dae::FunctionStatementView::AssignmentGroup { definitions })
+                    if definitions.iter().len() == 2
+            ));
+            let partial = function
+                .values()
+                .find(|value| value.name().as_str() == "p")
+                .unwrap();
+            assert!(matches!(
+                branch.outgoing(partial.id()),
+                Some(dae::FunctionAssignedState::Assigned(_))
+            ));
+            assert_eq!(
+                conditional.fallback().outgoing(partial.id()),
+                Some(dae::FunctionAssignedState::Unassigned)
+            );
+            assert!(matches!(
+                conditional.outgoing(partial.id()),
+                Some(dae::FunctionAssignedState::Conditional { .. })
+            ));
+        });
+}
+
+#[test]
+fn source_faulting_branch_checks_missing_output_only_at_return() {
+    let text = "function caller input Real u; output Real y; algorithm if u > 0 then assert(false, \"first fault\"); else y := 1; end if; end caller; caller(1.0);";
+    let source = TestSource::new(text);
+    let span = source.span(
+        "if u > 0 then assert(false, \"first fault\"); else y := 1; end if",
+        0,
+    );
+    let mut caller = rumoca_core::Function::new("caller", source.span(text, 0));
+    caller.add_input(real_function_param(
+        "u",
+        Vec::new(),
+        source.span("input Real u", 0),
+    ));
+    caller.add_output(real_function_param(
+        "y",
+        Vec::new(),
+        source.span("output Real y", 0),
+    ));
+    let literal = |value| Expression::Literal { value, span };
+    caller.body = vec![rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: Expression::Binary {
+                op: OpBinary::Gt,
+                lhs: Box::new(Expression::VarRef {
+                    name: Reference::new("u"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                rhs: Box::new(literal(Literal::Real(0.0))),
+                span,
+            },
+            stmts: vec![rumoca_core::Statement::Assert {
+                condition: literal(Literal::Boolean(false)),
+                message: Box::new(literal(Literal::String("first fault".to_owned()))),
+                level: None,
+                span,
+            }],
+        }],
+        else_block: Some(vec![rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", span),
+            value: literal(Literal::Real(1.0)),
+            span,
+        }]),
+        span,
+    }];
+    let mut model = test_model();
+    model.add_function(caller);
+    model.is_partial = true;
+    add_caller_equation(&mut model, &source);
+    construct(&model, source.map)
+        .expect("a selected earlier fault precedes the missing output's return check")
+        .inspect(|view| {
+            let function = constructed_function(view, "caller");
+            let statements = function.statements().collect::<Vec<_>>();
+            let [
+                dae::FunctionStatementView::Conditional { conditional },
+                dae::FunctionStatementView::RequireAssigned { value, .. },
+            ] = &statements[..]
+            else {
+                panic!("only the ordered return action checks the partial output")
+            };
+            assert!(matches!(
+                conditional.branches().next().unwrap().statements().next(),
+                Some(dae::FunctionStatementView::Assertion { .. })
+            ));
+            let output = function
+                .values()
+                .find(|value| value.name().as_str() == "y")
+                .unwrap();
+            assert_eq!(*value, output.id());
+            assert!(matches!(
+                conditional.outgoing(output.id()),
+                Some(dae::FunctionAssignedState::Conditional { .. })
+            ));
+        });
+}
+
+#[test]
+fn source_partial_join_remains_unchecked_when_unused() {
+    source_partial_join(false).inspect(|view| {
+        let function = constructed_function(view, "caller");
+        let statements = function.statements().collect::<Vec<_>>();
+        let [
+            dae::FunctionStatementView::Conditional { conditional },
+            dae::FunctionStatementView::Assignment { .. },
+        ] = &statements[..]
+        else {
+            panic!("an unused partial join introduces no assignedness action")
+        };
+        let partial = function
+            .values()
+            .find(|value| value.name().as_str() == "p")
+            .unwrap();
+        assert_eq!(
+            conditional.outgoing(partial.id()),
+            Some(dae::FunctionAssignedState::Unassigned)
+        );
+        assert_eq!(conditional.outputs().len(), 0);
+        assert_eq!(
+            conditional.branches().next().unwrap().statements().count(),
+            0
+        );
+        assert_eq!(conditional.fallback().statements().count(), 0);
+    });
+}
+
+#[test]
+fn source_partial_join_checks_only_at_its_actual_read() {
+    source_partial_join(true).inspect(|view| {
+        let function = constructed_function(view, "caller");
+        let statements = function.statements().collect::<Vec<_>>();
+        let [
+            dae::FunctionStatementView::Conditional { conditional },
+            dae::FunctionStatementView::Assignment { .. },
+            dae::FunctionStatementView::RequireAssigned {
+                conditional: checked,
+                value,
+                ..
+            },
+            dae::FunctionStatementView::Assignment { .. },
+        ] = &statements[..]
+        else {
+            panic!("the independent assignment precedes the partial value's read check")
+        };
+        assert_eq!(conditional.id(), checked.id());
+        let partial = function
+            .values()
+            .find(|target| target.id() == *value)
+            .unwrap();
+        assert_eq!(partial.name().as_str(), "p");
+    });
+}
+
 /// MLS §11.2.1.1: every receiving variable takes its result, left to right.
 #[test]
 fn multi_result_call_defines_every_receiving_variable() {
@@ -694,4 +1205,123 @@ fn model_scope_matrix_row_of_vectors_uses_checked_promotion() {
 
     construct(&model, source.map)
         .expect("the DAE constructor proves the promoted 3 x 2 concatenation");
+}
+
+// ===========================================================================
+// MLS §8.3.5, §12.4.3 multi-result call in a `when` equation
+// ===========================================================================
+
+const WHEN_TEXT: &str = "function two input Real x; output Real a; output Real b; algorithm a := x; b := x; end two; \
+     discrete Real p; discrete Real q; equation when time > 0.5 then (p, q) = two(1.0); end when;";
+
+/// `when time > 0.5 then (<outputs>) = two(1.0); end when` over discrete Reals.
+fn when_multi_output_model(source: &TestSource, outputs: &[&str]) -> flat::Model {
+    let mut model = test_model();
+    model.add_function(two_result_function(source));
+    for (name, declaration, type_id) in
+        [("p", "discrete Real p", 401), ("q", "discrete Real q", 402)]
+    {
+        add_primitive_variable(
+            &mut model,
+            source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            false,
+        );
+        model
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .variability = Variability::Discrete(Default::default());
+    }
+    let condition_span = source.span("time > 0.5", 0);
+    let condition = Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(Expression::VarRef {
+            name: Reference::new("time"),
+            subscripts: Vec::new(),
+            span: source.span("time", 0),
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(0.5),
+            span: source.span("0.5", 0),
+        }),
+        span: condition_span,
+    };
+    let call_span = source.span("two(1.0)", 0);
+    let mut branch = flat::WhenBranch::new(condition, condition_span);
+    branch.add_equation(flat::WhenEquation::function_call_outputs(
+        outputs.iter().map(|name| VarName::new(*name)).collect(),
+        Expression::FunctionCall {
+            name: Reference::new("two"),
+            args: vec![Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", 0),
+            }],
+            is_constructor: false,
+            span: call_span,
+        },
+        source.span("(p, q)", 0),
+        "when equation multi-output assignment",
+    ));
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, condition_span));
+    model.is_partial = true;
+    model
+}
+
+/// Both outputs of one call are assigned under the same event guard, and each
+/// reads a result of the one shared call.
+#[test]
+fn when_multi_result_call_assigns_every_output_from_one_call() {
+    let source = TestSource::new(WHEN_TEXT);
+    let model = when_multi_output_model(&source, &["p", "q"]);
+
+    let dae = construct(&model, source.map)
+        .expect("a multi-result call in a when body has one checked owner");
+    dae.inspect(|view| {
+        let equations = (0..)
+            .map_while(|index| view.discrete_real_equation(index))
+            .collect::<Vec<_>>();
+        assert_eq!(equations.len(), 2);
+        let guards = equations
+            .iter()
+            .map(|equation| match equation.activation() {
+                dae::DiscreteRealActivation::When { trigger, guard } => (trigger, guard),
+                dae::DiscreteRealActivation::Always => panic!("outputs are event-guarded"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(guards[0], guards[1]);
+        let owners = equations
+            .iter()
+            .map(|equation| {
+                let dae::ExpressionOperation::Binary { rhs, .. } =
+                    view.expression(equation.residual()).unwrap().operation()
+                else {
+                    panic!("each output is defined by `output - result`")
+                };
+                match view.expression(rhs).unwrap().operation() {
+                    dae::ExpressionOperation::Call { owner, .. } => owner,
+                    _ => panic!("each output reads one result of the source call"),
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owners[0], owners[1]);
+    });
+}
+
+/// MLS §8.3.5: a variable is assigned at most once per when branch, and that
+/// includes two outputs of one call.
+#[test]
+fn when_multi_result_call_assigning_one_output_twice_is_refused() {
+    let source = TestSource::new(WHEN_TEXT);
+    let model = when_multi_output_model(&source, &["p", "p"]);
+
+    assert!(
+        construct(&model, source.map).is_err(),
+        "an output assigned twice in one when branch has no single owner"
+    );
 }

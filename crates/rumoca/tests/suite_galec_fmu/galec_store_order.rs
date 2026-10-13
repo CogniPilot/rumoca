@@ -10,13 +10,17 @@
 //! [`galec_equivalence::embedded_c_expands_a_substituted_scratch_where_the_storage_it_reads_still_holds_it`]
 //! pins the shapes an order does serve.
 //!
-//! Some shapes have no such order. When two slots each carry an expansion that
-//! reads the storage the other overwrites, either store invalidates the other
-//! slot's reads, and there is nothing left downstream to restore what it
-//! overwrote. This module pins that the projection refuses instead of emitting
-//! one of the two wrong answers.
+//! A group whose slots each carried an expansion over the storage the other
+//! overwrites has no such order, and the projection refuses it. The crossed
+//! row eliminations below no longer produce that group, because each scale
+//! factor keeps an owner evaluated before either row update stores; this
+//! module pins the values that emission computes.
 
-use super::cli_support::{diagnostic_contains, run_compile_target, strip_ansi, write_fixture};
+use std::fs;
+use std::process::Command;
+
+use super::cc_support::assurance_c99_cc;
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
 
 use tempfile::tempdir;
 
@@ -25,12 +29,9 @@ const TARGET: &str = "embedded-c-galec";
 /// Two eliminations whose scale factors cross: `y`'s row update divides by
 /// `z`, and `z`'s row update divides by `y`.
 ///
-/// Both factors are written under a guard nest, so neither keeps an owner and
-/// each is spliced into the update that reads it. `y`'s update therefore
-/// carries an expansion over `z`, and `z`'s carries one over `y`, while the
-/// two updates store into `y` and `z`. Emitting `y` first makes `z`'s
-/// expansion divide values `y`'s store has replaced; emitting `z` first does
-/// the same to `y`'s.
+/// Both factors are written under a guard nest. Were either spliced into the
+/// update that reads it, `y`'s update would carry an expansion over `z` and
+/// `z`'s one over `y`, and either store order would divide by replaced values.
 const CROSSED_SCRATCH: &str = r#"
 function crossedScratch
   input Real m[3, 3];
@@ -71,31 +72,66 @@ algorithm
 end CrossedScratchSmoke;
 "#;
 
-/// The refusal is the whole point: for `m = [4 2 1; 4 5 3; 4 7 9]` against
-/// `b + m`, OpenModelica evaluates the third row of `y` to
-/// `[-0.2, 1.15, 5.45]` and of `z` to `[0.588235, -1.35294, 5.82353]`. An
-/// emission that stores `y` before `z`'s expansion runs reports
-/// `[-0.142857, 1.392857, 5.607142]` and `[1.771008, 4.305882, 8.652942]`
-/// instead, with no signal that anything went wrong. There is no order that
-/// serves both, so the projection must say so rather than pick one.
+/// Each scale factor keeps an owner of its own, computed against the storage
+/// the group found and before either row update stores, so no emission order is
+/// needed: for `m = [4 2 1; 4 5 3; 4 7 9]` against `b + m`, OpenModelica
+/// evaluates the third row of `y` to `[-0.2, 1.15, 5.45]` and of `z` to
+/// `[0.588235, -1.35294, 5.82353]`. An emission that stored `y` before `z`'s
+/// factor was evaluated would report `[-0.142857, 1.392857, 5.607142]` and
+/// `[1.771008, 4.305882, 8.652942]` instead.
 #[test]
-fn a_group_whose_slots_read_what_each_other_overwrites_is_refused() {
+fn crossed_row_eliminations_keep_each_factor_against_the_storage_it_was_stated_on() {
     let work = tempdir().expect("temp dir");
     let fixture = write_fixture(work.path(), "CrossedScratchSmoke", CROSSED_SCRATCH);
     let out = work.path().join("out");
     let output = run_compile_target(&fixture, TARGET, &out);
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let plain = strip_ansi(&stderr);
+    let plain = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        !output.status.success(),
-        "a group no emission order serves must be refused, not emitted:\n{plain}"
+        output.status.success(),
+        "crossed eliminations with owned factors must export:\n{plain}"
     );
+    let driver = out.join("main.c");
+    fs::write(&driver, CROSSED_DRIVER).expect("write driver");
+    let program = out.join("probe");
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg(out.join("CrossedScratchSmoke.c"))
+        .arg(out.join("rumoca_galec_kernels.c"))
+        .arg("-lm")
+        .output()
+        .expect("run cc");
     assert!(
-        diagnostic_contains(&stderr, "function-group-store-order"),
-        "the refusal must name the store-order obligation:\n{plain}"
+        compile.status.success(),
+        "strict cc -std=c99 compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
     );
-    assert!(
-        diagnostic_contains(&stderr, "reads what a sibling assignment"),
-        "the refusal must say what it could not place:\n{plain}"
+    let run = Command::new(&program).output().expect("run probe");
+    assert!(run.status.success(), "probe exited with {:?}", run.status);
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(
+        stdout.lines().last(),
+        Some("-0.20000 1.15000 5.45000 | 0.58824 -1.35294 5.82353"),
+        "the third rows must match the reference evaluation:\n{stdout}"
     );
 }
+
+const CROSSED_DRIVER: &str = "\
+#include <stdio.h>
+#include \"CrossedScratchSmoke.h\"
+int main(void) {
+    CrossedScratchSmokeState state;
+    int i;
+    CrossedScratchSmoke_startup(&state);
+    CrossedScratchSmoke_recalibrate(&state);
+    CrossedScratchSmoke_dostep(&state);
+    for (i = 0; i < 3; i++) {
+        printf(\"%.5f %.5f %.5f | %.5f %.5f %.5f\\n\",
+            (double)state.upper[i][0], (double)state.upper[i][1], (double)state.upper[i][2],
+            (double)state.accumulator[i][0], (double)state.accumulator[i][1],
+            (double)state.accumulator[i][2]);
+    }
+    return 0;
+}
+";

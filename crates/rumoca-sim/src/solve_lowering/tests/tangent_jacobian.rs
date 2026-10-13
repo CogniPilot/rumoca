@@ -320,7 +320,12 @@ fn check_torn_block(
 fn check_torn_blocks(label: &str, model: &solve::SolveModel, points: usize) -> (usize, usize) {
     let rows = prepared_rows(model);
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     let torn = blocks
         .iter()
         .filter(|block| block.tearing.is_some())
@@ -430,7 +435,12 @@ fn check_colored_block(
 fn check_colored_blocks(label: &str, model: &solve::SolveModel) -> usize {
     let rows = prepared_rows(model);
     let structures = model.artifacts.continuous.structural.algebraic_projection();
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     let applications =
         blocks
             .iter()
@@ -503,7 +513,12 @@ fn colored_plans_over_a_shared_source_share_one_widening() {
     let model = lower_source(&affine_chain(), "TangentChain", &[]);
     let rows = prepared_rows(&model);
     let structures = model.artifacts.continuous.structural.algebraic_projection();
-    let blocks = &model.problem.continuous.algebraic_projection_plan.blocks;
+    let blocks = &model
+        .problem
+        .continuous
+        .algebraic_projection_plan
+        .blocks
+        .scalar_blocks();
     let (block, application) = blocks
         .iter()
         .zip(structures)
