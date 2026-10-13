@@ -84,30 +84,38 @@ fn one_term_product_keeps_negative_zero_and_infinities() {
 }
 
 #[test]
-fn integer_matrix_owner_is_refused_by_existing_directional_constructor() {
+fn integer_matrix_multiply_is_refused_by_wasm_after_ir_construction() {
     let ty =
         solve::SolveValueType::tensor(solve::SolveScalarType::integer(profile()), vec![2]).unwrap();
     let mut builder = solve::SolvePureCallTable::builder(profile());
-    let result = builder.add_owner(
-        identity(151),
-        vec![ty.clone(), ty],
-        vec![solve::SolvePureCallOutput::result(
-            solve::SolveValueType::scalar(solve::SolveScalarType::integer(profile())),
-        )],
-        span(15100),
-        |b, inputs, outputs| {
-            let lhs = b.load(inputs[0], span(15101))?;
-            let rhs = b.load(inputs[1], span(15102))?;
-            let value = b.matrix_multiply(lhs, rhs, span(15103))?;
-            b.store(outputs[0], value, span(15104))
-        },
-    );
-    assert_eq!(
-        result.unwrap_err(),
-        solve::SolveProgramConstructionError::InvalidTensorAlgebra {
-            provenance: span(15103)
-        }
-    );
+    let owner = builder
+        .add_owner(
+            identity(151),
+            vec![ty.clone(), ty],
+            vec![solve::SolvePureCallOutput::result(
+                solve::SolveValueType::scalar(solve::SolveScalarType::integer(profile())),
+            )],
+            span(15100),
+            |b, inputs, outputs| {
+                let lhs = b.load(inputs[0], span(15101))?;
+                let rhs = b.load(inputs[1], span(15102))?;
+                let value = b.matrix_multiply(lhs, rhs, span(15103))?;
+                b.store(outputs[0], value, span(15104))
+            },
+        )
+        .expect("integer matrix operations are valid Solve IR");
+    let site = builder
+        .call_site(owner)
+        .expect("created owner has a call site");
+    let table = builder.finish();
+    assert!(matches!(
+        compile_pure_call_wasm(&table, &site),
+        Err(TypedCallCompileError::UnsupportedOperation {
+            opcode: "integer matrix multiply",
+            provenance,
+            ..
+        }) if provenance == span(15103)
+    ));
 }
 
 #[test]
