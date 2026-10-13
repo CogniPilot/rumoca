@@ -1,0 +1,29 @@
+{
+  "model": "ScalableTestSuite.Elementary.WhenEvents.ScaledExperiments.ManyEvents_N_1000_M_10",
+  "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
+  "stacked_base": "65478f8e89210f6bf77d347e1cc6b7730daaf8d0",
+  "source_revision": "c9a7574b31142fa976d20ab6970d78639c125ceb",
+  "stop_time": 10,
+  "scope": "terminal samples only; Real diagnostic samples rounded to 12 decimal places, not an unrounded/full-trace error measurement",
+  "Boolean_coordinates_compared": 1000,
+  "Boolean_mismatches": 0,
+  "true_coordinate_count": 99,
+  "Real_diagnostic_sample_absolute_errors": {
+    "x[1]": 9.71445146547012e-17,
+    "x[901]": 3.3306690738754696e-16,
+    "x[902]": 9.992007221626409e-15,
+    "x[1000]": 1.2789769243681803e-13
+  },
+  "compile_elapsed_ms": 81.05,
+  "simulation_elapsed_seconds": 3.91,
+  "profile_binary_sha256": "0f5ed7c75d1bb842d1e146af5a4d0ce969f2604898400cf7616c6bee50c9610f",
+  "log_sha256": "dee3c4d212064cc6b33b491b8d3ea045c3f1a3649fab3209ef64b776515bff56",
+  "oracle_sha256": "2de99d127f4c87325dee4b148d136f8e5b9e9ba0920c286d9d082f54bf8a1e2f",
+  "environment": {
+    "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue431-20261013/canary-cache",
+    "TMPDIR": "$HOME/scratch/rumoca/issue431-20261013/tmp",
+    "RAYON_NUM_THREADS": 4,
+    "RUST_TEST_THREADS": 4,
+    "CARGO_BUILD_JOBS": 4
+  }
+}

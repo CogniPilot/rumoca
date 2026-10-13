@@ -79,7 +79,8 @@
   ],
   "verification_gaps": [
     "Full workspace all-target/all-feature clippy, workspace test and doc not completed.",
-    "Full release MSL quality-baseline gate and coverage/landing gate not completed; no new broad cache under current disk capacity."
+    "Full release MSL quality-baseline gate and coverage/landing gate not completed; no new broad cache under current disk capacity.",
+    "Latest654 paired fixed20 and selected ModelicaTest not measured after the final parent rewrite; historical bd6 measurements are not relabeled latest."
   ],
   "source_context_equivalence": {
     "source_before": "scratch/rumoca/issue430-20261013/msl/ModelicaStandardLibrary-4.1.0",
@@ -136,7 +137,7 @@
     "selected_compile_tests": 15,
     "strict_lint": "Affected producer/consumer strict all-target lint passed; six-line enum-domain follow-up strict TypeCheck lint passed.",
     "format": "workspace fmt --all --check passed",
-    "scope": "TypeCheck/EvalFlat/Flatten/partition/strict-lint receipts were captured on eb515 source. Current bd6 source reran compiler15, runtime3, formatting, exact N1000 horizon10, pinned modelica_models3, valid rebuilt fixed20 pair and required-selected ModelicaTest. Historical f7 canary/ModelicaTest after identity is unverified and excluded."
+    "scope": "TypeCheck/EvalFlat/Flatten/partition/strict-lint receipts were captured on eb515 source. Proven rebuilt fixed20 pair and selected ModelicaTest are historical bd6. Latest654 source reran compiler15, runtime3, formatting, exact N1000 horizon10 and pinned modelica_models3; latest paired canary/selected gate pending. Historical f7 canary/ModelicaTest after identity remains unverified and excluded."
   },
   "historical_eb515": {
     "before": {
@@ -481,7 +482,46 @@
     "excluded_from_parity_claims": true,
     "log_sha256": "33eb25c47ca942d29939658e0ebcf451c71e08b682e6295fabe727c401fa5558"
   },
-  "current_bd6": {
+  "modelicatest_bd6": {
+    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-bd6",
+    "compiler_commit": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "worktree_dirty": false,
+    "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "msl_version": "v4.1.0",
+    "omc_version": "a96aa1a-cmake",
+    "scope": "partial",
+    "pipeline": {
+      "parse_models": 1,
+      "flatten_models": 1,
+      "dae_models": 1,
+      "solve_models": 1,
+      "balanced_models": 1,
+      "sim_ok": 1
+    },
+    "trace": {
+      "models_compared": 1,
+      "missing_trace_models": 0,
+      "skipped_models": 0,
+      "agreement_bands": {
+        "high_agreement": 1,
+        "minor_agreement": 0,
+        "deviation": 0
+      }
+    },
+    "raw_artifact_sha256": {
+      "msl_quality_current.json": "4ebc83848df8a95e560142b705f67d7e9a0982007db7d5e1d9062ceb47b0c305",
+      "sim_trace_comparison.json": "9c7c0076f31945c6462914caa42aac2d35e86a9a44488f75629e42ac063a0518",
+      "msl_results.json": "335fa8a1f146955111ca51c091ab6dfb878e909675cf99d94ec248712127771c",
+      "omc_simulation_reference.json": "7684b9dd03e6ff70f4d5b07787a801f06126f02139ede0f6e34d1a3f60679bff"
+    },
+    "selected_target": "ModelicaTest.Blocks.MuxDemux",
+    "required_selected_targets_success": true,
+    "command": "cargo xtask verify msl-parity --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json --results-dir $HOME/scratch/rumoca/issue431-20261013/modelicatest-bd6 --include-modelica-test --require-selected-targets-success --sim-set full",
+    "log_sha256": "2501f3c79a59bc8ee2b120221ea4f6fefc1019e553c148e232750d18ea89b29c",
+    "compiler_identity": "Uses the proven current compiler immediately after the full affected-source rebuild; no source or timestamp changes between runs.",
+    "scope_note": "Historical bd6 compiler source; not measured on latest654 parent."
+  },
+  "historical_bd6": {
     "before": {
       "artifact_root": "scratch/rumoca/issue431-20261013/canary-before-bd6",
       "compiler_commit": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
@@ -633,45 +673,17 @@
     },
     "source_rebuild_correction": "The invalid first after attempt is retained separately. All 107 issue-vs-base changed files were timestamp-invalidated before the corrected build; logs confirm the exact affected source crates rebuilt. Timestamp preservation is valid only for byte-identical source relative to the active cached build."
   },
-  "modelicatest_bd6": {
-    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-bd6",
-    "compiler_commit": "67707e72538f582584c966fc45eb46dc8f945d1c",
-    "worktree_dirty": false,
-    "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
-    "msl_version": "v4.1.0",
-    "omc_version": "a96aa1a-cmake",
-    "scope": "partial",
-    "pipeline": {
-      "parse_models": 1,
-      "flatten_models": 1,
-      "dae_models": 1,
-      "solve_models": 1,
-      "balanced_models": 1,
-      "sim_ok": 1
-    },
-    "trace": {
-      "models_compared": 1,
-      "missing_trace_models": 0,
-      "skipped_models": 0,
-      "agreement_bands": {
-        "high_agreement": 1,
-        "minor_agreement": 0,
-        "deviation": 0
-      }
-    },
-    "raw_artifact_sha256": {
-      "msl_quality_current.json": "4ebc83848df8a95e560142b705f67d7e9a0982007db7d5e1d9062ceb47b0c305",
-      "sim_trace_comparison.json": "9c7c0076f31945c6462914caa42aac2d35e86a9a44488f75629e42ac063a0518",
-      "msl_results.json": "335fa8a1f146955111ca51c091ab6dfb878e909675cf99d94ec248712127771c",
-      "omc_simulation_reference.json": "7684b9dd03e6ff70f4d5b07787a801f06126f02139ede0f6e34d1a3f60679bff"
-    },
-    "selected_target": "ModelicaTest.Blocks.MuxDemux",
-    "required_selected_targets_success": true,
-    "command": "cargo xtask verify msl-parity --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json --results-dir $HOME/scratch/rumoca/issue431-20261013/modelicatest-bd6 --include-modelica-test --require-selected-targets-success --sim-set full",
-    "log_sha256": "2501f3c79a59bc8ee2b120221ea4f6fefc1019e553c148e232750d18ea89b29c",
-    "compiler_identity": "Uses the proven current compiler immediately after the full affected-source rebuild; no source or timestamp changes between runs."
+  "historical_bd6_source_validation": {
+    "compiler_source_checkpoint": "67707e72538f582584c966fc45eb46dc8f945d1c",
+    "stacked_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+    "compile_regressions_passed": 15,
+    "runtime_regressions_passed": 3,
+    "workspace_format": "PASS",
+    "focused_build_log_sha256": "cef0dbba8587adc868279b395b61754ea28e94ce8addbd3d763434fd17afaa74",
+    "real_model_receipt": "omc-terminal-comparison-bd6-10.json",
+    "scope": "Current-base focused/source/canary/selected semantic gates only; full workspace, full MSL cohort and coverage remain unmeasured."
   },
-  "latest_compatibility": {
+  "historical_compatibility_bd6": {
     "compiler_source_checkpoint": "67707e72538f582584c966fc45eb46dc8f945d1c",
     "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
     "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
@@ -693,14 +705,52 @@
       }
     ]
   },
+  "latest_compatibility": {
+    "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
+    "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
+    "models": [
+      {
+        "model": "Tests.All",
+        "mode": "compile",
+        "log_sha256": "ef26de66364d03dc0bb48e78efda1f96ab8eff3dc026dcc2f8d926fb4b5861ce"
+      },
+      {
+        "model": "Tests.LieGroupTests.SO2",
+        "mode": "simulate t=0",
+        "log_sha256": "e2daba5be7c94803c825a78e3ec522377d35173efcd8d0150156e0226eb15503"
+      },
+      {
+        "model": "Tests.LieGroupTests.SE2",
+        "mode": "simulate t=0",
+        "log_sha256": "c546e6dc56eaa4f76a57a73255197ba0ff7591eec32b81c33af785ade47a1385"
+      }
+    ]
+  },
   "current_source_validation": {
-    "compiler_source_checkpoint": "67707e72538f582584c966fc45eb46dc8f945d1c",
-    "stacked_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+    "compiler_source_checkpoint": "a3e1e7400b95e91b85ab068e5aa1f07daa375575",
+    "stacked_base": "65478f8e89210f6bf77d347e1cc6b7730daaf8d0",
     "compile_regressions_passed": 15,
     "runtime_regressions_passed": 3,
     "workspace_format": "PASS",
-    "focused_build_log_sha256": "cef0dbba8587adc868279b395b61754ea28e94ce8addbd3d763434fd17afaa74",
-    "real_model_receipt": "omc-terminal-comparison-bd6-10.json",
-    "scope": "Current-base focused/source/canary/selected semantic gates only; full workspace, full MSL cohort and coverage remain unmeasured."
+    "focused_build_log_sha256": "87eac4bfe2a119ea4459a7b194a7bc1d2e523f802b6a01cc6c5ac5be5888e287",
+    "real_model_receipt": "omc-terminal-comparison-654-10.json",
+    "paired_canary": "NOT MEASURED on latest654 parent; proven bd6 pair remains historical",
+    "selected_ModelicaTest": "NOT MEASURED on latest654 parent; proven bd6 selected gate remains historical",
+    "scope": "Latest focused/source/compatibility gates only; no new paired-baseline/profile loop after parent rewrite."
+  },
+  "profiling_environment_correction": {
+    "initial_log_sha256": "0a1bf453411d73da2d1a10f718101e9ae8df7b1ec608659c30dfbb2d10d195fe",
+    "initial_environment": "Direct profile omitted XDG_CACHE_HOME; tool used default $HOME/.cache/rumoca",
+    "reported_auto_prune_files": 2795,
+    "reported_auto_prune_bytes": 166564097,
+    "scope": "Tool automatic pruning of default Rumoca cache; no manual cleanup or restoration attempted. Initial logs retained. Cheap probes repeated with explicit task-owned XDG_CACHE_HOME/TMPDIR; final latest receipts use corrected invocations.",
+    "corrected_environment": {
+      "XDG_CACHE_HOME": "$HOME/scratch/rumoca/issue431-20261013/canary-cache",
+      "TMPDIR": "$HOME/scratch/rumoca/issue431-20261013/tmp",
+      "RAYON_NUM_THREADS": 4,
+      "RUST_TEST_THREADS": 4,
+      "CARGO_BUILD_JOBS": 4
+    }
   }
 }

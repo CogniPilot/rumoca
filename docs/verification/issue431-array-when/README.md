@@ -30,7 +30,8 @@ declaration history run with a checked partition into exact producer ranges;
 independent elements retain their individual activations and holds.
 
 The PR is stacked on PR #421 at
-`bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483`. The earlier `f7b18ac0`,
+`65478f8e89210f6bf77d347e1cc6b7730daaf8d0`. The earlier `bd6b6da8`,
+`f7b18ac0`,
 `eb515d9b`, `da102156` and
 `6ce369dd` compiler snapshots are historical evidence only.
 The clean historical `da102156` baseline independently reproduces ToDAE ED019
@@ -128,16 +129,16 @@ same invalid cache reuse and is retained separately. All changed issue
 source files were then invalidated, and the build logs confirm that the
 affected IR, producer and consumer crates actually recompiled.
 
-The current bd6 source checkpoint `67707e72538f582584c966fc45eb46dc8f945d1c`
+The historical bd6 source checkpoint `67707e72538f582584c966fc45eb46dc8f945d1c`
 passes all fifteen focused compiler tests, three event simulations and
 workspace formatting. The exact N1000 horizon 10 model compiles in 82.32 ms
 and simulates in 4.19 s: balance 0, 1000/1000 matching, all 1000 terminal
 Boolean values equal OMC, with 99 true elements. The
-[current terminal receipt](omc-terminal-comparison-bd6-10.json) records
+[bd6 terminal receipt](omc-terminal-comparison-bd6-10.json) records
 the binary and raw log/oracle hashes and the rounded Real diagnostic scope.
 All three pinned modelica_models probes repeat successfully.
 
-The valid current bd6 fixed20 pair uses clean source and the same `ec011...`
+The valid historical bd6 fixed20 pair uses clean source and the same `ec011...`
 reference context: 20 through Solve and balanced, 16 simulation completions,
 15 compared/high, one typed skip, and no missing, near or deviating model
 traces. Pipeline/completion/model-band deltas are zero, and no per-model
@@ -145,3 +146,15 @@ phase/error/simulation/IC status changes occur. The required-selected
 ModelicaTest gate uses the same proven rebuilt compiler and passes one
 compile/simulation/high comparison. These are partial cohorts; full
 workspace, full release MSL and coverage/landing gates remain incomplete.
+
+The latest source on `65478f8e` at checkpoint `a3e1e7400b95e91b85ab068e5aa1f07daa375575`
+passes fifteen compiler tests, three runtime tests and workspace formatting after the parent
+removed literal-builtin folding. The exact N1000 horizon 10 model compiles
+in 81.05 ms and simulates in 3.91 s, with balance 0, 1000/1000
+matching and all 1000 terminal Boolean coordinates exactly equal to OMC.
+The [latest terminal receipt](omc-terminal-comparison-654-10.json) retains
+source/binary/log/oracle identity and the explicit owned-cache environment.
+All three pinned modelica_models probes pass again. Latest paired canary
+and selected ModelicaTest are unmeasured; the valid bd6 receipts remain
+historical. The ledger also records an initial profiling cache-setting
+omission and the cheap corrected task-owned-cache reruns.
