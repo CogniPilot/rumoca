@@ -32,6 +32,7 @@ mod projection_stages;
 mod quotient_memory;
 mod refresh;
 mod root_search;
+mod runtime_flags;
 mod scalar_names;
 mod scalar_output_placements;
 mod scalar_program_output_spans;
@@ -1066,6 +1067,7 @@ impl SolveProblem {
             .validate_shape_contract()
             .map_err(SolveProblemShapeContractError::Layout)?;
         validate_variable_storage_runs(self)?;
+        runtime_flags::validate(self)?;
         self.validate_solver_storage()?;
         validate_event_iteration_plan(self)?;
         validate_continuous_system_shape(self)?;

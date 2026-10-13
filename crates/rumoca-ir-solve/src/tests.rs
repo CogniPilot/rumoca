@@ -635,6 +635,14 @@ fn scalar_program_block_with_source_span_preserves_explicit_fixture_span() {
 }
 
 fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)]) -> VarLayout {
+    make_layout_with_private_parameters(y_shapes, p_shapes, 0)
+}
+
+fn make_layout_with_private_parameters(
+    y_shapes: &[(&str, Vec<usize>)],
+    p_shapes: &[(&str, Vec<usize>)],
+    private_parameters: usize,
+) -> VarLayout {
     let mut bindings = IndexMap::new();
     let mut shapes = IndexMap::new();
     let mut y_offset = 0usize;
@@ -655,16 +663,23 @@ fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)])
         .keys()
         .map(|name| (name.clone(), fixture_span()))
         .collect();
-    VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, y_offset, p_offset)
-        .expect("representative Solve fixture layout should satisfy shape contract")
+    VarLayout::from_parts_with_shapes_and_spans(
+        bindings,
+        shapes,
+        shape_spans,
+        y_offset,
+        p_offset + private_parameters,
+    )
+    .expect("representative Solve fixture layout should satisfy shape contract")
 }
 
 fn representative_solve_problem_fixture() -> SolveProblem {
     SolveProblem {
         schema_version: SOLVE_SCHEMA_VERSION,
-        layout: make_layout(
+        layout: make_layout_with_private_parameters(
             &[("x", vec![1]), ("y", vec![1]), ("hold.y", vec![1])],
             &[("p", vec![1]), ("__pre__.hold.y", vec![1])],
+            3,
         ),
         solve_layout: representative_solve_layout(),
         continuous: representative_continuous_system(),
@@ -681,10 +696,10 @@ fn representative_solve_layout() -> SolveLayout {
         algebraic_scalar_count: 1,
         output_scalar_count: 1,
         parameter_count: 1,
-        compiled_parameter_len: 2,
+        compiled_parameter_len: 5,
         discrete_real_scalar_names: vec!["hold.y".to_string()],
-        relation_memory_parameter_indices: vec![1],
-        initial_event_parameter_index: Some(1),
+        relation_memory_parameter_indices: vec![2],
+        initial_event_parameter_index: Some(3),
         pre_param_bindings: vec![PreParamBinding {
             dest_p_index: 1,
             source: PreParamSource::Y { index: 2 },
@@ -789,13 +804,13 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
         event_iteration_plan: EventIterationPlan::default(),
         runtime_assignment_rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
-                LinearOp::LoadP { dst: 0, index: 1 },
+                LinearOp::LoadP { dst: 0, index: 2 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_provenance(),
         )
         .expect("runtime assignment fixture is computable"),
-        runtime_assignment_targets: vec![scalar_slot_p(1)],
+        runtime_assignment_targets: vec![scalar_slot_p(2)],
         runtime_assignment_roles: vec![RuntimeAssignmentRole::RelationEvaluating],
         post_commit_assignment_rhs: ScalarProgramBlock::default(),
         post_commit_assignment_targets: Vec::new(),
@@ -1203,7 +1218,7 @@ fn representative_event_partition() -> SolveEventPartition {
             fixture_provenance(),
         )
         .expect("root scalar fixture is computable"),
-        root_relation_memory_targets: vec![Some(scalar_slot_p(1))],
+        root_relation_memory_targets: vec![Some(scalar_slot_p(2))],
         root_zero_domains: vec![RootZeroDomain::Previous],
         root_relation_refresh_roles: vec![RootRelationRefreshRole::Frozen],
         scheduled_time_events: vec![0.1],
@@ -1217,7 +1232,7 @@ fn representative_clock_partition() -> SolveClockPartition {
             PeriodicEventSchedule::new(rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap())
                 .unwrap(),
         ],
-        activation_parameter_indices: vec![0],
+        activation_parameter_indices: vec![4],
     }
 }
 
@@ -1991,7 +2006,7 @@ fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
                 LinearOp::LoadIndexedP {
                     dst: 1,
                     base: 1,
-                    count: 4,
+                    count: 5,
                     index: 0,
                 },
                 LinearOp::StoreOutput { src: 1 },
@@ -2006,8 +2021,8 @@ fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
         Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
             context: "continuous.residual",
             storage: "P",
-            index: 4,
-            extent: 2,
+            index: 5,
+            extent: 5,
             span: Some(fixture_span()),
         })
     );

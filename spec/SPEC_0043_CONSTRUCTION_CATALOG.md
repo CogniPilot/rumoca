@@ -820,7 +820,11 @@ program: the literal relation in initialization, only its truth buffer after
 initialization. The inactive literal arm is not evaluated. Runtime-assignment
 effect construction excludes a comparison only under the exact cleared
 initial-mode flag load; other guards, else arms, nested regions, and opaque
-call effects cannot issue a relation-free proof. Root evaluation
+call effects cannot issue a relation-free proof. Root construction
+certifies that the initial-mode flag is in-bounds hidden P storage, disjoint
+from source storage, other runtime memory, and every equation writer. Wire
+replay reconstructs this ownership proof before accepting effect certificates.
+Root evaluation
 retains the original relation operands. The buffer is distinct from condition-edge history and from
 any whole B.1c Boolean result. Clocked, structured, suppressed, and call-scoped
 relations retain their own checked activation and storage contracts. A

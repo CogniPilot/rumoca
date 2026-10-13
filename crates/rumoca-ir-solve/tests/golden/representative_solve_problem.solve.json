@@ -78,7 +78,7 @@
       }
     },
     "y_scalars": 3,
-    "p_scalars": 2
+    "p_scalars": 5
   },
   "solve_layout": {
     "variable_storage_runs": [],
@@ -87,16 +87,16 @@
     "algebraic_scalar_count": 1,
     "output_scalar_count": 1,
     "parameter_count": 1,
-    "compiled_parameter_len": 2,
+    "compiled_parameter_len": 5,
     "input_scalar_names": [],
     "discrete_real_scalar_names": [
       "hold.y"
     ],
     "discrete_valued_scalar_names": [],
     "relation_memory_parameter_indices": [
-      1
+      2
     ],
-    "initial_event_parameter_index": 1,
+    "initial_event_parameter_index": 3,
     "terminal_event_parameter_index": null,
     "initial_homotopy_parameter_index": null,
     "pre_param_bindings": [
@@ -453,7 +453,7 @@
           {
             "LoadP": {
               "dst": 0,
-              "index": 1
+              "index": 2
             }
           },
           {
@@ -479,8 +479,8 @@
     "runtime_assignment_targets": [
       {
         "P": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 2,
+          "byte_offset": 16
         }
       }
     ],
@@ -630,8 +630,8 @@
     "root_relation_memory_targets": [
       {
         "P": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 2,
+          "byte_offset": 16
         }
       }
     ],
@@ -716,7 +716,7 @@
       }
     ],
     "activation_parameter_indices": [
-      0
+      4
     ]
   }
 }

@@ -93,14 +93,13 @@ fn a_model_relation_used_as_a_function_argument_keeps_its_source_context() {
 }
 
 #[test]
-fn transient_relation_memory_does_not_evaluate_an_inactive_asserting_operand() {
+fn transient_relation_memory_does_not_execute_an_inactive_pure_call() {
     let source = r#"model UnsafeRelation
   function checked
     input Real u;
     output Real y;
   algorithm
-    assert(u>=0, "raw relation operand is outside its domain");
-    y := u;
+    y := sqrt(u);
   end checked;
   Real x(start=1, fixed=true);
   Boolean b;
@@ -124,12 +123,18 @@ end UnsafeRelation;"#;
         .solve_layout
         .initial_event_parameter_index
         .unwrap();
-    let rhs = &model.problem.discrete.runtime_assignment_rhs;
+    let rhs = &model.problem.discrete.rhs;
+    let source_target = model.problem.layout.binding("b").unwrap();
+    let source_row = model
+        .problem
+        .discrete
+        .update_targets
+        .iter()
+        .position(|target| *target == source_target)
+        .expect("the checked discrete owner retains the source Boolean");
     let mut output = vec![0.0; rhs.stored_output_count()];
-    let context = rumoca_eval_solve::RowEvalContext {
-        pure_calls: Some(&model.pure_calls),
-        ..Default::default()
-    };
+    // Deliberately withhold the call table: any executed call must refuse.
+    let context = rumoca_eval_solve::RowEvalContext::default();
     p[initial] = 0.0;
     rumoca_eval_solve::eval_scalar_program_block_with_context(
         rhs,
@@ -140,9 +145,9 @@ end UnsafeRelation;"#;
         &mut output,
     )
     .expect("held truth skips the raw call");
-    assert_eq!(output, [1.0]);
+    assert_eq!(output[source_row], 1.0);
     p[initial] = 1.0;
-    let error = rumoca_eval_solve::eval_scalar_program_block_with_context(
+    rumoca_eval_solve::eval_scalar_program_block_with_context(
         rhs,
         &y,
         &p,
@@ -150,9 +155,5 @@ end UnsafeRelation;"#;
         context,
         &mut output,
     )
-    .expect_err("initialization must execute and retain the original assertion");
-    assert!(
-        error.to_string().contains("raw relation operand"),
-        "{error}"
-    );
+    .expect_err("initialization must execute the raw call and require its typed owner");
 }

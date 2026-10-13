@@ -930,6 +930,7 @@ fn shared_relation_expression_keeps_no_event_evaluation_literal() {
         .solve_layout
         .initial_event_parameter_index
         .expect("relations require initialization mode without authored initial()");
+    check_initialization_mode_wire(&solve, initial, buffer);
     let mut parameters = vec![0.0; solve.solve_layout.compiled_parameter_len];
     for (time, buffered, initializing, expected) in [
         (0.0, 1.0, false, [1.0, 0.0, 1.0]),
@@ -958,5 +959,66 @@ fn shared_relation_expression_keeps_no_event_evaluation_literal() {
             };
             assert_eq!(*value, expected[*index], "target {index} at {time}");
         }
+    }
+}
+
+fn check_initialization_mode_wire(
+    solve: &rumoca_ir_solve::SolveProblem,
+    initial: usize,
+    buffer: usize,
+) {
+    let wire = serde_json::to_value(solve).unwrap();
+    serde_json::from_value::<rumoca_ir_solve::SolveProblem>(wire.clone())
+        .expect("the constructor-issued phase mode survives checked wire replay");
+    for (replacement, alter_layout, context) in [
+        (buffer, false, "discrete.runtime_assignment_roles"),
+        (buffer, true, "solve_layout.initial_event_parameter_index"),
+        (0, true, "solve_layout.initial_event_parameter_index"),
+        (
+            solve.layout.p_scalars(),
+            true,
+            "solve_layout.initial_event_parameter_index",
+        ),
+    ] {
+        let mut forged = wire.clone();
+        replace_phase_loads(&mut forged, initial, replacement);
+        if alter_layout {
+            forged["solve_layout"]["initial_event_parameter_index"] = replacement.into();
+        }
+        let error = serde_json::from_value::<rumoca_ir_solve::SolveProblem>(forged)
+            .expect_err("wire replay cannot forge phase mode from memory or a source parameter");
+        assert!(error.to_string().contains(context), "{error}");
+    }
+    let mut forged = wire;
+    forged["discrete"]["runtime_assignment_targets"][0] =
+        serde_json::to_value(rumoca_ir_solve::scalar_slot_p(initial)).unwrap();
+    let error = serde_json::from_value::<rumoca_ir_solve::SolveProblem>(forged)
+        .expect_err("equations cannot write the execution mode");
+    assert!(
+        error
+            .to_string()
+            .contains("initialization mode has an equation writer"),
+        "{error}"
+    );
+}
+
+fn replace_phase_loads(wire: &mut serde_json::Value, initial: usize, replacement: usize) {
+    match wire {
+        serde_json::Value::Object(fields) => {
+            if let Some(load) = fields.get_mut("LoadP")
+                && load["index"] == serde_json::json!(initial)
+            {
+                load["index"] = replacement.into();
+            }
+            for value in fields.values_mut() {
+                replace_phase_loads(value, initial, replacement);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                replace_phase_loads(value, initial, replacement);
+            }
+        }
+        _ => {}
     }
 }
