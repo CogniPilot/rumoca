@@ -30,7 +30,7 @@ declaration history run with a checked partition into exact producer ranges;
 independent elements retain their individual activations and holds.
 
 The PR is stacked on PR #421 at
-`eb515d9b01ef71cc945774578b8e38d733a4b67f`. The earlier `da102156` and
+`f7b18ac0b26cf206d336edc5960783bf789f351d`. The earlier `eb515d9b`, `da102156` and
 `6ce369dd` compiler snapshots are historical evidence only.
 The clean historical `da102156` baseline independently reproduces ToDAE ED019
 for `e[1]` on the exact pinned model.
@@ -111,3 +111,15 @@ snapshot's timestamps in the owned cache. The key includes timestamps, so
 this is an explicitly recorded context correction as well as a source fix.
 The CI-selected `ModelicaTest.Blocks.MuxDemux` gate also passes: one selected
 model compiles, simulates, and compares high, with required selected success.
+
+The final f7 source checkpoint `3c7023765517628782d22049620149c710afdf28`
+repeats the exact N1000 horizon 10 model: 78.99 ms compile, 4.18 s simulation,
+balance 0, 1000/1000 matching and zero terminal Boolean mismatches. The
+[final receipt](omc-terminal-comparison-f7-10.json) identifies the compiler
+binary and raw log/oracle hashes. Real samples use the profile's 12 decimal
+diagnostic formatting; their reported differences are not unrounded solver
+error bounds. All three pinned modelica_models probes repeat successfully.
+The final f7 fixed20 pair has identical source/reference context and zero
+stage/completion/model-band count deltas. Selected ModelicaTest again has
+one required-success compile/simulation/high comparison. Historical receipts
+remain labeled by their original source checkpoints.

@@ -21,5 +21,8 @@
       "relative_path": "Modelica/Icons.mo",
       "sha256": "6735813da1429ad28237c8ae641f4ed7a6401e13db80b8712a20ca13858d4649"
     }
-  ]
+  ],
+  "ScalableTestSuite_source_url": "https://github.com/casella/ScalableTestSuite/tree/c9a7574b31142fa976d20ab6970d78639c125ceb",
+  "MSL_version": "4.1.0",
+  "MSL_source_url": "https://github.com/modelica/ModelicaStandardLibrary/tree/v4.1.0"
 }

@@ -70,7 +70,73 @@
       }
     }
   },
-  "current_eb515": {
+  "setup_receipts": [
+    "Historical da102 baseline first comparator invocation lacked Node; independent corrected run passed.",
+    "Initial current focused source build used InstanceId in BTreeSet without Ord; corrected noniterated visited set to FxHashSet.",
+    "Initial strict layer lint identified excessive nesting and an unused test import; refactored/removal and strict rerun passed.",
+    "Broader Flatten checks identified dummy reference source spans and old Expr expectations in when fixtures; fixtures corrected; fresh full677 suite passed."
+  ],
+  "verification_gaps": [
+    "Full workspace all-target/all-feature clippy, workspace test and doc not completed.",
+    "Full release MSL quality-baseline gate and coverage/landing gate not completed; no new broad cache under current disk capacity."
+  ],
+  "source_context_equivalence": {
+    "source_before": "scratch/rumoca/issue430-20261013/msl/ModelicaStandardLibrary-4.1.0",
+    "source_after": "target/msl/ModelicaStandardLibrary-4.1.0",
+    "mo_files": 2669,
+    "identical_relative_paths": true,
+    "identical_sha256_contents": true,
+    "copied_mtime_metadata_files": 2556,
+    "reason": "OMC reference key fingerprints relative paths, size and mtime, not content; preserve exact baseline source snapshot timestamps after proving byte-identical trees."
+  },
+  "retry_reason": "Compiler source correction required for package-qualified enum domain lookup; separately preserve baseline timestamp metadata only after all 2669 .mo relative paths/sizes/SHA256 contents proved identical. Next run is a corrected-source and corrected-context attempt, not unchanged-source retry.",
+  "modelicatest_eb515": {
+    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-eb515",
+    "compiler_commit": "b48dc14c343a97e97a73aee81b0a59eb3f083900",
+    "worktree_dirty": false,
+    "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "msl_version": "v4.1.0",
+    "omc_version": "a96aa1a-cmake",
+    "scope": "partial",
+    "pipeline": {
+      "parse_models": 1,
+      "flatten_models": 1,
+      "dae_models": 1,
+      "solve_models": 1,
+      "balanced_models": 1,
+      "sim_ok": 1
+    },
+    "trace": {
+      "models_compared": 1,
+      "missing_trace_models": 0,
+      "skipped_models": 0,
+      "agreement_bands": {
+        "high_agreement": 1,
+        "minor_agreement": 0,
+        "deviation": 0
+      }
+    },
+    "raw_artifact_sha256": {
+      "msl_quality_current.json": "851ab9aa48394159ecae8329d868a109fe10003c9727ef1d4090fcf0be2e8a0f",
+      "sim_trace_comparison.json": "8852a9bdf8d8ae16bf15b86d05bb221dc73b4f4a6a76b3e33706f71e504cf611",
+      "msl_results.json": "3ff9b1529646d2f76969332c3e99373dd5ff31c5600f0418473007113efcf1b2",
+      "omc_simulation_reference.json": "3132560f87ebd0b3add735126ef90c581cfee79ac44eef4c7765cf38b65b7429"
+    },
+    "selected_target": "ModelicaTest.Blocks.MuxDemux",
+    "required_selected_targets_success": true
+  },
+  "validation": {
+    "typecheck_lib": 152,
+    "eval_flat_lib": 190,
+    "flatten_lib": 677,
+    "selected_partition_tests": 7,
+    "selected_runtime_tests": 3,
+    "selected_compile_tests": 15,
+    "strict_lint": "Affected producer/consumer strict all-target lint passed; six-line enum-domain follow-up strict TypeCheck lint passed.",
+    "format": "workspace fmt --all --check passed",
+    "scope": "Typecheck/EvalFlat/Flatten/partition/strict-lint receipts were captured on eb515 source; latest f7 reran compiler15, runtime3, parent literal builtin2, formatting, exact N1000 horizon10, all3 pinned modelica_models probes, fixed20 pair and selected ModelicaTest."
+  },
+  "historical_eb515": {
     "before": {
       "artifact_root": "scratch/rumoca/issue430-20261013/canary-before-eb515",
       "compiler_commit": "eb515d9b01ef71cc945774578b8e38d733a4b67f",
@@ -197,29 +263,92 @@
       "deviation": 0
     }
   },
-  "setup_receipts": [
-    "Historical da102 baseline first comparator invocation lacked Node; independent corrected run passed.",
-    "Initial current focused source build used InstanceId in BTreeSet without Ord; corrected noniterated visited set to FxHashSet.",
-    "Initial strict layer lint identified excessive nesting and an unused test import; refactored/removal and strict rerun passed.",
-    "Broader Flatten checks identified dummy reference source spans and old Expr expectations in when fixtures; fixtures corrected; fresh full677 suite passed."
-  ],
-  "verification_gaps": [
-    "Full workspace all-target/all-feature clippy, workspace test and doc not completed.",
-    "Full release MSL quality-baseline gate and coverage/landing gate not completed; no new broad cache under current disk capacity."
-  ],
-  "source_context_equivalence": {
-    "source_before": "scratch/rumoca/issue430-20261013/msl/ModelicaStandardLibrary-4.1.0",
-    "source_after": "target/msl/ModelicaStandardLibrary-4.1.0",
-    "mo_files": 2669,
-    "identical_relative_paths": true,
-    "identical_sha256_contents": true,
-    "copied_mtime_metadata_files": 2556,
-    "reason": "OMC reference key fingerprints relative paths, size and mtime, not content; preserve exact baseline source snapshot timestamps after proving byte-identical trees."
+  "current_f7": {
+    "before": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-before-f7",
+      "compiler_commit": "f7b18ac0b26cf206d336edc5960783bf789f351d",
+      "worktree_dirty": false,
+      "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "f4f2bcaced90532adc0d2de2201dff0b79635958d5b289e18876c796b30a13da",
+        "sim_trace_comparison.json": "e72cf134b401a99f5a937fda5b3384d5360848df9230016e2b62f50fccb07173",
+        "msl_results.json": "d8721a8fc6109790161857b5fe7cbe463c1228c017d38b46633ecc6dd7d06a02",
+        "omc_simulation_reference.json": "16eb151ca508ba8eaf0cce66a9fb979ab426f96b8d949a6651d58c0b492287d9"
+      }
+    },
+    "after": {
+      "artifact_root": "scratch/rumoca/issue431-20261013/canary-after-f7",
+      "compiler_commit": "3c7023765517628782d22049620149c710afdf28",
+      "worktree_dirty": false,
+      "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+      "msl_version": "v4.1.0",
+      "omc_version": "a96aa1a-cmake",
+      "scope": "partial",
+      "pipeline": {
+        "parse_models": 20,
+        "flatten_models": 20,
+        "dae_models": 20,
+        "solve_models": 20,
+        "balanced_models": 20,
+        "sim_ok": 16
+      },
+      "trace": {
+        "models_compared": 15,
+        "missing_trace_models": 0,
+        "skipped_models": 1,
+        "agreement_bands": {
+          "high_agreement": 15,
+          "minor_agreement": 0,
+          "deviation": 0
+        }
+      },
+      "raw_artifact_sha256": {
+        "msl_quality_current.json": "12b055381438758c55650a2a47b229e40d7bd6c7642f2112acb1d87a32504d24",
+        "sim_trace_comparison.json": "8d1ac7f40ee5bef3b2df25f1a921e6d739e312edb406eb2db6e09e4256f046d8",
+        "msl_results.json": "b763216d1466373a1ee8579eb0a6e9d44fee974d2186017cb78abb526279b10d",
+        "omc_simulation_reference.json": "40173b75ba8a55f156c45dde5e04cd1ddd5f67a291a0906029832b654147b06c"
+      }
+    },
+    "measured_delta": {
+      "pipeline": {
+        "parse_models": 0,
+        "flatten_models": 0,
+        "dae_models": 0,
+        "solve_models": 0,
+        "balanced_models": 0,
+        "sim_ok": 0
+      },
+      "compared": 0,
+      "high": 0,
+      "missing": 0,
+      "near_models": 0,
+      "deviating_models": 0
+    }
   },
-  "retry_reason": "Compiler source correction required for package-qualified enum domain lookup; separately preserve baseline timestamp metadata only after all 2669 .mo relative paths/sizes/SHA256 contents proved identical. Next run is a corrected-source and corrected-context attempt, not unchanged-source retry.",
-  "modelicatest_eb515": {
-    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-eb515",
-    "compiler_commit": "b48dc14c343a97e97a73aee81b0a59eb3f083900",
+  "modelicatest_f7": {
+    "artifact_root": "scratch/rumoca/issue431-20261013/modelicatest-f7",
+    "compiler_commit": "3c7023765517628782d22049620149c710afdf28",
     "worktree_dirty": false,
     "reference_context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
     "msl_version": "v4.1.0",
@@ -244,23 +373,34 @@
       }
     },
     "raw_artifact_sha256": {
-      "msl_quality_current.json": "851ab9aa48394159ecae8329d868a109fe10003c9727ef1d4090fcf0be2e8a0f",
-      "sim_trace_comparison.json": "8852a9bdf8d8ae16bf15b86d05bb221dc73b4f4a6a76b3e33706f71e504cf611",
-      "msl_results.json": "3ff9b1529646d2f76969332c3e99373dd5ff31c5600f0418473007113efcf1b2",
-      "omc_simulation_reference.json": "3132560f87ebd0b3add735126ef90c581cfee79ac44eef4c7765cf38b65b7429"
+      "msl_quality_current.json": "e2906e1dec39ab19195a647e551d9dc3b5b3db9b475d5022d0473455f3ae181c",
+      "sim_trace_comparison.json": "6f5748c2eef79c879a29309b1a2e095d142a09401da9e17565dd3e844d8039ba",
+      "msl_results.json": "bae061f064e5324956a9b0f72aa1583be7ee4ea17eb12051296915a36e619f7d",
+      "omc_simulation_reference.json": "ebf955fef542748d15b6fb3e1363bc14a0302e511f6a07f439d84f3b7674bc80"
     },
     "selected_target": "ModelicaTest.Blocks.MuxDemux",
     "required_selected_targets_success": true
   },
-  "validation": {
-    "typecheck_lib": 152,
-    "eval_flat_lib": 190,
-    "flatten_lib": 677,
-    "selected_partition_tests": 7,
-    "selected_runtime_tests": 3,
-    "selected_compile_tests": 15,
-    "strict_lint": "Affected producer/consumer strict all-target lint passed; six-line enum-domain follow-up strict TypeCheck lint passed.",
-    "format": "workspace fmt --all --check passed",
-    "scope": "captured eb515 compiler source; rebase onto refreshed421 preserves these as historical evidence"
+  "latest_compatibility": {
+    "compiler_source_checkpoint": "3c7023765517628782d22049620149c710afdf28",
+    "modelica_models_revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "archive_sha256": "cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578",
+    "models": [
+      {
+        "model": "Tests.All",
+        "mode": "compile",
+        "log_sha256": "556d0a98b4b14f208c1a748a65a0c08999a7195c733be9c994b65181688e25a6"
+      },
+      {
+        "model": "Tests.LieGroupTests.SO2",
+        "mode": "simulate t=0",
+        "log_sha256": "95c778262ae349e43b744f54247ba9b90d28e6772356ab55fdfb55c46cac8a63"
+      },
+      {
+        "model": "Tests.LieGroupTests.SE2",
+        "mode": "simulate t=0",
+        "log_sha256": "771324b9d4acb824e634471704856d26565e0c49f5595fd3e986eade2e75b2dd"
+      }
+    ]
   }
 }

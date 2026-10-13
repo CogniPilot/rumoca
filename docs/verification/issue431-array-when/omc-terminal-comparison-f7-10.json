@@ -1,0 +1,22 @@
+{
+  "model": "ScalableTestSuite.Elementary.WhenEvents.ScaledExperiments.ManyEvents_N_1000_M_10",
+  "compiler_source_checkpoint": "3c7023765517628782d22049620149c710afdf28",
+  "stacked_base": "f7b18ac0b26cf206d336edc5960783bf789f351d",
+  "source_revision": "c9a7574b31142fa976d20ab6970d78639c125ceb",
+  "stop_time": 10,
+  "scope": "terminal samples only; Real diagnostic samples rounded to 12 decimal places, not an unrounded/full-trace error measurement",
+  "Boolean_coordinates_compared": 1000,
+  "Boolean_mismatches": 0,
+  "true_coordinate_count": 99,
+  "Real_diagnostic_sample_absolute_errors": {
+    "x[1]": 9.71445146547012e-17,
+    "x[901]": 3.3306690738754696e-16,
+    "x[902]": 9.992007221626409e-15,
+    "x[1000]": 1.2789769243681803e-13
+  },
+  "compile_elapsed_ms": 78.99,
+  "simulation_elapsed_seconds": 4.18,
+  "profile_binary_sha256": "584e14bb42d264b5e47eba0d1c654d3949c0836cbe906f33b706da4b791468f8",
+  "log_sha256": "0afbb822baf450fea1534ac0c9a3f4c98bd8e692f9e8a6fdc7ea74b19e9cf2fa",
+  "oracle_sha256": "2de99d127f4c87325dee4b148d136f8e5b9e9ba0920c286d9d082f54bf8a1e2f"
+}
