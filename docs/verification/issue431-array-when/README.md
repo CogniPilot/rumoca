@@ -98,3 +98,16 @@ Current compatibility probes pass for the immutable modelica_models revision
 `Tests.LieGroupTests.SO2` / `SE2` simulation at time zero. The CI-pinned
 ModelicaTest overlay is revision `8ae3d35c24e519cb2996cab20f3b13daf2b0c50a`,
 archive SHA256 `b402903aefd4f1397364e3ae1992bb99080ce935ab9a426d3bcdb47e4da8eeb6`.
+
+The [canary ledger](canary-ledger.json) retains the failed first current
+attempt (two ET009 enumeration-domain refusals) and its unmatched reference
+context. The correction retrieves package-qualified table domains by their
+resolved declaration identity. After that correction, the clean eb515 pair
+has zero stage, completion, or accuracy-count deltas: 20 through Solve,
+16 simulation completions, 15 compared/high, one typed skip, no missing,
+near, or deviating model traces. Both reference keys are identical after
+proving all 2669 `.mo` files byte-identical and preserving the baseline source
+snapshot's timestamps in the owned cache. The key includes timestamps, so
+this is an explicitly recorded context correction as well as a source fix.
+The CI-selected `ModelicaTest.Blocks.MuxDemux` gate also passes: one selected
+model compiles, simulates, and compares high, with required selected success.
