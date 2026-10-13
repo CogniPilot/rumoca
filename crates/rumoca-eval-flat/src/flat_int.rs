@@ -1,9 +1,9 @@
 //! Structural integer evaluation against a flat model.
 //!
-//! Array dimensions, for-loop ranges and array subscripts must be known at
-//! compile time (MLS §4.5, §10.1). This module is the single evaluator that
-//! resolves such an expression to an `i64` by following parameter/constant
-//! bindings recorded in `flat::Model`.
+//! This module evaluates structural integer uses, including model array
+//! dimensions, model for-equation bounds and checked static when coordinates.
+//! It resolves these translation-time expressions to an `i64` by following
+//! parameter/constant bindings recorded in `flat::Model` (MLS §4.5, §10.1).
 
 use rumoca_ir_flat as flat;
 

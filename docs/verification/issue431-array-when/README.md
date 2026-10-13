@@ -73,12 +73,12 @@ This record is a focused verification ledger. Canary and cohort measurements
 must retain their exact scope and reference context; partial snapshots must
 not be promoted or reported as full-cohort parity.
 
-The refreshed compiler on the current eb515 stack repeats the requested
+The refreshed compiler on the historical eb515 stack repeats the requested
 horizon 10 after the review corrections. It compiles in 179.58 ms and
 simulates in 6.50 s on this host; these observations are not a performance
 parity claim. All 1000 terminal Boolean values still equal the unchanged
 OMC oracle, and the maximum sampled Real error remains 1.28e-13. The
-[current terminal receipt](omc-terminal-comparison-eb515-10.json) includes
+[eb515 terminal receipt](omc-terminal-comparison-eb515-10.json) includes
 both raw log and oracle hashes.
 
 Source review added original scalar index-type and when-target variability
@@ -99,7 +99,7 @@ Current compatibility probes pass for the immutable modelica_models revision
 ModelicaTest overlay is revision `8ae3d35c24e519cb2996cab20f3b13daf2b0c50a`,
 archive SHA256 `b402903aefd4f1397364e3ae1992bb99080ce935ab9a426d3bcdb47e4da8eeb6`.
 
-The [canary ledger](canary-ledger.json) retains the failed first current
+The [canary ledger](canary-ledger.json) retains the failed first eb515
 attempt (two ET009 enumeration-domain refusals) and its unmatched reference
 context. The correction retrieves package-qualified table domains by their
 resolved declaration identity. After that correction, the clean eb515 pair
