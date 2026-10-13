@@ -1,5 +1,5 @@
 {
-  "head": "ee02efb856546fb8b623196e4fff68f2a11216d2",
+  "head": "5e9a507eb9576bbc2fd80c822a63dc884baff9bd",
   "method": {
     "lines": "git diff --numstat BASE...HEAD; test path iff a path component is tests or file name is tests.rs, *_test.rs, *_tests.rs; remaining text includes production and review/spec documentation",
     "public_api": "Changed Rust files: multiset difference of normalized explicit public item signatures (pub without visibility restriction) and public struct field declarations; declaration parser is a reproducible regex census, not semantic rustdoc. Public enum variants are separately listed.",
@@ -16,17 +16,17 @@
   "measurement_scope": "Committed source/evidence snapshot before refreshing this metrics receipt; final PR text deltas additionally measured after receipt commit. Mandated origin/main includes parent history; stacked_421 isolates issue431.",
   "bases": {
     "stacked_421": {
-      "revision": "f7b18ac0b26cf206d336edc5960783bf789f351d",
-      "merge_base": "f7b18ac0b26cf206d336edc5960783bf789f351d",
+      "revision": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+      "merge_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
       "metrics": {
-        "production_lines_added": 4213,
-        "production_lines_deleted": 454,
+        "production_lines_added": 4528,
+        "production_lines_deleted": 458,
         "test_lines_added": 1830,
         "test_lines_deleted": 31,
         "public_items_added": 21,
         "public_items_removed": 4,
-        "files_touched": 107,
-        "net_added_lines": 5558
+        "files_touched": 108,
+        "net_added_lines": 5869
       },
       "public_declarations_added": [
         [
@@ -137,14 +137,14 @@
       "revision": "c74cddff6d7669fc2c3603d43529ab62e0964072",
       "merge_base": "c74cddff6d7669fc2c3603d43529ab62e0964072",
       "metrics": {
-        "production_lines_added": 91029,
-        "production_lines_deleted": 21326,
-        "test_lines_added": 69153,
-        "test_lines_deleted": 3740,
+        "production_lines_added": 91784,
+        "production_lines_deleted": 21335,
+        "test_lines_added": 69381,
+        "test_lines_deleted": 3741,
         "public_items_added": 1467,
         "public_items_removed": 150,
-        "files_touched": 1437,
-        "net_added_lines": 135116
+        "files_touched": 1448,
+        "net_added_lines": 136089
       }
     }
   }
