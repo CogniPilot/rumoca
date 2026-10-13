@@ -137,10 +137,36 @@ Checks measured on da102 plus the change:
   downloaded archive SHA256:
   `cc10b1a8994d31ab7f20ece0d9d99aca927c56a98ba9dd323d7bac267e98c578`.
 
-Standard workspace, coverage, full MSL and ModelicaTest gates remain pending;
-the PR stays draft until required validation is accounted for.
+Remaining workspace/documentation, coverage and full MSL gates are pending;
+the current ModelicaTest result is recorded below. The PR stays draft until
+required validation is accounted for.
 
 After rebasing only this change onto eb515, all 268 phase-solve tests passed,
 including the new parent Real signum cases and this change's wire/relation-mode
 cases. All five simulation initialization regressions passed on eb515.
 Numerical/canary measurements above retain their original da102 context.
+
+## Current stacked-base checks
+
+On `2d684832794f10d5288b5adbe0af31781b1e475f` (eb515 base), the exact
+reporter-root DroneHoverLoop initializes and advances to 0.01 s successfully
+(`current-loop-initialization-eb515.log`). Four-second trace/reset numbers
+above remain the earlier da102 measurements.
+
+The current ModelicaTest semantic gate passes its one selected model,
+ModelicaTest.Blocks.MuxDemux: compiled, simulated and compared, high agreement,
+zero skips/missing/near/deviation. Its first invocation stopped at discovery
+because the release library omitted ModelicaTest; no model phase was attempted.
+The independent prepared-source run uses CI's exact pinned package revision
+`8ae3d35c24e519cb2996cab20f3b13daf2b0c50a`, archive SHA256
+`b402903aefd4f1397364e3ae1992bb99080ce935ab9a426d3bcdb47e4da8eeb6`.
+Both logs are retained (`modelicatest-current.log` and
+`modelicatest-current-prepared.log`), with the latter's JSON in
+`modelicatest-current-prepared`.
+
+The committed non-coverage verification gate for 2d684832 has passed fmt,
+workspace clippy and lint; workspace tests are running. Coverage requires an
+unmeasured fresh instrumented target (the tool estimates approximately 50 GB)
+and remains pending because available scratch capacity is below that bound.
+Full 566-model MSL validation remains pending. This evidence update changes no
+compiler or test source relative to the measured revision.
