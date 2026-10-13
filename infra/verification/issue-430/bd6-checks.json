@@ -1,0 +1,120 @@
+{
+  "source_commit": "8c34dd9e4628fe23676304600396d5896643142e",
+  "stacked_base": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+  "git_worktree_dirty": false,
+  "source_binding": "fresh rebase checkout; changed compiler/consumer files explicitly rebuilt in owning, profile and canary logs",
+  "owning_tests": {
+    "ir_unit": 904,
+    "phase_unit": 270,
+    "integration": 3,
+    "doc": 9,
+    "initial_relation_regressions": 5,
+    "actual_fmi_c_cases": 4,
+    "rumoca_library": 122
+  },
+  "strict_checks": {
+    "fmt": "pass",
+    "clippy": "pass; ir-solve/phase-solve/codegen all-targets default features -D warnings",
+    "traversal_policy": "pass; 8 canonical covered files"
+  },
+  "exact_reporter_model": {
+    "model": "DroneHoverLoop",
+    "root": "$HOME/scratch/rumoca/issue430-20261013/downloads/reporter400",
+    "stop_time": 0.01,
+    "result": "pass",
+    "points": 501,
+    "elapsed_seconds": 20.54
+  },
+  "pinned_modelica_models": {
+    "revision": "a41f7c0c00b55c1bf54f03c9b66b901ba8e43c6f",
+    "Tests.All": "compile pass",
+    "Tests.LieGroupTests.SO2": "t0 assertion simulation pass",
+    "Tests.LieGroupTests.SE2": "t0 assertion simulation pass"
+  },
+  "modelica_test": {
+    "commit": "8c34dd9e4628fe23676304600396d5896643142e",
+    "dirty": false,
+    "context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "parse_models": 1,
+    "flatten_models": 1,
+    "dae_models": 1,
+    "solve_models": 1,
+    "balanced_models": 1,
+    "sim_ok": 1,
+    "models_compared": 1,
+    "agreement_high": 1,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 0,
+    "missing_trace_models": 0
+  },
+  "first_profile_build": "CLI refused missing opt-in msl-profile-bin before any model phase; supported feature enabled in separate captured build",
+  "historical_eb515_after_build_binding": "canary-after-eb515.log explicitly reports Dirty IR-Solve lib.rs then Compiling IR-Solve, phase-solve, sim and test-msl; not stale baseline",
+  "historical_eb515_after_log_sha256": "cb41a5b3a9e44598b4fd06d2970f1b8988f1a53439ed18a95f1a04231edc4374",
+  "remaining_gaps": [
+    "remaining broad workspace/doc gate steps",
+    "literal all-features workspace clippy",
+    "committed coverage gate (fresh approximately 50 GB target estimate exceeds owned available space)",
+    "full 566-model MSL parity",
+    "reporter original 27 s reset point (measured historical reset covers 4 s)"
+  ],
+  "automatic_ci": "integration-base stacked PR triggers DCO; standard PR CI branch filter is main",
+  "logs": {
+    "current-bd6-owning.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-owning.log",
+      "sha256": "d858170e7edd0629b9e250252c83a5c5272e287d21fa815503d9d70f0914b79c"
+    },
+    "current-bd6-initialization-regressions.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-initialization-regressions.log",
+      "sha256": "39a2fd274d00da4da1cdcb9ea4981cad18bd125f9eecc3d5fa16dd9cf0f32fba"
+    },
+    "current-bd6-c-apis.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-c-apis.log",
+      "sha256": "7c62e09297a975f1697941aa304da793c1c778c3c1cae33b33f49a3cbeeba9df"
+    },
+    "current-bd6-library.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-library.log",
+      "sha256": "e316b44b1dd2ee77d486ad02dc6beb20cf49903f52d7aec082a375d7aa392787"
+    },
+    "current-bd6-clippy.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-clippy.log",
+      "sha256": "a47900ae4100b138b70c93a293dc12d1f144b418cd1905081894e4a675f30815"
+    },
+    "current-bd6-fmt.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-fmt.log",
+      "sha256": "1d78ea543a68a3bfaeb61f2e76b248528b96128d8586606844a742681d5ac96d"
+    },
+    "current-bd6-traversal-policy.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-traversal-policy.log",
+      "sha256": "2e94e1fa4a703136a4d264a6b571cf84a63884adcea6670b2652ad937b8be84f"
+    },
+    "current-bd6-profile-build.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-profile-build.log",
+      "sha256": "32ae7e1e83cf574dbf1e07a87736310a81f59a5aeb3f89cd88752a115faf24a5"
+    },
+    "current-bd6-profile-build-enabled.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-profile-build-enabled.log",
+      "sha256": "03f2616ef625e74e9c55f48c90039f08f3fac1be62d05c424d88d269cd953d0f"
+    },
+    "current-bd6-drone.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-drone.log",
+      "sha256": "b9befbff1b54a305da51fd965e672b86630b8c99a152cb122f1c4de4f737d0f2"
+    },
+    "current-bd6-corpus-All.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-corpus-All.log",
+      "sha256": "121e334611a97ce777c1d17ec28e28da2acf88351e7ba0aa655169b5388237d4"
+    },
+    "current-bd6-corpus-SO2.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-corpus-SO2.log",
+      "sha256": "c0738cdf486bc34299a4ea73a1707e237c79c7576ac47e24060e4c5a83048fb7"
+    },
+    "current-bd6-corpus-SE2.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/current-bd6-corpus-SE2.log",
+      "sha256": "7c4879ee19ef779aa3ae7fdcb08ae1e8cd4e179f0d94ea556d8cd42aa0bcb0b0"
+    },
+    "modelicatest-bd6.log": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/modelicatest-bd6.log",
+      "sha256": "b7abe167a5eae73dd78945faa24224c3ba4eb35091c76b15538e097b76bf9c1b"
+    }
+  }
+}

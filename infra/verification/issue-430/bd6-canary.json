@@ -1,0 +1,90 @@
+{
+  "scope": "Tier1 fixed20 partial; not full-cohort parity",
+  "targets": "infra/verification/msl-canary-20.json",
+  "msl_version": "v4.1.0",
+  "omc_version": "a96aa1a-cmake",
+  "before": {
+    "commit": "bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483",
+    "dirty": false,
+    "context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "parse_models": 20,
+    "flatten_models": 20,
+    "dae_models": 20,
+    "solve_models": 20,
+    "balanced_models": 20,
+    "sim_ok": 16,
+    "models_compared": 15,
+    "agreement_high": 15,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 1,
+    "missing_trace_models": 0
+  },
+  "after": {
+    "commit": "8c34dd9e4628fe23676304600396d5896643142e",
+    "dirty": false,
+    "context": "ec011871d9a06f0d2670fd4fef02dcdbba0d44800d52ee6a6000072ca044077f",
+    "parse_models": 20,
+    "flatten_models": 20,
+    "dae_models": 20,
+    "solve_models": 20,
+    "balanced_models": 20,
+    "sim_ok": 16,
+    "models_compared": 15,
+    "agreement_high": 15,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 1,
+    "missing_trace_models": 0
+  },
+  "deltas": {
+    "parse_models": 0,
+    "flatten_models": 0,
+    "dae_models": 0,
+    "solve_models": 0,
+    "balanced_models": 0,
+    "sim_ok": 0,
+    "models_compared": 0,
+    "agreement_high": 0,
+    "agreement_minor": 0,
+    "agreement_deviation": 0,
+    "skipped_models": 0,
+    "missing_trace_models": 0
+  },
+  "per_model_outcome_fields": [
+    "phase_reached",
+    "is_balanced",
+    "initial_balance_ok",
+    "sim_status",
+    "ic_status",
+    "error_code"
+  ],
+  "changed_model_outcomes": [],
+  "model_outcome_footprint_sha256": "713e8fc75f2728ebd2b06584400c95610672b4dd5f706f79f92d293587ef6d6a",
+  "individual_phase_retries": 0,
+  "build_binding": "after log explicitly recompiles rumoca-ir-solve, rumoca-phase-solve, rumoca-sim and rumoca-test-msl after changed-file fresh checkout; no changed-source mtime restoration",
+  "artifacts": {
+    "before": {
+      "path": "$HOME/scratch/rumoca/issue431-20261013/canary-before-bd6",
+      "sha256": {
+        "msl_quality_current.json": "c6e750b7cd7b6a1ee3eef907653565ba4220046d0acc63ef3ed05cc0df16d05a",
+        "sim_trace_comparison.json": "813aadb4ab626cf99d118d00463485f09210228435c731e815ab6f03d0424790",
+        "msl_results.json": "7a71cbda79935751bf5a4d8a0dc6d2d62a1ec2452e99f6db70d6a6d9e3fdd86a",
+        "omc_simulation_reference.json": "49ab8fce1f2f2e3efe52c93e7790de3193c0f616f9d205ccdf369ace2c942a0d"
+      }
+    },
+    "after": {
+      "path": "$HOME/scratch/rumoca/issue430-20261013/canary-after-bd6",
+      "sha256": {
+        "msl_quality_current.json": "0c377c05ba0ca76e35f0ba8e0cd0a5853c8d8296faecdd1b469b2dcd0af14318",
+        "sim_trace_comparison.json": "e2b4265b006ddb3bcc05a6509544bad0d4eabcbbbc7fc3f274fef9f8dad9ae21",
+        "msl_results.json": "fad7a2d17eea8bbe41dd25937ffe17e57d3dd7b772d5ee4b7065e5dcb07d982a",
+        "omc_simulation_reference.json": "612251727e4c4f73dced07bff31ff9f2c9b0e3e8dabfa06543118e3f95ad6f47"
+      }
+    }
+  },
+  "log_sha256": {
+    "before": "8a10f8d6646e0de693f354dd314bbae81be71b28b0ac0702e1d13d4bcfbf53f5",
+    "after": "57736b031e289564f5296a29e385c5fef0e52c46150b7662d0e777a4b803d57c"
+  }
+}

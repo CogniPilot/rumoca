@@ -1,15 +1,14 @@
 # Issue 430 verification ledger
 
 This change is stacked on PR #421 at
-`eb515d9b01ef71cc945774578b8e38d733a4b67f`. The before/after numerical
-evidence below was collected on the earlier PR #421 tree
-`da102156cf4496e8a2255e905ebe66b859e339db`; it is historical for the final
-stacked base. The rebase changes only Real signum fault classification
-and its selected-arm totality context (4 parent files, +95/-1).
-Earlier observations at
-`6ce369dd2f4c961704a05c9f3163cda90480fb79` are historical, not evidence for
-the current stacked base. Artifact names below are relative to
-`$HOME/scratch/rumoca/issue430-20261013`.
+`bd6b6da89e0fcf63f6c739d9f4d6ff4f18823483`. Current source checks and the
+clean Tier 1 before/after pair use source checkpoint
+`8c34dd9e4628fe23676304600396d5896643142e`, recorded below. Earlier da102
+numerical/reset evidence and eb515 canaries/C checks retain their measured
+commits and are historical for this final base. The parent delta from eb515
+to bd6 is 28 files, +867/-32, including literal builtin semantics, parser build
+support, retained native support and execution controls. Artifact names below
+are relative to `$HOME/scratch/rumoca/issue430-20261013` unless noted.
 
 ## Reproduction inputs
 
@@ -86,10 +85,9 @@ belong only to the second run. No per-model failures were selectively retried.
 | Compared / high / near / deviation | 15 / 15 / 0 / 0 | 15 / 15 / 0 / 0 (delta 0) |
 | Typed skips / missing | 1 / 0 | 1 / 0 (delta 0) |
 
-This partial tripwire is not full-cohort parity. Final checks and after evidence
-will be appended before the draft becomes ready for review.
+This historical partial tripwire is not full-cohort parity.
 
-## Latest focused after evidence
+## Historical focused after evidence
 
 The da102 stacked-base build with this change runs DroneHoverLoop for four seconds without the
 reported projection failure. `focused-trace.json` compares 402 Rumoca output
@@ -146,7 +144,7 @@ including the new parent Real signum cases and this change's wire/relation-mode
 cases. All five simulation initialization regressions passed on eb515.
 Numerical/canary measurements above retain their original da102 context.
 
-## Current stacked-base checks
+## eb515 source checks (historical)
 
 On `2d684832794f10d5288b5adbe0af31781b1e475f` (eb515 base), the exact
 reporter-root DroneHoverLoop initializes and advances to 0.01 s successfully
@@ -172,12 +170,12 @@ failure and exact log digest are retained in `gate-first-failure.json`; later
 gate steps were not attempted. Coverage requires an
 unmeasured fresh instrumented target (the tool estimates approximately 50 GB)
 and remains pending because available scratch capacity is below that bound.
-Full 566-model MSL validation remains pending. This evidence update changes no
-compiler or test source relative to the measured revision.
+Full 566-model MSL validation remains pending. That earlier evidence-only update retained the measured revision’s compiler
+and test source.
 
-## Current Tier 1 canary delta
+## eb515 Tier 1 canary delta (historical)
 
-`current-canary.json` retains the clean current pair: before at
+`current-canary.json` retains the clean eb515 pair: before at
 `eb515d9b01ef71cc945774578b8e38d733a4b67f`, after at
 `1b88adcc993a85a3fe67edf677c127e2bafae7a1`. Both use the fixed 20-model list,
 MSL v4.1.0 and OMC a96aa1a-cmake, with exact source/reference context
@@ -227,3 +225,48 @@ and log digests. The stronger algebraic fixture initially exposed the exact
 Y-only AD guard/fallback with distinct positive-zero tangents; negative alias,
 nonzero and negative-zero controls protect its private C admission proof.
 The earlier workspace gate remains a failed attempt.
+
+## Final bd6 source checks and Tier 1 delta
+
+`bd6-checks.json` binds all current checks to clean source checkpoint 8c34dd9e.
+The full owning suites pass 904 IR and 270 phase unit tests, 3 integration
+and 9 doc tests. All five initialization regressions, all four actual FMI C
+cases and all 122 Rumoca library tests pass. Both FMI 2 and 3 initialize the
+strong algebraic reconstruction probe, preserve held truth during an
+uncommitted trial across the root, reset and initialize again. Authored
+initial-event refusal, pulse/state/time-event coexistence and optimized C
+warnings also pass. Formatting, scoped all-targets default-feature strict
+clippy and the canonical traversal-policy check pass.
+
+The exact reporter DroneHoverLoop initializes and advances to 0.01 s on this
+current source (501 points, 20.54 s). Pinned modelica_models Tests.All compiles;
+SO2 and SE2 assertion simulations at t0 pass. The CI-pinned prepared
+ModelicaTest MuxDemux gate passes one compile/simulation/high comparison, with
+zero skipped, missing, near or deviation models. Source pins/archive digests
+above are unchanged. The profiling CLI first refused its omitted opt-in
+feature before any model attempt; the captured enabled build is explicit.
+
+`bd6-canary.json` records the clean shared bd6 baseline from
+`$HOME/scratch/rumoca/issue431-20261013/canary-before-bd6` and this branch’s
+clean 8c34dd9e after run in `canary-after-bd6`. Both use the fixed20 list,
+MSL v4.1.0 / OMC a96aa1a-cmake and exact context ec011871... shown in the
+receipt. All 20 parse/flatten/DAE/Solve/balance outcomes, 16 simulations,
+15 compared models/high bands, one typed comparison skip and zero
+missing/near/deviation models match. Every selected model’s phase, balance,
+initial closure, simulation and initialization outcome matches individually;
+all deltas are zero. This is partial Tier 1 evidence, not cohort parity.
+
+The after log explicitly recompiles IR-Solve, phase-solve, sim and test-msl
+from this source. Changed-source mtimes were not restored. The historical
+eb515 after log likewise shows Dirty IR-Solve followed by producer rebuilds;
+its digest is retained. No individual canary phase was retried and no result
+directory was replaced.
+
+The first broad gate failure stays preserved in gate-first-failure.json. The
+current library test that failed there now passes, but the broad gate’s later
+steps have not been completed. Remaining workspace/doc, literal all-features
+workspace clippy, coverage and full 566-model MSL validation are explicit gaps.
+The approximately 50 GB coverage estimate exceeds available owned storage.
+The stacked integration-base PR triggers DCO; standard PR CI is filtered to
+main-targeted PRs. The PR remains draft. Historical real-model reset evidence
+covers four seconds; the original reported 27-second point is unmeasured.
