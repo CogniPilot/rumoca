@@ -55,6 +55,8 @@ mod retained_native_program;
 pub use retained_native_program::{LinkedNativeGuestModel, receive_fixed_native_guest_model};
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 mod host_runtime;
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+mod host_typed_call_runtime;
 mod scratch_report;
 mod typed_call;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -79,6 +81,9 @@ pub use retained_native_program::{
 pub use scratch_report::{ScratchCall, ScratchFrame, ScratchOwner, ScratchRegion, ScratchReport};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_runtime::WasmKernelRuntime;
+
+#[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
+pub use typed_call::PreparedCheckedAssertionHost;
 
 pub use typed_call::{
     CheckedAssertionWasmOutcome, CompiledCheckedAssertionWasm, CompiledRetainedEventWasm,
