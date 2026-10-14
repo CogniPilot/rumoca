@@ -199,6 +199,9 @@ impl ScalarExecutionView<'_> {
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
         self.validate_discrete_event_rows()?;
+        if input.row_filter == EventUpdateRowFilter::Hold {
+            return self.project_held_continuation(input, project_algebraics);
+        }
         let ProjectedEventUpdateInput {
             y,
             p,
@@ -306,6 +309,40 @@ impl ScalarExecutionView<'_> {
         Err(RuntimeSolveError::solve_ir(format!(
             "event update iteration did not converge at t={t}"
         )))
+    }
+
+    /// Execute a non-event continuation without advancing Appendix-B memory.
+    fn project_held_continuation<P>(
+        &self,
+        input: ProjectedEventUpdateInput<'_>,
+        mut project_algebraics: P,
+    ) -> Result<EventActionOutcome, RuntimeSolveError>
+    where
+        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
+    {
+        // Clock activation is a pulse at its tick, not a held discrete value.
+        self.write_event_pass_clock_params(input.p, input.t, input.row_filter);
+        // Continuous projection reads the held discrete/relation coordinate.
+        // Delay transport buffers may follow their committed continuous history;
+        // the projection's checked refresh assignments target only Y slots.
+        for step in self.event_schedule().event_pass() {
+            match step {
+                solve::EventPassStep::AlgebraicProjection => {
+                    project_algebraics(input.y, input.p)?;
+                }
+                solve::EventPassStep::RelationOverrides
+                | solve::EventPassStep::RuntimeAssignments
+                | solve::EventPassStep::RelationRefresh
+                | solve::EventPassStep::RelationSettle => {}
+            }
+        }
+        self.eval_event_actions(
+            input.y,
+            input.p,
+            input.event_pre_p,
+            input.t,
+            input.row_filter,
+        )
     }
 
     /// The event iteration schedule this model's Solve IR carries
