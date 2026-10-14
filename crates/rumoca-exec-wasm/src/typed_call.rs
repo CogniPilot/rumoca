@@ -6,6 +6,7 @@ mod checked_assertions;
 mod control;
 mod cost;
 mod emit;
+mod form;
 mod known;
 mod layout;
 mod link;

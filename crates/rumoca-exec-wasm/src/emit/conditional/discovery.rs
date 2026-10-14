@@ -45,3 +45,16 @@ pub(in crate::emit) fn call_sites(
     })?;
     Ok(sites)
 }
+
+pub(in crate::emit) fn directional_call_sites(
+    rows: &[Vec<LinearOp>],
+) -> Result<Vec<rumoca_ir_solve::SolvePureCallDirectionalSite>, String> {
+    let mut sites = Vec::new();
+    visit_operations(rows, |operation| {
+        if let LinearOp::PureCallDirectional { site, .. } = operation {
+            sites.push(site.clone());
+        }
+        Ok(())
+    })?;
+    Ok(sites)
+}

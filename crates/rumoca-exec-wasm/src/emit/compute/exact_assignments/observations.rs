@@ -36,7 +36,7 @@ impl BodyEmitter<'_> {
             .ok_or("observation has no retained source/carrier binding")?;
         let plan = self.calls.ok_or("observation has no compiled call table")?;
         let call = plan.call(site.value_site())?;
-        self.pass_call_inputs(site.value_site(), input_starts, &call, None)?;
+        self.pass_call_inputs(site.value_site().inputs(), input_starts, &call, None)?;
         self.pass_observation_buffers(&call)?;
         for offset in [plan.view().input, plan.view().output, plan.view().scratch] {
             self.call_address(offset);
