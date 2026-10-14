@@ -140,6 +140,46 @@ fn active_owner_refuses_reentry_and_other_owners_remain_independent() {
 }
 
 #[test]
+fn separately_owned_concurrent_arenas_preserve_their_active_cells() {
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        for lane in 0..2_u64 {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                let owner = ScratchOwner::default();
+                for call in 0..20_u64 {
+                    assert_eq!(
+                        owner.invoke(|arena| {
+                            let value = (lane << 32) | call;
+                            // SAFETY: this thread owns this exclusively leased arena and cell.
+                            let cell = unsafe {
+                                assert_eq!(enter_native(arena), 0);
+                                let cell = allocate_native(arena, 0, 1);
+                                assert!(!cell.is_null());
+                                cell.write(value);
+                                cell
+                            };
+                            barrier.wait();
+                            // SAFETY: the other owner cannot acquire or mutate this cell.
+                            unsafe {
+                                assert_eq!(cell.read(), value);
+                            }
+                            barrier.wait();
+                            // SAFETY: both checks finished while this frame stayed active.
+                            unsafe {
+                                leave_native(arena);
+                            }
+                            0
+                        }),
+                        0
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn damaged_and_unwound_leases_discard_storage_and_release_entry() {
     let owner = ScratchOwner::default();
     assert_eq!(
