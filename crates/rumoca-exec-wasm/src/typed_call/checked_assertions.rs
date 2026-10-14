@@ -159,9 +159,14 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
 /// Explicit host execution of one exact issued assertion invocation.
 /// Its private fields retain source authority together with the admitted engine.
 ///
-/// ```compile_fail
-/// use rumoca_exec_wasm::PreparedCheckedAssertionHost;
-/// let forged = PreparedCheckedAssertionHost { source: todo!(), runtime: todo!() };
+/// ```compile_fail,E0616
+/// use rumoca_exec_wasm::{CompiledCheckedAssertionWasm, PreparedCheckedAssertionHost};
+/// fn replace_source<'model>(
+///     host: &mut PreparedCheckedAssertionHost<'model>,
+///     source: CompiledCheckedAssertionWasm<'model>,
+/// ) {
+///     host.source = source;
+/// }
 /// ```
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
 pub struct PreparedCheckedAssertionHost<'model> {
