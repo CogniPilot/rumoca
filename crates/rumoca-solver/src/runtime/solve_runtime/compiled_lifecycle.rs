@@ -299,8 +299,6 @@ impl ScalarExecutionInventory {
         match &self.expressions {
             PreparedExpressions::Compiled(code) => Some(&code.lifecycle),
             PreparedExpressions::Reference => None,
-            #[cfg(test)]
-            PreparedExpressions::Fixture(_) => None,
         }
     }
 

@@ -5,7 +5,9 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use super::selected_programs::{CompleteExpression, CompleteJacobian};
+#[cfg(test)]
+use super::selected_programs::CompleteExpression;
+use super::selected_programs::CompleteJacobian;
 
 use super::{EvalSolveError, SolveExecutionBackend};
 
@@ -36,6 +38,7 @@ pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Op
 }
 
 /// `block` compiled by `backend` as a whole-block expression, if it compiles.
+#[cfg(test)]
 pub(super) fn compiled_expression(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,
     label: &str,
@@ -49,37 +52,6 @@ pub(super) fn compiled_expression(
                 backend.compile_expression(block),
             )?;
             super::selected_programs::expression_from_whole(backend.as_ref(), label, block, whole)
-        })
-        .transpose()
-}
-
-/// `block` compiled by `backend` for whole-block calls with its tensor nodes
-/// kept compact, or `scalar` (the block's scalar view) compiled when the
-/// backend has no compact form for it.
-pub(super) fn compiled_compute_expression(
-    backend: Option<&Rc<dyn SolveExecutionBackend>>,
-    label: &str,
-    block: &solve::ComputeBlock,
-    scalar: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<CompleteExpression>>, EvalSolveError> {
-    backend
-        .map(|backend| {
-            super::selected_programs::compute_expression(backend.as_ref(), label, block, scalar)
-        })
-        .transpose()
-}
-
-/// [`compiled_compute_expression`] for a directional (JVP) block, with
-/// `scalar` its scalar view.
-pub(super) fn compiled_compute_jacobian(
-    backend: Option<&Rc<dyn SolveExecutionBackend>>,
-    label: &str,
-    block: &solve::ComputeBlock,
-    scalar: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<CompleteJacobian>>, EvalSolveError> {
-    backend
-        .map(|backend| {
-            super::selected_programs::compute_jacobian(backend.as_ref(), label, block, scalar)
         })
         .transpose()
 }
@@ -267,24 +239,4 @@ pub(super) fn admitted_output_call(
     call(&mut scratch)?;
     out.copy_from_slice(&scratch);
     Ok(())
-}
-
-pub(super) fn admitted_compute_error(
-    context: &'static str,
-    source: &solve::ComputeBlock,
-    error: RuntimeSolveError,
-) -> RuntimeSolveError {
-    let mut source_spans = Vec::new();
-    for node in &source.nodes {
-        match node {
-            solve::ComputeNode::ScalarPrograms(block) => {
-                source_spans.extend_from_slice(block.program_spans());
-            }
-            solve::ComputeNode::MatMul { span, .. }
-            | solve::ComputeNode::LinSolve { span, .. }
-            | solve::ComputeNode::Map { span, .. }
-            | solve::ComputeNode::AffineStencil { span, .. } => source_spans.push(*span),
-        }
-    }
-    admitted_compiled_error(context, &source_spans, error)
 }

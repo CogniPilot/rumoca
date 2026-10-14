@@ -187,46 +187,25 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             Some((settled_y, settled_p)) => (settled_y.as_slice(), settled_p.as_slice()),
             None => (y, p),
         };
-        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial residual",
-                    self.runtime.model.problem.initialization.residual(),
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.initial_scalar_residual.eval_compact(
+                    RowEvalPoint {
+                        y: residual_y,
+                        p: residual_p,
+                        t,
+                    },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            residual_y,
-                            residual_p,
-                            t,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .initial_residual
-            .eval_with_context(
-                residual_y,
-                residual_p,
-                t,
-                self.runtime.row_eval_context(),
-                out,
-            )
-            .map_err(Into::into)
+            },
+        )
     }
 
     fn initial_residual_len(&self) -> usize {
-        self.runtime.scalar.initial_residual.len()
+        self.runtime.scalar.initial_scalar_residual.source().len()
     }
 
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
@@ -291,6 +270,7 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .runtime
             .scalar
             .initial_scalar_residual
+            .source()
             .single_output_row_for_output_index(output_index)
         else {
             return Ok(None);
@@ -302,18 +282,15 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
                 self.runtime.row_eval_context(),
             );
         }
-        self.runtime
-            .scalar
-            .initial_scalar_residual
-            .eval_target_assignment_row_unchecked_with_context(
-                row_idx,
-                target_y_index,
-                y,
-                p,
-                t,
-                self.runtime.row_eval_context(),
-            )
-            .map_err(Into::into)
+        let Some(reference) = self.runtime.scalar.initial_scalar_residual.reference() else {
+            return Ok(None);
+        };
+        reference.eval_target_assignment_row_unchecked_with_context(
+            row_idx,
+            target_y_index,
+            RowEvalPoint { y, p, t },
+            self.runtime.row_eval_context(),
+        )
     }
 
     fn eval_initial_residual_row(
@@ -330,45 +307,20 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .runtime
             .scalar
             .initial_scalar_residual
+            .source()
             .single_output_row_for_output_index(output_index)
         else {
             return Ok(None);
         };
-        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual() {
-            return compiled
-                .call_program_output(
-                    (row_idx, 0),
-                    y,
-                    p,
-                    t,
-                    self.runtime.model.external_tables.as_slice(),
-                )
-                .map_err(|error| {
-                    admitted_compiled_error(
-                        "initial residual row",
-                        self.runtime
-                            .scalar
-                            .initial_scalar_residual
-                            .block()
-                            .program_span(row_idx)
-                            .as_slice(),
-                        error,
-                    )
-                });
-        }
         self.runtime
             .scalar
             .initial_scalar_residual
-            .eval_row_output_unchecked_with_context(
-                row_idx,
-                0,
-                y,
-                p,
-                t,
+            .eval_output(
+                (row_idx, 0),
+                RowEvalPoint { y, p, t },
                 self.runtime.row_eval_context(),
             )
             .map(Some)
-            .map_err(Into::into)
     }
 }
 
@@ -489,51 +441,17 @@ impl InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = self.runtime.scalar.compiled_initial_residual_jacobian_v() {
-            let map_error = |error| {
-                admitted_compute_error(
-                    "initial residual JVP",
-                    &self
-                        .runtime
-                        .model
-                        .artifacts
-                        .initialization
-                        .residual_jacobian_v,
-                    error,
+        admitted_output_call(
+            &self.runtime.scalar.compiled_output_scratch,
+            out,
+            |output| {
+                self.runtime.scalar.initial_residual_jacobian_v.eval(
+                    solve_eval::JacobianEvalInputs { y, p, t, seed: v },
+                    self.runtime.row_eval_context(),
+                    output,
                 )
-            };
-            admitted_output_call(
-                &self.runtime.scalar.compiled_output_scratch,
-                out,
-                |output| {
-                    compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            output,
-                        )
-                        .map_err(map_error)
-                },
-            )?;
-            return Ok(());
-        }
-        self.runtime
-            .scalar
-            .initial_residual_jacobian_v
-            .eval_with_context(
-                y,
-                p,
-                t,
-                RowEvalContext {
-                    seed: Some(v),
-                    ..self.runtime.row_eval_context()
-                },
-                out,
-            )
-            .map_err(Into::into)
+            },
+        )
     }
 }
 

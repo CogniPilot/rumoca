@@ -1,5 +1,5 @@
 use super::*;
-use selected_programs::{CompleteExpression, CompleteJacobian};
+use selected_programs::CompleteJacobian;
 
 /// Required source expressions of a compiled scalar runtime. A missing kernel
 /// has no representation in this inventory.
@@ -11,10 +11,6 @@ pub(super) struct CompiledExpressions {
     pub(super) event_transactions: Box<[Rc<dyn CompiledSolveEventTransaction>]>,
     pub(super) lifecycle: CompiledLifecycle,
     pub(super) messages: compiled_messages::CompiledMessagePrograms,
-    pub(super) initial_residual: Rc<CompleteExpression>,
-    pub(super) initial_residual_jacobian_v: Rc<CompleteJacobian>,
-    pub(super) derivative_rhs: Rc<CompleteExpression>,
-    pub(super) derivative_jacobian_v: Rc<CompleteJacobian>,
     pub(super) root_conditions: Rc<dyn CompiledSolveExpression>,
 }
 
@@ -46,8 +42,6 @@ impl InitialUpdateJacobian {
 pub(super) enum PreparedExpressions {
     Reference,
     Compiled(Box<CompiledExpressions>),
-    #[cfg(test)]
-    Fixture(Box<FixtureExpressions>),
 }
 
 pub(super) fn require_prepared<T>(label: &str, prepared: Option<T>) -> Result<T, EvalSolveError> {
@@ -69,8 +63,6 @@ impl ScalarExecutionInventory {
                 &code.implicit_targets
             }),
             PreparedExpressions::Reference => None,
-            #[cfg(test)]
-            PreparedExpressions::Fixture(_) => None,
         }
     }
     pub(super) fn compiled_initial_update_jacobian(
@@ -82,8 +74,6 @@ impl ScalarExecutionInventory {
                 InitialUpdateJacobian::Compiled(code) => Some(code.as_ref()),
             },
             PreparedExpressions::Reference => None,
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_update_jacobian.as_deref(),
         }
     }
     pub(super) fn compiled_event_transaction(
@@ -99,104 +89,13 @@ impl ScalarExecutionInventory {
                     )
                 })
             }
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => Ok(code.event_transactions.get(index)),
         }
     }
-    pub(super) fn compiled_initial_residual(&self) -> Option<&dyn CompiledSolveExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.initial_residual.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_residual.as_deref(),
-        }
-    }
-    pub(super) fn compiled_initial_residual_jacobian_v(
-        &self,
-    ) -> Option<&dyn CompiledSolveJacobianExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.initial_residual_jacobian_v.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.initial_residual_jacobian_v.as_deref(),
-        }
-    }
-    pub(super) fn compiled_derivative_rhs(&self) -> Option<&dyn CompiledSolveExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.derivative_rhs.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.derivative_rhs.as_deref(),
-        }
-    }
-    pub(super) fn compiled_derivative_jacobian_v(
-        &self,
-    ) -> Option<&dyn CompiledSolveJacobianExpression> {
-        match &self.expressions {
-            PreparedExpressions::Reference => None,
-            PreparedExpressions::Compiled(code) => Some(code.derivative_jacobian_v.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.derivative_jacobian_v.as_deref(),
-        }
-    }
+
     pub(super) fn compiled_root_conditions(&self) -> Option<&dyn CompiledSolveExpression> {
         match &self.expressions {
             PreparedExpressions::Reference => None,
             PreparedExpressions::Compiled(code) => Some(code.root_conditions.as_ref()),
-            #[cfg(test)]
-            PreparedExpressions::Fixture(code) => code.root_conditions.as_deref(),
         }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(super) struct FixtureExpressions {
-    initial_update_jacobian: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    initial_residual: Option<Rc<dyn CompiledSolveExpression>>,
-    initial_residual_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    derivative_rhs: Option<Rc<dyn CompiledSolveExpression>>,
-    derivative_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
-    root_conditions: Option<Rc<dyn CompiledSolveExpression>>,
-    event_transactions: Vec<Rc<dyn CompiledSolveEventTransaction>>,
-}
-
-#[cfg(test)]
-impl ScalarExecutionInventory {
-    fn fixture_expressions_mut(&mut self) -> &mut FixtureExpressions {
-        if !matches!(self.expressions, PreparedExpressions::Fixture(_)) {
-            let code = match &self.expressions {
-                PreparedExpressions::Reference => FixtureExpressions::default(),
-                PreparedExpressions::Compiled(code) => FixtureExpressions {
-                    initial_update_jacobian: match &code.initial_update_jacobian {
-                        InitialUpdateJacobian::Unavailable => None,
-                        InitialUpdateJacobian::Compiled(code) => Some(code.clone()),
-                    },
-                    initial_residual: Some(code.initial_residual.clone()),
-                    initial_residual_jacobian_v: Some(code.initial_residual_jacobian_v.clone()),
-                    derivative_rhs: Some(code.derivative_rhs.clone()),
-                    derivative_jacobian_v: Some(code.derivative_jacobian_v.clone()),
-                    root_conditions: Some(Rc::clone(&code.root_conditions)),
-                    event_transactions: code.event_transactions.to_vec(),
-                },
-                PreparedExpressions::Fixture(_) => unreachable!("fixture handled above"),
-            };
-            self.expressions = PreparedExpressions::Fixture(Box::new(code));
-        }
-        match &mut self.expressions {
-            PreparedExpressions::Fixture(code) => code,
-            _ => unreachable!("the test fixture was installed"),
-        }
-    }
-
-    pub(super) fn fixture_compiled_initial_residual(
-        &mut self,
-    ) -> &mut Option<Rc<dyn CompiledSolveExpression>> {
-        &mut self.fixture_expressions_mut().initial_residual
-    }
-    pub(super) fn fixture_compiled_initial_residual_jacobian_v(
-        &mut self,
-    ) -> &mut Option<Rc<dyn CompiledSolveJacobianExpression>> {
-        &mut self.fixture_expressions_mut().initial_residual_jacobian_v
     }
 }

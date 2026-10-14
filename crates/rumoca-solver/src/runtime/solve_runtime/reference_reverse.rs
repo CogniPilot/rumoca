@@ -86,6 +86,16 @@ impl ReferenceReverseExecution<'_> {
                 out.len()
             )));
         }
+        let derivative = self
+            .view
+            .scalar
+            .derivative_scalar
+            .reference()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "reference derivative execution capability is unavailable",
+                )
+            })?;
         let mut scratch = self.view.scalar.derivative_scratch.borrow_mut();
         let solver_y = &mut scratch.solver_y;
         // Reconstruct the linearization point (states + derivative-dependency
@@ -101,25 +111,21 @@ impl ReferenceReverseExecution<'_> {
         out.fill(0.0);
         let (cot_y, cot_p) = out.split_at_mut(self.view.solver_count);
         let mut reverse_scratch = self.view.scalar.reverse_scratch.borrow_mut();
-        self.view
-            .scalar
-            .derivative_scalar
-            .reverse_vjp(
-                &rumoca_eval_solve::reverse::ReverseInputs {
-                    y: solver_y,
-                    p: params,
-                    t,
-                    context: self.view.row_eval_context(),
-                },
-                output_cotangents,
-                &mut rumoca_eval_solve::reverse::ReverseCotangents {
-                    y: cot_y,
-                    p: cot_p,
-                    seed: &mut [],
-                },
-                &mut reverse_scratch,
-            )
-            .map_err(RuntimeSolveError::from)?;
+        derivative.reverse_vjp(
+            &rumoca_eval_solve::reverse::ReverseInputs {
+                y: solver_y,
+                p: params,
+                t,
+                context: self.view.row_eval_context(),
+            },
+            output_cotangents,
+            &mut rumoca_eval_solve::reverse::ReverseCotangents {
+                y: cot_y,
+                p: cot_p,
+                seed: &mut [],
+            },
+            &mut reverse_scratch,
+        )?;
         Ok(())
     }
 
@@ -241,18 +247,22 @@ impl ReferenceReverseExecution<'_> {
                 self.view.solver_count
             )));
         }
+        let derivative = self
+            .view
+            .scalar
+            .derivative_scalar
+            .reference()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "reference derivative execution capability is unavailable",
+                )
+            })?;
         out.fill(0.0);
 
         // State (der) rows: ∂der/∂[y|p]ᵀ · λ[0..state_count].
         let state_lambda = &lambda[..self.view.state_count];
         self.accumulate_block_vjp(
-            &mut |inputs, cot, scratch| {
-                self.view
-                    .scalar
-                    .derivative_scalar
-                    .reverse_vjp(inputs, state_lambda, cot, scratch)
-                    .map_err(RuntimeSolveError::from)
-            },
+            &mut |inputs, cot, scratch| derivative.reverse_vjp(inputs, state_lambda, cot, scratch),
             (t, solver_y, params),
             out,
         )?;

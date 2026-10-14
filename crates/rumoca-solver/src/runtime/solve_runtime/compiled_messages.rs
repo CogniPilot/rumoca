@@ -164,8 +164,6 @@ impl SolveRuntime {
             RuntimeExecutionInventory::Scalar(scalar) => match &scalar.expressions {
                 PreparedExpressions::Compiled(code) => Some(code.messages.execution()),
                 PreparedExpressions::Reference => None,
-                #[cfg(test)]
-                PreparedExpressions::Fixture(_) => None,
             },
             #[cfg(feature = "native-wasm")]
             RuntimeExecutionInventory::Native(_) => Some(&native_message_requires_observation),

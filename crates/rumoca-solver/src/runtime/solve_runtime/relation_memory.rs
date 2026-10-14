@@ -1398,20 +1398,12 @@ impl ScalarExecutionView<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.scalar.compiled_derivative_rhs() {
-            compiled.call(
-                solver_y,
-                params,
+        self.scalar.derivative_scalar.eval(
+            RowEvalPoint {
+                y: solver_y,
+                p: params,
                 t,
-                self.model.external_tables.as_slice(),
-                out,
-            )?;
-            return self.validate_finite_derivatives(out);
-        }
-        self.scalar.derivative_rhs.eval_with_context(
-            solver_y,
-            params,
-            t,
+            },
             self.row_eval_context(),
             out,
         )?;

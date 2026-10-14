@@ -1,8 +1,10 @@
 //! Source-bound scalar execution with an explicit reference engine.
 use super::*;
 mod analysis;
+mod evaluation;
 mod reference;
 pub(super) use analysis::ProgramAnalysis;
+pub(super) use evaluation::{EvaluationDirectional, EvaluationPrimal};
 use selected_programs::{CompleteExpression, CompleteJacobian};
 
 #[derive(Clone)]
@@ -64,6 +66,52 @@ impl PrimalProgram {
         })
     }
 
+    pub(super) fn prepare_compact(
+        label: &'static str,
+        canonical: solve::ScalarProgramBlock,
+        compute: &solve::ComputeBlock,
+        backend: Option<&Rc<dyn SolveExecutionBackend>>,
+        primary: Option<&Self>,
+    ) -> Result<Self, EvalSolveError> {
+        let primary = primary.filter(|owner| owner.same_backend(backend));
+        let base = primary.map(|owner| &owner.source);
+        let reuse = BlockReuse::of(base, &canonical);
+        let execution = match backend {
+            None => PrimalExecution::Reference {
+                compute: Some(Box::new(PreparedComputeBlock::new_with_label(
+                    compute, label,
+                )?)),
+            },
+            Some(backend) => {
+                let code = primary.and_then(|owner| match &owner.execution {
+                    PrimalExecution::Reference { .. } => None,
+                    PrimalExecution::Compiled { code, .. } => Some(code),
+                });
+                let code = reuse.expression_with_fresh(
+                    code,
+                    &canonical,
+                    &mut || {
+                        selected_programs::compute_expression(
+                            backend.as_ref(),
+                            label,
+                            compute,
+                            &canonical,
+                        )
+                    },
+                    &mut |source| selected_programs::expression(backend.as_ref(), label, source),
+                )?;
+                PrimalExecution::Compiled {
+                    backend: Rc::clone(backend),
+                    code,
+                }
+            }
+        };
+        Ok(Self {
+            source: reuse.prepared(base, canonical)?,
+            execution,
+        })
+    }
+
     pub(super) fn prepare_with_compute(
         label: &'static str,
         canonical: solve::ScalarProgramBlock,
@@ -118,6 +166,22 @@ impl PrimalProgram {
                 context.external_tables.unwrap_or(&[]),
                 out,
             ),
+        }
+    }
+
+    pub(super) fn eval_compact(
+        &self,
+        point: RowEvalPoint<'_>,
+        context: RowEvalContext<'_>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        match &self.execution {
+            PrimalExecution::Reference {
+                compute: Some(compute),
+            } => compute
+                .eval_with_context(point.y, point.p, point.t, context, out)
+                .map_err(Into::into),
+            _ => self.eval(point, context, out),
         }
     }
 

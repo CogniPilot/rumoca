@@ -18,6 +18,7 @@ pub(super) struct TargetQueries {
 }
 
 enum TargetSource<'a> {
+    #[cfg(test)]
     Prepared(&'a PreparedScalarProgramBlock),
     Implicit {
         canonical: &'a solve::ScalarProgramBlock,
@@ -28,6 +29,7 @@ enum TargetSource<'a> {
 impl TargetSource<'_> {
     fn canonical(&self) -> &solve::ScalarProgramBlock {
         match self {
+            #[cfg(test)]
             Self::Prepared(source) => source.block(),
             Self::Implicit { canonical, .. } => canonical,
         }
@@ -35,6 +37,7 @@ impl TargetSource<'_> {
 
     fn row_output_position(&self, row: usize) -> Option<(usize, usize)> {
         match self {
+            #[cfg(test)]
             Self::Prepared(source) => source.row_output_position(row),
             Self::Implicit { analysis, .. } => analysis.row_output_position(row),
         }
@@ -47,6 +50,7 @@ impl TargetSource<'_> {
         target: usize,
     ) -> Result<Option<solve_eval::PreparedTargetValuePlan>, EvalSolveError> {
         match self {
+            #[cfg(test)]
             Self::Prepared(source) => source.portable_target_value_plan(program, offset, target),
             Self::Implicit { analysis, .. } => {
                 analysis.portable_target_value_plan(program, offset, target)
@@ -66,6 +70,7 @@ impl TargetQueries {
         Self::prepare_with_primary(source, candidates, backend, context, None)
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_with_primary(
         source: &PreparedScalarProgramBlock,
         candidates: impl IntoIterator<Item = (usize, usize)>,
@@ -82,7 +87,7 @@ impl TargetQueries {
         )
     }
 
-    pub(super) fn prepare_implicit_with_primary(
+    pub(super) fn prepare_owned_with_primary(
         canonical: &solve::ScalarProgramBlock,
         analysis: ProgramAnalysis<'_>,
         candidates: impl IntoIterator<Item = (usize, usize)>,
