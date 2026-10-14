@@ -91,7 +91,7 @@ fn invalid_layouts_refuse_without_reserving_and_large_requests_remain_supported(
     }
     assert!(memory.allocate_readexec(usize::MAX, 1).is_err());
     assert!(memory.pools.iter().all(|pool| pool.chunks.is_empty()));
-    let size = 3 * super::MIN_CHUNK_BYTES + 13;
+    let size = 3 * super::CHUNK_GRANULARITY_BYTES + 13;
     let pointer = memory
         .allocate_readwrite(size, page as u64)
         .expect("large request");
@@ -193,4 +193,57 @@ fn incremental_finalization_keeps_actual_entries_stable_until_owner_drop() {
         assert_eq!(second_call(), 73);
     }
     drop(module);
+}
+
+fn reserved_bytes(memory: &ChunkedMemory) -> usize {
+    memory
+        .pools
+        .iter()
+        .flat_map(|pool| &pool.chunks)
+        .map(|chunk| chunk.capacity)
+        .sum()
+}
+
+#[test]
+fn independent_tiny_owners_and_incremental_batches_reserve_page_sized_storage() {
+    let page = region::page::size();
+    let mut owners = Vec::new();
+    for _ in 0..32 {
+        let mut memory = ChunkedMemory::default();
+        assert_eq!(reserved_bytes(&memory), 0);
+        let code = memory.allocate_readexec(32, 16).expect("tiny code");
+        let constant = memory.allocate_readonly(8, 8).expect("tiny constant");
+        let data = memory.allocate_readwrite(8, 8).expect("tiny data");
+        memory
+            .finalize(BranchProtection::None)
+            .expect("seal tiny owner");
+        assert_eq!(protection(code), Protection::READ_EXECUTE);
+        assert_eq!(protection(constant), Protection::READ);
+        assert_eq!(protection(data), Protection::READ_WRITE);
+        owners.push(memory);
+    }
+    // Many separately owned kernels must not accumulate a large fixed reserve
+    // for a few bytes. Permit at most two pages per populated protection pool.
+    let reserved: usize = owners.iter().map(reserved_bytes).sum();
+    assert!(reserved <= owners.len() * 3 * 2 * page);
+    for memory in &mut owners {
+        let large = 2 * super::CHUNK_GRANULARITY_BYTES + 1;
+        memory
+            .allocate_readexec(large, 16)
+            .expect("larger batch remains admitted");
+        memory
+            .finalize(BranchProtection::None)
+            .expect("seal larger batch");
+        let before = reserved_bytes(memory);
+        let code = memory.allocate_readexec(32, 16).expect("new tiny batch");
+        assert!(reserved_bytes(memory) - before <= 2 * page);
+        assert_eq!(protection(code), Protection::READ_WRITE);
+        memory
+            .finalize(BranchProtection::None)
+            .expect("seal incremental batch");
+        assert_eq!(protection(code), Protection::READ_EXECUTE);
+        // SAFETY: no callable pointers escaped; all allocation accesses are done.
+        unsafe { memory.free_memory() };
+        assert_eq!(reserved_bytes(memory), 0);
+    }
 }
