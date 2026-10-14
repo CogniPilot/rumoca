@@ -2,16 +2,64 @@
   "base": "c15dc75182dd029177e4cabc4a3953ed6df563ce",
   "methodology": "git diff --numstat; tests by file path. Inline tests remain in production-file totals. Public declaration inventory by changed Rust path and explicit pub declaration; includes reexports and fields, plus checked new public enum variants and their named fields; excludes pub(crate). Signature lines are source declarations, not a rustdoc ABI diff.",
   "metrics": {
-    "production_lines_added": 3840,
-    "production_lines_deleted": 1497,
-    "test_lines_added": 1379,
-    "test_lines_deleted": 133,
-    "files_touched": 89,
-    "net_added_lines": 3589,
-    "public_items_added": 17,
-    "public_items_removed": 5
+    "production_lines_added": 4481,
+    "production_lines_deleted": 1776,
+    "test_lines_added": 1768,
+    "test_lines_deleted": 134,
+    "files_touched": 98,
+    "net_added_lines": 4339,
+    "public_items_added": 36,
+    "public_items_removed": 6
   },
   "public_declarations_added": [
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub enum EventMessageProgramKind {"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub struct EventMessageProgramInput<'a> {"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub action: &'a SolveEventAction,"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub part: usize,"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub kind: EventMessageProgramKind,"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub y: &'a [f64],"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub p: &'a [f64],"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub t: f64,"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub type EventMessageProgramExecution ="
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "pub fn eval_event_action_message("
+    ],
+    [
+      "crates/rumoca-eval-solve/src/lib.rs",
+      "pub use event_messages::{"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/lib.rs",
+      "pub message_program_execution: Option<&'a EventMessageProgramExecution>,"
+    ],
     [
       "crates/rumoca-solver/src/fmi_me.rs",
       "pub enum MeExecutionPolicyContradiction {"
@@ -79,9 +127,41 @@
     [
       "crates/rumoca-sim/src/error.rs",
       "SimError::RequiredExecutionBackendMissing::policy"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/errors.rs",
+      "EvalSolveError::SourceOperationFault"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/errors.rs",
+      "EvalSolveError::SourceOperationFault::message"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/errors.rs",
+      "EvalSolveError::SourceOperationFault::span"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "EventMessageProgramKind::Value"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "EventMessageProgramKind::MinimumLength"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "EventMessageProgramKind::LeftJustified"
+    ],
+    [
+      "crates/rumoca-eval-solve/src/event_messages.rs",
+      "EventMessageProgramKind::SignificantDigits"
     ]
   ],
   "public_declarations_removed": [
+    [
+      "crates/rumoca-eval-solve/src/lib.rs",
+      "pub fn eval_event_action_message("
+    ],
     [
       "crates/rumoca-solver/src/fmi_me.rs",
       "pub struct MeExecutionPolicyContradiction {"
