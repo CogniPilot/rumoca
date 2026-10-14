@@ -93,7 +93,7 @@ impl NativeScratch {
 
 /// One compiled owner's physical storage; a lease excludes overlapping entry.
 #[derive(Default)]
-pub(super) struct ScratchOwner(RefCell<NativeScratch>);
+pub(crate) struct ScratchOwner(RefCell<NativeScratch>);
 
 impl ScratchOwner {
     pub(super) fn invoke(&self, call: impl FnOnce(*mut NativeScratch) -> u8) -> u8 {
