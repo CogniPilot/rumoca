@@ -212,7 +212,7 @@ impl ScalarExecutionView<'_> {
                 .discrete_rhs
                 .row_output_position(row_idx)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("discrete output has no producer"))?;
-            let value = self.eval_lifecycle_output(
+            let value = self.eval_lifecycle_row_output(
                 &self.scalar.discrete_rhs,
                 program,
                 output,
@@ -1092,7 +1092,7 @@ impl ScalarExecutionView<'_> {
                 tol,
             },
             |program, output, (y, p, t)| {
-                self.eval_lifecycle_output(
+                self.eval_lifecycle_row_output(
                     &self.scalar.discrete_rhs,
                     program,
                     output,
@@ -1245,7 +1245,7 @@ impl ScalarExecutionView<'_> {
                         "pulse condition-memory output {row_idx} has no producing program"
                     ))
                 })?;
-            let value = self.eval_lifecycle_output(
+            let value = self.eval_lifecycle_row_output(
                 &self.scalar.discrete_rhs,
                 program,
                 output,

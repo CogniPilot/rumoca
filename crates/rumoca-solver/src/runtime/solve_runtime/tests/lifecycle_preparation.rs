@@ -592,3 +592,221 @@ fn prepared_condition_memory_seed_and_pulse_release_preserve_compiled_faults() {
         .unwrap();
     assert_eq!(p, [1.0]);
 }
+fn clock_buffer_model() -> solve::SolveModel {
+    let mut model = warm_start_test_model();
+    model.problem.layout = crate::fixture_layout::named_y_layout(
+        solve::VarLayout::from_parts(Default::default(), 2, 2),
+        vec!["x".into(), "z".into()],
+    );
+    model.problem.solve_layout.parameter_count = 2;
+    model.problem.solve_layout.compiled_parameter_len = 2;
+    model.parameters = vec![1.0, 1.0].into();
+    model.problem.events.condition_memory_parameter_indices = vec![1];
+    model.problem.discrete = solve::DiscreteSolveSystem {
+        rhs: spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "clock_buffer.mo",
+        ),
+        update_targets: vec![solve::scalar_slot_p(1)],
+        row_roles: vec![solve::DiscreteRowRole::PulseConditionMemory],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+        observation_refresh: vec![false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+        clock_owners: vec![None],
+        ..Default::default()
+    };
+    model.problem.clocks = solve::SolveClockPartition {
+        periodic_event_schedules: vec![
+            solve::PeriodicEventSchedule::new(
+                rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap(),
+            )
+            .unwrap(),
+        ],
+        activation_parameter_indices: vec![0],
+    };
+    model
+}
+
+fn run_clock_buffer_path(
+    runtime: &SolveRuntime,
+    path: usize,
+    y: &mut [f64],
+    p: &mut [f64],
+) -> Result<(), RuntimeSolveError> {
+    let scalar = runtime.scalar_execution().unwrap();
+    match path {
+        0 => scalar
+            .seed_condition_memory_for_initialization(y, p, 0.0, 1e-10)
+            .map(|_| ()),
+        1 => scalar
+            .apply_unfiltered_discrete_rows_once(y, p, 0.0, 1e-10)
+            .map(|_| ()),
+        _ => scalar.release_condition_pulses(y, p, 0.0),
+    }
+}
+
+fn check_clock_buffer_path(path: usize) {
+    let model = clock_buffer_model();
+    let executions = Rc::new(std::cell::Cell::new(0));
+    let native = SolveRuntime::new_fixture_with_backend(
+        &model,
+        Rc::new(Backend {
+            refused: test_span("unrelated.mo"),
+            only_time: false,
+            fault: None,
+            executions: executions.clone(),
+        }),
+    )
+    .unwrap();
+    let reference = SolveRuntime::new_fixture(&model).unwrap();
+    let mut results = Vec::new();
+    for runtime in [&native, &reference] {
+        let mut y = model.initial_y.to_vec();
+        let mut p = model.parameters.to_vec();
+        run_clock_buffer_path(runtime, path, &mut y, &mut p).unwrap();
+        results.push((y, p));
+    }
+    assert_eq!(results[0], results[1]);
+    assert_eq!(
+        executions.get(),
+        1,
+        "clock buffer path {path} must execute its prepared kernel"
+    );
+}
+
+#[test]
+fn clock_buffer_initialization_uses_prepared_code() {
+    check_clock_buffer_path(0);
+}
+#[test]
+fn clock_buffer_deadline_uses_prepared_code() {
+    check_clock_buffer_path(1);
+}
+#[test]
+fn clock_buffer_pulse_release_uses_prepared_code() {
+    check_clock_buffer_path(2);
+}
+
+fn two_output_clock_buffer_model() -> solve::SolveModel {
+    let mut model = clock_buffer_model();
+    model.problem.layout = crate::fixture_layout::named_y_layout(
+        solve::VarLayout::from_parts(Default::default(), 2, 3),
+        vec!["x".into(), "z".into()],
+    );
+    model.problem.solve_layout.parameter_count = 3;
+    model.problem.solve_layout.compiled_parameter_len = 3;
+    model.parameters = vec![1.0, 1.0, -5.0].into();
+    model
+        .problem
+        .discrete
+        .update_targets
+        .push(solve::scalar_slot_p(2));
+    model
+        .problem
+        .discrete
+        .row_roles
+        .push(solve::DiscreteRowRole::Equation);
+    model
+        .problem
+        .discrete
+        .pre_modes
+        .push(solve::DiscreteEventPreMode::FollowCurrent);
+    model.problem.discrete.observation_refresh.push(false);
+    model
+        .problem
+        .discrete
+        .integrator_history_effects
+        .push(solve::IntegratorHistoryEffect::Preserve);
+    model.problem.discrete.clock_owners.push(None);
+    model
+}
+
+#[test]
+fn clock_buffer_paths_select_the_issued_multi_output_offset() {
+    let mut model = two_output_clock_buffer_model();
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+            solve::LinearOp::LoadP { dst: 1, index: 0 },
+            solve::LinearOp::StoreOutput { src: 1 },
+        ]],
+        vec![test_span("clock_buffer.mo")],
+        vec![1, 0],
+    )
+    .unwrap();
+    for path in 0..3 {
+        let executions = Rc::new(std::cell::Cell::new(0));
+        let native = SolveRuntime::new_fixture_with_backend(
+            &model,
+            Rc::new(Backend {
+                refused: test_span("unrelated.mo"),
+                only_time: false,
+                fault: None,
+                executions: executions.clone(),
+            }),
+        )
+        .unwrap();
+        let reference = SolveRuntime::new_fixture(&model).unwrap();
+        let mut results = Vec::new();
+        for runtime in [&native, &reference] {
+            let mut y = model.initial_y.to_vec();
+            let mut p = model.parameters.to_vec();
+            run_clock_buffer_path(runtime, path, &mut y, &mut p).unwrap();
+            assert_eq!(p[1], if path == 1 { 1.0 } else { 0.0 });
+            assert_eq!(p[2], if path == 1 { 2.0 } else { -5.0 });
+            results.push((y, p));
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(executions.get(), if path == 1 { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn clock_buffer_paths_preserve_the_entry_state_on_a_later_compiled_fault() {
+    let mut model = two_output_clock_buffer_model();
+    let fault_span = test_span("later_clock_buffer.mo");
+    model.problem.discrete.row_roles[1] = solve::DiscreteRowRole::PulseConditionMemory;
+    model
+        .problem
+        .events
+        .condition_memory_parameter_indices
+        .push(2);
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_program_spans(
+        vec![
+            model.problem.discrete.rhs.programs()[0].clone(),
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        vec![test_span("clock_buffer.mo"), fault_span],
+    )
+    .unwrap();
+    for path in 0..3 {
+        let executions = Rc::new(std::cell::Cell::new(0));
+        let runtime = SolveRuntime::new_fixture_with_backend(
+            &model,
+            Rc::new(Backend {
+                refused: test_span("unrelated.mo"),
+                only_time: false,
+                fault: Some(fault_span),
+                executions: executions.clone(),
+            }),
+        )
+        .unwrap();
+        let mut y = model.initial_y.to_vec();
+        let mut p = model.parameters.to_vec();
+        let error = run_clock_buffer_path(&runtime, path, &mut y, &mut p).unwrap_err();
+        assert!(
+            matches!(error, RuntimeSolveError::SourceFault { span: Some(span), .. } if span == fault_span),
+            "{error}"
+        );
+        assert_eq!(y, model.initial_y.as_ref());
+        assert_eq!(p, model.parameters.as_ref());
+        assert_eq!(executions.get(), 2);
+    }
+}

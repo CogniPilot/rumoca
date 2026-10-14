@@ -355,7 +355,7 @@ impl ScalarExecutionView<'_> {
         Ok(true)
     }
 
-    pub(super) fn eval_lifecycle_output(
+    pub(super) fn eval_lifecycle_row_output(
         &self,
         block: &PreparedScalarProgramBlock,
         program: usize,

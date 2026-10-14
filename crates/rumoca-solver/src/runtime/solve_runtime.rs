@@ -1043,15 +1043,13 @@ impl ScalarExecutionView<'_> {
             params,
             &mut out[..model_root_count],
         )?;
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                &solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
+        self.delay_runtime.evaluate_event_roots(
+            t,
+            &solver_y,
+            params,
+            self.row_eval_context(),
+            &mut out[model_root_count..],
+        )?;
         validate_finite_runtime_output("root condition output", out)
     }
 
@@ -1125,15 +1123,13 @@ impl ScalarExecutionView<'_> {
             let model_out = &mut out[..model_root_count];
             let Some(plan) = &self.scalar.root_condition_plan else {
                 self.eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?;
-                self.delay_runtime
-                    .evaluate_event_roots(
-                        t,
-                        solver_y,
-                        params,
-                        self.row_eval_context(),
-                        &mut out[model_root_count..],
-                    )
-                    .map_err(RuntimeSolveError::from)?;
+                self.delay_runtime.evaluate_event_roots(
+                    t,
+                    solver_y,
+                    params,
+                    self.row_eval_context(),
+                    &mut out[model_root_count..],
+                )?;
                 return validate_finite_runtime_output("root search output", out);
             };
             self.validate_root_plan_output_len(plan, model_out)?;
@@ -1143,15 +1139,13 @@ impl ScalarExecutionView<'_> {
                 self.write_planned_root_search_conditions(plan, solver_y, params, t, model_out)?;
             }
         }
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
+        self.delay_runtime.evaluate_event_roots(
+            t,
+            solver_y,
+            params,
+            self.row_eval_context(),
+            &mut out[model_root_count..],
+        )?;
         validate_finite_runtime_output("root search output", out)
     }
 

@@ -41,7 +41,7 @@ impl CompiledSolveExpression for SelectedResidual {
 }
 
 #[test]
-fn selected_projection_residual_uses_native_or_explicit_decline() {
+fn selected_projection_residual_requires_prepared_output() {
     for decline in [false, true] {
         let mut runtime = SolveRuntime::new_fixture(&warm_start_test_model()).unwrap();
         let native = Rc::new(SelectedResidual {
@@ -52,12 +52,22 @@ fn selected_projection_residual_uses_native_or_explicit_decline() {
         });
         *runtime.scalar_fixture_mut().fixture_compiled_implicit_rhs() = Some(native.clone());
         for value in [2.0, -7.0] {
-            assert_eq!(
-                selected_projection(&runtime, false)
-                    .eval_implicit_residual_row(1, &[1.0, value], &[], 0.0)
-                    .unwrap(),
-                Some(value)
+            let result = selected_projection(&runtime, false).eval_implicit_residual_row(
+                1,
+                &[1.0, value],
+                &[],
+                0.0,
             );
+            if decline {
+                let error = result.expect_err("an absent prepared output must not be interpreted");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("prepared implicit residual output is absent")
+                );
+            } else {
+                assert_eq!(result.unwrap(), Some(value));
+            }
         }
         assert_eq!(
             native.calls.get(),
