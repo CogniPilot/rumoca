@@ -1,5 +1,6 @@
 mod indexed;
 mod programs;
+mod typed_calls;
 use super::*;
 use rumoca_ir_solve::{BinaryOp, LinearOp};
 use rumoca_solver::CompiledSolveJacobianExpression;

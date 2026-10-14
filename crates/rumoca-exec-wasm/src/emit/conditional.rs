@@ -3,7 +3,7 @@ mod discovery;
 mod regions;
 pub(in crate::emit) mod workspace;
 use super::*;
-pub(in crate::emit) use discovery::{call_sites, visit_operations};
+pub(in crate::emit) use discovery::{call_sites, directional_call_sites, visit_operations};
 use rumoca_ir_solve::FunctionConditionalProgram;
 
 #[derive(Clone, Copy)]

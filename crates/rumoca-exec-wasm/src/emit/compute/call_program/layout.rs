@@ -43,6 +43,7 @@ pub(in crate::emit) struct CallProgramLayout {
     pub status: u32,
     pub integer: u32,
     pub helpers: Vec<(solve::SolvePureCallSite, CallLayout)>,
+    pub directional_helpers: Vec<(solve::SolvePureCallDirectionalSite, CallLayout)>,
     pub(in crate::emit::compute::call_program) memos: Vec<Memo>,
     /// The runs of host Y the program publishes into P (SOLVE-C101), in Y order.
     pub carried: Vec<CarriedRun>,
@@ -161,17 +162,29 @@ impl CallProgramLayout {
         last: u32,
     ) -> Result<Self, String> {
         let mut calls = Vec::new();
+        let mut directional_calls = Vec::new();
         let (mut input, mut output, mut scratch) = (0, 0, 0);
         let mut call_outputs = 0usize;
         let mut components = Components::default();
         conditional::visit_operations(rows, |op| {
-            let site = match op {
-                LinearOp::PureCall { site, .. } => site,
-                LinearOp::PureCallObservation { site, .. } => site.value_site(),
+            let (layout, owner, outputs) = match op {
+                LinearOp::PureCall { site, .. } => {
+                    (helpers.layout(site), site.owner(), site.outputs().len())
+                }
+                LinearOp::PureCallObservation { site, .. } => (
+                    helpers.layout(site.value_site()),
+                    site.value_site().owner(),
+                    site.value_site().outputs().len(),
+                ),
+                LinearOp::PureCallDirectional { site, .. } => (
+                    helpers.directional_layout(site),
+                    site.owner(),
+                    site.outputs().len(),
+                ),
                 _ => return Ok(()),
             };
-            call_outputs += site.outputs().len();
-            let layout = helpers.layout(site).map_err(|e| e.to_string())?;
+            call_outputs += outputs;
+            let layout = layout.map_err(|error| error.to_string())?;
             input = input.max(
                 layout
                     .input
@@ -180,13 +193,20 @@ impl CallProgramLayout {
             );
             output = output.max(layout.output);
             if layout.scratch > scratch || components.widest_owner.is_none() {
-                components.widest_owner = Some(site.owner().index() as usize);
+                components.widest_owner = Some(owner.index() as usize);
             }
             scratch = scratch.max(layout.scratch);
             components.unshared_call_scratch =
                 components.unshared_call_scratch.max(layout.unshared);
-            if !calls.iter().any(|(existing, _)| existing == site) {
-                calls.push((site.clone(), layout));
+            match op {
+                LinearOp::PureCall { site, .. } => insert_call(&mut calls, site, layout),
+                LinearOp::PureCallObservation { site, .. } => {
+                    insert_call(&mut calls, site.value_site(), layout)
+                }
+                LinearOp::PureCallDirectional { site, .. } => {
+                    insert_call(&mut directional_calls, site, layout)
+                }
+                _ => return Err("call layout lost its exact source form".into()),
             }
             Ok(())
         })?;
@@ -229,6 +249,7 @@ impl CallProgramLayout {
             status: last.checked_add(2).ok_or("native local overflow")?,
             integer: last.checked_add(3).ok_or("native local overflow")?,
             helpers: calls,
+            directional_helpers: directional_calls,
             memos,
             carried: Vec::new(),
             carried_lanes: Vec::new(),
@@ -490,6 +511,18 @@ impl CallProgramPlan {
         self.layout.call(site)
     }
 
+    pub(in crate::emit) fn directional_call(
+        &self,
+        site: &solve::SolvePureCallDirectionalSite,
+    ) -> Result<CallLayout, String> {
+        self.layout
+            .directional_helpers
+            .iter()
+            .find(|(issued, _)| issued == site)
+            .map(|(_, layout)| layout.clone())
+            .ok_or_else(|| "directional call differs from its issued model table".into())
+    }
+
     pub(in crate::emit) fn for_schedule(
         rows: &[Vec<LinearOp>],
         helpers: &ProgramHelpers,
@@ -693,5 +726,15 @@ mod y_read_tests {
         let layout = layout.with_typed_lanes(4, 0, 0, 0).unwrap();
         assert_eq!(layout.y_reads.len(), 1);
         assert_eq!((layout.y_reads[0].start, layout.y_reads[0].end), (24, 32));
+    }
+}
+
+fn insert_call<S: PartialEq + Clone>(
+    calls: &mut Vec<(S, CallLayout)>,
+    site: &S,
+    layout: CallLayout,
+) {
+    if !calls.iter().any(|(existing, _)| existing == site) {
+        calls.push((site.clone(), layout));
     }
 }

@@ -566,6 +566,9 @@ impl<'a> BodyEmitter<'a> {
         {
             return Some(self.emit_checked_gather(*dst, *base, *stride, dimensions, indices));
         }
+        if self.calls.is_some() && matches!(op, LinearOp::PureCallDirectional { .. }) {
+            return Some(self.emit_native_directional_call(op));
+        }
         if self.calls.is_some() && matches!(op, LinearOp::PureCall { .. }) {
             return Some(self.emit_native_pure_call(op.clone(), None, None));
         }
