@@ -1,4 +1,5 @@
 mod authored_models;
+mod conditional_ranges;
 mod linear_solve;
 mod observations;
 mod outer_scalar_fold;
@@ -144,6 +145,6 @@ fn complete_expression_owns_code_for_every_original_program() {
         compiled
             .selected
             .iter()
-            .all(|(code, _)| !code.module_bytes().is_empty())
+            .all(|entry| !entry.0.module_bytes().is_empty())
     );
 }
