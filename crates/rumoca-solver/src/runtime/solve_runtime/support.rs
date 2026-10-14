@@ -5,9 +5,9 @@ use rustc_hash::FxHashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
-use super::{
-    CompiledSolveExpression, CompiledSolveJacobianExpression, EvalSolveError, SolveExecutionBackend,
-};
+use super::selected_programs::{CompleteExpression, CompleteJacobian};
+
+use super::{EvalSolveError, SolveExecutionBackend};
 
 pub(super) fn required_compiled<T>(
     label: &str,
@@ -40,7 +40,7 @@ pub(super) fn compiled_expression(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,
     label: &str,
     block: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
+) -> Result<Option<Rc<CompleteExpression>>, EvalSolveError> {
     backend
         .map(|backend| {
             let whole = required_compiled(
@@ -48,8 +48,19 @@ pub(super) fn compiled_expression(
                 block.program_spans(),
                 backend.compile_expression(block),
             )?;
-            super::selected_programs::expression(backend.as_ref(), label, block, whole)
+            super::selected_programs::expression_from_whole(backend.as_ref(), label, block, whole)
         })
+        .transpose()
+}
+
+/// Required selectable code when a compiled execution context is present.
+pub(super) fn compiled_selectable_expression(
+    backend: Option<&Rc<dyn SolveExecutionBackend>>,
+    label: &str,
+    source: &solve::ScalarProgramBlock,
+) -> Result<Option<Rc<CompleteExpression>>, EvalSolveError> {
+    backend
+        .map(|backend| super::selected_programs::expression(backend.as_ref(), label, source))
         .transpose()
 }
 
@@ -61,20 +72,12 @@ pub(super) fn compiled_compute_expression(
     label: &str,
     block: &solve::ComputeBlock,
     scalar: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<dyn CompiledSolveExpression>>, EvalSolveError> {
-    let Some(backend) = backend else {
-        return Ok(None);
-    };
-    let whole = match backend.compile_compute_expression(block) {
-        Ok(Some(compiled)) => compiled,
-        Ok(None) => required_compiled(
-            label,
-            scalar.program_spans(),
-            backend.compile_expression(scalar),
-        )?,
-        Err(error) => return required_compiled(label, scalar.program_spans(), Err(error)),
-    };
-    super::selected_programs::expression(backend.as_ref(), label, scalar, whole).map(Some)
+) -> Result<Option<Rc<CompleteExpression>>, EvalSolveError> {
+    backend
+        .map(|backend| {
+            super::selected_programs::compute_expression(backend.as_ref(), label, block, scalar)
+        })
+        .transpose()
 }
 
 /// [`compiled_compute_expression`] for a directional (JVP) block, with
@@ -84,20 +87,12 @@ pub(super) fn compiled_compute_jacobian(
     label: &str,
     block: &solve::ComputeBlock,
     scalar: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
-    let Some(backend) = backend else {
-        return Ok(None);
-    };
-    let whole = match backend.compile_compute_jacobian_expression(block) {
-        Ok(Some(compiled)) => compiled,
-        Ok(None) => required_compiled(
-            label,
-            scalar.program_spans(),
-            backend.compile_jacobian_expression(scalar),
-        )?,
-        Err(error) => return required_compiled(label, scalar.program_spans(), Err(error)),
-    };
-    super::selected_programs::jacobian(backend.as_ref(), label, scalar, whole).map(Some)
+) -> Result<Option<Rc<CompleteJacobian>>, EvalSolveError> {
+    backend
+        .map(|backend| {
+            super::selected_programs::compute_jacobian(backend.as_ref(), label, block, scalar)
+        })
+        .transpose()
 }
 
 /// `block` compiled by `backend` as a forward-mode Jacobian, if it compiles.
@@ -105,16 +100,9 @@ pub(super) fn compiled_jacobian(
     backend: Option<&Rc<dyn SolveExecutionBackend>>,
     label: &str,
     block: &solve::ScalarProgramBlock,
-) -> Result<Option<Rc<dyn CompiledSolveJacobianExpression>>, EvalSolveError> {
+) -> Result<Option<Rc<CompleteJacobian>>, EvalSolveError> {
     backend
-        .map(|backend| {
-            let whole = required_compiled(
-                label,
-                block.program_spans(),
-                backend.compile_jacobian_expression(block),
-            )?;
-            super::selected_programs::jacobian(backend.as_ref(), label, block, whole)
-        })
+        .map(|backend| super::selected_programs::jacobian(backend.as_ref(), label, block))
         .transpose()
 }
 

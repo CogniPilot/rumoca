@@ -129,7 +129,7 @@ fn selecting_one_program_never_runs_an_unrelated_faulting_program() {
     assert_eq!(
         code.call_program_output((0, 0), &[], &[], 0.0, &[])
             .unwrap(),
-        Some(3.0)
+        3.0
     );
     assert_eq!(*calls.borrow(), [source.program_span(0).unwrap()]);
     assert!(
@@ -167,10 +167,8 @@ fn selected_bulk_fault_preserves_outputs_and_success_reuses_each_program_once() 
     assert_eq!(out, [17.0, 19.0]);
     assert_eq!(*calls.borrow(), source.program_spans());
     calls.borrow_mut().clear();
-    assert!(
-        code.call_program_outputs_at(&[(0, 0), (0, 0)], (&[], &[], 0.0), &[], &mut out)
-            .unwrap()
-    );
+    code.call_program_outputs_at(&[(0, 0), (0, 0)], (&[], &[], 0.0), &[], &mut out)
+        .unwrap();
     assert_eq!(out, [3.0, 3.0]);
     assert_eq!(*calls.borrow(), [source.program_span(0).unwrap()]);
 }
@@ -198,7 +196,7 @@ fn a_whole_only_backend_still_prepares_required_selected_expression_code() {
     assert_eq!(
         code.call_program_output((1, 0), &[], &[], 0.0, &[])
             .unwrap(),
-        Some(7.0)
+        7.0
     );
 }
 
@@ -225,6 +223,6 @@ fn a_whole_only_backend_still_prepares_required_selected_directional_code() {
     assert_eq!(
         code.call_program_output((1, 0), &[], &[], 0.0, &[3.0, 7.0], &[])
             .unwrap(),
-        Some(7.0)
+        7.0
     );
 }

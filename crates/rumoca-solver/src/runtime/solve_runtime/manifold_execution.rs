@@ -1,4 +1,5 @@
 use super::*;
+use selected_programs::{CompleteExpression, CompleteJacobian};
 
 /// Both execution forms retain the same constraint programs and output order.
 #[derive(Clone)]
@@ -7,8 +8,8 @@ pub(super) struct PreparedManifoldProjection {
     directional: PreparedComputeBlock,
     directional_scalar: PreparedScalarProgramBlock,
     output_scratch: RefCell<Vec<f64>>,
-    compiled_residual: Option<Rc<dyn CompiledSolveExpression>>,
-    compiled_directional: Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    compiled_residual: Option<Rc<CompleteExpression>>,
+    compiled_directional: Option<Rc<CompleteJacobian>>,
 }
 
 impl PreparedManifoldProjection {
@@ -27,7 +28,12 @@ impl PreparedManifoldProjection {
                     source.program_spans(),
                     backend.compile_expression(&source),
                 )?;
-                selected_programs::expression(backend, "manifold_residual", &source, whole)
+                selected_programs::expression_from_whole(
+                    backend,
+                    "manifold_residual",
+                    &source,
+                    whole,
+                )
             })
             .transpose()?;
         let compiled_directional = compiled
@@ -38,7 +44,12 @@ impl PreparedManifoldProjection {
                     source.program_spans(),
                     backend.compile_jacobian_expression(&source),
                 )?;
-                selected_programs::jacobian(backend, "manifold_jacobian_v", &source, whole)
+                selected_programs::jacobian_from_whole(
+                    backend,
+                    "manifold_jacobian_v",
+                    &source,
+                    whole,
+                )
             })
             .transpose()?;
         Ok(Self {
@@ -96,17 +107,12 @@ impl PreparedManifoldProjection {
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
         if let Some(compiled) = &self.compiled_directional {
-            if !compiled.call_program_outputs(
+            return compiled.call_program_outputs(
                 program,
                 inputs,
                 context.external_tables.unwrap_or(&[]),
                 out,
-            )? {
-                return Err(RuntimeSolveError::solve_ir(
-                    "prepared manifold directional outputs are absent",
-                ));
-            }
-            return Ok(());
+            );
         }
         self.directional_scalar
             .eval_row_outputs_unchecked_with_context(

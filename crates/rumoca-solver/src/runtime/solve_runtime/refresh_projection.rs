@@ -368,14 +368,8 @@ impl<'a> ProjectionJacobian<'a> {
         runtime: ScalarExecutionView<'a>,
     ) -> Option<&'a dyn CompiledSolveJacobianExpression> {
         match self {
-            Self::SolverY { .. } => runtime
-                .scalar
-                .compiled_implicit_projection_jacobian_v()
-                .map(|code| code.as_ref()),
-            Self::SolverYAndParameters(_) => runtime
-                .scalar
-                .compiled_implicit_full_jacobian_v()
-                .map(|code| code.as_ref()),
+            Self::SolverY { .. } => runtime.scalar.compiled_implicit_projection_jacobian_v(),
+            Self::SolverYAndParameters(_) => runtime.scalar.compiled_implicit_full_jacobian_v(),
         }
     }
 }

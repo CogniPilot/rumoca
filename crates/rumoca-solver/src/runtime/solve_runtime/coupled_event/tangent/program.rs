@@ -10,16 +10,14 @@ use rumoca_eval_solve::{
 };
 use rumoca_ir_solve as solve;
 
-use super::super::super::{
-    CompiledSolveJacobianExpression, SolveExecutionBackend, admitted_compiled_error,
-    compiled_jacobian,
-};
+use super::super::super::selected_programs::CompleteJacobian;
+use super::super::super::{SolveExecutionBackend, admitted_compiled_error, compiled_jacobian};
 use crate::RuntimeSolveError;
 
 #[derive(Clone)]
 enum Execution {
     Reference,
-    Compiled(Rc<dyn CompiledSolveJacobianExpression>),
+    Compiled(Rc<CompleteJacobian>),
 }
 
 #[derive(Clone)]
@@ -120,10 +118,7 @@ impl TangentProgram {
                     inputs.seed,
                     context.external_tables.unwrap_or_default(),
                 )
-                .map_err(|error| self.error(error))?
-                .ok_or_else(|| {
-                    RuntimeSolveError::solve_ir("required coupled event tangent output declined")
-                })
+                .map_err(|error| self.error(error))
             }
         }
     }
@@ -144,20 +139,13 @@ impl TangentProgram {
                 .map_err(Into::into),
             Execution::Compiled(code) => {
                 let inputs = Self::inputs(y, p, t, context)?;
-                if !code
-                    .call_program_outputs(
-                        program,
-                        inputs,
-                        context.external_tables.unwrap_or_default(),
-                        out,
-                    )
-                    .map_err(|error| self.error(error))?
-                {
-                    return Err(RuntimeSolveError::solve_ir(
-                        "required coupled event tangent program declined",
-                    ));
-                }
-                Ok(())
+                code.call_program_outputs(
+                    program,
+                    inputs,
+                    context.external_tables.unwrap_or_default(),
+                    out,
+                )
+                .map_err(|error| self.error(error))
             }
         }
     }
