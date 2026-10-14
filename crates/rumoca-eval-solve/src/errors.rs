@@ -8,7 +8,7 @@ pub enum EvalSolveError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
-    /// Native status carries an index fault without axis/index/extent details.
+    /// Native index fault with the operand details retained by its issued entry.
     NativeSourceIndexFault {
         message: String,
         span: Option<rumoca_core::Span>,
@@ -231,8 +231,10 @@ impl std::fmt::Display for EvalSolveError {
             Self::CompiledExecution { message, .. } => {
                 write!(f, "compiled execution failed: {message}")
             }
-            Self::NativeSourceIndexFault { message, .. }
-            | Self::SourceOperationFault { message, .. } => f.write_str(message),
+            Self::NativeSourceIndexFault { message, .. } => {
+                write!(f, "native tensor index is out of bounds: {message}")
+            }
+            Self::SourceOperationFault { message, .. } => f.write_str(message),
             Self::ExternalTable {
                 operation,
                 table_id,
