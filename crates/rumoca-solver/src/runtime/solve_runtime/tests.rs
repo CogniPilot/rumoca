@@ -9,6 +9,7 @@ mod seed_linearization;
 mod selected_preparation;
 mod state_jacobian_pattern;
 mod target_queries;
+mod torn_preparation;
 
 use super::*;
 use rumoca_eval_solve::refresh_plan::{
