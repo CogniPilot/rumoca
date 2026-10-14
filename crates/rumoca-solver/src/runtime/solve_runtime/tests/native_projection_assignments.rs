@@ -201,18 +201,13 @@ fn projection(runtime: &SolveRuntime) -> RefreshProjectionModel<'_> {
             .algebraic_refresh
             .simultaneous_block_indices,
         plan_validated: true,
-        jacobian_v: ProjectionJacobian::SolverY {
-            block: &runtime
-                .scalar_execution()
-                .unwrap()
-                .scalar
-                .implicit_projection_jacobian_v,
-            scalar: &runtime
+        jacobian_v: ProjectionJacobian::SolverY(
+            &runtime
                 .scalar_execution()
                 .unwrap()
                 .scalar
                 .implicit_projection_scalar_jacobian_v,
-        },
+        ),
     }
 }
 
@@ -286,8 +281,13 @@ fn aggregate_outputs_do_not_generate_separate_native_assignment_programs() {
         solve::LinearOp::Const { dst: 3, value: 9.0 },
         solve::LinearOp::StoreOutput { src: 3 },
     ]);
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(vec![row], "shared_assignment.mo")).unwrap();
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(vec![row], "shared_assignment.mo"),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         projection(&runtime)
             .eval_implicit_target_value(0, 1, &[1.0, 100.0], &[], 0.0)
@@ -303,12 +303,16 @@ fn native_assignment_preserves_a_tiny_root_beside_a_large_incoming_value() {
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
     runtime.scalar_fixture_mut().execution_backend = Some(backend.clone());
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(
             vec![shifted_variable_residual_row(1, 1e-17)],
             "tiny_assignment.mo",
-        ))
-        .unwrap();
+        ),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         projection(&runtime)
             .eval_implicit_target_value(0, 1, &[1.0, 1e20], &[], 0.0)
@@ -323,8 +327,9 @@ fn singular_coefficients_preserve_the_projection_decline() {
     let model = warm_start_test_model();
     let mut runtime = SolveRuntime::new_fixture(&model).unwrap();
     let backend = Rc::new(AssignmentBackend::default());
-    runtime.scalar_fixture_mut().implicit_scalar_rhs =
-        PreparedScalarProgramBlock::new(spanned_block(
+    runtime.scalar_fixture_mut().implicit_scalar_rhs = PrimalProgram::prepare(
+        "reference fixture",
+        spanned_block(
             vec![vec![
                 solve::LinearOp::LoadP { dst: 0, index: 0 },
                 solve::LinearOp::LoadY { dst: 1, index: 1 },
@@ -344,8 +349,11 @@ fn singular_coefficients_preserve_the_projection_decline() {
                 solve::LinearOp::StoreOutput { src: 4 },
             ]],
             "singular_assignment.mo",
-        ))
-        .unwrap();
+        ),
+        None,
+        None,
+    )
+    .unwrap();
     for coefficient in [2.0, 0.0, f64::INFINITY, f64::NAN] {
         runtime.scalar_fixture_mut().execution_backend = None;
         let reference = projection(&runtime)

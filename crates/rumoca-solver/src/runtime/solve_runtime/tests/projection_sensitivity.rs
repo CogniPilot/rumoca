@@ -644,6 +644,7 @@ fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
             .unwrap()
             .scalar
             .implicit_jacobian_v
+            .source()
             .len()
     ];
     runtime
@@ -651,14 +652,14 @@ fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
         .unwrap()
         .scalar
         .implicit_jacobian_v
-        .eval_with_context(
-            &solver_y,
-            &params,
-            0.0,
-            RowEvalContext {
-                seed: Some(&v),
-                ..runtime.row_eval_context()
+        .eval(
+            solve_eval::JacobianEvalInputs {
+                y: &solver_y,
+                p: &params,
+                t: 0.0,
+                seed: &v,
             },
+            runtime.row_eval_context(),
             &mut jg_v,
         )
         .expect("forward implicit JVP");

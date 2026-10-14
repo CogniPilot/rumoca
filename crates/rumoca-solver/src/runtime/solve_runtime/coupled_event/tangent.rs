@@ -103,6 +103,7 @@ impl CoupledEventSystem<'_> {
             self.runtime
                 .scalar
                 .implicit_jacobian_v
+                .source()
                 .requirements()
                 .seed_len,
         );
@@ -186,32 +187,17 @@ impl CoupledEventSystem<'_> {
             seed: Some(seed),
             ..runtime.row_eval_context()
         };
-        let mut implicit = vec![0.0; runtime.scalar.implicit_jacobian_v.len()];
-        if let Some(code) = runtime.scalar.compiled_implicit_full_jacobian_v() {
-            code.call(
+        let mut implicit = vec![0.0; runtime.scalar.implicit_jacobian_v.source().len()];
+        runtime.scalar.implicit_jacobian_v.eval(
+            rumoca_eval_solve::JacobianEvalInputs {
                 y,
                 p,
-                self.t,
+                t: self.t,
                 seed,
-                runtime.model.external_tables.as_slice(),
-                &mut implicit,
-            )
-            .map_err(|error| {
-                super::super::admitted_compiled_error(
-                    "coupled event implicit tangent",
-                    runtime.scalar.implicit_jacobian_v.block().program_spans(),
-                    error,
-                )
-            })?;
-        } else {
-            runtime.scalar.implicit_jacobian_v.eval_with_context(
-                y,
-                p,
-                self.t,
-                context,
-                &mut implicit,
-            )?;
-        }
+            },
+            context,
+            &mut implicit,
+        )?;
         let row_p: Cow<'_, [f64]> = if self.snapshot.root_relation_overrides.is_empty() {
             Cow::Borrowed(p)
         } else {

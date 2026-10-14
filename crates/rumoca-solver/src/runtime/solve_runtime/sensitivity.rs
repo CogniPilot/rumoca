@@ -252,7 +252,13 @@ impl ScalarExecutionView<'_> {
         self.refresh_algebraic_and_output_slots(t, solver_y, params, settle.tol, settle.max_iters)?;
         let p_scalars = self.model.problem.layout.p_scalars();
         let seed_len = (self.solver_count + p_scalars)
-            .max(self.scalar.implicit_jacobian_v.requirements().seed_len)
+            .max(
+                self.scalar
+                    .implicit_jacobian_v
+                    .source()
+                    .requirements()
+                    .seed_len,
+            )
             .max(self.solver_count);
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
@@ -383,7 +389,13 @@ impl ScalarExecutionView<'_> {
             .derivative_jacobian_v
             .requirements()
             .seed_len
-            .max(self.scalar.implicit_jacobian_v.requirements().seed_len)
+            .max(
+                self.scalar
+                    .implicit_jacobian_v
+                    .source()
+                    .requirements()
+                    .seed_len,
+            )
             .max(self.solver_count);
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
