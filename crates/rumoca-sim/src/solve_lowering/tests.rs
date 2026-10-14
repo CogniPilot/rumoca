@@ -13,6 +13,7 @@ mod coincident_strict;
 mod fmi_export_defaults;
 mod function_returns;
 mod host_initialization;
+mod initial_relation_geometry;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod initial_relation_truth;
 #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
