@@ -18,14 +18,33 @@ pub fn next_runtime_event_stop(
     current_t: f64,
     target: f64,
 ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
+    let rows = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
+    Ok(next_runtime_event_stop_from_rows(
+        model,
+        params,
+        rows,
+        stop_schedule,
+        current_t,
+        target,
+    ))
+}
+
+pub(crate) fn next_runtime_event_stop_from_rows(
+    model: &solve::SolveModel,
+    params: &[f64],
+    rows: Vec<f64>,
+    stop_schedule: &SolveStopSchedule,
+    current_t: f64,
+    target: f64,
+) -> (f64, Option<RuntimeEventStop>) {
     let (static_stop, static_event) = stop_schedule.next_stop(current_t, target);
     let Some(dynamic_stop) =
-        next_dynamic_time_event(model, runtime_state, y, params, current_t, target)?
+        next_dynamic_time_event_from_rows(model, params, rows, current_t, target)
     else {
-        return Ok((static_stop, static_event));
+        return (static_stop, static_event);
     };
     if dynamic_stop < static_stop && !sample_time_match_with_tol(dynamic_stop, static_stop) {
-        return Ok((dynamic_stop, Some(RuntimeEventStop::dynamic_time_event())));
+        return (dynamic_stop, Some(RuntimeEventStop::dynamic_time_event()));
     }
     if sample_time_match_with_tol(dynamic_stop, static_stop) {
         let event = static_event
@@ -38,9 +57,9 @@ pub fn next_runtime_event_stop(
         // host target bounds this step. Returning the earlier value can leave
         // the later relation false and replay the clock when that dynamic
         // deadline is processed immediately after it.
-        return Ok((static_stop.max(dynamic_stop).min(target), Some(event)));
+        return (static_stop.max(dynamic_stop).min(target), Some(event));
     }
-    Ok((static_stop, static_event))
+    (static_stop, static_event)
 }
 
 pub fn current_dynamic_time_event_stop(
@@ -50,20 +69,31 @@ pub fn current_dynamic_time_event_stop(
     params: &[f64],
     current_t: f64,
 ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
+    let rows = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
+    Ok(current_dynamic_time_event_stop_from_rows(
+        model, params, &rows, current_t,
+    ))
+}
+
+pub(crate) fn current_dynamic_time_event_stop_from_rows(
+    model: &solve::SolveModel,
+    params: &[f64],
+    rows: &[f64],
+    current_t: f64,
+) -> Option<RuntimeEventStop> {
     let named_events = model
         .problem
         .events
         .dynamic_time_event_names
         .iter()
         .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let row_events = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
     if named_events
-        .chain(row_events)
+        .chain(rows.iter().copied())
         .any(|event_t| sample_time_match_with_tol(event_t, current_t))
     {
-        return Ok(Some(RuntimeEventStop::dynamic_time_event()));
+        return Some(RuntimeEventStop::dynamic_time_event());
     }
-    Ok(None)
+    None
 }
 
 pub fn visible_values_with_context(
@@ -190,24 +220,22 @@ fn visible_value_with_context(
     )))
 }
 
-fn next_dynamic_time_event(
+fn next_dynamic_time_event_from_rows(
     model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &[f64],
     params: &[f64],
+    mut candidates: Vec<f64>,
     current_t: f64,
     target: f64,
-) -> Result<Option<f64>, RuntimeSolveError> {
+) -> Option<f64> {
     let named_events = model
         .problem
         .events
         .dynamic_time_event_names
         .iter()
         .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let mut candidates = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
     candidates.extend(named_events);
     candidates.retain(|event_t| event_time_in_window(*event_t, current_t, target));
-    Ok(canonical_dynamic_time_event(&candidates))
+    canonical_dynamic_time_event(&candidates)
 }
 
 /// Return the reached instant for the earliest tolerance-coincident deadline

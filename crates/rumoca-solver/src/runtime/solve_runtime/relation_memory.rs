@@ -7,7 +7,13 @@ impl SolveRuntime {
         params: &[f64],
         current_t: f64,
     ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+        let rows = self.prepared_dynamic_time_event_row_values(y, params, current_t)?;
+        Ok(current_dynamic_time_event_stop_from_rows(
+            &self.model,
+            params,
+            &rows,
+            current_t,
+        ))
     }
 
     pub fn next_runtime_event_stop(
@@ -18,15 +24,31 @@ impl SolveRuntime {
         current_t: f64,
         target: f64,
     ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        next_runtime_event_stop(
+        let rows = self.prepared_dynamic_time_event_row_values(y, params, current_t)?;
+        Ok(next_runtime_event_stop_from_rows(
             &self.model,
-            &self.runtime_state,
-            y,
             params,
+            rows,
             stop_schedule,
             current_t,
             target,
-        )
+        ))
+    }
+
+    fn prepared_dynamic_time_event_row_values(
+        &self,
+        y: &[f64],
+        params: &[f64],
+        current_t: f64,
+    ) -> Result<Vec<f64>, RuntimeSolveError> {
+        let row_count = self.model.problem.events.dynamic_time_event_rhs.len();
+        if self.model.problem.events.dynamic_time_event_rhs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scalar = self.scalar_execution()?;
+        let mut rows = zero_runtime_values(row_count, "prepared dynamic time-event row values")?;
+        scalar.eval_dynamic_time_event_rows_into(current_t, y, params, &mut rows)?;
+        Ok(rows)
     }
 }
 
@@ -1157,14 +1179,17 @@ impl ScalarExecutionView<'_> {
                 0.0,
                 "visible values",
             )?;
-            self.scalar.visible_value_rows.eval_with_context(
-                y,
-                params,
-                t,
-                self.row_eval_context(),
+            self.eval_lifecycle_block(
+                &self.scalar.visible_value_rows,
+                RowEvalPoint { y, p: params, t },
                 values,
             )?;
             return Ok(());
+        }
+        if self.scalar.lifecycle().is_some() {
+            return Err(RuntimeSolveError::solve_ir(
+                "prepared visible output extent differs from its source",
+            ));
         }
         let computed =
             visible_values_with_context(&self.model, y, params, t, self.row_eval_context())?;

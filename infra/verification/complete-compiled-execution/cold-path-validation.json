@@ -1,0 +1,49 @@
+{
+  "priorRevision": "d42b2e6c0db746e525028be414b2628265f47caa",
+  "sourceSnapshotSha256": "e55498e13b77017e6ee51f05ea1b7f087fdea05a44ca9f930f5b26d40adb322a",
+  "sourceFiles": {
+    "crates/rumoca-solver/src/runtime/delay.rs": "2216d706739e3e2a152a1316283521e3493d70083ebad95e8cb4e0df4b0552d7",
+    "crates/rumoca-solver/src/runtime/solve_events.rs": "38f7c23c91efd8acaf22a7049d3a99980ddfa6ee89c1900bbc5e0cadb88ac752",
+    "crates/rumoca-solver/src/runtime/solve_runtime.rs": "f93cbdfb99fadeeda7a5f929ea2800bfe3b37f624a299179bc8baecdf24d3c6c",
+    "crates/rumoca-solver/src/runtime/solve_runtime/compiled_lifecycle.rs": "b468e9a0e1c75bbdc21329c7e5dd2b492a8b9a6a851ffa159849fdf45be94ba8",
+    "crates/rumoca-solver/src/runtime/solve_runtime/construction.rs": "a653ab8b38086e0a739b149be81eadb4d7204e35a15a05900750d699b1d0c28f",
+    "crates/rumoca-solver/src/runtime/solve_runtime/coupled_event.rs": "374620724d854924ebb9707f4ad29be7c7a874c7432d0e9cb5c3c22ec6ba60db",
+    "crates/rumoca-solver/src/runtime/solve_runtime/coupled_event/prepared_jvps.rs": "6353a60dfbf1c31e2771f7ecfaf8baddbb02cd47f6f1a7d9fc05191338acd182",
+    "crates/rumoca-solver/src/runtime/solve_runtime/coupled_event/tangent.rs": "a15fc6cb125d6fcd62b531c8dfe5eb283df3fc4af6706662315b14ff23d3514e",
+    "crates/rumoca-solver/src/runtime/solve_runtime/discrete_rows.rs": "afde6b03c8c79203fad38e29861f68bda48eb2c2609485a6f2562eed757d0a65",
+    "crates/rumoca-solver/src/runtime/solve_runtime/execution_inventory/tests.rs": "3782a37625d91f7fedac3e2470979795a62a495c0f5aced6fc34d4ec88932e19",
+    "crates/rumoca-solver/src/runtime/solve_runtime/execution_inventory/tests/deadline_scheduling.rs": "0ac4a5c662dffaa56e88c340004d967f3cf59458df597dd9882bc351b2f1b055",
+    "crates/rumoca-solver/src/runtime/solve_runtime/manifold_execution.rs": "756294296497b25852f9bfb762fa8d390d9cbc15f7355122383d00d94e2f62f5",
+    "crates/rumoca-solver/src/runtime/solve_runtime/refresh_batch.rs": "a2650013b36a9ecdf51cf8ee4a4f66ccfba71cb1e93c2946f05386cbbce95f52",
+    "crates/rumoca-solver/src/runtime/solve_runtime/refresh_execution.rs": "31fbf0ee354de2f87bf61a2e58749ef07e1f905ab706873efc9a6af365787a3d",
+    "crates/rumoca-solver/src/runtime/solve_runtime/refresh_projection.rs": "5d9cfc506ed0b5d4c36522f15c0d1aaa43a484c6e73681ab62a8f7a69b09e680",
+    "crates/rumoca-solver/src/runtime/solve_runtime/refresh_projection/grouped_jacobian.rs": "249c56bdc198439729257e084139d0ee22e4edc66c9b0dbcee1eeca9e1b88440",
+    "crates/rumoca-solver/src/runtime/solve_runtime/refresh_projection/grouped_residual.rs": "940abce5a9f59984186b77aab0aa0b7999ff8494d2951bbcc8f415caf5b61819",
+    "crates/rumoca-solver/src/runtime/solve_runtime/relation_memory.rs": "661d2e38d98161a8831023b8f80bb7dd58a85f15bea1da70f9bbdfeae818959c",
+    "crates/rumoca-solver/src/runtime/solve_runtime/tests/coupled_event_newton.rs": "7b301e2cd731f17ad7e078fdffbc4908a4034428da7265d94939c1bf9bea0b20",
+    "crates/rumoca-solver/src/runtime/solve_runtime/tests/lifecycle_preparation.rs": "a01aab74ab9007315c00016cbbf9941e148824b05435949fb2ca207ce8aed7b2",
+    "crates/rumoca-solver/src/runtime/solve_runtime/tests/native_projection_residual.rs": "aa5a269a573a099a3097965579981fd755334c82629c03a25fec751911cce40f",
+    "crates/rumoca-solver/src/runtime/solve_runtime/tests/refresh_dispatch.rs": "bad0098d4d614f0bc335ca6ad63debccabcf4308e3541be5c3e376ad1a70a092",
+    "crates/rumoca-solver/src/verification/condition_memory.rs": "3779889cb5971e9f5d462a56fd7f773001a3e274e968cbecc8d7738345442eb4"
+  },
+  "validation": {
+    "solverLibraryTests": 756,
+    "features": [
+      "native-wasm"
+    ],
+    "clippy": "solver all-targets, native-wasm, -D warnings",
+    "completeSourceClosure": false
+  },
+  "logs": {
+    "clock-buffer-three-before-fix.log": "d7ea65b6629bfc7b45dbb55e5d2e62809092280d72da6506cfeb775925dfdc12",
+    "clock-buffer-after-fix.log": "4c9318039ee2ff8440a4f392abd9d051ada4bbdb9a2849a8dbbe1d75303cae6c",
+    "clock-condition-memory-properties.log": "731422ecbc1d660481d3c1b68214387481b626eda35d95ecff9f92c40e295272",
+    "refresh-dispatch-before-fix.log": "f823a2e419e68db1e877a43c2de74f764d751b9f94018a98c93aef9ef94ebb46",
+    "coupled-jvps-before-fix.log": "ad3527478f0d671d8867d51d4fb7ef8fa7344392627fb4187adc8e7db6418d9a",
+    "coupled-primal-before-fix.log": "1251b3d4aa78ebb81bcd0dc4c026f337764b9739b66f1d10f58286d7aa8af2c0",
+    "delay-event-roots-before-fix.log": "021a2864d8b1e7f2479e703520087699e19770b0be0dea45cf2b1e8382f1d20f",
+    "deadline-scheduling-before-fix.log": "d456d8f6e31f5bc76070fccd09a55da7f63db6790cbd150d750f1dbbb0927a69",
+    "coupled-primal-after-full-solver.log": "a87efa55a7350cb97beab6d4b0868276a40341edfe4d83f07b3e76533ca2550c",
+    "coupled-runtime-clippy-after.log": "a8ef878ea69e22189985866de42d15f77c8f9a34b6bf4c478fb300efce4f8bba"
+  }
+}

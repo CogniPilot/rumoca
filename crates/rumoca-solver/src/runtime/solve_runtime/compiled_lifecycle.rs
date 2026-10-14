@@ -232,6 +232,33 @@ impl ScalarExecutionView<'_> {
             .map_err(Into::into)
     }
 
+    pub(super) fn eval_lifecycle_row_output(
+        &self,
+        block: &PreparedScalarProgramBlock,
+        program: usize,
+        output: usize,
+        point: RowEvalPoint<'_>,
+    ) -> Result<f64, RuntimeSolveError> {
+        let mut values = Vec::new();
+        if self.eval_lifecycle_program_outputs(block, program, point, &mut values)? {
+            return values.get(output).copied().ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "lifecycle output {output} is outside prepared program {program}"
+                ))
+            });
+        }
+        block
+            .eval_row_output_unchecked_with_context(
+                program,
+                output,
+                point.y,
+                point.p,
+                point.t,
+                self.row_eval_context(),
+            )
+            .map_err(Into::into)
+    }
+
     pub(super) fn eval_lifecycle_block(
         &self,
         block: &PreparedScalarProgramBlock,

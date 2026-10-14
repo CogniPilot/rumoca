@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "tests/refresh_dispatch.rs"]
+mod dispatch_tests;
+
 pub(super) fn static_refresh_parameter_indices<'a>(
     implicit: &PreparedScalarProgramBlock,
     plans: impl IntoIterator<Item = &'a solve::RefreshPlan>,
@@ -512,7 +516,17 @@ impl ScalarExecutionView<'_> {
         // the row's own implicit target; for a cross-paired row (a coupled
         // block solved a residual row for one of its other unknowns) the
         // assignment value belongs to a different variable.
-        if row.assignment_target() == Some(index)
+        if let Some(queries) = self.scalar.compiled_targets(false) {
+            if row.assignment_target() == Some(index)
+                && let Some(value) = queries.call(
+                    (program_row, row.output_offset(), index),
+                    (solver_y, params, t),
+                    self.row_eval_context(),
+                )?
+            {
+                return Ok(value);
+            }
+        } else if row.assignment_target() == Some(index)
             && let Some(value) = self
                 .scalar
                 .implicit_scalar_rhs
@@ -543,6 +557,17 @@ impl ScalarExecutionView<'_> {
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
         let program_row = self.refresh_program_row(row)?;
+        if let Some(code) = self.scalar.compiled_implicit_rhs() {
+            return code
+                .call_program_output(
+                    (program_row, row.output_offset()),
+                    solver_y,
+                    params,
+                    t,
+                    self.model.external_tables.as_slice(),
+                )?
+                .ok_or_else(|| RuntimeSolveError::solve_ir("prepared refresh residual is absent"));
+        }
         self.scalar
             .implicit_scalar_rhs
             .eval_row_output_unchecked_with_context(
@@ -601,7 +626,8 @@ impl ScalarExecutionView<'_> {
             self.validate_refresh_values(plan, solver_y, params)?;
             return Ok(());
         }
-        if self.can_batch_assignment_refresh(plan) {
+        if self.scalar.compiled_implicit_rhs().is_none() && self.can_batch_assignment_refresh(plan)
+        {
             self.scalar
                 .implicit_scalar_rhs
                 .apply_target_assignment_rows_unchecked_with_context(
@@ -836,15 +862,13 @@ impl ScalarExecutionView<'_> {
                     .eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?,
             }
         }
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
+        self.delay_runtime.evaluate_event_roots(
+            t,
+            solver_y,
+            params,
+            self.row_eval_context(),
+            &mut out[model_root_count..],
+        )?;
         validate_finite_runtime_output("root search output", out)
     }
 }

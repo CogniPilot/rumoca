@@ -25,7 +25,7 @@ use crate::runtime::projection::{
     project_algebraics_with_plan, project_algebraics_with_plan_certified,
 };
 use crate::runtime::solve_events::{
-    current_dynamic_time_event_stop, event_action_params, next_runtime_event_stop,
+    current_dynamic_time_event_stop_from_rows, event_action_params, next_runtime_event_stop_from_rows,
     visible_values_with_context,
 };
 use crate::runtime::solve_ops::write_clock_activation_params;
@@ -269,6 +269,7 @@ struct ScalarExecutionInventory {
     implicit_projection_jacobian_v: PreparedComputeBlock,
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
+    coupled_event_jvps: coupled_event::CoupledEventJvps,
     /// Tangent plan of each algebraic projection block's tearing, aligned
     /// with the block list; `None` for an untorn block or one without a plan.
     torn_tangents: Rc<[Option<rumoca_eval_solve::TornTangentEvaluator>]>,
@@ -1045,15 +1046,13 @@ impl ScalarExecutionView<'_> {
             params,
             &mut out[..model_root_count],
         )?;
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                &solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
+        self.delay_runtime.evaluate_event_roots(
+            t,
+            &solver_y,
+            params,
+            self.row_eval_context(),
+            &mut out[model_root_count..],
+        )?;
         validate_finite_runtime_output("root condition output", out)
     }
 
@@ -1127,15 +1126,13 @@ impl ScalarExecutionView<'_> {
             let model_out = &mut out[..model_root_count];
             let Some(plan) = &self.scalar.root_condition_plan else {
                 self.eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?;
-                self.delay_runtime
-                    .evaluate_event_roots(
-                        t,
-                        solver_y,
-                        params,
-                        self.row_eval_context(),
-                        &mut out[model_root_count..],
-                    )
-                    .map_err(RuntimeSolveError::from)?;
+                self.delay_runtime.evaluate_event_roots(
+                    t,
+                    solver_y,
+                    params,
+                    self.row_eval_context(),
+                    &mut out[model_root_count..],
+                )?;
                 return validate_finite_runtime_output("root search output", out);
             };
             self.validate_root_plan_output_len(plan, model_out)?;
@@ -1145,15 +1142,13 @@ impl ScalarExecutionView<'_> {
                 self.write_planned_root_search_conditions(plan, solver_y, params, t, model_out)?;
             }
         }
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
+        self.delay_runtime.evaluate_event_roots(
+            t,
+            solver_y,
+            params,
+            self.row_eval_context(),
+            &mut out[model_root_count..],
+        )?;
         validate_finite_runtime_output("root search output", out)
     }
 

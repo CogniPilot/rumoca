@@ -91,14 +91,17 @@ impl PreparedManifoldProjection {
         context: RowEvalContext<'_>,
         out: &mut Vec<f64>,
     ) -> Result<(), RuntimeSolveError> {
-        if let Some(compiled) = &self.compiled_directional
-            && compiled.call_program_outputs(
+        if let Some(compiled) = &self.compiled_directional {
+            if !compiled.call_program_outputs(
                 program,
                 inputs,
                 context.external_tables.unwrap_or(&[]),
                 out,
-            )?
-        {
+            )? {
+                return Err(RuntimeSolveError::solve_ir(
+                    "prepared manifold directional outputs are absent",
+                ));
+            }
             return Ok(());
         }
         self.directional_scalar
