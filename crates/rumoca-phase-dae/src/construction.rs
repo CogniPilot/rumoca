@@ -75,8 +75,9 @@ use analysis::{
     function_assertion, function_record_field_name, inferred_clock_transfer, is_event_condition,
     is_inferred_clock_condition, is_whole_clock_coordinate, materialized_discrete_real_family,
     materialized_discrete_value_rows, model_algorithm_targets, names_overlap,
-    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
-    structured_assignment_names, when_conditional_selects_clock_structure, when_function_call_key,
+    record_field_projections, selected_conditional_statements, selected_when_target,
+    specialized_comprehension_plan, structured_assignment_names,
+    when_conditional_selects_clock_structure, when_function_call_key,
 };
 use clock_operator_hosts::clock_operator_hosts;
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
@@ -153,6 +154,12 @@ enum Coordinate<'dae> {
 }
 
 impl<'dae> Coordinate<'dae> {
+    fn discrete_value(self) -> Option<dae::DiscreteValueId<'dae>> {
+        match self {
+            Self::DiscreteValue(variable) => Some(variable),
+            _ => None,
+        }
+    }
     fn current(self) -> dae::CoordinateInput<'dae> {
         match self {
             Self::Parameter(id) => dae::CoordinateInput::Parameter(id),
@@ -295,9 +302,6 @@ fn build_checked<'dae>(
     variable_plan: &VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    if let Some(declaration) = flat.predefined_string_declaration {
-        construction.register_predefined_string(declaration)?;
-    }
     let value_types = reserve_value_types(flat, analysis, construction)?;
     let mut clocks = lower_analysis_clocks(construction, flat, analysis)?;
     let no_function_ids = HashMap::new();
@@ -368,7 +372,12 @@ fn build_checked<'dae>(
         &analysis.clocked_value_owners,
         &clocks,
     )?;
-    let mut discrete_values = DiscreteValueStaging::new();
+    let mut discrete_values = DiscreteValueStaging::new(
+        flat,
+        &coordinates,
+        construction,
+        &analysis.discrete_value_topology,
+    )?;
     lower_bindings(
         construction,
         &mut discrete_values,
@@ -540,6 +549,9 @@ fn reserve_value_types<'dae>(
     analysis: &Analysis,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<HashMap<VarName, dae::ValueTypeId<'dae>>, dae::DaeConstructionError> {
+    if let Some(declaration) = flat.predefined_string_declaration {
+        construction.register_predefined_string(declaration)?;
+    }
     let mut value_types = HashMap::new();
     for (name, variable) in &flat.variables {
         if matches!(analysis.roles[name], PlannedRole::Clock) {

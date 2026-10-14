@@ -1,6 +1,6 @@
 {
   "dae": {
-    "schema_version": 51,
+    "schema_version": 52,
     "source_map": {
       "files": [
         [
@@ -694,8 +694,14 @@
       "discrete_value_owners": [
         {
           "targets": [
-            4,
-            5
+            {
+              "variable": 4,
+              "scalar_selection": null
+            },
+            {
+              "variable": 5,
+              "scalar_selection": null
+            }
           ],
           "branches": [
             {

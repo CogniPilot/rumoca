@@ -17,6 +17,72 @@ equation
   q=sqrt(1-x*x);
 end RelationInitialization;"#;
 
+#[test]
+fn ordinary_initialization_reads_relations_at_the_solved_discrete_definition() {
+    let dae = compile(
+        "model InitialDiscreteRelation
+         parameter Real period=1;
+         Real width;
+         discrete Real deadline(start=-5);
+         Real x; Real y;
+         equation width=period/2; der(x)=-x; y=if time < deadline+width then 3 else 0;
+         when time>0.7 then deadline=time; end when;
+         initial algorithm deadline:=0;
+         initial equation x=y;
+         end InitialDiscreteRelation;",
+        "InitialDiscreteRelation",
+    );
+    let session = SimulationSession::new(
+        &dae,
+        SimOptions {
+            t_end: 0.25,
+            ..Default::default()
+        },
+    )
+    .expect("the simultaneous initial solve reads the defined discrete value");
+    let state = session.state().unwrap();
+    assert_eq!(state.time, 0.0);
+    assert_eq!(state.values["x"], 3.0);
+    assert_eq!(state.values["y"], 3.0);
+}
+
+#[test]
+fn structured_boolean_relations_retain_raw_initialization_and_held_transient_truth() {
+    let dae = compile(
+        "model ArrayRelations Real x[3](each start=1, each fixed=true); Boolean b[3];\n\
+         equation der(x)=zeros(3); b={sqrt(x[i])>0 for i in 1:3}; end ArrayRelations;",
+        "ArrayRelations",
+    );
+    let model = super::super::entry::lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("structured relation wrappers have one proven affine program");
+    assert!(!model.problem.discrete.structured_rhs.is_empty());
+    let mut y = model.initial_y.to_vec();
+    let mut p = model.parameters.to_vec();
+    let initial = model
+        .problem
+        .solve_layout
+        .initial_event_parameter_index
+        .unwrap();
+    let rhs =
+        rumoca_eval_solve::to_scalar_program_block(&model.problem.discrete.structured_rhs).unwrap();
+    let mut output = vec![0.0; rhs.stored_output_count()];
+    for &memory in &model.problem.solve_layout.relation_memory_parameter_indices {
+        p[memory] = 0.0;
+    }
+    p[initial] = 1.0;
+    rumoca_eval_solve::eval_scalar_program_block(&rhs, &y, &p, 0.0, None, &mut output)
+        .expect("initialization reads raw relations despite false memory seeds");
+    assert_eq!(output, vec![1.0; 3]);
+    y.fill(-1.0);
+    for &memory in &model.problem.solve_layout.relation_memory_parameter_indices {
+        p[memory] = 1.0;
+    }
+    p[initial] = 0.0;
+    rumoca_eval_solve::eval_scalar_program_block(&rhs, &y, &p, 0.0, None, &mut output)
+        .expect("held truth skips raw sqrt at the negative trial coordinate");
+    assert_eq!(output, vec![1.0; 3]);
+}
+
 fn assert_initial_branch(source: &str) {
     let dae = compile(source, "RelationInitialization");
     for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {

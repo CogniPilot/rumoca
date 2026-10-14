@@ -314,6 +314,7 @@ fn affine_projection_seeds_are_omitted_from_all_owners_and_remainders() {
             owners.event(),
             &owners.clock_events()[0],
             owners.root_after_derivative().unwrap().remainder(),
+            owners.root_after_algebraic().unwrap().remainder(),
             owners.algebraic_after_derivative().unwrap().remainder(),
             owners.clock_events_after_event()[0].remainder(),
         ] {
@@ -793,9 +794,11 @@ fn wire_reconstructs_the_root_remainder_relation() {
     .unwrap();
     let wire = serde_json::to_value(&owners).unwrap();
     assert!(wire.get("root_after_derivative").is_none());
+    assert!(wire.get("root_after_algebraic").is_none());
     let replayed: ContinuousRefreshOwners = serde_json::from_value(wire).unwrap();
     assert!(replayed.is_issued());
     assert!(replayed.root_after_derivative().is_some());
+    assert!(replayed.root_after_algebraic().is_some());
 }
 
 #[test]
@@ -1021,4 +1024,101 @@ fn builder_push_reserves_the_registers_of_appended_operations() {
         })
         .unwrap();
     assert_eq!(result, 6);
+}
+
+#[test]
+fn full_algebraic_root_remainder_reissues_exact_uncovered_order_on_wire() {
+    let full = RefreshPlan {
+        rows: vec![row(0)],
+        causal_seed_rows: selection(1, [0]),
+        dynamic_causal_seed_rows: selection(1, [0]),
+        causal_solution_certified: true,
+        ..Default::default()
+    };
+    let root = RefreshPlan {
+        rows: vec![row(0), row(1)],
+        causal_seed_rows: selection(2, [0, 1]),
+        dynamic_causal_seed_rows: selection(2, [0, 1]),
+        causal_solution_certified: true,
+        ..Default::default()
+    };
+    let owners = ContinuousRefreshOwners::checked(
+        full,
+        RefreshPlan::default(),
+        root,
+        RefreshPlan::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    for owners in [
+        owners.clone(),
+        serde_json::from_value(serde_json::to_value(&owners).unwrap()).unwrap(),
+    ] {
+        let relation = owners.root_after_algebraic().unwrap();
+        assert_eq!(
+            relation
+                .remainder()
+                .dynamic_causal_rows()
+                .iter()
+                .map(AlgebraicRefreshRow::target_index)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(
+            owners
+                .root_after_derivative()
+                .unwrap()
+                .remainder()
+                .dynamic_causal_rows()
+                .iter()
+                .map(AlgebraicRefreshRow::target_index)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_ne!(
+            relation.remainder().dynamic_causal_sequence,
+            owners.root().dynamic_causal_sequence
+        );
+    }
+}
+
+#[test]
+fn full_algebraic_root_remainder_covers_only_the_exact_predecessor_inventory() {
+    let complete = mixed_projection_exact_plan(true);
+    let owners = ContinuousRefreshOwners::checked_for_source(
+        &two_output_source(true),
+        complete.clone(),
+        RefreshPlan::default(),
+        complete,
+        RefreshPlan::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        owners
+            .root_after_algebraic()
+            .unwrap()
+            .remainder()
+            .value_stages
+            .is_empty()
+    );
+    assert!(
+        !owners
+            .root_after_derivative()
+            .unwrap()
+            .remainder()
+            .value_stages
+            .is_empty()
+    );
+    let mut wire = serde_json::to_value(&owners).unwrap();
+    wire["algebraic"] = serde_json::to_value(RefreshPlan::default()).unwrap();
+    let altered: ContinuousRefreshOwners = serde_json::from_value(wire).unwrap();
+    assert!(
+        !altered
+            .root_after_algebraic()
+            .unwrap()
+            .remainder()
+            .value_stages
+            .is_empty()
+    );
 }

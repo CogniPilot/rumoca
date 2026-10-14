@@ -152,17 +152,7 @@ pub(super) fn call_native_with_parameters(
     // SAFETY: the original checked row was compiled by the production issuer;
     // its exact input and output slices were admitted above. The retained module
     // owns this kernel, and the production wrapper allocates its register tape.
-    let result = unsafe {
-        call_residual_jit(
-            &jit.jit,
-            jit.register_count,
-            &mut registers,
-            &[],
-            p,
-            0.0,
-            out,
-        )
-    };
+    let result = unsafe { call_residual_jit(jit, &mut registers, &[], p, 0.0, out) };
     compiled.record_jit_call();
     status::check(result)
 }

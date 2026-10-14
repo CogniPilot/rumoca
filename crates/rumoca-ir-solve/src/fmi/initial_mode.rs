@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests;
+mod typed_relation;
 
 use crate::parameter_reads::scalar_parameter_output as parameter;
 use crate::{LinearOp, LinearOpSliceKind, SolveModel, SolveVisitor};
@@ -13,14 +14,16 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
     let mut reads = ModeReads {
         flag,
         memory: &model.problem.solve_layout.relation_memory_parameter_indices,
+        calls: &model.pure_calls,
         seed_offset: model.problem.layout.y_scalars(),
         total: 0,
         guards: 0,
         unknown: false,
     };
-    reads
-        .visit_solve_model(model)
-        .expect("initialization-mode traversal is infallible");
+    match reads.visit_solve_model(model) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
     if reads.unknown {
         return Err("the C profile cannot prove compact reads independent of initialization mode");
     }
@@ -35,6 +38,7 @@ pub(super) fn validate(model: &SolveModel) -> Result<(), &'static str> {
 struct ModeReads<'a> {
     flag: usize,
     memory: &'a [usize],
+    calls: &'a crate::SolvePureCallTable,
     seed_offset: usize,
     total: usize,
     guards: usize,
@@ -70,7 +74,7 @@ impl SolveVisitor for ModeReads<'_> {
             && parameter_seed(&arm.condition, self.seed_offset)
             && memory_output(&program.fallback, self.seed_offset)
                 .is_some_and(|p| self.memory.contains(&p))
-            && comparison_output(&arm.result)
+            && comparison_output(&arm.result, self.calls)
         {
             self.guards += 1;
         }
@@ -138,7 +142,7 @@ fn memory_output(ops: &[LinearOp], offset: usize) -> Option<usize> {
     }
 }
 
-fn comparison_output(ops: &[LinearOp]) -> bool {
+fn comparison_output(ops: &[LinearOp], calls: &crate::SolvePureCallTable) -> bool {
     let (primal, tangent) = match ops {
         [
             ..,
@@ -148,11 +152,12 @@ fn comparison_output(ops: &[LinearOp]) -> bool {
         [.., LinearOp::StoreOutput { src }] => (*src, None),
         _ => return false,
     };
-    matches!(last_writer(ops, primal), Some(LinearOp::Compare { .. }))
-        && tangent.is_none_or(|register| {
-            matches!(last_writer(ops, register),
+    last_writer(ops, primal).is_some_and(|op| {
+        matches!(op, LinearOp::Compare { .. }) || typed_relation::comparison(op, primal, calls)
+    }) && tangent.is_none_or(|register| {
+        matches!(last_writer(ops, register),
             Some(LinearOp::Const { value, .. }) if value.to_bits() == 0.0f64.to_bits())
-        })
+    })
 }
 
 fn last_writer(ops: &[LinearOp], register: crate::Reg) -> Option<&LinearOp> {

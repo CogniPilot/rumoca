@@ -994,6 +994,15 @@ fn collect_when_clock_incidence(
                 register_runtime_coordinate(flat, target, *span, roles, incidence);
                 collect_expression_clock_incidence(value, flat, roles, incidence);
             }
+            flat::WhenEquation::AssignElement {
+                target,
+                value,
+                span,
+                ..
+            } => {
+                register_runtime_coordinate(flat, target.var_name(), *span, roles, incidence);
+                collect_expression_clock_incidence(value, flat, roles, incidence);
+            }
             flat::WhenEquation::Assert {
                 condition,
                 message,
@@ -1257,7 +1266,9 @@ fn validate_when_value_sample_operands(
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 validate_value_sample_operands(value, flat, plans, owner)?;
             }
             flat::WhenEquation::Assert { message, level, .. } => {

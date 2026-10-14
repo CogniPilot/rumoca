@@ -10,11 +10,13 @@ use cranelift_codegen::ir::{
     Value, types,
 };
 use cranelift_frontend::FunctionBuilder;
+use std::cell::{RefCell, RefMut};
 
 pub(super) const FAILURE: u8 = 9;
 
 #[derive(Default)]
 pub(crate) struct NativeScratch {
+    root: Frame,
     frames: Vec<Frame>,
     depth: usize,
     invalid: bool,
@@ -34,19 +36,27 @@ struct Buffer {
 impl NativeScratch {
     fn enter(&mut self) -> Option<()> {
         let next = self.depth.checked_add(1)?;
-        if self.frames.len() < next {
+        if next > 1 && self.frames.len() < next - 1 {
             self.frames.try_reserve(1).ok()?;
             self.frames.push(Frame::default());
         }
-        for buffer in &mut self.frames.get_mut(self.depth)?.buffers {
+        self.depth = next;
+        for buffer in &mut self.frame()?.buffers {
             buffer.active = false;
         }
-        self.depth = next;
         Some(())
     }
 
+    fn frame(&mut self) -> Option<&mut Frame> {
+        match self.depth {
+            0 => None,
+            1 => Some(&mut self.root),
+            depth => self.frames.get_mut(depth - 2),
+        }
+    }
+
     fn allocate(&mut self, site: u64, cells: u64) -> Option<*mut u64> {
-        let frame = self.frames.get_mut(self.depth.checked_sub(1)?)?;
+        let frame = self.frame()?;
         let site = usize::try_from(site).ok()?;
         let cells = usize::try_from(cells).ok()?;
         let slots = site.checked_add(1)?;
@@ -81,14 +91,35 @@ impl NativeScratch {
     }
 }
 
-/// Own all backing allocations until the complete native invocation returns.
-pub(super) fn invoke(call: impl FnOnce(*mut NativeScratch) -> u8) -> u8 {
-    let mut scratch = NativeScratch::default();
-    let result = call(&mut scratch);
-    if scratch.depth != 0 || scratch.invalid {
-        FAILURE
-    } else {
-        result
+/// One compiled owner's physical storage; a lease excludes overlapping entry.
+#[derive(Default)]
+pub(crate) struct ScratchOwner(RefCell<NativeScratch>);
+
+impl ScratchOwner {
+    pub(super) fn invoke(&self, call: impl FnOnce(*mut NativeScratch) -> u8) -> u8 {
+        let Ok(scratch) = self.0.try_borrow_mut() else {
+            return FAILURE;
+        };
+        let mut lease = ScratchLease {
+            scratch,
+            completed: false,
+        };
+        let result = call(&mut *lease.scratch);
+        lease.completed = lease.scratch.depth == 0 && !lease.scratch.invalid;
+        if lease.completed { result } else { FAILURE }
+    }
+}
+
+struct ScratchLease<'a> {
+    scratch: RefMut<'a, NativeScratch>,
+    completed: bool,
+}
+
+impl Drop for ScratchLease<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            *self.scratch = NativeScratch::default();
+        }
     }
 }
 

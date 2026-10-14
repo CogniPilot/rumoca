@@ -44,7 +44,7 @@ def commands(source):
 
 
 def load_inventory(root):
-    path = root / "docs/verification/user-guide-ci/non-modelica-inventory.json"
+    path = root / "crates/rumoca-bind-wasm/src/tests/fixtures/user_guide/non-modelica-inventory.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["schema"] == 2
     return data

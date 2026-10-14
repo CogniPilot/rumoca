@@ -181,22 +181,29 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             Some(solve_clock),
         );
     }
-    let projected = lower_call_projection_values(
-        view,
-        layout,
-        rows,
-        owner.observed(),
-        &owner_values
-            .iter()
-            .map(|entry| CallProjectionValue {
-                value: entry.1,
-                span: entry.2,
-                variable: entry.3,
-                scalar_count: entry.6,
-                unclocked: entry.4.is_none(),
-            })
-            .collect::<Vec<_>>(),
-    )?;
+    let projected = if owner_values
+        .iter()
+        .any(|entry| entry.0.scalar_selection().is_some())
+    {
+        vec![false; owner_values.len()]
+    } else {
+        lower_call_projection_values(
+            view,
+            layout,
+            rows,
+            owner.observed(),
+            &owner_values
+                .iter()
+                .map(|entry| CallProjectionValue {
+                    value: entry.1,
+                    span: entry.2,
+                    variable: entry.3,
+                    scalar_count: entry.6,
+                    unclocked: entry.4.is_none(),
+                })
+                .collect::<Vec<_>>(),
+        )?
+    };
     for (index, (target, value, span, variable, clock, sampled, scalar_count)) in
         owner_values.into_iter().enumerate()
     {
@@ -213,7 +220,14 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                 compiler.clocked_aggregate_program(clock_id, value)?
             };
             let targets = (0..scalar_count)
-                .map(|scalar| variable_scalar_slot(layout, target.index(), scalar, span))
+                .map(|scalar| {
+                    variable_scalar_slot(
+                        layout,
+                        target.index(),
+                        target.scalar_selection().unwrap_or(0) as usize + scalar,
+                        span,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let start_row = rows.targets.len();
             rows.record_clocked_producer(
@@ -253,7 +267,12 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                     .discrete_scalar_compiler(view, None)
                     .program(value, scalar)?,
             };
-            let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
+            let target = variable_scalar_slot(
+                layout,
+                target.index(),
+                target.scalar_selection().unwrap_or(0) as usize + scalar,
+                span,
+            )?;
             rows.claim_scalar_event_owner(variable, target, span)?;
             let pre_mode = expression_pre_mode(view, value, sampled);
             if clock.is_none() && pre_mode == solve::DiscreteEventPreMode::FollowCurrent {
@@ -916,7 +935,9 @@ fn lower_conditional_discrete_value_owner<'dae>(
                 GuardedTargetMetadata {
                     variable: dae::VariableId::from(target),
                     target_base: branch.target_base,
-                    width: variable.scalar_count(),
+                    width: target
+                        .scalar_selection()
+                        .map_or_else(|| variable.scalar_count(), |_| 1),
                     pre_mode: branch.pre_mode,
                     span: branch.span,
                     event_clock: None,
@@ -972,11 +993,20 @@ fn lower_triggered_discrete_value_owner<'dae>(
             &mut lowered,
             GuardedTargetMetadata {
                 variable,
-                target_base: variable_scalar_slot(layout, target.index(), 0, span)?,
-                width: view
-                    .variable(variable)
-                    .expect("checked B.1c target resolves")
-                    .scalar_count(),
+                target_base: variable_scalar_slot(
+                    layout,
+                    target.index(),
+                    target.scalar_selection().unwrap_or(0) as usize,
+                    span,
+                )?,
+                width: target.scalar_selection().map_or_else(
+                    || {
+                        view.variable(variable)
+                            .expect("checked B.1c target resolves")
+                            .scalar_count()
+                    },
+                    |_| 1,
+                ),
                 pre_mode,
                 span,
                 event_clock: Some(event_clock),
@@ -1002,7 +1032,7 @@ fn lower_checked_discrete_value_branch<'dae>(
     view: dae::DaeView<'dae>,
     layout: &EventCompilationContext<'_, 'dae>,
     clocks: &LoweredClocks<'dae>,
-    target: dae::DiscreteValueId<'dae>,
+    target: dae::DiscreteValueTarget<'dae>,
     target_ordinal: usize,
     branch: dae::DiscreteValueBranchView<'dae>,
 ) -> Result<LoweredDiscreteValueBranch<'dae>, LowerError> {
@@ -1014,7 +1044,12 @@ fn lower_checked_discrete_value_branch<'dae>(
         .get(target_ordinal)
         .expect("checked B.1c branch arity matches its target set");
     let span = provenance.span();
-    let target_base = variable_scalar_slot(layout, target.index(), 0, span)?;
+    let target_base = variable_scalar_slot(
+        layout,
+        target.index(),
+        target.scalar_selection().unwrap_or(0) as usize,
+        span,
+    )?;
     let clock = condition_clock_owner(view, guard)
         .map(|clock| clocks.clock(clock).map(|solve| (clock, solve)))
         .transpose()?;

@@ -5,8 +5,7 @@ use std::collections::BTreeSet;
 
 #[derive(Debug)]
 pub(in crate::construction) struct DiscreteValueTopologyPlan {
-    ordered_owners: Vec<Vec<VarName>>,
-    order_by_target: HashMap<VarName, TargetOrder>,
+    ordered_owners: Vec<Vec<DiscreteTargetKey>>,
     held_targets: Vec<HeldTargetPlan>,
     /// Per ordered owner: every target is an unread observation whose
     /// definition is not a discrete-time expression.
@@ -23,15 +22,12 @@ pub(in crate::construction) struct TargetOrder {
 pub(in crate::construction) struct HeldTargetPlan {
     pub(in crate::construction) name: VarName,
     pub(in crate::construction) declaration_span: Span,
+    pub(in crate::construction) selection: Option<SelectedWhenTarget>,
 }
 
 impl DiscreteValueTopologyPlan {
-    pub(in crate::construction) fn ordered_owners(&self) -> &[Vec<VarName>] {
+    pub(in crate::construction) fn ordered_owners(&self) -> &[Vec<DiscreteTargetKey>] {
         &self.ordered_owners
-    }
-
-    pub(in crate::construction) fn target_order(&self, target: &VarName) -> Option<TargetOrder> {
-        self.order_by_target.get(target).copied()
     }
 
     pub(in crate::construction) fn held_targets(&self) -> &[HeldTargetPlan] {
@@ -65,9 +61,19 @@ struct SourceOwner {
 
 struct SourceTarget {
     name: VarName,
-    dependencies: HashSet<VarName>,
+    dependencies: HashSet<DiscreteTargetKey>,
     span: Span,
     ordered_scalar_self_dependencies: bool,
+    selection: Option<SelectedWhenTarget>,
+}
+
+impl SourceTarget {
+    fn key(&self, flat: &flat::Model) -> DiscreteTargetKey {
+        self.selection.as_ref().map_or_else(
+            || DiscreteTargetKey::Whole(flat.variables[&self.name].instance_id),
+            SelectedWhenTarget::key,
+        )
+    }
 }
 
 fn require_target_occurrence(
@@ -111,8 +117,8 @@ pub(super) fn analyze_discrete_value_topology(
     )?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
-    let held_targets = add_held_owners(flat, roles, &mut owners);
-    order_owners(owners, held_targets, &observed)
+    let held_targets = add_held_owners(flat, roles, &mut owners)?;
+    order_owners(flat, owners, held_targets, &observed)
 }
 
 /// One owner per record equation with discrete-valued fields: the fields are
@@ -131,13 +137,13 @@ fn collect_record_equation_owners(
             continue;
         };
         let plan = &record_equations[&row];
-        let mut dependencies = current_discrete_dependencies(rhs, roles);
+        let mut dependencies = current_discrete_dependencies(flat, rhs, roles);
         // A record-to-record equation reads its source fields by coordinate.
         dependencies.extend(plan.fields.iter().filter_map(|field| match &field.value {
             RecordEquationFieldValue::Coordinate(source)
                 if matches!(roles.get(source), Some(PlannedRole::DiscreteValue)) =>
             {
-                Some(source.clone())
+                Some(DiscreteTargetKey::Whole(flat.variables[source].instance_id))
             }
             _ => None,
         }));
@@ -148,6 +154,7 @@ fn collect_record_equation_owners(
                 dependencies: dependencies.clone(),
                 span: equation.span,
                 ordered_scalar_self_dependencies: false,
+                selection: None,
             })
             .collect::<Vec<_>>();
         if !targets.is_empty() {
@@ -188,9 +195,10 @@ fn collect_binding_owners(
         owners.push(SourceOwner {
             targets: vec![SourceTarget {
                 name: name.clone(),
-                dependencies: current_discrete_dependencies(binding, roles),
+                dependencies: current_discrete_dependencies(flat, binding, roles),
                 span: expression_span(binding)?,
                 ordered_scalar_self_dependencies: false,
+                selection: None,
             }],
             span: variable.source_span,
         });
@@ -238,7 +246,7 @@ fn collect_equation_owners(
                 {
                     observed.extend(targets.into_iter().cloned());
                 }
-                push_multi_output_owner(equation, call, &receivers, roles, owners);
+                push_multi_output_owner(flat, equation, call, &receivers, roles, owners);
                 continue;
             }
             _ => continue,
@@ -259,9 +267,10 @@ fn collect_equation_owners(
             owners.push(SourceOwner {
                 targets: vec![SourceTarget {
                     name: plan.target.clone(),
-                    dependencies: current_discrete_dependencies(plan.value.as_ref(), roles),
+                    dependencies: current_discrete_dependencies(flat, plan.value.as_ref(), roles),
                     span: equation.span,
                     ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
+                    selection: None,
                 }],
                 span: equation.span,
             });
@@ -274,13 +283,14 @@ fn collect_equation_owners(
 /// receivers from one call, so they share one owner whose dependencies are the
 /// call's current discrete reads.
 fn push_multi_output_owner(
+    flat: &flat::Model,
     equation: &flat::Equation,
     call: &Expression,
     receivers: &[VarName],
     roles: &HashMap<VarName, PlannedRole>,
     owners: &mut Vec<SourceOwner>,
 ) {
-    let dependencies = current_discrete_dependencies(call, roles);
+    let dependencies = current_discrete_dependencies(flat, call, roles);
     let targets = receivers
         .iter()
         .filter(|receiver| matches!(roles.get(*receiver), Some(PlannedRole::DiscreteValue)))
@@ -289,6 +299,7 @@ fn push_multi_output_owner(
             dependencies: dependencies.clone(),
             span: equation.span,
             ordered_scalar_self_dependencies: false,
+            selection: None,
         })
         .collect::<Vec<_>>();
     if !targets.is_empty() {
@@ -307,6 +318,10 @@ fn collect_algorithm_owners(
     for algorithm in &flat.algorithms {
         let target_names =
             stable_discrete_targets(flat, roles, model_algorithm_targets(flat, algorithm));
+        let target_instances = target_names
+            .iter()
+            .map(|name| flat.variables[name].instance_id)
+            .collect::<HashSet<_>>();
         let event_algorithm =
             super::model_algorithms::contains_event_control(&algorithm.statements);
         if target_names.is_empty() {
@@ -317,6 +332,7 @@ fn collect_algorithm_owners(
             .map(|name| {
                 let mut dependencies = HashSet::new();
                 let occurrence = collect_statement_target_dependencies(
+                    flat,
                     &algorithm.statements,
                     &name,
                     roles,
@@ -328,13 +344,19 @@ fn collect_algorithm_owners(
                     algorithm.span,
                     occurrence,
                 )?;
+                dependencies = dependencies
+                    .into_iter()
+                    .map(|dependency| algorithm_owned_dependency(dependency, &target_instances))
+                    .collect();
                 // MLS 3.7 §11.1.2: an event algorithm starts every discrete
                 // target at its `pre` value (lowering seeds it so), so a read
                 // before the target's own definition is a history read, not a
                 // current-value self-dependency (`last := f(last)` in a `when`).
-                let ordered_scalar_self_dependencies = dependencies.contains(&name)
+                let ordered_scalar_self_dependencies = dependencies
+                    .contains(&DiscreteTargetKey::Whole(flat.variables[&name].instance_id))
                     && (event_algorithm
                         || !algorithm_reads_target_before_definition(
+                            flat,
                             &algorithm.statements,
                             &name,
                             roles,
@@ -346,10 +368,11 @@ fn collect_algorithm_owners(
                     dependencies,
                     span,
                     ordered_scalar_self_dependencies,
+                    selection: None,
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
-        if event_algorithm && owns_targets_separately(&algorithm.statements, &targets) {
+        if event_algorithm && owns_targets_separately(flat, &algorithm.statements, &targets) {
             owners.extend(targets.into_iter().map(|target| SourceOwner {
                 targets: vec![target],
                 span: algorithm.span,
@@ -362,6 +385,19 @@ fn collect_algorithm_owners(
         }
     }
     Ok(())
+}
+
+/// A model algorithm owns its written declarations as complete SSA values.
+/// Keep exact selections for reads of declarations outside that algorithm.
+fn algorithm_owned_dependency(
+    dependency: DiscreteTargetKey,
+    targets: &HashSet<InstanceId>,
+) -> DiscreteTargetKey {
+    if targets.contains(&dependency.instance()) {
+        DiscreteTargetKey::Whole(dependency.instance())
+    } else {
+        dependency
+    }
 }
 
 /// Whether the discrete-valued targets of one event algorithm own their
@@ -378,6 +414,7 @@ fn collect_algorithm_owners(
 /// guarded targets. One owner, whose first active branch defines every
 /// target, remains only for targets whose reads are cyclic.
 fn owns_targets_separately(
+    flat: &flat::Model,
     statements: &[rumoca_core::Statement],
     targets: &[SourceTarget],
 ) -> bool {
@@ -395,7 +432,7 @@ fn owns_targets_separately(
     if read_targets.iter().any(|name| body_writes.contains(*name)) {
         return false;
     }
-    targets_order_acyclically(targets, &names)
+    targets_order_acyclically(flat, targets)
 }
 
 fn collect_when_condition_reads(
@@ -443,17 +480,23 @@ fn collect_when_condition_reads(
 }
 
 /// Whether the current-value reads among one algorithm's targets admit an order.
-fn targets_order_acyclically(targets: &[SourceTarget], names: &HashSet<VarName>) -> bool {
+fn targets_order_acyclically(flat: &flat::Model, targets: &[SourceTarget]) -> bool {
+    let names = targets
+        .iter()
+        .map(|target| target.key(flat))
+        .collect::<HashSet<_>>();
     let mut remaining = targets
         .iter()
         .map(|target| {
             let reads = target
                 .dependencies
                 .iter()
-                .filter(|dependency| *dependency != &target.name && names.contains(*dependency))
+                .filter(|dependency| {
+                    *dependency != &target.key(flat) && names.contains(*dependency)
+                })
                 .cloned()
                 .collect::<HashSet<_>>();
-            (target.name.clone(), reads)
+            (target.key(flat), reads)
         })
         .collect::<Vec<_>>();
     while !remaining.is_empty() {
@@ -476,6 +519,7 @@ fn targets_order_acyclically(targets: &[SourceTarget], names: &HashSet<VarName>)
 /// `current_discrete_dependencies`.  Branch exits join with logical `and`, so
 /// a later read is admitted only when every path supplied a value.
 fn algorithm_reads_target_before_definition(
+    flat: &flat::Model,
     statements: &[rumoca_core::Statement],
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
@@ -485,16 +529,17 @@ fn algorithm_reads_target_before_definition(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, value, .. } => {
-                entry_read |= !written && expression_reads_current_target(value, target, roles);
+                entry_read |=
+                    !written && expression_reads_current_target(flat, value, target, roles);
                 if rumoca_core::component_ref_to_base_reference(comp).var_name() == target {
                     written = true;
                 }
             }
             rumoca_core::Statement::FunctionCall { args, outputs, .. } => {
                 entry_read |= !written
-                    && args
-                        .iter()
-                        .any(|argument| expression_reads_current_target(argument, target, roles));
+                    && args.iter().any(|argument| {
+                        expression_reads_current_target(flat, argument, target, roles)
+                    });
                 if outputs
                     .iter()
                     .flatten()
@@ -509,12 +554,13 @@ fn algorithm_reads_target_before_definition(
                 ..
             } => {
                 entry_read |= !written
-                    && cond_blocks
-                        .iter()
-                        .any(|block| expression_reads_current_target(&block.cond, target, roles));
+                    && cond_blocks.iter().any(|block| {
+                        expression_reads_current_target(flat, &block.cond, target, roles)
+                    });
                 let mut exits = Vec::with_capacity(cond_blocks.len() + 1);
                 for block in cond_blocks {
                     let (branch_read, branch_written) = algorithm_reads_target_before_definition(
+                        flat,
                         &block.stmts,
                         target,
                         roles,
@@ -527,7 +573,7 @@ fn algorithm_reads_target_before_definition(
                     Some(branch) => {
                         let (branch_read, branch_written) =
                             algorithm_reads_target_before_definition(
-                                branch, target, roles, written,
+                                flat, branch, target, roles, written,
                             );
                         entry_read |= branch_read;
                         exits.push(branch_written);
@@ -538,11 +584,12 @@ fn algorithm_reads_target_before_definition(
             }
             rumoca_core::Statement::When { blocks, .. } => {
                 entry_read |= !written
-                    && blocks
-                        .iter()
-                        .any(|block| expression_reads_current_target(&block.cond, target, roles));
+                    && blocks.iter().any(|block| {
+                        expression_reads_current_target(flat, &block.cond, target, roles)
+                    });
                 for block in blocks {
                     let (branch_read, _) = algorithm_reads_target_before_definition(
+                        flat,
                         &block.stmts,
                         target,
                         roles,
@@ -557,11 +604,12 @@ fn algorithm_reads_target_before_definition(
                 indices, equations, ..
             } => {
                 entry_read |= !written
-                    && indices
-                        .iter()
-                        .any(|index| expression_reads_current_target(&index.range, target, roles));
-                let (loop_read, _) =
-                    algorithm_reads_target_before_definition(equations, target, roles, written);
+                    && indices.iter().any(|index| {
+                        expression_reads_current_target(flat, &index.range, target, roles)
+                    });
+                let (loop_read, _) = algorithm_reads_target_before_definition(
+                    flat, equations, target, roles, written,
+                );
                 entry_read |= loop_read;
             }
             _ => {}
@@ -571,11 +619,14 @@ fn algorithm_reads_target_before_definition(
 }
 
 fn expression_reads_current_target(
+    flat: &flat::Model,
     expression: &Expression,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> bool {
-    current_discrete_dependencies(expression, roles).contains(target)
+    current_discrete_dependencies(flat, expression, roles)
+        .iter()
+        .any(|dependency| dependency.instance() == flat.variables[target].instance_id)
 }
 
 fn collect_when_owners(
@@ -591,16 +642,17 @@ fn collect_when_owners(
             written.extend(branch_written);
         }
         let target_names = stable_discrete_targets(flat, roles, written);
-        if target_names.is_empty() {
+        let mut element_targets = collect_element_when_targets(flat, chain, roles)?;
+        if target_names.is_empty() && element_targets.is_empty() {
             continue;
         }
-        let control_dependencies = when_control_dependencies(chain, roles);
-        let targets = target_names
+        let control_dependencies = when_control_dependencies(flat, chain, roles);
+        let mut targets = target_names
             .into_iter()
             .map(|name| {
                 let mut dependencies = control_dependencies.clone();
                 let occurrence =
-                    collect_when_target_dependencies(chain, &name, roles, &mut dependencies);
+                    collect_when_target_dependencies(flat, chain, &name, roles, &mut dependencies);
                 let span =
                     require_target_occurrence(&name, "when chain", chain.span(), occurrence)?;
                 Ok(SourceTarget {
@@ -608,9 +660,11 @@ fn collect_when_owners(
                     dependencies,
                     span,
                     ordered_scalar_self_dependencies: false,
+                    selection: None,
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
+        targets.append(&mut element_targets);
         owners.push(SourceOwner {
             targets,
             span: chain.span(),
@@ -619,11 +673,148 @@ fn collect_when_owners(
     Ok(())
 }
 
+fn collect_element_when_targets(
+    flat: &flat::Model,
+    chain: &flat::WhenChain,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<Vec<SourceTarget>, ToDaeError> {
+    let mut selections = Vec::new();
+    for branch in chain.branches() {
+        collect_element_targets(flat, &branch.equations, roles, &mut selections)?;
+    }
+    let control = when_control_dependencies(flat, chain, roles);
+    let mut targets: Vec<SourceTarget> = Vec::new();
+    for (selection, value) in selections {
+        let key = selection.key();
+        let mut dependencies = current_discrete_dependencies(flat, value, roles);
+        dependencies.extend(control.iter().cloned());
+        if let Some(previous) = targets.iter_mut().find(|target| target.key(flat) == key) {
+            previous.dependencies.extend(dependencies);
+        } else {
+            targets.push(SourceTarget {
+                name: selection.name.clone(),
+                span: selection.span,
+                dependencies,
+                ordered_scalar_self_dependencies: false,
+                selection: Some(selection),
+            });
+        }
+    }
+    Ok(targets)
+}
+
+fn collect_element_targets<'a>(
+    flat: &flat::Model,
+    equations: &'a [flat::WhenEquation],
+    roles: &HashMap<VarName, PlannedRole>,
+    selections: &mut Vec<(SelectedWhenTarget, &'a Expression)>,
+) -> Result<(), ToDaeError> {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                span,
+                ..
+            } => {
+                let selected = when_elements::selected_target(flat, target, subscripts, *span)?;
+                if matches!(roles.get(&selected.name), Some(PlannedRole::DiscreteValue)) {
+                    selections.push((selected, value));
+                }
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    collect_element_targets(flat, equations, roles, selections)?;
+                }
+                if let Some(equations) = else_branch {
+                    collect_element_targets(flat, equations, roles, selections)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn add_held_elements(
+    flat: &flat::Model,
+    owners: &mut Vec<SourceOwner>,
+    held: &mut Vec<HeldTargetPlan>,
+) -> Result<(), ToDaeError> {
+    let mut selected = HashMap::<InstanceId, HashSet<Box<[i64]>>>::new();
+    for target in owners.iter().flat_map(|owner| &owner.targets) {
+        if let Some(selection) = &target.selection {
+            selected
+                .entry(selection.instance)
+                .or_default()
+                .insert(selection.indices.clone());
+        }
+    }
+    for variable in flat.variables.values() {
+        let Some(defined) = selected.get(&variable.instance_id) else {
+            continue;
+        };
+        let invalid_extent = || {
+            ToDaeError::unsupported_flat(
+                "selected discrete array",
+                "requires representable nonnegative scalar extents and scalar count",
+                variable.source_span,
+            )
+        };
+        let extents = variable
+            .dims
+            .iter()
+            .map(|&extent| usize::try_from(extent).map_err(|_| invalid_extent()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = extents.iter().try_fold(1usize, |count, &extent| {
+            count.checked_mul(extent).ok_or_else(invalid_extent)
+        })?;
+        for scalar in 0..count {
+            let mut remainder = scalar;
+            let mut indices = vec![0; variable.dims.len()];
+            for (index, &extent) in indices.iter_mut().zip(&variable.dims).rev() {
+                *index = (remainder % extent as usize + 1) as i64;
+                remainder /= extent as usize;
+            }
+            if defined.contains(indices.as_slice()) {
+                continue;
+            }
+            let selection = SelectedWhenTarget {
+                name: variable.name.clone(),
+                instance: variable.instance_id,
+                indices: indices.into_boxed_slice(),
+                span: variable.source_span,
+            };
+            held.push(HeldTargetPlan {
+                name: variable.name.clone(),
+                declaration_span: variable.source_span,
+                selection: Some(selection.clone()),
+            });
+            owners.push(SourceOwner {
+                targets: vec![SourceTarget {
+                    name: variable.name.clone(),
+                    dependencies: HashSet::new(),
+                    span: variable.source_span,
+                    ordered_scalar_self_dependencies: false,
+                    selection: Some(selection),
+                }],
+                span: variable.source_span,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn add_held_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     owners: &mut Vec<SourceOwner>,
-) -> Vec<HeldTargetPlan> {
+) -> Result<Vec<HeldTargetPlan>, ToDaeError> {
     let defined = owners
         .iter()
         .flat_map(|owner| owner.targets.iter().map(|target| target.name.clone()))
@@ -634,6 +825,7 @@ fn add_held_owners(
             held_targets.push(HeldTargetPlan {
                 name: name.clone(),
                 declaration_span: variable.source_span,
+                selection: None,
             });
             owners.push(SourceOwner {
                 targets: vec![SourceTarget {
@@ -641,15 +833,18 @@ fn add_held_owners(
                     dependencies: HashSet::new(),
                     span: variable.source_span,
                     ordered_scalar_self_dependencies: false,
+                    selection: None,
                 }],
                 span: variable.source_span,
             });
         }
     }
-    held_targets
+    add_held_elements(flat, owners, &mut held_targets)?;
+    Ok(held_targets)
 }
 
 fn order_owners(
+    flat: &flat::Model,
     mut owners: Vec<SourceOwner>,
     held_targets: Vec<HeldTargetPlan>,
     observed: &HashSet<VarName>,
@@ -658,7 +853,7 @@ fn order_owners(
     for (owner_index, owner) in owners.iter().enumerate() {
         for target in &owner.targets {
             if owner_by_target
-                .insert(target.name.clone(), owner_index)
+                .insert(target.key(flat), owner_index)
                 .is_some()
             {
                 return Err(ToDaeError::discrete_solved_form_violation(
@@ -671,8 +866,9 @@ fn order_owners(
             }
         }
     }
+    expand_selected_dependencies(flat, &mut owners);
     for owner in &mut owners {
-        order_owner_targets(owner)?;
+        order_owner_targets(flat, owner)?;
     }
 
     let mut outgoing = vec![BTreeSet::new(); owners.len()];
@@ -726,33 +922,55 @@ fn order_owners(
             owners[index]
                 .targets
                 .iter()
-                .map(|target| target.name.clone())
+                .map(|target| target.key(flat))
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let order_by_target = ordered_owners
-        .iter()
-        .enumerate()
-        .flat_map(|(owner, targets)| {
-            targets
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(move |(target, name)| (name, TargetOrder { owner, target }))
-        })
-        .collect();
     Ok(DiscreteValueTopologyPlan {
         ordered_owners,
-        order_by_target,
         held_targets,
         observed_owners,
     })
 }
 
+fn expand_selected_dependencies(flat: &flat::Model, owners: &mut [SourceOwner]) {
+    let mut selected: HashMap<InstanceId, Vec<DiscreteTargetKey>> = HashMap::new();
+    let mut whole = HashSet::new();
+    for target in owners.iter().flat_map(|owner| &owner.targets) {
+        if target.selection.is_some() {
+            selected
+                .entry(flat.variables[&target.name].instance_id)
+                .or_default()
+                .push(target.key(flat));
+        } else {
+            whole.insert(flat.variables[&target.name].instance_id);
+        }
+    }
+    for target in owners.iter_mut().flat_map(|owner| &mut owner.targets) {
+        let mut dependencies = HashSet::new();
+        for dependency in target.dependencies.drain() {
+            match dependency {
+                DiscreteTargetKey::Whole(ref name)
+                    if selected.contains_key(name) && !whole.contains(name) =>
+                {
+                    dependencies.extend(selected[name].iter().cloned());
+                }
+                DiscreteTargetKey::Element { instance, .. } if whole.contains(&instance) => {
+                    dependencies.insert(DiscreteTargetKey::Whole(instance));
+                }
+                other => {
+                    dependencies.insert(other);
+                }
+            }
+        }
+        target.dependencies = dependencies;
+    }
+}
+
 fn external_predecessors(
     owner_index: usize,
     owner: &SourceOwner,
-    owner_by_target: &HashMap<VarName, usize>,
+    owner_by_target: &HashMap<DiscreteTargetKey, usize>,
 ) -> BTreeSet<usize> {
     owner
         .targets
@@ -763,12 +981,12 @@ fn external_predecessors(
         .collect()
 }
 
-fn order_owner_targets(owner: &mut SourceOwner) -> Result<(), ToDaeError> {
+fn order_owner_targets(flat: &flat::Model, owner: &mut SourceOwner) -> Result<(), ToDaeError> {
     let target_by_name = owner
         .targets
         .iter()
         .enumerate()
-        .map(|(index, target)| (target.name.clone(), index))
+        .map(|(index, target)| (target.key(flat), index))
         .collect::<HashMap<_, _>>();
     let mut outgoing = vec![BTreeSet::new(); owner.targets.len()];
     let mut indegree = vec![0usize; owner.targets.len()];
@@ -833,7 +1051,7 @@ fn order_owner_targets(owner: &mut SourceOwner) -> Result<(), ToDaeError> {
 
 fn cyclic_external_target<'owner>(
     owners: &'owner [SourceOwner],
-    owner_by_target: &HashMap<VarName, usize>,
+    owner_by_target: &HashMap<DiscreteTargetKey, usize>,
     indegree: &[usize],
 ) -> &'owner SourceTarget {
     owners
@@ -852,7 +1070,7 @@ fn cyclic_external_target<'owner>(
 fn has_cyclic_external_predecessor(
     owner: usize,
     target: &SourceTarget,
-    owner_by_target: &HashMap<VarName, usize>,
+    owner_by_target: &HashMap<DiscreteTargetKey, usize>,
     indegree: &[usize],
 ) -> bool {
     target
@@ -878,18 +1096,20 @@ fn stable_discrete_targets(
 }
 
 fn current_discrete_dependencies(
+    flat: &flat::Model,
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-) -> HashSet<VarName> {
+) -> HashSet<DiscreteTargetKey> {
     let mut dependencies = HashSet::new();
-    collect_current_discrete_dependencies(expression, roles, &mut dependencies);
+    collect_current_discrete_dependencies(flat, expression, roles, &mut dependencies);
     dependencies
 }
 
 fn collect_current_discrete_dependencies(
+    flat: &flat::Model,
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) {
     match expression {
         Expression::BuiltinCall {
@@ -910,39 +1130,59 @@ fn collect_current_discrete_dependencies(
         } if args
             .first()
             .is_some_and(|value| matches!(value, Expression::VarRef { .. })) => {}
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            if let Expression::VarRef { name, .. } = base.as_ref()
+                && matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue))
+            {
+                dependencies.insert(DiscreteTargetKey::from_reference(flat, name, expression));
+            } else {
+                collect_current_discrete_dependencies(flat, base, roles, dependencies);
+            }
+            for expr in subscripts.iter().filter_map(|subscript| match subscript {
+                Subscript::Expr { expr, .. } => Some(expr.as_ref()),
+                _ => None,
+            }) {
+                collect_current_discrete_dependencies(flat, expr, roles, dependencies);
+            }
+        }
         Expression::VarRef { name, .. } => {
             if matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue)) {
-                dependencies.insert(name.var_name().clone());
+                dependencies.insert(DiscreteTargetKey::from_reference(flat, name, expression));
             }
             for child in expression_children(expression) {
-                collect_current_discrete_dependencies(child, roles, dependencies);
+                collect_current_discrete_dependencies(flat, child, roles, dependencies);
             }
         }
         _ => {
             for child in expression_children(expression) {
-                collect_current_discrete_dependencies(child, roles, dependencies);
+                collect_current_discrete_dependencies(flat, child, roles, dependencies);
             }
         }
     }
 }
 
 fn collect_statement_target_dependencies(
+    flat: &flat::Model,
     statements: &[rumoca_core::Statement],
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     statements.iter().fold(None, |first_action, statement| {
-        let action = collect_statement_target_dependency(statement, target, roles, dependencies);
+        let action =
+            collect_statement_target_dependency(flat, statement, target, roles, dependencies);
         first_action.or(action)
     })
 }
 
 fn collect_statement_target_dependency(
+    flat: &flat::Model,
     statement: &rumoca_core::Statement,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     match statement {
         rumoca_core::Statement::Assignment {
@@ -952,7 +1192,7 @@ fn collect_statement_target_dependency(
                 .var_name()
                 .clone();
             source_target_contains(&written, target).then(|| {
-                collect_current_discrete_dependencies(value, roles, dependencies);
+                collect_current_discrete_dependencies(flat, value, roles, dependencies);
                 *span
             })
         }
@@ -967,7 +1207,7 @@ fn collect_statement_target_dependency(
             .any(|output| source_target_contains(&output.to_var_name(), target))
             .then(|| {
                 for argument in args {
-                    collect_current_discrete_dependencies(argument, roles, dependencies);
+                    collect_current_discrete_dependencies(flat, argument, roles, dependencies);
                 }
                 *span
             }),
@@ -976,6 +1216,7 @@ fn collect_statement_target_dependency(
             else_block,
             ..
         } => collect_conditional_target_dependencies(
+            flat,
             cond_blocks,
             else_block.as_deref(),
             target,
@@ -983,11 +1224,12 @@ fn collect_statement_target_dependency(
             dependencies,
         ),
         rumoca_core::Statement::When { blocks, .. } => {
-            collect_conditional_target_dependencies(blocks, None, target, roles, dependencies)
+            collect_conditional_target_dependencies(flat, blocks, None, target, roles, dependencies)
         }
         rumoca_core::Statement::For {
             indices, equations, ..
         } => collect_loop_target_dependencies(
+            flat,
             equations,
             indices.iter().map(|index| &index.range),
             target,
@@ -995,6 +1237,7 @@ fn collect_statement_target_dependency(
             dependencies,
         ),
         rumoca_core::Statement::While { block, .. } => collect_loop_target_dependencies(
+            flat,
             &block.stmts,
             std::iter::once(&block.cond),
             target,
@@ -1006,16 +1249,18 @@ fn collect_statement_target_dependency(
 }
 
 fn collect_conditional_target_dependencies(
+    flat: &flat::Model,
     blocks: &[rumoca_core::StatementBlock],
     fallback: Option<&[rumoca_core::Statement]>,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     let mut first_action = None;
     let mut prior_conditions = Vec::new();
     for block in blocks {
         let branch = collect_branch_target_dependencies(
+            flat,
             &block.stmts,
             prior_conditions
                 .iter()
@@ -1030,6 +1275,7 @@ fn collect_conditional_target_dependencies(
     }
     let fallback = fallback.and_then(|statements| {
         collect_branch_target_dependencies(
+            flat,
             statements,
             prior_conditions.iter().copied(),
             target,
@@ -1041,30 +1287,37 @@ fn collect_conditional_target_dependencies(
 }
 
 fn collect_branch_target_dependencies<'a>(
+    flat: &flat::Model,
     statements: &[rumoca_core::Statement],
     conditions: impl Iterator<Item = &'a Expression>,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     let mut branch_dependencies = HashSet::new();
-    let action =
-        collect_statement_target_dependencies(statements, target, roles, &mut branch_dependencies)?;
+    let action = collect_statement_target_dependencies(
+        flat,
+        statements,
+        target,
+        roles,
+        &mut branch_dependencies,
+    )?;
     for condition in conditions {
-        collect_current_discrete_dependencies(condition, roles, dependencies);
+        collect_current_discrete_dependencies(flat, condition, roles, dependencies);
     }
     dependencies.extend(branch_dependencies);
     Some(action)
 }
 
 fn collect_loop_target_dependencies<'a>(
+    flat: &flat::Model,
     statements: &[rumoca_core::Statement],
     controls: impl Iterator<Item = &'a Expression>,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
-    collect_branch_target_dependencies(statements, controls, target, roles, dependencies)
+    collect_branch_target_dependencies(flat, statements, controls, target, roles, dependencies)
 }
 
 fn source_target_contains(source: &VarName, concrete: &VarName) -> bool {
@@ -1082,6 +1335,7 @@ fn validate_when_equation_targets(
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         match equation {
+            flat::WhenEquation::AssignElement { .. } => {}
             flat::WhenEquation::Assign { target, span, .. } => {
                 claim_when_equation_target(target, *span, roles, written)?;
             }
@@ -1136,21 +1390,23 @@ fn claim_when_equation_target(
 }
 
 fn when_control_dependencies(
+    flat: &flat::Model,
     chain: &flat::WhenChain,
     roles: &HashMap<VarName, PlannedRole>,
-) -> HashSet<VarName> {
+) -> HashSet<DiscreteTargetKey> {
     let mut dependencies = HashSet::new();
     for branch in chain.branches() {
-        collect_current_discrete_dependencies(&branch.condition, roles, &mut dependencies);
-        collect_when_control_dependencies(&branch.equations, roles, &mut dependencies);
+        collect_current_discrete_dependencies(flat, &branch.condition, roles, &mut dependencies);
+        collect_when_control_dependencies(flat, &branch.equations, roles, &mut dependencies);
     }
     dependencies
 }
 
 fn collect_when_control_dependencies(
+    flat: &flat::Model,
     equations: &[flat::WhenEquation],
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) {
     for equation in equations {
         if let flat::WhenEquation::Conditional {
@@ -1160,25 +1416,27 @@ fn collect_when_control_dependencies(
         } = equation
         {
             for (condition, equations) in branches {
-                collect_current_discrete_dependencies(condition, roles, dependencies);
-                collect_when_control_dependencies(equations, roles, dependencies);
+                collect_current_discrete_dependencies(flat, condition, roles, dependencies);
+                collect_when_control_dependencies(flat, equations, roles, dependencies);
             }
             if let Some(else_branch) = else_branch {
-                collect_when_control_dependencies(else_branch, roles, dependencies);
+                collect_when_control_dependencies(flat, else_branch, roles, dependencies);
             }
         }
     }
 }
 
 fn collect_when_target_dependencies(
+    flat: &flat::Model,
     chain: &flat::WhenChain,
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     let mut first_action = None;
     for branch in chain.branches() {
         first_action = first_action.or(collect_when_equation_target_dependencies(
+            flat,
             &branch.equations,
             target,
             roles,
@@ -1189,10 +1447,11 @@ fn collect_when_target_dependencies(
 }
 
 fn collect_when_equation_target_dependencies(
+    flat: &flat::Model,
     equations: &[flat::WhenEquation],
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
+    dependencies: &mut HashSet<DiscreteTargetKey>,
 ) -> Option<Span> {
     let mut first_action = None;
     for equation in equations {
@@ -1203,7 +1462,7 @@ fn collect_when_equation_target_dependencies(
                 span,
                 ..
             } if written == target => {
-                collect_current_discrete_dependencies(value, roles, dependencies);
+                collect_current_discrete_dependencies(flat, value, roles, dependencies);
                 Some(*span)
             }
             flat::WhenEquation::Conditional {
@@ -1214,6 +1473,7 @@ fn collect_when_equation_target_dependencies(
                 let mut nested = None;
                 for (_, equations) in branches {
                     nested = nested.or(collect_when_equation_target_dependencies(
+                        flat,
                         equations,
                         target,
                         roles,
@@ -1222,6 +1482,7 @@ fn collect_when_equation_target_dependencies(
                 }
                 if let Some(else_branch) = else_branch {
                     nested = nested.or(collect_when_equation_target_dependencies(
+                        flat,
                         else_branch,
                         target,
                         roles,
@@ -1236,10 +1497,11 @@ fn collect_when_equation_target_dependencies(
                 span,
                 ..
             } if outputs.contains(target) => {
-                collect_current_discrete_dependencies(function, roles, dependencies);
+                collect_current_discrete_dependencies(flat, function, roles, dependencies);
                 Some(*span)
             }
             flat::WhenEquation::Assign { .. }
+            | flat::WhenEquation::AssignElement { .. }
             | flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. }
@@ -1248,6 +1510,68 @@ fn collect_when_equation_target_dependencies(
         first_action = first_action.or(action);
     }
     first_action
+}
+
+#[cfg(test)]
+#[test]
+fn algorithm_dependencies_preserve_external_selections_and_normalize_owned_values() {
+    let owned = InstanceId::new(41);
+    let external = InstanceId::new(42);
+    let targets = HashSet::from([owned]);
+    for index in [1, 2] {
+        let selection = DiscreteTargetKey::Element {
+            instance: owned,
+            indices: vec![index].into_boxed_slice(),
+        };
+        assert_eq!(selection.instance(), owned);
+        assert_eq!(
+            algorithm_owned_dependency(selection, &targets),
+            DiscreteTargetKey::Whole(owned)
+        );
+        let external_selection = DiscreteTargetKey::Element {
+            instance: external,
+            indices: vec![index].into_boxed_slice(),
+        };
+        assert_eq!(
+            algorithm_owned_dependency(external_selection.clone(), &targets),
+            external_selection
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn indexed_current_target_reads_retain_entry_value_classification() {
+    let mut sources = SourceMap::new();
+    let text = "x[1]";
+    let source = sources.add("indexed_entry.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let instance = InstanceId::new(41);
+    let name = VarName::new("x");
+    let mut flat = flat::Model::new();
+    let mut variable = flat::Variable::empty_with_span(span);
+    variable.name = name.clone();
+    variable.instance_id = instance;
+    variable.dims = vec![2];
+    flat.add_variable(name.clone(), variable);
+    let roles = HashMap::from([(name.clone(), PlannedRole::DiscreteValue)]);
+    let expression = Expression::VarRef {
+        name: rumoca_core::Reference::new("x").with_instance_id(instance),
+        subscripts: vec![Subscript::Index { value: 1, span }],
+        span,
+    };
+    assert!(expression_reads_current_target(
+        &flat,
+        &expression,
+        &name,
+        &roles
+    ));
+    let pre = Expression::BuiltinCall {
+        function: BuiltinFunction::Pre,
+        args: vec![expression],
+        span,
+    };
+    assert!(!expression_reads_current_target(&flat, &pre, &name, &roles));
 }
 
 #[cfg(test)]

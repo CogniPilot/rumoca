@@ -243,6 +243,8 @@ pub enum DaeConstructionError {
     },
     #[error("invalid B.1c topology plan at discrete-value target identity {target}")]
     InvalidDiscreteTopologyPlan { target: u32, span: Span },
+    #[error("invalid scalar selection of B.1c target identity {target}")]
+    InvalidDiscreteElementSelection { target: u32, span: Span },
     #[error("B.1c owner target order mismatch: expected {expected:?}, found {found:?}")]
     InvalidDiscreteTargetOrder {
         expected: Option<u32>,
@@ -399,6 +401,7 @@ impl DaeConstructionError {
             | Self::MissingClockOwnership { span, .. }
             | Self::InvalidDiscreteTopologyPlan { span, .. }
             | Self::InvalidDiscreteTargetOrder { span, .. }
+            | Self::InvalidDiscreteElementSelection { span, .. }
             | Self::EmptyDiscreteValueOwner { span }
             | Self::EmptyModelEventTransaction { span }
             | Self::UndeclaredModelEventTarget { span, .. }

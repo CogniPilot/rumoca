@@ -1,5 +1,5 @@
 {
-  "schema_version": 88,
+  "schema_version": 89,
   "layout": {
     "bindings": {
       "x": {
@@ -416,6 +416,7 @@
   "discrete": {
     "event_iteration_plan": {
       "runs": [],
+      "partitions": [],
       "schedule": {
         "event_pass": [
           "RelationOverrides",

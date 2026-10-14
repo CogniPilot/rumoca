@@ -187,6 +187,7 @@ fn analyze_when_function_call_equations(
                 }
             }
             flat::WhenEquation::Assign { .. }
+            | flat::WhenEquation::AssignElement { .. }
             | flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. } => {}

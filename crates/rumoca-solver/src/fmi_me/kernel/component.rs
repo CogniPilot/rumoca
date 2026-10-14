@@ -1,3 +1,5 @@
+mod caches;
+
 mod indicators;
 #[cfg(test)]
 mod tests;
@@ -102,17 +104,18 @@ impl SolveMeKernel {
             return Ok(());
         }
         let time = self.continuous_eval_time();
-        if self.copy_cached_root_conditions_into(time, &self.states, indicators) {
-            return Ok(());
-        }
-        let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, &self.params);
         self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.evaluate_inventory_indicators(time, params, &mut settled_guess, indicators)
+            if self.copy_cached_root_conditions_into(time, &self.states, params, indicators) {
+                return Ok(());
+            }
+            let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, params);
+            self.evaluate_inventory_indicators(time, params, &mut settled_guess, indicators)?;
+            self.apply_indicator_zero_sides(params, indicators);
+            self.cache_root_conditions_at_parameters(time, &self.states, params, indicators);
+            Ok(())
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
-        .map_err(|error| error.at_stage(MeStage::Integration))?;
-        self.apply_indicator_zero_sides(indicators);
-        self.cache_root_conditions(time, &self.states, indicators);
+        .map_err(|error: MeError| error.at_stage(MeStage::Integration))?;
         Ok(())
     }
 
@@ -127,7 +130,7 @@ impl SolveMeKernel {
         &self,
         time: f64,
         params: &[f64],
-        settled_guess: &mut Option<Vec<f64>>,
+        settled_guess: &mut Option<SettledIndicatorCoordinate>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
         // A dynamic-time deadline needs a settled coordinate of its own, and
@@ -137,7 +140,23 @@ impl SolveMeKernel {
         // restricted refresh.
         let needs_settled = self.indicator_plan.reads_deadlines() || self.seed_active();
         if needs_settled && settled_guess.is_none() {
-            *settled_guess = Some(self.solver_y_at_parameters(time, params)?);
+            *settled_guess = Some(SettledIndicatorCoordinate {
+                kind: SettledCoordinateKind::Algebraic,
+                values: self.solver_y_at_parameters(time, params)?,
+            });
+        }
+        if self.indicator_plan.reads_deadlines()
+            && let Some(coordinate) = settled_guess
+            && coordinate.kind == SettledCoordinateKind::Derivative
+        {
+            self.runtime.complete_algebraic_after_derivative(
+                time,
+                &mut coordinate.values,
+                params,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )?;
+            coordinate.kind = SettledCoordinateKind::Algebraic;
         }
         let mut root_values = self.indicator_root_scratch.borrow_mut();
         let mut deadlines = self.indicator_deadline_scratch.borrow_mut();
@@ -146,9 +165,12 @@ impl SolveMeKernel {
             self.evaluate_root_conditions(time, params, settled_guess, &mut root_values)?;
         }
         if self.indicator_plan.reads_deadlines() {
-            let guess = settled_guess.as_deref().ok_or_else(|| {
-                contract("FMI dynamic-time indicators need a settled algebraic coordinate")
-            })?;
+            let guess = settled_guess
+                .as_ref()
+                .map(|coordinate| coordinate.values.as_slice())
+                .ok_or_else(|| {
+                    contract("FMI dynamic-time indicators need a settled algebraic coordinate")
+                })?;
             self.runtime
                 .eval_dynamic_time_event_rows_into(time, guess, params, &mut deadlines)?;
         }
@@ -159,7 +181,7 @@ impl SolveMeKernel {
     }
 
     /// Report an exact zero on the side the plan assigned that position.
-    fn apply_indicator_zero_sides(&self, indicators: &mut [f64]) {
+    fn apply_indicator_zero_sides(&self, params: &[f64], indicators: &mut [f64]) {
         for (position, (indicator, entry)) in indicators
             .iter_mut()
             .zip(self.indicator_plan.entries())
@@ -171,13 +193,23 @@ impl SolveMeKernel {
             *indicator = match entry.zero_side() {
                 IndicatorZeroSide::Positive => f64::EPSILON,
                 IndicatorZeroSide::NonPositive => -f64::EPSILON,
-                IndicatorZeroSide::Frozen => self.frozen_indicator_zero(position),
+                IndicatorZeroSide::Frozen => self.frozen_indicator_zero(position, params),
             };
         }
     }
 
     /// The side the previous completed point froze one indicator on.
-    fn frozen_indicator_zero(&self, position: usize) -> f64 {
+    fn frozen_indicator_zero(&self, position: usize, params: &[f64]) -> f64 {
+        if let Some(ScalarSlot::P { index, .. }) =
+            self.indicator_plan.relation_memory_target(position)
+            && let Some(memory) = params.get(index)
+        {
+            return if *memory > 0.5 {
+                -f64::EPSILON
+            } else {
+                f64::EPSILON
+            };
+        }
         if self
             .frozen_indicator_positive
             .get(position)
@@ -194,7 +226,7 @@ impl SolveMeKernel {
         &self,
         time: f64,
         params: &[f64],
-        settled_guess: &mut Option<Vec<f64>>,
+        settled_guess: &mut Option<SettledIndicatorCoordinate>,
         indicators: &mut [f64],
     ) -> Result<(), MeError> {
         // Solve retains relation roots that are useful during initialization
@@ -204,16 +236,17 @@ impl SolveMeKernel {
         // cannot turn a parameter-static or purely algebraic relation into a
         // spurious state event.
         match settled_guess {
-            Some(guess)
-                if self
-                    .runtime
-                    .derivative_settled_coordinate_can_refresh_roots()? =>
+            Some(coordinate)
+                if coordinate.kind == SettledCoordinateKind::Algebraic
+                    && self
+                        .runtime
+                        .algebraic_settled_coordinate_can_refresh_roots()? =>
             {
                 self.runtime
-                    .eval_root_search_conditions_after_derivative_settle_into(
+                    .eval_root_search_conditions_after_algebraic_settle_into(
                         time,
                         params,
-                        guess,
+                        &mut coordinate.values,
                         ALGEBRAIC_REFRESH_TOL,
                         UPDATE_MAX_ITERS,
                         indicators,
@@ -221,13 +254,31 @@ impl SolveMeKernel {
                     .map_err(MeError::from)?;
                 Ok(())
             }
-            Some(guess) => {
+            Some(coordinate)
+                if coordinate.kind == SettledCoordinateKind::Derivative
+                    && self
+                        .runtime
+                        .derivative_settled_coordinate_can_refresh_roots()? =>
+            {
+                self.runtime
+                    .eval_root_search_conditions_after_derivative_settle_into(
+                        time,
+                        params,
+                        &mut coordinate.values,
+                        ALGEBRAIC_REFRESH_TOL,
+                        UPDATE_MAX_ITERS,
+                        indicators,
+                    )
+                    .map_err(MeError::from)?;
+                Ok(())
+            }
+            Some(coordinate) => {
                 self.runtime
                     .eval_root_search_conditions_with_guess_into(
                         time,
                         &self.states,
                         params,
-                        guess,
+                        &mut coordinate.values,
                         ALGEBRAIC_REFRESH_TOL,
                         UPDATE_MAX_ITERS,
                         indicators,
@@ -332,7 +383,6 @@ impl SolveMeKernel {
             self.frozen_indicator_positive.clear();
             return Ok(());
         }
-        let previous = self.frozen_indicator_positive.clone();
         let mut indicators = std::mem::take(&mut self.indicator_value_scratch);
         let read = self.event_indicators_into(&mut indicators);
         self.indicator_value_scratch = indicators;
@@ -340,18 +390,7 @@ impl SolveMeKernel {
         let settled = self
             .indicator_value_scratch
             .iter()
-            .enumerate()
-            .map(|(position, indicator)| {
-                match self.indicator_plan.relation_memory_target(position) {
-                    Some(ScalarSlot::P {
-                        index: parameter, ..
-                    }) => self
-                        .params
-                        .get(parameter)
-                        .is_none_or(|memory| *memory <= 0.5),
-                    _ => previous.get(position).copied().unwrap_or(*indicator > 0.0),
-                }
-            })
+            .map(|indicator| *indicator > 0.0)
             .collect();
         self.frozen_indicator_positive = settled;
         Ok(())
@@ -889,17 +928,15 @@ impl SolveMeKernel {
         };
         {
             let cache = self.continuous_linearization_cache.borrow();
-            if cache
-                .as_ref()
-                .filter(|cached| cached.matches(time, &self.states, parameters))
-                .is_some()
-            {
-                let solver_y = self.solver_y_guess.borrow();
+            if let Some(cached) = cache.as_ref().filter(|cached| {
+                cached.kind == SettledCoordinateKind::Derivative
+                    && cached.matches(time, &self.states, parameters)
+            }) {
                 return self
                     .runtime
                     .eval_state_jacobian_v_at_settled_solver_y_into(
                         lin,
-                        &solver_y,
+                        &cached.solver_y,
                         seed,
                         sensitivity,
                     )
@@ -1110,7 +1147,7 @@ impl SolveMeKernel {
         let settle = self.numerics_settle();
         self.with_callback_solver_y(time, |guess, _| {
             self.runtime
-                .full_solver_y_with_guess(
+                .full_solver_y_with_guess_certified(
                     time,
                     &self.states,
                     params,
@@ -1168,6 +1205,7 @@ impl SolveMeKernel {
             )));
         }
         solver_y[..state.len()].copy_from_slice(state);
+        self.copy_cached_algebraic_solver_y(time, state, &self.params, &mut solver_y);
         self.runtime
             .refresh_delay_values(time, &solver_y, &mut params)?;
         Ok(f(&params))
@@ -1187,12 +1225,19 @@ impl SolveMeKernel {
             )));
         }
         solver_y[..self.states.len()].copy_from_slice(&self.states);
+        self.copy_cached_algebraic_solver_y(self.time, &self.states, &self.params, &mut solver_y);
         self.max_step_duration =
             self.runtime
                 .refresh_delay_values(self.time, &solver_y, &mut self.params)?;
-        if !self.continuous_linearization_cache_matches(self.time, &self.states, &self.params) {
+        let algebraic_cached = self.copy_cached_algebraic_solver_y(
+            self.time,
+            &self.states,
+            &self.params,
+            &mut solver_y,
+        );
+        if !algebraic_cached {
             self.invalidate_continuous_linearization();
-            self.runtime.full_solver_y_with_guess(
+            self.runtime.full_solver_y_with_guess_certified(
                 self.time,
                 &self.states,
                 &self.params,
@@ -1200,154 +1245,11 @@ impl SolveMeKernel {
                 settle.tol,
                 settle.max_iters,
             )?;
-            self.cache_continuous_linearization(self.time, &self.states, &self.params, &solver_y);
+            self.cache_algebraic_coordinate(self.time, &self.states, &self.params, &solver_y);
         }
         self.runtime
             .commit_delay_history(self.time, &solver_y, &self.params)?;
         Ok(())
-    }
-
-    // -- caches ------------------------------------------------------------
-
-    fn copy_cached_derivative_into(&self, time: f64, state: &[f64], out: &mut [f64]) -> bool {
-        let cache = self.derivative_cache.borrow();
-        let Some(cached) = cache.as_ref() else {
-            return false;
-        };
-        if cached.time.to_bits() != time.to_bits()
-            || !state_values_match(&cached.state, state)
-            || cached.derivative.len() != out.len()
-        {
-            return false;
-        }
-        out.copy_from_slice(&cached.derivative);
-        true
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        let cache = self.derivative_cache.borrow();
-        let cached = cache.as_ref()?;
-        (cached.time.to_bits() == time.to_bits() && state_values_match(&cached.state, state))
-            .then(|| cached.derivative.clone())
-    }
-
-    pub(crate) fn cache_derivative(&self, time: f64, state: &[f64], derivative: &[f64]) {
-        let mut cache = self.derivative_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.derivative.clone_from_slice(derivative);
-        } else {
-            *cache = Some(CachedDerivative {
-                time,
-                state: state.to_vec(),
-                derivative: derivative.to_vec(),
-            });
-        }
-    }
-
-    pub(super) fn clear_derivative_cache(&self) {
-        *self.derivative_cache.borrow_mut() = None;
-        *self.continuous_linearization_cache.borrow_mut() = None;
-    }
-
-    pub(super) fn clear_runtime_caches(&self) {
-        self.clear_callback_value_caches();
-        *self.continuous_linearization_cache.borrow_mut() = None;
-    }
-
-    pub(super) fn clear_callback_value_caches(&self) {
-        *self.derivative_cache.borrow_mut() = None;
-        *self.root_cache.borrow_mut() = None;
-    }
-
-    fn copy_cached_root_conditions_into(&self, time: f64, state: &[f64], out: &mut [f64]) -> bool {
-        let cache = self.root_cache.borrow();
-        let Some(cached) = cache.as_ref() else {
-            return false;
-        };
-        if cached.time.to_bits() != time.to_bits()
-            || !state_values_match(&cached.state, state)
-            || cached.values.len() != out.len()
-        {
-            return false;
-        }
-        out.copy_from_slice(&cached.values);
-        true
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        let cache = self.root_cache.borrow();
-        let cached = cache.as_ref()?;
-        (cached.time.to_bits() == time.to_bits() && state_values_match(&cached.state, state))
-            .then(|| cached.values.clone())
-    }
-
-    pub(crate) fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
-        let mut cache = self.root_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.values.clone_from_slice(values);
-        } else {
-            *cache = Some(CachedRootConditions {
-                time,
-                state: state.to_vec(),
-                values: values.to_vec(),
-            });
-        }
-    }
-
-    pub(super) fn cache_continuous_linearization(
-        &self,
-        time: f64,
-        state: &[f64],
-        parameters: &[f64],
-        _solver_y: &[f64],
-    ) {
-        let mut cache = self.continuous_linearization_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.parameters.clone_from_slice(parameters);
-        } else {
-            *cache = Some(CachedContinuousLinearization {
-                time,
-                state: state.to_vec(),
-                parameters: parameters.to_vec(),
-            });
-        }
-    }
-
-    pub(super) fn invalidate_continuous_linearization(&self) {
-        *self.continuous_linearization_cache.borrow_mut() = None;
-    }
-
-    fn continuous_linearization_cache_matches(
-        &self,
-        time: f64,
-        state: &[f64],
-        parameters: &[f64],
-    ) -> bool {
-        self.continuous_linearization_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|cached| cached.matches(time, state, parameters))
-    }
-
-    fn cached_continuous_solver_y(
-        &self,
-        time: f64,
-        state: &[f64],
-        parameters: &[f64],
-    ) -> Option<Vec<f64>> {
-        self.continuous_linearization_cache
-            .borrow()
-            .as_ref()
-            .filter(|cached| cached.matches(time, state, parameters))
-            .map(|_| self.solver_y_guess.borrow().clone())
     }
 
     // -- initialization ----------------------------------------------------
@@ -1534,9 +1436,8 @@ impl SolveMeKernel {
             },
             move |y, p| project_event_algebraics(&projection_runtime, y, p, event_time, policy),
         )?;
-        // Unrelated algebraic/output lanes remain lazy in the retained solver
-        // seed. Their owning callback refresh plan materializes them if and
-        // when a derivative, root, or visible-value consumer asks for them.
+        // Event iteration uses its scoped closure; the commit certifies the
+        // full post-event geometry shared by root and visible-value consumers.
         self.commit_event_runtime_state(event_time, solver_y, &mut root_overrides)?;
         self.record_event_action_outcome(outcome, event_time)?;
         // `commit_event_runtime_state` leaves a checked post-event
@@ -1562,23 +1463,20 @@ impl SolveMeKernel {
         mut solver_y: Vec<f64>,
         root_overrides: &mut Vec<(usize, f64)>,
     ) -> Result<(), MeError> {
-        let history_changed = commit_pre_params_after_event_at(
+        commit_pre_params_after_event_at(
             &self.runtime.model,
             &solver_y,
             &mut self.params,
             Some(event_time),
             self.tolerance,
         );
-        if history_changed {
-            self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
-        }
+        // A root query and the committed relation side must share the same
+        // certified full geometry, even when no pre-history slot changed.
+        self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
         self.copy_states_from_solver_y(&solver_y);
         self.invalidate_continuous_linearization();
+        self.cache_algebraic_coordinate(event_time, &self.states, &self.params, &solver_y);
         *self.solver_y_guess.borrow_mut() = solver_y;
-        if history_changed {
-            let solver_y = self.solver_y_guess.borrow();
-            self.cache_continuous_linearization(event_time, &self.states, &self.params, &solver_y);
-        }
         self.commit_delay_point()?;
         Ok(())
     }

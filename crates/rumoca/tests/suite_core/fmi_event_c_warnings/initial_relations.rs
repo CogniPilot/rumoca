@@ -134,3 +134,30 @@ fn fmi_targets_refuse_authored_initial_events_independently_of_relation_mode() {
         assert!(format!("{error:#}").contains("authored initial()"));
     }
 }
+
+#[test]
+fn fmi_targets_admit_exact_integer_relation_initialization() {
+    let result = rumoca::Compiler::new()
+        .model("IntegerPrecision")
+        .compile_str(
+            "model IntegerPrecision input Integer n(start=0); output Integer y;\n\
+         equation y=if n<0 then -2147483648+n+1 else 2147483647+n; end IntegerPrecision;",
+            "IntegerPrecision.mo",
+        )
+        .unwrap();
+    let package = rumoca_sim::lower_solve_package(&result.dae).unwrap();
+    for target in ["fmi2", "fmi3"] {
+        let rendered = rumoca::render_target_files(&result, "IntegerPrecision", target, None);
+        assert!(
+            rendered.is_ok(),
+            "{target}: {rendered:?}\nInteger relation programs: {:?}\nTyped owners: {:?}",
+            package.problem.discrete.rhs.programs(),
+            package
+                .pure_calls
+                .owners()
+                .iter()
+                .map(|owner| owner.body())
+                .collect::<Vec<_>>()
+        );
+    }
+}

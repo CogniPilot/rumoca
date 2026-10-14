@@ -42,6 +42,19 @@ impl SolveRuntime {
             .full_solver_y_with_guess(t, state, params, guess, tol, max_iters)
     }
 
+    pub(crate) fn full_solver_y_with_guess_certified(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        guess: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .full_solver_y_with_guess_certified(t, state, params, guess, tol, max_iters)
+    }
+
     pub fn eval_state_derivatives(
         &self,
         t: f64,
@@ -163,6 +176,21 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         self.scalar_execution()?
             .eval_root_search_conditions_after_derivative_settle_into(
+                t, params, solver_y, tol, max_iters, out,
+            )
+    }
+
+    pub(crate) fn eval_root_search_conditions_after_algebraic_settle_into(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .eval_root_search_conditions_after_algebraic_settle_into(
                 t, params, solver_y, tol, max_iters, out,
             )
     }
@@ -617,6 +645,18 @@ impl SolveRuntime {
             .refresh_algebraic_and_output_slots_certified(t, solver_y, params, tol, max_iters)
     }
 
+    pub(crate) fn complete_algebraic_after_derivative(
+        &self,
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        self.scalar_execution()?
+            .complete_algebraic_after_derivative(t, solver_y, params, tol, max_iters)
+    }
+
     pub fn refresh_event_dependency_slots_certified(
         &self,
         t: f64,
@@ -726,6 +766,13 @@ impl SolveRuntime {
         Ok(self
             .scalar_execution()?
             .derivative_settled_coordinate_can_refresh_roots())
+    }
+    pub(crate) fn algebraic_settled_coordinate_can_refresh_roots(
+        &self,
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(self
+            .scalar_execution()?
+            .algebraic_settled_coordinate_can_refresh_roots())
     }
     pub(crate) fn binding_row_source(
         &self,

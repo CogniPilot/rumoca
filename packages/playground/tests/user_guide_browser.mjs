@@ -28,6 +28,8 @@ function start(command, args) {
   return { child, terminal, launchError: () => launchError };
 }
 
+await run(process.execPath, ["--test", "packages/playground/tests/book_live_loading.test.mjs"]);
+
 // Reuse the same package built and shipped by the PR WASM job. No replacement
 // models, parser, fake library caches, or missing-capability fallback.
 const packageBase = path.join(root, "packages/rumoca/dist/release-full-web");

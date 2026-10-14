@@ -86,7 +86,9 @@ fn collect_when_previous_operands(
 ) {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 collect_previous_operand_names(value, discrete);
             }
             flat::WhenEquation::Assert {

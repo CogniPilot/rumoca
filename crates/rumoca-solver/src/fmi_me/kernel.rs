@@ -66,11 +66,25 @@ struct CachedDerivative {
 struct CachedRootConditions {
     time: f64,
     state: Vec<f64>,
+    parameters: Vec<f64>,
+    values: Vec<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettledCoordinateKind {
+    Derivative,
+    Algebraic,
+}
+
+struct SettledIndicatorCoordinate {
+    kind: SettledCoordinateKind,
     values: Vec<f64>,
 }
 
 #[derive(Clone)]
 struct CachedContinuousLinearization {
+    kind: SettledCoordinateKind,
+    solver_y: Vec<f64>,
     time: f64,
     state: Vec<f64>,
     parameters: Vec<f64>,
@@ -1329,6 +1343,7 @@ fn root_cache_bit_eq(
         (Some(left), Some(right)) => {
             left.time.to_bits() == right.time.to_bits()
                 && float_slice_bit_eq(&left.state, &right.state)
+                && float_slice_bit_eq(&left.parameters, &right.parameters)
                 && float_slice_bit_eq(&left.values, &right.values)
         }
         (None, None) => true,
@@ -1344,8 +1359,10 @@ fn continuous_linearization_cache_bit_eq(
     match (left, right) {
         (Some(left), Some(right)) => {
             left.time.to_bits() == right.time.to_bits()
+                && float_slice_bit_eq(&left.solver_y, &right.solver_y)
                 && float_slice_bit_eq(&left.state, &right.state)
                 && float_slice_bit_eq(&left.parameters, &right.parameters)
+                && left.kind == right.kind
         }
         (None, None) => true,
         _ => false,

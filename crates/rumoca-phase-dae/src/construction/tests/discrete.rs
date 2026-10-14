@@ -2019,13 +2019,13 @@ fn malformed_flat_rejects_second_independent_when_owner_for_one_target() {
             .when_chains
             .push(flat::WhenChain::new(branch, source.span(owner, 0)));
     }
-    let second_owner = source.span("when false then m = false; end when", 0);
+    let second_assignment = source.span("m = false", 0);
     let error = construct(&model, source.map).unwrap_err();
 
     assert!(matches!(
         error,
         ToDaeError::DiscreteSolvedFormViolation { detail, span }
-            if span == second_owner && detail.contains("`m`")
+            if span == second_assignment && detail.contains("`m`")
     ));
 }
 

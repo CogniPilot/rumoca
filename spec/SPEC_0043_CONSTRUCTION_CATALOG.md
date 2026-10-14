@@ -62,15 +62,24 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 20,750 | Retain checked conditional/tensor/loop-region and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-core-loc` | 11,000 | 21,250 | Retain checked conditional/tensor/loop-region, selected coordinate ownership and initialization parameter identity; retire downstream recovery during Solve Algorithm Block cutover |
 | `dae-wire-loc` | 3,250 | 6,500 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
-| `dae-total-loc` | 14,250 | 27,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 27,750 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
 legal once its ledger row records it, and only crossing a 250-line step forces
 the row to be rewritten. Measured, checked, and stated as an acceptance contract
 in `crates/rumoca/tests/suite_gates/dae_loc_trigger_test.rs`.
+
+**2026-10-13 selected-coordinate review:** production measures 21,193 core +
+6,393 wire = 27,586 lines under §1a. Checked array selection, exact source
+ownership, ordered coverage and replay retain one declaration with independent
+element events. Shared target projection replaces rendered-name recovery;
+variable operations now live in their ordinary model module. The §1b rounding
+rule derives ceilings 21,250 / 6,500 / 27,750. Review triggers and totality-debt
+ceilings are unchanged; remaining code carries construction and replay evidence
+rather than parallel unchecked paths.
 
 **2026-09-12 scalar-owner index review:** production is 17,347 core + 5,431
 wire = 22,778 lines. The [module review](../docs/dev-guide/src/tooling/multibody-coverage.md#scalar-row-owner-lookup)
@@ -155,15 +164,14 @@ core and wire ceilings, and totality-debt ceilings are unchanged.
 
 **2026-10-07 enumeration-declaration review:** measured production source moved to 18,684 core, 5,572 wire, and 24,256 total lines with the enumeration declaration attribute of an enumeration variable (DAE-C32) and its view and wire replay. The derived rule rounds the total up to the next 250-line step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers, core and wire ceilings, and totality-debt ceilings are unchanged.
 
-**2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification is pending in `docs/verification/pr427-main-dae-integer/structured-quotient-owner.md`.
+**2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification remains pending.
 
 
-**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The [module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md) accounts for checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
+**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The review covers checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
 
 **2026-10-12 combined workshop review:** production at `d3f804491` measures
-19,937 core, 6,037 wire and 25,974 total lines. The refreshed
-[module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md)
-accounts for closed model-arm derivative proof transfer, constructor-issued
+19,937 core, 6,037 wire and 25,974 total lines. The review
+covers closed model-arm derivative proof transfer, constructor-issued
 clock facts and the shared read-only selected-value traversal. Solve's duplicate
 synchronous-condition owner analysis is removed. Derived acknowledgment steps
 are 20,000 / 6,250 / 26,000; thresholds and totality-debt
@@ -832,6 +840,16 @@ relations retain their own checked activation and storage contracts. A
 and expression caches, even when it shares an expression with a monitored root.
 The corresponding construction row is in [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md).
 
+Initialization algebraic read cones derive from the canonical primal programs'
+value and control dependencies, including comparison operands in retained
+regions. Jacobian sparsity is derivative authority and cannot issue this value
+ordering: a comparison has zero derivative while still reading its operands.
+The cone closes only over requested algebraic producers, leaving unrelated
+singular blocks outside it and preserving the original selected-arm evaluation.
+The execution-mode lane is not a scheduled-event owner. Every initialization
+boundary clears that lane and performs the MLS §8.6 event iteration at the same
+start time; a right-limit continuation requires an independently issued event.
+
 Each initialization homotopy step settles the numeric initialization equations,
 covered algebraic equations, relation truth, and ordinary Boolean definitions
 together before advancing lambda. Ordinary `pre` values remain fixed during
@@ -873,6 +891,7 @@ time, never a value.
 
 | Rule | Owner/Where | Construction proof |
 |---|---|---|
+| Event producers enter selected-array ownership only from the checked causal Real definition's element selection or the checked discrete-value target's scalar selection; declaration rank and width are not selection evidence. Whole-array producers retain their whole-declaration claim, including the exact producer projection consumed by a model-event transaction. A selected array's event-iteration producer partitions cover its whole declaration storage exactly once in canonical scalar order. Construction rejects empty, overlapping, missing, out-of-range, nested, unclaimed, or clock-incompatible partitions; each leaf replays the existing checked scalar or guarded producer range, and wire decoding replays the same proof. Current and pre bindings remain one complete typed declaration run | Solve event-iteration construction | Independent element triggers cannot become one priority chain or leave convergence lanes unowned, and a whole-array transaction cannot lose its exact producer |
 | A family whose captured template is its only body keeps full bodies only at its corner cells (base and one neighbor per binder, through nested loops) and issues placeholder rows for every other cell, recording its owner in `flat::FamilyInteriors`: a regular state-derivative body, a proven regular parameter-variability assignment, or a continuous algebraic body. A continuous algebraic body defines only continuous-time `Real` declarations of its own class occurrence that no `der` equation reads; its nested loop ranges do not read enclosing binders; and its template reads only arithmetic, references, literals, arrays, ranges, unfiltered comprehensions, and smooth builtins (no relation, `if`, user call, record field, or operator with event, memory, clock, or derivative semantics). | `rumoca-phase-flatten` (`continuous_algebraic`, `equations::cheapen`) | The owner is decided from the still-symbolic body and occurrence-scoped declaration evidence before any cell is expanded; a family whose template cannot own its expanded rows is a flatten error, never a silent placeholder |
 | A family flattened as continuous algebraic is a continuous structured owner lowered from its template; derived-parameter promotion admits only `FamilyInteriors::ParameterAssignment`. A consumer of the scalar equation view (flat-IR template rendering) rejects the family at its span (`EC007`); the DAE reads it only through its template. | `rumoca-phase-dae` template selection and family analysis | The cheapening reason is read from the family, never re-inferred from row contents; the template's call shapes pass the same certification as a selected materialized template |
 | A continuous algebraic family whose rows are matched to the scalars of one algebraic variable lowers to one synthesized pure-call owner keyed by the DAE family (SOLVE-C70) and one residual program `target - call(inputs)` stored as a range, when its admission proof holds: one body `target[binders] - rhs` in the binder-substitution view; the target subscripts are the binders in declaration order over the target's whole extents, so domain order is the target's row-major order; `rhs` is a scalar of the target's scalar type; and `rhs` reads no coordinate of the target, no derivative or non-variable coordinate, and no function call. Constants `rhs` reads with literal bindings are folded into the body. The owner body is one typed map over the family domain evaluating `rhs` at the binder values. A family the proof refuses (a recurrence reading its own target among them) keeps its scalar rows by that refusal, and so does a family whose owner body has no directional relation (a product reduction among them), since the residual is differentiated through that relation. | `rumoca-phase-solve` continuous family lowering, `typed_functions::family_owner` | The proof is checked on the DAE family before any point is enumerated; the call's result order is the target's row-major order, so the residual is elementwise and its IR size follows the source |
@@ -1043,8 +1062,7 @@ does not authorize rendering a rounded Float64 min/max as an exact Integer bound
 Moved from SPEC_0036 section "Source-Ordered Function Assertion Cutover"; rows and rules below are normative by reference from that section.
 
 The canonical typed evaluator and compiled shared C kernel implement this
-cutover. `docs/verification/fmi-ls-first-fault.md` records the unchanged
-source controls and adapter limits. ALG-015 remains the source-language
+cutover. ALG-015 remains the source-language
 requirement throughout.
 
 | Rule | Owner/Where | Brief Justification |
@@ -1269,10 +1287,7 @@ model is catalogued in [SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-c
 | Static receiver authority follows the checked complete provider/alias/allocation graph, not an import signature | Trusted whole-graph constructor | A receiver cannot inspect the callee behind its function import |
 | Standalone or separately linked guest imports grant no admission; every call retains the existing lease/outcome/fault and typed-cell checks | Private native receiver and existing execution owner | Direct linkage changes platform plumbing, never success or publication semantics |
 
-**DRAFT receiver boundary:** the proposed WASIP2-only canonical-reader dependency
-and private receiver signatures are in
-[the fixed guest receiver proposal](../docs/verification/fixed-native-linked-receiver-proposal-20261011.md#draft-canonical-reader-boundary).
-The isolated receiver source implements the proposed boundary, but remains
+**DRAFT receiver boundary:** the isolated receiver source remains
 unqualified and is not an accepted exception to SPEC_0029. The
 receiver cannot inspect an imported callee; altered-provider refusal belongs to
 the trusted complete-graph constructor, not a guest-supplied flag or descriptor.

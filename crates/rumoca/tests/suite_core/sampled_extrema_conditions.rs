@@ -6,8 +6,7 @@ use rumoca_sim::{SimOptions, simulate_dae};
 use rumoca_solver::SimExecutionPolicy;
 use rumoca_solver::fmi_me::{MeError, session::MeSessionError};
 
-const SOURCE: &str =
-    include_str!("../../../../docs/verification/pr427-workshop-ci/sampled-extrema-reproduction.mo");
+const SOURCE: &str = include_str!("fixtures/sampled_extrema_reproduction.mo");
 
 #[test]
 fn a_sampled_body_condition_does_not_create_a_crossing_root() {

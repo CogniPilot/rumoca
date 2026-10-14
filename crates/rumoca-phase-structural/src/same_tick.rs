@@ -180,6 +180,10 @@ pub enum SameTickOrderError {
     Cycle { span: Span, detail: String },
     #[error("variable `{name}` is written by more than one same-tick producer")]
     DuplicateOwner { span: Span, name: String },
+    #[error(
+        "same-tick clock exchange for selected discrete-value array `{name}` requires element-aware producer ownership"
+    )]
+    UnsupportedSelectedTarget { span: Span, name: String },
     #[error("same-tick read of `{name}` cannot be refreshed inside the clock partition: {detail}")]
     UnrefreshableRead {
         span: Span,
@@ -198,6 +202,7 @@ impl SameTickOrderError {
             | Self::InvalidClockDomains { span }
             | Self::Cycle { span, .. }
             | Self::DuplicateOwner { span, .. }
+            | Self::UnsupportedSelectedTarget { span, .. }
             | Self::UnrefreshableRead { span, .. } => *span,
         }
     }
@@ -234,6 +239,7 @@ pub struct SameTickDefinitions<'dae> {
     /// value predates the tick, even when they do not depend on another
     /// clock-owned producer (for example `fresh = valid and sample(...)`).
     refresh_on_tick: BTreeSet<u32>,
+    selected_variables: BTreeSet<u32>,
 }
 
 /// One coordinate's accumulated writers while [`SameTickDefinitions`] derives.
@@ -338,12 +344,20 @@ impl<'dae> SameTickDefinitions<'dae> {
             }
         }
         refresh_on_tick.retain(|variable| exact.contains_key(variable));
+        let selected_variables = (0..view.discrete_value_owner_count())
+            .filter_map(|index| view.discrete_value_owner_id(index))
+            .filter_map(|id| view.discrete_value_owner(id))
+            .flat_map(|owner| owner.targets().iter())
+            .filter(|target| target.scalar_selection().is_some())
+            .map(|target| target.variable().index())
+            .collect();
         Ok(Self {
             derivative_sources,
             ids,
             exact,
             opaque,
             refresh_on_tick,
+            selected_variables,
         })
     }
 
@@ -511,9 +525,14 @@ fn collect_discrete_value_writers<'dae>(
         if unconditional {
             let branch = first.expect("checked unconditional B.1c branch resolves");
             for (target, (value, _)) in owner.targets().iter().zip(branch.values().iter()) {
-                let target = dae::VariableId::from(target).index();
-                record_definition(view, sources, writers, target, value)?;
-                refresh_on_tick.insert(target);
+                record_discrete_value_writer(
+                    view,
+                    sources,
+                    writers,
+                    refresh_on_tick,
+                    target,
+                    value,
+                )?;
             }
             continue;
         }
@@ -526,6 +545,26 @@ fn collect_discrete_value_writers<'dae>(
         for target in owner.targets().iter() {
             record_opaque_writer(writers, dae::VariableId::from(target).index(), &reads);
         }
+    }
+    Ok(())
+}
+
+fn record_discrete_value_writer<'dae>(
+    view: dae::DaeView<'dae>,
+    sources: &DerivativeSources<'dae>,
+    writers: &mut Writers<'dae>,
+    refresh_on_tick: &mut BTreeSet<u32>,
+    target: dae::DiscreteValueTarget<'dae>,
+    value: dae::ExprId<'dae>,
+) -> Result<(), SameTickOrderError> {
+    let variable = target.variable().index();
+    if target.scalar_selection().is_some() {
+        let mut reads = OwnerReadViews::default();
+        collect_writer_reads(view, value, sources, &mut reads)?;
+        record_opaque_writer(writers, variable, &reads);
+    } else {
+        record_definition(view, sources, writers, variable, value)?;
+        refresh_on_tick.insert(variable);
     }
     Ok(())
 }
@@ -626,6 +665,21 @@ pub fn issue_same_tick_schedule<'dae>(
         return Err(SameTickOrderError::InvalidClockDomains {
             span: producer.span,
         });
+    }
+    for producer in producers {
+        if !matches!(producer.read_context, SameTickReadContext::ClockPartition) {
+            continue;
+        }
+        if let Some(target) = producer
+            .targets
+            .iter()
+            .find(|target| definitions.selected_variables.contains(&target.index()))
+        {
+            return Err(SameTickOrderError::UnsupportedSelectedTarget {
+                span: producer.span,
+                name: variable_name(view, target.index()),
+            });
+        }
     }
     let producer_of = map_producer_targets(view, producers)?;
     let direct_reads = collect_producer_reads(view, producers)?;
@@ -960,6 +1014,55 @@ mod tests {
         collect_condition_same_instant_reads_except, collect_condition_same_instant_reads_pruned,
     };
     use super::*;
+
+    #[test]
+    fn selected_value_writers_are_opaque_and_clock_exchange_is_typed_refused() {
+        let text = "discrete Boolean m[2]; m[1]=true; m[2]=false;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("SelectedClockOwner.mo", text);
+        let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let ty = model.types(|types| {
+                types.derived(dae::ValueType::array(dae::ScalarType::Boolean, [2]), at)
+            })?;
+            let variable = model.variables(|variables| {
+                variables.discrete_value(
+                    VarName::new("m"),
+                    ty,
+                    at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let targets = [
+                model.discrete_value_element(variable, &[1], at)?,
+                model.discrete_value_element(variable, &[2], at)?,
+            ];
+            let value = model.expressions(|expressions| {
+                expressions.at(at).literal(dae::DaeLiteral::Boolean(true))
+            })?;
+            model.b1c_selected(targets, |topology| {
+                topology.selected_owner(at, targets, |owner| owner.always(at, [(value, at); 2]))?;
+                Ok(())
+            })
+        })
+        .unwrap();
+        model.inspect(|view| {
+            let definitions = SameTickDefinitions::derive(view, &oriented_plan(view)).unwrap();
+            let variable = view.variables().next().unwrap().0;
+            assert!(definitions.definition(variable.index()).is_none());
+            assert!(!definitions.refreshes_on_tick(variable.index()));
+            let producer = SameTickProducer {
+                read_context: SameTickReadContext::ClockPartition,
+                clock_domains: vec![0],
+                targets: vec![variable],
+                value_reads: vec![],
+                condition_reads: vec![],
+                span: at.span(),
+            };
+            assert!(matches!(issue_same_tick_schedule(view, &definitions, &[producer], &BTreeSet::new(), &ClockCoincidence::never()),
+                Err(SameTickOrderError::UnsupportedSelectedTarget { span, .. }) if span == at.span()));
+        });
+    }
 
     #[test]
     fn condition_read_projection_prunes_only_the_issued_expression() {

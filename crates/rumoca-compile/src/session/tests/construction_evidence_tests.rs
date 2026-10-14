@@ -32,7 +32,7 @@ fn baseline(case: &fixtures::Fixture) -> Value {
 }
 
 #[test]
-fn construction_result_preserves_legacy_wire_balance_selections_and_refusals() {
+fn construction_result_preserves_current_wire_balance_selections_and_refusals() {
     for case in fixtures::FIXTURES {
         let (flat, source_map) = flat_fixture(case);
         let result = rumoca_phase_dae::to_dae_with_evidence(&flat, source_map.clone());
@@ -49,7 +49,7 @@ fn construction_result_preserves_legacy_wire_balance_selections_and_refusals() {
                 assert_eq!(
                     serde_json::to_value(&dae).unwrap(),
                     serde_json::to_value(&projected).unwrap(),
-                    "{} compatibility projection",
+                    "{} to_dae projection",
                     case.name
                 );
                 if case.name == "guard" {
@@ -68,7 +68,34 @@ fn construction_result_preserves_legacy_wire_balance_selections_and_refusals() {
                 json!({"error": error.to_diagnostic()})
             }
         };
-        assert_eq!(actual, expected, "{} frozen pre-cutover result", case.name);
+        assert_eq!(actual, expected, "{} frozen current result", case.name);
+    }
+}
+
+#[test]
+fn retained_current_wire_replays_and_refuses_other_versions() {
+    for case in fixtures::FIXTURES.iter().filter(|case| case.success) {
+        let expected = baseline(case)["dae"].clone();
+        assert_eq!(expected["schema_version"], 52, "{}", case.name);
+        let replayed: dae::Dae = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(replayed).unwrap(),
+            expected,
+            "{}",
+            case.name
+        );
+        for version in [51, 53] {
+            let mut invalid = expected.clone();
+            invalid["schema_version"] = json!(version);
+            let error = serde_json::from_value::<dae::Dae>(invalid).unwrap_err();
+            assert!(
+                error.to_string().contains(&format!(
+                    "unsupported DAE schema version {version}; expected 52"
+                )),
+                "{}: {error}",
+                case.name
+            );
+        }
     }
 }
 

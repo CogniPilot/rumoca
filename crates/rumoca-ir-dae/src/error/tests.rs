@@ -361,6 +361,14 @@ fn definition_messages_are_exact() {
             span: Some(at),
         },
         Case {
+            error: DaeConstructionError::InvalidDiscreteElementSelection {
+                target: 6,
+                span: at,
+            },
+            message: "invalid scalar selection of B.1c target identity 6",
+            span: Some(at),
+        },
+        Case {
             error: DaeConstructionError::IncompleteDefinition {
                 kind: "parameter",
                 index: 11,

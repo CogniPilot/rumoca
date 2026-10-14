@@ -95,6 +95,34 @@ impl ScalarExecutionView<'_> {
         )
     }
 
+    pub(crate) fn complete_algebraic_after_derivative(
+        &self,
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        let plan = self
+            .scalar
+            .algebraic_refresh_after_derivative
+            .as_ref()
+            .map_or(&self.scalar.algebraic_refresh, |relation| {
+                relation.remainder()
+            });
+        self.refresh_slots_with_plan(
+            plan,
+            RefreshSlotArgs {
+                t,
+                solver_y,
+                params,
+                tol,
+                max_iters,
+                certify_coordinates: true,
+            },
+        )
+    }
+
     /// Refresh exactly the algebraic closure consumed by event iteration.
     ///
     /// The returned coordinate is certified for discrete assignments,
@@ -695,5 +723,128 @@ impl ScalarExecutionView<'_> {
             value,
             "refresh assignment value"
         );
+    }
+}
+
+impl ScalarExecutionView<'_> {
+    pub fn eval_root_search_conditions_after_derivative_settle_into(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if !self.derivative_settled_coordinate_can_refresh_roots() {
+            return Err(RuntimeSolveError::solve_ir(
+                "root refresh has no certified derivative-settled remainder".to_string(),
+            ));
+        }
+        let relation = self
+            .scalar
+            .root_refresh_after_derivative
+            .as_ref()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir("root refresh derivative-settled remainder disappeared")
+            })?;
+        self.eval_root_search_conditions_after_settle(
+            t, params, solver_y, tol, max_iters, out, relation,
+        )
+    }
+
+    pub(crate) fn algebraic_settled_coordinate_can_refresh_roots(&self) -> bool {
+        self.scalar.root_refresh_after_algebraic.is_some()
+    }
+
+    pub(crate) fn eval_root_search_conditions_after_algebraic_settle_into(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let relation = self
+            .scalar
+            .root_refresh_after_algebraic
+            .as_ref()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "root refresh has no certified algebraic-settled remainder",
+                )
+            })?;
+        self.eval_root_search_conditions_after_settle(
+            t, params, solver_y, tol, max_iters, out, relation,
+        )
+    }
+
+    // SPEC_0021: Exception - the selected constructor-issued remainder is part of the checked coordinate.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_root_search_conditions_after_settle(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+        relation: &solve::RefreshRemainderRelation,
+    ) -> Result<(), RuntimeSolveError> {
+        if solver_y.len() != self.solver_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "settled solver-y length mismatch: expected {}, got {}",
+                self.solver_count,
+                solver_y.len()
+            )));
+        }
+        let remainder = relation.remainder();
+        if remainder.causal_solution_certified || !remainder.value_stages.is_empty() {
+            self.refresh_slots_with_plan(
+                remainder,
+                RefreshSlotArgs {
+                    t,
+                    solver_y,
+                    params,
+                    tol,
+                    max_iters,
+                    certify_coordinates: true,
+                },
+            )?;
+        }
+        let root_count = self.root_condition_count();
+        if root_count == 0 {
+            return fill_inactive_root_output(out);
+        }
+        validate_runtime_output_len("root search output", root_count, out.len())?;
+        let model_root_count = self.model.problem.events.root_conditions.len();
+        if model_root_count > 0 {
+            let model_out = &mut out[..model_root_count];
+            match &self.scalar.root_condition_plan {
+                Some(plan) if plan.search_rows.is_empty() => {
+                    self.validate_root_plan_output_len(plan, model_out)?;
+                    self.write_planned_root_search_defaults(plan, params, t, model_out)?;
+                }
+                Some(plan) => {
+                    self.validate_root_plan_output_len(plan, model_out)?;
+                    self.write_planned_root_search_conditions(
+                        plan, solver_y, params, t, model_out,
+                    )?;
+                }
+                None => self
+                    .eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?,
+            }
+        }
+        self.delay_runtime
+            .evaluate_event_roots(
+                t,
+                solver_y,
+                params,
+                self.row_eval_context(),
+                &mut out[model_root_count..],
+            )
+            .map_err(RuntimeSolveError::from)?;
+        validate_finite_runtime_output("root search output", out)
     }
 }

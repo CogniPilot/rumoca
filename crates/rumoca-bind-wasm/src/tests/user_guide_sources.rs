@@ -124,13 +124,14 @@ fn user_guide_fence_inventory_preserves_every_embedded_source() {
         .filter_map(GuideFence::scenario_path)
         .collect();
     assert_eq!(scenarios.len(), 21);
-    let issued: Vec<PathBuf> = serde_json::from_str(
-        &std::fs::read_to_string(
-            repository_root().join("docs/verification/user-guide-ci/linked-scenarios.json"),
+    let issued: Vec<PathBuf> =
+        serde_json::from_str(
+            &std::fs::read_to_string(repository_root().join(
+                "crates/rumoca-bind-wasm/src/tests/fixtures/user_guide/linked-scenarios.json",
+            ))
+            .expect("mandatory browser scenario roster"),
         )
-        .expect("mandatory browser scenario roster"),
-    )
-    .expect("scenario path array");
+        .expect("scenario path array");
     let actual: std::collections::BTreeSet<_> = scenarios.iter().cloned().collect();
     assert_eq!(actual.len(), 16);
     assert_eq!(issued.len(), actual.len(), "no duplicate scenario cells");

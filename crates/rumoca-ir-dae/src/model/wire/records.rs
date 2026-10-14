@@ -273,9 +273,16 @@ pub(super) enum EquationOperationInput {
     },
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DiscreteValueTargetWire {
+    pub(super) variable: u32,
+    pub(super) scalar_selection: Option<u32>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct DiscreteValueOwnerWire<Targets = Vec<u32>> {
+pub(super) struct DiscreteValueOwnerWire<Targets = Vec<DiscreteValueTargetWire>> {
     pub(super) targets: Targets,
     pub(super) branches: Vec<DiscreteValueBranchWire>,
     pub(super) structure: Option<StructuredDiscreteValueWire>,
@@ -317,7 +324,7 @@ pub(super) struct DiscreteValueActionWire {
 
 pub(super) fn discrete_value_owner_output(
     storage: &FrozenStorage,
-) -> Vec<DiscreteValueOwnerWire<&[u32]>> {
+) -> Vec<DiscreteValueOwnerWire<&[crate::discrete_values::DiscreteValueTargetEntry]>> {
     storage
         .discrete_value_owners
         .iter()

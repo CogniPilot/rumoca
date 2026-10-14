@@ -176,7 +176,9 @@ fn when_equation_expressions<'flat>(
 ) {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 out.push(value);
             }
             flat::WhenEquation::Assert {

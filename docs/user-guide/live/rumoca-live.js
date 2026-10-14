@@ -2539,6 +2539,7 @@ self.onmessage = async (event) => {
         const liveDirectives = parseLiveDirectives(originalSource);
         let sourceUrl = liveDirectives.source || '';
         const scenarioUrl = liveDirectives.scenario || '';
+        let sourceLoading = Boolean(sourceUrl || scenarioUrl);
         let modelOverride = liveDirectives.model || '';
         const directiveSourceOnly = liveDirectives.mode === 'source';
         let sourceOnly = directiveSourceOnly;
@@ -3149,6 +3150,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }
 
         function refreshExecutionAvailability(loading = false) {
+            loading = loading || sourceLoading;
             const codegen = isCodegenScenario();
             const galecCodegen = codegen && GALEC_CODEGEN_TARGETS.has(codegenTarget());
             runBtn.textContent = galecCodegen ? 'Generate .alg' : codegen ? 'Generate Code' : '▶ Simulate';
@@ -3342,6 +3344,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 }
                 originalSource = (await response.text()).replace(/\n$/, '');
                 editor.setValue(originalSource);
+                sourceLoading = false;
                 resetBtn.disabled = false;
                 settingsBtn.disabled = false;
                 refreshExecutionAvailability();
@@ -3386,7 +3389,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         };
 
         const withWasm = async (key, busyLabel, action) => {
-            if (widget.busy) {
+            if (widget.busy || sourceLoading) {
                 return;
             }
             const run = new AbortController();

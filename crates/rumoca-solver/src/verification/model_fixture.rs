@@ -284,8 +284,8 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
 }
 
 /// A one-state model whose discrete equation settles during `initial()` but
-/// diverges at an ordinary runtime event: `q := if initial() then q else
-/// q + increment`.
+/// diverges at a later runtime event: `q := if initial() or time <= 0 then q
+/// else q + increment`. The mandatory post-initial pass still settles at zero.
 pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel {
     let mut model = single_state_model();
     model.problem.solve_layout.parameter_count = 2;
@@ -307,13 +307,27 @@ pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel
                     rhs: 1,
                 },
                 solve::LinearOp::LoadP { dst: 3, index: 1 },
+                solve::LinearOp::LoadTime { dst: 4 },
+                solve::LinearOp::Const { dst: 5, value: 0.0 },
+                solve::LinearOp::Compare {
+                    dst: 6,
+                    op: solve::CompareOp::Le,
+                    lhs: 4,
+                    rhs: 5,
+                },
+                solve::LinearOp::Binary {
+                    dst: 7,
+                    op: solve::BinaryOp::Or,
+                    lhs: 3,
+                    rhs: 6,
+                },
                 solve::LinearOp::Select {
-                    dst: 4,
-                    cond: 3,
+                    dst: 8,
+                    cond: 7,
                     if_true: 0,
                     if_false: 2,
                 },
-                solve::LinearOp::StoreOutput { src: 4 },
+                solve::LinearOp::StoreOutput { src: 8 },
             ]],
             "dre.mo",
         ),

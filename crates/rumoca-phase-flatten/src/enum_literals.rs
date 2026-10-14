@@ -377,7 +377,9 @@ fn canonicalize_when_equations(
 ) {
     for equation in equations.iter_mut() {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 canonicalize_expr(value, enum_literals, variable_names);
             }
             flat::WhenEquation::Assert {

@@ -1,5 +1,6 @@
 mod derived_wire;
 mod discrete_integer_quotients;
+mod discrete_value_selections;
 mod expression_children;
 mod external_functions;
 mod function_derivatives;
@@ -1436,7 +1437,7 @@ fn assert_variable_role_round_trip(encoded: &str, discrete_action: DaeProvenance
             owner
                 .targets()
                 .iter()
-                .map(DiscreteValueId::index)
+                .map(DiscreteValueTarget::index)
                 .collect::<Vec<_>>(),
             [7]
         );

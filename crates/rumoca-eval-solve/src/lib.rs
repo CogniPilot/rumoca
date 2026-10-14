@@ -30,6 +30,7 @@ pub mod ad;
 pub mod artifacts;
 mod block_residual_split;
 mod compute_block_scalarize;
+mod conditional_region;
 mod errors;
 mod event_observations;
 #[cfg(feature = "wire-replay")]
@@ -3528,6 +3529,11 @@ fn eval_function_conditional_region(
     frames: &mut Vec<RowEvalScratch>,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
+    if out.len() == 1
+        && let Some(value) = conditional_region::direct_value(input, region, register_count)
+    {
+        return OutputCursor::new(out).store(value?);
+    }
     let mut nested = PreparedRowEval::new(
         region,
         register_count,

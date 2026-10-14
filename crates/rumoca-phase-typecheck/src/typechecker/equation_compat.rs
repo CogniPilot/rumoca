@@ -201,7 +201,7 @@ impl TypeChecker {
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) {
-        if self.is_integer_iterator_reference(comp) {
+        if self.is_iterator_reference(comp) {
             return;
         }
         match self.resolve_component_reference_type(comp, type_table) {

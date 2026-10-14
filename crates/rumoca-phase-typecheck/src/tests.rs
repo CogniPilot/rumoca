@@ -20,6 +20,7 @@ mod modifier_tests;
 mod parameter_if_branch_tests;
 mod record_constructor_alias_tests;
 mod semantic_identity_tests;
+mod subscript_type_tests;
 mod user_defined_type_tests;
 mod variability_tests;
 

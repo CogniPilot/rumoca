@@ -28,7 +28,7 @@ struct StagedBranch<'dae> {
 }
 
 struct StagedOwner<'dae> {
-    targets: Vec<dae::DiscreteValueId<'dae>>,
+    targets: Vec<dae::DiscreteValueTarget<'dae>>,
     branches: Vec<StagedBranch<'dae>>,
     structure: Option<StagedStructure<'dae>>,
     provenance: dae::DaeProvenance,
@@ -48,7 +48,7 @@ pub(super) struct DiscreteWhenAssignment<'dae> {
     pub(super) guard: dae::ConditionId<'dae>,
     pub(super) parent: Option<ParentActivation<'dae>>,
     pub(super) statement: Option<Span>,
-    pub(super) target: dae::DiscreteValueId<'dae>,
+    pub(super) target: dae::DiscreteValueTarget<'dae>,
     pub(super) value: dae::ExprId<'dae>,
     pub(super) branch_provenance: dae::DaeProvenance,
     pub(super) action_provenance: dae::DaeProvenance,
@@ -59,7 +59,7 @@ struct StagedAssignment<'dae> {
     activation: BranchActivation<'dae>,
     parent: Option<BranchActivation<'dae>>,
     statement: Option<Span>,
-    target: dae::DiscreteValueId<'dae>,
+    target: dae::DiscreteValueTarget<'dae>,
     value: dae::ExprId<'dae>,
     branch_provenance: dae::DaeProvenance,
     action_provenance: dae::DaeProvenance,
@@ -67,15 +67,56 @@ struct StagedAssignment<'dae> {
 
 pub(super) struct DiscreteValueStaging<'dae> {
     owners: Vec<StagedOwner<'dae>>,
-    owner_by_target: HashMap<dae::DiscreteValueId<'dae>, usize>,
+    owner_by_target: HashMap<dae::DiscreteValueTarget<'dae>, usize>,
+    orders: HashMap<dae::DiscreteValueTarget<'dae>, analysis::TargetOrder>,
 }
 
 impl<'dae> DiscreteValueStaging<'dae> {
-    pub(super) fn new() -> Self {
-        Self {
+    pub(super) fn new(
+        flat: &flat::Model,
+        coordinates: &ModelCoordinates<'dae>,
+        construction: &mut dae::DaeConstruction<'dae>,
+        plan: &DiscreteValueTopologyPlan,
+    ) -> Result<Self, dae::DaeConstructionError> {
+        let declarations = flat
+            .variables
+            .values()
+            .map(|variable| (variable.instance_id, variable))
+            .collect::<HashMap<_, _>>();
+        let mut orders = HashMap::new();
+        for (owner, targets) in plan.ordered_owners().iter().enumerate() {
+            for (ordinal, key) in targets.iter().enumerate() {
+                let (analysis::DiscreteTargetKey::Whole(instance)
+                | analysis::DiscreteTargetKey::Element { instance, .. }) = key;
+                let variable = coordinates.by_instance()[instance]
+                    .discrete_value()
+                    .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+                        name: declarations[instance].name.clone(),
+                        span: declarations[instance].source_span,
+                    })?;
+                let target = match key {
+                    analysis::DiscreteTargetKey::Whole(_) => variable.into(),
+                    analysis::DiscreteTargetKey::Element { indices, .. } => construction
+                        .discrete_value_element(
+                            variable,
+                            indices,
+                            dae::DaeProvenance::source(declarations[instance].source_span)?,
+                        )?,
+                };
+                orders.insert(
+                    target,
+                    analysis::TargetOrder {
+                        owner,
+                        target: ordinal,
+                    },
+                );
+            }
+        }
+        Ok(Self {
             owners: Vec::new(),
             owner_by_target: HashMap::new(),
-        }
+            orders,
+        })
     }
 
     pub(super) fn owner(
@@ -117,20 +158,46 @@ impl<'dae> DiscreteValueStaging<'dae> {
         plan: &DiscreteValueTopologyPlan,
         structure: Option<StagedStructure<'dae>>,
     ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
-        let mut targets = target_names
+        let targets = target_names
             .into_iter()
             .filter_map(|name| {
                 let Coordinate::DiscreteValue(target) = coordinates[&name] else {
                     return None;
                 };
-                plan.target_order(&name).map(|order| (target, order))
+                self.orders
+                    .get(&target.into())
+                    .copied()
+                    .map(|order| (target.into(), order))
             })
             .collect::<Vec<_>>();
+        self.build_targets(provenance, targets, plan, structure)
+    }
+
+    pub(super) fn mixed_owner(
+        &mut self,
+        provenance: dae::DaeProvenance,
+        targets: Vec<dae::DiscreteValueTarget<'dae>>,
+        plan: &DiscreteValueTopologyPlan,
+    ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
+        let targets = targets
+            .into_iter()
+            .map(|target| (target, self.orders[&target]))
+            .collect();
+        self.build_targets(provenance, targets, plan, None)
+    }
+
+    fn build_targets(
+        &mut self,
+        provenance: dae::DaeProvenance,
+        mut targets: Vec<(dae::DiscreteValueTarget<'dae>, analysis::TargetOrder)>,
+        plan: &DiscreteValueTopologyPlan,
+        structure: Option<StagedStructure<'dae>>,
+    ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
         if targets.is_empty() {
             return Ok(None);
         }
         targets.sort_by_key(|(_, order)| (order.owner, order.target));
-        targets.dedup_by_key(|(target, _)| target.index());
+        targets.dedup_by_key(|(target, _)| *target);
         let first = self.owners.len();
         let mut start = 0usize;
         while start < targets.len() {
@@ -179,7 +246,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
     pub(super) fn always(
         &mut self,
         owner: DiscreteValueOwnerHandle,
-        target: dae::DiscreteValueId<'dae>,
+        target: impl Into<dae::DiscreteValueTarget<'dae>>,
         value: dae::ExprId<'dae>,
         branch_provenance: dae::DaeProvenance,
         action_provenance: dae::DaeProvenance,
@@ -189,7 +256,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
             activation: BranchActivation::Always,
             parent: None,
             statement: None,
-            target,
+            target: target.into(),
             value,
             branch_provenance,
             action_provenance,
@@ -321,30 +388,25 @@ impl<'dae> DiscreteValueStaging<'dae> {
                     span: held.declaration_span,
                 });
             };
-            if self.owner_by_target.contains_key(&target) {
-                return Err(dae::DaeConstructionError::DuplicateDefinition {
-                    kind: "B.1c held semantic owner",
-                    index: target.index(),
-                    span: held.declaration_span,
-                });
-            }
             let provenance = dae::DaeProvenance::generated(
                 dae::DaeGeneration::DiscreteUpdate,
                 held.declaration_span,
             )?;
-            let Some(owner) = self.owner(provenance, [held.name.clone()], coordinates, plan)?
-            else {
-                return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
-                    target: target.index(),
-                    span: held.declaration_span,
-                });
+            let selected = match &held.selection {
+                Some(selection) => {
+                    construction.discrete_value_element(target, &selection.indices, provenance)?
+                }
+                None => target.into(),
+            };
+            let Some(owner) = self.mixed_owner(provenance, vec![selected], plan)? else {
+                unreachable!("a held owner has one selected target")
             };
             let value = construction.expressions(|expressions| {
                 expressions
                     .at(provenance)
-                    .coordinate(dae::CoordinateInput::PreDiscreteValue(target))
+                    .pre_discrete_value_target(selected)
             })?;
-            self.always(owner, target, value, provenance, provenance)?;
+            self.always(owner, selected, value, provenance, provenance)?;
         }
         Ok(())
     }
@@ -362,7 +424,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
             .iter()
             .flat_map(|owner| owner.targets.iter().copied())
             .collect::<Vec<_>>();
-        construction.b1c(topology, |b1c| {
+        construction.b1c_selected(topology, |b1c| {
             for owner in self.owners {
                 let observed = plan.owner_is_observed(owner.rank);
                 append_owner(b1c, owner, observed)?;
@@ -453,11 +515,15 @@ fn append_owner<'dae>(
             provenance,
             structure.domain,
             structure.scalar_view,
-            targets,
+            targets.into_iter().map(|target| target.variable()),
             append,
         )?,
-        None if observed => topology.observed_owner(provenance, targets, append)?,
-        None => topology.owner(provenance, targets, append)?,
+        None if observed => topology.observed_owner(
+            provenance,
+            targets.into_iter().map(|target| target.variable()),
+            append,
+        )?,
+        None => topology.selected_owner(provenance, targets, append)?,
     };
     Ok(())
 }
@@ -593,7 +659,7 @@ fn activate_section_branch<'dae>(
 
 fn fill_branch_retained_values<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    targets: &[dae::DiscreteValueId<'dae>],
+    targets: &[dae::DiscreteValueTarget<'dae>],
     branch: &mut StagedBranch<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (target, value) in targets.iter().copied().zip(&mut branch.values) {
@@ -605,9 +671,7 @@ fn fill_branch_retained_values<'dae>(
             branch.provenance.span(),
         )?;
         let retained = construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .coordinate(dae::CoordinateInput::PreDiscreteValue(target))
+            expressions.at(provenance).pre_discrete_value_target(target)
         })?;
         *value = Some((retained, provenance));
     }

@@ -1,5 +1,8 @@
+#[cfg(test)]
+mod integrator_history_effect_tests;
+
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
@@ -143,6 +146,7 @@ fn build_event_iteration_plan<'dae>(
     discrete: &DiscreteRows<'dae>,
 ) -> Result<solve::EventIterationPlan, LowerError> {
     let mut runs = Vec::new();
+    let mut partitions = Vec::new();
     for (id, variable) in view.variables().filter(|(_, variable)| {
         variable.causality() != dae::VariableCausality::Input
             && matches!(
@@ -212,7 +216,14 @@ fn build_event_iteration_plan<'dae>(
                 ));
             }
         }
-        let owner = discrete.event_iteration_owner(id, scalar_count, span)?;
+        let owner = discrete.selected_iteration_owner(
+            id,
+            variable.role(),
+            current_p_base,
+            scalar_count,
+            &mut partitions,
+            span,
+        )?;
         runs.push(solve::EventIterationRun {
             variable: id.index() as usize,
             pre_binding_start,
@@ -220,7 +231,7 @@ fn build_event_iteration_plan<'dae>(
         });
     }
     runs.sort_by_key(|run| run.pre_binding_start);
-    Ok(solve::EventIterationPlan::new(runs))
+    Ok(solve::EventIterationPlan::new_partitioned(runs, partitions))
 }
 
 fn lower_delays<'dae>(
@@ -302,6 +313,8 @@ struct DiscreteRows<'dae> {
     guarded_assignments: Vec<PendingGuardedAssignment>,
     structured_output_cursor: usize,
     event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
+    selected_event_variables: BTreeSet<u32>,
+    selected_event_owners: HashMap<u32, Vec<SelectedEventOwner>>,
     /// Exact same-tick definitions (SOLVE-C57), derived once per DAE. Program
     /// granularity consults it while lowering, and the issued order replays it.
     same_tick_definitions: std::rc::Rc<rumoca_phase_structural::SameTickDefinitions<'dae>>,
@@ -322,6 +335,13 @@ struct DiscreteRows<'dae> {
     /// Rows of observed B.1c owners (SPEC_0022 EXPR-012): unread
     /// observations refreshed at every output point.
     observed_rows: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedEventOwner {
+    base: solve::ScalarSlot,
+    width: usize,
+    owner: solve::EventIterationOwner,
 }
 
 struct PendingGuardedAssignment {
@@ -417,6 +437,23 @@ enum EventIterationOwnerClaim {
     },
 }
 
+fn selected_event_variables<'dae>(
+    view: dae::DaeView<'dae>,
+    plan: &rumoca_phase_structural::CausalDiscretePlan<'dae>,
+) -> BTreeSet<u32> {
+    let mut selected = (0..view.discrete_real_equation_count())
+        .filter_map(|equation| plan.discrete_real_definition(equation))
+        .filter_map(|definition| definition.element().map(|_| definition.target().index()))
+        .collect::<BTreeSet<_>>();
+    selected.extend(
+        view.discrete_value_targets()
+            .iter()
+            .filter(|target| target.scalar_selection().is_some())
+            .map(|target| target.index()),
+    );
+    selected
+}
+
 impl<'dae> DiscreteRows<'dae> {
     fn new(
         view: dae::DaeView<'dae>,
@@ -432,6 +469,7 @@ impl<'dae> DiscreteRows<'dae> {
                 )?,
             ),
             event_iteration_owners: vec![None; view.variable_count()],
+            selected_event_variables: selected_event_variables(view, &plan),
             ..Self::default()
         })
     }
@@ -444,6 +482,17 @@ impl<'dae> DiscreteRows<'dae> {
     ) -> Result<(), LowerError> {
         let variable_index = variable.index() as usize;
         let row = self.targets.len();
+        if self.selected_event_variables.contains(&variable.index()) {
+            return self.claim_selected_event_owner(
+                variable,
+                SelectedEventOwner {
+                    base: target,
+                    width: 1,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: row },
+                },
+                span,
+            );
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable_index)
@@ -501,6 +550,12 @@ impl<'dae> DiscreteRows<'dae> {
         update_index: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if self.selected_event_owners.contains_key(&variable.index()) {
+            return Err(LowerError::contract(
+                "event coordinate has both selected and structured producer owners",
+                span,
+            ));
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable.index() as usize)
@@ -520,8 +575,24 @@ impl<'dae> DiscreteRows<'dae> {
         variable: dae::VariableId<'dae>,
         program_index: usize,
         target_range_index: usize,
+        base: solve::ScalarSlot,
+        width: usize,
         span: Span,
     ) -> Result<(), LowerError> {
+        if self.selected_event_variables.contains(&variable.index()) {
+            return self.claim_selected_event_owner(
+                variable,
+                SelectedEventOwner {
+                    base,
+                    width,
+                    owner: solve::EventIterationOwner::GuardedAssignment {
+                        program_index,
+                        target_range_index,
+                    },
+                },
+                span,
+            );
+        }
         let claim = self
             .event_iteration_owners
             .get_mut(variable.index() as usize)
@@ -625,6 +696,103 @@ impl<'dae> DiscreteRows<'dae> {
             span: transaction_span,
         });
         Ok(())
+    }
+
+    fn claim_selected_event_owner(
+        &mut self,
+        variable: dae::VariableId<'dae>,
+        owner: SelectedEventOwner,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if self.event_iteration_owners[variable.index() as usize].is_some() {
+            return Err(LowerError::contract(
+                "selected producer overlaps a whole-declaration owner",
+                span,
+            ));
+        }
+        self.selected_event_owners
+            .entry(variable.index())
+            .or_default()
+            .push(owner);
+        Ok(())
+    }
+
+    fn selected_iteration_owner(
+        &self,
+        variable: dae::VariableId<'dae>,
+        role: dae::VariableRole,
+        current_base: usize,
+        scalar_count: usize,
+        partitions: &mut Vec<solve::EventIterationPartition>,
+        span: Span,
+    ) -> Result<solve::EventIterationOwner, LowerError> {
+        let Some(owners) = self.selected_event_owners.get(&variable.index()) else {
+            return self.event_iteration_owner(variable, scalar_count, span);
+        };
+        let first_partition = partitions.len();
+        let mut ordered = owners.clone();
+        ordered.sort_by_key(|owner| match owner.base {
+            solve::ScalarSlot::P { index, .. } => index,
+            _ => usize::MAX,
+        });
+        let mut cursor = 0usize;
+        for owner in ordered {
+            let solve::ScalarSlot::P { index, .. } = owner.base else {
+                return Err(LowerError::contract(
+                    "selected event target is not P-backed",
+                    span,
+                ));
+            };
+            let start = index.checked_sub(current_base).ok_or_else(|| {
+                LowerError::contract("selected event target precedes its declaration", span)
+            })?;
+            if start < cursor
+                || start
+                    .checked_add(owner.width)
+                    .is_none_or(|end| end > scalar_count)
+            {
+                return Err(LowerError::contract(
+                    "selected event producer ranges overlap or leave storage",
+                    span,
+                ));
+            }
+            if start > cursor && role != dae::VariableRole::DiscreteReal {
+                return Err(LowerError::contract(
+                    "selected m lacks a held definition",
+                    span,
+                ));
+            }
+            if start > cursor {
+                partitions.push(solve::EventIterationPartition {
+                    scalar_start: cursor,
+                    scalar_count: start - cursor,
+                    owner: solve::EventIterationOwner::Hold,
+                });
+            }
+            partitions.push(solve::EventIterationPartition {
+                scalar_start: start,
+                scalar_count: owner.width,
+                owner: owner.owner,
+            });
+            cursor = start + owner.width;
+        }
+        if cursor < scalar_count && role != dae::VariableRole::DiscreteReal {
+            return Err(LowerError::contract(
+                "selected m lacks complete definition coverage",
+                span,
+            ));
+        }
+        if cursor < scalar_count {
+            partitions.push(solve::EventIterationPartition {
+                scalar_start: cursor,
+                scalar_count: scalar_count - cursor,
+                owner: solve::EventIterationOwner::Hold,
+            });
+        }
+        Ok(solve::EventIterationOwner::Partitioned {
+            first_partition,
+            partition_count: partitions.len() - first_partition,
+        })
     }
 
     fn event_iteration_owner(
@@ -773,6 +941,8 @@ impl<'dae> DiscreteRows<'dae> {
                     target.variable,
                     program_index,
                     target_range_index,
+                    target.target_base,
+                    target.width,
                     target.span,
                 )?;
             }
@@ -1690,141 +1860,4 @@ fn lower_time_events<'dae>(
         }
     }
     Ok((scheduled, dynamic.into_scalar_block()?))
-}
-
-#[cfg(test)]
-mod integrator_history_effect_tests {
-    use super::*;
-
-    fn provenance() -> rumoca_core::ProvenanceSpan {
-        Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("integrator_history_effect.mo"),
-            0,
-            1,
-        )
-        .require_provenance("integrator history effect fixture")
-        .unwrap()
-    }
-
-    fn load_program(slot: solve::ScalarSlot) -> Vec<solve::LinearOp> {
-        let load = match slot {
-            solve::ScalarSlot::Y { index, .. } => solve::LinearOp::LoadY { dst: 0, index },
-            solve::ScalarSlot::P { index, .. } => solve::LinearOp::LoadP { dst: 0, index },
-            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => unreachable!(),
-        };
-        vec![load, solve::LinearOp::StoreOutput { src: 0 }]
-    }
-
-    fn scalar_block(programs: Vec<Vec<solve::LinearOp>>) -> solve::ScalarProgramBlock {
-        solve::ScalarProgramBlock::with_source_span(programs, provenance()).unwrap()
-    }
-
-    fn compute_block(programs: Vec<Vec<solve::LinearOp>>) -> solve::ComputeBlock {
-        solve::ComputeBlock::from_scalar_program_block(scalar_block(programs))
-    }
-
-    fn discrete_with_targets(targets: Vec<solve::ScalarSlot>) -> solve::DiscreteSolveSystem {
-        let row_count = targets.len();
-        solve::DiscreteSolveSystem {
-            rhs: scalar_block(
-                targets
-                    .iter()
-                    .map(|_| {
-                        vec![
-                            solve::LinearOp::Const { dst: 0, value: 0.0 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ]
-                    })
-                    .collect(),
-            ),
-            update_targets: targets,
-            row_roles: vec![solve::DiscreteRowRole::Equation; row_count],
-            pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
-            observation_refresh: vec![false; row_count],
-            integrator_history_effects: vec![solve::IntegratorHistoryEffect::Restart; row_count],
-            clock_owners: vec![None; row_count],
-            ..solve::DiscreteSolveSystem::default()
-        }
-    }
-
-    fn derive_integrator_history_effects(
-        discrete: &mut solve::DiscreteSolveSystem,
-        continuous: &solve::ContinuousSolveSystem,
-        state_scalar_count: usize,
-    ) {
-        let Some(sensitive) = integrator_history_sensitive_slots(
-            continuous,
-            &discrete.runtime_assignment_rhs,
-            &discrete.runtime_assignment_targets,
-            state_scalar_count,
-        ) else {
-            return;
-        };
-        apply_integrator_history_effects(discrete, &sensitive, state_scalar_count);
-    }
-
-    #[test]
-    fn direct_continuous_dependencies_and_state_targets_restart() {
-        let continuous = solve::ContinuousSolveSystem {
-            derivative_rhs: compute_block(vec![load_program(solve::scalar_slot_p(0))]),
-            ..Default::default()
-        };
-        let mut discrete = discrete_with_targets(vec![
-            solve::scalar_slot_p(0),
-            solve::scalar_slot_p(1),
-            solve::scalar_slot_y(0),
-        ]);
-
-        derive_integrator_history_effects(&mut discrete, &continuous, 1);
-
-        assert_eq!(
-            discrete.integrator_history_effects,
-            [
-                solve::IntegratorHistoryEffect::Restart,
-                solve::IntegratorHistoryEffect::Preserve,
-                solve::IntegratorHistoryEffect::Restart,
-            ]
-        );
-    }
-
-    #[test]
-    fn runtime_assignment_dependencies_propagate_transitively() {
-        let continuous = solve::ContinuousSolveSystem {
-            derivative_rhs: compute_block(vec![load_program(solve::scalar_slot_p(0))]),
-            ..Default::default()
-        };
-        let mut discrete = discrete_with_targets(vec![solve::scalar_slot_p(1)]);
-        discrete.runtime_assignment_rhs = scalar_block(vec![load_program(solve::scalar_slot_p(1))]);
-        discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(0)];
-
-        derive_integrator_history_effects(&mut discrete, &continuous, 0);
-
-        assert_eq!(
-            discrete.integrator_history_effects,
-            [solve::IntegratorHistoryEffect::Restart]
-        );
-    }
-
-    #[test]
-    fn disconnected_runtime_assignment_cycles_fail_closed() {
-        let continuous = solve::ContinuousSolveSystem::default();
-        let mut discrete =
-            discrete_with_targets(vec![solve::scalar_slot_p(2), solve::scalar_slot_p(4)]);
-        discrete.runtime_assignment_rhs = scalar_block(vec![
-            load_program(solve::scalar_slot_p(3)),
-            load_program(solve::scalar_slot_p(2)),
-        ]);
-        discrete.runtime_assignment_targets =
-            vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)];
-
-        derive_integrator_history_effects(&mut discrete, &continuous, 0);
-
-        assert_eq!(
-            discrete.integrator_history_effects,
-            [
-                solve::IntegratorHistoryEffect::Restart,
-                solve::IntegratorHistoryEffect::Preserve,
-            ]
-        );
-    }
 }

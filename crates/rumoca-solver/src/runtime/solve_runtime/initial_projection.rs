@@ -7,10 +7,13 @@ use crate::runtime::projection::{
     project_initial_variables_with_homotopy,
 };
 use nalgebra::DVector;
+use rumoca_core::Span;
 
 use super::initial_continuation::InitialContinuationCoverage;
 
 use super::*;
+
+pub(super) type InitialReadCones = Box<[Box<[usize]>]>;
 
 struct InitialProjectionModel<'a> {
     runtime: ScalarExecutionView<'a>,
@@ -789,49 +792,95 @@ impl ScalarExecutionView<'_> {
 
 /// Per initialization residual row, the positions in `plan` of the algebraic
 /// refresh blocks the row reads directly or through other blocks, closed over
-/// the construction's structural patterns, issued once when the runtime is
+/// the canonical primal value dependencies, issued once when the runtime is
 /// built. `None` when a block Jacobian must carry its direction through every
-/// block: a pattern is unrecorded, or an update row reads an algebraic slot,
+/// block: an update row reads an algebraic slot,
 /// so the updates' tangents may carry any block's.
 pub(super) fn settled_read_cones(
     model: &solve::SolveModel,
-    continuous: &solve::ContinuousStructuralArtifacts,
+    residual: &solve::ScalarProgramBlock,
+    implicit: &solve::ScalarProgramBlock,
     plan: &solve::AlgebraicProjectionPlan,
-) -> Option<Box<[Box<[usize]>]>> {
-    let residual = model
-        .artifacts
-        .initialization
-        .structural
-        .residual()?
-        .pattern();
-    let implicit = continuous.implicit()?.pattern();
+) -> Result<Option<InitialReadCones>, EvalSolveError> {
     if updates_read_algebraic_slots(model) {
-        return None;
+        return Ok(None);
     }
-    Some(read_cones(residual, implicit, plan.blocks.scalar_blocks()))
+    let residual_reads =
+        primal_row_reads(residual, model.problem.initialization.residual().len()?)?;
+    let implicit_reads = primal_row_reads(implicit, model.problem.continuous.implicit_rhs.len()?)?;
+    for block in plan.blocks.scalar_blocks() {
+        for &row in &block.rows {
+            if implicit.output_position(row).is_none() {
+                return Err(EvalSolveError::InvalidRow {
+                    message: "an initial read cone requests an unproduced continuous equation"
+                        .into(),
+                    span: implicit.first_source_span(),
+                });
+            }
+        }
+    }
+    Ok(Some(read_cones(
+        &residual_reads,
+        &implicit_reads,
+        plan.blocks.scalar_blocks(),
+        implicit.first_source_span(),
+    )?))
 }
 
-/// [`settled_read_cones`] over the patterns: `residual` has one row per
-/// initialization row and `implicit` one per continuous row, both over
-/// `[solver-y | parameter]` columns.
+/// Route every primal output through its checked output placement. Guards can
+/// read a coordinate while its derivative is identically zero.
+fn primal_row_reads(
+    block: &solve::ScalarProgramBlock,
+    row_count: usize,
+) -> Result<Vec<std::collections::BTreeSet<usize>>, EvalSolveError> {
+    let mut rows = vec![std::collections::BTreeSet::new(); row_count];
+    for (program_index, program) in block.programs().iter().enumerate() {
+        let span = block.program_span(program_index);
+        let error = || EvalSolveError::InvalidRow {
+            message: "initial primal read projection disagrees with its checked output placement"
+                .into(),
+            span,
+        };
+        let dependencies = solve::StructuralPattern::derive_output_y_dependencies(program, span)
+            .map_err(|failure| EvalSolveError::InvalidRow {
+                message: failure.to_string(),
+                span,
+            })?;
+        let ordinals = block
+            .program_output_ordinals(program_index)
+            .ok_or_else(error)?;
+        if ordinals.len() != dependencies.len() {
+            return Err(error());
+        }
+        for (ordinal, reads) in ordinals.zip(dependencies) {
+            let output = block.output_index_at(ordinal).ok_or_else(error)?;
+            let destination = rows.get_mut(output).ok_or_else(error)?;
+            destination.extend(reads);
+        }
+    }
+    Ok(rows)
+}
+
+/// [`settled_read_cones`] over primal solver-Y dependencies, with one entry per
+/// initialization or continuous equation rather than scalar program number.
 fn read_cones(
-    residual: &solve::StructuralPattern,
-    implicit: &solve::StructuralPattern,
+    residual: &[std::collections::BTreeSet<usize>],
+    implicit: &[std::collections::BTreeSet<usize>],
     blocks: &[solve::AlgebraicProjectionBlock],
-) -> Box<[Box<[usize]>]> {
-    let columns = residual.columns().max(implicit.columns()) as usize;
-    (0..residual.rows() as usize)
-        .map(|row| {
-            let mut read = vec![false; columns];
-            residual.visit_row_columns(row, &mut |column| read[column] = true);
+    source_span: Option<Span>,
+) -> Result<Box<[Box<[usize]>]>, EvalSolveError> {
+    residual
+        .iter()
+        .map(|dependencies| {
+            let mut read = dependencies.clone();
             let mut needed = vec![false; blocks.len()];
             // Plan order puts most readers after the blocks they read, so a
             // sweep from the last block back usually closes the set in one
             // pass; the loop stops at the first pass that adds no block.
-            while add_blocks_read(blocks, implicit, &mut read, &mut needed) {}
-            (0..blocks.len())
+            while add_blocks_read(blocks, implicit, &mut read, &mut needed, source_span)? {}
+            Ok((0..blocks.len())
                 .filter(|&position| needed[position])
-                .collect()
+                .collect())
         })
         .collect()
 }
@@ -840,23 +889,30 @@ fn read_cones(
 /// in `read` and adding the columns its rows read; whether any block was added.
 fn add_blocks_read(
     blocks: &[solve::AlgebraicProjectionBlock],
-    implicit: &solve::StructuralPattern,
-    read: &mut [bool],
+    implicit: &[std::collections::BTreeSet<usize>],
+    read: &mut std::collections::BTreeSet<usize>,
     needed: &mut [bool],
-) -> bool {
+    source_span: Option<Span>,
+) -> Result<bool, EvalSolveError> {
     let mut grew = false;
     for (position, block) in blocks.iter().enumerate().rev() {
-        let solves_a_read = block.y_indices.iter().any(|&y| read.get(y) == Some(&true));
+        let solves_a_read = block.y_indices.iter().any(|y| read.contains(y));
         if needed[position] || !solves_a_read {
             continue;
         }
         needed[position] = true;
         grew = true;
         for &row in &block.rows {
-            implicit.visit_row_columns(row, &mut |column| read[column] = true);
+            let dependencies = implicit
+                .get(row)
+                .ok_or_else(|| EvalSolveError::InvalidRow {
+                    message: "an initial read cone references an absent continuous equation".into(),
+                    span: source_span,
+                })?;
+            read.extend(dependencies);
         }
     }
-    grew
+    Ok(grew)
 }
 
 /// Write the update rows' tangents `values` into the seed entries of their
@@ -999,9 +1055,8 @@ impl ScalarExecutionView<'_> {
             // initialization instant that memory must be the relation evaluated
             // at the solution itself (MLS 3.7 §8.6, every equation holds at
             // once), so a change sends the projection round again.
-            let state = y[..self.model.state_scalar_count().min(y.len())].to_vec();
             let relations_changed =
-                self.update_relation_memory_from_state(t, &state, p, tol, max_iters)?;
+                self.refresh_initial_relation_memory(t, y, p, tol, max_iters)?;
             let update_changed = self.apply_initialization_updates(y, p, t, tol, max_iters)?;
             if !delay_changed && !update_changed && !relations_changed {
                 return Ok(());
@@ -1073,20 +1128,12 @@ fn reads_algebraic_slot(op: &solve::LinearOp, state_count: usize) -> bool {
 #[cfg(test)]
 mod read_cone_tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn pattern(rows: &[Vec<usize>], columns: usize) -> solve::StructuralPattern {
-        let span = rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("read_cone_tests.mo"),
-            0,
-            1,
-        );
-        let provenance = solve::PatternProvenance::derived(
-            solve::PatternDerivation::DependencyPropagation,
-            span,
-        )
-        .expect("fixture provenance");
-        solve::StructuralPattern::from_row_dependencies(rows.len(), columns, rows, provenance)
-            .expect("fixture pattern")
+    fn reads(rows: &[Vec<usize>]) -> Vec<std::collections::BTreeSet<usize>> {
+        rows.iter()
+            .map(|row| row.iter().copied().collect())
+            .collect()
     }
 
     fn block(row: usize, y: usize) -> solve::AlgebraicProjectionBlock {
@@ -1097,6 +1144,70 @@ mod read_cone_tests {
         }
     }
 
+    #[test]
+    fn primal_output_routing_keeps_comparison_control_and_multiple_stores() {
+        use solve::LinearOp as Op;
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("primal_read_cone.mo"),
+            0,
+            1,
+        );
+        let region = solve::FunctionConditionalProgram::checked(
+            0,
+            [1],
+            [(
+                vec![Op::LoadP { dst: 0, index: 0 }, Op::StoreOutput { src: 0 }],
+                vec![
+                    Op::LoadY { dst: 0, index: 1 },
+                    Op::Const { dst: 1, value: 0.0 },
+                    Op::Compare {
+                        dst: 2,
+                        op: solve::CompareOp::Gt,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    Op::StoreOutput { src: 2 },
+                ],
+            )],
+            vec![Op::Const { dst: 0, value: 0.0 }, Op::StoreOutput { src: 0 }],
+        )
+        .unwrap();
+        let program = solve::ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                Op::LoadY { dst: 0, index: 2 },
+                Op::FunctionConditional {
+                    dst_start: 1,
+                    capture_start: 1,
+                    program: Arc::new(region),
+                },
+                Op::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                Op::StoreOutput { src: 2 },
+                Op::LoadY { dst: 3, index: 1 },
+                Op::StoreOutput { src: 3 },
+            ]],
+            vec![span],
+            vec![2, 0],
+        )
+        .unwrap();
+        let rows = primal_row_reads(&program, 3).unwrap();
+        assert_eq!(rows, reads(&[vec![1], vec![], vec![1, 2]]));
+        let cones = read_cones(
+            &reads(&[vec![2]]),
+            &rows,
+            &[block(0, 1), block(2, 2)],
+            Some(span),
+        )
+        .unwrap();
+        assert_eq!(&*cones[0], &[0, 1]);
+        let error = primal_row_reads(&program, 2).unwrap_err();
+        assert_eq!(error.source_span(), Some(span));
+    }
+
     /// TwoTanks in miniature over `[m, H, level, h, T]`: block 0 solves `level`
     /// from `m`, block 1 solves `h` from `H = m*h` (singular at `m = 0`), and
     /// block 2 solves `T` from `h`. The level row reads only block 0, so the
@@ -1104,13 +1215,15 @@ mod read_cone_tests {
     /// and, through it, block 1.
     #[test]
     fn an_unread_singular_block_is_outside_the_level_rows_cone() {
-        let implicit = pattern(&[vec![0, 2], vec![0, 1, 3], vec![3, 4]], 5);
-        let residual = pattern(&[vec![2], vec![4]], 5);
+        let implicit = reads(&[vec![0, 2], vec![0, 1, 3], vec![3, 4]]);
+        let residual = reads(&[vec![2], vec![4]]);
         let cones = read_cones(
             &residual,
             &implicit,
             &[block(0, 2), block(1, 3), block(2, 4)],
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(&*cones[0], &[0]);
         assert_eq!(&*cones[1], &[1, 2]);
     }
@@ -1119,13 +1232,15 @@ mod read_cone_tests {
     /// sweep repeats until it adds nothing.
     #[test]
     fn a_block_reading_a_later_block_is_closed_over() {
-        let implicit = pattern(&[vec![1], vec![2], vec![]], 3);
-        let residual = pattern(&[vec![0]], 3);
+        let implicit = reads(&[vec![1], vec![2], vec![]]);
+        let residual = reads(&[vec![0]]);
         let cones = read_cones(
             &residual,
             &implicit,
             &[block(2, 2), block(0, 0), block(1, 1)],
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(&*cones[0], &[0, 1, 2]);
     }
 }
@@ -1403,7 +1518,7 @@ mod tests {
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]]);
-        solve::SolveModel {
+        let mut model = solve::SolveModel {
             problem: solve::SolveProblem {
                 layout: crate::fixture_layout::named_y_layout(
                     rumoca_ir_solve::VarLayout::from_parts(Default::default(), 0, 2),
@@ -1468,7 +1583,9 @@ mod tests {
             initial_y: vec![51.0].into(),
             parameters: vec![100.0, 100.0].into(),
             ..Default::default()
-        }
+        };
+        crate::test_fixtures::derive_structural_artifacts(&mut model);
+        model
     }
 
     #[test]

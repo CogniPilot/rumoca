@@ -19,6 +19,7 @@ use super::*;
 /// resolved: `validate_model_expressions` already used the expression roles.
 #[derive(Clone, Copy)]
 struct WhenScope<'a> {
+    flat: &'a flat::Model,
     roles: &'a HashMap<VarName, PlannedRole>,
     expression_roles: &'a HashMap<VarName, PlannedRole>,
     states: &'a HashSet<VarName>,
@@ -30,7 +31,7 @@ struct WhenScope<'a> {
 }
 
 pub(super) fn validate_when_chains(
-    chains: &[flat::WhenChain],
+    flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
@@ -39,13 +40,14 @@ pub(super) fn validate_when_chains(
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     let scope = WhenScope {
+        flat,
         roles,
         expression_roles,
         states,
         constants,
         model_values,
     };
-    for chain in chains {
+    for chain in &flat.when_chains {
         for branch in chain.branches() {
             // A when-clause's own activation condition is evaluated to decide
             // whether the event happens, so it is not yet inside the event it
@@ -88,6 +90,17 @@ fn validate_when_equations(
                 span,
                 ..
             } => validate_assignment(target, value, *span, scope, clocked)?,
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                span,
+                ..
+            } => {
+                let selected =
+                    when_elements::selected_target(scope.flat, target, subscripts, *span)?;
+                validate_assignment(&selected.name, value, *span, scope, clocked)?;
+            }
             flat::WhenEquation::Reinit {
                 state, value, span, ..
             } => validate_reinitialization(state, value, *span, scope, clocked)?,
@@ -231,6 +244,7 @@ fn non_real_targets(
                 }
             }
             flat::WhenEquation::Assign { .. }
+            | flat::WhenEquation::AssignElement { .. }
             | flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. } => {}

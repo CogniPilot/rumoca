@@ -163,3 +163,92 @@ fn observed_discrete_replay_retains_output_sampling_classification() {
         assert_eq!(owner.branches().len(), 1);
     });
 }
+
+#[test]
+fn selected_discrete_replay_retains_element_identity_activation_and_hold() {
+    let text = "Boolean m[2,2]; when active then m[2,1] = true; end when;";
+    let mut map = SourceMap::new();
+    let source = map.add("SelectedOwnerReplay.mo", text);
+    let at = source_provenance(source, text, "Boolean m[2,2]");
+    let original = dae::Dae::construct(map, |model| {
+        let ty = model.types(|types| {
+            types.derived(dae::ValueType::array(dae::ScalarType::Boolean, [2, 2]), at)
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                ty,
+                at,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let targets = [[1, 1], [1, 2], [2, 1], [2, 2]]
+            .into_iter()
+            .map(|indices| model.discrete_value_element(variable, &indices, at))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value = model.expressions(|expressions| {
+            expressions.at(at).literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        let active = model.conditions(|conditions| {
+            let active = conditions.reserve(at)?;
+            conditions.define(active, dae::ConditionInput::Discrete(value), at)?;
+            Ok(active)
+        })?;
+        let held = model.expressions(|expressions| {
+            targets
+                .iter()
+                .map(|target| expressions.at(at).pre_discrete_value_target(*target))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        model.b1c_selected(targets.iter().copied(), |topology| {
+            append_selected_owners(topology, &targets, &held, active, value, at)
+        })
+    })
+    .unwrap();
+    let rebuilt = replay(&original);
+    assert_eq!(
+        serde_json::to_value(&rebuilt).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+    rebuilt.inspect(|view| {
+        assert_eq!(view.variable_count(), 1);
+        for ordinal in 0..4 {
+            let owner = view
+                .discrete_value_owner(view.discrete_value_owner_id(ordinal).unwrap())
+                .unwrap();
+            let target = owner.targets().get(0).unwrap();
+            assert_eq!(target.scalar_selection(), Some(ordinal as u32));
+            assert_eq!(
+                view.discrete_value_target_indices(target).unwrap(),
+                [ordinal as i64 / 2 + 1, ordinal as i64 % 2 + 1]
+            );
+            assert_eq!(
+                matches!(
+                    owner.branches().get(0).unwrap().activation(),
+                    dae::DiscreteBranchActivation::When { .. }
+                ),
+                ordinal == 2
+            );
+        }
+    });
+}
+
+fn append_selected_owners<'dae>(
+    topology: &mut dae::DiscreteValueTopology<'_, 'dae>,
+    targets: &[dae::DiscreteValueTarget<'dae>],
+    held: &[dae::ExprId<'dae>],
+    active: dae::ConditionId<'dae>,
+    value: dae::ExprId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    for (ordinal, (&target, &held)) in targets.iter().zip(held).enumerate() {
+        topology.selected_owner(at, [target], |owner| {
+            if ordinal == 2 {
+                owner.when(active, active, at, [(value, at)])
+            } else {
+                owner.always(at, [(held, at)])
+            }
+        })?;
+    }
+    Ok(())
+}

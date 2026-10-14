@@ -21,6 +21,11 @@ impl ContinuousRefreshOwners {
                 .map(|relation| &mut relation.remainder),
         )
         .chain(
+            self.root_after_algebraic
+                .iter_mut()
+                .map(|relation| &mut relation.remainder),
+        )
+        .chain(
             self.algebraic_after_derivative
                 .iter_mut()
                 .map(|relation| &mut relation.remainder),

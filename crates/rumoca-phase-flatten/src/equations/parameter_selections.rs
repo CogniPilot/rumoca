@@ -13,6 +13,81 @@ use rumoca_ir_flat as flat;
 use super::build_qualified_name;
 use crate::{Context, FlattenError};
 
+/// MLS §8.3.5.3: a when-equation's target subscripts are parameter expressions.
+pub(super) fn when_target_selection(
+    ctx: &Context,
+    blocks: &[ast::EquationBlock],
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+) -> Result<Option<flat::ParameterBranchSelection>, FlattenError> {
+    let mut indices = Vec::new();
+    for block in blocks {
+        collect_when_target_indices(&block.eqs, &mut indices);
+    }
+    for index in &indices {
+        if let Some(parameter) =
+            crate::boolean_eval::non_evaluable_parameter_read(ctx, index, prefix)
+        {
+            return Err(FlattenError::unsupported_equation(
+                format!(
+                    "when target subscript reads non-evaluable parameter `{parameter}` (MLS §8.3.5.3)"
+                ),
+                span,
+            ));
+        }
+    }
+    if !indices
+        .iter()
+        .any(|index| crate::boolean_eval::reads_parameter(ctx, index, prefix))
+    {
+        return Ok(None);
+    }
+    Ok(Some(parameter_branch_selection(
+        flat::StructuralParameterUse::WhenTargetSubscript,
+        indices,
+        prefix,
+        span,
+    )))
+}
+
+fn collect_when_target_indices<'a>(
+    equations: &'a [ast::Equation],
+    indices: &mut Vec<&'a ast::Expression>,
+) {
+    for equation in equations {
+        match equation {
+            ast::Equation::Simple {
+                lhs: ast::Expression::ComponentReference(reference),
+                ..
+            } => {
+                indices.extend(
+                    reference
+                        .parts
+                        .iter()
+                        .flat_map(|part| part.subs.iter().flatten())
+                        .filter_map(|subscript| match subscript {
+                            ast::Subscript::Expression(expression) => Some(expression),
+                            _ => None,
+                        }),
+                );
+            }
+            ast::Equation::For { equations, .. } => collect_when_target_indices(equations, indices),
+            ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                for block in cond_blocks {
+                    collect_when_target_indices(&block.eqs, indices);
+                }
+                if let Some(equations) = else_block {
+                    collect_when_target_indices(equations, indices);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// MLS 3.7 sections 4.5 and 18.6: a `fixed = false` or `Evaluate = false`
 /// parameter is not evaluable, so a for-equation range reading one has no
 /// translation value (section 8.3.3); refuse it before expansion reads it.

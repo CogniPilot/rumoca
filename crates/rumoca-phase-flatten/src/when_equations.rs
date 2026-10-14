@@ -370,7 +370,9 @@ fn collect_when_eq_targets(eqs: &[flat::WhenEquation]) -> BTreeSet<rumoca_core::
                     targets.extend(collect_when_eq_targets(else_branch));
                 }
             }
-            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::AssignElement { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => {}
         }
     }
     targets
@@ -421,7 +423,9 @@ fn summarize_when_definitions(
                     insert_when_definition(&mut definitions, target, span)?;
                 }
             }
-            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::AssignElement { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => {}
         }
     }
     Ok(definitions)
@@ -552,16 +556,53 @@ fn flatten_when_simple_equation(
     }
 
     // Simple single-target assignment
-    let target = extract_assignment_target(lhs, prefix)?;
+    let qualified =
+        qualify_expression_imports_with_def_map_ctx(lhs, prefix, imports, def_map, ctx, None)?;
+    let (name, subscripts) = match qualified {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => (name, subscripts),
+        rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } => match *base {
+            rumoca_core::Expression::VarRef {
+                name,
+                subscripts: inner,
+                ..
+            } if inner.is_empty() => (name, subscripts),
+            _ => {
+                return Err(FlattenError::unsupported_equation(
+                    "when-equation LHS must select one declared coordinate",
+                    target_span,
+                ));
+            }
+        },
+        _ => {
+            return Err(FlattenError::unsupported_equation(
+                "when-equation LHS must be a simple variable reference",
+                target_span,
+            ));
+        }
+    };
     let value =
         qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
-    let origin = format!("when equation assignment to {}", target);
-    Ok(Some(flat::WhenEquation::assign(
-        target,
-        value,
-        target_span,
-        origin,
-    )))
+    let origin = format!("when equation assignment to {}", name);
+    if subscripts.is_empty() {
+        Ok(Some(flat::WhenEquation::assign(
+            name.var_name().clone(),
+            value,
+            target_span,
+            origin,
+        )))
+    } else {
+        Ok(Some(flat::WhenEquation::AssignElement {
+            target: name,
+            subscripts,
+            value,
+            span: target_span,
+            origin,
+        }))
+    }
 }
 
 /// Flatten a function call in a when-clause (reinit, assert, terminate).
@@ -812,7 +853,17 @@ fn flatten_reinit_call(
         ));
     }
 
-    let state = extract_assignment_target(&args[0], prefix)?;
+    let state = match &args[0] {
+        ast::Expression::ComponentReference(reference) => {
+            rumoca_core::VarName::new(build_qualified_name(prefix, reference))
+        }
+        _ => {
+            return Err(FlattenError::unsupported_equation(
+                "reinit target must be a state reference",
+                args[0].span(),
+            ));
+        }
+    };
     let value =
         qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
     let origin = format!("reinit({})", state);
@@ -826,24 +877,4 @@ fn flatten_reinit_call(
         target_span,
         origin,
     )))
-}
-
-/// Extract the target variable name from an assignment LHS.
-fn extract_assignment_target(
-    lhs: &ast::Expression,
-    prefix: &ast::QualifiedName,
-) -> Result<rumoca_core::VarName, FlattenError> {
-    match lhs {
-        ast::Expression::ComponentReference(cr) => {
-            let name = build_qualified_name(prefix, cr);
-            Ok(rumoca_core::VarName::new(name))
-        }
-        _ => {
-            // LHS must be a simple variable reference
-            Err(FlattenError::unsupported_equation(
-                "when-equation LHS must be a simple variable reference",
-                lhs.span(),
-            ))
-        }
-    }
 }

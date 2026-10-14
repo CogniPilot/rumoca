@@ -384,6 +384,7 @@ pub(crate) trait KernelKind {
     /// length of the kernel set `kernel` belongs to.
     unsafe fn invoke(
         kernel: Self::Fn,
+        scratch: &scratch::ScratchOwner,
         y: &[f64],
         p: &[f64],
         t: f64,
@@ -413,6 +414,7 @@ impl KernelKind for ResidualKernels {
 
     unsafe fn invoke(
         kernel: Self::Fn,
+        scratch: &scratch::ScratchOwner,
         y: &[f64],
         p: &[f64],
         t: f64,
@@ -421,9 +423,8 @@ impl KernelKind for ResidualKernels {
     ) -> u8 {
         // SAFETY: the kernel was declared with the residual row ABI; the
         // caller guarantees the buffers cover every index its plan proved.
-        scratch::invoke(|arena| unsafe {
-            kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena)
-        })
+        scratch
+            .invoke(|arena| unsafe { kernel(y.as_ptr(), p.as_ptr(), t, out.as_mut_ptr(), arena) })
     }
 }
 
@@ -442,6 +443,7 @@ impl KernelKind for DirectionalKernels {
 
     unsafe fn invoke(
         kernel: Self::Fn,
+        scratch: &scratch::ScratchOwner,
         y: &[f64],
         p: &[f64],
         t: f64,
@@ -450,7 +452,7 @@ impl KernelKind for DirectionalKernels {
     ) -> u8 {
         // SAFETY: the kernel was declared with the directional row ABI; the
         // caller guarantees the buffers cover every index its plan proved.
-        scratch::invoke(|arena| unsafe {
+        scratch.invoke(|arena| unsafe {
             kernel(
                 y.as_ptr(),
                 p.as_ptr(),
@@ -488,6 +490,7 @@ pub(crate) struct KernelId(usize);
 /// Native loop kernels of the affine tensor nodes of one block, sharing one
 /// executable-memory arena.
 pub(crate) struct CompiledTensorKernels<K: KernelKind> {
+    scratch: scratch::ScratchOwner,
     kernels: Vec<K::Fn>,
     input_requirements: InputRequirements,
     output_len: usize,
@@ -534,6 +537,7 @@ impl<K: KernelKind> CompiledTensorKernels<K> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok((
             Self {
+                scratch: Default::default(),
                 kernels,
                 input_requirements,
                 output_len,
@@ -583,7 +587,17 @@ impl<K: KernelKind> KernelFrame<'_, K> {
         // SAFETY: the frame checked its buffers against the set's input
         // requirements and output length, which the kernel's plan proved
         // cover every index it reads and writes.
-        let status = unsafe { K::invoke(function, self.y, self.p, self.t, self.seed, self.out) };
+        let status = unsafe {
+            K::invoke(
+                function,
+                &self.kernels.scratch,
+                self.y,
+                self.p,
+                self.t,
+                self.seed,
+                self.out,
+            )
+        };
         status::check(status)
     }
 }

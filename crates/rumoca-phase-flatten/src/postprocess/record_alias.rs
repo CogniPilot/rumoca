@@ -34,7 +34,9 @@ pub(super) fn canonicalize_record_alias_when_equations(
 ) {
     for equation in equations {
         match equation {
-            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+            flat::WhenEquation::Assign { value, .. }
+            | flat::WhenEquation::AssignElement { value, .. }
+            | flat::WhenEquation::Reinit { value, .. } => {
                 canonicalize_record_alias_expr(value, ctx, known_variables);
             }
             flat::WhenEquation::Assert {

@@ -194,6 +194,7 @@ fn collect_when_targets(
             flat::WhenEquation::Assign { target, .. } => {
                 targets.insert(target.clone());
             }
+            flat::WhenEquation::AssignElement { .. } => {}
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
@@ -249,18 +250,27 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         source_owner: WhenSourceOwner,
         chain: &flat::WhenChain,
     ) -> Result<(), dae::DaeConstructionError> {
-        let owner_provenance = dae::DaeProvenance::source(chain.span())?;
-        let discrete_value = self.discrete_values.owner(
-            owner_provenance,
-            when_chain_discrete_value_targets(
-                chain,
-                self.request.coordinates,
-                self.request.function_calls,
-                self.request.flat,
-            ),
+        let provenance = dae::DaeProvenance::source(chain.span())?;
+        let mut targets = when_chain_discrete_value_targets(
+            chain,
             self.request.coordinates,
-            self.request.topology,
-        )?;
+            self.request.function_calls,
+            self.request.flat,
+        )
+        .into_iter()
+        .map(|name| {
+            let Coordinate::DiscreteValue(target) = self.request.coordinates[&name] else {
+                unreachable!()
+            };
+            target.into()
+        })
+        .collect::<Vec<_>>();
+        for branch in chain.branches() {
+            self.collect_selected_targets(&branch.equations, &mut targets)?;
+        }
+        let discrete_value =
+            self.discrete_values
+                .mixed_owner(provenance, targets, self.request.topology)?;
         let guards = self.lower_chain_guards(source_owner.0 as usize, chain)?;
         self.own_chain_clocks(chain, &guards)?;
         let owners = WhenSemanticOwners {
@@ -391,6 +401,15 @@ fn own_clocked_targets<'dae>(
                     own_clocked_targets(construction, request, clock, else_branch)?;
                 }
             }
+            flat::WhenEquation::AssignElement { target, span, .. } => {
+                own_clocked_target(
+                    construction,
+                    coordinates,
+                    clock,
+                    target.var_name(),
+                    dae::DaeProvenance::source(*span)?,
+                )?;
+            }
             flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
             | flat::WhenEquation::Terminate { .. } => {}
@@ -519,6 +538,13 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             flat::WhenEquation::Assign { target, value, .. } => {
                 self.lower_assignment(owners, guard, target, value, equation.span())
             }
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                span,
+                ..
+            } => self.lower_element_assignment(owners, guard, target, subscripts, value, *span),
             flat::WhenEquation::Reinit { state, value, .. } => {
                 self.lower_reinit(owners.source, guard, state, value, equation.span())
             }
@@ -575,6 +601,124 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             value,
             provenance,
         )
+    }
+
+    fn collect_selected_targets(
+        &mut self,
+        equations: &[flat::WhenEquation],
+        targets: &mut Vec<dae::DiscreteValueTarget<'dae>>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        for equation in equations {
+            self.collect_selected_equation_targets(equation, targets)?;
+        }
+        Ok(())
+    }
+
+    fn collect_selected_equation_targets(
+        &mut self,
+        equation: &flat::WhenEquation,
+        targets: &mut Vec<dae::DiscreteValueTarget<'dae>>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        match equation {
+            flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                span,
+                ..
+            } => {
+                let selection = selected_when_target(self.request.flat, target, subscripts, *span)
+                    .expect("analysis checked selected target identity and bounds");
+                if let Coordinate::DiscreteValue(parent) =
+                    self.request.functions.coordinate_instances[&selection.instance]
+                {
+                    let target = self.construction.discrete_value_element(
+                        parent,
+                        &selection.indices,
+                        dae::DaeProvenance::source(*span)?,
+                    )?;
+                    targets.push(target);
+                }
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    self.collect_selected_targets(equations, targets)?;
+                }
+                if let Some(equations) = else_branch {
+                    self.collect_selected_targets(equations, targets)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn lower_element_assignment(
+        &mut self,
+        owners: WhenSemanticOwners,
+        guard: EventGuard<'dae>,
+        target: &rumoca_core::Reference,
+        subscripts: &[Subscript],
+        value: &Expression,
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let selection = selected_when_target(self.request.flat, target, subscripts, span)
+            .expect("analysis checked selected target identity and bounds");
+        let provenance = dae::DaeProvenance::source(span)?;
+        let value = self.lower_body_value(guard, value)?;
+        match self.request.functions.coordinate_instances[&selection.instance] {
+            Coordinate::DiscreteValue(parent) => {
+                let target = self.construction.discrete_value_element(
+                    parent,
+                    &selection.indices,
+                    provenance,
+                )?;
+                let owner = owners.discrete_value.ok_or(
+                    dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                        target: target.index(),
+                        span,
+                    },
+                )?;
+                self.discrete_values
+                    .when(super::discrete_values::DiscreteWhenAssignment {
+                        owner,
+                        trigger: guard.trigger,
+                        guard: guard.condition,
+                        parent: guard.parent_activation,
+                        statement: guard.statement,
+                        target,
+                        value,
+                        branch_provenance: guard.branch_provenance,
+                        action_provenance: provenance,
+                    })
+            }
+            Coordinate::DiscreteReal(_) => {
+                let reference = Expression::VarRef {
+                    name: target.clone(),
+                    subscripts: subscripts.to_vec(),
+                    span,
+                };
+                let lhs = self.lower_body_value(guard, &reference)?;
+                let residual = self.construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .binary(dae::BinaryOperator::Subtract, lhs, value)
+                })?;
+                self.construction.discrete(|equations| {
+                    equations.when_real_equation(
+                        guard.trigger,
+                        guard.condition,
+                        provenance,
+                        |equation| equation.residual(residual),
+                    )
+                })?;
+                Ok(())
+            }
+            _ => unreachable!("analysis admitted only discrete coordinates"),
+        }
     }
 
     /// A value the when body reads, in the owning partition's clock scope
@@ -821,7 +965,7 @@ pub(super) fn lower_when_assignment<'dae>(
                     guard: guard.condition,
                     parent: guard.parent_activation,
                     statement: guard.statement,
-                    target,
+                    target: target.into(),
                     value,
                     branch_provenance: guard.branch_provenance,
                     action_provenance: provenance,

@@ -256,10 +256,7 @@ pub fn initial_static_event_pre_mode(
     problem: &solve::SolveProblem,
     t_start: f64,
 ) -> Option<EventPreMode> {
-    let mut mode = problem
-        .solve_layout
-        .initial_event_parameter_index
-        .map(|_| EventPreMode::FollowCurrent);
+    let mut mode = None;
     for event_t in &problem.events.scheduled_time_events {
         if sample_time_match_with_tol(*event_t, t_start) {
             merge_initial_event_mode(&mut mode, EventPreMode::FollowCurrent);
@@ -453,14 +450,11 @@ mod tests {
     }
 
     #[test]
-    fn checked_initial_flag_schedules_the_initial_event() {
+    fn initialization_mode_does_not_issue_a_time_event() {
         let mut problem = solve::SolveProblem::default();
         problem.solve_layout.initial_event_parameter_index = Some(0);
 
-        assert_eq!(
-            initial_static_event_pre_mode(&problem, 0.0),
-            Some(EventPreMode::FollowCurrent)
-        );
+        assert_eq!(initial_static_event_pre_mode(&problem, 0.0), None);
     }
 
     #[test]

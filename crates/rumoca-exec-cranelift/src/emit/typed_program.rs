@@ -118,6 +118,7 @@ struct PureCallSymbol {
 
 /// Owns the code memory for one completely compiled checked call table.
 pub(crate) struct CompiledPureCallTable {
+    scratch: scratch::ScratchOwner,
     symbols: Box<[Option<PureCallSymbol>]>,
     directional_symbols: Box<[Option<PureCallSymbol>]>,
     observation_symbols: Box<[Option<PureCallSymbol>]>,
@@ -265,8 +266,9 @@ impl CompiledPureCallTable {
         let call: TypedCall = unsafe { std::mem::transmute(symbol.address) };
         // SAFETY: both slices have the exact checked cell extents required by
         // the compiled owner and remain valid for the duration of the call.
-        let status =
-            scratch::invoke(|arena| unsafe { call(input.as_ptr(), output.as_mut_ptr(), arena) });
+        let status = self
+            .scratch
+            .invoke(|arena| unsafe { call(input.as_ptr(), output.as_mut_ptr(), arena) });
         status::check(status)
     }
 }
@@ -786,6 +788,7 @@ impl TableCompiler {
             );
         }
         Ok(CompiledPureCallTable {
+            scratch: Default::default(),
             symbols: symbols.into_boxed_slice(),
             directional_symbols: directional_symbols.into_boxed_slice(),
             observation_symbols: observation_symbols.into_boxed_slice(),

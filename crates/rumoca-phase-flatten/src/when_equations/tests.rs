@@ -1,8 +1,7 @@
 use super::{
-    collect_when_eq_targets, extract_assignment_target, flatten_when_blocks,
-    flatten_when_body_equation, flatten_when_for_equation, flatten_when_function_call,
-    flatten_when_if_equation, is_known_streams_side_effect_call,
-    validate_when_equation_definitions,
+    collect_when_eq_targets, flatten_when_blocks, flatten_when_body_equation,
+    flatten_when_for_equation, flatten_when_function_call, flatten_when_if_equation,
+    is_known_streams_side_effect_call, validate_when_equation_definitions,
 };
 use crate::errors::FlattenError;
 use rumoca_ir_ast as ast;
@@ -31,7 +30,7 @@ fn comp_ref(path: &str) -> ast::ComponentReference {
                 def_id: Some(rumoca_core::DefId::new(19_001 + index as u32)),
             })
             .collect(),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
         qualified_display_name: None,
     }
 }
@@ -765,8 +764,17 @@ fn assignment_target_error_uses_invalid_lhs_span() {
         span,
     };
 
-    let err = extract_assignment_target(&lhs, &ast::QualifiedName::new())
-        .expect_err("non-reference LHS should fail");
+    let err = flatten_when_body_equation(
+        &crate::Context::default(),
+        &ast::Equation::Simple {
+            lhs,
+            rhs: int_expr_with_span(1, span),
+        },
+        &ast::QualifiedName::new(),
+        span,
+        None,
+    )
+    .expect_err("non-reference LHS should fail");
 
     assert!(
         matches!(
@@ -828,16 +836,23 @@ fn when_for_equation_expands_all_index_ranges() {
     )
     .expect("resolved references retain source spans and issued iterator identities");
     for (equation, (i, j)) in expanded.iter().zip([(1, 1), (1, 2), (2, 1), (2, 2)]) {
-        let flat::WhenEquation::Assign {
+        let flat::WhenEquation::AssignElement {
             target,
             value,
+            subscripts,
             span,
             ..
         } = equation
         else {
             panic!("expanded assignment");
         };
-        assert_eq!(target.as_str(), format!("y[{i},{j}]"));
+        assert_eq!(target.as_str(), "y");
+        assert_eq!(subscripts.len(), 2);
+        for (subscript, expected) in subscripts.iter().zip([i, j]) {
+            assert!(
+                matches!(subscript, rumoca_core::Subscript::Index { value, .. } if *value == expected)
+            );
+        }
         assert!(!span.is_dummy());
         let rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Add,
@@ -859,14 +874,23 @@ fn when_for_equation_expands_all_index_ranges() {
     let targets = expanded
         .iter()
         .map(|eq| match eq {
-            flat::WhenEquation::Assign { target, .. } => target.as_str().to_string(),
+            flat::WhenEquation::AssignElement { subscripts, .. } => subscripts
+                .iter()
+                .map(|subscript| {
+                    let rumoca_core::Subscript::Index { value, .. } = subscript else {
+                        panic!("scalar index")
+                    };
+                    value.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(","),
             other => panic!("expected assignment, got {other:?}"),
         })
         .collect::<std::collections::HashSet<_>>();
 
     assert_eq!(targets.len(), 4);
-    assert!(targets.contains("y[1,1]"));
-    assert!(targets.contains("y[1,2]"));
-    assert!(targets.contains("y[2,1]"));
-    assert!(targets.contains("y[2,2]"));
+    assert!(targets.contains("1,1"));
+    assert!(targets.contains("1,2"));
+    assert!(targets.contains("2,1"));
+    assert!(targets.contains("2,2"));
 }

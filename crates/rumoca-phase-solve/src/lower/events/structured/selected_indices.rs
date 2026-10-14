@@ -7,7 +7,24 @@ mod tests;
 
 struct Family {
     programs: Vec<Vec<solve::LinearOp>>,
-    captures: Vec<Vec<f64>>,
+    captures: Vec<Vec<CaptureSource>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CaptureSource {
+    Constant(f64),
+    Y(usize),
+    P(usize),
+}
+
+impl CaptureSource {
+    fn operation(self, dst: solve::Reg) -> solve::LinearOp {
+        match self {
+            Self::Constant(value) => solve::LinearOp::Const { dst, value },
+            Self::Y(index) => solve::LinearOp::LoadY { dst, index },
+            Self::P(index) => solve::LinearOp::LoadP { dst, index },
+        }
+    }
 }
 
 struct Region {
@@ -59,6 +76,13 @@ impl Region {
     }
 
     fn value(&mut self, values: impl IntoIterator<Item = f64>) -> Result<solve::Reg, LowerError> {
+        self.source(values.into_iter().map(CaptureSource::Constant))
+    }
+
+    fn source(
+        &mut self,
+        sources: impl IntoIterator<Item = CaptureSource>,
+    ) -> Result<solve::Reg, LowerError> {
         let dst = self.reserve(1)?;
         match self.capture_base {
             Some(base) => {
@@ -69,15 +93,11 @@ impl Region {
                     solve::LinearOp::LoadFunctionConditionalCapture { dst, index },
                     self.family.programs.len(),
                 ));
-                for (captures, value) in self.family.captures.iter_mut().zip(values) {
-                    captures.push(value);
+                for (captures, source) in self.family.captures.iter_mut().zip(sources) {
+                    captures.push(source);
                 }
             }
-            None => self.append(
-                values
-                    .into_iter()
-                    .map(|value| solve::LinearOp::Const { dst, value }),
-            ),
+            None => self.append(sources.into_iter().map(|source| source.operation(dst))),
         }
         Ok(dst)
     }
@@ -126,6 +146,11 @@ fn region(
             solve::LinearOp::Const { dst, .. } if capture_base.is_some() => {
                 literal(&ops, &mut output, dst)?;
             }
+            solve::LinearOp::LoadY { dst, .. } | solve::LinearOp::LoadP { dst, .. }
+                if capture_base.is_some() =>
+            {
+                storage(&ops, &mut output, dst)?;
+            }
             solve::LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -142,6 +167,39 @@ fn region(
         }
     }
     Ok(output.family)
+}
+
+fn storage(
+    ops: &[&solve::LinearOp],
+    output: &mut Region,
+    dst: &solve::Reg,
+) -> Result<(), LowerError> {
+    if ops.iter().all(|op| *op == ops[0]) {
+        output.append(ops.iter().map(|op| (*op).clone()));
+        return Ok(());
+    }
+    let sources = ops
+        .iter()
+        .map(|op| match (ops[0], op) {
+            (solve::LinearOp::LoadY { .. }, solve::LinearOp::LoadY { dst: actual, index })
+                if actual == dst =>
+            {
+                Ok(CaptureSource::Y(*index))
+            }
+            (solve::LinearOp::LoadP { .. }, solve::LinearOp::LoadP { dst: actual, index })
+                if actual == dst =>
+            {
+                Ok(CaptureSource::P(*index))
+            }
+            _ => Err(non_affine_structured_program(output.span)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let src = output.source(sources)?;
+    output.append(std::iter::repeat_n(
+        solve::LinearOp::Move { dst: *dst, src },
+        ops.len(),
+    ));
+    Ok(())
 }
 
 fn literal(
@@ -269,7 +327,7 @@ fn conditional(
     let (programs, extras) = conditional_programs(&programs, output.span)?;
     let mut extra_registers = Vec::new();
     for index in 0..extras[0].len() {
-        extra_registers.push(output.value(extras.iter().map(|values| values[index]))?);
+        extra_registers.push(output.source(extras.iter().map(|values| values[index].clone()))?);
     }
     let capture = output.reserve(
         program
@@ -315,7 +373,13 @@ fn conditional(
 fn conditional_programs(
     programs: &[&solve::FunctionConditionalProgram],
     span: Span,
-) -> Result<(Vec<solve::FunctionConditionalProgram>, Vec<Vec<f64>>), LowerError> {
+) -> Result<
+    (
+        Vec<solve::FunctionConditionalProgram>,
+        Vec<Vec<CaptureSource>>,
+    ),
+    LowerError,
+> {
     let base = programs[0];
     let mut captures = vec![Vec::new(); programs.len()];
     let mut arms = vec![Vec::new(); programs.len()];
@@ -366,7 +430,7 @@ fn conditional_programs(
 
 fn conditional_region<'a>(
     programs: &[&'a solve::FunctionConditionalProgram],
-    captures: &mut [Vec<f64>],
+    captures: &mut [Vec<CaptureSource>],
     span: Span,
     select: impl Fn(&'a solve::FunctionConditionalProgram) -> (&'a Vec<solve::LinearOp>, usize),
 ) -> Result<Vec<Vec<solve::LinearOp>>, LowerError> {

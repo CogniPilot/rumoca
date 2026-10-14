@@ -118,6 +118,34 @@ fn collapse_index_when_equations(
             | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => {
                 collapse_index_expr(value, known_flat_vars);
             }
+            rumoca_ir_flat::WhenEquation::AssignElement {
+                target,
+                subscripts,
+                value,
+                span,
+                ..
+            } => {
+                let mut expression = rumoca_core::Expression::Index {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: target.clone(),
+                        subscripts: Vec::new(),
+                        span: *span,
+                    }),
+                    subscripts: subscripts.clone(),
+                    span: *span,
+                };
+                collapse_index_expr(&mut expression, known_flat_vars);
+                if let rumoca_core::Expression::VarRef {
+                    name,
+                    subscripts: selected,
+                    ..
+                } = expression
+                {
+                    *target = name;
+                    *subscripts = selected;
+                }
+                collapse_index_expr(value, known_flat_vars);
+            }
             rumoca_ir_flat::WhenEquation::Assert {
                 condition,
                 message,

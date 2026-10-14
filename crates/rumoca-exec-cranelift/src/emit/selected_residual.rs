@@ -99,17 +99,8 @@ impl CompiledResidualRows {
         let compiled = &self.jits[program];
         // SAFETY: selectable compilation emits one entry per source program;
         // the input bounds and aggregate output extent were checked above.
-        let status = unsafe {
-            call_residual_jit(
-                &compiled.jit,
-                compiled.register_count,
-                &mut regs,
-                inputs.y,
-                inputs.p,
-                inputs.t,
-                output,
-            )
-        };
+        let status =
+            unsafe { call_residual_jit(compiled, &mut regs, inputs.y, inputs.p, inputs.t, output) };
         self.record_jit_call();
         status::check(status)?;
         if let Some(expected) = expected {

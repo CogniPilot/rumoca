@@ -14,7 +14,9 @@ impl From<rumoca_phase_structural::SameTickOrderError> for LowerError {
     fn from(error: rumoca_phase_structural::SameTickOrderError) -> Self {
         use rumoca_phase_structural::SameTickOrderError;
         match &error {
-            SameTickOrderError::Cycle { .. } | SameTickOrderError::UnrefreshableRead { .. } => {
+            SameTickOrderError::Cycle { .. }
+            | SameTickOrderError::UnrefreshableRead { .. }
+            | SameTickOrderError::UnsupportedSelectedTarget { .. } => {
                 Self::non_computable(error.to_string(), error.span())
             }
             SameTickOrderError::DuplicateOwner { .. }

@@ -419,7 +419,9 @@ pub(super) fn collect_when_equation_class_scopes(
     scopes: &mut HashSet<String>,
 ) {
     match eq {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. }
+        | flat::WhenEquation::Reinit { value, .. } => {
             collect_expression_class_scopes(value, live_vars, def_map, scopes)
         }
         flat::WhenEquation::Assert {

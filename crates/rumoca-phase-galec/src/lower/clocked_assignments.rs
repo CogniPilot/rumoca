@@ -1011,6 +1011,17 @@ fn lower_discrete_value_owner<'dae>(
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<ClockedAssignment, GalecTargetError> {
     let span = owner.provenance().span();
+    if owner
+        .targets()
+        .iter()
+        .any(|target| target.scalar_selection().is_some())
+    {
+        return Err(unsupported(
+            "discrete-value-element-owner",
+            "independent discrete-value array elements are not yet supported by the Rumoca GALEC clock scheduler".to_owned(),
+            span,
+        ));
+    }
     let target_variables = owner
         .targets()
         .iter()

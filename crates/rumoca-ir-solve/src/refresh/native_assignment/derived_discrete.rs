@@ -393,19 +393,61 @@ fn scalar_row_owners(
 ) -> Result<BTreeMap<usize, SolveVariableValueKind>, NativeEvaluationRefusal> {
     let mut owners = BTreeMap::new();
     for run in &problem.discrete.event_iteration_plan.runs {
-        let EventIterationOwner::ScalarRows { start_row } = run.owner else {
-            return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
-        };
         let storage = problem
             .solve_layout
             .variable_storage_runs
             .get(run.variable)
             .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
-        for row in start_row..start_row + storage.scalar_count {
-            if owners.insert(row, storage.value_kind).is_some() {
-                return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+        match run.owner {
+            EventIterationOwner::Partitioned {
+                first_partition,
+                partition_count,
+            } => {
+                let end = first_partition
+                    .checked_add(partition_count)
+                    .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+                let partitions = problem
+                    .discrete
+                    .event_iteration_plan
+                    .partitions
+                    .get(first_partition..end)
+                    .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+                for partition in partitions {
+                    insert_scalar_row_owners(
+                        &mut owners,
+                        partition.owner,
+                        partition.scalar_count,
+                        storage.value_kind,
+                    )?;
+                }
             }
+            owner => insert_scalar_row_owners(
+                &mut owners,
+                owner,
+                storage.scalar_count,
+                storage.value_kind,
+            )?,
         }
     }
     Ok(owners)
+}
+
+fn insert_scalar_row_owners(
+    owners: &mut BTreeMap<usize, SolveVariableValueKind>,
+    owner: EventIterationOwner,
+    scalar_count: usize,
+    kind: SolveVariableValueKind,
+) -> Result<(), NativeEvaluationRefusal> {
+    let EventIterationOwner::ScalarRows { start_row } = owner else {
+        return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+    };
+    let end = start_row
+        .checked_add(scalar_count)
+        .ok_or(NativeEvaluationRefusal::UnownedDiscreteRow)?;
+    for row in start_row..end {
+        if owners.insert(row, kind).is_some() {
+            return Err(NativeEvaluationRefusal::UnownedDiscreteRow);
+        }
+    }
+    Ok(())
 }

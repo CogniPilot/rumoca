@@ -314,7 +314,7 @@ pub fn derive_runtime_assignment_roles(
         .map(|(program, target)| {
             let writes_relation_memory =
                 matches!(target, ScalarSlot::P { index, .. } if relation_memory.contains(&index));
-            if writes_relation_memory || evaluates_transient_relation(program, initial_mode) {
+            if writes_relation_memory || contains_transient_relation_effect(program, initial_mode) {
                 RuntimeAssignmentRole::RelationEvaluating
             } else {
                 RuntimeAssignmentRole::RelationFree
@@ -455,27 +455,29 @@ pub fn derive_root_relation_refresh_roles(
 }
 
 /// Effect of the checked regions reachable with initialization mode cleared.
-fn evaluates_transient_relation(program: &[LinearOp], initial_mode: Option<usize>) -> bool {
+fn contains_transient_relation_effect(program: &[LinearOp], initial_mode: Option<usize>) -> bool {
     program.iter().any(|op| match op {
         LinearOp::Compare { .. } => true,
         LinearOp::FunctionConditional { program, .. } => {
             program.arms.iter().any(|arm| {
-                evaluates_transient_relation(&arm.condition, initial_mode)
+                contains_transient_relation_effect(&arm.condition, initial_mode)
                     || (!initial_mode_condition(&arm.condition, initial_mode)
-                        && evaluates_transient_relation(&arm.result, initial_mode))
-            }) || evaluates_transient_relation(&program.fallback, initial_mode)
+                        && contains_transient_relation_effect(&arm.result, initial_mode))
+            }) || contains_transient_relation_effect(&program.fallback, initial_mode)
         }
         _ => {
             let mut effect = RelationEffect(false);
-            crate::visitor::walk_linear_op_slice(
+            match crate::visitor::walk_linear_op_slice(
                 &mut effect,
                 crate::visitor::LinearOpSliceKind::ScalarProgram {
                     program_index: 0,
                     span: None,
                 },
                 std::slice::from_ref(op),
-            )
-            .expect("relation-effect traversal is infallible");
+            ) {
+                Ok(()) => {}
+                Err(never) => match never {},
+            }
             effect.0
         }
     })

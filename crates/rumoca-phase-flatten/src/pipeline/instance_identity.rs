@@ -125,6 +125,31 @@ fn attach_when_equation_reference_scopes(
         WhenEquation::Assign { value, .. } | WhenEquation::Reinit { value, .. } => {
             attach_reference_scope(value, instance_scope)
         }
+        WhenEquation::AssignElement {
+            target,
+            subscripts,
+            value,
+            span,
+            ..
+        } => {
+            let mut expression = rumoca_core::Expression::VarRef {
+                name: target.clone(),
+                subscripts: subscripts.clone(),
+                span: *span,
+            };
+            attach_reference_scope(&mut expression, instance_scope)?;
+            let rumoca_core::Expression::VarRef {
+                name,
+                subscripts: selected,
+                ..
+            } = expression
+            else {
+                unreachable!("scope attachment preserves a variable reference")
+            };
+            *target = name;
+            *subscripts = selected;
+            attach_reference_scope(value, instance_scope)
+        }
         WhenEquation::Assert {
             condition,
             message,

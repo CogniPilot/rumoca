@@ -66,6 +66,7 @@ mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
+mod initial_relation_memory;
 mod interpreted_schedules;
 mod manifold_execution;
 mod model_owner;
@@ -271,11 +272,13 @@ struct ScalarExecutionInventory {
     /// refresh blocks it reads directly or through other blocks; `None` when
     /// a block Jacobian must carry its direction through every block
     /// ([`initial_projection::settled_read_cones`]).
-    settled_read_cones: Option<Box<[Box<[usize]>]>>,
+    settled_read_cones: Option<initial_projection::InitialReadCones>,
     derivative_refresh: solve::RefreshPlan,
     root_refresh: solve::RefreshPlan,
     event_refresh: solve::RefreshPlan,
     root_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
+    root_refresh_after_algebraic: Option<solve::RefreshRemainderRelation>,
+    algebraic_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
     clock_event_refresh_after_event: Vec<solve::RefreshRemainderRelation>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
@@ -650,11 +653,18 @@ impl SolveRuntime {
                 });
             }
         }
+        let (initial_scalar_residual, initial_continuation) =
+            InitialContinuationCoverage::certify_runtime_blocks(
+                model,
+                &implicit_scalar_rhs,
+                &algebraic_refresh,
+            )?;
         let settled_read_cones = initial_projection::settled_read_cones(
             model,
-            &continuous_structural,
+            &initial_scalar_residual,
+            implicit_scalar_rhs.block(),
             &algebraic_refresh.simultaneous_plan,
-        );
+        )?;
         let projection_demand =
             refresh_projection::projection_jacobian_demand(model, settled_read_cones.as_deref())?;
         let compiled_algebraic_jacobians = match primary {
@@ -691,6 +701,9 @@ impl SolveRuntime {
             &refresh_program_rows,
         );
         let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
+        let root_refresh_after_algebraic = refresh_owners.root_after_algebraic().cloned();
+        let algebraic_refresh_after_derivative =
+            refresh_owners.algebraic_after_derivative().cloned();
         let clock_event_refresh_after_event = refresh_owners.clock_events_after_event().to_vec();
         if clock_event_refresh_after_event.len() != clock_event_refresh.len() {
             return Err(EvalSolveError::InvalidRow {
@@ -718,12 +731,6 @@ impl SolveRuntime {
             &model.problem.events.root_conditions,
             &mut |block| compiled_expression(execution_backend.as_ref(), "root_conditions", block),
         );
-        let (initial_scalar_residual, initial_continuation) =
-            InitialContinuationCoverage::certify_runtime_blocks(
-                model,
-                &implicit_scalar_rhs,
-                &algebraic_refresh,
-            )?;
         let compiled_initial_residual = BlockReuse::of(
             primary.map(|primary| &primary.scalar.initial_scalar_residual),
             &initial_scalar_residual,
@@ -889,6 +896,8 @@ impl SolveRuntime {
             root_refresh,
             event_refresh,
             root_refresh_after_derivative,
+            root_refresh_after_algebraic,
+            algebraic_refresh_after_derivative,
             clock_event_refresh_after_event,
             initial_continuation,
             root_condition_rows: prepare(
@@ -1416,6 +1425,19 @@ impl ScalarExecutionView<'_> {
         self.refresh_algebraic_and_output_slots(t, guess, params, tol, max_iters)
     }
 
+    pub(crate) fn full_solver_y_with_guess_certified(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        guess: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        self.update_solver_y_guess_from_state(guess, state)?;
+        self.refresh_algebraic_and_output_slots_certified(t, guess, params, tol, max_iters)
+    }
+
     pub fn eval_state_derivatives(
         &self,
         t: f64,
@@ -1634,85 +1656,6 @@ impl ScalarExecutionView<'_> {
                 self.write_planned_root_search_defaults(plan, params, t, model_out)?;
             } else {
                 self.write_planned_root_search_conditions(plan, solver_y, params, t, model_out)?;
-            }
-        }
-        self.delay_runtime
-            .evaluate_event_roots(
-                t,
-                solver_y,
-                params,
-                self.row_eval_context(),
-                &mut out[model_root_count..],
-            )
-            .map_err(RuntimeSolveError::from)?;
-        validate_finite_runtime_output("root search output", out)
-    }
-
-    pub fn eval_root_search_conditions_after_derivative_settle_into(
-        &self,
-        t: f64,
-        params: &[f64],
-        solver_y: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        if !self.derivative_settled_coordinate_can_refresh_roots() {
-            return Err(RuntimeSolveError::solve_ir(
-                "root refresh has no certified derivative-settled remainder".to_string(),
-            ));
-        }
-        if solver_y.len() != self.solver_count {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "derivative-settled solver-y length mismatch: expected {}, got {}",
-                self.solver_count,
-                solver_y.len()
-            )));
-        }
-        let relation = self
-            .scalar
-            .root_refresh_after_derivative
-            .as_ref()
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "root refresh derivative-settled remainder disappeared".to_string(),
-                )
-            })?;
-        let remainder = relation.remainder();
-        if !remainder.value_stages.is_empty() {
-            self.refresh_slots_with_plan(
-                remainder,
-                RefreshSlotArgs {
-                    t,
-                    solver_y,
-                    params,
-                    tol,
-                    max_iters,
-                    certify_coordinates: true,
-                },
-            )?;
-        }
-        let root_count = self.root_condition_count();
-        if root_count == 0 {
-            return fill_inactive_root_output(out);
-        }
-        validate_runtime_output_len("root search output", root_count, out.len())?;
-        let model_root_count = self.model.problem.events.root_conditions.len();
-        if model_root_count > 0 {
-            let model_out = &mut out[..model_root_count];
-            match &self.scalar.root_condition_plan {
-                Some(plan) if plan.search_rows.is_empty() => {
-                    self.validate_root_plan_output_len(plan, model_out)?;
-                    self.write_planned_root_search_defaults(plan, params, t, model_out)?;
-                }
-                Some(plan) => {
-                    self.validate_root_plan_output_len(plan, model_out)?;
-                    self.write_planned_root_search_conditions(
-                        plan, solver_y, params, t, model_out,
-                    )?;
-                }
-                None => self
-                    .eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?,
             }
         }
         self.delay_runtime

@@ -531,10 +531,12 @@ pub(crate) fn flatten_equation_with_def_map(
             ))
         }
 
-        ast::Equation::When(_blocks) => {
-            // When-equations are handled separately by flatten_when_equation()
-            // Return empty here since they don't produce regular flat equations
-            Ok(FlattenedEquations::default())
+        ast::Equation::When(blocks) => {
+            // When bodies own no ordinary residuals, but target indices are structural.
+            let selection = parameter_selections::when_target_selection(ctx, blocks, prefix, span)?;
+            let mut flattened = FlattenedEquations::default();
+            flattened.parameter_branch_selections.extend(selection);
+            Ok(flattened)
         }
 
         ast::Equation::If {

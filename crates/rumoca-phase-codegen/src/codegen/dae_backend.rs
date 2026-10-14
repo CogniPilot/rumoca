@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 
 // 8: carries both ordered conditional statements and retained external-table
 // descriptors; versions 7 published either one alone.
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 8;
+// 9: retains checked scalar selections on discrete-value targets.
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -868,7 +869,10 @@ fn project_discrete_values(view: dae::DaeView<'_>) -> Value {
                 "targets": owner
                     .targets()
                     .iter()
-                    .map(|target| target.index())
+                    .map(|target| json!({
+                        "variable": target.variable().index(),
+                        "scalar_selection": target.scalar_selection(),
+                    }))
                     .collect::<Vec<_>>(),
                 "branches": owner
                     .branches()

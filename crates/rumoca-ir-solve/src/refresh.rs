@@ -501,6 +501,8 @@ pub struct ContinuousRefreshOwners {
     #[serde(skip)]
     root_after_derivative: Option<RefreshRemainderRelation>,
     #[serde(skip)]
+    root_after_algebraic: Option<RefreshRemainderRelation>,
+    #[serde(skip)]
     algebraic_after_derivative: Option<RefreshRemainderRelation>,
     #[serde(skip)]
     clock_events_after_event: Vec<RefreshRemainderRelation>,
@@ -744,6 +746,7 @@ impl ContinuousRefreshOwners {
     pub fn is_issued(&self) -> bool {
         self.compact_projection.is_some() && self.native_assignment.is_some()
             || self.root_after_derivative.is_some()
+                && self.root_after_algebraic.is_some()
                 && self.algebraic_after_derivative.is_some()
                 && self.clock_events_after_event.len() == self.clock_events.len()
     }
@@ -797,6 +800,13 @@ impl ContinuousRefreshOwners {
             &mut algebraic_after_derivative.remainder,
             algebraic_remainder_owner,
         )?;
+        let mut root_after_algebraic = root.issue_value_remainder_after(&algebraic);
+        let root_algebraic_owner = algebraic_remainder_owner.checked_add(1).ok_or_else(|| {
+            ContinuousRefreshConstructionError {
+                reason: "continuous refresh relation owner count overflows".to_string(),
+            }
+        })?;
+        issue_refresh_sequence_ids(&mut root_after_algebraic.remainder, root_algebraic_owner)?;
         Ok(Self {
             compact_projection: None,
             projection_affinities: BTreeMap::new(),
@@ -809,6 +819,7 @@ impl ContinuousRefreshOwners {
             exact_assignment_programs: Vec::new(),
             exact_assignment_schedules: Vec::new(),
             root_after_derivative: Some(root_after_derivative),
+            root_after_algebraic: Some(root_after_algebraic),
             algebraic_after_derivative: Some(algebraic_after_derivative),
             clock_events_after_event,
         })
@@ -984,6 +995,7 @@ impl ContinuousRefreshOwners {
             exact_assignment_programs,
             exact_assignment_schedules,
             root_after_derivative,
+            root_after_algebraic,
             algebraic_after_derivative,
             clock_events_after_event,
         } = self;
@@ -995,6 +1007,11 @@ impl ContinuousRefreshOwners {
             .chain(clock_events.iter())
             .chain(
                 root_after_derivative
+                    .iter()
+                    .map(|relation| relation.remainder()),
+            )
+            .chain(
+                root_after_algebraic
                     .iter()
                     .map(|relation| relation.remainder()),
             )
@@ -1082,6 +1099,11 @@ impl ContinuousRefreshOwners {
     #[must_use]
     pub const fn root_after_derivative(&self) -> Option<&RefreshRemainderRelation> {
         self.root_after_derivative.as_ref()
+    }
+
+    #[must_use]
+    pub const fn root_after_algebraic(&self) -> Option<&RefreshRemainderRelation> {
+        self.root_after_algebraic.as_ref()
     }
 
     #[must_use]
@@ -1930,139 +1952,9 @@ impl RefreshPlan {
     pub fn dynamic_causal_rows(&self) -> RefreshRows<'_> {
         self.selected_rows(&self.dynamic_causal_seed_rows)
     }
-
-    fn issue_value_remainder_after(&self, settled: &Self) -> RefreshRemainderRelation {
-        let settled_stages = refresh_stage_coverage(settled);
-        let value_stages = self
-            .value_stages
-            .iter()
-            .filter_map(|stage| uncovered_refresh_stage(self, stage, &settled_stages))
-            .collect();
-        let mut remainder = self.clone();
-        remainder.value_stages = value_stages;
-        if self.causal_solution_certified && settled.causal_solution_certified {
-            let settled_rows = settled
-                .causal_rows()
-                .iter()
-                .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id))
-                .collect::<Vec<_>>();
-            remainder.causal_seed_rows =
-                uncovered_refresh_rows(self, &self.causal_seed_rows, &settled_rows);
-            remainder.static_causal_seed_rows =
-                uncovered_refresh_rows(self, &self.static_causal_seed_rows, &settled_rows);
-            remainder.dynamic_causal_seed_rows =
-                uncovered_refresh_rows(self, &self.dynamic_causal_seed_rows, &settled_rows);
-        } else {
-            // A staged remainder cannot inherit the complete plan's causal
-            // certificate. Doing so would select an unfiltered causal schedule
-            // and discard the construction-issued uncovered stages.
-            remainder.causal_solution_certified = false;
-        }
-        RefreshRemainderRelation { remainder }
-    }
 }
 
-#[derive(PartialEq)]
-enum RefreshStageIdentity {
-    ExactAssignment(RefreshRowOwnerId),
-    ProjectionBlock(usize),
-}
-
-fn refresh_stage_coverage(plan: &RefreshPlan) -> Vec<RefreshStageIdentity> {
-    let mut identities = Vec::new();
-    for stage in &plan.value_stages {
-        match stage {
-            RefreshStage::CausalSeedSweep {
-                static_rows,
-                dynamic_rows,
-                ..
-            }
-            | RefreshStage::ExactAssignments {
-                static_rows,
-                dynamic_rows,
-                ..
-            } => identities.extend(
-                plan.selected_rows(static_rows)
-                    .iter()
-                    .chain(plan.selected_rows(dynamic_rows).iter())
-                    .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id)),
-            ),
-            RefreshStage::ProjectionBlock { block_index, .. } => {
-                identities.push(RefreshStageIdentity::ProjectionBlock(*block_index));
-            }
-        }
-    }
-    identities
-}
-
-fn uncovered_refresh_rows(
-    plan: &RefreshPlan,
-    rows: &RefreshRowSelection,
-    settled: &[RefreshStageIdentity],
-) -> RefreshRowSelection {
-    RefreshRowSelection(
-        rows.indices()
-            .iter()
-            .copied()
-            .filter(|index| {
-                let row = &plan.rows[usize::try_from(*index)
-                    .expect("checked continuous refresh row index fits usize")];
-                !settled.contains(&RefreshStageIdentity::ExactAssignment(row.owner_id))
-            })
-            .collect(),
-    )
-}
-
-fn uncovered_refresh_stage(
-    plan: &RefreshPlan,
-    stage: &RefreshStage,
-    settled: &[RefreshStageIdentity],
-) -> Option<RefreshStage> {
-    match stage {
-        RefreshStage::CausalSeedSweep {
-            static_rows,
-            dynamic_rows,
-            ..
-        } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, true),
-        RefreshStage::ExactAssignments {
-            static_rows,
-            dynamic_rows,
-            ..
-        } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, false),
-        RefreshStage::ProjectionBlock { block_index, .. } => (!settled
-            .contains(&RefreshStageIdentity::ProjectionBlock(*block_index)))
-        .then(|| stage.clone()),
-    }
-}
-
-fn uncovered_row_stage(
-    plan: &RefreshPlan,
-    static_rows: &RefreshRowSelection,
-    dynamic_rows: &RefreshRowSelection,
-    settled: &[RefreshStageIdentity],
-    causal: bool,
-) -> Option<RefreshStage> {
-    let static_rows = uncovered_refresh_rows(plan, static_rows, settled);
-    let dynamic_rows = uncovered_refresh_rows(plan, dynamic_rows, settled);
-    if static_rows.is_empty() && dynamic_rows.is_empty() {
-        return None;
-    }
-    Some(if causal {
-        RefreshStage::CausalSeedSweep {
-            static_sequence: RefreshSequenceId::default(),
-            dynamic_sequence: RefreshSequenceId::default(),
-            static_rows,
-            dynamic_rows,
-        }
-    } else {
-        RefreshStage::ExactAssignments {
-            static_sequence: RefreshSequenceId::default(),
-            dynamic_sequence: RefreshSequenceId::default(),
-            static_rows,
-            dynamic_rows,
-        }
-    })
-}
+mod remainder;
 
 #[cfg(test)]
 mod tests;

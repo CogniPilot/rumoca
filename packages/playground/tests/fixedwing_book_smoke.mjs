@@ -31,6 +31,14 @@ async function waitForModel(predicate) {
 }
 
 try {
+  // A parsed scenario must not enable execution until its Modelica file arrives.
+  let releaseModelSource;
+  const modelSourceGate = new Promise((resolve) => { releaseModelSource = resolve; });
+  const modelRequest = page.waitForRequest("**/fixedwing/FixedWingSIL.mo", { timeout: 120000 });
+  await page.route("**/fixedwing/FixedWingSIL.mo", async (route) => {
+    await modelSourceGate;
+    await route.continue();
+  });
   // Library startup may outlive transient user activation on a slow connection.
   await page.route("**/source-roots/cache.bin.gz", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 6000));
@@ -41,6 +49,10 @@ try {
   });
   const widget = page.locator("#fixed-wing-sil + .rumoca-live");
   await widget.locator(".rumoca-live-run").waitFor({ timeout: 120000 });
+  await modelRequest;
+  assert.equal(await widget.locator(".rumoca-live-run").isDisabled(), true,
+    "scenario metadata must not permit compiling the unloaded Modelica source");
+  releaseModelSource();
 
   // Observe the real session without replacing compilation, inputs, or stepping.
   await page.evaluate(async () => {

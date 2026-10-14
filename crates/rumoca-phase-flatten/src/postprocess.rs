@@ -22,8 +22,11 @@ mod record_alias;
 mod record_alias_postprocess_tests;
 #[cfg(test)]
 mod substitute_constant_tests;
+mod when_discrete_reads;
 
 use super::*;
+
+pub(crate) use when_discrete_reads::freeze_current_discrete_selections;
 
 pub(crate) use constant_lookup::constant_expr_preserves_array_shape;
 pub(crate) use constant_substituter::substitute_known_constants_expr;
@@ -441,7 +444,9 @@ fn substitute_known_constants_when_equation(
     locals: &HashSet<String>,
 ) -> Result<(), FlattenError> {
     match equation {
-        flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+        flat::WhenEquation::Assign { value, .. }
+        | flat::WhenEquation::AssignElement { value, .. }
+        | flat::WhenEquation::Reinit { value, .. } => {
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Assert {

@@ -203,3 +203,43 @@ fn a_no_event_guard_over_another_scalar_of_its_vector_is_not_a_fact() {
 fn a_no_event_guard_over_block_inputs_compiles() {
     simulates(NO_EVENT_OPEN_LIMITER, "NoEventOpenLimiter", 1.0);
 }
+
+#[test]
+fn limiter_event_geometry_is_independent_of_output_cadence() {
+    let compiled = Compiler::new()
+        .model("LimiterLoop")
+        .compile_str(LIMITER_LOOP, "loop_guarded_smooth_relations.mo")
+        .unwrap();
+    for dt in [0.001, 0.003] {
+        let options = SimOptions {
+            t_end: 1.0,
+            dt: Some(dt),
+            solver_mode: SimSolverMode::Auto,
+            ..SimOptions::default()
+        };
+        let result = simulate_dae_with_diagnostics(&compiled.dae, &options).unwrap();
+        let output = result
+            .names
+            .iter()
+            .position(|name| name == "v_out")
+            .unwrap();
+        for (time, value) in result.times.iter().zip(&result.data[output]) {
+            assert!(
+                value.abs() <= 15.0 + 1e-9,
+                "dt={dt}, t={time}, v_out={value}"
+            );
+            // After each positive-feedback upper fold, the outgoing valid
+            // solution is the lower rail, irrespective of observation cadence.
+            if (0.043..0.055).contains(time)
+                || (0.358..0.370).contains(time)
+                || (0.673..0.685).contains(time)
+                || (0.987..0.999).contains(time)
+            {
+                assert!(
+                    (*value + 15.0).abs() < 1e-9,
+                    "dt={dt}, t={time}: upper fold did not reach lower rail: {value}"
+                );
+            }
+        }
+    }
+}
