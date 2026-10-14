@@ -34,7 +34,10 @@ fn ordinary_initialization_reads_relations_at_the_solved_discrete_definition() {
     );
     let session = SimulationSession::new(
         &dae,
-        SimOptions { t_end: 0.25, ..Default::default() },
+        SimOptions {
+            t_end: 0.25,
+            ..Default::default()
+        },
     )
     .expect("the simultaneous initial solve reads the defined discrete value");
     let state = session.state().unwrap();

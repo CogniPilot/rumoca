@@ -240,6 +240,18 @@ impl ScalarExecutionView<'_> {
         self.set_initial_event_flag(p, false);
         let Some(event) = initial_event else {
             commit_pre_params_after_event(&self.model, y, p, tol);
+            let action = self.apply_projected_post_initial_event_update(
+                ProjectedPostInitialEventInput {
+                    y,
+                    p,
+                    t: t_start,
+                    tol,
+                    max_iters,
+                    row_filter: EventUpdateRowFilter::All,
+                },
+                |y, p| project_algebraics(y, p, t_start),
+            )?;
+            commit_pre_params_after_event(&self.model, y, p, tol);
             return Ok(ProjectedInitialEventOutcome {
                 final_t: t_start,
                 observations,

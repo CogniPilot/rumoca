@@ -840,6 +840,16 @@ relations retain their own checked activation and storage contracts. A
 and expression caches, even when it shares an expression with a monitored root.
 The corresponding construction row is in [SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md).
 
+Initialization algebraic read cones derive from the canonical primal programs'
+value and control dependencies, including comparison operands in retained
+regions. Jacobian sparsity is derivative authority and cannot issue this value
+ordering: a comparison has zero derivative while still reading its operands.
+The cone closes only over requested algebraic producers, leaving unrelated
+singular blocks outside it and preserving the original selected-arm evaluation.
+The execution-mode lane is not a scheduled-event owner. Every initialization
+boundary clears that lane and performs the MLS §8.6 event iteration at the same
+start time; a right-limit continuation requires an independently issued event.
+
 Each initialization homotopy step settles the numeric initialization equations,
 covered algebraic equations, relation truth, and ordinary Boolean definitions
 together before advancing lambda. Ordinary `pre` values remain fixed during

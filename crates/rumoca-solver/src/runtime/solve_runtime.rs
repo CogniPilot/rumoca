@@ -650,11 +650,18 @@ impl SolveRuntime {
                 });
             }
         }
+        let (initial_scalar_residual, initial_continuation) =
+            InitialContinuationCoverage::certify_runtime_blocks(
+                model,
+                &implicit_scalar_rhs,
+                &algebraic_refresh,
+            )?;
         let settled_read_cones = initial_projection::settled_read_cones(
             model,
-            &continuous_structural,
+            &initial_scalar_residual,
+            implicit_scalar_rhs.block(),
             &algebraic_refresh.simultaneous_plan,
-        );
+        )?;
         let projection_demand =
             refresh_projection::projection_jacobian_demand(model, settled_read_cones.as_deref())?;
         let compiled_algebraic_jacobians = match primary {
@@ -718,12 +725,6 @@ impl SolveRuntime {
             &model.problem.events.root_conditions,
             &mut |block| compiled_expression(execution_backend.as_ref(), "root_conditions", block),
         );
-        let (initial_scalar_residual, initial_continuation) =
-            InitialContinuationCoverage::certify_runtime_blocks(
-                model,
-                &implicit_scalar_rhs,
-                &algebraic_refresh,
-            )?;
         let compiled_initial_residual = BlockReuse::of(
             primary.map(|primary| &primary.scalar.initial_scalar_residual),
             &initial_scalar_residual,
