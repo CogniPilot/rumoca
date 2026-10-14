@@ -818,10 +818,7 @@ impl ScalarExecutionView<'_> {
             return Ok(None);
         };
         let tables = self.model.external_tables.as_slice();
-        let compiled = self
-            .scalar
-            .compiled_implicit_projection_jacobian_v()
-            .map(|code| code.as_ref());
+        let compiled = self.scalar.compiled_implicit_projection_jacobian_v();
         let mut call = |program: usize, seed: &[f64], out: &mut Vec<f64>| {
             compiled.is_some_and(|compiled| {
                 compiled
