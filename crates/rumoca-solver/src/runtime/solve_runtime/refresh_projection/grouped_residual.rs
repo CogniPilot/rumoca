@@ -71,16 +71,19 @@ impl RefreshProjectionModel<'_> {
         {
             return Ok(());
         }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs()
-            && compiled.call_program_outputs(
+        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs() {
+            if !compiled.call_program_outputs(
                 program,
                 y,
                 p,
                 t,
                 self.runtime.model.external_tables.as_slice(),
                 out,
-            )?
-        {
+            )? {
+                return Err(RuntimeSolveError::solve_ir(
+                    "prepared grouped residual outputs are absent",
+                ));
+            }
             return Ok(());
         }
         self.runtime

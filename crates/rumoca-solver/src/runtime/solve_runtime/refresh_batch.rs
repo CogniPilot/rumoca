@@ -14,6 +14,9 @@ impl ScalarExecutionView<'_> {
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<Option<usize>, RuntimeSolveError> {
+        if self.scalar.compiled_implicit_rhs().is_some() {
+            return Ok(None);
+        }
         let first = &plan[start];
         if !self.can_refresh_from_tensor_output(first) {
             return Ok(None);
@@ -120,16 +123,31 @@ impl ScalarExecutionView<'_> {
             end += 1;
         }
         row_outputs.resize(output_count, 0.0);
-        self.scalar
-            .implicit_scalar_rhs
-            .eval_row_outputs_unchecked_with_context(
+        if let Some(code) = self.scalar.compiled_implicit_rhs() {
+            if !code.call_program_outputs(
                 row_idx,
                 solver_y,
                 params,
                 t,
-                self.row_eval_context(),
+                self.model.external_tables.as_slice(),
                 row_outputs,
-            )?;
+            )? {
+                return Err(RuntimeSolveError::solve_ir(
+                    "prepared refresh outputs are absent",
+                ));
+            }
+        } else {
+            self.scalar
+                .implicit_scalar_rhs
+                .eval_row_outputs_unchecked_with_context(
+                    row_idx,
+                    solver_y,
+                    params,
+                    t,
+                    self.row_eval_context(),
+                    row_outputs,
+                )?;
+        }
         for position in start..end {
             let refresh_row = &plan[position];
             let Some(value) = row_outputs.get(refresh_row.output_offset()).copied() else {

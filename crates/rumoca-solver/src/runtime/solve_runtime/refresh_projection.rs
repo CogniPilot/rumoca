@@ -607,15 +607,18 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
             return Ok(Some(value));
         }
-        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs()
-            && let Some(value) = compiled.call_program_output(
-                (program_idx, output_offset),
-                y,
-                p,
-                t,
-                self.runtime.model.external_tables.as_slice(),
-            )?
-        {
+        if let Some(compiled) = &self.runtime.scalar.compiled_implicit_rhs() {
+            let value = compiled
+                .call_program_output(
+                    (program_idx, output_offset),
+                    y,
+                    p,
+                    t,
+                    self.runtime.model.external_tables.as_slice(),
+                )?
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir("prepared implicit residual output is absent")
+                })?;
             self.runtime
                 .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
             return Ok(Some(value));
@@ -672,16 +675,19 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         {
             return Ok(Some(value));
         }
-        if let Some(compiled) = self.jacobian_v.compiled(self.runtime)
-            && let Some(value) = compiled.call_program_output(
-                (jvp_program_idx, output_offset),
-                y,
-                p,
-                t,
-                v,
-                self.runtime.model.external_tables.as_slice(),
-            )?
-        {
+        if let Some(compiled) = self.jacobian_v.compiled(self.runtime) {
+            let value = compiled
+                .call_program_output(
+                    (jvp_program_idx, output_offset),
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                )?
+                .ok_or_else(|| {
+                    RuntimeSolveError::solve_ir("prepared implicit directional output is absent")
+                })?;
             return Ok(Some(value));
         }
         block

@@ -323,3 +323,251 @@ fn every_cold_event_derivative_family_is_required_before_runtime_execution() {
         assert_eq!(calls.get(), 0, "a refused inventory never executes");
     }
 }
+
+struct JvpBackend {
+    failed: Option<rumoca_core::Span>,
+    refused: Option<rumoca_core::Span>,
+    calls: Rc<RefCell<Vec<rumoca_core::Span>>>,
+}
+
+struct JvpKernel {
+    failed: Option<rumoca_core::Span>,
+    inner: Rc<dyn CompiledSolveJacobianExpression>,
+    spans: Vec<rumoca_core::Span>,
+    calls: Rc<RefCell<Vec<rumoca_core::Span>>>,
+}
+
+impl CompiledSolveJacobianExpression for JvpKernel {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.calls.borrow_mut().extend(&self.spans);
+        if self.failed.is_some_and(|span| self.spans.contains(&span)) {
+            return Err(RuntimeSolveError::SourceFault {
+                message: "coupled derivative source fault".into(),
+                span: self.failed,
+            });
+        }
+        self.inner.call(y, p, t, seed, tables, out)
+    }
+}
+
+struct PrimalKernel {
+    inner: Rc<dyn CompiledSolveExpression>,
+    spans: Vec<rumoca_core::Span>,
+    failed: Option<rumoca_core::Span>,
+    calls: Rc<RefCell<Vec<rumoca_core::Span>>>,
+}
+
+impl CompiledSolveExpression for PrimalKernel {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.calls.borrow_mut().extend(&self.spans);
+        if self.failed.is_some_and(|span| self.spans.contains(&span)) {
+            return Err(RuntimeSolveError::SourceFault {
+                message: "coupled primal source fault".into(),
+                span: self.failed,
+            });
+        }
+        self.inner.call(y, p, t, tables, out)
+    }
+}
+
+impl SolveExecutionBackend for JvpBackend {
+    fn compile_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String> {
+        Ok(Rc::new(PrimalKernel {
+            inner: super::super::test_kernels::expression(source)?,
+            spans: source.program_spans().to_vec(),
+            failed: self.failed,
+            calls: self.calls.clone(),
+        }))
+    }
+
+    fn compile_jacobian_expression(
+        &self,
+        source: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String> {
+        if self
+            .refused
+            .is_some_and(|span| source.program_spans().contains(&span))
+        {
+            return Err("cold event JVP is unsupported".into());
+        }
+        Ok(Rc::new(JvpKernel {
+            failed: self.failed,
+            inner: super::super::test_kernels::jacobian(source)?,
+            spans: source.program_spans().to_vec(),
+            calls: self.calls.clone(),
+        }))
+    }
+
+    fn compile_assignment_schedule(
+        &self,
+        source: &solve::ComputeBlock,
+        owners: &solve::ContinuousRefreshOwners,
+        schedule: &solve::ExactRefreshAssignmentSchedule,
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String> {
+        super::super::test_kernels::assignment(source, owners, schedule)
+    }
+
+    fn compile_event_transaction(
+        &self,
+        _: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String> {
+        Err("fixture has no transaction".into())
+    }
+}
+
+#[test]
+fn coupled_event_native_recovery_executes_prepared_discrete_and_implicit_jvps() {
+    let model = coupled_event_model(true);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = SolveRuntime::new_fixture_with_backend(
+        &model,
+        Rc::new(JvpBackend {
+            failed: None,
+            refused: None,
+            calls: calls.clone(),
+        }),
+    )
+    .unwrap();
+    assert!(
+        calls.borrow().is_empty(),
+        "preparation must not execute any JVP"
+    );
+    let native = solve_prepared_coupled(&runtime).unwrap();
+    assert_eq!(native, solve_coupled(&model).unwrap());
+    let calls = calls.borrow();
+    for source in [
+        "coupled_event_discrete_jvp.mo",
+        "coupled_event_implicit_jvp.mo",
+        "coupled_event_implicit.mo",
+    ] {
+        assert!(
+            calls.contains(&test_span(source)),
+            "compiled {source} was bypassed"
+        );
+    }
+}
+
+#[test]
+fn cold_coupled_event_jvps_are_rejected_during_preparation() {
+    for role in 0..4 {
+        let mut model = coupled_event_model(true);
+        let span = test_span("cold_coupled_event_jvp.mo");
+        let block = spanned_block(coupled_event_jvp_rows().1, "cold_coupled_event_jvp.mo");
+        let artifacts = &mut model.artifacts.discrete;
+        match role {
+            0 => artifacts.rhs_jacobian_v = Some(block),
+            1 => artifacts.runtime_assignment_jacobian_v = Some(block),
+            2 => artifacts.guarded_jacobian_v = Some(block),
+            3 => artifacts.structured_jacobian_v = Some(block),
+            _ => unreachable!(),
+        }
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let error = SolveRuntime::new_fixture_with_backend(
+            &model,
+            Rc::new(JvpBackend {
+                failed: None,
+                refused: Some(span),
+                calls: calls.clone(),
+            }),
+        )
+        .err()
+        .expect("a present unsupported JVP must fail before event recovery is used");
+        assert!(
+            matches!(error, EvalSolveError::CompiledExecution { span: Some(actual), .. } if actual == span),
+            "{error}"
+        );
+        assert!(calls.borrow().is_empty());
+        SolveRuntime::new_fixture(&model)
+            .expect("explicit reference preparation still accepts the source");
+    }
+}
+
+#[test]
+fn native_coupled_event_without_derivative_reports_unavailable() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let runtime = SolveRuntime::new_fixture_with_backend(
+        &coupled_event_model(false),
+        Rc::new(JvpBackend {
+            failed: None,
+            refused: None,
+            calls,
+        }),
+    )
+    .expect("a derivative unavailable for an unused event path does not invent an artifact");
+    let error = solve_prepared_coupled(&runtime).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            RuntimeSolveError::DirectionalDerivativeUnavailable { .. }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn coupled_native_jvp_fault_preserves_category_span_and_input_transaction() {
+    check_coupled_fault_transaction("coupled_event_discrete_jvp.mo");
+}
+
+#[test]
+fn coupled_native_primal_fault_preserves_category_span_and_input_transaction() {
+    check_coupled_fault_transaction("coupled_event_implicit.mo");
+}
+
+fn check_coupled_fault_transaction(source: &'static str) {
+    let span = test_span(source);
+    let runtime = SolveRuntime::new_fixture_with_backend(
+        &coupled_event_model(true),
+        Rc::new(JvpBackend {
+            failed: Some(span),
+            refused: None,
+            calls: Rc::default(),
+        }),
+    )
+    .unwrap();
+    let mut y = vec![1.0];
+    let mut p = vec![1.0];
+    let snapshot = DiscretePreSnapshot {
+        row_filter: EventUpdateRowFilter::All,
+        root_relation_overrides: &[],
+        event_iteration: 0,
+    };
+    let error = runtime
+        .scalar_execution()
+        .unwrap()
+        .solve_coupled_event_rows(
+            &snapshot,
+            &mut DiscreteRowsSettleInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1e-12,
+                max_iters: 20,
+            },
+        )
+        .expect_err("a prepared source fault must not be bypassed by interpretation");
+    assert!(
+        matches!(error, RuntimeSolveError::SourceFault { span: Some(actual), .. } if actual == span),
+        "{error}"
+    );
+    assert_eq!(y, [1.0]);
+    assert_eq!(p, [1.0]);
+}

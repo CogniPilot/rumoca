@@ -1217,14 +1217,17 @@ impl ScalarExecutionView<'_> {
                 0.0,
                 "visible values",
             )?;
-            self.scalar.visible_value_rows.eval_with_context(
-                y,
-                params,
-                t,
-                self.row_eval_context(),
+            self.eval_lifecycle_block(
+                &self.scalar.visible_value_rows,
+                RowEvalPoint { y, p: params, t },
                 values,
             )?;
             return Ok(());
+        }
+        if self.scalar.lifecycle().is_some() {
+            return Err(RuntimeSolveError::solve_ir(
+                "prepared visible output extent differs from its source",
+            ));
         }
         let computed =
             visible_values_with_context(&self.model, y, params, t, self.row_eval_context())?;

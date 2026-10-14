@@ -1,5 +1,7 @@
 use super::*;
 
+mod deadline_scheduling;
+
 impl SolveRuntime {
     pub(in crate::runtime::solve_runtime) fn scalar_fixture_mut(
         &mut self,

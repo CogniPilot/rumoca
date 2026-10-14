@@ -3,12 +3,12 @@ use crate::{
 };
 use rumoca_ir_solve as solve;
 
-use super::ScalarExecutionView;
 use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
 use super::guarded_assignments::guarded_target_at;
+use super::{ScalarExecutionView, admitted_compiled_error};
 
 mod tangent;
 pub(super) use tangent::CoupledEventJvps;
@@ -97,7 +97,12 @@ impl ScalarExecutionView<'_> {
             input.tol,
             self.event_schedule().stalled_settle(),
         )
-        .map_err(|error| coupled_recovery_error(input.t, &error.to_string()))?;
+        .map_err(|error| match error {
+            RuntimeSolveError::SolveIr { .. } => {
+                coupled_recovery_error(input.t, &error.to_string())
+            }
+            error => error,
+        })?;
         write_unknowns(&inventory.unknowns, &unknowns, input.y, input.p)?;
         self.apply_root_relation_memory_overrides(
             snapshot.root_relation_overrides,
@@ -368,13 +373,34 @@ impl CoupledEventSystem<'_> {
         residual: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let mut implicit = vec![0.0; self.runtime.scalar.implicit_scalar_rhs.len()];
-        self.runtime.scalar.implicit_scalar_rhs.eval_with_context(
-            y,
-            p,
-            self.t,
-            self.runtime.row_eval_context(),
-            &mut implicit,
-        )?;
+        if let Some(code) = self.runtime.scalar.compiled_implicit_rhs() {
+            code.call(
+                y,
+                p,
+                self.t,
+                self.runtime.model.external_tables.as_slice(),
+                &mut implicit,
+            )
+            .map_err(|error| {
+                admitted_compiled_error(
+                    "coupled implicit residual",
+                    self.runtime
+                        .scalar
+                        .implicit_scalar_rhs
+                        .block()
+                        .program_spans(),
+                    error,
+                )
+            })?;
+        } else {
+            self.runtime.scalar.implicit_scalar_rhs.eval_with_context(
+                y,
+                p,
+                self.t,
+                self.runtime.row_eval_context(),
+                &mut implicit,
+            )?;
+        }
         let mut eval_p_cache = EventEvalParamCache::default();
         for (slot, row) in residual.iter_mut().zip(&self.inventory.residuals) {
             *slot = match *row {
