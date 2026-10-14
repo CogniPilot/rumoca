@@ -24,7 +24,7 @@
 //! the policy, the application, the root-search types, and the scan capability
 //! host-private with no unchecked constructor.
 
-use rumoca_ir_solve::fmi::{RootBracket, RootLocationPlan};
+use rumoca_ir_solve::fmi::{RootBracket, RootLocationPlan, SlidingModes};
 
 use super::{
     integrator::{MeAcceptedStep, MeContinuousPoint, MeStepProposal, accepted_step_roundoff},
@@ -139,6 +139,12 @@ impl MeRootSearchPolicy {
         self.location_tolerance
     }
 
+    /// The component's root-location plan (SPEC_0044 ME-EVENT-004).
+    #[must_use]
+    pub(super) fn root_location(&self) -> &RootLocationPlan {
+        &self.root_location
+    }
+
     #[must_use]
     pub(super) fn state_count(&self) -> usize {
         self.nominals.len()
@@ -232,6 +238,11 @@ impl MeRootSearchPolicy {
 pub(super) struct MeRootApplication {
     left: MeContinuousPoint,
     application: MeContinuousPoint,
+    /// The indicator positions whose domain differs between the two points.
+    changed: Vec<usize>,
+    /// Whether the crossing applies at the scan coordinate that observed it
+    /// because every changed indicator slides.
+    sliding: bool,
 }
 
 impl MeRootApplication {
@@ -278,13 +289,19 @@ impl MeRootApplication {
                 ),
             });
         }
-        if !domains_changed(&left_indicators, &application_indicators) {
+        let changed = changed_domains(&left_indicators, &application_indicators);
+        if changed.is_empty() {
             return Err(MeSessionError::Contract {
                 reason: "root application requires at least one changed indicator domain"
                     .to_owned(),
             });
         }
-        Ok(Self { left, application })
+        Ok(Self {
+            left,
+            application,
+            changed,
+            sliding: false,
+        })
     }
 
     #[must_use]
@@ -295,6 +312,19 @@ impl MeRootApplication {
     #[must_use]
     pub(super) fn application(&self) -> &MeContinuousPoint {
         &self.application
+    }
+
+    /// The indicator positions this application changes the domain of.
+    #[must_use]
+    pub(super) fn changed_indicators(&self) -> &[usize] {
+        &self.changed
+    }
+
+    /// Whether the crossing was applied without refinement (SPEC_0044
+    /// ME-EVENT-005).
+    #[must_use]
+    pub(super) fn sliding(&self) -> bool {
+        self.sliding
     }
 }
 
@@ -499,15 +529,20 @@ fn scan_accepted_interval<T: RootScanTarget>(
         policy,
         accepted,
         retained,
+        &SlidingModes::default(),
         &mut RootScanWorkspace::default(),
     )
 }
 
+/// A domain change made only by indicators that `sliding` marks applies at the
+/// scan coordinate that first observes it, without refinement (SPEC_0044
+/// ME-EVENT-005).
 pub(super) fn scan_accepted_interval_with_workspace<T: RootScanTarget>(
     target: &mut T,
     policy: &MeRootSearchPolicy,
     accepted: &MeAcceptedStep,
     retained: &[f64],
+    sliding: &SlidingModes,
     workspace: &mut RootScanWorkspace,
 ) -> Result<Option<MeRootApplication>, MeSessionError> {
     if retained.is_empty() {
@@ -550,6 +585,9 @@ pub(super) fn scan_accepted_interval_with_workspace<T: RootScanTarget>(
             upper.time = coordinate;
             copy_scan_values(&mut upper.states, states, "scan bracket states")?;
             copy_scan_values(&mut upper.indicators, indicators, "scan bracket indicators")?;
+            if sliding.only_sliding(&changed_domains(&lower.indicators, &upper.indicators)) {
+                return sliding_application(policy, lower, upper).map(Some);
+            }
             return refine_bracket(target, policy, lower, upper).map(Some);
         }
         if is_end {
@@ -612,6 +650,52 @@ fn require_indicator_width(expected: usize, indicators: &[f64]) -> Result<(), Me
         });
     }
     Ok(())
+}
+
+fn changed_domains(before: &[f64], after: &[f64]) -> Vec<usize> {
+    before
+        .iter()
+        .zip(after)
+        .enumerate()
+        .filter(|(_, (before, after))| {
+            IndicatorDomain::of(**before) != IndicatorDomain::of(**after)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Apply a sliding crossing at the scan coordinate that observed it.
+///
+/// A sliding mode re-crosses its surface immediately after every event, so
+/// refining each crossing to the location tolerance advances time by little
+/// more than that tolerance per event and the session stalls. Applying it at
+/// the first scan coordinate that observes it bounds the cost to one event per
+/// accepted step: the state leaves the surface by at most what it moves in
+/// that step before the event brings it back.
+fn sliding_application(
+    policy: &MeRootSearchPolicy,
+    lower: &ScanSample,
+    upper: &ScanSample,
+) -> Result<MeRootApplication, MeSessionError> {
+    let width = policy.state_count();
+    let left = MeContinuousPoint::new(
+        lower.time,
+        try_copied(&lower.states, "sliding left states")?,
+        width,
+    )?;
+    let application = MeContinuousPoint::new(
+        upper.time,
+        try_copied(&upper.states, "sliding application states")?,
+        width,
+    )?;
+    let mut application = MeRootApplication::new(
+        left,
+        application,
+        try_copied(&lower.indicators, "sliding left indicators")?,
+        try_copied(&upper.indicators, "sliding application indicators")?,
+    )?;
+    application.sliding = true;
+    Ok(application)
 }
 
 fn domains_changed(before: &[f64], after: &[f64]) -> bool {

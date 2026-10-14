@@ -6,8 +6,10 @@
 //! method, refinement budget, or tie-break.
 
 mod bracket;
+mod sliding;
 
 pub use bracket::RootBracket;
+pub use sliding::SlidingModes;
 
 /// Which domain changes an accepted interval applies together when several
 /// indicators change domain in it.
@@ -57,6 +59,12 @@ pub struct RootLocationPlan {
     /// up the roundoff of one accepted interval.
     roundoff_epsilons: f64,
     tie_break: RootTieBreak,
+    /// Consecutive close state events of one indicator that make it slide
+    /// ([`SlidingModes`]).
+    sliding_streak: u32,
+    /// The widest gap between two state events of one indicator, as a fraction
+    /// of the scan resolution, that continues its streak.
+    sliding_gap_fraction: f64,
 }
 
 impl RootLocationPlan {
@@ -69,6 +77,8 @@ impl RootLocationPlan {
         refinement_iteration_cap: 128,
         roundoff_epsilons: 100.0,
         tie_break: RootTieBreak::ToleranceWindow,
+        sliding_streak: 8,
+        sliding_gap_fraction: 1.0e-5,
     };
 
     /// The adjacent-sample bound for an experiment of `experiment_width`.
@@ -146,6 +156,18 @@ impl RootLocationPlan {
     pub const fn tie_break(&self) -> RootTieBreak {
         self.tie_break
     }
+
+    #[must_use]
+    pub const fn sliding_streak(&self) -> u32 {
+        self.sliding_streak
+    }
+
+    /// The widest gap between two state events of one indicator that
+    /// continues its sliding streak, for a scan of `scan_resolution`.
+    #[must_use]
+    pub fn sliding_gap(&self, scan_resolution: f64) -> f64 {
+        self.sliding_gap_fraction * scan_resolution
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +192,8 @@ mod tests {
         );
         assert_eq!(plan.minmax_slack(), 4);
         assert_eq!(plan.tie_break(), RootTieBreak::ToleranceWindow);
+        assert_eq!(plan.sliding_streak(), 8);
+        assert_eq!(plan.sliding_gap(0.125), 1.25e-6);
     }
 
     /// The cap covers the minmax bound of the widest bracket the standard

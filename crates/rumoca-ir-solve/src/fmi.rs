@@ -82,7 +82,9 @@ pub use native_deployment::{
     FmiCarryPair, FmiNativeDeploymentView, NativeCarryError, NativeDeploymentError,
     NativeTypedInventoryGap, check_native_typed_membership, reads_input_lanes,
 };
-pub use root_location::{RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak};
+pub use root_location::{
+    RootBracket, RootLocationPlan, RootRefinementMethod, RootTieBreak, SlidingModes,
+};
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///

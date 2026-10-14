@@ -191,6 +191,8 @@ pub(super) struct MeHostState {
     pub(super) inputs: IndexMap<String, f64>,
     pub(super) event_streak_time: Option<f64>,
     pub(super) event_streak_count: usize,
+    /// Which indicators slide (SPEC_0044 ME-EVENT-005).
+    pub(super) sliding: rumoca_ir_solve::fmi::SlidingModes,
     /// Why the session stopped being usable, once that has happened.
     ///
     /// After it is set, some pair of correlated owners — the component and the

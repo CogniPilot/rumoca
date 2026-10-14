@@ -294,6 +294,7 @@ fn build_host_state(
         inputs: IndexMap::new(),
         event_streak_time: None,
         event_streak_count: 0,
+        sliding: rumoca_ir_solve::fmi::SlidingModes::new(indicator_count),
         usability: Cell::new(None),
         options,
     })
@@ -572,6 +573,7 @@ impl MeSimulationSession<'_, '_> {
         self.host.retained_interval = None;
         self.host.event_streak_time = None;
         self.host.event_streak_count = 0;
+        self.host.sliding.reset();
         self.host.budget = TimeoutBudget::new(options.max_wall_seconds());
         self.host.options = options;
 
@@ -939,6 +941,7 @@ impl MeSimulationSession<'_, '_> {
     ) -> Result<(), MeSessionError> {
         let step = self.accept_proposal(proposal)?;
         crate::runtime::hotpath_stats::inc_solver_step();
+        self.host.sliding.begin_interval();
         debug_assert!(
             step.order() > 0,
             "a checked accepted step always carries a positive declared order"
@@ -954,10 +957,33 @@ impl MeSimulationSession<'_, '_> {
         match located? {
             Some(application) if !self.coincides_with_time_event(&step, &application)? => {
                 crate::runtime::hotpath_stats::inc_root_hit();
+                self.record_sliding_modes(&application)?;
                 self.apply_located_root(&step, &application, cursor)
             }
             _ => self.commit_accepted_endpoint(&step, cursor),
         }
+    }
+
+    /// Record a state event in the plan's sliding-mode history (SPEC_0044
+    /// ME-EVENT-005), and count one applied without refinement.
+    fn record_sliding_modes(
+        &mut self,
+        application: &MeRootApplication,
+    ) -> Result<(), MeSessionError> {
+        let policy = self.host.policy()?;
+        let plan = policy.root_location();
+        let gap = plan.sliding_gap(policy.scan_resolution());
+        let streak = plan.sliding_streak();
+        if application.sliding() {
+            crate::runtime::fallbacks::note_sliding_mode(application.changed_indicators());
+        }
+        self.host.sliding.record_event(
+            application.application().time(),
+            application.changed_indicators(),
+            gap,
+            streak,
+        );
+        Ok(())
     }
 
     /// Whether a located root is the scheduled time event this step reaches,
@@ -1034,6 +1060,7 @@ impl MeSimulationSession<'_, '_> {
                 policy,
                 step,
                 retained,
+                &self.host.sliding,
                 &mut self.scan_workspace.borrow_mut(),
             )
         })

@@ -27,6 +27,7 @@ mod real_extrema;
 mod reported_models;
 mod residual_split_harness;
 mod slice_updates;
+mod sliding_modes;
 mod state_events;
 mod tensor_algebra;
 mod torn_tangent_harness;

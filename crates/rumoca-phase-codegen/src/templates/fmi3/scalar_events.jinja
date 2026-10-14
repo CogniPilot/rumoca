@@ -13,8 +13,56 @@
 {%- if solve.solve_layout.initial_event_parameter_index is not none %}m->p[{{ solve.solve_layout.initial_event_parameter_index }}] = {{ "1.0" if active else "0.0" }}; {% endif -%}
 {%- endmacro %}
 
+{#- SlidingModes of rumoca-ir-solve fmi/root_location/sliding.rs
+    (ME-EVENT-005), for at most `capacity` indicators. -#}
+{%- macro sliding_modes_struct(capacity) -%}
+struct RmcSlidingModes { double last[{{ capacity }}]; uint32_t streak[{{ capacity }}]; bool sliding[{{ capacity }}]; uint32_t intervals; }
+{%- endmacro %}
+
+{#- SlidingModes::new over `capacity` indicators, as statements on `modes`. -#}
+{%- macro sliding_modes_reset(modes, capacity) -%}
+for (size_t k = 0; k != {{ capacity }}; ++k) { {{ modes }}.last[k] = -INFINITY; {{ modes }}.streak[k] = 0; {{ modes }}.sliding[k] = false; } {{ modes }}.intervals = 0;
+{%- endmacro %}
+
+{#- The SlidingModes operations of a RootLocationPlan, operation for operation,
+    over the first `n` indicators; `changed[k]` marks an indicator whose
+    domain differs from its relation memory. -#}
+{%- macro sliding_modes(plan) %}
+/* SlidingModes::begin_interval: the second interval since the latest state
+   event ends every sliding mode. */
+static void rmc_slide_begin(struct RmcSlidingModes* s, size_t n) {
+    if (s->intervals < UINT32_MAX) ++s->intervals;
+    if (s->intervals == 2) for (size_t k = 0; k != n; ++k) s->sliding[k] = false;
+}
+/* SlidingModes::only_sliding. */
+static bool rmc_slide_only(const struct RmcSlidingModes* s, const bool* changed, size_t n) {
+    bool any = false;
+    for (size_t k = 0; k != n; ++k) {
+        if (!changed[k]) continue;
+        if (!s->sliding[k]) return false;
+        any = true;
+    }
+    return any;
+}
+/* RootLocationPlan::sliding_gap. */
+static double rmc_slide_gap(double scan) {
+    return {{ plan.sliding_gap_fraction }} * scan;
+}
+/* SlidingModes::record_event with the plan's sliding_streak. */
+static void rmc_slide_record(struct RmcSlidingModes* s, const bool* changed, size_t n, double time, double gap) {
+    for (size_t k = 0; k != n; ++k) {
+        if (!changed[k]) { s->streak[k] = 0; s->sliding[k] = false; continue; }
+        bool close = s->sliding[k] || time - s->last[k] <= gap;
+        s->streak[k] = close ? (s->streak[k] < UINT32_MAX ? s->streak[k] + 1u : UINT32_MAX) : 1u;
+        s->last[k] = time;
+        s->sliding[k] = s->streak[k] >= {{ plan.sliding_streak }}u;
+    }
+    s->intervals = 0;
+}
+{%- endmacro %}
+
 {%- macro event_fields(fmi) -%}
-{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_input_runs.scalar_count, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right;{% endif -%}
+{%- if fmi.scalar_events %} bool rmc_domain[{{ [fmi.event_indicator_roots|length, 1]|max }}]; bool rmc_domain_valid; double rmc_indicator[{{ [fmi.event_indicator_roots|length, 1]|max }}]; double rmc_entry_y[Y_LEN]; double rmc_entry_p[P_LEN]; bool rmc_entry_captured; bool rmc_initial_event; double rmc_scan; size_t rmc_override_root[{{ [fmi.scalar_events.roots|length, 1]|max }}]; double rmc_override_value[{{ [fmi.scalar_events.roots|length, 1]|max }}]; size_t rmc_override_count; size_t rmc_pass; double rmc_input_seen[{{ [fmi.scalar_events.discrete_input_runs.scalar_count, 1]|max }}]; bool rmc_right_valid; double rmc_anchor; double rmc_right; {{ sliding_modes_struct([fmi.event_indicator_roots|length, 1]|max) }} rmc_slide; bool rmc_slide_logged;{% endif -%}
 {%- endmacro %}
 
 {#- The evaluation time of a read at the component's time: after an event with
@@ -31,7 +79,7 @@ static inline double rmc_now(const ModelInstance* m) { return m->time; }
 {%- endmacro %}
 
 {%- macro event_reset(fmi) -%}
-{%- if fmi.scalar_events %} m->rmc_domain_valid=false; m->rmc_entry_captured=false; m->rmc_initial_event=false; m->rmc_override_count=0; m->rmc_scan=0.0; m->rmc_pass=0; m->rmc_right_valid=false;{% endif -%}
+{%- if fmi.scalar_events %} m->rmc_domain_valid=false; m->rmc_entry_captured=false; m->rmc_initial_event=false; m->rmc_override_count=0; m->rmc_scan=0.0; m->rmc_pass=0; m->rmc_right_valid=false; {{ sliding_modes_reset("m->rmc_slide", [fmi.event_indicator_roots|length, 1]|max) }} m->rmc_slide_logged = false;{% endif -%}
 {%- endmacro %}
 
 {#- One named change step of a pass; `flag` accumulates whether it changed the
@@ -967,6 +1015,15 @@ static {{ prefix }}Status rmc_domains_changed(ModelInstance* m, double* z, bool*
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) *changed |= m->rmc_domain[k] != (z[k] > 0.0);
     return {{ prefix }}OK;
 }
+{{- sliding_modes(plan) }}
+/* Which indicators `z` holds outside the domain their relation memory holds. */
+static void rmc_slide_changed(const ModelInstance* m, const double* z, bool* changed) {
+    for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) changed[k] = m->rmc_domain[k] != (z[k] > 0.0);
+}
+/* The scan resolution the interval loop uses. */
+static double rmc_scan_now(const ModelInstance* m) {
+    return m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN);
+}
 /* Narrow the interval [t, t + h], whose end has a changed domain (`z_high`)
    and whose start has none (`z_low`), to the location tolerance by the plan's
    refinement (root.rs refine_earliest), and integrate to the application
@@ -1025,6 +1082,8 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
     double z_high[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
     bool changed = false;
     memcpy(y0, m->y, sizeof(m->y));
+    bool slide_changed[{{ [fmi.event_indicator_roots|length, 1]|max }}] = {0};
+    rmc_slide_begin(&m->rmc_slide, RMC_EVENT_INDICATORS);
     {{ prefix }}Status integrated = {{ integrate }}(m, t, h);
     if (integrated != {{ prefix }}OK) return integrated == {{ prefix }}Discard ? {{ prefix }}Discard : {{ prefix }}Error;
     if (rmc_domains_changed(m, z_high, &changed) != {{ prefix }}OK) return {{ prefix }}Error;
@@ -1041,20 +1100,34 @@ static {{ prefix }}Status rmc_cs_interval(ModelInstance* m, double t, double h, 
         return {{ prefix }}OK;
     }
     if (!changed) return {{ prefix }}OK;
-    memcpy(m->y, y0, sizeof(m->y));
-    m->time = t;
-    if (rmc_event_indicators(m, z_low) != {{ prefix }}OK) return {{ prefix }}Error;
-    if (rmc_cs_locate(m, t, h, y0, z_low, z_high, advanced) != {{ prefix }}OK) return {{ prefix }}Error;
-    /* RootLocationPlan::coincides_with_time_event: a root located within the
-       interval's roundoff of the time event it ends at is not applied on its
-       own; the interval ends at the event and the event's iteration handles
-       it. */
-    if (ends_at_time_event && fabs(h - *advanced) <= rmc_interval_roundoff(t, h)) {
+    /* A change made only by sliding indicators applies at the interval end
+       that observed it, without refinement (sliding.rs, ME-EVENT-005); at a
+       time event, the event's iteration handles it. */
+    rmc_slide_changed(m, z_high, slide_changed);
+    if (rmc_slide_only(&m->rmc_slide, slide_changed, RMC_EVENT_INDICATORS)) {
+        if (ends_at_time_event) { m->time = t + h; return {{ prefix }}OK; }
+        if (!m->rmc_slide_logged) { m->rmc_slide_logged = true; RMC_LOG_AT(m, "event", "a sliding mode's state events apply at the scan coordinate"); }
+    } else {
         memcpy(m->y, y0, sizeof(m->y));
-        if ({{ integrate }}(m, t, h) != {{ prefix }}OK) return {{ prefix }}Error;
-        *advanced = h;
-        return {{ prefix }}OK;
+        m->time = t;
+        if (rmc_event_indicators(m, z_low) != {{ prefix }}OK) return {{ prefix }}Error;
+        if (rmc_cs_locate(m, t, h, y0, z_low, z_high, advanced) != {{ prefix }}OK) return {{ prefix }}Error;
+        /* RootLocationPlan::coincides_with_time_event: a root located within
+           the interval's roundoff of the time event it ends at is not applied
+           on its own; the interval ends at the event and the event's iteration
+           handles it. */
+        if (ends_at_time_event && fabs(h - *advanced) <= rmc_interval_roundoff(t, h)) {
+            memcpy(m->y, y0, sizeof(m->y));
+            if ({{ integrate }}(m, t, h) != {{ prefix }}OK) return {{ prefix }}Error;
+            *advanced = h;
+            return {{ prefix }}OK;
+        }
     }
+    /* SlidingModes::record_event over the domains at the application point. */
+    m->time = t + *advanced;
+    if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
+    rmc_slide_changed(m, z, slide_changed);
+    rmc_slide_record(&m->rmc_slide, slide_changed, RMC_EVENT_INDICATORS, m->time, rmc_slide_gap(rmc_scan_now(m)));
     bool enter = false;
     if (rmc_events_completed(m, &enter) != {{ prefix }}OK) return {{ prefix }}Error;
     bool reinit = false;
@@ -1077,7 +1150,7 @@ static {{ prefix }}Status rmc_cs_advance(ModelInstance* m, double start, double 
     while (t < end) {
         /* Indicators bound the scan; a component without any integrates a
            whole interval. */
-        double scan = RMC_EVENT_INDICATORS == 0 ? INFINITY : (m->rmc_scan > 0.0 ? m->rmc_scan : rmc_scan_resolution(NAN));
+        double scan = RMC_EVENT_INDICATORS == 0 ? INFINITY : rmc_scan_now(m);
         double h = fmin(end - t, scan), advanced = 0.0, event = 0.0;
         /* A time event inside the interval ends it exactly at the event, and
            an event at the interval's end is handled at the end. */

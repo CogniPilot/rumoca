@@ -58,6 +58,8 @@ mod root_refinement_render_tests;
 mod scalar_plan_template_tests;
 mod scalar_program_plan;
 mod scalar_region_plan;
+#[cfg(test)]
+mod sliding_modes_render_tests;
 mod solve_lazy;
 mod solve_renderer;
 #[cfg(test)]

@@ -130,6 +130,10 @@ pub struct ProjectionFallbackReport {
     /// relations was consistent, so the current side was kept. Counted per
     /// root.
     pub relation_surfaces: BTreeMap<usize, u64>,
+    /// State events applied at the scan coordinate because every indicator
+    /// they changed was sliding (SPEC_0044 ME-EVENT-005). Counted per
+    /// indicator.
+    pub sliding_modes: BTreeMap<usize, u64>,
 }
 
 impl ProjectionFallbackReport {
@@ -137,6 +141,13 @@ impl ProjectionFallbackReport {
     #[must_use]
     pub fn relation_surface_total(&self) -> u64 {
         self.relation_surfaces.values().sum()
+    }
+
+    /// State events applied without refinement in a sliding mode, summed over
+    /// indicators.
+    #[must_use]
+    pub fn sliding_mode_total(&self) -> u64 {
+        self.sliding_modes.values().sum()
     }
 
     /// The sites whose fallback rate exceeds the reporting threshold.
@@ -186,6 +197,18 @@ impl ProjectionFallbackReport {
                 self.relation_surface_total()
             ));
         }
+        if !self.sliding_modes.is_empty() {
+            let indicators = self
+                .sliding_modes
+                .iter()
+                .map(|(indicator, count)| format!("indicator {indicator} x{count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "{} state event(s) of a sliding mode applied at the scan coordinate ({indicators})",
+                self.sliding_mode_total()
+            ));
+        }
         lines
     }
 }
@@ -200,6 +223,7 @@ thread_local! {
     /// before its block's projection); that call has already fallen back.
     static PENDING: RefCell<Vec<ProjectionSite>> = const { RefCell::new(Vec::new()) };
     static SURFACES: RefCell<BTreeMap<usize, u64>> = const { RefCell::new(BTreeMap::new()) };
+    static SLIDING: RefCell<BTreeMap<usize, u64>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// The projection fallback counts on this thread since the last
@@ -209,6 +233,7 @@ pub fn projection_fallbacks() -> ProjectionFallbackReport {
     ProjectionFallbackReport {
         sites: COUNTS.with(|counts| counts.borrow().clone()),
         relation_surfaces: SURFACES.with(|surfaces| surfaces.borrow().clone()),
+        sliding_modes: SLIDING.with(|sliding| sliding.borrow().clone()),
     }
 }
 
@@ -217,6 +242,7 @@ pub fn reset_projection_fallbacks() {
     ACTIVE.with(|active| active.borrow_mut().clear());
     PENDING.with(|pending| pending.borrow_mut().clear());
     SURFACES.with(|surfaces| surfaces.borrow_mut().clear());
+    SLIDING.with(|sliding| sliding.borrow_mut().clear());
 }
 
 /// One projection call at a site, counted when it begins; it ends when this
@@ -303,6 +329,17 @@ pub(crate) fn note_relation_surface(roots: &[usize]) {
     });
 }
 
+/// Count one state event applied without refinement in the sliding mode of
+/// `indicators`.
+pub(crate) fn note_sliding_mode(indicators: &[usize]) {
+    SLIDING.with(|sliding| {
+        let mut sliding = sliding.borrow_mut();
+        for indicator in indicators {
+            *sliding.entry(*indicator).or_default() += 1;
+        }
+    });
+}
+
 /// Single-program sharings whose shared-value proof failed in this process;
 /// each ran its program unshared (SPEC_0043 shared-value segments).
 #[must_use]
@@ -338,6 +375,24 @@ mod tests {
         );
         reset_projection_fallbacks();
         assert_eq!(projection_fallbacks().relation_surface_total(), 0);
+    }
+
+    #[test]
+    fn sliding_mode_events_are_counted_per_indicator_and_reported() {
+        reset_projection_fallbacks();
+        note_sliding_mode(&[2]);
+        note_sliding_mode(&[2, 5]);
+        let report = projection_fallbacks();
+        assert_eq!(report.sliding_modes.get(&2), Some(&2));
+        assert_eq!(report.sliding_mode_total(), 3);
+        assert!(
+            report
+                .warnings()
+                .iter()
+                .any(|line| line.contains("scan coordinate (indicator 2 x2, indicator 5 x1)"))
+        );
+        reset_projection_fallbacks();
+        assert_eq!(projection_fallbacks().sliding_mode_total(), 0);
     }
 
     #[test]

@@ -333,6 +333,7 @@ mod simulation_work_counts;
 mod singular_active_mode;
 mod singular_algebraic_seed;
 mod size_of_call_results;
+mod sliding_mode_events;
 mod smooth_index_reduction;
 mod solve_model_round_trip;
 mod state_demotion_through_alias;
