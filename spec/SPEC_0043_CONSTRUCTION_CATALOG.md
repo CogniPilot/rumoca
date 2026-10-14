@@ -164,15 +164,14 @@ core and wire ceilings, and totality-debt ceilings are unchanged.
 
 **2026-10-07 enumeration-declaration review:** measured production source moved to 18,684 core, 5,572 wire, and 24,256 total lines with the enumeration declaration attribute of an enumeration variable (DAE-C32) and its view and wire replay. The derived rule rounds the total up to the next 250-line step, so the `dae-total-loc` ceiling moves to 24,500; the review triggers, core and wire ceilings, and totality-debt ceilings are unchanged.
 
-**2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification is pending in `docs/verification/pr427-main-dae-integer/structured-quotient-owner.md`.
+**2026-10-11 compact quotient-boundary review:** production source at `ab034993b` measures 18,803 core, 5,759 wire, and 24,562 total lines (tests/generated excluded by §1a). The existing quotient batch and staged replay now retain an exact structured-domain boundary instead of forcing a binder-dependent relation into the scalar condition system; wire records omit and reconstruct its issued root at the same stream position. The §1b rounding rule yields ceilings 19,000 / 6,000 / 24,750. Thresholds and totality-debt ceilings stay unchanged; execution qualification remains pending.
 
 
-**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The [module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md) accounts for checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
+**2026-10-11 workshop conditional-owner review:** production at `4aaaf7872` measures 19,686 core, 6,037 wire, and 25,723 total lines. The review covers checked model-arm construction/replay, quotient correlation, closed-owner proof transfer, and fixed operand views. The derived acknowledgment steps are 19,750 / 6,250 / 25,750; review triggers and totality-debt ceilings are unchanged. Final combined execution gates and maintainer review remain pending.
 
 **2026-10-12 combined workshop review:** production at `d3f804491` measures
-19,937 core, 6,037 wire and 25,974 total lines. The refreshed
-[module inventory and review](../docs/verification/pr427-workshop-ci/dae-module-review.md)
-accounts for closed model-arm derivative proof transfer, constructor-issued
+19,937 core, 6,037 wire and 25,974 total lines. The review
+covers closed model-arm derivative proof transfer, constructor-issued
 clock facts and the shared read-only selected-value traversal. Solve's duplicate
 synchronous-condition owner analysis is removed. Derived acknowledgment steps
 are 20,000 / 6,250 / 26,000; thresholds and totality-debt
@@ -1053,8 +1052,7 @@ does not authorize rendering a rounded Float64 min/max as an exact Integer bound
 Moved from SPEC_0036 section "Source-Ordered Function Assertion Cutover"; rows and rules below are normative by reference from that section.
 
 The canonical typed evaluator and compiled shared C kernel implement this
-cutover. `docs/verification/fmi-ls-first-fault.md` records the unchanged
-source controls and adapter limits. ALG-015 remains the source-language
+cutover. ALG-015 remains the source-language
 requirement throughout.
 
 | Rule | Owner/Where | Brief Justification |
@@ -1279,10 +1277,7 @@ model is catalogued in [SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-c
 | Static receiver authority follows the checked complete provider/alias/allocation graph, not an import signature | Trusted whole-graph constructor | A receiver cannot inspect the callee behind its function import |
 | Standalone or separately linked guest imports grant no admission; every call retains the existing lease/outcome/fault and typed-cell checks | Private native receiver and existing execution owner | Direct linkage changes platform plumbing, never success or publication semantics |
 
-**DRAFT receiver boundary:** the proposed WASIP2-only canonical-reader dependency
-and private receiver signatures are in
-[the fixed guest receiver proposal](../docs/verification/fixed-native-linked-receiver-proposal-20261011.md#draft-canonical-reader-boundary).
-The isolated receiver source implements the proposed boundary, but remains
+**DRAFT receiver boundary:** the isolated receiver source remains
 unqualified and is not an accepted exception to SPEC_0029. The
 receiver cannot inspect an imported callee; altered-provider refusal belongs to
 the trusted complete-graph constructor, not a guest-supplied flag or descriptor.
