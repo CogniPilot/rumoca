@@ -159,13 +159,13 @@ impl<'model> CompiledCheckedAssertionWasm<'model> {
 /// Explicit host execution of one exact issued assertion invocation.
 /// Its private fields retain source authority together with the admitted engine.
 ///
-/// ```compile_fail,E0616
+/// ```compile_fail,E0451
 /// use rumoca_exec_wasm::{CompiledCheckedAssertionWasm, PreparedCheckedAssertionHost};
-/// fn replace_source<'model>(
-///     host: &mut PreparedCheckedAssertionHost<'model>,
+/// fn rebind<'model>(
 ///     source: CompiledCheckedAssertionWasm<'model>,
-/// ) {
-///     host.source = source;
+///     original: PreparedCheckedAssertionHost<'model>,
+/// ) -> PreparedCheckedAssertionHost<'model> {
+///     PreparedCheckedAssertionHost { source, ..original }
 /// }
 /// ```
 #[cfg(all(feature = "host-engine", not(target_arch = "wasm32")))]
