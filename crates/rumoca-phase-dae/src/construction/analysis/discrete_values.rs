@@ -318,6 +318,10 @@ fn collect_algorithm_owners(
     for algorithm in &flat.algorithms {
         let target_names =
             stable_discrete_targets(flat, roles, model_algorithm_targets(flat, algorithm));
+        let target_instances = target_names
+            .iter()
+            .map(|name| flat.variables[name].instance_id)
+            .collect::<HashSet<_>>();
         let event_algorithm =
             super::model_algorithms::contains_event_control(&algorithm.statements);
         if target_names.is_empty() {
@@ -340,6 +344,10 @@ fn collect_algorithm_owners(
                     algorithm.span,
                     occurrence,
                 )?;
+                dependencies = dependencies
+                    .into_iter()
+                    .map(|dependency| algorithm_owned_dependency(dependency, &target_instances))
+                    .collect();
                 // MLS 3.7 §11.1.2: an event algorithm starts every discrete
                 // target at its `pre` value (lowering seeds it so), so a read
                 // before the target's own definition is a history read, not a
@@ -377,6 +385,19 @@ fn collect_algorithm_owners(
         }
     }
     Ok(())
+}
+
+/// A model algorithm owns its written declarations as complete SSA values.
+/// Keep exact selections for reads of declarations outside that algorithm.
+fn algorithm_owned_dependency(
+    dependency: DiscreteTargetKey,
+    targets: &HashSet<InstanceId>,
+) -> DiscreteTargetKey {
+    if targets.contains(&dependency.instance()) {
+        DiscreteTargetKey::Whole(dependency.instance())
+    } else {
+        dependency
+    }
 }
 
 /// Whether the discrete-valued targets of one event algorithm own their
@@ -603,9 +624,9 @@ fn expression_reads_current_target(
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> bool {
-    current_discrete_dependencies(flat, expression, roles).contains(&DiscreteTargetKey::Whole(
-        flat.variables[target].instance_id,
-    ))
+    current_discrete_dependencies(flat, expression, roles)
+        .iter()
+        .any(|dependency| dependency.instance() == flat.variables[target].instance_id)
 }
 
 fn collect_when_owners(
@@ -1489,6 +1510,68 @@ fn collect_when_equation_target_dependencies(
         first_action = first_action.or(action);
     }
     first_action
+}
+
+#[cfg(test)]
+#[test]
+fn algorithm_dependencies_preserve_external_selections_and_normalize_owned_values() {
+    let owned = InstanceId::new(41);
+    let external = InstanceId::new(42);
+    let targets = HashSet::from([owned]);
+    for index in [1, 2] {
+        let selection = DiscreteTargetKey::Element {
+            instance: owned,
+            indices: vec![index].into_boxed_slice(),
+        };
+        assert_eq!(selection.instance(), owned);
+        assert_eq!(
+            algorithm_owned_dependency(selection, &targets),
+            DiscreteTargetKey::Whole(owned)
+        );
+        let external_selection = DiscreteTargetKey::Element {
+            instance: external,
+            indices: vec![index].into_boxed_slice(),
+        };
+        assert_eq!(
+            algorithm_owned_dependency(external_selection.clone(), &targets),
+            external_selection
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn indexed_current_target_reads_retain_entry_value_classification() {
+    let mut sources = SourceMap::new();
+    let text = "x[1]";
+    let source = sources.add("indexed_entry.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let instance = InstanceId::new(41);
+    let name = VarName::new("x");
+    let mut flat = flat::Model::new();
+    let mut variable = flat::Variable::empty_with_span(span);
+    variable.name = name.clone();
+    variable.instance_id = instance;
+    variable.dims = vec![2];
+    flat.add_variable(name.clone(), variable);
+    let roles = HashMap::from([(name.clone(), PlannedRole::DiscreteValue)]);
+    let expression = Expression::VarRef {
+        name: rumoca_core::Reference::new("x").with_instance_id(instance),
+        subscripts: vec![Subscript::Index { value: 1, span }],
+        span,
+    };
+    assert!(expression_reads_current_target(
+        &flat,
+        &expression,
+        &name,
+        &roles
+    ));
+    let pre = Expression::BuiltinCall {
+        function: BuiltinFunction::Pre,
+        args: vec![expression],
+        span,
+    };
+    assert!(!expression_reads_current_target(&flat, &pre, &name, &roles));
 }
 
 #[cfg(test)]

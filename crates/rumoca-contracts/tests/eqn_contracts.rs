@@ -805,7 +805,7 @@ fn eqn_020_same_variable_in_two_when_equations_rejected() {
         "#,
         "Test",
         FailedPhase::ToDae,
-        "ED020",
+        "ED010",
     );
 }
 
@@ -825,7 +825,7 @@ fn eqn_020_second_when_owner_is_the_reported_site() {
             end when;
         end Test;
     "#;
-    expect_compile_failure_at_last_source_slice(source, "Test", "ED020", "level");
+    expect_compile_failure_at_last_source_slice(source, "Test", "ED010", "level");
 }
 
 fn expect_compile_failure_at_last_source_slice(

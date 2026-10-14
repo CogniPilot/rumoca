@@ -11,6 +11,12 @@ pub(in crate::construction) enum DiscreteTargetKey {
 }
 
 impl DiscreteTargetKey {
+    pub(super) fn instance(&self) -> InstanceId {
+        match self {
+            Self::Whole(instance) | Self::Element { instance, .. } => *instance,
+        }
+    }
+
     pub(super) fn from_reference(
         flat: &flat::Model,
         name: &rumoca_core::Reference,
@@ -119,6 +125,7 @@ impl CoordinateOwners {
         selection: Option<Box<[i64]>>,
         owner: usize,
         span: Span,
+        name: &VarName,
     ) -> Result<(), ToDaeError> {
         let conflict = self.whole.is_some_and(|previous| previous != owner)
             || match &selection {
@@ -130,7 +137,9 @@ impl CoordinateOwners {
             };
         if conflict {
             return Err(ToDaeError::discrete_solved_form_violation(
-                "independent when-equations have overlapping coordinate definitions (MLS §8.3.5.4)",
+                format!(
+                    "independent when-equations have overlapping coordinate definitions of `{name}` (MLS §8.3.5.4)"
+                ),
                 span,
             ));
         }
@@ -152,9 +161,14 @@ pub(super) fn validate_model_owners(
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
 ) -> Result<(), ToDaeError> {
     let mut owners = HashMap::new();
+    let names = flat
+        .variables
+        .values()
+        .map(|variable| (variable.instance_id, &variable.name))
+        .collect::<HashMap<_, _>>();
     for (owner, chain) in flat.when_chains.iter().enumerate() {
         for branch in chain.branches() {
-            claim_equation_targets(flat, &branch.equations, owner, &mut owners, calls)?;
+            claim_equation_targets(flat, &branch.equations, owner, &mut owners, calls, &names)?;
         }
     }
     Ok(())
@@ -166,13 +180,16 @@ fn claim_equation_targets(
     owner: usize,
     owners: &mut HashMap<InstanceId, CoordinateOwners>,
     calls: &HashMap<WhenFunctionCallKey, ModelEventFunctionCallPlan>,
+    names: &HashMap<InstanceId, &VarName>,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         for instance in whole_target_instances(flat, equation, calls)? {
-            owners
-                .entry(instance)
-                .or_default()
-                .claim(None, owner, equation.span())?;
+            owners.entry(instance).or_default().claim(
+                None,
+                owner,
+                equation.span(),
+                names[&instance],
+            )?;
         }
         let target = match equation {
             flat::WhenEquation::AssignElement {
@@ -194,17 +211,19 @@ fn claim_equation_targets(
                     .map(|(_, equations)| equations.as_slice())
                     .chain(else_branch.iter().map(Vec::as_slice))
                 {
-                    claim_equation_targets(flat, equations, owner, owners, calls)?;
+                    claim_equation_targets(flat, equations, owner, owners, calls, names)?;
                 }
                 None
             }
             _ => None,
         };
         if let Some((instance, selection)) = target {
-            owners
-                .entry(instance)
-                .or_default()
-                .claim(selection, owner, equation.span())?;
+            owners.entry(instance).or_default().claim(
+                selection,
+                owner,
+                equation.span(),
+                names[&instance],
+            )?;
         }
     }
     Ok(())
