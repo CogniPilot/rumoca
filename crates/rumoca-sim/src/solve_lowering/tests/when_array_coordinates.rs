@@ -117,3 +117,37 @@ fn matrix_coordinate_mapping_is_row_major_and_preserves_each_hold() {
         assert_eq!(*result.data[channel].last().unwrap(), expected, "{name}");
     }
 }
+
+#[test]
+fn selected_initial_dependencies_survive_mode_clear_and_refresh_observables() {
+    let source = r#"
+model SelectedInitial
+  Real x(start=0, fixed=true);
+  Boolean e[3](each start=false, each fixed=true);
+  Real y;
+equation
+  der(x)=1;
+  when initial() then e[1]=true; end when;
+  when initial() then e[2]=e[1]; end when;
+  y=if initial() then -1 else if e[1] and e[2] then 1 else 0;
+end SelectedInitial;
+"#;
+    let compiled = compile(source, "SelectedInitial");
+    let result = simulate_dae_with_diagnostics(
+        &compiled,
+        &SimOptions {
+            t_end: 0.2,
+            ..SimOptions::default()
+        },
+    )
+    .unwrap();
+    for (name, expected) in [("e[1]", 1.0), ("e[2]", 1.0), ("e[3]", 0.0), ("y", 1.0)] {
+        let channel = result
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap();
+        assert_eq!(result.data[channel].first(), Some(&expected), "{name}");
+        assert!(result.data[channel].iter().all(|&value| value == expected));
+    }
+}
