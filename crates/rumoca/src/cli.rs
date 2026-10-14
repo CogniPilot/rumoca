@@ -319,6 +319,9 @@ pub struct CompileArgs {
 
     /// Dump an intermediate representation: `<stage>-mo` for Modelica or
     /// `<stage>-json` for JSON (stage = ast/flat/dae/solve). See possible values.
+    /// `ast-json` is the parser's tree of MODELICA_FILE alone and ignores
+    /// --model and --source-root; every later stage selects the model and
+    /// resolves its class closure.
     #[arg(long, value_enum, conflicts_with = "target")]
     pub emit: Option<EmitTarget>,
 

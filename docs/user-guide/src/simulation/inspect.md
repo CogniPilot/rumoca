@@ -21,9 +21,9 @@ rumoca compile Model.mo --emit dae-json -o m.json
 ```
 
 `ast-json` is the one stage before name resolution. It dumps the file you
-pass exactly as the parser read it: `--model` is not needed and
-`--source-root` is not read, so the dump stays available while a library the
-file references is missing or does not resolve. Every later stage needs the
+pass exactly as the parser read it: `--model` and `--source-root` are
+accepted but ignored, so the dump covers the whole file and stays available
+while a library the file references is missing or does not resolve. Every later stage needs the
 model's whole class closure, so `flat-mo` and beyond still report unresolved
 names. For the Modelica Standard Library that means naming the directory
 that holds `Modelica/`, `ModelicaServices/`, and `Complex.mo` as one
