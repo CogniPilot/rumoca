@@ -50,6 +50,17 @@ impl TypedValue {
         value_type: SolveValueType,
         elements: Vec<SolveValueKind>,
     ) -> Result<Self, TypedValueConstructionError> {
+        Self::check_elements(&value_type, &elements)?;
+        Ok(Self {
+            value_type,
+            elements: Payload::of(elements),
+        })
+    }
+
+    fn check_elements(
+        value_type: &SolveValueType,
+        elements: &[SolveValueKind],
+    ) -> Result<(), TypedValueConstructionError> {
         if elements.len() != value_type.scalar_count() as usize {
             return Err(TypedValueConstructionError::ScalarCountMismatch);
         }
@@ -60,10 +71,7 @@ impl TypedValue {
         {
             return Err(TypedValueConstructionError::ElementTypeMismatch);
         }
-        Ok(Self {
-            value_type,
-            elements: Payload::of(elements),
-        })
+        Ok(())
     }
 
     #[must_use]
@@ -124,6 +132,29 @@ impl TypedValue {
                 operation: "construct runtime value",
                 provenance,
             }
+        })
+    }
+
+    fn checked_elements(
+        value_type: SolveValueType,
+        mut elements: impl ExactSizeIterator<Item = Result<SolveValueKind, TypedProgramEvalError>>,
+        provenance: Span,
+    ) -> Result<Self, TypedProgramEvalError> {
+        if elements.len() != 1 {
+            return Self::checked(
+                value_type,
+                elements.collect::<Result<Vec<_>, _>>()?,
+                provenance,
+            );
+        }
+        let element = elements
+            .next()
+            .ok_or_else(|| invalid_error("construct runtime value", provenance))??;
+        Self::check_elements(&value_type, std::slice::from_ref(&element))
+            .map_err(|_| invalid_error("construct runtime value", provenance))?;
+        Ok(Self {
+            value_type,
+            elements: Payload::Scalar(element),
         })
     }
 }
