@@ -80,8 +80,9 @@ simulations, with4 typed failures and0 timeouts. Its initial comparator refusal
 (missing pinned OMC Services) remains in `canary-after-initial.json`. Official
 repository dependency setup was then run, and the existing traces were compared
 without repeating Rumoca model attempts:15 compared,15 high,0 minor/deviation,
-0 missing,1 existing typed reference-policy exclusion. The before delta is not
-yet measured; this is not cohort evidence.
+0 missing,1 existing typed reference-policy exclusion. `canary-delta.json` retains the paired c15dc7518 baseline: all counts
+have delta0, with the exact same four failures and one reference exclusion.
+Neither run is full-cohort evidence.
 
 CI's architecture scan caught `solve_runtime.rs` at2094 lines. Construction was
 moved verbatim into its focused module at `d5d35b3cb`, leaving the runtime1406
