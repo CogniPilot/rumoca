@@ -4,6 +4,9 @@ mod admitted_tests;
 mod grouped_jacobian;
 mod grouped_residual;
 mod prepared_jacobian;
+mod torn_preparation;
+
+pub(super) use torn_preparation::TornSweepCache;
 
 pub(super) use prepared_jacobian::{
     prepare_projection_jacobians, projection_jacobian_demand, projection_jacobian_source,
@@ -19,20 +22,6 @@ use rumoca_eval_solve::{PreparedTornSweep, TornSweepStatus};
 
 use super::*;
 use crate::runtime::fallbacks::{self, ProjectionFallback, ProjectionSite};
-
-/// Prepared batched torn-block sweeps, keyed by the address of the plan's
-/// `BlockTearing`. The tearing lives inside the runtime's immutable
-/// `SolveModel`, so its address is stable for the runtime's lifetime; the
-/// cache is dropped on clone because a clone owns a different model
-/// allocation, so inherited keys could collide with unrelated tearings.
-#[derive(Default)]
-pub(super) struct TornSweepCache(RefCell<FxHashMap<usize, Option<Rc<PreparedTornSweepEntry>>>>);
-
-impl Clone for TornSweepCache {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
 
 /// One torn block's prepared batched sweep and, when the execution backend
 /// accepts the composite, its compiled form.
@@ -1278,87 +1267,6 @@ impl RefreshProjectionModel<'_> {
 }
 
 impl ScalarExecutionView<'_> {
-    /// Prepared batched sweep for one torn block, resolved once from the same
-    /// certified isolators the per-row path re-resolves on every call, with
-    /// its compiled composite when the execution backend accepts it. `None`
-    /// is cached too, so an unbatchable block keeps the per-row path without
-    /// repeating the resolution.
-    pub(super) fn prepared_torn_sweep(
-        &self,
-        tearing: &solve::BlockTearing,
-    ) -> Option<Rc<PreparedTornSweepEntry>> {
-        let key = std::ptr::from_ref(tearing) as usize;
-        if let Some(prepared) = self.scalar.torn_sweep_cache.0.borrow().get(&key) {
-            return prepared.clone();
-        }
-        let prepared = self.build_torn_sweep_entry(tearing).map(Rc::new);
-        self.scalar
-            .torn_sweep_cache
-            .0
-            .borrow_mut()
-            .insert(key, prepared.clone());
-        prepared
-    }
-
-    fn build_torn_sweep_entry(
-        &self,
-        tearing: &solve::BlockTearing,
-    ) -> Option<PreparedTornSweepEntry> {
-        let causal_steps = tearing
-            .causal_steps
-            .iter()
-            .map(|step| (step.row, step.y_index))
-            .collect::<Vec<_>>();
-        let sweep = self
-            .scalar
-            .implicit_scalar_rhs
-            .prepare_torn_sweep(&causal_steps, &tearing.residual_rows)?;
-        let compiled = self.scalar.execution_backend.as_ref().and_then(|backend| {
-            let composite = self
-                .scalar
-                .implicit_scalar_rhs
-                .torn_sweep_composite(&sweep)?;
-            let schedule = optional_compiled(
-                "torn_assignment_schedule",
-                backend.compile_torn_assignment_rows(
-                    &composite.assignment_rows,
-                    &composite.assignment_targets,
-                ),
-            )?;
-            let residual_block = optional_compiled(
-                "torn_residual_block",
-                backend.compile_expression(&composite.residual_block),
-            )?;
-            let source_spans = tearing
-                .causal_steps
-                .iter()
-                .filter_map(|step| {
-                    self.scalar
-                        .implicit_scalar_rhs
-                        .row_output_position(step.row)
-                })
-                .filter_map(|(program, _)| {
-                    self.scalar
-                        .implicit_scalar_rhs
-                        .block()
-                        .program_span(program)
-                })
-                .chain(composite.residual_block.program_spans().iter().copied())
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            Some(CompiledTornSweep {
-                schedule,
-                residual_block,
-                source_spans,
-                affected_y: composite.assignment_targets.into_boxed_slice(),
-                rollback: RefCell::new(Vec::new()),
-                residual_len: composite.residual_block.stored_output_count(),
-                residual_outputs: composite.residual_outputs.into_boxed_slice(),
-            })
-        });
-        Some(PreparedTornSweepEntry { sweep, compiled })
-    }
-
     pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
         plan.value_stage_schedule_is_certified(&self.scalar.continuous_structural)
     }
