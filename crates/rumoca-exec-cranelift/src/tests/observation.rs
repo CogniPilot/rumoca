@@ -404,8 +404,10 @@ fn checked_native_messages_keep_the_source_binding_across_repeated_invocations()
         vec![fixture_span()],
     )
     .unwrap();
-    let mut model = rumoca_ir_solve::SolveModel::default();
-    model.pure_calls = table.clone();
+    let mut model = rumoca_ir_solve::SolveModel {
+        pure_calls: table.clone(),
+        ..Default::default()
+    };
     model.problem.events.action_conditions = block;
     model.problem.events.actions = vec![action(&site)];
     let source = rumoca_ir_solve::SolveExecutionSource::new(model);

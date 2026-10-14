@@ -526,16 +526,7 @@ fn scalar_region<'program>(
     for &(operation, region) in path {
         program = match program.get(operation)? {
             solve::LinearOp::FunctionConditional { program, .. } => {
-                if region == program.arms.len() * 2 {
-                    &program.fallback
-                } else {
-                    let arm = program.arms.get(region / 2)?;
-                    if region % 2 == 0 {
-                        &arm.condition
-                    } else {
-                        &arm.result
-                    }
-                }
+                conditional_region(program, region)?
             }
             solve::LinearOp::FunctionFold { program, .. }
             | solve::LinearOp::GuardedFunctionFold { program, .. }
@@ -612,4 +603,19 @@ fn scalar_bound(
             sum.checked_add(count)
                 .ok_or_else(|| error("observation bound overflows"))
         })
+}
+
+fn conditional_region(
+    program: &solve::FunctionConditionalProgram,
+    region: usize,
+) -> Option<&[solve::LinearOp]> {
+    if region == program.arms.len() * 2 {
+        return Some(&program.fallback);
+    }
+    let arm = program.arms.get(region / 2)?;
+    Some(if region.is_multiple_of(2) {
+        &arm.condition
+    } else {
+        &arm.result
+    })
 }
