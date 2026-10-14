@@ -36,6 +36,7 @@ impl InitialUpdateJacobian {
         };
         let whole = required_compiled(
             "initial_update_jacobian",
+            source.program_spans(),
             backend.compile_jacobian_expression(source),
         )?;
         selected_programs::jacobian(backend, "initial_update_jacobian", source, whole)
