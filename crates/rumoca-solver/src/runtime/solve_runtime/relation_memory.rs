@@ -1260,13 +1260,21 @@ impl ScalarExecutionView<'_> {
                 "visible value rows",
             ));
         }
-        let value = self.scalar.visible_value_rows.eval_row_with_context(
-            idx,
-            y,
-            params,
-            t,
-            self.row_eval_context(),
-        )?;
+        let value = if self.scalar.lifecycle().is_some() {
+            self.eval_lifecycle_row(
+                &self.scalar.visible_value_rows,
+                idx,
+                RowEvalPoint { y, p: params, t },
+            )?
+        } else {
+            self.scalar.visible_value_rows.eval_row_with_context(
+                idx,
+                y,
+                params,
+                t,
+                self.row_eval_context(),
+            )?
+        };
         Ok(Some(value))
     }
 

@@ -53,6 +53,7 @@ mod chart_sharing;
 mod compiled_expressions;
 mod compiled_inventory;
 mod compiled_lifecycle;
+mod compiled_messages;
 mod compiled_targets;
 mod construction;
 mod selected_programs;
@@ -166,7 +167,8 @@ impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
             },
             fault @ (EvalSolveError::InvalidTensorIndex { .. }
             | EvalSolveError::TensorIndexOutOfBounds { .. }
-            | EvalSolveError::NativeSourceIndexFault { .. }) => Self::SourceFault {
+            | EvalSolveError::NativeSourceIndexFault { .. }
+            | EvalSolveError::SourceOperationFault { .. }) => Self::SourceFault {
                 message: fault.to_string(),
                 span: fault.source_span(),
             },
@@ -1373,6 +1375,7 @@ impl SolveRuntime {
                 .scalar_backend()
                 .and_then(|backend| backend.pure_call_execution()),
             runtime_state: Some(&self.runtime_state),
+            message_program_execution: self.message_program_execution(),
             ..Default::default()
         }
     }
