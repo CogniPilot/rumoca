@@ -1,7 +1,10 @@
 //! Reuse the checked typed emitter inside a complete native assignment module.
 #[cfg(test)]
 mod tests;
-use super::{TypedCallCompileError, TypedCallFault, emit, link::LinkedOwners};
+use super::{
+    TypedCallCompileError, TypedCallFault, emit,
+    link::{AssertionMode, LinkedOwners},
+};
 use crate::emit::MathImport;
 use rumoca_ir_solve as solve;
 use std::collections::BTreeMap;
@@ -66,7 +69,17 @@ impl ProgramHelpers {
         table: &solve::SolvePureCallTable,
         sites: &[solve::SolvePureCallSite],
     ) -> Result<Self, TypedCallCompileError> {
-        Self::with_demands(table, sites, |_| Demand::all())
+        Self::with_demands(table, sites, |_| Demand::all(), AssertionMode::Value)
+    }
+
+    /// A complete native entry executes its original assigned-read guards;
+    /// unlike a numeric value row, it has no scheduled assertion observer.
+    pub(crate) fn native_with_demands(
+        table: &solve::SolvePureCallTable,
+        sites: &[solve::SolvePureCallSite],
+        demand: impl Fn(&solve::SolvePureCallSite) -> Demand,
+    ) -> Result<Self, TypedCallCompileError> {
+        Self::with_demands(table, sites, demand, AssertionMode::Standalone)
     }
 
     pub(crate) fn event(
@@ -100,10 +113,11 @@ impl ProgramHelpers {
 
     /// Link the program whose root `site` is built for the outputs
     /// `demand(site)` of it that some stage reads (SOLVE-C95).
-    pub(crate) fn with_demands(
+    fn with_demands(
         table: &solve::SolvePureCallTable,
         sites: &[solve::SolvePureCallSite],
         demand: impl Fn(&solve::SolvePureCallSite) -> Demand,
+        assertion_mode: AssertionMode,
     ) -> Result<Self, TypedCallCompileError> {
         if sites.iter().any(|site| !table.matches_site(site)) {
             return Err(TypedCallCompileError::SiteMismatch);
@@ -116,7 +130,7 @@ impl ProgramHelpers {
             .map(|site| (site.owner(), demand(site)))
             .collect::<Vec<_>>();
         Ok(Self {
-            linked: LinkedOwners::construct_program(table, &roots)?,
+            linked: LinkedOwners::construct_program(table, &roots, assertion_mode)?,
             directional: None,
             relocated: false,
         })
