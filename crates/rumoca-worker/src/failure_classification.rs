@@ -256,6 +256,7 @@ impl ModelFailureBucket {
             SimError::ModelExchangeSession(_) => Self::RuntimeContract,
             SimError::DirectionalDerivativeUnavailable { .. }
             | SimError::ExecutionPolicyContradiction { .. }
+            | SimError::RequiredExecutionBackendMissing { .. }
             | SimError::UnsupportedSolverMode { .. }
             | SimError::SolveIr(_)
             | SimError::SolverError(_) => Self::from_sim_stage(error.stage().unwrap_or(fallback)),
@@ -457,6 +458,15 @@ mod tests {
             ModelFailureBucket::from_sim_error(&capability, SimFailureStage::BackendBuild),
             ModelFailureBucket::SimBackendBuild,
             "BDF derivative capability is decided during backend construction"
+        );
+        let missing = SimError::RequiredExecutionBackendMissing {
+            policy: "native_required",
+        }
+        .at_stage(SimFailureStage::BackendBuild);
+        assert_eq!(
+            ModelFailureBucket::from_sim_error(&missing, SimFailureStage::Integration),
+            ModelFailureBucket::SimBackendBuild,
+            "required backend refusal retains its preparation stage"
         );
     }
 

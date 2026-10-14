@@ -1,0 +1,78 @@
+{
+  "base": "c15dc75182dd029177e4cabc4a3953ed6df563ce",
+  "methodology": "git diff --numstat; tests by file path. Inline tests remain in production-file totals. Public declaration inventory by changed Rust path and explicit pub declaration; includes reexports and fields, excludes implicit enum variant visibility and pub(crate). Signature lines are source declarations, not a rustdoc ABI diff.",
+  "metrics": {
+    "production_lines_added": 3056,
+    "production_lines_deleted": 964,
+    "test_lines_added": 1379,
+    "test_lines_deleted": 133,
+    "files_touched": 85,
+    "net_added_lines": 3338,
+    "public_items_added": 10,
+    "public_items_removed": 5
+  },
+  "public_declarations_added": [
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "pub enum MeExecutionPolicyContradiction {"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub use reference_reverse::ReferenceReverseExecution;"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub fn model(&self) -> &SolveRuntimeModel {"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub fn state_count(&self) -> usize {"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub fn solver_count(&self) -> usize {"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
+      "pub struct ReferenceReverseExecution<'runtime> {"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
+      "pub fn prepare_reverse_sensitivity("
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
+      "pub fn reverse_state_derivative_vjp("
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
+      "pub fn reverse_implicit_residual_vjp("
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
+      "pub fn apply_steady_residual_transpose("
+    ]
+  ],
+  "public_declarations_removed": [
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "pub struct MeExecutionPolicyContradiction {"
+    ],
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "pub policy: &'static str,"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub model: SolveRuntimeModel,"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub state_count: usize,"
+    ],
+    [
+      "crates/rumoca-solver/src/runtime/solve_runtime.rs",
+      "pub solver_count: usize,"
+    ]
+  ]
+}

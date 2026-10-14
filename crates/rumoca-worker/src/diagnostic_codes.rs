@@ -99,9 +99,9 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
         // compiled backend handle) is rejected before any construction or
         // integration happens, so it codes like the other preparation-time
         // contract violations.
-        SimError::ExecutionPolicyContradiction { .. } | SimError::UnsupportedSolverMode { .. } => {
-            Some(runtime_preparation_code().to_string())
-        }
+        SimError::ExecutionPolicyContradiction { .. }
+        | SimError::RequiredExecutionBackendMissing { .. }
+        | SimError::UnsupportedSolverMode { .. } => Some(runtime_preparation_code().to_string()),
         SimError::DirectionalDerivativeUnavailable { .. } => {
             Some(runtime_preparation_code().to_string())
         }
@@ -168,6 +168,12 @@ mod tests {
         assert_eq!(
             sim_error_diagnostic_code(&SimError::DirectionalDerivativeUnavailable {
                 reason: "non-differentiable operation".to_string(),
+            }),
+            Some("EX002".to_string())
+        );
+        assert_eq!(
+            sim_error_diagnostic_code(&SimError::RequiredExecutionBackendMissing {
+                policy: "native_required",
             }),
             Some("EX002".to_string())
         );
