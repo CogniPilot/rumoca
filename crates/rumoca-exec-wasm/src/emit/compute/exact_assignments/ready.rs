@@ -77,12 +77,16 @@ impl Ready {
     ) -> Result<Self, String> {
         let programs = checked_programs(&plan, layout, seed_len)?;
         let sites = conditional::call_sites(&programs)?;
+        let directional = conditional::directional_call_sites(&programs)?;
         let mut helpers = match event {
             Some(source) => ProgramHelpers::event(source, &sites),
-            None => ProgramHelpers::new(table, &sites),
+            None => ProgramHelpers::with_directional(table, &sites, &directional),
         }
         .map_err(|error| error.to_string())?;
         checked_call_interfaces(&sites)?;
+        for site in &directional {
+            checked_interface(site.inputs(), site.outputs())?;
+        }
         let mut merged = collect_imports(&programs)?
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
@@ -101,7 +105,7 @@ impl Ready {
         } else {
             arena::ArenaPlan::required(&programs, 0)?
         };
-        let calls = CallProgramPlan::new(&programs, &helpers, work, arena.inner_counter)?;
+        let calls = CallProgramPlan::new(&programs, &helpers, work, arena.last_integer_local())?;
         if plan
             .maximum_tuple
             .checked_mul(8)
@@ -187,11 +191,6 @@ fn directional_operation(operation: &LinearOp, seed_len: usize) -> Result<(), St
             count,
             ..
         } => start.checked_add(*count),
-        LinearOp::PureCallDirectional { .. } => {
-            return Err(
-                "WASM private directional profile has no linked typed directional helper".into(),
-            );
-        }
         _ => return Ok(()),
     };
     if end.is_none_or(|end| end > seed_len) {
@@ -202,24 +201,27 @@ fn directional_operation(operation: &LinearOp, seed_len: usize) -> Result<(), St
 
 fn checked_call_interfaces(sites: &[solve::SolvePureCallSite]) -> Result<(), String> {
     for site in sites {
-        let admitted = |value: &solve::SolveValueType| {
-            matches!(
-                value.element_type(),
-                solve::SolveScalarType::Real {
-                    format: solve::SolveRealFormat::Binary64,
-                    ..
-                } | solve::SolveScalarType::Integer(_)
-                    | solve::SolveScalarType::Boolean
-            )
-        };
-        if !site.inputs().iter().all(admitted)
-            || !site
-                .outputs()
-                .iter()
-                .all(|output| admitted(output.value_type()))
-        {
-            return Err("WASM exact calls require Binary64 typed interfaces".into());
-        }
+        checked_interface(site.inputs(), site.outputs())?;
+    }
+    Ok(())
+}
+
+fn checked_interface(
+    inputs: &[solve::SolveValueType],
+    outputs: &[solve::SolvePureCallOutput],
+) -> Result<(), String> {
+    let admitted = |value: &solve::SolveValueType| {
+        matches!(
+            value.element_type(),
+            solve::SolveScalarType::Real {
+                format: solve::SolveRealFormat::Binary64,
+                ..
+            } | solve::SolveScalarType::Integer(_)
+                | solve::SolveScalarType::Boolean
+        )
+    };
+    if !inputs.iter().all(admitted) || !outputs.iter().all(|output| admitted(output.value_type())) {
+        return Err("WASM exact calls require Binary64 typed interfaces".into());
     }
     Ok(())
 }

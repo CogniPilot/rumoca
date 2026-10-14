@@ -10,6 +10,7 @@ use super::*;
 pub(super) struct GatherFaults {
     pub status_base: u32,
     pub entries: Vec<crate::NativeGatherFault>,
+    pub linear_solve: Vec<crate::NativeLinearSolveFault>,
 }
 
 pub(super) use crate::outline::FUNCTION_BYTES;
@@ -142,7 +143,12 @@ fn stage_body(
         faults
             .status_base
             .checked_add(
-                u32::try_from(faults.entries.len()).map_err(|_| "native gather status overflow")?,
+                faults
+                    .entries
+                    .len()
+                    .checked_add(faults.linear_solve.len())
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or("native source status overflow")?,
             )
             .ok_or("native gather status overflow")?,
     );
@@ -165,6 +171,7 @@ fn stage_body(
         return Err("native stage did not consume its complete issued programs".into());
     }
     faults.entries.append(&mut emitter.gather_faults);
+    faults.linear_solve.append(&mut emitter.linear_solve_faults);
     Ok(function)
 }
 
