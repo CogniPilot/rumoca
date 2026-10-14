@@ -264,7 +264,9 @@ static {{ prefix }}Status rmc_event_indicators(ModelInstance* m, double* z) {
         double value = roots[root];
         if (value == 0.0) {
             signed char zero = rmc_root_zero[root];
-            value = zero > 0 ? DBL_EPSILON : (zero < 0 ? -DBL_EPSILON : (m->rmc_domain_valid && m->rmc_domain[k] ? DBL_EPSILON : -DBL_EPSILON));
+            long memory = rmc_root_memory[root];
+            bool frozen_positive = memory >= 0 ? m->p[memory] <= 0.5 : (m->rmc_domain_valid && m->rmc_domain[k]);
+            value = zero > 0 ? DBL_EPSILON : (zero < 0 ? -DBL_EPSILON : (frozen_positive ? DBL_EPSILON : -DBL_EPSILON));
         }
         z[k] = value;
     }
@@ -861,9 +863,7 @@ static {{ prefix }}Status rmc_events_continuous(ModelInstance* m) {
     if (RMC_EVENT_INDICATORS == 0) return {{ prefix }}OK;
     if (rmc_event_indicators(m, z) != {{ prefix }}OK) return {{ prefix }}Error;
     for (size_t k = 0; k != RMC_EVENT_INDICATORS; ++k) {
-        long memory = rmc_root_memory[rmc_indicator_root[k]];
-        bool previous = m->rmc_domain_valid ? m->rmc_domain[k] : z[k] > 0.0;
-        m->rmc_domain[k] = memory >= 0 ? m->p[memory] <= 0.5 : previous;
+        m->rmc_domain[k] = z[k] > 0.0;
     }
     m->rmc_domain_valid = true;
     return {{ prefix }}OK;

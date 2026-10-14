@@ -499,3 +499,111 @@ fn correlated_clocked_instances_resolve_from_the_original_component() {
         rumoca_core::ClockPhaseAnchor::SimulationStart
     );
 }
+
+#[test]
+fn frozen_relation_memory_orients_only_original_exact_zero_indicators() {
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.events.root_conditions = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_exact_zero_root.mo",
+    );
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
+    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous];
+    model.problem.events.root_relation_refresh_roles = vec![solve::RootRelationRefreshRole::Frozen];
+    model.problem.solve_layout.parameter_count = 1;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.relation_memory_parameter_indices = vec![0];
+    model.parameters = vec![0.0].into();
+    let mut kernel = instantiate(&model);
+    kernel.enter_initialization_mode().unwrap();
+    kernel.exit_initialization_mode().unwrap();
+    kernel.update_discrete_states().unwrap();
+    kernel.enter_continuous_time_mode().unwrap();
+    for (state, memory, expected) in [
+        (1.0e-12_f64, 1.0, 1.0e-12_f64),
+        (-1.0e-12_f64, 0.0, -1.0e-12_f64),
+        (0.0, 0.0, f64::EPSILON),
+        (0.0, 1.0, -f64::EPSILON),
+    ] {
+        kernel.states[0] = state;
+        kernel.params[0] = memory;
+        kernel.clear_runtime_caches();
+        let mut values = vec![0.0; kernel.indicator_plan.len()];
+        kernel.event_indicators_into(&mut values).unwrap();
+        assert_eq!(values[0].to_bits(), expected.to_bits());
+        kernel.seed_settled_indicator_domains().unwrap();
+        assert_eq!(kernel.frozen_indicator_positive[0], expected > 0.0);
+    }
+}
+
+#[test]
+fn settled_views_and_root_values_require_identical_time_states_and_parameters() {
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.solve_layout.parameter_count = 1;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0].into();
+    let kernel = instantiate(&model);
+    let time = 0.25_f64;
+    let states = kernel.states.clone();
+    let parameters = [0.0_f64];
+    let adjacent_parameters = [f64::from_bits(1)];
+    let mut adjacent_states = states.clone();
+    adjacent_states[0] = f64::from_bits(states[0].to_bits() + 1);
+    let complete = kernel.solver_y_at_parameters(time, &parameters).unwrap();
+    assert!((complete[1] - ALGEBRAIC_SLOPE * time).abs() < 1e-6);
+    kernel.cache_algebraic_coordinate(time, &states, &parameters, &complete);
+    kernel.solver_y_guess.borrow_mut()[1] = -123.0;
+    let view = kernel
+        .cached_continuous_solver_y(time, &states, &parameters)
+        .unwrap();
+    assert_eq!(view.kind, SettledCoordinateKind::Algebraic);
+    assert_eq!(view.values, complete);
+    kernel.cache_root_conditions_at_parameters(time, &states, &parameters, &[3.0]);
+    for (at, state, params) in [
+        (time.next_up(), states.as_slice(), parameters.as_slice()),
+        (time, adjacent_states.as_slice(), parameters.as_slice()),
+        (time, states.as_slice(), adjacent_parameters.as_slice()),
+    ] {
+        assert!(
+            kernel
+                .cached_continuous_solver_y(at, state, params)
+                .is_none()
+        );
+        assert!(!kernel.copy_cached_root_conditions_into(at, state, params, &mut [0.0]));
+    }
+    assert!(kernel.copy_cached_root_conditions_into(time, &states, &parameters, &mut [0.0]));
+}
+
+#[test]
+fn a_deadline_read_completes_the_checked_remainder_of_a_partial_derivative_view() {
+    let mut model = steep_algebraic_time_event_model();
+    model.problem.events.dynamic_time_event_names = vec!["algebraicDeadline".to_owned()];
+    model.problem.events.dynamic_time_event_rhs = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_partial_derivative_deadline.mo",
+    );
+    let mut kernel = instantiate(&model);
+    let time = 0.25;
+    kernel.set_time(MeTime::at(time)).unwrap();
+    kernel
+        .continuous_state_derivatives_into(&mut [0.0])
+        .unwrap();
+    let view = kernel
+        .cached_continuous_solver_y(time, &kernel.states, &kernel.params)
+        .unwrap();
+    assert_eq!(view.kind, SettledCoordinateKind::Derivative);
+    assert_eq!(
+        view.values[1], 0.0,
+        "the derivative does not own the deadline's algebraic lane"
+    );
+    let mut indicators = vec![0.0; kernel.indicator_plan.len()];
+    kernel.event_indicators_into(&mut indicators).unwrap();
+    assert_eq!(indicators.len(), 1);
+    assert!((indicators[0] - (ALGEBRAIC_SLOPE * time - time)).abs() < 1e-6);
+}
