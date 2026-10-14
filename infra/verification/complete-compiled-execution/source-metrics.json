@@ -1,14 +1,14 @@
 {
   "base": "c15dc75182dd029177e4cabc4a3953ed6df563ce",
-  "methodology": "git diff --numstat; tests by file path. Inline tests remain in production-file totals. Public declaration inventory by changed Rust path and explicit pub declaration; includes reexports and fields, excludes implicit enum variant visibility and pub(crate). Signature lines are source declarations, not a rustdoc ABI diff.",
+  "methodology": "git diff --numstat; tests by file path. Inline tests remain in production-file totals. Public declaration inventory by changed Rust path and explicit pub declaration; includes reexports and fields, plus checked new public enum variants and their named fields; excludes pub(crate). Signature lines are source declarations, not a rustdoc ABI diff.",
   "metrics": {
-    "production_lines_added": 3056,
+    "production_lines_added": 3084,
     "production_lines_deleted": 964,
     "test_lines_added": 1379,
     "test_lines_deleted": 133,
     "files_touched": 85,
-    "net_added_lines": 3338,
-    "public_items_added": 10,
+    "net_added_lines": 3366,
+    "public_items_added": 17,
     "public_items_removed": 5
   },
   "public_declarations_added": [
@@ -51,6 +51,34 @@
     [
       "crates/rumoca-solver/src/runtime/solve_runtime/reference_reverse.rs",
       "pub fn apply_steady_residual_transpose("
+    ],
+    [
+      "crates/rumoca-solver/src/solver.rs",
+      "SimExecutionPolicy::NativeRequired"
+    ],
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "MeExecutionPolicyContradiction::UnexpectedBackend"
+    ],
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "MeExecutionPolicyContradiction::UnexpectedBackend::policy"
+    ],
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "MeExecutionPolicyContradiction::MissingBackend"
+    ],
+    [
+      "crates/rumoca-solver/src/fmi_me.rs",
+      "MeExecutionPolicyContradiction::MissingBackend::policy"
+    ],
+    [
+      "crates/rumoca-sim/src/error.rs",
+      "SimError::RequiredExecutionBackendMissing"
+    ],
+    [
+      "crates/rumoca-sim/src/error.rs",
+      "SimError::RequiredExecutionBackendMissing::policy"
     ]
   ],
   "public_declarations_removed": [
